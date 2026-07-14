@@ -516,8 +516,6 @@ impl RoomPersistence {
 
     /// Reserve request order before formatting, blob resolution, or
     /// serialization begins.
-    // Wired in by the causal-save slice.
-    #[allow(dead_code)]
     pub(crate) fn claim_file_checkpoint(
         &self,
     ) -> Result<super::file_checkpoint::SaveSequenceClaim, super::file_checkpoint::SaveClaimError>
@@ -526,8 +524,6 @@ impl RoomPersistence {
     }
 
     /// Clone the room-owned checkpoint coordinator for a blocking completion.
-    // Wired in by the causal-save slice.
-    #[allow(dead_code)]
     pub(crate) fn file_checkpoint_coordinator(
         &self,
     ) -> Arc<super::file_checkpoint::FileCheckpointCoordinator> {
@@ -535,8 +531,6 @@ impl RoomPersistence {
     }
 
     /// Newest save sequence that reached a committed ordering barrier.
-    // Wired in by the causal-save slice.
-    #[allow(dead_code)]
     pub(crate) fn latest_file_checkpoint_barrier_sequence(&self) -> u64 {
         self.file_checkpoint.latest_barrier_sequence()
     }
@@ -1041,8 +1035,6 @@ pub struct NotebookRoom {
     /// Serializes source, peer, daemon, and file-checkpoint journal records.
     pub(crate) durability: Arc<super::durability::RoomDurability>,
     /// Atomic lease for a reconciliation that may span async disk preparation.
-    // Read by the causal-save slice's reconciliation claim.
-    #[allow(dead_code)]
     pub(crate) source_reconciliation_claimed: AtomicBool,
     /// File binding owner: canonical .ipynb path, file watcher, autosave.
     pub file_binding: NotebookFileBinding,
@@ -1112,8 +1104,6 @@ pub struct NotebookRoom {
 }
 
 impl NotebookRoom {
-    // Wired in by the causal-save slice.
-    #[allow(dead_code)]
     pub(crate) fn try_claim_source_reconciliation(
         self: &Arc<Self>,
     ) -> Option<SourceReconciliationClaim> {

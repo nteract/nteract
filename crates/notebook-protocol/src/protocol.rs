@@ -243,6 +243,97 @@ pub enum SaveErrorKind {
     Io { message: String },
 }
 
+/// Why a save request could not advance the causal file checkpoint.
+///
+/// A blocked save is an honest outcome, not a committed `NotebookSaved`
+/// event. Callers may retry I/O failures, reconnect to the owning room for a
+/// path conflict, or discard a superseded completion because a newer request
+/// owns the save sequence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SaveBlockedReason {
+    /// Another room currently owns the requested path.
+    PathAlreadyOpen { uuid: String, path: String },
+    /// The monotonic sequence counter cannot advance.
+    SequenceExhausted,
+    /// A newer save request superseded this completion.
+    Superseded { latest_sequence: u64 },
+    /// Disk and recovery journal diverged; explicit reconciliation is
+    /// required before overwriting the bound source.
+    SourceConflict { message: String },
+    /// Another degraded source condition blocks in-place persistence.
+    SourceDegraded { message: String },
+    /// File preparation, serialization, or durable replacement failed.
+    Io { message: String },
+}
+
+/// Deliberate resolution for a room whose recovered Automerge state and
+/// bound `.ipynb` source disagree.
+///
+/// These operations are intentionally separate from ordinary save and reload
+/// paths. A caller must name which side wins (or preserve the recovered side
+/// at a different path) before mutation capabilities are restored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SourceReconciliation {
+    /// Save the recovered room to a different file and continue from that new
+    /// binding. The divergent original source is left untouched.
+    SaveRecoveredAs { path: String },
+    /// Keep the recovered room and deliberately overwrite its bound source.
+    KeepRecoveredAndOverwriteSource,
+    /// Archive the recovery journal and causally replace the live room with
+    /// the exact current contents of the bound source file.
+    ArchiveRecoveryAndReloadSource,
+}
+
+/// Stable operation name echoed in reconciliation responses.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceReconciliationOperation {
+    SaveRecoveredAs,
+    KeepRecoveredAndOverwriteSource,
+    ArchiveRecoveryAndReloadSource,
+}
+
+impl SourceReconciliation {
+    pub fn operation(&self) -> SourceReconciliationOperation {
+        match self {
+            Self::SaveRecoveredAs { .. } => SourceReconciliationOperation::SaveRecoveredAs,
+            Self::KeepRecoveredAndOverwriteSource => {
+                SourceReconciliationOperation::KeepRecoveredAndOverwriteSource
+            }
+            Self::ArchiveRecoveryAndReloadSource => {
+                SourceReconciliationOperation::ArchiveRecoveryAndReloadSource
+            }
+        }
+    }
+}
+
+/// Why an explicit source reconciliation did not commit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SourceReconciliationBlockedReason {
+    /// The room does not currently require an explicit source decision.
+    NotRequired { message: String },
+    /// Another reconciliation already owns the room transition.
+    Busy,
+    /// The operation requires a file-backed room.
+    NoBoundSource,
+    /// `save_recovered_as` must not name the divergent bound source.
+    TargetMustDiffer {
+        bound_path: String,
+        requested_path: String,
+    },
+    /// The requested path is currently owned by another room.
+    PathAlreadyOpen { uuid: String, path: String },
+    /// The source file could not be parsed or fully prepared before commit.
+    InvalidSource { message: String },
+    /// File or journal I/O failed before a complete reconciliation commit.
+    Io { message: String },
+    /// A causal save checkpoint was blocked.
+    Save { reason: SaveBlockedReason },
+}
+
 /// Why a caller-provided execution id was rejected.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -666,6 +757,11 @@ pub enum NotebookRequest {
         path: Option<String>,
     },
 
+    /// Resolve a recovered-room/source conflict by explicitly choosing one of
+    /// the preservation policies in [`SourceReconciliation`]. Owner scope is
+    /// required and ordinary mutation remains gated until this commits.
+    ReconcileNotebookSource { operation: SourceReconciliation },
+
     /// Fork the current notebook into a new ephemeral (in-memory only) room.
     ///
     /// Creates a new UUID, copies cells + metadata from the source room,
@@ -786,13 +882,57 @@ pub enum NotebookResponse {
     /// All cells queued for execution.
     AllCellsQueued { queued: Vec<QueueEntry> },
 
-    /// Notebook saved successfully to disk.
+    /// Notebook saved successfully to disk by a committed atomic checkpoint.
     NotebookSaved {
         /// The absolute path where the notebook was written.
         path: String,
+        /// Exact NotebookDoc heads represented by the file.
+        exported_heads: Vec<String>,
+        /// Monotonic committed replacement sequence.
+        save_sequence: u64,
     },
 
-    /// Save failed with a structured error.
+    /// The requested heads and serialized bytes already match the committed
+    /// file checkpoint. No file replacement or saved timestamp was emitted.
+    NotebookAlreadyCurrent {
+        path: String,
+        exported_heads: Vec<String>,
+        save_sequence: u64,
+    },
+
+    /// The request did not commit a file checkpoint.
+    NotebookSaveBlocked {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        save_sequence: Option<u64>,
+        reason: SaveBlockedReason,
+    },
+
+    /// An explicit room/source reconciliation committed successfully.
+    NotebookSourceReconciled {
+        operation: SourceReconciliationOperation,
+        /// The room's active source path after reconciliation.
+        path: String,
+        /// Archive directory containing the retired recovery journal, when
+        /// the disk source was deliberately selected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archived_journal: Option<String>,
+        /// Exact NotebookDoc heads represented by the selected source.
+        exported_heads: Vec<String>,
+        /// Monotonic file-checkpoint sequence assigned to the selected source.
+        save_sequence: u64,
+        /// New room source generation made interactive by the decision.
+        source_generation: u64,
+    },
+
+    /// An explicit reconciliation did not reach its journal/file commit point.
+    NotebookSourceReconciliationBlocked {
+        operation: SourceReconciliationOperation,
+        reason: SourceReconciliationBlockedReason,
+    },
+
+    /// Legacy save failure response retained for older daemon/client paths.
     SaveError { error: SaveErrorKind },
 
     /// Notebook forked into a new ephemeral room.
@@ -1530,6 +1670,16 @@ mod tests {
                     "action": "save_notebook",
                     "format_cells": true,
                     "path": "/tmp/example.ipynb",
+                }),
+            ),
+            (
+                "reconcile_notebook_source",
+                serde_json::json!({
+                    "action": "reconcile_notebook_source",
+                    "operation": {
+                        "type": "save_recovered_as",
+                        "path": "/tmp/recovered.ipynb",
+                    },
                 }),
             ),
             (

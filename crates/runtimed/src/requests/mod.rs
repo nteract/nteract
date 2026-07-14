@@ -71,6 +71,7 @@ pub(crate) mod get_history;
 pub(crate) mod guarded;
 pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;
+pub(crate) mod reconcile_notebook_source;
 pub(crate) mod run_all_cells;
 pub(crate) mod save_notebook;
 pub(crate) mod send_comm;
@@ -145,6 +146,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::GetHistory { .. } => "GetHistory",
         NotebookRequest::Complete { .. } => "Complete",
         NotebookRequest::SaveNotebook { .. } => "SaveNotebook",
+        NotebookRequest::ReconcileNotebookSource { .. } => "ReconcileNotebookSource",
         NotebookRequest::CloneAsEphemeral { .. } => "CloneAsEphemeral",
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
@@ -447,6 +449,7 @@ pub(crate) async fn handle_notebook_request(
             | NotebookRequest::SyncEnvironment { .. }
             | NotebookRequest::SaveNotebook { .. }
             | NotebookRequest::GetHistory { .. }
+            | NotebookRequest::ReconcileNotebookSource { .. }
             | NotebookRequest::ApplyBokehSessionPatch { .. } => {
                 return NotebookResponse::Error {
                     error: format!(
@@ -546,6 +549,10 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::SaveNotebook { format_cells, path } => {
             save_notebook::handle(room, &daemon, format_cells, path).await
+        }
+
+        NotebookRequest::ReconcileNotebookSource { operation } => {
+            reconcile_notebook_source::handle(room, &daemon, operation).await
         }
 
         NotebookRequest::CloneAsEphemeral { source_notebook_id } => {

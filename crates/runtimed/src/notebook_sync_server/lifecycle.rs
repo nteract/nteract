@@ -970,8 +970,6 @@ impl RoomLifecycle {
 
     /// Adopt the causal file checkpoint that turns an untitled room into a
     /// file-backed source generation.
-    // Wired in by the causal-save slice.
-    #[allow(dead_code)]
     pub(crate) fn promote_file_backed_checkpoint(
         &self,
         generation: u64,
@@ -1066,8 +1064,6 @@ impl RoomLifecycle {
 
     /// Complete an explicit recovered-room/source decision and restore the
     /// mutation/execute capabilities only after its file and journal commit.
-    // Wired in by the causal-save slice.
-    #[allow(dead_code)]
     pub(crate) fn complete_reconciliation(
         &self,
         generation: u64,
@@ -1123,8 +1119,6 @@ impl RoomLifecycle {
     /// generation readable but non-interactive. A projection from the prior
     /// generation remains inspectable with its original generation/heads; it
     /// must never be relabeled as the newly committed document generation.
-    // Wired in by the causal-save slice.
-    #[allow(dead_code)]
     pub(crate) fn fail_reconciliation(
         &self,
         generation: u64,

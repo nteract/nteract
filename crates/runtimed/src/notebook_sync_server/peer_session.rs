@@ -520,7 +520,9 @@ mod tests {
 
     use super::*;
     use crate::blob_store::BlobStore;
-    use crate::notebook_sync_server::{apply_ipynb_changes, RoomInitialLoad, RoomInitialLoadStart};
+    use crate::notebook_sync_server::{
+        apply_ipynb_changes, save_notebook_to_disk, RoomInitialLoad, RoomInitialLoadStart,
+    };
 
     #[derive(Default)]
     struct CaptureWriter {
@@ -1376,8 +1378,75 @@ mod tests {
         assert_eq!(status.initial_load, InitialLoadPhaseWire::Ready);
     }
 
-    // The failed-source in-place-save guard test lands with the causal-save
-    // slice, which introduces SaveError::CheckpointBlocked.
+    #[tokio::test]
+    async fn source_preparation_failure_leaves_live_doc_untouched_and_preserves_source_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load_path = tmp.path().join("partial.ipynb");
+        let source_bytes = br##"{
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {"id":"one","cell_type":"code","metadata":{},"source":"1","execution_count":null,"outputs":[]},
+                {"id":"two","cell_type":"code","metadata":{},"source":"2","execution_count":null,"outputs":[]},
+                {"id":"three","cell_type":"code","metadata":{},"source":"3","execution_count":null,"outputs":[]},
+                {"id":"bad","cell_type":"markdown","metadata":{},"source":"![x](attachment:bad)","attachments":{"bad":"not-a-mime-bundle"}}
+            ]
+        }"##;
+        tokio::fs::write(&load_path, source_bytes).await.unwrap();
+        let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
+        let room = Arc::new(NotebookRoom::new_fresh(
+            Uuid::new_v4(),
+            Some(load_path.clone()),
+            tmp.path(),
+            blob_store,
+            false,
+        ));
+        let mut reader = tokio::io::empty();
+        let mut writer = CaptureWriter::default();
+        let mut peer_state = sync::State::new();
+
+        let error = stream_initial_load(
+            &mut reader,
+            &mut writer,
+            &room,
+            Some(&load_path),
+            tmp.path(),
+            &mut peer_state,
+            NotebookDocPhaseWire::Syncing,
+            RuntimeStatePhaseWire::Syncing,
+            InitialLoadPhaseWire::Streaming,
+            4,
+        )
+        .await
+        .expect_err("malformed fourth-cell attachment should fail the source");
+
+        assert!(error
+            .to_string()
+            .contains("attachment bad must be a MIME bundle"));
+        assert!(matches!(
+            room.initial_load.state(),
+            RoomInitialLoadState::Failed { .. }
+        ));
+        assert_eq!(
+            room.doc.read().await.cell_count(),
+            0,
+            "source preparation must finish before the first live change is published"
+        );
+        assert!(room.load_failed());
+
+        let save_error = save_notebook_to_disk(&room, None)
+            .await
+            .expect_err("failed-source persistence guard must reject in-place save");
+        assert!(matches!(
+            save_error,
+            crate::notebook_sync_server::SaveError::CheckpointBlocked {
+                reason: notebook_protocol::protocol::SaveBlockedReason::SourceDegraded { .. },
+                ..
+            }
+        ));
+        assert_eq!(tokio::fs::read(&load_path).await.unwrap(), source_bytes);
+    }
 
     #[tokio::test]
     async fn valid_zero_cell_notebook_publishes_explicit_ready_count() {

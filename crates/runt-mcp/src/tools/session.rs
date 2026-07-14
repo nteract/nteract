@@ -1342,7 +1342,9 @@ pub async fn save_notebook(
         })
         .await
     {
-        Ok(NotebookResponse::NotebookSaved { path: saved_path }) => {
+        Ok(NotebookResponse::NotebookSaved {
+            path: saved_path, ..
+        }) => {
             // Update session's notebook_path so auto-rejoin uses connect_open
             {
                 let mut guard = server.session.write().await;

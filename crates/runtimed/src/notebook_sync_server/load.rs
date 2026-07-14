@@ -24,8 +24,7 @@ pub(crate) struct ParsedIpynbCells {
 /// nbformat 4.5 and removing the ordinal fallback.
 ///
 /// Positions are generated incrementally using fractional indexing.
-// The pre-journal watcher path still consumes this shape; the causal-save
-// slice re-gates it to test-only when the watcher rewrite lands.
+#[cfg(test)]
 pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedIpynbCells> {
     parse_cells_from_ipynb_for_notebook(json, uuid::Uuid::nil())
 }
@@ -634,15 +633,11 @@ struct PreparedInitialImport {
 /// Fully validated and asset-resolved disk state for an explicit source
 /// reconciliation. Preparation is async and completes before the recovery
 /// journal is archived or the live document lock is acquired.
-// Wired in by the causal-save slice.
-#[allow(dead_code)]
 pub(crate) struct PreparedSourceReconciliation {
     prepared: PreparedInitialImport,
 }
 
 /// The exact causal replacement authored onto the live recovered document.
-// Wired in by the causal-save slice.
-#[allow(dead_code)]
 pub(crate) struct AppliedSourceReconciliation {
     pub(crate) fingerprint: super::recovery::SourceFingerprint,
     pub(crate) source_content: Vec<u8>,
@@ -740,8 +735,6 @@ async fn prepare_initial_import(
 /// archiving recovery history. This deliberately shares the initial source
 /// preparation path so attachments, output blobs, markdown assets, metadata,
 /// and stable disk cell IDs receive identical validation.
-// Wired in by the causal-save slice.
-#[allow(dead_code)]
 pub(crate) async fn prepare_source_reconciliation(
     room: &NotebookRoom,
     path: &Path,
@@ -755,8 +748,6 @@ pub(crate) async fn prepare_source_reconciliation(
 /// Author a deliberate disk-source replacement on top of the current live
 /// recovered history. The caller must hold the room document write lock and
 /// retain a pre-mutation snapshot for rollback if the journal commit fails.
-// Wired in by the causal-save slice.
-#[allow(dead_code)]
 pub(crate) fn apply_prepared_source_reconciliation(
     doc: &mut NotebookDoc,
     actor: &str,
@@ -1099,8 +1090,6 @@ fn bind_prepared_executions_to_staged_document(
     Ok(())
 }
 
-// Wired in by the causal-save slice.
-#[allow(dead_code)]
 pub(crate) fn apply_reconciled_runtime_sidecars(
     room: &NotebookRoom,
     reconciliation: &AppliedSourceReconciliation,
@@ -2300,8 +2289,7 @@ fn degrade_external_source_revision(room: &NotebookRoom, reason: String) {
 ///
 /// Returns true only after changed NotebookDoc heads have a durable journal
 /// marker. Journal failure rolls the live document back before returning.
-// The pre-journal watcher path still consumes this shape; the causal-save
-// slice re-gates it to test-only when the watcher rewrite lands.
+#[cfg(test)]
 pub(crate) async fn apply_ipynb_changes(
     room: &NotebookRoom,
     external_cells: &[CellSnapshot],
@@ -2343,8 +2331,6 @@ impl AppliedIpynbChanges {
 
 /// Apply a file-watcher revision while causally binding every authored batch
 /// to the exact source fingerprint it came from.
-// Wired in by the causal-save slice.
-#[allow(dead_code)]
 pub(crate) async fn apply_ipynb_changes_from_source(
     room: &NotebookRoom,
     external_cells: &[CellSnapshot],

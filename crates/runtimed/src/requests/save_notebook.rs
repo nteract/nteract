@@ -8,8 +8,9 @@ use tracing::warn;
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
     canonical_target_path, finalize_untitled_promotion, format_notebook_cells,
-    persist_notebook_bytes, release_autosave_owner_marker_for_path, save_notebook_to_disk,
-    NotebookFileBinding, NotebookRoom, SaveError,
+    persist_notebook_bytes, refresh_primary_baseline_from_checkpoint,
+    release_autosave_owner_marker_for_path, save_notebook_to_disk_with_claim_and_intent,
+    FileSaveIntent, FileSaveOutcome, NotebookFileBinding, NotebookRoom, SaveError,
 };
 use crate::protocol::NotebookResponse;
 
@@ -19,6 +20,52 @@ pub(crate) async fn handle(
     format_cells: bool,
     path: Option<String>,
 ) -> NotebookResponse {
+    handle_with_intent(room, daemon, format_cells, path, FileSaveIntent::Ordinary).await
+}
+
+pub(crate) async fn handle_reconciled(
+    room: &Arc<NotebookRoom>,
+    daemon: &Arc<Daemon>,
+    format_cells: bool,
+    path: Option<String>,
+    source_generation: u64,
+    expected_source_fingerprint: Option<crate::notebook_sync_server::recovery::SourceFingerprint>,
+) -> NotebookResponse {
+    handle_with_intent(
+        room,
+        daemon,
+        format_cells,
+        path,
+        FileSaveIntent::Reconcile {
+            source_generation,
+            expected_source_fingerprint,
+        },
+    )
+    .await
+}
+
+async fn handle_with_intent(
+    room: &Arc<NotebookRoom>,
+    daemon: &Arc<Daemon>,
+    format_cells: bool,
+    path: Option<String>,
+    intent: FileSaveIntent,
+) -> NotebookResponse {
+    // Reserve a monotonic identity before formatting or serialization can
+    // yield. A later request supersedes this one only after reaching a real
+    // checkpoint barrier; failed preparation cannot burn an older viable save.
+    let save_claim = match room.persistence.claim_file_checkpoint() {
+        Ok(claim) => claim,
+        Err(_) => {
+            return NotebookResponse::NotebookSaveBlocked {
+                path,
+                save_sequence: None,
+                reason: notebook_protocol::protocol::SaveBlockedReason::SequenceExhausted,
+            };
+        }
+    };
+    let save_sequence = save_claim.sequence();
+
     let disable_auto_format = {
         let settings = daemon.settings.read().await;
         settings.get_all().disable_auto_format
@@ -27,7 +74,12 @@ pub(crate) async fn handle(
     // Format cells if requested (before saving)
     if format_cells && !disable_auto_format {
         if let Err(e) = format_notebook_cells(room).await {
-            warn!("[save] Format cells failed (continuing with save): {}", e);
+            warn!("[save] Format cells failed before durable commit: {}", e);
+            return NotebookResponse::NotebookSaveBlocked {
+                path,
+                save_sequence: Some(save_sequence),
+                reason: notebook_protocol::protocol::SaveBlockedReason::Io { message: e },
+            };
         }
     }
 
@@ -48,8 +100,10 @@ pub(crate) async fn handle(
         (Some(p), _) => match crate::paths::normalize_save_target(p) {
             Ok(normalized) => Some(canonical_target_path(&normalized).await),
             Err(msg) => {
-                return NotebookResponse::SaveError {
-                    error: notebook_protocol::protocol::SaveErrorKind::Io { message: msg },
+                return NotebookResponse::NotebookSaveBlocked {
+                    path,
+                    save_sequence: Some(save_sequence),
+                    reason: notebook_protocol::protocol::SaveBlockedReason::Io { message: msg },
                 };
             }
         },
@@ -75,12 +129,31 @@ pub(crate) async fn handle(
         if let Err(kind) =
             NotebookFileBinding::claim_path(&daemon.notebook_rooms, canonical_pre, room.id).await
         {
-            return NotebookResponse::SaveError { error: kind };
+            let reason = match kind {
+                notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen { uuid, path } => {
+                    notebook_protocol::protocol::SaveBlockedReason::PathAlreadyOpen { uuid, path }
+                }
+                notebook_protocol::protocol::SaveErrorKind::Io { message } => {
+                    notebook_protocol::protocol::SaveBlockedReason::Io { message }
+                }
+            };
+            return NotebookResponse::NotebookSaveBlocked {
+                path: path.clone(),
+                save_sequence: Some(save_sequence),
+                reason,
+            };
         }
     }
 
-    let written = match save_notebook_to_disk(room, path.as_deref()).await {
-        Ok(p) => p,
+    let save_outcome = match save_notebook_to_disk_with_claim_and_intent(
+        room,
+        path.as_deref(),
+        save_claim,
+        intent,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
         Err(e) => {
             // Rollback the path_index claim we just made so the room
             // stays untitled / its old path stays claimed.
@@ -97,13 +170,46 @@ pub(crate) async fn handle(
                     room.identity.persist_path
                 );
             }
-            let kind = match e {
-                SaveError::Unrecoverable(msg) | SaveError::Retryable(msg) => {
-                    notebook_protocol::protocol::SaveErrorKind::Io { message: msg }
-                }
+            let (blocked_sequence, reason) = match e {
+                SaveError::Unrecoverable(message) | SaveError::Retryable(message) => (
+                    Some(save_sequence),
+                    notebook_protocol::protocol::SaveBlockedReason::Io { message },
+                ),
+                SaveError::CheckpointBlocked {
+                    save_sequence,
+                    reason,
+                } => (save_sequence, reason),
             };
-            return NotebookResponse::SaveError { error: kind };
+            return NotebookResponse::NotebookSaveBlocked {
+                path: path.clone(),
+                save_sequence: blocked_sequence,
+                reason,
+            };
         }
+    };
+    let written = save_outcome.path().to_string();
+
+    // The blocking checkpoint was current when it committed, but a newer save
+    // may have crossed its own barrier before this async continuation resumed.
+    // Never let the older continuation rebind the room, move registry entries,
+    // or install watcher baselines for the wrong file.
+    let latest_barrier = room.persistence.latest_file_checkpoint_barrier_sequence();
+    if latest_barrier > save_sequence {
+        if let Some(ref canonical_pre) = pre_claim {
+            NotebookFileBinding::release_path(&daemon.notebook_rooms, canonical_pre).await;
+        }
+        return NotebookResponse::NotebookSaveBlocked {
+            path: Some(written),
+            save_sequence: Some(save_sequence),
+            reason: notebook_protocol::protocol::SaveBlockedReason::Superseded {
+                latest_sequence: latest_barrier,
+            },
+        };
+    }
+
+    let (checkpoint_sequence, wrote_file) = match &save_outcome {
+        FileSaveOutcome::Saved { save_sequence, .. } => (*save_sequence, true),
+        FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => (*save_sequence, false),
     };
 
     // Post-write canonicalize. Usually matches the pre-write key. If it
@@ -133,9 +239,34 @@ pub(crate) async fn handle(
         }
     }
 
+    // Promotion and Save As install a watcher for a path that was not primary
+    // while the lower-level save ran. Seed it from the exact committed file
+    // before starting that watcher; the helper refuses a newer checkpoint or
+    // an external edit that raced this continuation.
+    if was_untitled || pre_claim.is_some() {
+        let _ = refresh_primary_baseline_from_checkpoint(
+            room,
+            std::path::Path::new(&written),
+            checkpoint_sequence,
+            wrote_file,
+        )
+        .await;
+    }
+
     let registry_now = chrono::Utc::now().to_rfc3339();
     if was_untitled {
-        finalize_untitled_promotion(room, canonical.clone()).await;
+        if let Err(message) = finalize_untitled_promotion(room, canonical.clone()).await {
+            NotebookFileBinding::release_path(&daemon.notebook_rooms, &canonical).await;
+            let save_sequence = match &save_outcome {
+                FileSaveOutcome::Saved { save_sequence, .. }
+                | FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => *save_sequence,
+            };
+            return NotebookResponse::NotebookSaveBlocked {
+                path: Some(written),
+                save_sequence: Some(save_sequence),
+                reason: notebook_protocol::protocol::SaveBlockedReason::Io { message },
+            };
+        }
         // Persist path -> id so reopening this freshly-saved file keeps its id
         // across daemon restarts (NIP-1).
         daemon
@@ -159,5 +290,24 @@ pub(crate) async fn handle(
         // If path didn't change, this is save-in-place: nothing else.
     }
 
-    NotebookResponse::NotebookSaved { path: written }
+    match save_outcome {
+        FileSaveOutcome::Saved {
+            exported_heads,
+            save_sequence,
+            ..
+        } => NotebookResponse::NotebookSaved {
+            path: written,
+            exported_heads,
+            save_sequence,
+        },
+        FileSaveOutcome::AlreadyCurrent {
+            exported_heads,
+            save_sequence,
+            ..
+        } => NotebookResponse::NotebookAlreadyCurrent {
+            path: written,
+            exported_heads,
+            save_sequence,
+        },
+    }
 }
