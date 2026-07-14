@@ -3989,16 +3989,12 @@ fn watcher_test_ipynb_bytes(cell_id: &str, source: &str) -> Vec<u8> {
 
 fn watcher_observation_for_test(
     observed: &[u8],
-    now_ms: u64,
-    last_self_write_ms: u64,
     known_disk: Option<&[u8]>,
     manifest: &[u8],
     pending: Option<&[u8]>,
 ) -> WatcherObservation {
     WatcherObservation {
         observed: super::recovery::source_fingerprint(observed),
-        now_ms,
-        last_self_write_ms,
         known_disk_hash: known_disk
             .map(|bytes| *super::recovery::source_fingerprint(bytes).as_bytes()),
         manifest_fingerprint: super::recovery::source_fingerprint(manifest),
@@ -4012,10 +4008,6 @@ fn watcher_observation_from_room(room: &NotebookRoom, disk_bytes: &[u8]) -> Watc
     let manifest = room.durability.manifest();
     WatcherObservation {
         observed: super::recovery::source_fingerprint(disk_bytes),
-        // Far outside any self-write window: the fingerprint guards must
-        // carry the decision on their own.
-        now_ms: 1_000_000,
-        last_self_write_ms: 0,
         known_disk_hash: room.persistence.known_disk_hash(),
         manifest_fingerprint: manifest.source_fingerprint,
         pending_checkpoint_fingerprint: manifest
@@ -4031,135 +4023,51 @@ fn classify_watcher_observation_table() {
 
     const OBSERVED: &[u8] = b"observed notebook bytes";
     const OTHER: &[u8] = b"some other notebook bytes";
-    // Timestamps outside the self-write window.
-    const QUIET_NOW: u64 = 1_000_000;
-    const QUIET_LAST: u64 = 0;
-    // Timestamps inside the self-write window.
-    const RECENT_NOW: u64 = 1_000_000;
-    const RECENT_LAST: u64 = RECENT_NOW - SELF_WRITE_SKIP_WINDOW_MS + 1;
 
     let cases: Vec<(&str, WatcherObservation, WatcherIngestDecision)> = vec![
         (
-            "self-write window only",
-            watcher_observation_for_test(OBSERVED, RECENT_NOW, RECENT_LAST, None, OTHER, None),
-            Skip(SelfWriteWindow),
-        ),
-        (
-            "window boundary is exclusive",
-            watcher_observation_for_test(
-                OBSERVED,
-                RECENT_NOW,
-                RECENT_NOW - SELF_WRITE_SKIP_WINDOW_MS,
-                None,
-                OTHER,
-                None,
-            ),
-            Ingest,
-        ),
-        (
             "known disk hash only",
-            watcher_observation_for_test(
-                OBSERVED,
-                QUIET_NOW,
-                QUIET_LAST,
-                Some(OBSERVED),
-                OTHER,
-                None,
-            ),
+            watcher_observation_for_test(OBSERVED, Some(OBSERVED), OTHER, None),
             Skip(KnownDiskContent),
         ),
         (
             "manifest fingerprint only, diverged baseline",
-            watcher_observation_for_test(
-                OBSERVED,
-                QUIET_NOW,
-                QUIET_LAST,
-                Some(OTHER),
-                OBSERVED,
-                None,
-            ),
+            watcher_observation_for_test(OBSERVED, Some(OTHER), OBSERVED, None),
             Skip(ManifestFingerprint),
         ),
         (
             "manifest fingerprint only, no baseline",
-            watcher_observation_for_test(OBSERVED, QUIET_NOW, QUIET_LAST, None, OBSERVED, None),
+            watcher_observation_for_test(OBSERVED, None, OBSERVED, None),
             Skip(ManifestFingerprint),
         ),
         (
             "pending checkpoint only",
-            watcher_observation_for_test(
-                OBSERVED,
-                QUIET_NOW,
-                QUIET_LAST,
-                Some(OTHER),
-                OTHER,
-                Some(OBSERVED),
-            ),
+            watcher_observation_for_test(OBSERVED, Some(OTHER), OTHER, Some(OBSERVED)),
             Skip(PendingCheckpoint),
         ),
         (
-            "window and known disk hash",
-            watcher_observation_for_test(
-                OBSERVED,
-                RECENT_NOW,
-                RECENT_LAST,
-                Some(OBSERVED),
-                OTHER,
-                None,
-            ),
-            Skip(SelfWriteWindow),
-        ),
-        (
             "known disk hash and manifest fingerprint",
-            watcher_observation_for_test(
-                OBSERVED,
-                QUIET_NOW,
-                QUIET_LAST,
-                Some(OBSERVED),
-                OBSERVED,
-                None,
-            ),
+            watcher_observation_for_test(OBSERVED, Some(OBSERVED), OBSERVED, None),
             Skip(KnownDiskContent),
         ),
         (
             "manifest fingerprint and pending checkpoint",
-            watcher_observation_for_test(
-                OBSERVED,
-                QUIET_NOW,
-                QUIET_LAST,
-                None,
-                OBSERVED,
-                Some(OBSERVED),
-            ),
+            watcher_observation_for_test(OBSERVED, None, OBSERVED, Some(OBSERVED)),
             Skip(ManifestFingerprint),
         ),
         (
             "all guards at once",
-            watcher_observation_for_test(
-                OBSERVED,
-                RECENT_NOW,
-                RECENT_LAST,
-                Some(OBSERVED),
-                OBSERVED,
-                Some(OBSERVED),
-            ),
-            Skip(SelfWriteWindow),
+            watcher_observation_for_test(OBSERVED, Some(OBSERVED), OBSERVED, Some(OBSERVED)),
+            Skip(KnownDiskContent),
         ),
         (
             "unknown bytes ingest",
-            watcher_observation_for_test(OBSERVED, QUIET_NOW, QUIET_LAST, None, OTHER, None),
+            watcher_observation_for_test(OBSERVED, None, OTHER, None),
             Ingest,
         ),
         (
             "unknown bytes ingest despite stale baselines",
-            watcher_observation_for_test(
-                OBSERVED,
-                QUIET_NOW,
-                QUIET_LAST,
-                Some(OTHER),
-                OTHER,
-                Some(OTHER),
-            ),
+            watcher_observation_for_test(OBSERVED, Some(OTHER), OTHER, Some(OTHER)),
             Ingest,
         ),
     ];
@@ -4231,8 +4139,7 @@ async fn watcher_storm_of_identical_events_is_fully_suppressed() {
 
 /// The commit-to-baseline window: a save's journal commit has landed but its
 /// primary-path baseline install has not run yet. An event observing the new
-/// bytes must skip via the manifest fingerprint, not the self-write window
-/// (`last_self_write` stays untouched here).
+/// bytes must skip via the manifest fingerprint.
 #[tokio::test]
 async fn watcher_event_between_journal_commit_and_baseline_install_skips() {
     let tmp = tempfile::TempDir::new().unwrap();

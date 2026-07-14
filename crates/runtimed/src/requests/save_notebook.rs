@@ -207,9 +207,9 @@ async fn handle_with_intent(
         };
     }
 
-    let (checkpoint_sequence, wrote_file) = match &save_outcome {
-        FileSaveOutcome::Saved { save_sequence, .. } => (*save_sequence, true),
-        FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => (*save_sequence, false),
+    let checkpoint_sequence = match &save_outcome {
+        FileSaveOutcome::Saved { save_sequence, .. }
+        | FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => *save_sequence,
     };
 
     // Post-write canonicalize. Usually matches the pre-write key. If it
@@ -248,7 +248,6 @@ async fn handle_with_intent(
             room,
             std::path::Path::new(&written),
             checkpoint_sequence,
-            wrote_file,
         )
         .await;
     }

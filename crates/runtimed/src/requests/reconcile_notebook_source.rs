@@ -367,7 +367,6 @@ async fn archive_and_reload_source(
             save_sequence,
             applied.loaded_sources.clone(),
             &applied.source_content,
-            false,
         )
         .await;
     let exported_heads = applied

@@ -769,7 +769,7 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         }
         if !room
             .persistence
-            .note_primary_save_baseline(checkpoint.save_sequence, saved, &content_bytes, true)
+            .note_primary_save_baseline(checkpoint.save_sequence, saved, &content_bytes)
             .await
         {
             debug!(
@@ -815,7 +815,6 @@ pub(crate) async fn refresh_primary_baseline_from_checkpoint(
     room: &NotebookRoom,
     path: &Path,
     save_sequence: u64,
-    self_write: bool,
 ) -> bool {
     let bytes = match tokio::fs::read(path).await {
         Ok(bytes) => bytes,
@@ -862,7 +861,7 @@ pub(crate) async fn refresh_primary_baseline_from_checkpoint(
         .map(|cell| (cell.id, cell.source))
         .collect();
     room.persistence
-        .note_primary_save_baseline(save_sequence, sources, &bytes, self_write)
+        .note_primary_save_baseline(save_sequence, sources, &bytes)
         .await
 }
 
@@ -2174,9 +2173,6 @@ async fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 // Watch .ipynb files for external changes (git, VS Code, other editors).
 // When changes are detected, merge them into the Automerge doc and broadcast.
 
-/// Time window (ms) to skip file change events after our own writes.
-pub(crate) const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
-
 /// One debounced watcher observation, reduced to the side-effect-free reads
 /// that decide skip versus ingest. Captured once per event so the decision
 /// can be exercised as a pure function.
@@ -2184,10 +2180,6 @@ pub(crate) const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
 pub(crate) struct WatcherObservation {
     /// Fingerprint of the bytes currently on disk at the watched path.
     pub(crate) observed: super::recovery::SourceFingerprint,
-    /// Milliseconds since epoch at classification time.
-    pub(crate) now_ms: u64,
-    /// Milliseconds since epoch of the last self-write baseline install.
-    pub(crate) last_self_write_ms: u64,
     /// Disk baseline recorded by saves and watcher merges
     /// ([`RoomPersistence::known_disk_hash`]). `None` disables that guard.
     pub(crate) known_disk_hash: Option<[u8; 32]>,
@@ -2204,8 +2196,6 @@ pub(crate) struct WatcherObservation {
 /// Which guard suppressed a watcher observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WatcherSkipReason {
-    /// The event landed inside the self-write suppression window.
-    SelfWriteWindow,
     /// Bytes match the disk baseline recorded by saves and watcher merges.
     KnownDiskContent,
     /// Bytes match the committed manifest source fingerprint.
@@ -2238,13 +2228,6 @@ pub(crate) enum WatcherIngestDecision {
 pub(crate) fn classify_watcher_observation(
     observation: &WatcherObservation,
 ) -> WatcherIngestDecision {
-    if observation
-        .now_ms
-        .saturating_sub(observation.last_self_write_ms)
-        < SELF_WRITE_SKIP_WINDOW_MS
-    {
-        return WatcherIngestDecision::Skip(WatcherSkipReason::SelfWriteWindow);
-    }
     if observation.known_disk_hash == Some(*observation.observed.as_bytes()) {
         return WatcherIngestDecision::Skip(WatcherSkipReason::KnownDiskContent);
     }
@@ -2319,8 +2302,6 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
     let manifest = room.durability.manifest();
     let observation = WatcherObservation {
         observed: super::recovery::source_fingerprint(contents.as_bytes()),
-        now_ms: unix_now_ms(),
-        last_self_write_ms: room.persistence.last_self_write.load(Ordering::Relaxed),
         known_disk_hash: room.persistence.known_disk_hash(),
         manifest_fingerprint: manifest.source_fingerprint,
         pending_checkpoint_fingerprint: manifest
@@ -2449,7 +2430,7 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
             .collect();
         let _ = room
             .persistence
-            .note_primary_save_baseline(source_save_sequence, sources, contents.as_bytes(), false)
+            .note_primary_save_baseline(source_save_sequence, sources, contents.as_bytes())
             .await;
     }
 
