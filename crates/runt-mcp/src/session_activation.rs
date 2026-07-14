@@ -372,6 +372,90 @@ mod tests {
         );
     }
 
+    /// Deterministic rollback drive for the locked install section of
+    /// `install_activated_session` (tools/session.rs). The connect future is
+    /// stubbed with a oneshot so the supersede lands at an exact point: after
+    /// the reconnect claims its lease, before its session reaches the slot.
+    /// A superseded connect must never publish over the notebook the user
+    /// just switched to; the previous occupant stays installed.
+    #[tokio::test]
+    async fn superseded_connect_install_rolls_back_previous_slot_occupant() {
+        let owner = Arc::new(SessionActivation::default());
+        let slot = Arc::new(tokio::sync::RwLock::new(None::<String>));
+
+        // Healthy occupant: target A connects, publishes, and commits.
+        let ActivationTicket::Leader(mut installed) = owner.begin(target("local:id:a")) else {
+            panic!("first activation must lead");
+        };
+        {
+            let mut guard = slot.write().await;
+            *guard = Some("session-a-gen1".to_string());
+            assert!(installed.mark_installed());
+        }
+        let installed_generation = installed.generation();
+        installed.complete(&success("connected a"));
+
+        // Reconnect attempt for the same target. Its flight closed with
+        // `complete`, so this leads a fresh generation.
+        let ActivationTicket::Leader(reconnect) = owner.begin(target("local:id:a")) else {
+            panic!("reconnect after a completed flight must lead");
+        };
+        let (connect_tx, connect_rx) = tokio::sync::oneshot::channel::<String>();
+        let install_slot = Arc::clone(&slot);
+        let install = tokio::spawn(async move {
+            // Stubbed connect: the daemon handshake resolves only when the
+            // test fires the oneshot, after the supersede below.
+            let session = connect_rx.await.expect("connect stub must resolve");
+            // Mirrors the locked install-and-rollback section of
+            // `install_activated_session`: publish into the slot, then commit
+            // the identity via `mark_installed`. A failed commit must restore
+            // the previous occupant and drop the stale session.
+            let mut guard = install_slot.write().await;
+            let previous = guard.replace(session);
+            if !reconnect.mark_installed() {
+                let stale = guard.take();
+                *guard = previous;
+                drop(stale);
+                return Err(activation_error(
+                    "session_superseded",
+                    "A newer notebook target superseded this connection",
+                    reconnect.generation(),
+                    reconnect.target(),
+                ));
+            }
+            Ok(())
+        });
+
+        // Supersede mid-flight: the user switches to B while A's stubbed
+        // connect is still pending.
+        let ActivationTicket::Leader(_b) = owner.begin(target("local:id:b")) else {
+            panic!("different target must lead");
+        };
+
+        connect_tx
+            .send("session-a-gen2".to_string())
+            .expect("install task must be waiting on the connect stub");
+
+        let result = install.await.expect("install task must not panic");
+
+        // mark_installed refused the stale commit and the result reports it.
+        let error = result.expect_err("superseded install must not commit");
+        assert_eq!(error.is_error, Some(true));
+        assert_eq!(
+            error
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.pointer("/error/code"))
+                .and_then(serde_json::Value::as_str),
+            Some("session_superseded")
+        );
+
+        // The previous occupant is back in the slot and remains the
+        // installed identity.
+        assert_eq!(slot.read().await.as_deref(), Some("session-a-gen1"));
+        assert!(owner.is_current_identity(installed_generation, "local:id:a"));
+    }
+
     #[tokio::test]
     async fn cold_path_can_alias_uuid_into_same_flight() {
         let owner = Arc::new(SessionActivation::default());
