@@ -900,7 +900,7 @@ async fn test_get_or_create_room_reuses_existing() {
         uuid1,
         RoomCreationOptions {
             path: None,
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: tmp.path(),
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -913,7 +913,7 @@ async fn test_get_or_create_room_reuses_existing() {
         uuid1,
         RoomCreationOptions {
             path: None,
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: tmp.path(),
             blob_store,
             ephemeral: false,
@@ -939,7 +939,7 @@ async fn file_load_is_pending_before_room_becomes_observable() {
         uuid,
         RoomCreationOptions {
             path: Some(path.clone()),
-            initial_load_required: true,
+            initial_load_execution_store_dir: Some(tmp.path()),
             docs_dir: tmp.path(),
             blob_store,
             ephemeral: false,
@@ -976,7 +976,7 @@ async fn test_get_or_create_room_different_notebooks() {
         uuid1,
         RoomCreationOptions {
             path: None,
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: tmp.path(),
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -989,7 +989,7 @@ async fn test_get_or_create_room_different_notebooks() {
         uuid2,
         RoomCreationOptions {
             path: None,
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: tmp.path(),
             blob_store,
             ephemeral: false,
@@ -1057,115 +1057,9 @@ async fn test_new_fresh_creates_empty_doc() {
     );
 }
 
-#[tokio::test]
-async fn test_new_fresh_deletes_stale_persisted_doc_for_file_path() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let blob_store = test_blob_store(&tmp);
-
-    // Use a fixed UUID so we can find the persist file again.
-    let uuid = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-111111111111").unwrap();
-
-    // Create and persist a room with content using load_or_create (uses the UUID string)
-    {
-        let room = NotebookRoom::load_or_create(&uuid.to_string(), tmp.path(), blob_store.clone());
-        let mut doc = room.doc.try_write().unwrap();
-        doc.add_cell(0, "c1", "code").unwrap();
-        doc.update_source("c1", "old content").unwrap();
-        let bytes = doc.save();
-        persist_notebook_bytes(&bytes, &room.identity.persist_path);
-    }
-
-    // Verify persisted file exists
-    let filename = notebook_doc_filename(&uuid.to_string());
-    let persist_path = tmp.path().join(&filename);
-    assert!(persist_path.exists(), "Persisted file should exist");
-
-    // Create fresh room for a file-backed path — should delete persisted doc and start empty.
-    // path=Some means this is file-backed, so the persisted .automerge doc should be deleted.
-    let fake_ipynb = tmp.path().join("stale-test.ipynb");
-    let room = NotebookRoom::new_fresh(uuid, Some(fake_ipynb), tmp.path(), blob_store, false);
-
-    // Persisted file should be deleted
-    assert!(
-        !persist_path.exists(),
-        "Persisted file should be deleted by new_fresh"
-    );
-
-    // Room should be empty (no cells from persisted doc)
-    let doc = room.doc.try_read().unwrap();
-    assert_eq!(doc.cell_count(), 0, "new_fresh should start with empty doc");
-}
-
-#[tokio::test]
-async fn test_file_backed_room_discards_legacy_persisted_history_before_ipynb_import() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let blob_store = test_blob_store(&tmp);
-    let uuid = Uuid::parse_str("bbbbbbbb-cccc-dddd-eeee-222222222222").unwrap();
-    let actor = "legacy-runtimed";
-
-    let filename = notebook_doc_filename(&uuid.to_string());
-    let persist_path = tmp.path().join(&filename);
-    let legacy_bytes = legacy_pre_seed_v4_doc_bytes(&uuid.to_string(), actor, "legacy-cell");
-    persist_notebook_bytes(&legacy_bytes, &persist_path);
-    assert!(persist_path.exists(), "legacy persisted doc should exist");
-
-    let notebook_path = tmp.path().join("source-of-truth.ipynb");
-    std::fs::write(
-        &notebook_path,
-        r#"{
-            "nbformat": 4,
-            "nbformat_minor": 5,
-            "metadata": {},
-            "cells": [
-                {
-                    "id": "ipynb-cell",
-                    "cell_type": "code",
-                    "source": "print('ipynb')",
-                    "execution_count": null,
-                    "metadata": {},
-                    "outputs": []
-                }
-            ]
-        }"#,
-    )
-    .unwrap();
-
-    let room = NotebookRoom::new_fresh(
-        uuid,
-        Some(notebook_path.clone()),
-        tmp.path(),
-        blob_store,
-        false,
-    );
-
-    assert!(
-        !persist_path.exists(),
-        "file-backed rooms must discard stale UUID-keyed Automerge history"
-    );
-
-    let actors = room.doc.try_write().unwrap().contributing_actors();
-    assert!(
-        actors.contains(&SCHEMA_SEED_ACTOR_LABEL.to_string()),
-        "file-backed rooms should start from canonical seed history"
-    );
-    assert!(
-        !actors.contains(&actor.to_string()),
-        "stale legacy persisted actor must not contribute to file-backed rooms"
-    );
-
-    {
-        let prepared = prepare_notebook_load(&notebook_path, &room.blob_store, None)
-            .await
-            .unwrap();
-        let mut doc = room.doc.write().await;
-        apply_notebook_load(&mut doc, None, None, prepared).unwrap();
-        assert_eq!(doc.cell_count(), 1);
-        let cells = doc.get_cells();
-        assert_eq!(cells[0].id, "ipynb-cell");
-        assert_eq!(cells[0].source, "print('ipynb')");
-        assert!(doc.get_cell("legacy-cell").is_none());
-    }
-}
+// The stale-persisted-doc deletion tests were retired with the room's
+// snapshot-delete path: file-backed history now flows through the recovery
+// journal. The causal-save slice carries the replacement coverage.
 
 #[tokio::test]
 async fn test_new_fresh_loads_persisted_doc_for_untitled_notebook() {
@@ -1748,7 +1642,7 @@ fn test_room_with_path_and_store(
     let blob_store = test_blob_store(tmp);
     let notebook_id = notebook_path.to_string_lossy().to_string();
 
-    let doc = notebook_doc::NotebookDoc::new(&notebook_id);
+    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
     let persist_path = tmp.path().join("doc.automerge");
     let (persist_tx, persist_rx) = watch::channel::<Option<Vec<u8>>>(None);
     let (flush_request_tx, flush_rx) = mpsc::unbounded_channel::<FlushRequest>();
@@ -1770,12 +1664,30 @@ fn test_room_with_path_and_store(
     let comments = comments_store
         .load_or_create(&comments_doc_id, &comments_ref)
         .expect("create comments document");
+    let document_head_hashes = doc.get_heads();
+    let document_heads = document_head_hashes
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let genesis_snapshot = doc.save();
+    let durability = Arc::new(super::durability::RoomDurability::journaled(
+        super::recovery::RecoveryJournal::new(persist_path.with_extension("recovery")),
+        room_id,
+        Some(notebook_path.clone()),
+        super::recovery::source_fingerprint(&[]),
+        0,
+        genesis_snapshot.clone(),
+    ));
+    let lifecycle = RoomLifecycle::new(genesis_snapshot, document_heads);
     let room = NotebookRoom {
         id: room_id,
         doc: Arc::new(RwLock::new(doc)),
         broadcasts: RoomBroadcasts::default(),
         persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
-        initial_load: RoomInitialLoad::default(),
+        initial_load: RoomInitialLoad::new(Arc::clone(&lifecycle)),
+        lifecycle,
+        durability,
+        source_reconciliation_claimed: AtomicBool::new(false),
         file_binding: NotebookFileBinding::new(Some(notebook_path.clone()), false),
         identity: RoomIdentity::new(persist_path),
         connections: RoomConnections::default(),
@@ -5552,7 +5464,7 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
             uuid,
             RoomCreationOptions {
                 path,
-                initial_load_required: false,
+                initial_load_execution_store_dir: None,
                 docs_dir: &docs_dir,
                 blob_store: blob_store.clone(),
                 ephemeral: false,
@@ -5574,7 +5486,7 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
             uuid,
             RoomCreationOptions {
                 path,
-                initial_load_required: false,
+                initial_load_execution_store_dir: None,
                 docs_dir: &docs_dir,
                 blob_store: blob_store.clone(),
                 ephemeral: false,
@@ -8957,7 +8869,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         source_uuid,
         RoomCreationOptions {
             path: Some(source_path.clone()),
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: &docs_dir,
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -9290,7 +9202,7 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
         source_uuid,
         RoomCreationOptions {
             path: Some(tmp.path().join("source.ipynb")),
-            initial_load_required: false,
+            initial_load_execution_store_dir: None,
             docs_dir: &docs_dir,
             blob_store: blob_store.clone(),
             ephemeral: false,

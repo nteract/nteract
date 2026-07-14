@@ -19,6 +19,8 @@ pub struct PathIndex {
 pub enum PathIndexError {
     #[error("path already open in room {uuid}: {path}")]
     PathAlreadyOpen { uuid: Uuid, path: PathBuf },
+    #[error("notebook room publication is frozen for clean shutdown")]
+    RegistryFrozen,
 }
 
 impl PathIndex {
@@ -124,6 +126,7 @@ mod tests {
                 assert_eq!(uuid, a);
                 assert_eq!(p, path("/tmp/foo.ipynb"));
             }
+            PathIndexError::RegistryFrozen => panic!("path index itself is never frozen"),
         }
     }
 

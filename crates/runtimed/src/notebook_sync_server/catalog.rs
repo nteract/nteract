@@ -12,10 +12,13 @@ pub type NotebookRooms = Arc<RoomRegistry>;
 
 pub(crate) struct RoomCreationOptions<'a> {
     pub path: Option<PathBuf>,
-    /// Publish a pending room-owned file load before registry insertion.
-    /// OpenNotebook sets this for existing `.ipynb` files; attach/create paths
-    /// that seed or sync their own document leave it false.
-    pub initial_load_required: bool,
+    /// Execution-store root for a room-owned initial file import.
+    ///
+    /// `Some` means an existing `.ipynb` must be loaded. Room creation claims
+    /// that source generation before registry publication and transfers the
+    /// claim into the task before any subsequent await. Attach/create paths
+    /// that seed or sync their own document leave this `None`.
+    pub initial_load_execution_store_dir: Option<&'a Path>,
     pub docs_dir: &'a Path,
     pub blob_store: Arc<BlobStore>,
     pub ephemeral: bool,
@@ -60,6 +63,10 @@ pub async fn get_or_create_room_result(
     uuid: uuid::Uuid,
     options: RoomCreationOptions<'_>,
 ) -> anyhow::Result<(Arc<NotebookRoom>, ReservationGuard)> {
+    enum InitialSourceTask {
+        Import(RoomInitialLoadClaim, PathBuf),
+        FinalizeRecovery(RoomInitialLoadClaim, Option<PathBuf>),
+    }
     // Fast path: room already exists. The registry hands back the
     // existing Arc plus a fresh reservation guard without minting a
     // new room.
@@ -68,7 +75,7 @@ pub async fn get_or_create_room_result(
     }
 
     info!("[notebook-sync] Creating room for {}", uuid);
-    let path_for_room = options.path.clone();
+    let mut path_for_room = options.path.clone();
     let room = Arc::new(NotebookRoom::new_fresh_with_trusted_packages(
         uuid,
         path_for_room.clone(),
@@ -77,14 +84,68 @@ pub async fn get_or_create_room_result(
         options.ephemeral,
         options.trusted_packages,
     )?);
-    if options.initial_load_required {
-        room.initial_load.mark_required();
-        // If the handshake aborts before a peer joins, the room must still
-        // enter the ordinary peerless-room lifecycle once loading settles.
-        // A successful join clears this timestamp before the reaper can act,
-        // and the reservation guard protects concurrent handshakes.
-        room.connections.stamp_kernel_torn_down_now();
+    if path_for_room.is_none() {
+        path_for_room = room.file_binding.path().await;
     }
+    let durability = room.durability.status();
+    let mut initial_source_task = if room.initial_load.is_loading()
+        && matches!(
+            durability.source_phase,
+            super::recovery::RecoverySourcePhase::DurablyStaged
+                | super::recovery::RecoverySourcePhase::Ready
+        ) {
+        let Some(load_path) = path_for_room.clone() else {
+            anyhow::bail!("recovered file source requires a notebook path");
+        };
+        let (claim, _) = claim_room_initial_load(&room, load_path);
+        let Some(claim) = claim else {
+            anyhow::bail!("recovered source generation was already claimed");
+        };
+        Some(InitialSourceTask::FinalizeRecovery(
+            claim,
+            options
+                .initial_load_execution_store_dir
+                .map(Path::to_path_buf),
+        ))
+    } else if matches!(
+        room.initial_load.state(),
+        RoomInitialLoadState::Failed { .. }
+    ) {
+        // Source conflicts and peer-only pre-source recovery require an
+        // explicit reconciliation decision. Never regenerate over them.
+        None
+    } else if path_for_room.is_none() {
+        // Untitled rooms have no file source task. A recovered journal is
+        // already their canonical active document; a fresh room remains in
+        // the NotNeeded lifecycle until it is explicitly saved to a path.
+        None
+    } else if let Some(execution_store_dir) = options.initial_load_execution_store_dir {
+        if durability.has_durable_record
+            && durability.source_phase != super::recovery::RecoverySourcePhase::Pending
+        {
+            None
+        } else {
+            let Some(load_path) = path_for_room.clone() else {
+                anyhow::bail!("initial file load requires a notebook path");
+            };
+            room.initial_load.mark_required();
+            let (claim, _) = claim_room_initial_load(&room, load_path);
+            let Some(claim) = claim else {
+                anyhow::bail!("fresh room initial load generation was already claimed");
+            };
+            // If the handshake aborts before a peer joins, the room must still
+            // enter the ordinary peerless-room lifecycle once loading settles.
+            // A successful join clears this timestamp before the reaper can act,
+            // and the reservation guard protects concurrent handshakes.
+            room.connections.stamp_kernel_torn_down_now();
+            Some(InitialSourceTask::Import(
+                claim,
+                execution_store_dir.to_path_buf(),
+            ))
+        }
+    } else {
+        None
+    };
 
     // Atomic insert across the registry's UUID map and path index.
     // If we lose a race to a concurrent caller (same UUID or same
@@ -112,13 +173,29 @@ pub async fn get_or_create_room_result(
     // Side-effects only happen when we actually inserted a fresh room.
     // If we lost the race, the racing caller already ran them.
     if inserted_new {
+        // Transfer the pre-publication ownership claim into the source task
+        // synchronously, before the first post-publication await below. If
+        // room creation were cancelled before this transfer, dropping the
+        // claim terminalizes the visible generation instead of stranding it.
+        if let Some(task) = initial_source_task.take() {
+            match task {
+                InitialSourceTask::Import(claim, execution_store_dir) => {
+                    spawn_claimed_room_initial_load(claim, execution_store_dir);
+                }
+                InitialSourceTask::FinalizeRecovery(claim, execution_store_dir) => {
+                    spawn_claimed_room_recovery_finalize(claim, execution_store_dir);
+                }
+            }
+        }
+
         // Record the notebook's project-file context on the runtime-state
         // doc. Single-writer invariant: only the daemon writes this key.
         // Also re-runs after untitled promotion and save-as rename; see
         // `project_context::refresh_project_context` callers.
-        super::project_context::refresh_project_context_async(&room, options.path.as_deref()).await;
+        super::project_context::refresh_project_context_async(&room, path_for_room.as_deref())
+            .await;
 
-        if let Some(ref notebook_path) = options.path {
+        if let Some(ref notebook_path) = path_for_room {
             NotebookFileBinding::bind_existing(&room, notebook_path).await;
         }
     }
