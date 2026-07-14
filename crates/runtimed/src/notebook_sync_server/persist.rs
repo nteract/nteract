@@ -2341,10 +2341,17 @@ pub(crate) fn spawn_notebook_file_watcher(
                             // Linux: inotify reports reads (IN_ACCESS), so a
                             // poller merely reading the file would otherwise
                             // re-run the merge on every debounce window —
-                            // churning the journal and resetting the autosave
-                            // debounce forever.
-                            if room.persistence.known_disk_hash().is_some()
-                                && !room.persistence.disk_content_diverged(contents.as_bytes())
+                            // churning the journal, resetting the autosave
+                            // debounce, and bumping the source generation for
+                            // content the room already ingested. Two sources
+                            // of "already known": the disk baseline recorded
+                            // by saves and watcher merges, and the durability
+                            // manifest fingerprint recorded by the initial
+                            // load (which never sets the save baseline).
+                            if (room.persistence.known_disk_hash().is_some()
+                                && !room.persistence.disk_content_diverged(contents.as_bytes()))
+                                || observed_fingerprint
+                                    == room.durability.manifest().source_fingerprint
                             {
                                 debug!(
                                     "[notebook-watch] Disk content unchanged for {:?}; skipping",
