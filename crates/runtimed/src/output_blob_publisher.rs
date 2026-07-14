@@ -45,7 +45,12 @@ impl OutputBlobPublisher {
             return Ok(());
         };
 
-        for blob in manifest.blob_refs() {
+        let blobs = manifest.blob_refs(blob_store).await.map_err(|error| {
+            BlobPublishError::InvalidManifest {
+                message: error.to_string(),
+            }
+        })?;
+        for blob in blobs {
             cloud.publish_blob(blob, blob_store).await?;
         }
         Ok(())
@@ -207,6 +212,8 @@ pub(crate) enum BlobPublishError {
         expected: u64,
         actual: u64,
     },
+    #[error("failed to enumerate output manifest blobs: {message}")]
+    InvalidManifest { message: String },
     #[error("failed to upload blob {hash}: {message}")]
     RemoteRequest { hash: String, message: String },
     #[error("blob {hash} upload failed with {status}: {body}")]
@@ -226,9 +233,10 @@ impl BlobPublishError {
                     || *status == StatusCode::TOO_MANY_REQUESTS
                     || status.is_server_error()
             }
-            Self::MissingLocalBlob { .. } | Self::LocalRead { .. } | Self::SizeMismatch { .. } => {
-                false
-            }
+            Self::MissingLocalBlob { .. }
+            | Self::LocalRead { .. }
+            | Self::SizeMismatch { .. }
+            | Self::InvalidManifest { .. } => false,
         }
     }
 }

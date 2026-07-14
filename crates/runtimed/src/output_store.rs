@@ -527,13 +527,23 @@ impl OutputManifest {
         }
     }
 
-    pub(crate) fn blob_refs(&self) -> Vec<OutputBlobRef> {
+    pub(crate) async fn blob_refs(&self, blob_store: &BlobStore) -> io::Result<Vec<OutputBlobRef>> {
         let mut refs = Vec::new();
         match self {
             OutputManifest::DisplayData { data, .. }
             | OutputManifest::ExecuteResult { data, .. } => {
                 for (media_type, content_ref) in data {
                     push_blob_ref(&mut refs, content_ref, media_type);
+                }
+                if let Some(arrow_manifest) = data.get(ARROW_STREAM_MANIFEST_MIME) {
+                    let content = arrow_manifest.resolve(blob_store).await?;
+                    let manifest = serde_json::from_str(&content).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("failed to parse Arrow stream manifest: {error}"),
+                        )
+                    })?;
+                    collect_arrow_manifest_blob_refs(&manifest, blob_store, &mut refs).await?;
                 }
             }
             OutputManifest::Stream { text, .. } => {
@@ -548,7 +558,7 @@ impl OutputManifest {
                 }
             }
         }
-        refs
+        Ok(refs)
     }
 }
 
@@ -560,6 +570,90 @@ fn push_blob_ref(refs: &mut Vec<OutputBlobRef>, content_ref: &ContentRef, media_
             media_type: media_type.to_string(),
         });
     }
+}
+
+async fn collect_arrow_manifest_blob_refs(
+    manifest: &Value,
+    blob_store: &BlobStore,
+    refs: &mut Vec<OutputBlobRef>,
+) -> io::Result<()> {
+    let fallback_media_type = manifest
+        .get("content_type")
+        .and_then(Value::as_str)
+        .unwrap_or(ARROW_STREAM_MIME);
+
+    if let Some(chunks) = manifest.get("chunks").and_then(Value::as_array) {
+        for chunk in chunks {
+            push_arrow_manifest_blob_ref(refs, chunk, fallback_media_type, blob_store).await?;
+        }
+    }
+    if let Some(blobs) = manifest.get("blobs").and_then(Value::as_array) {
+        for blob in blobs {
+            push_arrow_manifest_blob_ref(refs, blob, fallback_media_type, blob_store).await?;
+        }
+    }
+    if let Some(coalesced) = manifest.get("coalesced") {
+        push_arrow_manifest_blob_ref(refs, coalesced, fallback_media_type, blob_store).await?;
+        if let Some(segments) = coalesced.get("segments").and_then(Value::as_array) {
+            for segment in segments {
+                push_arrow_manifest_blob_ref(refs, segment, fallback_media_type, blob_store)
+                    .await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn push_arrow_manifest_blob_ref(
+    refs: &mut Vec<OutputBlobRef>,
+    value: &Value,
+    fallback_media_type: &str,
+    blob_store: &BlobStore,
+) -> io::Result<()> {
+    let Some(hash) = value
+        .get("hash")
+        .or_else(|| value.get("blob"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+
+    let meta = if value.get("size").and_then(Value::as_u64).is_some()
+        && value
+            .get("media_type")
+            .or_else(|| value.get("content_type"))
+            .and_then(Value::as_str)
+            .is_some()
+    {
+        None
+    } else {
+        blob_store.get_meta(hash).await?
+    };
+    let size = value
+        .get("size")
+        .and_then(Value::as_u64)
+        .or_else(|| meta.as_ref().map(|meta| meta.size))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Arrow stream blob metadata not found: {hash}"),
+            )
+        })?;
+    let media_type = value
+        .get("media_type")
+        .or_else(|| value.get("content_type"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| meta.as_ref().map(|meta| meta.media_type.clone()))
+        .unwrap_or_else(|| fallback_media_type.to_string());
+
+    refs.push(OutputBlobRef {
+        hash: hash.to_string(),
+        size,
+        media_type,
+    });
+    Ok(())
 }
 
 // =============================================================================
@@ -1701,8 +1795,10 @@ mod tests {
         assert_eq!(p.frames, 0);
     }
 
-    #[test]
-    fn output_manifest_blob_refs_collect_direct_content_refs() {
+    #[tokio::test]
+    async fn output_manifest_blob_refs_collect_direct_content_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
         let mut display_data = HashMap::new();
         display_data.insert(
             "image/png".to_string(),
@@ -1750,9 +1846,9 @@ mod tests {
         };
 
         let mut refs = Vec::new();
-        refs.extend(display.blob_refs());
-        refs.extend(stream.blob_refs());
-        refs.extend(error.blob_refs());
+        refs.extend(display.blob_refs(&blob_store).await.unwrap());
+        refs.extend(stream.blob_refs(&blob_store).await.unwrap());
+        refs.extend(error.blob_refs(&blob_store).await.unwrap());
         refs.sort_by(|left, right| left.hash.cmp(&right.hash));
 
         assert_eq!(
@@ -1777,6 +1873,99 @@ mod tests {
                     hash: "traceback-hash".to_string(),
                     size: 789,
                     media_type: "application/json".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn output_manifest_blob_refs_collect_inline_arrow_stream_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+        let chunk = b"arrow stream chunk";
+        let chunk_hash = blob_store.put(chunk, ARROW_STREAM_MIME).await.unwrap();
+        let arrow_manifest = json!({
+            "version": 1,
+            "content_type": ARROW_STREAM_MIME,
+            "chunks": [{
+                "hash": chunk_hash,
+                "size": chunk.len(),
+                "row_count": 2
+            }],
+            "complete": true
+        });
+        let manifest = OutputManifest::DisplayData {
+            output_id: "out-arrow".to_string(),
+            data: HashMap::from([(
+                ARROW_STREAM_MANIFEST_MIME.to_string(),
+                ContentRef::Inline {
+                    inline: arrow_manifest.to_string(),
+                },
+            )]),
+            metadata: HashMap::new(),
+            transient: TransientData::default(),
+        };
+
+        assert_eq!(
+            manifest.blob_refs(&blob_store).await.unwrap(),
+            vec![OutputBlobRef {
+                hash: chunk_hash,
+                size: chunk.len() as u64,
+                media_type: ARROW_STREAM_MIME.to_string(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn output_manifest_blob_refs_collect_chunks_from_blob_backed_arrow_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+        let chunk = b"arrow stream chunk";
+        let chunk_hash = blob_store.put(chunk, ARROW_STREAM_MIME).await.unwrap();
+        let arrow_manifest = json!({
+            "version": 1,
+            "content_type": ARROW_STREAM_MIME,
+            "chunks": [{
+                "blob": chunk_hash,
+                "size": chunk.len(),
+                "row_count": 2
+            }],
+            "complete": true
+        })
+        .to_string();
+        let manifest_hash = blob_store
+            .put(arrow_manifest.as_bytes(), ARROW_STREAM_MANIFEST_MIME)
+            .await
+            .unwrap();
+        let manifest = OutputManifest::ExecuteResult {
+            output_id: "out-arrow".to_string(),
+            data: HashMap::from([(
+                ARROW_STREAM_MANIFEST_MIME.to_string(),
+                ContentRef::Blob {
+                    blob: manifest_hash.clone(),
+                    size: arrow_manifest.len() as u64,
+                },
+            )]),
+            metadata: HashMap::new(),
+            execution_count: Some(1),
+            transient: TransientData::default(),
+        };
+
+        let mut refs = manifest.blob_refs(&blob_store).await.unwrap();
+        refs.sort_by(|left, right| left.media_type.cmp(&right.media_type));
+
+        assert_eq!(
+            refs,
+            vec![
+                OutputBlobRef {
+                    hash: chunk_hash,
+                    size: chunk.len() as u64,
+                    media_type: ARROW_STREAM_MIME.to_string(),
+                },
+                OutputBlobRef {
+                    hash: manifest_hash,
+                    size: arrow_manifest.len() as u64,
+                    media_type: ARROW_STREAM_MANIFEST_MIME.to_string(),
                 },
             ]
         );

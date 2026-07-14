@@ -24,8 +24,8 @@ export const classicLightSettings: ThemeSettings = {
   foreground: "#24292e",
   selection: "#BBDFFF",
   selectionMatch: "#BBDFFF",
-  gutterBackground: "#fff",
-  gutterForeground: "#6e7781",
+  gutterBackground: "transparent",
+  gutterForeground: "#d0d7de",
 };
 
 export const classicLightStyle: TagStyle[] = [
@@ -75,8 +75,8 @@ export const classicDarkSettings: ThemeSettings = {
   caret: "#c9d1d9",
   selection: "#003d73",
   selectionMatch: "#003d73",
-  gutterBackground: "#0d1117",
-  gutterForeground: "#6e7781",
+  gutterBackground: "transparent",
+  gutterForeground: "#4a5159",
   lineHighlight: "#36334280",
 };
 
@@ -127,8 +127,8 @@ export const creamLightSettings: ThemeSettings = {
   foreground: "#3c3836",
   selection: "#d8cec3",
   selectionMatch: "#d8cec3",
-  gutterBackground: "#f5f2ec",
-  gutterForeground: "#6e655f",
+  gutterBackground: "transparent",
+  gutterForeground: "#d0c7bc",
 };
 
 export const creamLightStyle: TagStyle[] = [
@@ -179,8 +179,8 @@ export const creamDarkSettings: ThemeSettings = {
   caret: "#ebdbb2",
   selection: "#3a3533",
   selectionMatch: "#3a3533",
-  gutterBackground: "#1a1816",
-  gutterForeground: "#9a918a",
+  gutterBackground: "transparent",
+  gutterForeground: "#564f49",
   lineHighlight: "#32302f80",
 };
 

@@ -3,6 +3,16 @@ import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 
 const CONFIG_URL = new URL("../wrangler.toml", import.meta.url);
+const ASSET_WORKER_CONFIGS = [
+  {
+    name: "renderer assets Worker",
+    url: new URL("../wrangler.renderer-assets.toml", import.meta.url),
+  },
+  {
+    name: "output document Worker",
+    url: new URL("../wrangler.output-document.toml", import.meta.url),
+  },
+];
 
 async function readVarsBlock() {
   const config = await readFile(CONFIG_URL, "utf8");
@@ -42,5 +52,18 @@ describe("notebook cloud deploy config", () => {
 
     assert.equal(apiKeyUserinfo.origin, oidcIssuer.origin);
     assert.equal(apiKeyUserinfo.pathname, "/api/auth/sessions/whoami");
+  });
+
+  it("runs asset requests through each sidecar Worker before serving static files", async () => {
+    for (const { name, url } of ASSET_WORKER_CONFIGS) {
+      const config = await readFile(url, "utf8");
+      const assetsBlock = config.match(/^\[assets\]\s*$([\s\S]*?)(?=^\[|(?![\s\S]))/m)?.[1] ?? "";
+
+      assert.match(
+        assetsBlock,
+        /^run_worker_first\s*=\s*true\s*$/m,
+        `${name} must run first so its response headers cannot be bypassed`,
+      );
+    }
   });
 });
