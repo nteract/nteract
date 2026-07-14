@@ -1,6 +1,6 @@
 # Local-First Notebook State
 
-**Status:** Accepted, 2026-06-11. Trimmed 2026-06-29.
+**Status:** Accepted, 2026-06-11; trimmed 2026-06-29; daemon recovery boundary amended 2026-07-13.
 
 This ADR records the local-first contract for cloud notebook handles. Historical
 PR sequencing and landed implementation notes belong in Git history, not in the
@@ -9,6 +9,7 @@ architecture register.
 Related:
 
 - [Live Notebook Projection Policy](./live-notebook-projection-policy.md)
+- [Room Source Lifecycle and File-Backed Recovery](./room-source-lifecycle-and-file-recovery.md)
 - [Shared-Store Projection Convergence](../memos/shared-store-projection-convergence.md)
 
 ## Context
@@ -46,7 +47,8 @@ flushed back to the room from the browser.
   any authoring. Never reuse an actor label across document instances.
 - Persisted bytes and their authoring principal commit atomically. Anonymous or
   unverifiable principals never seed, save, clear, or bridge local persistence.
-- Storage failures degrade to no persistence; they do not break the live session.
+- Browser-local storage failures degrade to no browser persistence; they do not
+  break the live session.
   Corrupt local bytes degrade to room bootstrap.
 - A seeded session whose replayed changes the room rejects clears its local
   record after teardown flush settles and retries from room bootstrap.
@@ -54,6 +56,29 @@ flushed back to the room from the browser.
   sync state recover.
 - Connection status stays out of kernel/runtime status surfaces. Reconnect and
   asset-load failures render as viewer notices, not kernel chrome.
+
+These browser-local persistence rules do not make browser storage or the
+`.ipynb` file the sole durable room record. For file-backed daemon rooms,
+accepted heads are protected by the recovery journal defined in
+[Room Source Lifecycle and File-Backed Recovery](./room-source-lifecycle-and-file-recovery.md).
+
+## Daemon Room Durability
+
+The room's live `NotebookDoc` remains authoritative while resident. A
+file-backed recovery journal records `durable_heads` independently from the
+`exported_heads` represented by the latest committed `.ipynb` snapshot. A room
+may therefore recover acknowledged edits after a daemon restart even when the
+user file has not yet been exported.
+
+Source loading does not suspend Automerge's local-first merge model. Low-level
+peers may sync and durably journal changes during source preparation or
+publication. User-facing UI and MCP mutation capabilities remain read-only
+until room availability is `Interactive`, so a client never mistakes a partial
+source view for normal editing readiness.
+
+If the recovery journal and `.ipynb` file diverge, the room preserves both and
+enters an explicit degraded conflict state. Reconnect must not erase local
+history merely to make the file and room appear consistent.
 
 ## Reconnect Model
 

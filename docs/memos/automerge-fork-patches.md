@@ -1,6 +1,19 @@
 # Automerge Fork Patches
 
-**Status:** Memo / proposal, 2026-05-21.
+**Status:** Memo / active register, 2026-05-21; fork baseline updated 2026-07-13.
+
+## Fork baseline update (2026-07-13)
+
+`nteract/automerge:main` is a tested mirror of upstream Automerge commit
+`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7`. The previous fork main is
+preserved at `archive/main-pre-upstream-sync-20260713`.
+
+Upstream already includes the stale-orphan sync correction and its
+`queued_orphan_need_does_not_block_unrelated_sync_response` regression test.
+The downstream stale-orphan PR was therefore closed as superseded rather than
+rebased: the minimal nteract-only patch set for that behavior is empty. The
+nteract workspace pins the tested mirror commit exactly and can drop the fork
+URL once the corresponding upstream release is available.
 
 This memo tracks possible Automerge fork patches. It is not an accepted nteract
 architecture decision until a patch becomes part of the workspace contract.

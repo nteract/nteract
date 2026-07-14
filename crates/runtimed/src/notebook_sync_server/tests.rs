@@ -462,6 +462,7 @@ async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
     let mut observed_counts = Vec::new();
     let mut last_count = 0usize;
     let mut saw_ready = false;
+    let mut ready_notebook_doc_phase = None;
 
     while !saw_ready {
         let frame = recv_typed_frame_or_timeout(
@@ -504,10 +505,13 @@ async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
                 }
             }
             NotebookFrameType::SessionControl => {
-                if decode_sync_status(&frame).is_some_and(|status| {
-                    status.initial_load == notebook_protocol::protocol::InitialLoadPhaseWire::Ready
-                }) {
-                    saw_ready = true;
+                if let Some(status) = decode_sync_status(&frame) {
+                    if status.initial_load
+                        == notebook_protocol::protocol::InitialLoadPhaseWire::Ready
+                    {
+                        ready_notebook_doc_phase = Some(status.notebook_doc);
+                        saw_ready = true;
+                    }
                 }
             }
             _ => {}
@@ -524,6 +528,16 @@ async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
         Some(7),
         "client should converge before Ready when replies are already buffered"
     );
+    // Depending on scheduler order, the final acknowledgement is either
+    // drained inside initial loading (so Ready already carries Interactive)
+    // or arrives immediately afterward in the steady-state loop. Both paths
+    // must converge; the regression was a buffered ACK that left the session
+    // stuck in Syncing forever.
+    if ready_notebook_doc_phase
+        != Some(notebook_protocol::protocol::NotebookDocPhaseWire::Interactive)
+    {
+        recv_until_notebook_doc_interactive(&mut client_reader).await;
+    }
 
     drop(client_writer);
     drop(client_reader);
@@ -886,6 +900,7 @@ async fn test_get_or_create_room_reuses_existing() {
         uuid1,
         RoomCreationOptions {
             path: None,
+            initial_load_required: false,
             docs_dir: tmp.path(),
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -898,6 +913,7 @@ async fn test_get_or_create_room_reuses_existing() {
         uuid1,
         RoomCreationOptions {
             path: None,
+            initial_load_required: false,
             docs_dir: tmp.path(),
             blob_store,
             ephemeral: false,
@@ -908,6 +924,43 @@ async fn test_get_or_create_room_reuses_existing() {
 
     // Should be the same Arc (same room)
     assert!(Arc::ptr_eq(&room1, &room2));
+}
+
+#[tokio::test]
+async fn file_load_is_pending_before_room_becomes_observable() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let uuid = Uuid::new_v4();
+    let path = tmp.path().join("pending.ipynb");
+
+    let (room, _guard) = get_or_create_room(
+        &rooms,
+        uuid,
+        RoomCreationOptions {
+            path: Some(path.clone()),
+            initial_load_required: true,
+            docs_dir: tmp.path(),
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+
+    let visible = rooms
+        .peek_uuid(uuid)
+        .await
+        .expect("room should be registered");
+    assert!(Arc::ptr_eq(&room, &visible));
+    assert!(matches!(
+        visible.initial_load.state(),
+        RoomInitialLoadState::Loading { generation: 1 }
+    ));
+    assert!(
+        visible.connections.last_kernel_torn_down_at().is_some(),
+        "a never-attached file room must enter the peerless reaper lifecycle"
+    );
 }
 
 #[tokio::test]
@@ -923,6 +976,7 @@ async fn test_get_or_create_room_different_notebooks() {
         uuid1,
         RoomCreationOptions {
             path: None,
+            initial_load_required: false,
             docs_dir: tmp.path(),
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -935,6 +989,7 @@ async fn test_get_or_create_room_different_notebooks() {
         uuid2,
         RoomCreationOptions {
             path: None,
+            initial_load_required: false,
             docs_dir: tmp.path(),
             blob_store,
             ephemeral: false,
@@ -1720,6 +1775,7 @@ fn test_room_with_path_and_store(
         doc: Arc::new(RwLock::new(doc)),
         broadcasts: RoomBroadcasts::default(),
         persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
+        initial_load: RoomInitialLoad::default(),
         file_binding: NotebookFileBinding::new(Some(notebook_path.clone()), false),
         identity: RoomIdentity::new(persist_path),
         connections: RoomConnections::default(),
@@ -5496,6 +5552,7 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
             uuid,
             RoomCreationOptions {
                 path,
+                initial_load_required: false,
                 docs_dir: &docs_dir,
                 blob_store: blob_store.clone(),
                 ephemeral: false,
@@ -5517,6 +5574,7 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
             uuid,
             RoomCreationOptions {
                 path,
+                initial_load_required: false,
                 docs_dir: &docs_dir,
                 blob_store: blob_store.clone(),
                 ephemeral: false,
@@ -8899,6 +8957,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         source_uuid,
         RoomCreationOptions {
             path: Some(source_path.clone()),
+            initial_load_required: false,
             docs_dir: &docs_dir,
             blob_store: blob_store.clone(),
             ephemeral: false,
@@ -9231,6 +9290,7 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
         source_uuid,
         RoomCreationOptions {
             path: Some(tmp.path().join("source.ipynb")),
+            initial_load_required: false,
             docs_dir: &docs_dir,
             blob_store: blob_store.clone(),
             ephemeral: false,

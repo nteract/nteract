@@ -9,8 +9,29 @@ use crate::task_supervisor::spawn_best_effort;
 use super::{
     flush_launched_deps_to_metadata, rename_env_dir_to_unified_hash, save_notebook_to_disk,
     send_runtime_agent_request, should_preserve_env_on_eviction, CapturedEnvRuntime, NotebookRoom,
-    NotebookRooms,
+    NotebookRooms, RoomInitialLoad, RoomInitialLoadState,
 };
+
+/// Last-peer teardown must never wait forever on the owner-lived source task.
+/// If this deadline wins, kernel and environment cleanup still proceed while
+/// every `.ipynb` mutation is skipped. This is intentionally not a deadline on
+/// materialization itself: a large but progressing load remains room-owned.
+const LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(120);
+
+async fn wait_for_initial_load_before_notebook_writes(
+    initial_load: &RoomInitialLoad,
+    timeout: std::time::Duration,
+) -> Option<RoomInitialLoadState> {
+    let state = initial_load.state();
+    if !state.is_loading() {
+        return Some(state);
+    }
+
+    tokio::time::timeout(timeout, initial_load.wait_until_settled())
+        .await
+        .ok()
+}
 
 /// Handle a peer disconnecting from a room.
 ///
@@ -286,6 +307,79 @@ pub(super) async fn handle_peer_disconnect(
                 .kernel_teardown_destructive
                 .store(false, Ordering::Release);
 
+            // Initial file materialization is room-owned and can outlive the
+            // peer that caused it to start. Never project the room's partial
+            // document back into the source `.ipynb`: doing so can combine a
+            // prefix of loaded cells with hot dependency metadata and replace
+            // the complete file on disk. Bound only teardown's wait; the
+            // owner-lived source task may still make legitimate progress after
+            // a slow filesystem or large notebook delays it.
+            //
+            // Kernel shutdown above is deliberately independent. On timeout or
+            // source failure we skip only notebook writes, then continue env
+            // cleanup below.
+            let has_saved_path = room_for_teardown.file_binding.has_saved_path().await;
+            let notebook_writes_allowed = if has_saved_path {
+                match wait_for_initial_load_before_notebook_writes(
+                    &room_for_teardown.initial_load,
+                    LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT,
+                )
+                .await
+                {
+                    Some(RoomInitialLoadState::NotNeeded { .. })
+                    | Some(RoomInitialLoadState::Ready { .. }) => true,
+                    Some(RoomInitialLoadState::Failed { generation, reason }) => {
+                        warn!(
+                            "[notebook-sync] Skipping final notebook writes for {} because initial load generation {} failed: {}",
+                            notebook_id_for_teardown, generation, reason
+                        );
+                        false
+                    }
+                    Some(RoomInitialLoadState::Loading { generation }) => {
+                        warn!(
+                            "[notebook-sync] Skipping final notebook writes for {} because initial load generation {} is still loading",
+                            notebook_id_for_teardown, generation
+                        );
+                        false
+                    }
+                    None => {
+                        warn!(
+                            "[notebook-sync] Skipping final notebook writes for {} after waiting {:?} for initial load to settle",
+                            notebook_id_for_teardown,
+                            LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT
+                        );
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+
+            // The source-settle wait can be long enough for a peer to
+            // reconnect and launch a replacement kernel. Revalidate before
+            // reading launched config or touching notebook/env state from what
+            // may now be a new session. A changed generation aborts this stale
+            // teardown even if that peer has already disconnected again.
+            let still_current_after_load_wait = rooms_for_teardown
+                .serialize_with(|| {
+                    let no_peers = room_for_teardown
+                        .connections
+                        .active_peers
+                        .load(Ordering::Relaxed)
+                        == 0;
+                    let same_generation = room_for_teardown.connections.connection_generation()
+                        == teardown_generation;
+                    no_peers && same_generation
+                })
+                .await;
+            if !still_current_after_load_wait {
+                debug!(
+                    "[notebook-sync] Post-kernel cleanup stopped for {} after initial-load wait (peer reconnected)",
+                    notebook_id_for_teardown
+                );
+                return;
+            }
+
             // Flush launched_config deps → metadata.runt.{uv,conda}.dependencies
             // before env cleanup and final save. This captures any packages
             // the user hot-installed during the session so they land in
@@ -298,11 +392,15 @@ pub(super) async fn handle_peer_disconnect(
             // gates strictly on that — so at most one flush happens per
             // teardown. We record which runtime flushed so the rename
             // step below uses the right hash function.
-            let launched_snapshot = room_for_teardown
-                .runtime_agent_launched_config
-                .read()
-                .await
-                .clone();
+            let launched_snapshot = if notebook_writes_allowed {
+                room_for_teardown
+                    .runtime_agent_launched_config
+                    .read()
+                    .await
+                    .clone()
+            } else {
+                None
+            };
             let mut flushed_runtime: Option<CapturedEnvRuntime> = None;
             let mut save_succeeded = false;
             if let Some(ref launched) = launched_snapshot {
@@ -365,7 +463,7 @@ pub(super) async fn handle_peer_disconnect(
             // `.ipynb` to save and use the persisted Automerge doc
             // instead, which the synchronous flush at the top of this
             // task already wrote.
-            if !save_succeeded && room_for_teardown.file_binding.has_saved_path().await {
+            if notebook_writes_allowed && !save_succeeded {
                 match save_notebook_to_disk(&room_for_teardown, None).await {
                     Ok(_) => {
                         debug!(
@@ -540,6 +638,52 @@ pub(super) async fn handle_peer_disconnect(
             peer_id,
             remaining,
             if remaining == 1 { "" } else { "s" }
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn notebook_write_wait_times_out_while_source_is_loading() {
+        let initial_load = RoomInitialLoad::default();
+        initial_load.mark_required();
+
+        assert_eq!(
+            wait_for_initial_load_before_notebook_writes(
+                &initial_load,
+                std::time::Duration::from_millis(1),
+            )
+            .await,
+            None,
+            "teardown must skip notebook writes instead of observing partial source state"
+        );
+        assert!(initial_load.is_loading());
+    }
+
+    #[tokio::test]
+    async fn notebook_write_wait_observes_source_ready() {
+        let initial_load = Arc::new(RoomInitialLoad::default());
+        initial_load.mark_required();
+        let generation = initial_load.state().generation();
+        let completer = Arc::clone(&initial_load);
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            assert!(completer.complete_ready(generation, 1));
+        });
+
+        assert_eq!(
+            wait_for_initial_load_before_notebook_writes(
+                &initial_load,
+                std::time::Duration::from_secs(1),
+            )
+            .await,
+            Some(RoomInitialLoadState::Ready {
+                generation,
+                cell_count: 1,
+            })
         );
     }
 }

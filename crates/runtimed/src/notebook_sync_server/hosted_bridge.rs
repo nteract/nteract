@@ -1084,6 +1084,7 @@ mod tests {
                 uuid::Uuid::new_v4(),
                 RoomCreationOptions {
                     path: None,
+                    initial_load_required: false,
                     docs_dir: &daemon.config.notebook_docs_dir,
                     blob_store: daemon.blob_store.clone(),
                     ephemeral: true,

@@ -10,10 +10,172 @@ use tracing::{info, warn};
 
 use notebook_protocol::connection::{self, NotebookFrameType, TypedNotebookFrame};
 
+use super::peer_notebook_sync::{apply_notebook_doc_frame, finish_notebook_doc_frame};
 use super::{
-    streaming_load_cells, NotebookRoom, RoomConnectionIdentity, StreamingLoadFrameDrain,
+    start_room_initial_load, NotebookRoom, RoomConnectionIdentity, RoomInitialLoadState,
     STATE_SYNC_COMPACT_THRESHOLD,
 };
+
+struct InitialLoadFrameDrain<'a> {
+    framed_reader: &'a mut connection::FramedReader,
+    deferred_frames: &'a mut VecDeque<TypedNotebookFrame>,
+    connection_identity: &'a RoomConnectionIdentity,
+}
+
+/// Drain client acknowledgements while the room materializes.
+///
+/// Messages carrying client changes are deferred until the room reaches its
+/// coherent initial boundary. Empty messages are safe to apply and advance
+/// this peer's independent sync state so later room batches can keep flowing.
+async fn drain_buffered_initial_load_frames<W>(
+    drain: &mut InitialLoadFrameDrain<'_>,
+    writer: &mut W,
+    room: &NotebookRoom,
+    peer_state: &mut sync::State,
+) -> Result<Option<bool>, String>
+where
+    W: AsyncWrite + Unpin,
+{
+    tokio::task::yield_now().await;
+    let mut notebook_doc_converged = None;
+    let mut automerge_frame_deferred = drain
+        .deferred_frames
+        .iter()
+        .any(|frame| frame.frame_type == NotebookFrameType::AutomergeSync);
+
+    loop {
+        let Some(frame) = drain.framed_reader.try_recv() else {
+            break;
+        };
+        let frame = frame.map_err(|error| format!("Failed to read initial-load reply: {error}"))?;
+
+        if frame.frame_type != NotebookFrameType::AutomergeSync {
+            drain.deferred_frames.push_back(frame);
+            continue;
+        }
+
+        // Automerge sync state is a reliable in-order stream. Once a client
+        // edit is deferred, every later Automerge frame (including an empty
+        // acknowledgement) must remain behind it until the source settles.
+        // Applying a later ACK first can advance `their_heads` past changes
+        // the room has not incorporated yet and falsely report convergence.
+        if automerge_frame_deferred {
+            drain.deferred_frames.push_back(frame);
+            notebook_doc_converged = Some(false);
+            continue;
+        }
+
+        let message = sync::Message::decode(&frame.payload)
+            .map_err(|error| format!("Failed to decode initial-load reply: {error}"))?;
+        if !message.changes.is_empty() {
+            drain.deferred_frames.push_back(frame);
+            automerge_frame_deferred = true;
+            notebook_doc_converged = Some(false);
+            continue;
+        }
+
+        let (effects, reply_encoded) =
+            apply_notebook_doc_frame(room, peer_state, drain.connection_identity, &frame.payload)
+                .await
+                .map_err(|error| format!("Failed to apply initial-load reply: {error}"))?;
+        notebook_doc_converged = Some(!effects.sync_reply_queued());
+
+        if let Some(encoded) = reply_encoded {
+            connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded)
+                .await
+                .map_err(|error| format!("Failed to send initial-load reply: {error}"))?;
+        }
+
+        finish_notebook_doc_frame(room, effects).await;
+    }
+
+    Ok(notebook_doc_converged)
+}
+
+/// Preserve NotebookDoc changes already accepted from a progressive peer when
+/// the room source reaches a terminal failure.
+///
+/// Change-bearing frames stay deferred while loading so file batches establish
+/// a coherent base first. Failure is also a terminal boundary: apply those
+/// buffered edits before closing the session rather than discarding user work.
+async fn apply_failed_initial_load_notebook_frames<W>(
+    drain: &mut InitialLoadFrameDrain<'_>,
+    writer: &mut W,
+    room: &NotebookRoom,
+    peer_state: &mut sync::State,
+) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
+    tokio::task::yield_now().await;
+
+    let mut pending = std::mem::take(drain.deferred_frames);
+    loop {
+        while let Some(frame) = drain.framed_reader.try_recv() {
+            pending.push_back(
+                frame.map_err(|error| format!("Failed to read failed-load frame: {error}"))?,
+            );
+        }
+
+        if pending.is_empty() {
+            break;
+        }
+
+        while let Some(frame) = pending.pop_front() {
+            if frame.frame_type != NotebookFrameType::AutomergeSync {
+                drain.deferred_frames.push_back(frame);
+                continue;
+            }
+
+            let (effects, reply_encoded) = apply_notebook_doc_frame(
+                room,
+                peer_state,
+                drain.connection_identity,
+                &frame.payload,
+            )
+            .await
+            .map_err(|error| format!("Failed to preserve failed-load edit: {error}"))?;
+
+            if let Some(encoded) = reply_encoded {
+                connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded)
+                    .await
+                    .map_err(|error| format!("Failed to acknowledge failed-load edit: {error}"))?;
+            }
+            finish_notebook_doc_frame(room, effects).await;
+        }
+    }
+
+    Ok(())
+}
+
+async fn send_initial_load_doc_delta<W>(
+    writer: &mut W,
+    room: &NotebookRoom,
+    peer_state: &mut sync::State,
+) -> anyhow::Result<bool>
+where
+    W: AsyncWrite + Unpin,
+{
+    let encoded = {
+        let mut doc = room.doc.write().await;
+        doc.generate_sync_message_recovering(peer_state, "room-initial-load")
+            .map_err(|error| anyhow::anyhow!("initial-load sync generation failed: {error}"))?
+            .map(|message| message.encode())
+    };
+
+    let sent = encoded.is_some();
+    if let Some(encoded) = encoded {
+        connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded)
+            .await
+            .map_err(|error| anyhow::anyhow!("initial-load sync send failed: {error}"))?;
+    }
+    Ok(sent)
+}
+
+struct InitialLoadSyncOutcome {
+    initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
+    notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
+}
 
 pub(crate) async fn send_session_status<W>(
     writer: &mut W,
@@ -153,7 +315,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    stream_initial_load_inner(
+    Ok(stream_initial_load_inner(
         writer,
         room,
         needs_load,
@@ -165,7 +327,8 @@ where
         client_protocol_version,
         None,
     )
-    .await
+    .await?
+    .initial_load_phase)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -177,7 +340,7 @@ pub(crate) async fn stream_initial_load_with_frame_drain<W>(
     needs_load: Option<&Path>,
     execution_store_dir: &Path,
     peer_state: &mut sync::State,
-    notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
+    notebook_doc_phase: &mut notebook_protocol::protocol::NotebookDocPhaseWire,
     runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
     initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
     client_protocol_version: u8,
@@ -186,23 +349,25 @@ pub(crate) async fn stream_initial_load_with_frame_drain<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    stream_initial_load_inner(
+    let outcome = stream_initial_load_inner(
         writer,
         room,
         needs_load,
         execution_store_dir,
         peer_state,
-        notebook_doc_phase,
+        *notebook_doc_phase,
         runtime_state_phase,
         initial_load_phase,
         client_protocol_version,
-        Some(StreamingLoadFrameDrain {
+        Some(InitialLoadFrameDrain {
             framed_reader,
             deferred_frames,
             connection_identity,
         }),
     )
-    .await
+    .await?;
+    *notebook_doc_phase = outcome.notebook_doc_phase;
+    Ok(outcome.initial_load_phase)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -212,110 +377,154 @@ async fn stream_initial_load_inner<W>(
     needs_load: Option<&Path>,
     execution_store_dir: &Path,
     peer_state: &mut sync::State,
-    notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
+    mut notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
     runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
     initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
     client_protocol_version: u8,
-    frame_drain: Option<StreamingLoadFrameDrain<'_>>,
-) -> anyhow::Result<notebook_protocol::protocol::InitialLoadPhaseWire>
+    mut frame_drain: Option<InitialLoadFrameDrain<'_>>,
+) -> anyhow::Result<InitialLoadSyncOutcome>
 where
     W: AsyncWrite + Unpin,
 {
-    let Some(load_path) = needs_load else {
-        return Ok(initial_load_phase);
-    };
-    if !room.try_start_loading() {
-        return Ok(initial_load_phase);
-    }
-
-    // Streaming load: add cells in batches and sync after each batch so the
-    // frontend can observe progressive notebook-doc updates.
-    let execution_store =
-        runtimed_client::execution_store::ExecutionStore::new(execution_store_dir.to_path_buf());
-    match streaming_load_cells(
-        writer,
-        room,
-        load_path,
-        Some(&execution_store),
-        peer_state,
-        frame_drain,
-    )
-    .await
+    let mut changed_rx = room.broadcasts.changed_tx.subscribe();
+    let mut load_state_rx = if let Some(load_path) = needs_load {
+        start_room_initial_load(
+            room,
+            load_path.to_path_buf(),
+            execution_store_dir.to_path_buf(),
+        )
+    } else if room.is_loading()
+        || matches!(
+            initial_load_phase,
+            notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
+                | notebook_protocol::protocol::InitialLoadPhaseWire::Failed { .. }
+        )
     {
-        Ok(count) => {
-            room.finish_loading();
-            // The load succeeded and the room now reflects the file on disk, so
-            // any prior failed-load hazard is resolved. Clear it here (on
-            // completion, not at retry start) to avoid racing an in-flight
-            // autosave during the retry window.
-            room.clear_load_failed();
-            info!(
-                "[notebook-sync] Streaming load complete: {} cells from {}",
-                count,
-                load_path.display()
-            );
-            let initial_load_phase = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
-            if client_protocol_version >= 3 {
-                send_session_status(
-                    writer,
+        room.initial_load.subscribe()
+    } else {
+        return Ok(InitialLoadSyncOutcome {
+            initial_load_phase,
+            notebook_doc_phase,
+        });
+    };
+
+    let mut generation = load_state_rx.borrow().generation();
+    let mut notebook_doc_converged = false;
+    loop {
+        let state = load_state_rx.borrow().clone();
+        match state {
+            RoomInitialLoadState::Ready {
+                generation: settled_generation,
+                ..
+            } if settled_generation == generation => {
+                // Close the race with the final batch notification. This is
+                // also the completion signal for a valid zero-cell notebook.
+                if send_initial_load_doc_delta(writer, room, peer_state).await? {
+                    notebook_doc_converged = false;
+                }
+                if let Some(drain) = frame_drain.as_mut() {
+                    if let Some(converged) =
+                        drain_buffered_initial_load_frames(drain, writer, room, peer_state)
+                            .await
+                            .map_err(anyhow::Error::msg)?
+                    {
+                        notebook_doc_converged = converged;
+                    }
+                }
+                if notebook_doc_converged {
+                    notebook_doc_phase =
+                        notebook_protocol::protocol::NotebookDocPhaseWire::Interactive;
+                }
+                let phase = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
+                if client_protocol_version >= 3 {
+                    send_session_status(
+                        writer,
+                        notebook_doc_phase,
+                        runtime_state_phase,
+                        phase.clone(),
+                    )
+                    .await?;
+                }
+                return Ok(InitialLoadSyncOutcome {
+                    initial_load_phase: phase,
                     notebook_doc_phase,
-                    runtime_state_phase,
-                    initial_load_phase.clone(),
-                )
-                .await?;
+                });
             }
-            Ok(initial_load_phase)
+            RoomInitialLoadState::Failed {
+                generation: settled_generation,
+                reason,
+            } if settled_generation == generation => {
+                if let Some(drain) = frame_drain.as_mut() {
+                    apply_failed_initial_load_notebook_frames(drain, writer, room, peer_state)
+                        .await
+                        .map_err(anyhow::Error::msg)?;
+                }
+                // Preserving buffered edits awaits room locks and transport.
+                // An external watcher/save can reconcile the source and
+                // advance Failed(g) to Ready(g+1) meanwhile. Never publish the
+                // stale failure after that recovery; follow the new generation
+                // from the top of the loop instead.
+                let current_state = room.initial_load.state();
+                if current_state.generation() != settled_generation {
+                    generation = current_state.generation();
+                    continue;
+                }
+                send_initial_load_doc_delta(writer, room, peer_state).await?;
+                let phase = notebook_protocol::protocol::InitialLoadPhaseWire::Failed {
+                    reason: reason.clone(),
+                };
+                if client_protocol_version >= 3 {
+                    send_session_status(writer, notebook_doc_phase, runtime_state_phase, phase)
+                        .await?;
+                }
+                return Err(anyhow::anyhow!("Initial materialization failed: {reason}"));
+            }
+            RoomInitialLoadState::Loading {
+                generation: active_generation,
+            } if active_generation == generation => {}
+            ref newer if newer.generation() > generation => {
+                // Explicit retry/reconciliation advances the room generation.
+                // Follow that authoritative state instead of surfacing a stale
+                // terminal result captured by this waiter.
+                generation = newer.generation();
+                continue;
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Initial materialization generation changed while waiting: expected {}, observed {:?}",
+                    generation,
+                    other
+                ));
+            }
         }
-        Err(e) => {
-            let execution_ids = {
-                let mut doc = room.doc.write().await;
-                let execution_ids = doc
-                    .get_cells()
-                    .into_iter()
-                    .filter_map(|cell| doc.get_execution_id(&cell.id))
-                    .collect::<Vec<_>>();
-                if let Err(err) = doc.clear_all_cells() {
-                    warn!(
-                        "[notebook-sync] Failed to clear partial load cells for {}: {}",
-                        load_path.display(),
-                        err
-                    );
-                }
-                execution_ids
-            };
-            if !execution_ids.is_empty() {
-                if let Err(err) = room
-                    .state
-                    .with_doc(|state_doc| state_doc.remove_executions(&execution_ids))
-                {
-                    warn!(
-                        "[notebook-sync] Failed to remove partial load executions for {}: {}",
-                        load_path.display(),
-                        err
-                    );
+
+        tokio::select! {
+            changed = load_state_rx.changed() => {
+                if changed.is_err() {
+                    return Err(anyhow::anyhow!("Initial materialization state channel closed"));
                 }
             }
-            // The room was just emptied by a failed load; mark it so the
-            // persistence guard refuses to autosave this empty doc over a
-            // non-empty file.
-            room.mark_load_failed();
-            room.finish_loading();
-            let _ = room.broadcasts.changed_tx.send(());
-            warn!(
-                "[notebook-sync] Streaming load failed for {}: {}",
-                load_path.display(),
-                e
-            );
-            if client_protocol_version >= 3 {
-                send_session_status(
-                    writer,
-                    notebook_doc_phase,
-                    runtime_state_phase,
-                    notebook_protocol::protocol::InitialLoadPhaseWire::Failed { reason: e.clone() },
-                )
-                .await?;
+            changed = changed_rx.recv() => {
+                match changed {
+                    Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if send_initial_load_doc_delta(writer, room, peer_state).await? {
+                            notebook_doc_converged = false;
+                        }
+                        if let Some(drain) = frame_drain.as_mut() {
+                            if let Some(converged) =
+                                drain_buffered_initial_load_frames(drain, writer, room, peer_state)
+                                .await
+                                .map_err(anyhow::Error::msg)?
+                            {
+                                notebook_doc_converged = converged;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err(anyhow::anyhow!("Notebook room closed during initial materialization"));
+                    }
+                }
             }
-            Err(anyhow::anyhow!("Streaming load failed: {}", e))
         }
     }
 }
@@ -335,7 +544,10 @@ mod tests {
 
     use super::*;
     use crate::blob_store::BlobStore;
-    use crate::notebook_sync_server::apply_ipynb_changes;
+    use crate::notebook_sync_server::{
+        apply_ipynb_changes, save_notebook_to_disk, RoomInitialLoad, RoomInitialLoadStart,
+        STREAMING_BATCH_SIZE,
+    };
 
     #[derive(Default)]
     struct CaptureWriter {
@@ -504,22 +716,59 @@ mod tests {
         statuses
     }
 
-    #[tokio::test]
-    async fn stream_initial_load_contention_leaves_owner_loading_state_untouched() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn room_initial_load_coalesces_waiters_on_one_generation() {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
-        let load_path = tmp.path().join("missing-but-not-read.ipynb");
+        let load_path = tmp.path().join("source.ipynb");
+        write_one_cell_notebook(&load_path).await;
+
+        let first = start_room_initial_load(&room, load_path.clone(), tmp.path().to_path_buf());
+        let second = start_room_initial_load(&room, load_path, tmp.path().to_path_buf());
+
+        let first_generation = first.borrow().generation();
+        assert_eq!(
+            first.borrow().clone(),
+            RoomInitialLoadState::Loading {
+                generation: first_generation
+            }
+        );
+        assert_eq!(
+            second.borrow().generation(),
+            first_generation,
+            "all waiters must observe the same source generation"
+        );
+
+        let settled = room.initial_load.wait_until_settled().await;
+        assert_eq!(
+            settled,
+            RoomInitialLoadState::Ready {
+                generation: first_generation,
+                cell_count: 1,
+            }
+        );
+        assert_eq!(room.doc.read().await.cell_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn late_waiter_observes_ready_generation_after_loading_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        room.initial_load.mark_required();
+        let (start, _) = room.initial_load.begin();
+        let RoomInitialLoadStart::Started { generation } = start else {
+            panic!("pending load should be claimable");
+        };
+        assert!(room.initial_load.complete_ready(generation, 0));
+
         let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
-
-        assert!(room.try_start_loading(), "first peer owns streaming load");
-
         let phase = stream_initial_load(
             &mut reader,
             &mut writer,
             &room,
-            Some(&load_path),
+            None,
             tmp.path(),
             &mut peer_state,
             NotebookDocPhaseWire::Syncing,
@@ -528,32 +777,17 @@ mod tests {
             4,
         )
         .await
-        .expect("contending peer should not fail");
+        .expect("late waiter should consume the sticky terminal state");
 
-        assert_eq!(phase, InitialLoadPhaseWire::Streaming);
-        assert!(
-            writer.bytes.is_empty(),
-            "contending peer must not emit Ready/Failed before the owner finishes loading"
-        );
-        assert!(
-            room.is_loading(),
-            "contending peer must leave the owner loading marker intact"
-        );
-
-        room.finish_loading();
-        assert!(
-            !room.is_loading(),
-            "steady-state changed_rx readiness check can now promote Streaming to Ready"
-        );
+        assert_eq!(phase, InitialLoadPhaseWire::Ready);
     }
 
     #[tokio::test]
-    async fn stream_initial_load_failure_emits_failed_status_and_clears_partial_doc() {
+    async fn peer_write_failure_does_not_cancel_or_roll_back_room_load() {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         let load_path = tmp.path().join("source.ipynb");
         write_one_cell_notebook(&load_path).await;
-        let mut changed_rx = room.broadcasts.changed_tx.subscribe();
         let mut reader = tokio::io::empty();
         let mut writer = FailFirstWrite::expecting_partial_state(&room);
         let mut peer_state = sync::State::new();
@@ -571,55 +805,37 @@ mod tests {
             4,
         )
         .await
-        .expect_err("missing file should fail streaming load");
+        .expect_err("injected peer write failure should drop only this waiter");
 
         assert!(
             err.to_string()
-                .contains("Failed to send sync message: injected first write failure"),
-            "error should preserve the peer-loop failure prefix"
+                .contains("initial-load sync send failed: injected first write failure"),
+            "error should preserve the peer transport failure"
         );
         assert!(writer.observed_partial_doc);
         assert!(writer.observed_partial_executions);
-        assert!(
-            !room.is_loading(),
-            "failure cleanup must release the loading marker"
-        );
+
+        let settled = room.initial_load.wait_until_settled().await;
+        assert!(matches!(
+            settled,
+            RoomInitialLoadState::Ready { cell_count: 1, .. }
+        ));
         assert_eq!(
             room.doc.read().await.cell_count(),
-            0,
-            "failure cleanup must clear partially loaded cells"
+            1,
+            "peer transport failure must not clear authoritative room cells"
         );
         room.state
             .with_doc(|state_doc| {
                 assert!(
-                    state_doc.read_state().executions.is_empty(),
-                    "failure cleanup must remove executions for rolled-back cells"
+                    !state_doc.read_state().executions.is_empty(),
+                    "peer transport failure must not clear room runtime state"
                 );
                 Ok(())
             })
             .unwrap();
-        changed_rx
-            .try_recv()
-            .expect("failure cleanup should broadcast document change");
-        assert!(
-            changed_rx.try_recv().is_err(),
-            "failure cleanup should emit exactly one cleanup broadcast"
-        );
-
-        let statuses = decode_session_statuses(&writer.bytes);
-        assert_eq!(statuses.len(), 1);
-        let SessionControlMessage::SyncStatus(status) = &statuses[0];
-        assert_eq!(status.notebook_doc, NotebookDocPhaseWire::Syncing);
-        assert_eq!(status.runtime_state, RuntimeStatePhaseWire::Syncing);
-        match &status.initial_load {
-            InitialLoadPhaseWire::Failed { reason } => {
-                assert!(
-                    reason.contains("Failed to send sync message"),
-                    "failed status should include the load failure reason: {reason}"
-                );
-            }
-            other => panic!("expected failed initial load status, got {other:?}"),
-        }
+        assert!(!room.load_failed());
+        assert!(decode_session_statuses(&writer.bytes).is_empty());
     }
 
     #[tokio::test]
@@ -666,7 +882,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_initial_load_v2_failure_suppresses_failed_status_frame() {
+    async fn stream_initial_load_v2_transport_failure_does_not_fail_source() {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         let load_path = tmp.path().join("source.ipynb");
@@ -694,19 +910,13 @@ mod tests {
         assert!(writer.observed_partial_executions);
         assert!(
             writer.bytes.is_empty(),
-            "pre-v3 failure must not emit SessionControl frames"
+            "pre-v3 transport failure must not emit SessionControl frames"
         );
-        assert!(!room.is_loading());
-        assert_eq!(room.doc.read().await.cell_count(), 0);
-        room.state
-            .with_doc(|state_doc| {
-                assert!(
-                    state_doc.read_state().executions.is_empty(),
-                    "pre-v3 failure cleanup must remove rolled-back executions"
-                );
-                Ok(())
-            })
-            .unwrap();
+        assert!(matches!(
+            room.initial_load.wait_until_settled().await,
+            RoomInitialLoadState::Ready { cell_count: 1, .. }
+        ));
+        assert_eq!(room.doc.read().await.cell_count(), 1);
     }
 
     #[tokio::test]
@@ -714,7 +924,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         let load_path = tmp.path().join("does-not-exist.ipynb");
-        let mut changed_rx = room.broadcasts.changed_tx.subscribe();
         let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
@@ -736,13 +945,9 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("Streaming load failed: Failed to read notebook"),
+                .contains("Initial materialization failed: Failed to read notebook"),
             "missing file should preserve the load failure reason"
         );
-        changed_rx
-            .try_recv()
-            .expect("missing-file cleanup should broadcast document change");
-        assert!(changed_rx.try_recv().is_err());
 
         let statuses = decode_session_statuses(&writer.bytes);
         assert_eq!(statuses.len(), 1);
@@ -756,6 +961,457 @@ mod tests {
             }
             other => panic!("expected failed initial load status, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn late_waiter_observes_sticky_failed_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        room.initial_load.mark_required();
+        let (start, _) = room.initial_load.begin();
+        let RoomInitialLoadStart::Started { generation } = start else {
+            panic!("pending load should be claimable");
+        };
+        assert!(room
+            .initial_load
+            .complete_failed(generation, "source became unreadable".to_string()));
+
+        let mut reader = tokio::io::empty();
+        let mut writer = CaptureWriter::default();
+        let mut peer_state = sync::State::new();
+        let error = stream_initial_load(
+            &mut reader,
+            &mut writer,
+            &room,
+            None,
+            tmp.path(),
+            &mut peer_state,
+            NotebookDocPhaseWire::Syncing,
+            RuntimeStatePhaseWire::Syncing,
+            InitialLoadPhaseWire::Streaming,
+            4,
+        )
+        .await
+        .expect_err("late waiter must observe the room's sticky failure");
+
+        assert!(error
+            .to_string()
+            .contains("Initial materialization failed: source became unreadable"));
+        let statuses = decode_session_statuses(&writer.bytes);
+        assert_eq!(statuses.len(), 1);
+        let SessionControlMessage::SyncStatus(status) = &statuses[0];
+        assert_eq!(
+            status.initial_load,
+            InitialLoadPhaseWire::Failed {
+                reason: "source became unreadable".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_generation_applies_deferred_peer_changes_before_terminal_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        {
+            let mut doc = room.doc.write().await;
+            doc.add_cell(0, "progressive-cell", "code").unwrap();
+            doc.update_source("progressive-cell", "source batch")
+                .unwrap();
+        }
+
+        let mut peer_state = sync::State::new();
+        let initial = room
+            .doc
+            .write()
+            .await
+            .generate_sync_message_recovering(&mut peer_state, "test-failed-load-initial")
+            .unwrap()
+            .expect("room should publish the progressive cell");
+        let mut client_doc = notebook_doc::NotebookDoc::bootstrap(
+            notebook_doc::TextEncoding::Utf16CodeUnit,
+            "mcp:test",
+        );
+        let mut client_state = sync::State::new();
+        client_doc
+            .receive_sync_message_recovering(&mut client_state, initial, "test-failed-load-client")
+            .unwrap();
+        for round in 0..32 {
+            let from_client = client_doc
+                .generate_sync_message_recovering(
+                    &mut client_state,
+                    &format!("test-failed-load-client-converge-{round}"),
+                )
+                .unwrap();
+            let from_room = room
+                .doc
+                .write()
+                .await
+                .generate_sync_message_recovering(
+                    &mut peer_state,
+                    &format!("test-failed-load-room-converge-{round}"),
+                )
+                .unwrap();
+            if from_client.is_none() && from_room.is_none() {
+                break;
+            }
+            if let Some(message) = from_client {
+                room.doc
+                    .write()
+                    .await
+                    .receive_sync_message_recovering(
+                        &mut peer_state,
+                        message,
+                        "test-failed-load-room-receive",
+                    )
+                    .unwrap();
+            }
+            if let Some(message) = from_room {
+                client_doc
+                    .receive_sync_message_recovering(
+                        &mut client_state,
+                        message,
+                        "test-failed-load-client-receive",
+                    )
+                    .unwrap();
+            }
+        }
+
+        client_doc
+            .update_source("progressive-cell", "edited before source failure")
+            .unwrap();
+        let peer_edit = client_doc
+            .generate_sync_message_recovering(&mut client_state, "test-failed-load-edit")
+            .unwrap()
+            .expect("client edit should produce a sync message");
+        assert!(
+            !peer_edit.changes.is_empty(),
+            "regression requires a change-bearing frame deferred by bootstrap"
+        );
+        let empty_ack = sync::Message {
+            heads: peer_edit.heads.clone(),
+            need: peer_edit.need.clone(),
+            have: peer_edit.have.clone(),
+            changes: sync::ChunkList::empty(),
+            flags: peer_edit.flags,
+            version: peer_edit.version.clone(),
+        };
+        let edit_payload = peer_edit.encode();
+        let ack_payload = empty_ack.encode();
+
+        let mut wire = Vec::new();
+        connection::send_typed_frame(&mut wire, NotebookFrameType::AutomergeSync, &edit_payload)
+            .await
+            .unwrap();
+        connection::send_typed_frame(&mut wire, NotebookFrameType::AutomergeSync, &ack_payload)
+            .await
+            .unwrap();
+        let mut framed_reader = connection::FramedReader::spawn(std::io::Cursor::new(wire), 4);
+        let identity = RoomConnectionIdentity::local(Some("mcp:test".to_string()))
+            .await
+            .unwrap();
+        let mut deferred_frames = VecDeque::new();
+        let mut writer = CaptureWriter::default();
+        let convergence = drain_buffered_initial_load_frames(
+            &mut InitialLoadFrameDrain {
+                framed_reader: &mut framed_reader,
+                deferred_frames: &mut deferred_frames,
+                connection_identity: &identity,
+            },
+            &mut writer,
+            &room,
+            &mut peer_state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(convergence, Some(false));
+        assert_eq!(deferred_frames.len(), 2);
+        assert_eq!(deferred_frames[0].payload, edit_payload);
+        assert_eq!(deferred_frames[1].payload, ack_payload);
+        assert_eq!(
+            room.doc
+                .read()
+                .await
+                .get_cell("progressive-cell")
+                .unwrap()
+                .source,
+            "source batch",
+            "the later ACK must not advance peer state ahead of the deferred edit"
+        );
+
+        room.initial_load.mark_required();
+        let (start, _) = room.initial_load.begin();
+        let RoomInitialLoadStart::Started { generation } = start else {
+            panic!("pending load should be claimable");
+        };
+        assert!(room
+            .initial_load
+            .complete_failed(generation, "source batch failed".to_string()));
+        room.mark_load_failed();
+
+        let mut notebook_doc_phase = NotebookDocPhaseWire::Syncing;
+        let error = stream_initial_load_with_frame_drain(
+            &mut framed_reader,
+            &mut writer,
+            &mut deferred_frames,
+            &room,
+            None,
+            tmp.path(),
+            &mut peer_state,
+            &mut notebook_doc_phase,
+            RuntimeStatePhaseWire::Syncing,
+            InitialLoadPhaseWire::Streaming,
+            4,
+            &identity,
+        )
+        .await
+        .expect_err("the source generation remains terminally failed");
+
+        assert!(error
+            .to_string()
+            .contains("Initial materialization failed: source batch failed"));
+        assert_eq!(
+            room.doc
+                .read()
+                .await
+                .get_cell("progressive-cell")
+                .unwrap()
+                .source,
+            "edited before source failure",
+            "terminal source failure must not discard an already-deferred peer edit"
+        );
+        assert!(deferred_frames.is_empty());
+        let statuses = decode_session_statuses(&writer.bytes);
+        assert_eq!(statuses.len(), 1);
+        let SessionControlMessage::SyncStatus(status) = &statuses[0];
+        assert!(matches!(
+            status.initial_load,
+            InitialLoadPhaseWire::Failed { .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn late_waiter_follows_recovery_that_races_failed_frame_drain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        room.initial_load.mark_required();
+        let (start, _) = room.initial_load.begin();
+        let RoomInitialLoadStart::Started { generation } = start else {
+            panic!("pending load should be claimable");
+        };
+        assert!(room
+            .initial_load
+            .complete_failed(generation, "transient failure".to_string()));
+        room.mark_load_failed();
+
+        let mut framed_reader = connection::FramedReader::spawn(tokio::io::empty(), 1);
+        let mut deferred_frames = VecDeque::new();
+        let identity = RoomConnectionIdentity::local(Some("mcp:test".to_string()))
+            .await
+            .unwrap();
+        let recovery_room = Arc::clone(&room);
+        let recovery = tokio::spawn(async move {
+            // The task cannot run until the stream yields in
+            // `apply_failed_initial_load_notebook_frames`.
+            recovery_room.mark_load_recovered(0);
+        });
+        let mut writer = CaptureWriter::default();
+        let mut peer_state = sync::State::new();
+        let mut notebook_doc_phase = NotebookDocPhaseWire::Syncing;
+        let phase = stream_initial_load_with_frame_drain(
+            &mut framed_reader,
+            &mut writer,
+            &mut deferred_frames,
+            &room,
+            None,
+            tmp.path(),
+            &mut peer_state,
+            &mut notebook_doc_phase,
+            RuntimeStatePhaseWire::Syncing,
+            InitialLoadPhaseWire::Streaming,
+            4,
+            &identity,
+        )
+        .await
+        .expect("waiter should follow the recovered generation");
+
+        recovery.await.unwrap();
+        assert_eq!(phase, InitialLoadPhaseWire::Ready);
+        assert!(matches!(
+            room.initial_load.state(),
+            RoomInitialLoadState::Ready {
+                generation: recovered,
+                cell_count: 0,
+            } if recovered == generation + 1
+        ));
+        let statuses = decode_session_statuses(&writer.bytes);
+        assert_eq!(statuses.len(), 1);
+        let SessionControlMessage::SyncStatus(status) = &statuses[0];
+        assert_eq!(status.initial_load, InitialLoadPhaseWire::Ready);
+    }
+
+    #[tokio::test]
+    async fn source_failure_preserves_published_batches_and_source_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let load_path = tmp.path().join("partial.ipynb");
+        let source_bytes = br##"{
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {"id":"one","cell_type":"code","metadata":{},"source":"1","execution_count":null,"outputs":[]},
+                {"id":"two","cell_type":"code","metadata":{},"source":"2","execution_count":null,"outputs":[]},
+                {"id":"three","cell_type":"code","metadata":{},"source":"3","execution_count":null,"outputs":[]},
+                {"id":"bad","cell_type":"markdown","metadata":{},"source":"![x](attachment:bad)","attachments":{"bad":"not-a-mime-bundle"}}
+            ]
+        }"##;
+        tokio::fs::write(&load_path, source_bytes).await.unwrap();
+        let blob_store = Arc::new(BlobStore::new(tmp.path().join("blobs")));
+        let room = Arc::new(NotebookRoom::new_fresh(
+            Uuid::new_v4(),
+            Some(load_path.clone()),
+            tmp.path(),
+            blob_store,
+            false,
+        ));
+        let mut reader = tokio::io::empty();
+        let mut writer = CaptureWriter::default();
+        let mut peer_state = sync::State::new();
+
+        let error = stream_initial_load(
+            &mut reader,
+            &mut writer,
+            &room,
+            Some(&load_path),
+            tmp.path(),
+            &mut peer_state,
+            NotebookDocPhaseWire::Syncing,
+            RuntimeStatePhaseWire::Syncing,
+            InitialLoadPhaseWire::Streaming,
+            4,
+        )
+        .await
+        .expect_err("malformed fourth-cell attachment should fail the source");
+
+        assert!(error
+            .to_string()
+            .contains("attachment bad must be a MIME bundle"));
+        assert!(matches!(
+            room.initial_load.state(),
+            RoomInitialLoadState::Failed { .. }
+        ));
+        assert_eq!(
+            room.doc.read().await.cell_count(),
+            STREAMING_BATCH_SIZE,
+            "source failure must not roll back already-published room truth"
+        );
+        assert!(room.load_failed());
+
+        save_notebook_to_disk(&room, None)
+            .await
+            .expect("failed-source persistence guard should skip in-place write");
+        assert_eq!(tokio::fs::read(&load_path).await.unwrap(), source_bytes);
+    }
+
+    #[tokio::test]
+    async fn valid_zero_cell_notebook_publishes_explicit_ready_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let room = test_room(&tmp);
+        let load_path = tmp.path().join("empty.ipynb");
+        tokio::fs::write(
+            &load_path,
+            r#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[]}"#,
+        )
+        .await
+        .unwrap();
+        let mut reader = tokio::io::empty();
+        let mut writer = CaptureWriter::default();
+        let mut peer_state = sync::State::new();
+
+        let phase = stream_initial_load(
+            &mut reader,
+            &mut writer,
+            &room,
+            Some(&load_path),
+            tmp.path(),
+            &mut peer_state,
+            NotebookDocPhaseWire::Syncing,
+            RuntimeStatePhaseWire::Syncing,
+            InitialLoadPhaseWire::Streaming,
+            4,
+        )
+        .await
+        .expect("valid empty notebook should settle successfully");
+
+        assert_eq!(phase, InitialLoadPhaseWire::Ready);
+        let state = room.initial_load.state();
+        let RoomInitialLoadState::Ready {
+            generation,
+            cell_count,
+        } = state
+        else {
+            panic!("expected explicit Ready state, got {state:?}");
+        };
+        assert_eq!(cell_count, 0);
+        assert!(matches!(
+            room.initial_load.begin().0,
+            RoomInitialLoadStart::Observing {
+                generation: observed
+            } if observed == generation
+        ));
+    }
+
+    #[test]
+    fn stale_completion_cannot_publish_over_retry_generation() {
+        let initial_load = RoomInitialLoad::default();
+        let (start, _) = initial_load.begin();
+        let RoomInitialLoadStart::Started { generation: first } = start else {
+            panic!("first source claim should start");
+        };
+        assert!(initial_load.complete_failed(first, "retry me".to_string()));
+
+        let second = initial_load
+            .retry_failed()
+            .expect("failed source can retry");
+        assert!(matches!(
+            initial_load.begin().0,
+            RoomInitialLoadStart::Started { generation } if generation == second
+        ));
+        assert!(
+            !initial_load.complete_ready(first, 99),
+            "stale completion must not overwrite the current generation"
+        );
+        assert_eq!(
+            initial_load.state(),
+            RoomInitialLoadState::Loading { generation: second }
+        );
+    }
+
+    #[test]
+    fn external_recovery_advances_failed_generation_to_ready() {
+        let initial_load = RoomInitialLoad::default();
+        initial_load.mark_required();
+        let (start, _) = initial_load.begin();
+        let RoomInitialLoadStart::Started { generation: failed } = start else {
+            panic!("required load should start");
+        };
+        assert!(initial_load.complete_failed(failed, "retry me".to_string()));
+
+        let recovered = initial_load
+            .recover_failed(3)
+            .expect("external reconciliation should publish recovery");
+        assert_eq!(recovered, failed + 1);
+        assert_eq!(
+            initial_load.state(),
+            RoomInitialLoadState::Ready {
+                generation: recovered,
+                cell_count: 3,
+            }
+        );
+        assert!(
+            !initial_load.complete_ready(failed, 99),
+            "the failed source generation must not overwrite recovered room truth"
+        );
     }
 
     #[tokio::test]

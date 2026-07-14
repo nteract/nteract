@@ -51,6 +51,17 @@ pub enum Request {
         notebook_id: String,
     },
 
+    /// Read a coherent, room-owned projection after initial materialization.
+    ///
+    /// Unlike `InspectNotebook`, this request never falls back to a persisted
+    /// document. The notebook must have a resident room, and the daemon waits
+    /// for that room's initial materialization source to settle before
+    /// returning the projection.
+    GetNotebookProjection {
+        /// UUID of the resident notebook room.
+        notebook_id: String,
+    },
+
     /// List all active notebook rooms.
     ListRooms,
 
@@ -177,6 +188,15 @@ pub enum Response {
         kernel_info: Option<NotebookKernelInfo>,
     },
 
+    /// A coherent room-owned notebook projection.
+    NotebookProjection { projection: Box<NotebookProjection> },
+
+    /// Projection could not be produced from the authoritative room.
+    NotebookProjectionUnavailable {
+        notebook_id: String,
+        failure: NotebookProjectionFailure,
+    },
+
     /// List of active notebook rooms.
     RoomsList { rooms: Vec<RoomInfo> },
 
@@ -219,6 +239,85 @@ pub struct NotebookKernelInfo {
     pub kernel_type: String,
     pub env_source: String,
     pub status: String,
+}
+
+/// Version of the room-owned notebook projection wire shape.
+pub const NOTEBOOK_PROJECTION_SCHEMA_VERSION: u32 = 1;
+
+/// Typed terminal failures for room-owned projection requests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NotebookProjectionFailure {
+    /// The UUID does not name a resident room.
+    RoomNotFound,
+    /// The room's initial file materialization reached a terminal failure.
+    InitialLoadFailed { generation: u64, reason: String },
+}
+
+impl std::fmt::Display for NotebookProjectionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RoomNotFound => write!(f, "room not found"),
+            Self::InitialLoadFailed { generation, reason } => {
+                write!(f, "initial load generation {generation} failed: {reason}")
+            }
+        }
+    }
+}
+
+/// Lightweight, ordered cell information returned during notebook connect.
+///
+/// The daemon deliberately bounds `source_preview`: initial discovery needs
+/// stable cell IDs and enough source to orient an agent, not an unbounded copy
+/// of every cell. Full source remains available through the notebook document
+/// once the caller's replica contains `NotebookProjection::notebook_heads`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotebookCellProjection {
+    pub id: String,
+    pub cell_type: String,
+    pub source_preview: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_count: Option<i64>,
+}
+
+/// Compact runtime facts needed by notebook connect responses.
+///
+/// Execution records and output payloads are intentionally omitted; they can
+/// be large and have dedicated query surfaces. The returned runtime-state
+/// heads identify the exact causal snapshot these facts came from.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NotebookRuntimeProjection {
+    pub kernel: runtime_doc::KernelState,
+    pub env: runtime_doc::EnvState,
+    pub trust: runtime_doc::TrustRuntimeState,
+    pub project_context: runtime_doc::ProjectContext,
+}
+
+/// Coherent initial notebook view captured from the authoritative room.
+///
+/// NotebookDoc and RuntimeStateDoc are separate Automerge documents, so the
+/// two head sets describe their respective snapshots rather than pretending
+/// the pair is transactionally atomic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotebookProjection {
+    pub schema_version: u32,
+    pub load_generation: u64,
+    pub notebook_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notebook_path: Option<String>,
+    pub cells: Vec<NotebookCellProjection>,
+    /// Preserves the existing MCP connect behavior: this is the UV dependency
+    /// list from `metadata.runt.uv.dependencies`.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    pub runtime: NotebookRuntimeProjection,
+    pub notebook_heads: Vec<String>,
+    pub runtime_state_heads: Vec<String>,
+    pub captured_at: DateTime<Utc>,
 }
 
 /// High-level lifecycle position of a notebook room.
@@ -383,6 +482,19 @@ mod tests {
     }
 
     #[test]
+    fn test_request_get_notebook_projection() {
+        let request = Request::GetNotebookProjection {
+            notebook_id: "018f0000-0000-7000-8000-000000000001".to_string(),
+        };
+        match roundtrip_request(&request) {
+            Request::GetNotebookProjection { notebook_id } => {
+                assert_eq!(notebook_id, "018f0000-0000-7000-8000-000000000001");
+            }
+            _ => panic!("unexpected request type"),
+        }
+    }
+
+    #[test]
     fn test_response_runtime_metrics() {
         let resp = Response::RuntimeMetrics {
             num_workers: 4,
@@ -536,6 +648,59 @@ mod tests {
         };
         match roundtrip_response(&resp) {
             Response::Error { message } => assert_eq!(message, "test error"),
+            _ => panic!("unexpected response type"),
+        }
+    }
+
+    #[test]
+    fn test_response_notebook_projection() {
+        let projection = NotebookProjection {
+            schema_version: NOTEBOOK_PROJECTION_SCHEMA_VERSION,
+            load_generation: 7,
+            notebook_id: "018f0000-0000-7000-8000-000000000001".to_string(),
+            notebook_path: Some("/tmp/example.ipynb".to_string()),
+            cells: vec![NotebookCellProjection {
+                id: "cell-1".to_string(),
+                cell_type: "code".to_string(),
+                source_preview: "print('hello')".to_string(),
+                execution_id: Some("exec-1".to_string()),
+                execution_status: Some("done".to_string()),
+                execution_count: Some(1),
+            }],
+            dependencies: vec!["numpy".to_string()],
+            runtime: NotebookRuntimeProjection::default(),
+            notebook_heads: vec!["aa".repeat(32)],
+            runtime_state_heads: vec!["bb".repeat(32)],
+            captured_at: Utc::now(),
+        };
+
+        match roundtrip_response(&Response::NotebookProjection {
+            projection: Box::new(projection.clone()),
+        }) {
+            Response::NotebookProjection { projection: parsed } => assert_eq!(*parsed, projection),
+            _ => panic!("unexpected response type"),
+        }
+    }
+
+    #[test]
+    fn test_response_notebook_projection_failure() {
+        let response = Response::NotebookProjectionUnavailable {
+            notebook_id: "018f0000-0000-7000-8000-000000000001".to_string(),
+            failure: NotebookProjectionFailure::InitialLoadFailed {
+                generation: 9,
+                reason: "invalid notebook JSON".to_string(),
+            },
+        };
+
+        match roundtrip_response(&response) {
+            Response::NotebookProjectionUnavailable {
+                notebook_id,
+                failure: NotebookProjectionFailure::InitialLoadFailed { generation, reason },
+            } => {
+                assert_eq!(notebook_id, "018f0000-0000-7000-8000-000000000001");
+                assert_eq!(generation, 9);
+                assert_eq!(reason, "invalid notebook JSON");
+            }
             _ => panic!("unexpected response type"),
         }
     }

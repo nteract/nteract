@@ -2909,6 +2909,31 @@ async fn test_streaming_load_via_open_notebook() {
         Some(&expected_comments_notebook_ref)
     );
 
+    // The control-plane projection waits on the room-owned load rather than
+    // depending on this peer's bootstrap progress. It must expose the complete
+    // ordered notebook and the causal heads a caller can use as a sync guard.
+    let projection = pool_client
+        .get_notebook_projection(&info.notebook_id, Duration::from_secs(10))
+        .await
+        .expect("room projection should settle independently of the peer");
+    assert_eq!(projection.schema_version, 1);
+    assert_eq!(projection.load_generation, 1);
+    assert_eq!(projection.notebook_id, info.notebook_id);
+    assert_eq!(projection.notebook_path.as_deref(), canonical_path.to_str());
+    assert_eq!(
+        projection
+            .cells
+            .iter()
+            .map(|cell| cell.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["c1", "c2", "c3", "c4", "c5", "c6", "c7"]
+    );
+    assert_eq!(projection.cells[0].source_preview, "x = 1");
+    assert!(
+        !projection.notebook_heads.is_empty(),
+        "projection should carry the room's notebook heads"
+    );
+
     assert_session_ready(&handle, "OpenNotebook streaming load").await;
     let mut cells = handle.get_cells();
 

@@ -302,13 +302,12 @@ pub(crate) async fn save_notebook_to_disk(
     .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
     let cell_count = v4_notebook.cells.len();
 
-    // Zeroing guard (in-place saves). A failed/incomplete streaming load empties
-    // the room doc (peer_session clears all cells on load failure). Writing that
-    // empty room back to its own file overwrites a populated `.ipynb` and
-    // destroys the notebook. Skip the write when the save is IN-PLACE, the
-    // in-memory doc has 0 cells, the room was emptied by a failed load
-    // (`load_failed`), and a non-empty file already exists on disk; return Ok so
-    // the autosave debouncer keeps running (Unrecoverable would disable it).
+    // Failed-source guard (in-place saves). Initial materialization publishes
+    // batches progressively and deliberately does not erase them on failure:
+    // another room source may already have authored concurrent document truth.
+    // That partial room must not overwrite its source `.ipynb`. Skip the write
+    // whenever initial load failed and a non-empty file exists on disk; return
+    // Ok so the autosave debouncer stays armed for an explicit recovery.
     //
     // "In-place" = the save targets the room's current bound path. Desktop
     // autosave/teardown/Save pass `target_path = None`; MCP/Node/Python
@@ -321,15 +320,10 @@ pub(crate) async fn save_notebook_to_disk(
     // doc over an empty/absent file still round-trips, and a brand-new untitled
     // notebook has no existing file to protect.
     //
-    // `room.load_failed()` is what separates a failed load from a legitimate
-    // emptying. The flag is set at exactly one production point — the
-    // streaming-load Err branch in peer_session, co-located with the
-    // `clear_all_cells()` that empties the room — and cleared on a fresh load
-    // attempt (`try_start_loading` winning the claim). So a legitimately-empty
-    // notebook reached via ANY init path (no failed load) is never flagged and
-    // always saves: deleting the last cell or editing metadata on a loaded room
-    // WRITES the empty state. Only a room emptied by a failed load over a
-    // non-empty/corrupt file on disk is protected.
+    // `room.load_failed()` separates failed source materialization from a
+    // legitimately partial or empty notebook. It is cleared only when a source
+    // generation completes successfully, the watcher reconciles the file, or
+    // an explicit save establishes a new baseline.
     //
     // The disk trigger is "disk has bytes," not "disk parses to >=1 cell." The
     // most common reason a streaming load fails is that the file is corrupt
@@ -360,14 +354,14 @@ pub(crate) async fn save_notebook_to_disk(
             }
         }
     };
-    if is_in_place_save && cell_count == 0 && room.load_failed() {
+    if is_in_place_save && room.load_failed() {
         let disk_has_content = existing_raw
             .as_ref()
             .is_some_and(|bytes| bytes.iter().any(|b| !b.is_ascii_whitespace()));
         if disk_has_content {
             warn!(
-                "[notebook-sync] Skipping save of empty doc over existing on-disk content for \
-                 {:?} (room emptied by a failed load); preserving file. Save As to a new path \
+                "[notebook-sync] Skipping save of partially loaded doc over existing on-disk content for \
+                 {:?} (initial materialization failed); preserving file. Save As to a new path \
                  still writes.",
                 notebook_path
             );
@@ -410,7 +404,7 @@ pub(crate) async fn save_notebook_to_disk(
             }
             // Disk already matches the room, so any failed-load hazard is
             // resolved — clear the flag so a later legitimate empty save writes.
-            room.clear_load_failed();
+            room.mark_load_recovered(cell_count);
             return Ok(notebook_path.to_string_lossy().to_string());
         }
     }
@@ -444,7 +438,7 @@ pub(crate) async fn save_notebook_to_disk(
     // (A still-failed empty room over existing content is skipped by the guard
     // above and never reaches here, so this only clears genuine recoveries:
     // Save As, or adding a cell to a failed-load room and saving.)
-    room.clear_load_failed();
+    room.mark_load_recovered(cell_count);
 
     // Update last_self_write timestamp so the file watcher skips our own write.
     // Applies to all rooms (including ephemeral that were just promoted to
@@ -1834,23 +1828,18 @@ pub(crate) fn spawn_notebook_file_watcher(
                             )
                             .await;
 
-                            // The file watcher is a recovery path that does not go
-                            // through `try_start_loading`. Clear the failed-load
-                            // hazard once the watcher has actually reconciled the
-                            // file into the doc — i.e. the doc now matches the
-                            // parsed file's cell count. This clears on a valid
-                            // reload whether the file is empty (`cells: []`) or
-                            // populated, but NOT when apply failed (e.g. on bad
-                            // attachments) and left the doc out of sync, which
-                            // keeps the on-disk file protected.
-                            if room.doc.read().await.cell_count() == external_cells.len() {
-                                room.clear_load_failed();
-                            }
+                            // Recovery is published only after cells and metadata
+                            // both reconcile successfully below. Until then the
+                            // Failed generation and persistence guard remain
+                            // authoritative.
+                            let cells_reconciled =
+                                room.doc.read().await.cell_count() == external_cells.len();
 
                             // Apply metadata changes to Automerge doc.
                             // Only update when the external file has a metadata
                             // object — a missing key means "no metadata info",
                             // not "clear metadata".
+                            let mut metadata_reconciled = true;
                             let metadata_changed = if let Some(ref meta) = external_metadata {
                                 let current = {
                                     let doc = room.doc.read().await;
@@ -1861,12 +1850,17 @@ pub(crate) fn spawn_notebook_file_watcher(
                                     let mut doc = room.doc.write().await;
                                     if let Err(e) = doc.set_metadata_snapshot(meta) {
                                         warn!("[notebook-watch] Failed to set metadata: {}", e);
+                                        metadata_reconciled = false;
                                     }
                                 }
                                 changed
                             } else {
                                 false
                             };
+
+                            if cells_reconciled && metadata_reconciled {
+                                room.mark_load_recovered(external_cells.len());
+                            }
 
                             if cells_changed || metadata_changed {
                                 info!(

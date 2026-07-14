@@ -378,18 +378,10 @@ pub struct RoomPersistence {
     /// content observed yet" (untitled rooms, Save As targets) and disables
     /// the check.
     last_known_disk_hash: std::sync::Mutex<Option<[u8; 32]>>,
-    /// Whether a streaming load is in progress for this room.
-    /// Prevents two connections from both attempting to load from disk.
-    is_loading: AtomicBool,
-    /// Hazard flag set only when a FAILED streaming load empties this room.
-    /// Set true at the one production point that zeroes a room out from under a
-    /// possibly-non-empty file: the streaming-load Err branch in peer_session,
-    /// co-located with `doc.clear_all_cells()`. Cleared on a fresh load attempt
-    /// (`try_start_loading` winning the claim) since a retry supersedes any
-    /// prior failure. The zeroing guard in `save_notebook_to_disk` reads this:
-    /// a room emptied by a failed load (flag true) must not autosave its empty
-    /// state over a non-empty/corrupt file, while a legitimately-empty room from
-    /// ANY init path (flag false) always saves.
+    /// Hazard flag set when initial file materialization fails. Partial batches
+    /// remain in the room so failure handling cannot erase concurrent document
+    /// truth; the persistence guard uses this flag to keep those partial bytes
+    /// from overwriting the source `.ipynb`.
     load_failed: AtomicBool,
 }
 
@@ -415,7 +407,6 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             last_known_disk_hash: std::sync::Mutex::new(None),
-            is_loading: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
         }
     }
@@ -434,7 +425,6 @@ impl RoomPersistence {
             previous_visible_executions: std::sync::Mutex::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             last_known_disk_hash: std::sync::Mutex::new(None),
-            is_loading: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
         }
     }
@@ -535,48 +525,231 @@ impl RoomPersistence {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Atomically claim the loading role. Returns `true` if this caller won
-    /// the race and should perform the streaming load.
-    pub fn try_start_loading(&self) -> bool {
-        // Note: load_failed is deliberately NOT cleared here. Clearing at the
-        // START of a retry opens a race — an in-flight autosave that already
-        // passed its is_loading() check could then see load_failed == false with
-        // the room still empty mid-retry and zero the file. The flag is cleared
-        // only on recovery COMPLETION (a successful load in peer_session, a
-        // watcher reconcile, or a successful save).
-        self.is_loading
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    /// Mark loading complete (success or failure).
-    pub fn finish_loading(&self) {
-        self.is_loading.store(false, Ordering::Release);
-    }
-
-    /// True if a streaming load is currently in progress.
-    pub fn is_loading(&self) -> bool {
-        self.is_loading.load(Ordering::Acquire)
-    }
-
-    /// Flag the room as emptied by a failed streaming load. Set at the one
-    /// production point that zeroes the room (peer_session Err branch); the
-    /// zeroing guard then refuses to autosave this empty doc over a file.
+    /// Flag a failed initial materialization so persistence preserves the
+    /// source file until explicit recovery.
     pub fn mark_load_failed(&self) {
         self.load_failed.store(true, Ordering::Release);
     }
 
-    /// True if the room was emptied by a failed streaming load and not yet
-    /// retried. See `mark_load_failed` and the zeroing guard in
-    /// `save_notebook_to_disk`.
+    /// True if initial materialization failed and has not been recovered.
     pub fn load_failed(&self) -> bool {
         self.load_failed.load(Ordering::Acquire)
     }
 
-    /// Clear the failed-load hazard flag. Called when a fresh load attempt
-    /// wins the loading claim, since the retry supersedes the prior failure.
+    /// Clear the failed-load hazard after successful recovery.
     pub fn clear_load_failed(&self) {
         self.load_failed.store(false, Ordering::Release);
+    }
+}
+
+/// Room-owned lifecycle for the initial `.ipynb` materialization.
+///
+/// This state belongs to the room rather than to any peer connection. A peer
+/// may stop waiting (or disconnect) without cancelling the shared load. The
+/// generation makes task completion conditional: an older task cannot publish
+/// `Ready` or `Failed` over a newer attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoomInitialLoadState {
+    NotNeeded { generation: u64 },
+    Loading { generation: u64 },
+    Ready { generation: u64, cell_count: usize },
+    Failed { generation: u64, reason: String },
+}
+
+impl RoomInitialLoadState {
+    pub fn generation(&self) -> u64 {
+        match self {
+            Self::NotNeeded { generation }
+            | Self::Loading { generation }
+            | Self::Ready { generation, .. }
+            | Self::Failed { generation, .. } => *generation,
+        }
+    }
+
+    pub fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading { .. })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomInitialLoadStart {
+    Started { generation: u64 },
+    Observing { generation: u64 },
+}
+
+/// Single-flight, observable initial-load state for one notebook room.
+pub struct RoomInitialLoad {
+    /// Serializes read/transition/write so two callers cannot both publish a
+    /// new `Loading` generation. This is synchronous state and is never held
+    /// across an await.
+    transition: std::sync::Mutex<()>,
+    state_tx: watch::Sender<RoomInitialLoadState>,
+    /// Whether a room-owned task has claimed the current `Loading`
+    /// generation. Kept under `transition`; atomic storage lets `is_loading`
+    /// remain a cheap synchronous predicate for eviction/autosave paths.
+    task_claimed: AtomicBool,
+}
+
+impl Default for RoomInitialLoad {
+    fn default() -> Self {
+        let (state_tx, _) = watch::channel(RoomInitialLoadState::NotNeeded { generation: 0 });
+        Self {
+            transition: std::sync::Mutex::new(()),
+            state_tx,
+            task_claimed: AtomicBool::new(false),
+        }
+    }
+}
+
+impl RoomInitialLoad {
+    fn lock_transition(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.transition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<RoomInitialLoadState> {
+        self.state_tx.subscribe()
+    }
+
+    pub fn state(&self) -> RoomInitialLoadState {
+        self.state_tx.borrow().clone()
+    }
+
+    /// Publish `Loading` before a file-backed room becomes discoverable.
+    /// The actual source task claims this generation with [`Self::begin`].
+    pub fn mark_required(&self) {
+        let _guard = self.lock_transition();
+        if let RoomInitialLoadState::NotNeeded { generation } = self.state() {
+            self.task_claimed.store(false, Ordering::Release);
+            self.state_tx.send_replace(RoomInitialLoadState::Loading {
+                generation: generation.saturating_add(1),
+            });
+        }
+    }
+
+    /// Start the first load, or join the generation already loading/settled.
+    /// `Ready` is sticky for the room lifetime so a valid zero-cell notebook is
+    /// not mistaken for "never loaded." `Failed` is also sticky: retrying a
+    /// partially materialized document requires an explicit reconciliation
+    /// decision rather than blindly replaying file cells over live room state.
+    pub fn begin(&self) -> (RoomInitialLoadStart, watch::Receiver<RoomInitialLoadState>) {
+        let _guard = self.lock_transition();
+        let current = self.state();
+        let start = match current {
+            RoomInitialLoadState::Loading { generation } => {
+                if self.task_claimed.swap(true, Ordering::AcqRel) {
+                    RoomInitialLoadStart::Observing { generation }
+                } else {
+                    RoomInitialLoadStart::Started { generation }
+                }
+            }
+            RoomInitialLoadState::Ready { generation, .. }
+            | RoomInitialLoadState::Failed { generation, .. } => {
+                RoomInitialLoadStart::Observing { generation }
+            }
+            RoomInitialLoadState::NotNeeded { generation } => {
+                let generation = generation.saturating_add(1);
+                self.task_claimed.store(true, Ordering::Release);
+                self.state_tx
+                    .send_replace(RoomInitialLoadState::Loading { generation });
+                RoomInitialLoadStart::Started { generation }
+            }
+        };
+        (start, self.subscribe())
+    }
+
+    /// Explicitly start a new generation after a terminal failure.
+    ///
+    /// The initial loader does not call this automatically because a failed
+    /// generation may have published partial file cells alongside concurrent
+    /// room edits. A future reconciliation policy can opt into retrying without
+    /// weakening the generation guard.
+    pub fn retry_failed(&self) -> Option<u64> {
+        let _guard = self.lock_transition();
+        let RoomInitialLoadState::Failed { generation, .. } = self.state() else {
+            return None;
+        };
+        let generation = generation.saturating_add(1);
+        self.task_claimed.store(false, Ordering::Release);
+        self.state_tx
+            .send_replace(RoomInitialLoadState::Loading { generation });
+        Some(generation)
+    }
+
+    /// Publish a coherent external recovery after a terminal source failure.
+    ///
+    /// File-watcher reconciliation and an explicit successful save establish a
+    /// new authoritative baseline without replaying the failed source task.
+    /// Advance the generation so waiters can distinguish that recovery from
+    /// the failed attempt it supersedes.
+    pub fn recover_failed(&self, cell_count: usize) -> Option<u64> {
+        let _guard = self.lock_transition();
+        let RoomInitialLoadState::Failed { generation, .. } = self.state() else {
+            return None;
+        };
+        let generation = generation.saturating_add(1);
+        self.task_claimed.store(false, Ordering::Release);
+        self.state_tx.send_replace(RoomInitialLoadState::Ready {
+            generation,
+            cell_count,
+        });
+        Some(generation)
+    }
+
+    /// Wait for the current source generation to settle.
+    ///
+    /// Dropping this future only drops its watch receiver. It cannot cancel or
+    /// mutate the room-owned source operation.
+    pub async fn wait_until_settled(&self) -> RoomInitialLoadState {
+        let mut receiver = self.subscribe();
+        loop {
+            let state = receiver.borrow().clone();
+            if !state.is_loading() {
+                return state;
+            }
+            if receiver.changed().await.is_err() {
+                return self.state();
+            }
+        }
+    }
+
+    pub fn complete_ready(&self, generation: u64, cell_count: usize) -> bool {
+        let _guard = self.lock_transition();
+        if self.state() != (RoomInitialLoadState::Loading { generation }) {
+            return false;
+        }
+        self.state_tx.send_replace(RoomInitialLoadState::Ready {
+            generation,
+            cell_count,
+        });
+        self.task_claimed.store(false, Ordering::Release);
+        true
+    }
+
+    pub fn complete_failed(&self, generation: u64, reason: String) -> bool {
+        let _guard = self.lock_transition();
+        if self.state() != (RoomInitialLoadState::Loading { generation }) {
+            return false;
+        }
+        self.state_tx
+            .send_replace(RoomInitialLoadState::Failed { generation, reason });
+        self.task_claimed.store(false, Ordering::Release);
+        true
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.state().is_loading()
+    }
+
+    #[cfg(test)]
+    fn reset_loading_for_test(&self) {
+        let _guard = self.lock_transition();
+        if let RoomInitialLoadState::Loading { generation } = self.state() {
+            self.state_tx
+                .send_replace(RoomInitialLoadState::NotNeeded { generation });
+            self.task_claimed.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -740,6 +913,8 @@ pub struct NotebookRoom {
     pub broadcasts: RoomBroadcasts,
     /// Disk persistence state for Automerge/doc save bookkeeping.
     pub persistence: RoomPersistence,
+    /// Room-owned, generation-bearing initial file materialization lifecycle.
+    pub initial_load: RoomInitialLoad,
     /// File binding owner: canonical .ipynb path, file watcher, autosave.
     pub file_binding: NotebookFileBinding,
     /// Notebook identity: persist_path and working_dir.
@@ -1010,6 +1185,7 @@ impl NotebookRoom {
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
             persistence,
+            initial_load: RoomInitialLoad::default(),
             file_binding: NotebookFileBinding::new(path, ephemeral),
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
@@ -1131,6 +1307,7 @@ impl NotebookRoom {
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
             persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
+            initial_load: RoomInitialLoad::default(),
             file_binding: NotebookFileBinding::new(path, false),
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
@@ -1169,18 +1346,23 @@ impl NotebookRoom {
 
     /// True if a streaming load is currently in progress.
     pub fn is_loading(&self) -> bool {
-        self.persistence.is_loading()
+        self.initial_load.is_loading()
     }
 
     /// Atomically claim the streaming-load role. Returns `true` if the
     /// caller won the race and should perform the load.
+    #[cfg(test)]
     pub fn try_start_loading(&self) -> bool {
-        self.persistence.try_start_loading()
+        matches!(
+            self.initial_load.begin().0,
+            RoomInitialLoadStart::Started { .. }
+        )
     }
 
     /// Mark the streaming load complete.
+    #[cfg(test)]
     pub fn finish_loading(&self) {
-        self.persistence.finish_loading();
+        self.initial_load.reset_loading_for_test();
     }
 
     /// Flag the room as emptied by a failed streaming load. See
@@ -1199,6 +1381,12 @@ impl NotebookRoom {
     /// `RoomPersistence::clear_load_failed`.
     pub fn clear_load_failed(&self) {
         self.persistence.clear_load_failed();
+    }
+
+    /// Clear the persistence hazard and publish a recovered Ready generation.
+    pub fn mark_load_recovered(&self, cell_count: usize) {
+        self.persistence.clear_load_failed();
+        let _ = self.initial_load.recover_failed(cell_count);
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).
