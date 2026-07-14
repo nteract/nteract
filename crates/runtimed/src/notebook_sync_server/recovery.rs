@@ -47,6 +47,12 @@ impl SourceFingerprint {
     pub(crate) fn to_hex(self) -> String {
         hex::encode(self.0)
     }
+
+    /// Raw digest bytes, for comparison against externally tracked disk
+    /// hashes (the watcher classifier's known-disk-hash guard).
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
 }
 
 /// Compute the content fingerprint used to distinguish a matching source file

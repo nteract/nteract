@@ -755,7 +755,7 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         }
         if !room
             .persistence
-            .note_primary_save_baseline(checkpoint.save_sequence, saved, &content_bytes, true)
+            .note_primary_save_baseline(checkpoint.save_sequence, saved, &content_bytes)
             .await
         {
             debug!(
@@ -801,7 +801,6 @@ pub(crate) async fn refresh_primary_baseline_from_checkpoint(
     room: &NotebookRoom,
     path: &Path,
     save_sequence: u64,
-    self_write: bool,
 ) -> bool {
     let bytes = match tokio::fs::read(path).await {
         Ok(bytes) => bytes,
@@ -848,7 +847,7 @@ pub(crate) async fn refresh_primary_baseline_from_checkpoint(
         .map(|cell| (cell.id, cell.source))
         .collect();
     room.persistence
-        .note_primary_save_baseline(save_sequence, sources, &bytes, self_write)
+        .note_primary_save_baseline(save_sequence, sources, &bytes)
         .await
 }
 
@@ -2160,8 +2159,72 @@ async fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 // Watch .ipynb files for external changes (git, VS Code, other editors).
 // When changes are detected, merge them into the Automerge doc and broadcast.
 
-/// Time window (ms) to skip file change events after our own writes.
-pub(crate) const SELF_WRITE_SKIP_WINDOW_MS: u64 = 600;
+/// One debounced watcher observation, reduced to the side-effect-free reads
+/// that decide skip versus ingest. Captured once per event so the decision
+/// can be exercised as a pure function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WatcherObservation {
+    /// Fingerprint of the bytes currently on disk at the watched path.
+    pub(crate) observed: super::recovery::SourceFingerprint,
+    /// Disk baseline recorded by saves and watcher merges
+    /// ([`RoomPersistence::known_disk_hash`]). `None` disables that guard.
+    pub(crate) known_disk_hash: Option<[u8; 32]>,
+    /// Committed source fingerprint from the durability manifest, advanced
+    /// at journal-commit time under the checkpoint coordinator lock.
+    pub(crate) manifest_fingerprint: super::recovery::SourceFingerprint,
+    /// Fingerprint of a prepared-but-uncommitted file checkpoint. Present
+    /// only inside the rename-to-commit window of an in-flight save, when
+    /// the new bytes are visible on disk but the manifest still names the
+    /// previous source fingerprint.
+    pub(crate) pending_checkpoint_fingerprint: Option<super::recovery::SourceFingerprint>,
+}
+
+/// Which guard suppressed a watcher observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatcherSkipReason {
+    /// Bytes match the disk baseline recorded by saves and watcher merges.
+    KnownDiskContent,
+    /// Bytes match the committed manifest source fingerprint.
+    ManifestFingerprint,
+    /// Bytes match a prepared checkpoint whose journal commit has not
+    /// landed yet (the rename-to-commit window).
+    PendingCheckpoint,
+}
+
+/// The watcher's skip/ingest decision for one debounced observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatcherIngestDecision {
+    Skip(WatcherSkipReason),
+    Ingest,
+}
+
+/// Decide whether a debounced file event carries new disk truth.
+///
+/// Pure over the captured observation: bytes already reconciled carry no new
+/// disk truth, and skipping them is load-bearing on Linux where inotify
+/// reports reads (IN_ACCESS): a poller merely reading the file would
+/// otherwise re-run the merge on every debounce window, churning the journal,
+/// resetting the autosave debounce, and bumping the source generation for
+/// content the room already ingested. Three fingerprint sources of "already
+/// known": the disk baseline recorded by saves and watcher merges, the
+/// manifest fingerprint recorded at journal-commit time (which also covers
+/// the initial load, which never sets the save baseline), and the pending
+/// checkpoint fingerprint covering the rename-to-commit window of an
+/// in-flight save. Anything else is genuine external truth to ingest.
+pub(crate) fn classify_watcher_observation(
+    observation: &WatcherObservation,
+) -> WatcherIngestDecision {
+    if observation.known_disk_hash == Some(*observation.observed.as_bytes()) {
+        return WatcherIngestDecision::Skip(WatcherSkipReason::KnownDiskContent);
+    }
+    if observation.observed == observation.manifest_fingerprint {
+        return WatcherIngestDecision::Skip(WatcherSkipReason::ManifestFingerprint);
+    }
+    if observation.pending_checkpoint_fingerprint == Some(observation.observed) {
+        return WatcherIngestDecision::Skip(WatcherSkipReason::PendingCheckpoint);
+    }
+    WatcherIngestDecision::Ingest
+}
 
 /// Preserve both disk and journal truth when an external file revision races
 /// unsaved causal heads. This transition is shared by the watcher and tests so
@@ -2205,6 +2268,182 @@ pub(crate) async fn mark_external_source_conflict_if_needed(
     }
     warn!("[notebook-watch] {reason}");
     true
+}
+
+/// Handle one debounced watcher event for `notebook_path`: read the file,
+/// classify the observation against the room's skip baselines, and ingest
+/// genuine external truth. Extracted from the watcher loop so tests can
+/// drive the classifier and ingest seams directly instead of through real
+/// filesystem notifications.
+pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &Path) {
+    // Read and parse the file
+    let contents = match tokio::fs::read_to_string(notebook_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            // File may be deleted or being written
+            debug!("[notebook-watch] Cannot read {:?}: {}", notebook_path, e);
+            return;
+        }
+    };
+    let manifest = room.durability.manifest();
+    let observation = WatcherObservation {
+        observed: super::recovery::source_fingerprint(contents.as_bytes()),
+        known_disk_hash: room.persistence.known_disk_hash(),
+        manifest_fingerprint: manifest.source_fingerprint,
+        pending_checkpoint_fingerprint: manifest
+            .pending_file_checkpoint
+            .map(|pending| pending.file_fingerprint),
+    };
+    let observed_fingerprint = observation.observed;
+    match classify_watcher_observation(&observation) {
+        WatcherIngestDecision::Skip(reason) => {
+            debug!(
+                "[notebook-watch] Skipping event for {:?} ({:?})",
+                notebook_path, reason
+            );
+            return;
+        }
+        WatcherIngestDecision::Ingest => {}
+    }
+
+    // A journal with heads newer than its causal file
+    // checkpoint represents unsaved collaborative
+    // truth. If disk changed to different bytes, keep
+    // both versions and require explicit reconciliation
+    // instead of merging or choosing a winner.
+    if mark_external_source_conflict_if_needed(room, notebook_path, contents.as_bytes()).await {
+        return;
+    }
+
+    let json: serde_json::Value = match serde_json::from_str(&contents) {
+        Ok(j) => j,
+        Err(e) => {
+            // Partial write or invalid JSON - try again next event
+            debug!("[notebook-watch] Cannot parse {:?}: {}", notebook_path, e);
+            return;
+        }
+    };
+
+    // Parse cells from the .ipynb
+    // None = parse failure (missing cells key), Some([]) = valid empty notebook
+    let ParsedIpynbCells {
+        cells: external_cells,
+        outputs_by_cell: external_outputs,
+        attachments: external_attachments,
+    } = match parse_cells_from_ipynb_for_notebook(&json, room.id) {
+        Some(parsed) => parsed,
+        None => {
+            warn!(
+                "[notebook-watch] Cannot parse cells from {:?} - skipping",
+                notebook_path
+            );
+            return;
+        }
+    };
+    let external_metadata = parse_metadata_from_ipynb(&json);
+
+    // Check if kernel is running (to preserve outputs)
+    let has_kernel = room.has_kernel().await;
+    let source_claim = match room.persistence.claim_file_checkpoint() {
+        Ok(claim) => claim,
+        Err(_) => {
+            let reason = "external source checkpoint sequence exhausted".to_string();
+            room.durability.mark_degraded(reason.clone());
+            let heads = room.durability.status().durable_heads;
+            room.lifecycle.mark_degraded(reason.clone(), heads, true);
+            return;
+        }
+    };
+    let source_save_sequence = source_claim.sequence();
+    let source_revision = ExternalSourceRevision {
+        fingerprint: observed_fingerprint,
+        canonical_path: notebook_path.to_path_buf(),
+        save_sequence: source_save_sequence,
+        saved_at: std::fs::metadata(notebook_path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+    };
+
+    // Apply the complete cell+metadata revision under
+    // one NotebookDoc lock and one journal marker.
+    let applied = apply_ipynb_changes_from_source(
+        room,
+        &external_cells,
+        &external_outputs,
+        &external_attachments,
+        external_metadata.as_ref(),
+        has_kernel,
+        source_revision,
+    )
+    .await;
+    let cells_changed = applied.cells_changed;
+    let metadata_changed = applied.metadata_changed;
+
+    // Close the remaining window between the
+    // pre-document revision check and baseline
+    // publication. If a newer edit landed, leave the
+    // prior baseline intact so it cannot be mistaken
+    // for exported content.
+    match tokio::fs::read(notebook_path).await {
+        Ok(current) if super::recovery::source_fingerprint(&current) == observed_fingerprint => {}
+        Ok(_) | Err(_) => return,
+    }
+
+    if room.durability.status().is_degraded() {
+        // `apply_ipynb_changes` rolls the NotebookDoc
+        // back when its journal marker fails. Do not
+        // apply metadata, advance source baselines, or
+        // publish a recovery over that terminal state.
+        return;
+    }
+
+    // Recovery is published only after cells and metadata
+    // both reconcile successfully below. Until then the
+    // Failed generation and persistence guard remain
+    // authoritative.
+    let cells_reconciled = room.doc.read().await.cell_count() == external_cells.len();
+
+    if cells_reconciled {
+        room.clear_load_failed();
+        // Only a fully reconciled and journaled source
+        // revision becomes the autosave staleness
+        // baseline. Failed or partial application keeps
+        // the prior baseline so a later save cannot
+        // silently overwrite unobserved disk truth.
+        let sources = external_cells
+            .iter()
+            .map(|cell| (cell.id.clone(), cell.source.clone()))
+            .collect();
+        let _ = room
+            .persistence
+            .note_primary_save_baseline(source_save_sequence, sources, contents.as_bytes())
+            .await;
+    }
+
+    if cells_changed || metadata_changed {
+        info!(
+            "[notebook-watch] Applied external changes from {:?} (cells={}, metadata={})",
+            notebook_path, cells_changed, metadata_changed,
+        );
+
+        // Notify peers of the change — actual data
+        // arrives via Automerge sync frames
+        let _ = room.broadcasts.changed_tx.send(());
+    }
+
+    // Re-verify trust after external metadata edits.
+    // External edits via uv/editor (e.g. `uv add numpy`
+    // + save) rewrite metadata.runt.*.dependencies,
+    // and the cached trust state was computed against
+    // the old dep list. Trust lives in metadata, so
+    // gate on metadata_changed — cell-only edits
+    // can't affect dependency names.
+    // check_and_update_trust_state only writes when
+    // the status actually flipped and emits
+    // state_changed_tx so the frontend banner reacts.
+    if metadata_changed {
+        check_and_update_trust_state(room).await;
+    }
 }
 
 pub(crate) fn spawn_notebook_file_watcher(
@@ -2275,220 +2514,7 @@ pub(crate) fn spawn_notebook_file_watcher(
                             if !relevant {
                                 continue;
                             }
-
-                            // Check if this is a self-write (within skip window of our last save).
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0);
-                            let last_write = room.persistence.last_self_write.load(Ordering::Relaxed);
-                            if now.saturating_sub(last_write) < SELF_WRITE_SKIP_WINDOW_MS {
-                                debug!(
-                                    "[notebook-watch] Skipping self-write event for {:?}",
-                                    notebook_path
-                                );
-                                continue;
-                            }
-
-                            // Read and parse the file
-                            let contents = match tokio::fs::read_to_string(&notebook_path).await {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    // File may be deleted or being written
-                                    debug!(
-                                        "[notebook-watch] Cannot read {:?}: {}",
-                                        notebook_path, e
-                                    );
-                                    continue;
-                                }
-                            };
-                            let observed_fingerprint =
-                                super::recovery::source_fingerprint(contents.as_bytes());
-
-                            // Bytes we already reconciled carry no new disk
-                            // truth. Skipping them here is load-bearing on
-                            // Linux: inotify reports reads (IN_ACCESS), so a
-                            // poller merely reading the file would otherwise
-                            // re-run the merge on every debounce window —
-                            // churning the journal, resetting the autosave
-                            // debounce, and bumping the source generation for
-                            // content the room already ingested. Two sources
-                            // of "already known": the disk baseline recorded
-                            // by saves and watcher merges, and the durability
-                            // manifest fingerprint recorded by the initial
-                            // load (which never sets the save baseline).
-                            if (room.persistence.known_disk_hash().is_some()
-                                && !room.persistence.disk_content_diverged(contents.as_bytes()))
-                                || observed_fingerprint
-                                    == room.durability.manifest().source_fingerprint
-                            {
-                                debug!(
-                                    "[notebook-watch] Disk content unchanged for {:?}; skipping",
-                                    notebook_path
-                                );
-                                continue;
-                            }
-
-                            // A journal with heads newer than its causal file
-                            // checkpoint represents unsaved collaborative
-                            // truth. If disk changed to different bytes, keep
-                            // both versions and require explicit reconciliation
-                            // instead of merging or choosing a winner.
-                            if mark_external_source_conflict_if_needed(
-                                &room,
-                                &notebook_path,
-                                contents.as_bytes(),
-                            )
-                            .await
-                            {
-                                continue;
-                            }
-
-                            let json: serde_json::Value = match serde_json::from_str(&contents) {
-                                Ok(j) => j,
-                                Err(e) => {
-                                    // Partial write or invalid JSON - try again next event
-                                    debug!(
-                                        "[notebook-watch] Cannot parse {:?}: {}",
-                                        notebook_path, e
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            // Parse cells from the .ipynb
-                            // None = parse failure (missing cells key), Some([]) = valid empty notebook
-                            let ParsedIpynbCells {
-                                cells: external_cells,
-                                outputs_by_cell: external_outputs,
-                                attachments: external_attachments,
-                            } = match parse_cells_from_ipynb_for_notebook(&json, room.id) {
-                                Some(parsed) => parsed,
-                                None => {
-                                    warn!(
-                                        "[notebook-watch] Cannot parse cells from {:?} - skipping",
-                                        notebook_path
-                                    );
-                                    continue;
-                                }
-                            };
-                            let external_metadata = parse_metadata_from_ipynb(&json);
-
-                            // Check if kernel is running (to preserve outputs)
-                            let has_kernel = room.has_kernel().await;
-                            let source_claim = match room.persistence.claim_file_checkpoint() {
-                                Ok(claim) => claim,
-                                Err(_) => {
-                                    let reason = "external source checkpoint sequence exhausted"
-                                        .to_string();
-                                    room.durability.mark_degraded(reason.clone());
-                                    let heads = room.durability.status().durable_heads;
-                                    room.lifecycle.mark_degraded(
-                                        reason.clone(),
-                                        heads,
-                                        true,
-                                    );
-                                    continue;
-                                }
-                            };
-                            let source_save_sequence = source_claim.sequence();
-                            let source_revision = ExternalSourceRevision {
-                                fingerprint: observed_fingerprint,
-                                canonical_path: notebook_path.clone(),
-                                save_sequence: source_save_sequence,
-                                saved_at: std::fs::metadata(&notebook_path)
-                                    .and_then(|metadata| metadata.modified())
-                                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
-                            };
-
-                            // Apply the complete cell+metadata revision under
-                            // one NotebookDoc lock and one journal marker.
-                            let applied = apply_ipynb_changes_from_source(
-                                &room,
-                                &external_cells,
-                                &external_outputs,
-                                &external_attachments,
-                                external_metadata.as_ref(),
-                                has_kernel,
-                                source_revision,
-                            )
-                            .await;
-                            let cells_changed = applied.cells_changed;
-                            let metadata_changed = applied.metadata_changed;
-
-                            // Close the remaining window between the
-                            // pre-document revision check and baseline
-                            // publication. If a newer edit landed, leave the
-                            // prior baseline intact so it cannot be mistaken
-                            // for exported content.
-                            match tokio::fs::read(&notebook_path).await {
-                                Ok(current)
-                                    if super::recovery::source_fingerprint(&current)
-                                        == observed_fingerprint => {}
-                                Ok(_) | Err(_) => continue,
-                            }
-
-                            if room.durability.status().is_degraded() {
-                                // `apply_ipynb_changes` rolls the NotebookDoc
-                                // back when its journal marker fails. Do not
-                                // apply metadata, advance source baselines, or
-                                // publish a recovery over that terminal state.
-                                continue;
-                            }
-
-                            // Recovery is published only after cells and metadata
-                            // both reconcile successfully below. Until then the
-                            // Failed generation and persistence guard remain
-                            // authoritative.
-                            let cells_reconciled =
-                                room.doc.read().await.cell_count() == external_cells.len();
-
-                            if cells_reconciled {
-                                room.clear_load_failed();
-                                // Only a fully reconciled and journaled source
-                                // revision becomes the autosave staleness
-                                // baseline. Failed or partial application keeps
-                                // the prior baseline so a later save cannot
-                                // silently overwrite unobserved disk truth.
-                                let sources = external_cells
-                                    .iter()
-                                    .map(|cell| (cell.id.clone(), cell.source.clone()))
-                                    .collect();
-                                let _ = room
-                                    .persistence
-                                    .note_primary_save_baseline(
-                                        source_save_sequence,
-                                        sources,
-                                        contents.as_bytes(),
-                                        false,
-                                    )
-                                    .await;
-                            }
-
-                            if cells_changed || metadata_changed {
-                                info!(
-                                    "[notebook-watch] Applied external changes from {:?} (cells={}, metadata={})",
-                                    notebook_path, cells_changed, metadata_changed,
-                                );
-
-                                // Notify peers of the change — actual data
-                                // arrives via Automerge sync frames
-                                let _ = room.broadcasts.changed_tx.send(());
-                            }
-
-                            // Re-verify trust after external metadata edits.
-                            // External edits via uv/editor (e.g. `uv add numpy`
-                            // + save) rewrite metadata.runt.*.dependencies,
-                            // and the cached trust state was computed against
-                            // the old dep list. Trust lives in metadata, so
-                            // gate on metadata_changed — cell-only edits
-                            // can't affect dependency names.
-                            // check_and_update_trust_state only writes when
-                            // the status actually flipped and emits
-                            // state_changed_tx so the frontend banner reacts.
-                            if metadata_changed {
-                                check_and_update_trust_state(&room).await;
-                            }
+                            process_watcher_event(&room, &notebook_path).await;
                         }
                         Err(errs) => {
                             warn!("[notebook-watch] Watch error for {:?}: {:?}", notebook_path, errs);
