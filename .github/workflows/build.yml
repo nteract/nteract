@@ -792,7 +792,14 @@ jobs:
           include-mcp-widget: true
 
       - name: Run tests
-        run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --verbose
+        # DEBUG-ONLY (this branch): isolate the Linux-only autosave flush
+        # timeout with full log capture. Run it several times to measure
+        # determinism.
+        run: |
+          for i in 1 2 3; do
+            echo "=== attempt $i ==="
+            cargo test -p runtimed --lib test_promote_untitled_starts_autosave -- --nocapture || exit 1
+          done
 
       - name: Run kernel-launch network tests (nono attestation)
         # Exercises the real GitHub download + Sigstore attestation path for nono.

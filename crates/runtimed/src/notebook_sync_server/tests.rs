@@ -6425,6 +6425,13 @@ async fn atomic_writes_leave_no_temp_files() {
 async fn test_promote_untitled_starts_autosave() {
     use std::time::Duration;
 
+    // DEBUG-ONLY (this branch): surface tracing from autosave/watcher/save
+    // paths in CI output to diagnose the Linux-only flush timeout.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("runtimed=debug")
+        .with_test_writer()
+        .try_init();
+
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
     let docs_dir = tmp.path().join("docs");
