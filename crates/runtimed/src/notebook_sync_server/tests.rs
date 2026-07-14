@@ -12455,6 +12455,117 @@ fn complete_checkpoint_through_durable_intent_seams(
 }
 
 #[tokio::test]
+async fn save_continuation_fingerprint_mismatch_is_refused_and_rebinds_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
+    let path = tmp.path().join("fingerprint-mismatch.ipynb");
+
+    let checkpoint_bytes = baseline_race_ipynb_bytes("cell-s1", "s1 = 1");
+    let externally_replaced_bytes = baseline_race_ipynb_bytes("cell-external", "external = 2");
+    let s1 = room.persistence.claim_file_checkpoint().unwrap();
+    let s1_sequence = s1.sequence();
+    complete_checkpoint_through_durable_intent_seams(&room, s1, &path, &checkpoint_bytes);
+
+    // Preserve the committed sequence and path, but replace the visible file
+    // externally so only the fingerprint leg can reject this continuation.
+    tokio::fs::write(&path, &externally_replaced_bytes)
+        .await
+        .unwrap();
+    let manifest_before = room.durability.manifest();
+    assert_eq!(manifest_before.file_save_sequence, Some(s1_sequence));
+    assert_eq!(
+        manifest_before.canonical_path.as_deref(),
+        Some(path.as_path())
+    );
+    assert_ne!(
+        manifest_before.source_fingerprint,
+        super::recovery::source_fingerprint(&externally_replaced_bytes)
+    );
+
+    assert!(
+        !refresh_primary_baseline_from_checkpoint(&room, &path, s1_sequence).await,
+        "continuation with a fingerprint mismatch must be refused"
+    );
+    assert_baseline_tuple(&room.persistence, None, "after fingerprint mismatch").await;
+    assert_eq!(
+        room.durability.manifest(),
+        manifest_before,
+        "fingerprint rejection must leave durability state unchanged"
+    );
+
+    // Restoring the committed bytes makes the identical call succeed: the
+    // fingerprint mismatch alone drove the refusal.
+    tokio::fs::write(&path, &checkpoint_bytes).await.unwrap();
+    assert!(
+        refresh_primary_baseline_from_checkpoint(&room, &path, s1_sequence).await,
+        "restored committed bytes must rebuild the baseline"
+    );
+    let s1_sources = HashMap::from([("cell-s1".to_string(), "s1 = 1".to_string())]);
+    assert_baseline_tuple(
+        &room.persistence,
+        Some((&s1_sources, checkpoint_bytes.as_slice(), s1_sequence)),
+        "after restored committed bytes",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn save_continuation_canonical_path_mismatch_is_refused_and_rebinds_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
+    let manifest_path = tmp.path().join("manifest-path.ipynb");
+    let continuation_path = tmp.path().join("continuation-path.ipynb");
+
+    let s1_bytes = baseline_race_ipynb_bytes("cell-s1", "s1 = 1");
+    let s1 = room.persistence.claim_file_checkpoint().unwrap();
+    let s1_sequence = s1.sequence();
+    complete_checkpoint_through_durable_intent_seams(&room, s1, &manifest_path, &s1_bytes);
+
+    // Put byte-identical content at the continuation path so sequence and
+    // fingerprint match the manifest and only the canonical-path leg differs.
+    tokio::fs::write(&continuation_path, &s1_bytes)
+        .await
+        .unwrap();
+    let manifest_before = room.durability.manifest();
+    assert_eq!(manifest_before.file_save_sequence, Some(s1_sequence));
+    assert_eq!(
+        manifest_before.source_fingerprint,
+        super::recovery::source_fingerprint(&s1_bytes)
+    );
+    assert_ne!(
+        manifest_before.canonical_path.as_deref(),
+        Some(continuation_path.as_path())
+    );
+
+    assert!(
+        !refresh_primary_baseline_from_checkpoint(&room, &continuation_path, s1_sequence).await,
+        "continuation with a canonical-path mismatch must be refused"
+    );
+    assert_baseline_tuple(&room.persistence, None, "after canonical-path mismatch").await;
+    assert_eq!(
+        room.durability.manifest(),
+        manifest_before,
+        "canonical-path rejection must leave durability state unchanged"
+    );
+
+    // The manifest's own canonical path accepts the identical sequence and
+    // bytes: the path mismatch alone drove the refusal.
+    assert!(
+        refresh_primary_baseline_from_checkpoint(&room, &manifest_path, s1_sequence).await,
+        "manifest canonical path must rebuild the baseline"
+    );
+    let s1_sources = HashMap::from([("cell-s1".to_string(), "s1 = 1".to_string())]);
+    assert_baseline_tuple(
+        &room.persistence,
+        Some((&s1_sources, s1_bytes.as_slice(), s1_sequence)),
+        "after canonical-path continuation",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn save_continuation_race_superseded_sequence_fails_manifest_triple_check_and_rebinds_nothing(
 ) {
     let tmp = tempfile::TempDir::new().unwrap();
