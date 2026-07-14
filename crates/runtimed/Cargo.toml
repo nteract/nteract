@@ -129,6 +129,7 @@ windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32
 
 [dev-dependencies]
 tempfile = { workspace = true }
+proptest = { workspace = true }
 serial_test = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 notebook-sync = { path = "../notebook-sync" }

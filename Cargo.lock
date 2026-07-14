@@ -7557,6 +7557,7 @@ dependencies = [
  "nteract-markdown-wasm",
  "nteract-telemetry",
  "petname",
+ "proptest",
  "pulldown-cmark",
  "rattler",
  "rattler_cache",

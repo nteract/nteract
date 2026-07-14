@@ -684,6 +684,9 @@ fn sync_parent_directory(_path: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
+mod model_tests;
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
