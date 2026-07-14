@@ -1,20 +1,18 @@
 //! Daemon watch loop driven by `DaemonConnection` events.
 //!
-//! Replaces the old `health.rs` ping-and-backoff loop. `DaemonConnection`
-//! (in `runtimed-client`) already maintains a long-lived supervisor that
-//! caches `DaemonInfo` and emits `Connected`/`Upgraded`/`Disconnected`.
-//! This module consumes that stream and performs the two actions that are
-//! specific to the MCP server:
+//! `DaemonConnection` maintains a long-lived supervisor that caches
+//! `DaemonInfo` and emits `Connected`/`Upgraded`/`Disconnected`. This module
+//! consumes that stream and performs the two actions specific to the MCP server:
 //!
 //! 1. Exit the process on a version change so the proxy respawns us with
 //!    the new binary.
 //! 2. Re-join the active notebook session when the daemon comes back
 //!    (either after a brief disconnect, or after a same-version restart).
 //!
-//! Tool dispatch is no longer gated on a locally-tracked state — under
-//! sustained concurrent load the old loop could stall in `Reconnecting`
-//! while the daemon was actually healthy, short-circuiting every tool
-//! call. See #2000.
+//! Tool dispatch asks the daemon directly instead of gating on a local
+//! connection state. Under sustained concurrent load, local gating can stall in
+//! `Reconnecting` while the daemon is healthy, short-circuiting every tool call.
+//! See #2000.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -453,13 +451,11 @@ async fn rejoin(
     };
 
     // The daemon is authoritative about whether a notebook still exists.
-    // A NotebookSync attach reloads a resident-or-recoverable room (untitled
-    // notebooks reload from their persisted docs_dir doc) and refuses a gone
-    // one. We no longer pre-check list_rooms here: that heuristic could not
-    // tell "evicted" from "dormant but recoverable from docs_dir" — exactly
-    // the untitled case that must auto-recover after a daemon restart. A
-    // refusal comes back from `connect` as `SyncError::Protocol` and is
-    // handled in the retry loop below (cleared as Evicted, no retry).
+    // NotebookSync attach reloads a resident-or-recoverable room and refuses a
+    // gone one. `list_rooms` cannot distinguish an evicted UUID from a dormant
+    // untitled notebook that is recoverable from docs_dir, which is the #2088
+    // case. A refusal is handled in the retry loop below as Evicted with no
+    // retry.
     let label = peer_label.read().await.clone();
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
@@ -555,13 +551,12 @@ async fn rejoin(
                     info!("Automatic notebook rejoin cancelled by explicit session intent");
                     return true;
                 }
-                // A daemon refusal (the notebook is gone) is definitive — the
+                // A daemon refusal (the notebook is gone) is definitive - the
                 // handshake completed and the daemon said no. Don't burn retries
-                // on it; clear the session as Evicted with a recovery hint. This
-                // is the old immediate-give-up behavior, now driven by the daemon
-                // instead of a list_rooms heuristic. Only the refusal is treated
-                // this way: transient failures (daemon down → Io/DaemonUnavailable,
-                // streaming-load failure → Protocol) still retry below.
+                // on it; clear the session as Evicted with a recovery hint. Only
+                // the refusal is treated this way: transient failures (daemon down
+                // to Io/DaemonUnavailable, streaming-load failure to Protocol)
+                // still retry below.
                 if matches!(e, notebook_sync::SyncError::NotebookUnavailable(_)) {
                     info!("Rejoin refused by daemon (notebook gone): {e}");
                     *last_session_drop.write().await = Some(SessionDropInfo {
@@ -855,18 +850,18 @@ mod tests {
         );
     }
 
-    /// Connected events AFTER a Disconnected should trigger
-    /// RejoinContinuation — the peer connection was actually lost.
+    /// Connected events after a lagged disconnect should trigger
+    /// RejoinContinuation because the peer connection was actually lost.
     #[test]
-    fn reconnect_after_disconnect_triggers_rejoin() {
+    fn lagged_connected_after_disconnect_triggers_rejoin_continuation() {
         let connected = DaemonEvent::Connected {
             info: info_with("1.0.0", 100),
         };
         let initial = None;
         let disconnect = None;
 
-        // After disconnect, Connected should trigger rejoin — session
-        // still live (legacy path before immediate-clear).
+        // After disconnect, Connected should trigger rejoin while the session
+        // is still live.
         assert_eq!(
             classify(&connected, &initial, true, true, &disconnect),
             WatchDecision::RejoinContinuation

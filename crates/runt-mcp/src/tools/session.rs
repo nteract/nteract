@@ -54,9 +54,9 @@ async fn resolve_room_notebook_path(server: &NteractMcp, notebook_id: &str) -> O
 }
 
 /// Maximum number of parked sessions. When this limit is reached, the
-/// least-recently-parked session is evicted (dropped) to make room. This
+/// parked session chosen by HashMap iteration order is evicted to make room. This
 /// bounds the resource footprint of a long-lived MCP process that touches
-/// many notebooks — without a cap, every notebook ever opened keeps its
+/// many notebooks - without a cap, every notebook ever opened keeps its
 /// peer connection and kernel alive indefinitely.
 const MAX_PARKED_SESSIONS: usize = 8;
 
@@ -84,14 +84,14 @@ async fn park_session(server: &NteractMcp, old: NotebookSession) {
         notebook_path: old.notebook_path.clone(),
         rejoin_target: Some(old.rejoin_target()),
     });
-    // Park the session — peer connection stays alive, no eviction.
+    // Park the session: peer connection stays alive, no eviction.
     let mut parked = server.parked_sessions.write().await;
 
-    // LRU eviction: if at capacity, drop an existing parked session.
+    // Arbitrary-order eviction: if at capacity, drop an existing parked session.
     if parked.len() >= MAX_PARKED_SESSIONS {
         if let Some(oldest_key) = parked.keys().next().cloned() {
             tracing::info!(
-                "[mcp] Parked sessions at capacity ({}), evicting {}",
+                "[mcp] Parked sessions at capacity ({}), evicting {} by arbitrary HashMap order",
                 MAX_PARKED_SESSIONS,
                 oldest_key
             );
@@ -294,9 +294,9 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
     match handle.get_runtime_state() {
         Ok(state) => {
             // Project the typed lifecycle through to_legacy() so the MCP wire
-            // shape (string `kernel_status`) stays unchanged. Group 6 of the
-            // RuntimeLifecycle refactor (#2096) decides whether to add a
-            // typed wire field; that's intentionally deferred here.
+            // shape stays stable with its string `kernel_status`. A typed MCP
+            // lifecycle field belongs with the RuntimeLifecycle wire contract
+            // work tracked in #2096.
             let (legacy_status, _legacy_phase) = state.kernel.lifecycle.to_legacy();
             info.insert("kernel_status".into(), serde_json::json!(legacy_status));
             if !state.kernel.language.is_empty() {
@@ -1589,10 +1589,9 @@ pub async fn save_notebook(
     let handle = access.handle.clone();
     let notebook_id = access.notebook_id.clone();
 
-    // The daemon decides whether a path is required (untitled rooms with
-    // no existing path field return SaveError with a clear message). We no
-    // longer parse notebook_id to guess — every room has a UUID now, so
-    // that heuristic would misfire on file-backed rooms.
+    // The daemon decides whether a path is required. Untitled rooms without an
+    // existing path return SaveError with a clear message; MCP room ids are
+    // always UUIDs and do not identify whether a room is file-backed.
 
     // Ensure daemon has latest
     if let Err(e) = handle.confirm_sync().await {

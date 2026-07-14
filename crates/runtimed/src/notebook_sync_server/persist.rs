@@ -1203,14 +1203,6 @@ fn platform_process_exists(_pid: u32) -> bool {
     false
 }
 
-/// Transitions an untitled room to file-backed: claims path in path_index,
-/// updates room.file_binding.path, cleans up the stale `.automerge` persist file, spawns
-/// the `.ipynb` file watcher and autosave debouncer, clears ephemeral markers,
-/// and stamps the new path on the runtime-state doc (peers see it via sync).
-///
-/// Returns `Ok(())` on success, or `Err(SaveErrorKind::PathAlreadyOpen)` if
-/// another room is already serving this canonical path.  On error the caller's
-/// room state is NOT mutated.
 /// Canonicalize a path that may not yet exist on disk.
 ///
 /// `tokio::fs::canonicalize` requires the target to exist. For pre-write
@@ -1313,18 +1305,9 @@ pub(crate) async fn finalize_untitled_promotion(
         .state
         .with_doc(|state| state.set_file_source_issue(None));
 
-    // NOTE: We don't actually stop the .automerge persist debouncer here —
-    // stopping it would require taking ownership of room.persist_tx, which
-    // the current struct definition doesn't support (it's a plain
-    // Option<Sender<...>>). A subsequent AutomergeSync frame may resurrect
-    // the .automerge file we delete below. That's OK because:
-    //   - The file is keyed by SHA256(uuid), so it never collides with a
-    //     different room.
-    //   - Future open_notebook calls for the .ipynb go through a path key,
-    //     not the UUID — the orphaned .automerge is never consulted.
-    //   - The debouncer task dies when NotebookRoom is dropped on eviction.
-    // TODO(followup): make persist_tx: Mutex<Option<...>> so .take() can
-    // properly drop the sender and close the channel.
+    // A later AutomergeSync frame may recreate this `.automerge` file. That is
+    // harmless: the file is keyed by SHA256(uuid), and path-keyed opens consult
+    // the `.ipynb` path and recovery journal rather than this untitled mirror.
     if room.identity.persist_path.exists() {
         if let Err(e) = tokio::fs::remove_file(&room.identity.persist_path).await {
             warn!(

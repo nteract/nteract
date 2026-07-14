@@ -116,13 +116,9 @@ pub(super) async fn handle_peer_disconnect(
                     return;
                 }
 
-                // Force a synchronous flush of the persist debouncer BEFORE
-                // we touch the kernel. The room stays resident across kernel
-                // teardown, so the historical "fast reconnect lands in a
-                // post-removal window" race no longer applies — but the
-                // flush is still load-bearing because hot-installed deps
-                // and any unflushed edits should be on disk before kernel
-                // RPC starts unwinding things.
+                // Force a synchronous flush of the persist debouncer before
+                // kernel teardown. Hot-installed deps and any unflushed edits
+                // should be on disk before kernel RPC starts unwinding things.
                 //
                 // On timeout or write failure we back off and retry. The
                 // room stays resident, so retrying is cheap and a reconnect

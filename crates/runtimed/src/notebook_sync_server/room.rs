@@ -304,8 +304,8 @@ pub struct RoomBroadcasts {
     /// lifecycle, project context, path, and last_saved.
     pub file_dirty_tx: broadcast::Sender<()>,
     /// Broadcast channel for kernel Comm events (ipywidget messages and custom
-    /// widget traffic). Env progress moved to RuntimeStateDoc and no longer
-    /// flows here.
+    /// widget traffic). Runtime lifecycle and environment progress live in
+    /// RuntimeStateDoc, not on this transient event channel.
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     /// Broadcast channel for presence frames (cursor, selection, kernel state).
     /// Carries raw presence bytes plus the peer_id to relay to other peers.
@@ -343,10 +343,10 @@ pub struct RoomPersistence {
     /// The coordinator is shared with blocking workers so no Tokio mutex is
     /// held across filesystem I/O.
     file_checkpoint: Arc<super::file_checkpoint::FileCheckpointCoordinator>,
-    /// Debouncer channels — present only when the room writes to a
+    /// Debouncer channels - present only when the room writes to a
     /// persisted Automerge doc (`notebook-docs/*.automerge`). Ephemeral
     /// rooms keep this `None`, and so do rooms promoted via Save (the
-    /// `.automerge` stream isn't restarted post-promotion — see comment
+    /// `.automerge` stream is not restarted post-promotion - see comment
     /// in `finalize_untitled_promotion`).
     ///
     /// The `Mutex<Option<...>>` wrapper lets the reaper `.take()` the
@@ -586,7 +586,6 @@ impl RoomPersistence {
     /// the persist task exit via its shutdown arm with one final
     /// flush. Returns `None` for ephemeral rooms or if a prior caller
     /// already took it.
-    #[allow(dead_code)]
     pub fn take_debouncer(&self) -> Option<PersistDebouncer> {
         self.lock_debouncer().take()
     }
@@ -1319,7 +1318,7 @@ impl NotebookRoom {
             );
             NotebookDoc::load_or_create_with_actor(&persist_path, &notebook_id_str, runtimed_actor)
         } else {
-            // TODO(phase-6): tighten NotebookDoc to accept Uuid directly
+            // NotebookDoc stores actor ids as strings.
             NotebookDoc::new_with_actor(&notebook_id_str, runtimed_actor)
         };
         // Spawn debounced persistence task (watch channel keeps latest value only)
