@@ -203,22 +203,8 @@ pub(crate) async fn save_notebook_to_disk(
                 save_sequence: None,
                 reason: notebook_protocol::protocol::SaveBlockedReason::SequenceExhausted,
             })?;
-    save_notebook_to_disk_with_claim(room, target_path, claim).await
-}
-
-/// Save using a sequence reserved by the request handler before formatting.
-pub(crate) async fn save_notebook_to_disk_with_claim(
-    room: &NotebookRoom,
-    target_path: Option<&str>,
-    save_claim: super::file_checkpoint::SaveSequenceClaim,
-) -> Result<FileSaveOutcome, SaveError> {
-    save_notebook_to_disk_with_claim_and_intent(
-        room,
-        target_path,
-        save_claim,
-        FileSaveIntent::Ordinary,
-    )
-    .await
+    save_notebook_to_disk_with_claim_and_intent(room, target_path, claim, FileSaveIntent::Ordinary)
+        .await
 }
 
 pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(

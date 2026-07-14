@@ -24,11 +24,6 @@ pub(crate) struct ParsedIpynbCells {
 /// nbformat 4.5 and removing the ordinal fallback.
 ///
 /// Positions are generated incrementally using fractional indexing.
-#[cfg(test)]
-pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedIpynbCells> {
-    parse_cells_from_ipynb_for_notebook(json, uuid::Uuid::nil())
-}
-
 pub(crate) fn parse_cells_from_ipynb_for_notebook(
     json: &serde_json::Value,
     notebook_id: uuid::Uuid,
@@ -247,12 +242,7 @@ fn jobj_get<'a, 's>(
 /// Returns `(cells, Option<metadata_snapshot>)`. Outputs are kept as
 /// `serde_json::Value` so they can be passed directly to `create_manifest`
 /// without a serialize→parse round-trip.
-#[cfg(test)]
-pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebook, String> {
-    parse_notebook_jiter_for_notebook(bytes, uuid::Uuid::nil())
-}
-
-fn parse_notebook_jiter_for_notebook(
+pub(crate) fn parse_notebook_jiter_for_notebook(
     bytes: &[u8],
     notebook_id: uuid::Uuid,
 ) -> Result<ParsedStreamingNotebook, String> {
@@ -838,17 +828,12 @@ fn capture_staged_batch(
     staged: &mut NotebookDoc,
     previous_heads: &[automerge::ChangeHash],
 ) -> Option<StagedChangeBatch> {
-    let resulting_heads = staged.get_heads();
     let changes = staged.doc_mut().get_changes(previous_heads);
     if changes.is_empty() {
         return None;
     }
     let hashes = changes.iter().map(automerge::Change::hash).collect();
-    Some(StagedChangeBatch {
-        changes,
-        hashes,
-        resulting_heads,
-    })
+    Some(StagedChangeBatch { changes, hashes })
 }
 
 async fn stage_initial_import(
@@ -1731,7 +1716,7 @@ pub(crate) async fn prepare_notebook_load(
         cells,
         outputs_by_cell,
         attachments: nbformat_attachments,
-    } = parse_cells_from_ipynb(&json)
+    } = parse_cells_from_ipynb_for_notebook(&json, uuid::Uuid::nil())
         .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
     let widget_comms = widget_comms_from_notebook_metadata(json.get("metadata"), blob_store).await;
     let context_id = path.to_string_lossy().to_string();

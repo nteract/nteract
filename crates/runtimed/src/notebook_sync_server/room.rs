@@ -983,12 +983,6 @@ impl ReservationGuard {
             .fetch_add(1, Ordering::Relaxed);
         Self { room }
     }
-
-    /// The room this guard is reserving.
-    #[allow(dead_code)]
-    pub fn room(&self) -> &Arc<NotebookRoom> {
-        &self.room
-    }
 }
 
 impl Drop for ReservationGuard {

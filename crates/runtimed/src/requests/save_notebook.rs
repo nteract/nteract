@@ -257,13 +257,9 @@ async fn handle_with_intent(
     if was_untitled {
         if let Err(message) = finalize_untitled_promotion(room, canonical.clone()).await {
             NotebookFileBinding::release_path(&daemon.notebook_rooms, &canonical).await;
-            let save_sequence = match &save_outcome {
-                FileSaveOutcome::Saved { save_sequence, .. }
-                | FileSaveOutcome::AlreadyCurrent { save_sequence, .. } => *save_sequence,
-            };
             return NotebookResponse::NotebookSaveBlocked {
                 path: Some(written),
-                save_sequence: Some(save_sequence),
+                save_sequence: Some(checkpoint_sequence),
                 reason: notebook_protocol::protocol::SaveBlockedReason::Io { message },
             };
         }
