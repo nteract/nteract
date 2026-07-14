@@ -15,9 +15,7 @@ pub mod typosquat;
 extern crate runtimed_client as runtimed;
 pub use runtimed::runtime::Runtime;
 
-use notebook_protocol::protocol::{
-    NotebookRequest, NotebookResponse, SaveBlockedReason, SaveErrorKind,
-};
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveBlockedReason};
 use notebook_sync::RelayHandle;
 
 use log::{debug, info, warn};
@@ -2576,18 +2574,6 @@ fn apply_path_changed(
     Ok(())
 }
 
-/// Format a structured daemon `SaveErrorKind` as a user-facing message.
-fn format_save_error(error: &SaveErrorKind) -> String {
-    match error {
-        SaveErrorKind::PathAlreadyOpen { path, .. } => format!(
-            "Cannot save: {} is already open in another notebook window. \
-             Close that window first, or choose a different path.",
-            path
-        ),
-        SaveErrorKind::Io { message } => format!("Failed to save notebook: {}", message),
-    }
-}
-
 fn format_save_blocked(reason: &SaveBlockedReason) -> String {
     match reason {
         SaveBlockedReason::PathAlreadyOpen { path, .. } => format!(
@@ -2662,9 +2648,6 @@ async fn save_notebook_as(
         }
         Ok(NotebookResponse::NotebookSaveBlocked { reason, .. }) => {
             return Err(format_save_blocked(&reason));
-        }
-        Ok(NotebookResponse::SaveError { error }) => {
-            return Err(format_save_error(&error));
         }
         Ok(NotebookResponse::Error { error }) => {
             return Err(format!("Daemon save failed: {}", error));

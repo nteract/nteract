@@ -222,9 +222,7 @@ async fn canonical_local_id_target_for_server(
     }
 }
 
-use notebook_protocol::protocol::{
-    NotebookRequest, NotebookResponse, SaveBlockedReason, SaveErrorKind,
-};
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveBlockedReason};
 
 use super::{arg_bool, arg_str, arg_string_array, tool_error, tool_success};
 
@@ -1682,25 +1680,6 @@ pub async fn save_notebook(
                 if path.is_none() && message.contains("untitled") {
                     tool_error(
                         "No path specified. For notebooks created with create_notebook(), you must provide a path (e.g., save_notebook(path='/path/to/file.ipynb'))",
-                    )
-                } else {
-                    tool_error(&format!("Failed to save notebook: {message}"))
-                }
-            }
-        },
-        Ok(NotebookResponse::SaveError { error }) => match error {
-            SaveErrorKind::PathAlreadyOpen {
-                uuid,
-                path: conflict,
-            } => tool_error(&format!(
-                "Cannot save: {conflict} is already open in session {uuid}. \
-                 Close that session first, then retry.",
-            )),
-            SaveErrorKind::Io { message } => {
-                if path.is_none() && message.contains("untitled") {
-                    tool_error(
-                        "No path specified. For notebooks created with create_notebook(), \
-                         you must provide a path (e.g., save_notebook(path='/path/to/file.ipynb'))",
                     )
                 } else {
                     tool_error(&format!("Failed to save notebook: {message}"))

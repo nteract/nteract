@@ -18,8 +18,8 @@ use crate::{EnvType, PooledEnv};
 pub use notebook_protocol::connection::{EnvSource, LaunchSpec};
 pub use notebook_protocol::protocol::{
     CompletionItem, DenoLaunchedConfig, DependencyGuard, EnvSyncDiff, ExecutionIdRejectionReason,
-    GuardedNotebookProvenance, HistoryEntry, LaunchedEnvConfig, NotebookBroadcast, NotebookRequest,
-    NotebookResponse, QueueEntry,
+    HistoryEntry, LaunchedEnvConfig, NotebookBroadcast, NotebookRequest, NotebookResponse,
+    QueueEntry,
 };
 
 /// Requests that clients can send to the daemon.
@@ -356,12 +356,11 @@ pub struct NotebookSourceProjectionState {
     pub retry: NotebookSourceRetry,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotebookAvailabilityPhase {
     Attached,
     ProjectionReady,
-    #[default]
     Interactive,
     Degraded,
 }
@@ -383,7 +382,7 @@ impl Default for NotebookCapabilities {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotebookAvailabilityProjection {
     pub phase: NotebookAvailabilityPhase,
     pub generation: u64,
@@ -391,7 +390,6 @@ pub struct NotebookAvailabilityProjection {
     pub document_heads: Vec<String>,
     #[serde(default)]
     pub projection_heads: Vec<String>,
-    #[serde(default)]
     pub capabilities: NotebookCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -402,22 +400,6 @@ pub struct NotebookReadiness {
     pub projection: bool,
     pub document: bool,
     pub runtime: bool,
-}
-
-impl Default for NotebookReadiness {
-    fn default() -> Self {
-        // Projections from older daemons were returned only after initial
-        // document loading completed. Runtime readiness was never implied.
-        Self {
-            projection: true,
-            document: true,
-            runtime: false,
-        }
-    }
-}
-
-const fn projection_complete_by_default() -> bool {
-    true
 }
 
 /// Coherent initial notebook view captured from the authoritative room.
@@ -442,13 +424,10 @@ pub struct NotebookProjection {
     #[serde(default)]
     pub source_state: NotebookSourceProjectionState,
     /// Authoritative room availability and user-facing capabilities.
-    #[serde(default)]
     pub availability: NotebookAvailabilityProjection,
-    #[serde(default)]
     pub readiness: NotebookReadiness,
     /// True when this bounded projection covers the complete staged cell list
     /// for `projection_heads` (cell sources remain previews by design).
-    #[serde(default = "projection_complete_by_default")]
     pub projection_complete: bool,
     #[serde(default)]
     pub projection_heads: Vec<String>,
@@ -471,17 +450,6 @@ pub enum RoomState {
     Active,
     Idle,
     Inactive,
-}
-
-impl Default for RoomState {
-    /// Backwards-compat default for clients deserializing from older
-    /// daemons that don't emit a `state` field. Treat absence as
-    /// `Active` because that was the universal behaviour before the
-    /// state field existed (rooms only appeared in `list_rooms` while a
-    /// peer was connected).
-    fn default() -> Self {
-        RoomState::Active
-    }
 }
 
 impl RoomState {
@@ -517,8 +485,6 @@ pub struct RoomInfo {
     pub notebook_path: Option<String>,
     /// Lifecycle position: `active` (peers > 0), `idle` (no peers,
     /// kernel alive), or `inactive` (no peers, no kernel — resumable).
-    /// Older daemons that don't emit this field default to `active`.
-    #[serde(default)]
     pub state: RoomState,
 }
 
@@ -846,6 +812,56 @@ mod tests {
         }) {
             Response::NotebookProjection { projection: parsed } => assert_eq!(*parsed, projection),
             _ => panic!("unexpected response type"),
+        }
+    }
+
+    #[test]
+    fn degraded_projection_deserializes_with_mutate_false() {
+        let response = serde_json::json!({
+            "type": "notebook_projection",
+            "projection": {
+                "schema_version": NOTEBOOK_PROJECTION_SCHEMA_VERSION,
+                "load_generation": 9,
+                "notebook_id": "018f0000-0000-7000-8000-000000000001",
+                "notebook_path": null,
+                "cells": [],
+                "dependencies": [],
+                "runtime": NotebookRuntimeProjection::default(),
+                "source_state": NotebookSourceProjectionState::default(),
+                "availability": {
+                    "phase": "degraded",
+                    "generation": 9,
+                    "document_heads": [],
+                    "projection_heads": [],
+                    "capabilities": {
+                        "read": true,
+                        "mutate": false,
+                        "execute": false
+                    },
+                    "reason": "source conflict"
+                },
+                "readiness": {
+                    "projection": true,
+                    "document": true,
+                    "runtime": false
+                },
+                "projection_complete": true,
+                "projection_heads": [],
+                "notebook_heads": [],
+                "runtime_state_heads": [],
+                "captured_at": Utc::now()
+            }
+        });
+
+        match serde_json::from_value(response).expect("degraded projection should deserialize") {
+            Response::NotebookProjection { projection } => {
+                assert_eq!(
+                    projection.availability.phase,
+                    NotebookAvailabilityPhase::Degraded
+                );
+                assert!(!projection.availability.capabilities.mutate);
+            }
+            other => panic!("unexpected response type: {other:?}"),
         }
     }
 

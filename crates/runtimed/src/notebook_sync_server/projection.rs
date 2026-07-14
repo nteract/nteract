@@ -217,7 +217,18 @@ async fn finish_notebook_projection(
             project_context: runtime_state.project_context,
         },
         source_state: NotebookSourceProjectionState::default(),
-        availability: NotebookAvailabilityProjection::default(),
+        availability: NotebookAvailabilityProjection {
+            phase: NotebookAvailabilityPhase::Attached,
+            generation: load_generation,
+            document_heads: Vec::new(),
+            projection_heads: Vec::new(),
+            capabilities: NotebookCapabilities {
+                read: false,
+                mutate: false,
+                execute: false,
+            },
+            reason: None,
+        },
         readiness: NotebookReadiness {
             projection: false,
             document: false,

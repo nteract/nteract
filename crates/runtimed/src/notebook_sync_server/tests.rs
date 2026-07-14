@@ -6131,7 +6131,7 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
 }
 
 /// Verify that `promote_untitled_to_file_backed` returns
-/// `SaveErrorKind::PathAlreadyOpen` when the target path is already held by
+/// `SaveBlockedReason::PathAlreadyOpen` when the target path is already held by
 /// another room, and does NOT mutate the fresh room's state on error.
 #[tokio::test]
 async fn saving_to_already_open_path_returns_path_already_open_error() {
@@ -6161,7 +6161,7 @@ async fn saving_to_already_open_path_returns_path_already_open_error() {
         .unwrap_err();
 
     match err {
-        notebook_protocol::protocol::SaveErrorKind::PathAlreadyOpen { uuid, path: p } => {
+        notebook_protocol::protocol::SaveBlockedReason::PathAlreadyOpen { uuid, path: p } => {
             assert_eq!(uuid, existing_uuid.to_string());
             assert_eq!(p, target_path.to_string_lossy());
         }

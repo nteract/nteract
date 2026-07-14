@@ -122,7 +122,7 @@ impl NotebookFileBinding {
         rooms: &NotebookRooms,
         canonical: &Path,
         uuid: uuid::Uuid,
-    ) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
+    ) -> Result<(), notebook_protocol::protocol::SaveBlockedReason> {
         try_claim_path(rooms, canonical, uuid).await
     }
 
