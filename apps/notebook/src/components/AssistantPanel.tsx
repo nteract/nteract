@@ -7,6 +7,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
+import { Streamdown } from "streamdown";
 import { cn } from "@/lib/utils";
 import { streamAssistantChat, type AssistantChatMessage } from "../lib/assistant-chat-client";
 import { logger } from "../lib/logger";
@@ -194,17 +195,29 @@ export function AssistantPanel() {
             >
               <div
                 className={cn(
-                  "max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-2 text-sm",
+                  "max-w-[85%] rounded-lg px-3 py-2 text-sm",
                   message.role === "user"
-                    ? "bg-primary text-primary-foreground"
+                    ? "bg-primary text-primary-foreground whitespace-pre-wrap break-words"
                     : "bg-muted text-foreground",
                   message.isError && "bg-destructive/10 text-destructive",
                 )}
               >
-                {message.content}
-                {message.isStreaming && message.content.length === 0 ? (
-                  <span className="text-muted-foreground">…</span>
-                ) : null}
+                {message.role === "assistant" ? (
+                  message.content.length === 0 && message.isStreaming ? (
+                    <span className="text-muted-foreground">…</span>
+                  ) : (
+                    <Streamdown
+                      mode={message.isStreaming ? "streaming" : "static"}
+                      className="prose prose-sm dark:prose-invert max-w-none"
+                    >
+                      {message.content}
+                    </Streamdown>
+                  )
+                ) : (
+                  <>
+                    {message.content}
+                  </>
+                )}
               </div>
             </div>
           ))

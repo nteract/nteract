@@ -4,6 +4,7 @@
 
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "streamdown/styles.css";
 @import "../../../src/styles/ansi.css";
 @import "../../../src/styles/notebook-base.css";
 @import "../../../src/styles/cream-theme.css";
