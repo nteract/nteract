@@ -615,12 +615,7 @@ async fn get_room_projection(
 }
 
 fn superseded_result(lease: &ActivationLease) -> CallToolResult {
-    activation_error(
-        "session_superseded",
-        "A newer notebook target superseded this connection",
-        lease.generation(),
-        lease.target(),
-    )
+    lease.superseded_result()
 }
 
 async fn install_activated_session(
@@ -628,25 +623,8 @@ async fn install_activated_session(
     lease: &ActivationLease,
     session: NotebookSession,
 ) -> Result<(), CallToolResult> {
-    if !lease.is_current() {
-        return Err(superseded_result(lease));
-    }
-
     let session_key = session.session_key();
-    let previous = {
-        let mut guard = server.session.write().await;
-        if !lease.is_current() {
-            return Err(superseded_result(lease));
-        }
-        let previous = guard.replace(session);
-        if !lease.mark_installed() {
-            let stale = guard.take();
-            *guard = previous;
-            drop(stale);
-            return Err(superseded_result(lease));
-        }
-        previous
-    };
+    let previous = lease.install_in_slot(&server.session, session).await?;
 
     // A different target may begin immediately after publication. This
     // session remains the installed, usable identity until that newer attempt
