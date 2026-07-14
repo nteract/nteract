@@ -1444,18 +1444,11 @@ impl Drop for RoomInitialLoadClaim {
 pub(crate) fn claim_room_initial_load(
     room: &Arc<NotebookRoom>,
     load_path: PathBuf,
-) -> (
-    Option<RoomInitialLoadClaim>,
-    watch::Receiver<RoomInitialLoadState>,
-) {
-    let (start, receiver) = room.initial_load.begin();
-    let RoomInitialLoadStart::Started { generation } = start else {
-        return (None, receiver);
+) -> Option<RoomInitialLoadClaim> {
+    let RoomInitialLoadStart::Started { generation } = room.initial_load.begin() else {
+        return None;
     };
-    (
-        Some(RoomInitialLoadClaim::new(room, generation, load_path)),
-        receiver,
-    )
+    Some(RoomInitialLoadClaim::new(room, generation, load_path))
 }
 
 /// Transfer a claimed source generation into its supervised task.
@@ -1563,20 +1556,17 @@ pub(crate) fn spawn_claimed_room_recovery_finalize(
 
 /// Start or join this room's initial file materialization.
 ///
-/// The spawned operation owns only the room and file path. Callers receive a
-/// watch receiver and may drop it freely; doing so does not cancel the load.
+/// The spawned operation owns only the room and file path. Joining an
+/// in-flight generation is a no-op; observers follow the room lifecycle via
+/// `RoomInitialLoad::state`/`subscribe_authoritative`.
 pub(crate) fn start_room_initial_load(
     room: &Arc<NotebookRoom>,
     load_path: PathBuf,
     execution_store_dir: PathBuf,
-) -> watch::Receiver<RoomInitialLoadState> {
-    let (claim, receiver) = claim_room_initial_load(room, load_path);
-    let Some(claim) = claim else {
-        return receiver;
-    };
-    spawn_claimed_room_initial_load(claim, execution_store_dir);
-
-    receiver
+) {
+    if let Some(claim) = claim_room_initial_load(room, load_path) {
+        spawn_claimed_room_initial_load(claim, execution_store_dir);
+    }
 }
 
 /// Retry a failed source generation only while the live notebook is pristine.

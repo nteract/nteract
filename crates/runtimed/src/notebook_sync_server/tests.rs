@@ -986,8 +986,8 @@ async fn published_room_source_claim_cancellation_terminalizes_projection_waits(
     ));
 
     room.initial_load.mark_required();
-    let (claim, _) = claim_room_initial_load(&room, path.clone());
-    let claim = claim.expect("source generation should be claimed before publication");
+    let claim = claim_room_initial_load(&room, path.clone())
+        .expect("source generation should be claimed before publication");
     rooms
         .insert_or_get(uuid, Arc::clone(&room), Some(&path))
         .await

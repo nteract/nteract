@@ -362,7 +362,7 @@ where
 {
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     let mut source_state_rx = if let Some(load_path) = needs_load {
-        let _legacy_load_rx = start_room_initial_load(
+        start_room_initial_load(
             room,
             load_path.to_path_buf(),
             execution_store_dir.to_path_buf(),
@@ -718,18 +718,19 @@ mod tests {
         let load_path = tmp.path().join("source.ipynb");
         write_one_cell_notebook(&load_path).await;
 
-        let first = start_room_initial_load(&room, load_path.clone(), tmp.path().to_path_buf());
-        let second = start_room_initial_load(&room, load_path, tmp.path().to_path_buf());
-
-        let first_generation = first.borrow().generation();
+        let authoritative = room.initial_load.subscribe_authoritative();
+        start_room_initial_load(&room, load_path.clone(), tmp.path().to_path_buf());
+        let first_generation = authoritative.borrow().generation();
         assert_eq!(
-            first.borrow().clone(),
+            room.initial_load.state(),
             RoomInitialLoadState::Loading {
                 generation: first_generation
             }
         );
+
+        start_room_initial_load(&room, load_path, tmp.path().to_path_buf());
         assert_eq!(
-            second.borrow().generation(),
+            room.initial_load.state().generation(),
             first_generation,
             "all waiters must observe the same source generation"
         );
@@ -751,8 +752,8 @@ mod tests {
         let room = test_room(&tmp);
         let load_path = tmp.path().join("cancelled.ipynb");
         room.initial_load.mark_required();
-        let (claim, _) = crate::notebook_sync_server::claim_room_initial_load(&room, load_path);
-        let claim = claim.expect("required source generation should be claimable");
+        let claim = crate::notebook_sync_server::claim_room_initial_load(&room, load_path)
+            .expect("required source generation should be claimable");
         let generation = claim.generation();
 
         drop(claim);
@@ -780,11 +781,11 @@ mod tests {
         room.initial_load.mark_required();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (claim, _) = crate::notebook_sync_server::claim_room_initial_load(
+            let _claim = crate::notebook_sync_server::claim_room_initial_load(
                 &room,
                 tmp.path().join("panicked.ipynb"),
-            );
-            let _claim = claim.expect("required source generation should be claimable");
+            )
+            .expect("required source generation should be claimable");
             panic!("injected source owner panic");
         }));
 
@@ -877,7 +878,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
@@ -1095,7 +1096,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
@@ -1268,7 +1269,7 @@ mod tests {
         );
 
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
@@ -1323,7 +1324,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         room.initial_load.mark_required();
-        let (start, _) = room.initial_load.begin();
+        let start = room.initial_load.begin();
         let RoomInitialLoadStart::Started { generation } = start else {
             panic!("pending load should be claimable");
         };
@@ -1489,7 +1490,7 @@ mod tests {
         };
         assert_eq!(cell_count, 0);
         assert!(matches!(
-            room.initial_load.begin().0,
+            room.initial_load.begin(),
             RoomInitialLoadStart::Observing {
                 generation: observed
             } if observed == generation
@@ -1499,7 +1500,7 @@ mod tests {
     #[test]
     fn stale_completion_cannot_publish_over_retry_generation() {
         let initial_load = RoomInitialLoad::default();
-        let (start, _) = initial_load.begin();
+        let start = initial_load.begin();
         let RoomInitialLoadStart::Started { generation: first } = start else {
             panic!("first source claim should start");
         };
@@ -1509,7 +1510,7 @@ mod tests {
             .retry_failed_claimed()
             .expect("failed source can retry");
         assert!(matches!(
-            initial_load.begin().0,
+            initial_load.begin(),
             RoomInitialLoadStart::Observing { generation } if generation == second
         ));
         assert!(
@@ -1526,7 +1527,7 @@ mod tests {
     fn external_recovery_advances_failed_generation_to_ready() {
         let initial_load = RoomInitialLoad::default();
         initial_load.mark_required();
-        let (start, _) = initial_load.begin();
+        let start = initial_load.begin();
         let RoomInitialLoadStart::Started { generation: failed } = start else {
             panic!("required load should start");
         };

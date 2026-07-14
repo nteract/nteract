@@ -652,12 +652,13 @@ pub enum RoomInitialLoadStart {
 }
 
 /// Single-flight, observable initial-load state for one notebook room.
+///
+/// Thin projection facade over the room lifecycle's source axis: consumers
+/// read [`RoomInitialLoadState`] snapshots via [`Self::state`] or follow the
+/// authoritative source channel via [`Self::subscribe_authoritative`]. The
+/// wrapper transitions carry the sticky Ready/Failed contract.
 pub struct RoomInitialLoad {
     lifecycle: Arc<RoomLifecycle>,
-    /// Legacy wire projection. The authoritative state is `lifecycle`; this
-    /// sender only preserves the pre-progressive session protocol during the
-    /// room-substrate slice.
-    state_tx: watch::Sender<RoomInitialLoadState>,
 }
 
 impl Default for RoomInitialLoad {
@@ -668,12 +669,7 @@ impl Default for RoomInitialLoad {
 
 impl RoomInitialLoad {
     pub(crate) fn new(lifecycle: Arc<RoomLifecycle>) -> Self {
-        let initial = Self::project_state(&lifecycle.source_state());
-        let (state_tx, _) = watch::channel(initial);
-        Self {
-            lifecycle,
-            state_tx,
-        }
+        Self { lifecycle }
     }
 
     pub(crate) fn project_state(source: &RoomSourceState) -> RoomInitialLoadState {
@@ -707,19 +703,9 @@ impl RoomInitialLoad {
         }
     }
 
-    fn refresh_legacy(&self) {
-        self.state_tx
-            .send_replace(Self::project_state(&self.lifecycle.source_state()));
-    }
-
-    pub fn subscribe(&self) -> watch::Receiver<RoomInitialLoadState> {
-        self.state_tx.subscribe()
-    }
-
-    /// Subscribe to the authoritative source axis rather than the temporary
-    /// legacy projection channel. Durability failures and source conflicts
-    /// transition the lifecycle directly, so long-lived waiters must observe
-    /// this channel to avoid missing a terminal state.
+    /// Subscribe to the authoritative source axis. Durability failures and
+    /// source conflicts transition the lifecycle directly, so long-lived
+    /// waiters must observe this channel to avoid missing a terminal state.
     pub(crate) fn subscribe_authoritative(&self) -> watch::Receiver<RoomSourceState> {
         self.lifecycle.subscribe_source()
     }
@@ -732,7 +718,6 @@ impl RoomInitialLoad {
     /// The actual source task claims this generation with [`Self::begin`].
     pub fn mark_required(&self) {
         self.lifecycle.mark_source_required();
-        self.refresh_legacy();
     }
 
     /// Start the first load, or join the generation already loading/settled.
@@ -740,18 +725,16 @@ impl RoomInitialLoad {
     /// not mistaken for "never loaded." `Failed` is also sticky: retrying a
     /// partially materialized document requires an explicit reconciliation
     /// decision rather than blindly replaying file cells over live room state.
-    pub fn begin(&self) -> (RoomInitialLoadStart, watch::Receiver<RoomInitialLoadState>) {
+    pub fn begin(&self) -> RoomInitialLoadStart {
         if matches!(self.state(), RoomInitialLoadState::NotNeeded { .. }) {
             self.lifecycle.mark_source_required();
         }
-        let start = match self.lifecycle.begin_source() {
+        match self.lifecycle.begin_source() {
             RoomSourceStart::Started { generation } => RoomInitialLoadStart::Started { generation },
             RoomSourceStart::Observing { generation } => {
                 RoomInitialLoadStart::Observing { generation }
             }
-        };
-        self.refresh_legacy();
-        (start, self.subscribe())
+        }
     }
 
     /// Atomically advance a failed generation and claim its source task.
@@ -761,15 +744,11 @@ impl RoomInitialLoad {
     /// separate calls. The returned generation must immediately be wrapped in
     /// a `RoomInitialLoadClaim`, whose drop guard terminalizes cancellation.
     pub(crate) fn retry_failed_claimed(&self) -> Option<u64> {
-        let generation = self.lifecycle.retry_failed_claimed()?;
-        self.refresh_legacy();
-        Some(generation)
+        self.lifecycle.retry_failed_claimed()
     }
 
     pub(crate) fn resume_failed_staged_claimed(&self) -> Option<u64> {
-        let generation = self.lifecycle.resume_failed_staged_claimed()?;
-        self.refresh_legacy();
-        Some(generation)
+        self.lifecycle.resume_failed_staged_claimed()
     }
 
     /// Publish a coherent external recovery after a terminal source failure.
@@ -784,11 +763,7 @@ impl RoomInitialLoad {
         projection: Arc<runtimed_client::protocol::NotebookProjection>,
     ) -> Option<u64> {
         let heads = projection.notebook_heads.clone();
-        let generation = self
-            .lifecycle
-            .recover_failed(cell_count, heads, projection)?;
-        self.refresh_legacy();
-        Some(generation)
+        self.lifecycle.recover_failed(cell_count, heads, projection)
     }
 
     /// Wait for the current source generation to settle.
@@ -820,23 +795,13 @@ impl RoomInitialLoad {
         cell_count: usize,
         document_heads: Vec<String>,
     ) -> bool {
-        let completed = self
-            .lifecycle
-            .complete_ready(generation, cell_count, document_heads);
-        if completed {
-            self.refresh_legacy();
-        }
-        completed
+        self.lifecycle
+            .complete_ready(generation, cell_count, document_heads)
     }
 
     pub fn complete_failed(&self, generation: u64, reason: String) -> bool {
-        let completed = self
-            .lifecycle
-            .complete_failed(generation, "source_failed", reason);
-        if completed {
-            self.refresh_legacy();
-        }
-        completed
+        self.lifecycle
+            .complete_failed(generation, "source_failed", reason)
     }
 
     pub fn is_loading(&self) -> bool {
@@ -851,7 +816,6 @@ impl RoomInitialLoad {
     #[cfg(test)]
     fn reset_loading_for_test(&self) {
         self.lifecycle.reset_in_progress();
-        self.refresh_legacy();
     }
 }
 
@@ -1839,7 +1803,7 @@ impl NotebookRoom {
             self.lifecycle.mark_source_required();
         }
         matches!(
-            self.initial_load.begin().0,
+            self.initial_load.begin(),
             RoomInitialLoadStart::Started { .. }
         )
     }

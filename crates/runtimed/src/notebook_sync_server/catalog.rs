@@ -94,8 +94,7 @@ pub async fn get_or_create_room_result(
         let Some(load_path) = path_for_room.clone() else {
             anyhow::bail!("recovered file source requires a notebook path");
         };
-        let (claim, _) = claim_room_initial_load(&room, load_path);
-        let Some(claim) = claim else {
+        let Some(claim) = claim_room_initial_load(&room, load_path) else {
             anyhow::bail!("recovered source generation was already claimed");
         };
         Some(InitialSourceTask::FinalizeRecovery(
@@ -126,8 +125,7 @@ pub async fn get_or_create_room_result(
                 anyhow::bail!("initial file load requires a notebook path");
             };
             room.initial_load.mark_required();
-            let (claim, _) = claim_room_initial_load(&room, load_path);
-            let Some(claim) = claim else {
+            let Some(claim) = claim_room_initial_load(&room, load_path) else {
                 anyhow::bail!("fresh room initial load generation was already claimed");
             };
             // If the handshake aborts before a peer joins, the room must still
