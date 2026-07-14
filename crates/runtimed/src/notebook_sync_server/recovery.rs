@@ -44,10 +44,6 @@ impl SourceFingerprint {
         Self(Sha256::digest(bytes).into())
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
     pub(crate) fn to_hex(self) -> String {
         hex::encode(self.0)
     }
@@ -301,41 +297,6 @@ pub(crate) enum RecoveryJournalDiscoveryError {
     },
 }
 
-/// Durable append coordinates useful for fault injection and future journal
-/// checkpointing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct JournalAppendReceipt {
-    pub(crate) start_offset: u64,
-    pub(crate) end_offset: u64,
-    pub(crate) checksum: [u8; 32],
-    pub(crate) manifest_index: RecoveryManifestIndex,
-}
-
-/// Status of the non-authoritative JSON index for the newest journal record.
-///
-/// The checksummed append-only record is the commit point. An index failure
-/// must never turn a committed batch into an apparent failure: doing so could
-/// make callers roll back or withhold an acknowledgement even though recovery
-/// would replay the batch after restart.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RecoveryManifestIndex {
-    Updated,
-    Stale { reason: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RecoveryCompactionOutcome {
-    Compacted {
-        record: Box<RecoveryRecord>,
-        bytes_before: u64,
-        bytes_after: u64,
-        manifest_index: RecoveryManifestIndex,
-    },
-    Unavailable {
-        reason: RecoveryUnavailableReason,
-    },
-}
-
 /// The durably published copy of an archived recovery journal.
 ///
 /// Archives are directories so the authoritative journal and its optional
@@ -347,47 +308,9 @@ pub(crate) struct RecoveryArchivePaths {
     pub(crate) manifest: Option<PathBuf>,
 }
 
-/// Whether retiring the active journal name was durably flushed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RecoveryArchiveDurability {
-    Durable,
-    /// The atomic retirement succeeded, but a directory flush failed. The
-    /// archive still preserves the journal bytes, while crash-time selection
-    /// between the active and retired names is uncertain.
-    Uncertain {
-        reason: String,
-    },
-}
-
-/// The manifest is an inspectability index, not recovery authority. Its
-/// retirement is therefore best-effort after the journal commit point.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RecoveryArchiveSidecar {
-    NotPresent,
-    Retired,
-    RetainedActive { reason: String },
-}
-
-/// Result of archiving a journal.
-///
-/// `JournalRetired` is the commit point: the active journal path no longer
-/// exists and disk reload may become authoritative. Any returned error means
-/// that the active journal was left in place.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RecoveryArchiveOutcome {
-    JournalRetired {
-        archive: RecoveryArchivePaths,
-        durability: RecoveryArchiveDurability,
-        sidecar: RecoveryArchiveSidecar,
-    },
-    Unavailable {
-        reason: RecoveryUnavailableReason,
-    },
-}
-
 /// Result of preserving the old active journal and atomically replacing it
-/// with one reconciled record. Unlike [`RecoveryArchiveOutcome`], the active
-/// name is never intentionally absent at a successful boundary.
+/// with one reconciled record. The active name is never intentionally absent
+/// at a successful boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryArchiveReplacement {
     pub(crate) archive: RecoveryArchivePaths,
@@ -482,7 +405,7 @@ impl RecoveryJournal {
         &self,
         manifest: &RecoveryManifest,
         automerge_snapshot: &[u8],
-    ) -> Result<JournalAppendReceipt, RecoveryJournalError> {
+    ) -> Result<(), RecoveryJournalError> {
         self.append_with_directory_sync(manifest, automerge_snapshot, sync_directory)
     }
 
@@ -491,7 +414,7 @@ impl RecoveryJournal {
         manifest: &RecoveryManifest,
         automerge_snapshot: &[u8],
         mut sync_directory: SyncDirectory,
-    ) -> Result<JournalAppendReceipt, RecoveryJournalError>
+    ) -> Result<(), RecoveryJournalError>
     where
         SyncDirectory: FnMut(&Path) -> io::Result<()>,
     {
@@ -519,25 +442,19 @@ impl RecoveryJournal {
         }
         let file_len = metadata.len();
         let file_modified = metadata.modified().ok();
-        let (last_valid_end, valid_record_count, ignored_tail, has_valid_record) =
+        let (last_valid_end, valid_record_count, ignored_tail) =
             match append_cursor.as_ref().filter(|cursor| {
                 cursor.file_len == file_len
                     && cursor.modified.is_some()
                     && cursor.modified == file_modified
             }) {
-                Some(cursor) => (
-                    cursor.last_valid_end,
-                    cursor.valid_record_count,
-                    None,
-                    cursor.valid_record_count > 0,
-                ),
+                Some(cursor) => (cursor.last_valid_end, cursor.valid_record_count, None),
                 None => {
                     let scan = scan_file(&mut file)?;
                     (
                         scan.last_valid_end,
                         scan.valid_record_count,
                         scan.ignored_tail,
-                        scan.latest.is_some(),
                     )
                 }
             };
@@ -546,7 +463,7 @@ impl RecoveryJournal {
             if tail.is_unsupported_version() {
                 return Err(RecoveryJournalError::UnsupportedTailVersion { tail: tail.clone() });
             }
-            if !has_valid_record {
+            if valid_record_count == 0 {
                 return Err(RecoveryJournalError::NoValidRecord { tail: tail.clone() });
             }
             if !tail.is_repairable_torn_suffix() {
@@ -566,20 +483,23 @@ impl RecoveryJournal {
 
         // The record above is the durable batch marker. The manifest is only
         // an inspectability index, so its replacement is deliberately
-        // best-effort after that commit point. Returning an error here would
-        // invite callers to roll back an already durable batch and let restart
-        // replay work that was never acknowledged.
-        let manifest_index = match serde_json::to_vec(manifest)
+        // best-effort after that commit point. A failure here is logged, not
+        // returned: returning an error would invite callers to roll back an
+        // already durable batch and let restart replay work that was never
+        // acknowledged.
+        if let Err(error) = serde_json::to_vec(manifest)
             .map_err(RecoveryJournalError::from)
             .and_then(|bytes| {
                 replace_file_atomically(&self.manifest_path(), &bytes)
                     .map_err(RecoveryJournalError::from)
-            }) {
-            Ok(()) => RecoveryManifestIndex::Updated,
-            Err(error) => RecoveryManifestIndex::Stale {
-                reason: error.to_string(),
-            },
-        };
+            })
+        {
+            tracing::warn!(
+                "[notebook-sync] Recovery journal manifest sidecar update failed for {}: {}",
+                self.path.display(),
+                error
+            );
+        }
 
         let encoded_len = u64::try_from(encoded.bytes.len()).map_err(|_| {
             RecoveryJournalError::RecordTooLarge {
@@ -591,12 +511,12 @@ impl RecoveryJournal {
         let appended_record_count = valid_record_count.saturating_add(1);
         let should_compact =
             appended_record_count >= COMPACT_AFTER_RECORDS || appended_end >= COMPACT_AFTER_BYTES;
-        let (active_start, active_end, active_record_count) = if should_compact {
+        let (active_end, active_record_count) = if should_compact {
             // The just-appended record is already the newest complete record.
             // Replacing the active file with those same encoded bytes is a
             // crash-safe production compaction and avoids a second full scan.
             match replace_file_atomically(&self.path, &encoded.bytes) {
-                Ok(()) => (0, encoded_len, 1),
+                Ok(()) => (encoded_len, 1),
                 Err(error) => {
                     // The append above is already the durable commit point.
                     // Compaction is maintenance; failing it must not invite a
@@ -606,11 +526,11 @@ impl RecoveryJournal {
                         self.path.display(),
                         error
                     );
-                    (start_offset, appended_end, appended_record_count)
+                    (appended_end, appended_record_count)
                 }
             }
         } else {
-            (start_offset, appended_end, appended_record_count)
+            (appended_end, appended_record_count)
         };
         *append_cursor = Some(JournalAppendCursor {
             file_len: active_end,
@@ -621,12 +541,7 @@ impl RecoveryJournal {
             valid_record_count: active_record_count,
         });
 
-        Ok(JournalAppendReceipt {
-            start_offset: active_start,
-            end_offset: active_end,
-            checksum: encoded.checksum,
-            manifest_index,
-        })
+        Ok(())
     }
 
     /// Load the last complete valid record without consulting a source file.
@@ -692,22 +607,6 @@ impl RecoveryJournal {
         }
     }
 
-    /// Preserve the active journal under a unique archival path, then retire
-    /// the active journal name atomically.
-    ///
-    /// The complete archive is copied, flushed, and published before the
-    /// authoritative journal is moved over that copy. The move is the commit
-    /// point: failures before it leave the active journal untouched; after it,
-    /// this method always returns `JournalRetired`. The manifest sidecar is
-    /// moved only after that commit and is best-effort because it is not the
-    /// recovery authority.
-    ///
-    /// Callers must serialize this operation with appends and compaction for
-    /// the same path.
-    pub(crate) fn archive(&self) -> Result<RecoveryArchiveOutcome, RecoveryJournalError> {
-        self.archive_with(|| Ok(()), replace_file)
-    }
-
     /// Preserve the current journal and sidecar in a uniquely published
     /// archive directory while leaving the active names untouched.
     fn publish_archive_copy(&self) -> Result<RecoveryArchivePaths, RecoveryJournalError> {
@@ -754,66 +653,6 @@ impl RecoveryJournal {
             return Err(RecoveryJournalError::ArchiveNotCommitted { archive, source });
         }
         Ok(archive)
-    }
-
-    fn archive_with<BeforeRetire, RetireSidecar>(
-        &self,
-        before_journal_retire: BeforeRetire,
-        retire_sidecar: RetireSidecar,
-    ) -> Result<RecoveryArchiveOutcome, RecoveryJournalError>
-    where
-        BeforeRetire: FnOnce() -> io::Result<()>,
-        RetireSidecar: FnOnce(&Path, &Path) -> io::Result<()>,
-    {
-        if !self.path.try_exists()? {
-            return Ok(RecoveryArchiveOutcome::Unavailable {
-                reason: RecoveryUnavailableReason::MissingJournal,
-            });
-        }
-        let active_manifest = self.manifest_path();
-        let archive = self.publish_archive_copy()?;
-
-        if let Err(source) = before_journal_retire() {
-            return Err(RecoveryJournalError::ArchiveNotCommitted { archive, source });
-        }
-        if let Err(source) = replace_file(&self.path, &archive.journal) {
-            return Err(RecoveryJournalError::ArchiveNotCommitted { archive, source });
-        }
-
-        // The active journal name is gone from this point onward. Do not turn
-        // later sidecar or fsync failures into an error that could be mistaken
-        // for a pre-commit failure.
-        let mut durability_issues = Vec::new();
-        if let Err(error) = sync_directory(&archive.directory) {
-            durability_issues.push(format!("archive directory flush failed: {error}"));
-        }
-        if let Err(error) = sync_parent_directory(&self.path) {
-            durability_issues.push(format!("active directory flush failed: {error}"));
-        }
-        let durability = if durability_issues.is_empty() {
-            RecoveryArchiveDurability::Durable
-        } else {
-            RecoveryArchiveDurability::Uncertain {
-                reason: durability_issues.join("; "),
-            }
-        };
-
-        let sidecar = match &archive.manifest {
-            None => RecoveryArchiveSidecar::NotPresent,
-            Some(archived_manifest) => match retire_sidecar(&active_manifest, archived_manifest) {
-                Ok(()) => RecoveryArchiveSidecar::Retired,
-                Err(_error) if !active_manifest.exists() => RecoveryArchiveSidecar::Retired,
-                Err(error) => RecoveryArchiveSidecar::RetainedActive {
-                    reason: error.to_string(),
-                },
-            },
-        };
-
-        Ok(RecoveryArchiveOutcome::JournalRetired {
-            archive,
-            durability,
-            sidecar,
-        })
     }
 
     /// Preserve the current active journal, then atomically replace the active
@@ -885,81 +724,6 @@ impl RecoveryJournal {
         Ok(RecoveryArchiveReplacement {
             archive,
             durability_warning,
-        })
-    }
-
-    /// Atomically replace the journal with its newest complete valid record.
-    ///
-    /// Scanning retains at most the previous and candidate bounded records in
-    /// memory. The existing journal remains intact until the replacement has
-    /// been fully written and flushed.
-    pub(crate) fn compact(&self) -> Result<RecoveryCompactionOutcome, RecoveryJournalError> {
-        let mut file = match File::open(&self.path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(RecoveryCompactionOutcome::Unavailable {
-                    reason: RecoveryUnavailableReason::MissingJournal,
-                });
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let scan = scan_file(&mut file)?;
-        if let Some(tail) = &scan.ignored_tail {
-            if tail.is_unsupported_version() {
-                return Err(RecoveryJournalError::UnsupportedTailVersion { tail: tail.clone() });
-            }
-            if !tail.is_repairable_torn_suffix() {
-                return Err(RecoveryJournalError::CorruptTailRequiresReconciliation {
-                    tail: tail.clone(),
-                });
-            }
-        }
-        let Some(record) = scan.latest else {
-            let reason = match scan.ignored_tail {
-                Some(tail) => RecoveryUnavailableReason::NoValidRecord { tail },
-                None => RecoveryUnavailableReason::EmptyJournal,
-            };
-            return Ok(RecoveryCompactionOutcome::Unavailable { reason });
-        };
-
-        let encoded = encode_record(&record.manifest, &record.automerge_snapshot)?;
-        let bytes_after = u64::try_from(encoded.bytes.len()).map_err(|_| {
-            RecoveryJournalError::RecordTooLarge {
-                actual: encoded.bytes.len(),
-                maximum: MAX_RECORD_BYTES,
-            }
-        })?;
-        replace_file_atomically(&self.path, &encoded.bytes)?;
-        *self
-            .append_cursor
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(JournalAppendCursor {
-            file_len: bytes_after,
-            modified: std::fs::metadata(&self.path)
-                .and_then(|metadata| metadata.modified())
-                .ok(),
-            last_valid_end: bytes_after,
-            valid_record_count: 1,
-        });
-        // As with append, the atomically replaced journal is authoritative.
-        // A stale inspectability index does not undo a committed compaction.
-        let manifest_index = match serde_json::to_vec(&record.manifest)
-            .map_err(RecoveryJournalError::from)
-            .and_then(|bytes| {
-                replace_file_atomically(&self.manifest_path(), &bytes)
-                    .map_err(RecoveryJournalError::from)
-            }) {
-            Ok(()) => RecoveryManifestIndex::Updated,
-            Err(error) => RecoveryManifestIndex::Stale {
-                reason: error.to_string(),
-            },
-        };
-
-        Ok(RecoveryCompactionOutcome::Compacted {
-            record: Box::new(record),
-            bytes_before: scan.file_len,
-            bytes_after,
-            manifest_index,
         })
     }
 }
@@ -1065,7 +829,6 @@ pub(crate) fn discover_journal_by_canonical_path(
 
 struct EncodedRecord {
     bytes: Vec<u8>,
-    checksum: [u8; 32],
 }
 
 fn encode_record(
@@ -1130,7 +893,7 @@ fn encode_record(
     bytes.extend_from_slice(&checksum);
     bytes.extend_from_slice(&manifest_bytes);
     bytes.extend_from_slice(automerge_snapshot);
-    Ok(EncodedRecord { bytes, checksum })
+    Ok(EncodedRecord { bytes })
 }
 
 struct JournalScan {
@@ -1564,17 +1327,16 @@ mod tests {
         let first_snapshot = snapshot("first");
         let second_snapshot = snapshot("second");
 
-        let first = journal
+        journal
             .append(&manifest(1, source), &first_snapshot)
             .unwrap();
-        let second = journal
+        let first_end = std::fs::metadata(&path).unwrap().len();
+        assert!(first_end > 0);
+        journal
             .append(&manifest(2, source), &second_snapshot)
             .unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > first_end);
 
-        assert_eq!(first.start_offset, 0);
-        assert_eq!(first.end_offset, second.start_offset);
-        assert_eq!(first.manifest_index, RecoveryManifestIndex::Updated);
-        assert_eq!(second.manifest_index, RecoveryManifestIndex::Updated);
         assert_eq!(journal.path(), path);
         let recovered = matched_record(journal.load(source_fingerprint(source)).unwrap());
         let indexed_manifest: RecoveryManifest =
@@ -1679,14 +1441,14 @@ mod tests {
         assert_eq!(first_attempted_directory, Some(canonical_parent.clone()));
 
         let mut retried_directories = Vec::new();
-        let receipt = journal
+        journal
             .append_with_directory_sync(&manifest(1, source), &recovered_snapshot, |directory| {
                 retried_directories.push(directory.to_path_buf());
                 Ok(())
             })
             .unwrap();
 
-        assert_eq!(receipt.start_offset, 0);
+        assert!(std::fs::metadata(&path).unwrap().len() > 0);
         assert_eq!(retried_directories.first(), Some(&canonical_parent));
         let recovered = matched_record(journal.load(source_fingerprint(source)).unwrap());
         assert_eq!(recovered.record.manifest.sequence, 1);
@@ -1726,26 +1488,38 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn manifest_index_failure_does_not_turn_a_committed_append_into_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("room.recovery");
         let journal = RecoveryJournal::new(&path);
         let source = b"source";
 
-        // A directory at the sidecar path makes atomic file replacement fail
-        // without preventing the authoritative journal append.
-        std::fs::create_dir(journal.manifest_path()).unwrap();
-        let recovered_snapshot = snapshot("durable despite stale index");
-        let receipt = journal
-            .append(&manifest(1, source), &recovered_snapshot)
+        journal
+            .append(&manifest(1, source), &snapshot("first"))
             .unwrap();
+        let previous_manifest_bytes = std::fs::read(journal.manifest_path()).unwrap();
 
-        assert!(matches!(
-            receipt.manifest_index,
-            RecoveryManifestIndex::Stale { .. }
-        ));
+        // Removing write permission on the directory blocks the sidecar's
+        // atomic replace (temp-file create, then rename) without touching the
+        // journal file, which is already open for the append below.
+        let original_permissions = std::fs::metadata(directory.path()).unwrap().permissions();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let recovered_snapshot = snapshot("durable despite stale index");
+        let append_result = journal.append(&manifest(2, source), &recovered_snapshot);
+
+        std::fs::set_permissions(directory.path(), original_permissions).unwrap();
+
+        assert!(append_result.is_ok());
+        assert_eq!(
+            std::fs::read(journal.manifest_path()).unwrap(),
+            previous_manifest_bytes
+        );
         let recovered = matched_record(journal.load(source_fingerprint(source)).unwrap());
-        assert_eq!(recovered.record.manifest.sequence, 1);
+        assert_eq!(recovered.record.manifest.sequence, 2);
         assert_eq!(recovered.record.automerge_snapshot, recovered_snapshot);
     }
 
@@ -1772,84 +1546,6 @@ mod tests {
             }
             other => panic!("expected source conflict, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn archive_durably_publishes_both_files_before_retiring_active_names() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("room.recovery");
-        let journal = RecoveryJournal::new(&path);
-        let source = b"source";
-        journal
-            .append(&manifest(1, source), &snapshot("recovered"))
-            .unwrap();
-        let original_journal = std::fs::read(&path).unwrap();
-        let original_manifest = std::fs::read(journal.manifest_path()).unwrap();
-
-        let (archive, durability, sidecar) = match journal.archive().unwrap() {
-            RecoveryArchiveOutcome::JournalRetired {
-                archive,
-                durability,
-                sidecar,
-            } => (archive, durability, sidecar),
-            other => panic!("expected retired journal, got {other:?}"),
-        };
-
-        assert_eq!(durability, RecoveryArchiveDurability::Durable);
-        assert_eq!(sidecar, RecoveryArchiveSidecar::Retired);
-        assert!(!path.exists());
-        assert!(!journal.manifest_path().exists());
-        assert_eq!(std::fs::read(&archive.journal).unwrap(), original_journal);
-        let archived_manifest = archive.manifest.as_ref().unwrap();
-        assert_eq!(std::fs::read(archived_manifest).unwrap(), original_manifest);
-
-        let archived_journal = RecoveryJournal::new(&archive.journal);
-        let recovered = matched_record(archived_journal.load(source_fingerprint(source)).unwrap());
-        assert_eq!(recovered.record.manifest.sequence, 1);
-        assert_eq!(
-            journal.archive().unwrap(),
-            RecoveryArchiveOutcome::Unavailable {
-                reason: RecoveryUnavailableReason::MissingJournal
-            }
-        );
-    }
-
-    #[test]
-    fn archive_failure_before_commit_preserves_active_and_published_copies() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("room.recovery");
-        let journal = RecoveryJournal::new(&path);
-        let source = b"source";
-        journal
-            .append(&manifest(1, source), &snapshot("recovered"))
-            .unwrap();
-        let original_journal = std::fs::read(&path).unwrap();
-        let original_manifest = std::fs::read(journal.manifest_path()).unwrap();
-
-        let error = journal
-            .archive_with(
-                || Err(io::Error::other("injected before journal retirement")),
-                replace_file,
-            )
-            .unwrap_err();
-        let archive = match error {
-            RecoveryJournalError::ArchiveNotCommitted { archive, source } => {
-                assert_eq!(source.kind(), io::ErrorKind::Other);
-                archive
-            }
-            other => panic!("expected an uncommitted archive, got {other:?}"),
-        };
-
-        assert_eq!(std::fs::read(&path).unwrap(), original_journal);
-        assert_eq!(
-            std::fs::read(journal.manifest_path()).unwrap(),
-            original_manifest
-        );
-        assert_eq!(std::fs::read(&archive.journal).unwrap(), original_journal);
-        assert_eq!(
-            std::fs::read(archive.manifest.as_ref().unwrap()).unwrap(),
-            original_manifest
-        );
     }
 
     #[test]
@@ -1884,53 +1580,6 @@ mod tests {
     }
 
     #[test]
-    fn manifest_retirement_failure_does_not_undo_journal_commit() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("room.recovery");
-        let journal = RecoveryJournal::new(&path);
-        journal
-            .append(&manifest(1, b"source"), &snapshot("recovered"))
-            .unwrap();
-
-        let (archive, durability, sidecar) = match journal
-            .archive_with(
-                || Ok(()),
-                |_source, _destination| {
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "injected sidecar retirement failure",
-                    ))
-                },
-            )
-            .unwrap()
-        {
-            RecoveryArchiveOutcome::JournalRetired {
-                archive,
-                durability,
-                sidecar,
-            } => (archive, durability, sidecar),
-            other => panic!("expected retired journal, got {other:?}"),
-        };
-
-        assert_eq!(durability, RecoveryArchiveDurability::Durable);
-        assert!(matches!(
-            sidecar,
-            RecoveryArchiveSidecar::RetainedActive { reason }
-                if reason.contains("injected sidecar retirement failure")
-        ));
-        assert!(!path.exists());
-        assert!(journal.manifest_path().exists());
-        assert!(archive.journal.exists());
-        assert!(archive.manifest.unwrap().exists());
-        assert_eq!(
-            journal.load(source_fingerprint(b"source")).unwrap(),
-            RecoveryLoadOutcome::Unavailable {
-                reason: RecoveryUnavailableReason::MissingJournal
-            }
-        );
-    }
-
-    #[test]
     fn torn_tail_recovers_last_complete_record() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("room.recovery");
@@ -1938,17 +1587,19 @@ mod tests {
         let source = b"source";
         let first_snapshot = snapshot("first");
         let second_snapshot = snapshot("second");
-        let first = journal
+        journal
             .append(&manifest(1, source), &first_snapshot)
             .unwrap();
-        let second = journal
+        let first_end = std::fs::metadata(&path).unwrap().len();
+        journal
             .append(&manifest(2, source), &second_snapshot)
             .unwrap();
+        let second_end = std::fs::metadata(&path).unwrap().len();
         File::options()
             .write(true)
             .open(&path)
             .unwrap()
-            .set_len(second.end_offset - 7)
+            .set_len(second_end - 7)
             .unwrap();
 
         let recovered = matched_record(journal.load(source_fingerprint(source)).unwrap());
@@ -1956,7 +1607,7 @@ mod tests {
         assert_eq!(recovered.record.automerge_snapshot, first_snapshot);
         assert!(matches!(
             recovered.ignored_tail,
-            Some(JournalTailIssue::TruncatedPayload { offset, .. }) if offset == first.end_offset
+            Some(JournalTailIssue::TruncatedPayload { offset, .. }) if offset == first_end
         ));
     }
 
@@ -1966,18 +1617,20 @@ mod tests {
         let path = directory.path().join("room.recovery");
         let journal = RecoveryJournal::new(&path);
         let source = b"source";
-        let first = journal
+        journal
             .append(&manifest(1, source), &snapshot("first"))
             .unwrap();
-        let second = journal
+        let first_end = std::fs::metadata(&path).unwrap().len();
+        journal
             .append(&manifest(2, source), &snapshot("second"))
             .unwrap();
+        let second_end = std::fs::metadata(&path).unwrap().len();
 
         let mut file = File::options().read(true).write(true).open(&path).unwrap();
-        file.seek(SeekFrom::Start(second.end_offset - 1)).unwrap();
+        file.seek(SeekFrom::Start(second_end - 1)).unwrap();
         let mut byte = [0_u8; 1];
         file.read_exact(&mut byte).unwrap();
-        file.seek(SeekFrom::Start(second.end_offset - 1)).unwrap();
+        file.seek(SeekFrom::Start(second_end - 1)).unwrap();
         file.write_all(&[byte[0] ^ 0xff]).unwrap();
         file.sync_all().unwrap();
 
@@ -1985,9 +1638,7 @@ mod tests {
         assert_eq!(recovered.record.manifest.sequence, 1);
         assert_eq!(
             recovered.ignored_tail,
-            Some(JournalTailIssue::ChecksumMismatch {
-                offset: first.end_offset
-            })
+            Some(JournalTailIssue::ChecksumMismatch { offset: first_end })
         );
     }
 
@@ -1997,22 +1648,25 @@ mod tests {
         let path = directory.path().join("room.recovery");
         let journal = RecoveryJournal::new(&path);
         let source = b"source";
-        let first = journal
+        journal
             .append(&manifest(1, source), &snapshot("first"))
             .unwrap();
-        let second = journal
+        let first_end = std::fs::metadata(&path).unwrap().len();
+        journal
             .append(&manifest(2, source), &snapshot("second"))
             .unwrap();
         journal
             .append(&manifest(3, source), &snapshot("valid suffix"))
             .unwrap();
 
+        // The second record starts exactly where the first one ends.
+        let second_start = first_end;
         let mut file = File::options().read(true).write(true).open(&path).unwrap();
-        file.seek(SeekFrom::Start(second.start_offset + HEADER_LEN as u64))
+        file.seek(SeekFrom::Start(second_start + HEADER_LEN as u64))
             .unwrap();
         let mut byte = [0_u8; 1];
         file.read_exact(&mut byte).unwrap();
-        file.seek(SeekFrom::Start(second.start_offset + HEADER_LEN as u64))
+        file.seek(SeekFrom::Start(second_start + HEADER_LEN as u64))
             .unwrap();
         file.write_all(&[byte[0] ^ 0xff]).unwrap();
         file.sync_all().unwrap();
@@ -2030,7 +1684,7 @@ mod tests {
             error,
             RecoveryJournalError::CorruptTailRequiresReconciliation {
                 tail: JournalTailIssue::ChecksumMismatch { offset }
-            } if offset == first.end_offset
+            } if offset == first_end
         ));
         assert_eq!(std::fs::read(&path).unwrap(), preserved);
     }
@@ -2041,24 +1695,34 @@ mod tests {
         let path = directory.path().join("room.recovery");
         let journal = RecoveryJournal::new(&path);
         let source = b"source";
-        let first = journal
+        journal
             .append(&manifest(1, source), &snapshot("first"))
             .unwrap();
-        let torn = journal
+        let first_end = std::fs::metadata(&path).unwrap().len();
+        journal
             .append(&manifest(2, source), &snapshot("torn"))
             .unwrap();
+        let torn_end = std::fs::metadata(&path).unwrap().len();
         File::options()
             .write(true)
             .open(&path)
             .unwrap()
-            .set_len(torn.end_offset - 11)
+            .set_len(torn_end - 11)
             .unwrap();
 
+        let replacement_manifest = manifest(3, source);
         let replacement_snapshot = snapshot("replacement");
-        let replacement = journal
-            .append(&manifest(3, source), &replacement_snapshot)
+        let replacement_len = encode_record(&replacement_manifest, &replacement_snapshot)
+            .unwrap()
+            .bytes
+            .len() as u64;
+        journal
+            .append(&replacement_manifest, &replacement_snapshot)
             .unwrap();
-        assert_eq!(replacement.start_offset, first.end_offset);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            first_end + replacement_len
+        );
 
         let recovered = matched_record(journal.load(source_fingerprint(source)).unwrap());
         assert_eq!(recovered.record.manifest.sequence, 3);
@@ -2067,75 +1731,24 @@ mod tests {
     }
 
     #[test]
-    fn compaction_atomically_preserves_newest_valid_record() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("room.recovery");
-        let journal = RecoveryJournal::new(&path);
-        let source = b"source";
-        journal
-            .append(&manifest(1, source), &snapshot("first"))
-            .unwrap();
-        let newest_snapshot = snapshot("newest");
-        let newest = journal
-            .append(&manifest(2, source), &newest_snapshot)
-            .unwrap();
-
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(b"torn-tail").unwrap();
-        file.sync_all().unwrap();
-        let bytes_before = std::fs::metadata(&path).unwrap().len();
-
-        let compacted = journal.compact().unwrap();
-        let bytes_after = match compacted {
-            RecoveryCompactionOutcome::Compacted {
-                record,
-                bytes_before: reported_before,
-                bytes_after,
-                manifest_index,
-            } => {
-                assert_eq!(reported_before, bytes_before);
-                assert_eq!(record.manifest.sequence, 2);
-                assert_eq!(record.automerge_snapshot, newest_snapshot);
-                assert_eq!(manifest_index, RecoveryManifestIndex::Updated);
-                bytes_after
-            }
-            other => panic!("expected compacted journal, got {other:?}"),
-        };
-        assert!(bytes_after < newest.end_offset);
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), bytes_after);
-
-        let recovered = matched_record(journal.load(source_fingerprint(source)).unwrap());
-        assert_eq!(recovered.record.manifest.sequence, 2);
-        assert_eq!(recovered.record.automerge_snapshot, newest_snapshot);
-        assert!(recovered.ignored_tail.is_none());
-
-        let mut entries: Vec<_> = std::fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        entries.sort();
-        let mut expected = vec![
-            path.file_name().unwrap().to_os_string(),
-            journal.manifest_path().file_name().unwrap().to_os_string(),
-        ];
-        expected.sort();
-        assert_eq!(entries, expected);
-    }
-
-    #[test]
     fn append_automatically_compacts_the_active_journal() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("bounded.recovery");
         let journal = RecoveryJournal::new(&path);
-        let mut last_receipt = None;
         for sequence in 1..=COMPACT_AFTER_RECORDS {
             let manifest = manifest(sequence as u64, b"source");
-            last_receipt = Some(journal.append(&manifest, &snapshot("value")).unwrap());
+            journal.append(&manifest, &snapshot("value")).unwrap();
         }
 
-        let receipt = last_receipt.unwrap();
-        assert_eq!(receipt.start_offset, 0);
-        assert_eq!(std::fs::metadata(&path).unwrap().len(), receipt.end_offset);
+        // Compaction replaced the bounded journal with just the newest
+        // record: its on-disk length is one record, not COMPACT_AFTER_RECORDS.
+        let newest_manifest = manifest(COMPACT_AFTER_RECORDS as u64, b"source");
+        let single_record_len = encode_record(&newest_manifest, &snapshot("value"))
+            .unwrap()
+            .bytes
+            .len() as u64;
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), single_record_len);
+
         let latest = match journal.latest_record().unwrap() {
             RecoveryLatestOutcome::Recovered(recovery) => recovery,
             other => panic!("expected compacted recovery record, got {other:?}"),

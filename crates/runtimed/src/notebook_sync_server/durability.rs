@@ -975,7 +975,65 @@ impl RoomDurability {
         &self,
         changes: Vec<Change>,
     ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
-        self.commit_changes(changes)
+        self.ensure_accepting_commits()?;
+        if changes.is_empty() {
+            return Ok(DurableCommitOutcome::AlreadyDurable(self.status()));
+        }
+
+        let mut state = self.lock_state();
+        let mut durable = AutoCommit::load(&state.durable_snapshot)
+            .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+        let peer_hashes = changes
+            .iter()
+            .map(|change| change.hash().0)
+            .collect::<Vec<_>>();
+        let missing = changes
+            .into_iter()
+            .filter(|change| durable.get_change_by_hash(&change.hash()).is_none())
+            .collect::<Vec<_>>();
+        if missing.is_empty()
+            && peer_hashes
+                .iter()
+                .all(|hash| state.manifest.peer_change_hashes.contains(hash))
+        {
+            return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
+                &state,
+            )));
+        }
+        durable
+            .apply_changes(missing)
+            .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+        let durable_heads = durable.get_heads().iter().map(|head| head.0).collect();
+        let snapshot = durable.save();
+
+        let mut manifest = state.manifest.clone();
+        manifest.sequence = manifest
+            .sequence
+            .checked_add(1)
+            .ok_or(RoomDurabilityError::SequenceExhausted)?;
+        manifest.durable_heads = durable_heads;
+        apply_mutation_to_manifest(
+            &mut manifest,
+            DurableMutation::Peer {
+                change_hashes: peer_hashes,
+            },
+        );
+        if let Some(journal) = self.journal() {
+            if let Err(error) = journal.append(&manifest, &snapshot) {
+                let reason = error.to_string();
+                state.degraded_reason = Some(reason);
+                self.status_tx.send_replace(status_from_state(&state));
+                return Err(RoomDurabilityError::Journal(error));
+            }
+        }
+
+        state.manifest = manifest;
+        state.durable_snapshot = snapshot.into();
+        state.has_durable_record = true;
+        state.degraded_reason = None;
+        let status = status_from_state(&state);
+        self.status_tx.send_replace(status.clone());
+        Ok(DurableCommitOutcome::Committed(status))
     }
 
     /// Commit one fully prepared external file revision as a new immutable
@@ -1051,71 +1109,6 @@ impl RoomDurability {
                 return Err(RoomDurabilityError::Journal(error));
             }
         }
-        state.manifest = manifest;
-        state.durable_snapshot = snapshot.into();
-        state.has_durable_record = true;
-        state.degraded_reason = None;
-        let status = status_from_state(&state);
-        self.status_tx.send_replace(status.clone());
-        Ok(DurableCommitOutcome::Committed(status))
-    }
-
-    fn commit_changes(
-        &self,
-        changes: Vec<Change>,
-    ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
-        self.ensure_accepting_commits()?;
-        if changes.is_empty() {
-            return Ok(DurableCommitOutcome::AlreadyDurable(self.status()));
-        }
-
-        let mut state = self.lock_state();
-        let mut durable = AutoCommit::load(&state.durable_snapshot)
-            .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
-        let peer_hashes = changes
-            .iter()
-            .map(|change| change.hash().0)
-            .collect::<Vec<_>>();
-        let missing = changes
-            .into_iter()
-            .filter(|change| durable.get_change_by_hash(&change.hash()).is_none())
-            .collect::<Vec<_>>();
-        if missing.is_empty()
-            && peer_hashes
-                .iter()
-                .all(|hash| state.manifest.peer_change_hashes.contains(hash))
-        {
-            return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
-                &state,
-            )));
-        }
-        durable
-            .apply_changes(missing)
-            .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
-        let durable_heads = durable.get_heads().iter().map(|head| head.0).collect();
-        let snapshot = durable.save();
-
-        let mut manifest = state.manifest.clone();
-        manifest.sequence = manifest
-            .sequence
-            .checked_add(1)
-            .ok_or(RoomDurabilityError::SequenceExhausted)?;
-        manifest.durable_heads = durable_heads;
-        apply_mutation_to_manifest(
-            &mut manifest,
-            DurableMutation::Peer {
-                change_hashes: peer_hashes,
-            },
-        );
-        if let Some(journal) = self.journal() {
-            if let Err(error) = journal.append(&manifest, &snapshot) {
-                let reason = error.to_string();
-                state.degraded_reason = Some(reason);
-                self.status_tx.send_replace(status_from_state(&state));
-                return Err(RoomDurabilityError::Journal(error));
-            }
-        }
-
         state.manifest = manifest;
         state.durable_snapshot = snapshot.into();
         state.has_durable_record = true;
