@@ -1554,35 +1554,327 @@ mod tests {
         }
     }
 
+    /// Fault matrix over the ambiguous active-journal replacement in
+    /// `archive_and_replace_with`. The cells are the outcomes an atomic
+    /// replace can leave at the active path when it reports an error: nothing
+    /// replaced, the exact replacement committed before the error surfaced
+    /// (rename landed, directory flush failed), or bytes at the path that are
+    /// not the exact replacement. Under every cell the active journal path
+    /// exists and scans to a valid latest record, wrote-then-errored is
+    /// classified by byte-compare, and the published archive directory holds
+    /// the complete pre-replacement journal and sidecar.
     #[test]
-    fn reconciled_replacement_failure_keeps_old_active_journal() {
+    fn reconciled_replacement_fault_matrix_keeps_a_scannable_active_journal() {
+        enum ReplaceFault {
+            Succeeds,
+            ErrorsBeforeCommit,
+            CommitsThenErrors,
+            AppendsThenErrors,
+        }
+        enum Expected {
+            Committed { warning: bool },
+            NotCommitted,
+        }
+        enum ActiveBytes {
+            Original,
+            Replacement,
+            OriginalThenReplacement,
+        }
+        struct Cell {
+            name: &'static str,
+            fault: ReplaceFault,
+            expected: Expected,
+            active_bytes: ActiveBytes,
+            active_sequence: u64,
+        }
+
+        let cells = [
+            Cell {
+                name: "replacement commits cleanly",
+                fault: ReplaceFault::Succeeds,
+                expected: Expected::Committed { warning: false },
+                active_bytes: ActiveBytes::Replacement,
+                active_sequence: 2,
+            },
+            Cell {
+                name: "wrote-then-errored: exact replacement committed before the error",
+                fault: ReplaceFault::CommitsThenErrors,
+                expected: Expected::Committed { warning: true },
+                active_bytes: ActiveBytes::Replacement,
+                active_sequence: 2,
+            },
+            Cell {
+                name: "errored before commit leaves the old active journal",
+                fault: ReplaceFault::ErrorsBeforeCommit,
+                expected: Expected::NotCommitted,
+                active_bytes: ActiveBytes::Original,
+                active_sequence: 1,
+            },
+            Cell {
+                name: "bytes other than the exact replacement classify as uncommitted",
+                fault: ReplaceFault::AppendsThenErrors,
+                expected: Expected::NotCommitted,
+                active_bytes: ActiveBytes::OriginalThenReplacement,
+                active_sequence: 2,
+            },
+        ];
+
+        for cell in cells {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("room.recovery");
+            let journal = RecoveryJournal::new(&path);
+            journal
+                .append(&manifest(1, b"old-source"), &snapshot("old"))
+                .unwrap();
+            let original_journal = std::fs::read(&path).unwrap();
+            let original_manifest = std::fs::read(journal.manifest_path()).unwrap();
+
+            let replacement_manifest = manifest(2, b"new-source");
+            let replacement_snapshot = snapshot("new");
+            let replacement_bytes = encode_record(&replacement_manifest, &replacement_snapshot)
+                .unwrap()
+                .bytes;
+
+            let result = journal.archive_and_replace_with(
+                &replacement_manifest,
+                &replacement_snapshot,
+                |path, bytes| match cell.fault {
+                    ReplaceFault::Succeeds => replace_file_atomically(path, bytes),
+                    ReplaceFault::ErrorsBeforeCommit => {
+                        Err(io::Error::other("injected pre-commit replacement failure"))
+                    }
+                    ReplaceFault::CommitsThenErrors => {
+                        replace_file_atomically(path, bytes)?;
+                        Err(io::Error::other("injected post-commit flush failure"))
+                    }
+                    ReplaceFault::AppendsThenErrors => {
+                        let mut file = OpenOptions::new().append(true).open(path)?;
+                        file.write_all(bytes)?;
+                        file.sync_all()?;
+                        Err(io::Error::other("injected ambiguous replacement failure"))
+                    }
+                },
+            );
+
+            let archive = match (result, &cell.expected) {
+                (Ok(replacement), Expected::Committed { warning }) => {
+                    assert_eq!(
+                        replacement.durability_warning.is_some(),
+                        *warning,
+                        "{}: unexpected durability warning state",
+                        cell.name
+                    );
+                    replacement.archive
+                }
+                (
+                    Err(RecoveryJournalError::ArchiveNotCommitted { archive, source }),
+                    Expected::NotCommitted,
+                ) => {
+                    assert_eq!(source.kind(), io::ErrorKind::Other, "{}", cell.name);
+                    archive
+                }
+                (other, _) => panic!("{}: unexpected outcome {other:?}", cell.name),
+            };
+
+            // The active journal path exists under every fault cell, holds
+            // exactly the bytes the cell's replace left behind, and scans to
+            // a valid latest record.
+            let expected_active_bytes = match cell.active_bytes {
+                ActiveBytes::Original => original_journal.clone(),
+                ActiveBytes::Replacement => replacement_bytes.clone(),
+                ActiveBytes::OriginalThenReplacement => {
+                    let mut bytes = original_journal.clone();
+                    bytes.extend_from_slice(&replacement_bytes);
+                    bytes
+                }
+            };
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                expected_active_bytes,
+                "{}",
+                cell.name
+            );
+            let recovered = match journal.latest_record().unwrap() {
+                RecoveryLatestOutcome::Recovered(recovery) => recovery,
+                other => panic!(
+                    "{}: expected a recoverable journal, got {other:?}",
+                    cell.name
+                ),
+            };
+            assert_eq!(
+                recovered.record.manifest.sequence, cell.active_sequence,
+                "{}",
+                cell.name
+            );
+
+            // The archive directory is complete once its rename commits: the
+            // full pre-replacement journal and sidecar under one unique path,
+            // with no staging leftovers.
+            assert_eq!(
+                std::fs::read(&archive.journal).unwrap(),
+                original_journal,
+                "{}",
+                cell.name
+            );
+            assert_eq!(
+                std::fs::read(archive.manifest.as_ref().unwrap()).unwrap(),
+                original_manifest,
+                "{}",
+                cell.name
+            );
+            let entries: Vec<String> = std::fs::read_dir(directory.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                entries.iter().all(|name| !name.contains(".staging")),
+                "{}: staging directory left behind in {entries:?}",
+                cell.name
+            );
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|name| name.contains(".archive-"))
+                    .count(),
+                1,
+                "{}: expected exactly one archive directory in {entries:?}",
+                cell.name
+            );
+
+            // The inspectability sidecar is refreshed only after a committed
+            // replacement.
+            let expected_sidecar = match cell.expected {
+                Expected::Committed { .. } => serde_json::to_vec(&replacement_manifest).unwrap(),
+                Expected::NotCommitted => original_manifest.clone(),
+            };
+            assert_eq!(
+                std::fs::read(journal.manifest_path()).unwrap(),
+                expected_sidecar,
+                "{}",
+                cell.name
+            );
+
+            // The journal stays appendable after every cell.
+            journal
+                .append(&manifest(3, b"post-fault"), &snapshot("post-fault"))
+                .unwrap();
+            let appended = match journal.latest_record().unwrap() {
+                RecoveryLatestOutcome::Recovered(recovery) => recovery,
+                other => panic!("{}: expected appendable journal, got {other:?}", cell.name),
+            };
+            assert_eq!(appended.record.manifest.sequence, 3, "{}", cell.name);
+        }
+    }
+
+    #[test]
+    fn reconciled_replacement_refuses_to_mint_a_journal_when_none_is_active() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("room.recovery");
         let journal = RecoveryJournal::new(&path);
-        journal
-            .append(&manifest(1, b"old-source"), &snapshot("old"))
-            .unwrap();
-        let original = std::fs::read(&path).unwrap();
+        let mut replace_called = false;
 
         let error = journal
-            .archive_and_replace_with(
-                &manifest(2, b"new-source"),
-                &snapshot("new"),
-                |_path, _bytes| Err(io::Error::other("injected replacement failure")),
-            )
+            .archive_and_replace_with(&manifest(1, b"source"), &snapshot("value"), |_p, _b| {
+                replace_called = true;
+                Ok(())
+            })
             .unwrap_err();
-        let archive = match error {
-            RecoveryJournalError::ArchiveNotCommitted { archive, source } => {
-                assert_eq!(source.kind(), io::ErrorKind::Other);
-                archive
-            }
-            other => panic!("expected replacement failure, got {other:?}"),
-        };
 
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(std::fs::read(&archive.journal).unwrap(), original);
-        let recovered = matched_record(journal.load(source_fingerprint(b"old-source")).unwrap());
+        assert!(matches!(
+            &error,
+            RecoveryJournalError::Io(source) if source.kind() == io::ErrorKind::NotFound
+        ));
+        assert!(!replace_called);
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn publish_archive_copy_publishes_unique_complete_archives_without_retiring_active_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("room.recovery");
+        let journal = RecoveryJournal::new(&path);
+        let source = b"source";
+        journal
+            .append(&manifest(1, source), &snapshot("recovered"))
+            .unwrap();
+        let original_journal = std::fs::read(&path).unwrap();
+        let original_manifest = std::fs::read(journal.manifest_path()).unwrap();
+
+        let first = journal.publish_archive_copy().unwrap();
+        // A journal without its optional sidecar still archives completely.
+        std::fs::remove_file(journal.manifest_path()).unwrap();
+        let second = journal.publish_archive_copy().unwrap();
+
+        assert_ne!(first.directory, second.directory);
+        assert_eq!(std::fs::read(&first.journal).unwrap(), original_journal);
+        assert_eq!(
+            std::fs::read(first.manifest.as_ref().unwrap()).unwrap(),
+            original_manifest
+        );
+        assert_eq!(second.manifest, None);
+        assert_eq!(std::fs::read(&second.journal).unwrap(), original_journal);
+
+        // The active journal name is never touched by publication.
+        assert_eq!(std::fs::read(&path).unwrap(), original_journal);
+        let recovered = matched_record(journal.load(source_fingerprint(source)).unwrap());
         assert_eq!(recovered.record.manifest.sequence, 1);
+    }
+
+    #[test]
+    fn publish_archive_copy_staging_fault_cleans_up_and_preserves_active_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("room.recovery");
+        let journal = RecoveryJournal::new(&path);
+        let source = b"source";
+        journal
+            .append(&manifest(1, source), &snapshot("recovered"))
+            .unwrap();
+        let original_journal = std::fs::read(&path).unwrap();
+
+        // A directory at the sidecar path passes the existence probe, then
+        // fails the durable staging copy partway through the archive stage.
+        std::fs::remove_file(journal.manifest_path()).unwrap();
+        std::fs::create_dir(journal.manifest_path()).unwrap();
+
+        let error = journal.publish_archive_copy().unwrap_err();
+        assert!(matches!(error, RecoveryJournalError::Io(_)));
+
+        // The failed stage is cleaned up and the active journal still scans.
+        assert_eq!(std::fs::read(&path).unwrap(), original_journal);
+        let recovered = matched_record(journal.load(source_fingerprint(source)).unwrap());
+        assert_eq!(recovered.record.manifest.sequence, 1);
+        let mut entries: Vec<String> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                journal
+                    .manifest_path()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn publish_archive_copy_missing_journal_fails_without_creating_archive_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+
+        let error = journal.publish_archive_copy().unwrap_err();
+
+        assert!(matches!(
+            &error,
+            RecoveryJournalError::Io(source) if source.kind() == io::ErrorKind::NotFound
+        ));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
     #[test]
