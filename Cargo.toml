@@ -76,6 +76,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 notify = "8"
 notify-debouncer-mini = "0.7"
 parquet = { version = "54", default-features = false, features = ["arrow", "snap", "flate2", "zstd"] }
+proptest = "1"
 rattler = { version = "0.40", default-features = false, features = ["native-tls"] }
 rattler_cache = { version = "0.6", default-features = false, features = ["native-tls"] }
 rattler_conda_types = "0.44"
