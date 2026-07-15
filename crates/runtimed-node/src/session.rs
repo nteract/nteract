@@ -1255,15 +1255,16 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     let package_manager = opts.package_manager.map(Into::into);
     let environment_mode = opts.environment_mode.map(Into::into);
 
-    let result = notebook_sync::connect::connect_create_with_environment_mode(
+    let result = notebook_sync::connect::connect_create(
         socket_path.clone(),
-        &runtime,
-        working_dir.clone(),
-        &actor_label,
-        /* ephemeral */ false,
-        package_manager,
-        dependencies,
-        environment_mode,
+        notebook_sync::connect::CreateNotebookSpec {
+            working_dir: working_dir.clone(),
+            actor_label: actor_label.clone(),
+            package_manager,
+            dependencies,
+            environment_mode,
+            ..notebook_sync::connect::CreateNotebookSpec::new(runtime.as_str())
+        },
     )
     .await
     .map_err(to_napi_err)?;

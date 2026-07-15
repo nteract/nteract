@@ -22,6 +22,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
+/// Spec for creating a "python" notebook as `actor_label`, with every other
+/// field at its default: non-ephemeral, no deps, daemon-chosen notebook id.
+/// Tests override individual fields with struct update syntax.
+fn create_spec(actor_label: &str) -> connect::CreateNotebookSpec {
+    connect::CreateNotebookSpec {
+        actor_label: actor_label.to_string(),
+        ..connect::CreateNotebookSpec::new("python")
+    }
+}
+
 /// Write a test .ipynb notebook file with the given cells.
 /// Each cell is a tuple of (id, cell_type, source, outputs_json_strings).
 fn write_test_ipynb(path: &std::path::Path, cells: &[(&str, &str, &str, Vec<&str>)]) {
@@ -740,12 +750,10 @@ async fn test_local_identity_handshake_and_presence_rewrite() {
 
     let result = connect::connect_create(
         socket_path.clone(),
-        "python",
-        None,
-        "agent:codex:s1",
-        true,
-        None,
-        vec![],
+        connect::CreateNotebookSpec {
+            ephemeral: true,
+            ..create_spec("agent:codex:s1")
+        },
     )
     .await
     .expect("client should connect");
@@ -859,12 +867,10 @@ async fn test_local_identity_rejects_foreign_automerge_actor() {
 
     let owner = connect::connect_create(
         socket_path.clone(),
-        "python",
-        None,
-        "desktop:owner",
-        true,
-        None,
-        vec![],
+        connect::CreateNotebookSpec {
+            ephemeral: true,
+            ..create_spec("desktop:owner")
+        },
     )
     .await
     .expect("owner should connect");
@@ -926,17 +932,9 @@ async fn test_notebook_sync_via_unified_socket() {
     assert!(wait_for_daemon(&pool_client).await);
 
     // Create first notebook via connect_create — should get daemon starter cell
-    let result1 = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .expect("client1 should connect");
+    let result1 = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .expect("client1 should connect");
     assert_eq!(
         result1.info.cell_count, 1,
         "CreateNotebook handshake should report the daemon starter cell"
@@ -990,17 +988,9 @@ async fn test_notebook_sync_via_unified_socket() {
     );
 
     // Create a different notebook — should be independent
-    let result3 = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .expect("client3 should connect");
+    let result3 = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .expect("client3 should connect");
     assert_eq!(
         result3.info.cell_count, 1,
         "second CreateNotebook handshake should report its own daemon starter cell"
@@ -1044,17 +1034,9 @@ async fn test_notebook_sync_cross_window_propagation() {
     assert!(wait_for_daemon(&pool_client).await);
 
     // First client creates a notebook; second client joins it
-    let result = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .unwrap();
+    let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .unwrap();
     let notebook_id = result.info.notebook_id.clone();
     let client1 = result.handle;
     let client2 = connect::connect(socket_path.clone(), notebook_id, "test")
@@ -1117,17 +1099,9 @@ async fn test_parallel_cell_mutations_same_session_no_disconnect() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    let result = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .unwrap();
+    let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .unwrap();
     let notebook_id = result.info.notebook_id.clone();
     let handle = result.handle;
 
@@ -1205,17 +1179,9 @@ async fn test_untrusted_launch_and_sync_environment_are_daemon_rejected() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    let result = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .unwrap();
+    let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .unwrap();
     let handle = result.handle;
 
     assert!(
@@ -1288,15 +1254,13 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
         let project_dir = project_dir.clone();
         let notebook_path = notebook_path.clone();
         async move {
-            let result = connect::connect_create_with_environment_mode(
+            let result = connect::connect_create(
                 socket_path,
-                "python",
-                Some(project_dir),
-                label,
-                false,
-                None,
-                vec![],
-                Some(mode),
+                connect::CreateNotebookSpec {
+                    working_dir: Some(project_dir),
+                    environment_mode: Some(mode),
+                    ..create_spec(label)
+                },
             )
             .await
             .unwrap();
@@ -1367,12 +1331,11 @@ async fn test_sync_environment_guard_rejects_stale_observed_dependencies() {
 
     let result = connect::connect_create(
         socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        Some(notebook_protocol::connection::PackageManager::Uv),
-        vec!["pandas".to_string()],
+        connect::CreateNotebookSpec {
+            package_manager: Some(notebook_protocol::connection::PackageManager::Uv),
+            dependencies: vec!["pandas".to_string()],
+            ..create_spec("test")
+        },
     )
     .await
     .unwrap();
@@ -1425,12 +1388,11 @@ async fn test_approve_trust_guard_rejects_stale_observed_dependencies() {
 
     let result = connect::connect_create(
         socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        Some(notebook_protocol::connection::PackageManager::Uv),
-        vec!["pandas".to_string()],
+        connect::CreateNotebookSpec {
+            package_manager: Some(notebook_protocol::connection::PackageManager::Uv),
+            dependencies: vec!["pandas".to_string()],
+            ..create_spec("test")
+        },
     )
     .await
     .unwrap();
@@ -1481,17 +1443,9 @@ async fn test_sync_environment_no_deps_reaches_existing_no_kernel_path() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    let result = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .unwrap();
+    let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .unwrap();
     let handle = result.handle;
 
     assert!(
@@ -1532,17 +1486,9 @@ async fn test_parallel_daemon_requests_same_session_no_disconnect() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    let result = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .unwrap();
+    let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .unwrap();
     let handle = result.handle;
 
     assert!(
@@ -1604,17 +1550,9 @@ async fn test_untitled_notebook_persists_through_eviction() {
     // Phase 1: Two clients connect, add cells, then both disconnect
     let notebook_id;
     {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+            .await
+            .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client1 = result.handle;
         let _client2 = connect::connect(socket_path.clone(), notebook_id.clone(), "test")
@@ -1744,17 +1682,9 @@ async fn test_eviction_flushes_before_reconnect() {
     // the `.automerge` debouncer is the only thing keeping content durable.
     let notebook_id;
     {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+            .await
+            .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
 
@@ -1840,17 +1770,9 @@ async fn test_kernel_teardown_keeps_room_resident() {
     // trigger the kernel-teardown task.
     let notebook_id;
     {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+            .await
+            .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
 
@@ -1973,17 +1895,9 @@ async fn test_ghost_reaper_removes_after_ttl() {
 
     let notebook_id;
     {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+            .await
+            .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
         assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
@@ -2078,17 +1992,9 @@ async fn test_ghost_reaper_skips_reconnected_room() {
 
     let notebook_id;
     {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+            .await
+            .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
         assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
@@ -2167,17 +2073,9 @@ async fn test_peer_reconnect_bumps_generation() {
     let notebook_id;
     let gen_before_disconnect;
     {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+            .await
+            .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
         assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
@@ -2247,17 +2145,9 @@ async fn test_resident_room_reaper_lru_cap_evicts_oldest() {
     // creation order (oldest first).
     let mut notebook_ids: Vec<String> = Vec::new();
     for tag in ["a", "b", "c"] {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            tag,
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec(tag))
+            .await
+            .unwrap();
         let notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
         assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
@@ -2368,17 +2258,9 @@ async fn test_resident_room_reaper_lru_cap_exempts_active() {
     let mut clients = Vec::new();
     let mut notebook_ids = Vec::new();
     for tag in ["a", "b", "c"] {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            tag,
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec(tag))
+            .await
+            .unwrap();
         notebook_ids.push(result.info.notebook_id.clone());
         let client = result.handle;
         assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
@@ -2444,17 +2326,9 @@ async fn test_resident_room_reaper_skips_reserved_room() {
 
     let notebook_id;
     {
-        let result = connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![],
-        )
-        .await
-        .unwrap();
+        let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+            .await
+            .unwrap();
         notebook_id = result.info.notebook_id.clone();
         let client = result.handle;
         assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
@@ -2541,17 +2415,9 @@ async fn test_notebook_cell_delete_propagation() {
     assert!(wait_for_daemon(&pool_client).await);
 
     // Client1 creates a notebook with three cells
-    let result = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .unwrap();
+    let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .unwrap();
     let notebook_id = result.info.notebook_id.clone();
     let client1 = result.handle;
 
@@ -2652,33 +2518,9 @@ async fn test_multiple_notebooks_concurrent_isolation() {
 
     // Create three notebooks concurrently via connect_create
     let (nb_a, nb_b, nb_c) = tokio::join!(
-        connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![]
-        ),
-        connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![]
-        ),
-        connect::connect_create(
-            socket_path.clone(),
-            "python",
-            None,
-            "test",
-            false,
-            None,
-            vec![]
-        ),
+        connect::connect_create(socket_path.clone(), create_spec("test"),),
+        connect::connect_create(socket_path.clone(), create_spec("test"),),
+        connect::connect_create(socket_path.clone(), create_spec("test"),),
     );
     let nb_a = nb_a.unwrap();
     let nb_b = nb_b.unwrap();
@@ -3218,20 +3060,10 @@ async fn test_uuid_joiner_receives_frontend_authored_relay_cells() {
     assert!(wait_for_daemon(&pool_client).await);
 
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let relay = connect::connect_create_relay_with_operator(
-        socket_path.clone(),
-        "python",
-        None,
-        None,
-        frame_tx,
-        false,
-        None,
-        vec![],
-        None,
-        Some("desktop".to_string()),
-    )
-    .await
-    .expect("desktop relay create should connect");
+    let relay =
+        connect::connect_create_relay(socket_path.clone(), create_spec("desktop"), frame_tx)
+            .await
+            .expect("desktop relay create should connect");
     let notebook_id = relay.info.notebook_id.clone();
     let relay_handle = relay.handle;
 
@@ -3424,12 +3256,10 @@ async fn seed_pipe_room(
 ) -> (notebook_sync::connect::CreateResult, String) {
     let seed = connect::connect_create(
         socket_path.to_path_buf(),
-        "python",
-        None,
-        "test:seed",
-        true,
-        None,
-        vec![],
+        connect::CreateNotebookSpec {
+            ephemeral: true,
+            ..create_spec("test:seed")
+        },
     )
     .await
     .expect("seed room create should succeed");
@@ -4072,12 +3902,11 @@ async fn test_create_notebook_with_deps() {
     // Create notebook with conda + two deps
     let result = connect::connect_create(
         socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        Some(notebook_protocol::connection::PackageManager::Conda),
-        vec!["pandas".to_string(), "numpy".to_string()],
+        connect::CreateNotebookSpec {
+            package_manager: Some(notebook_protocol::connection::PackageManager::Conda),
+            dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+            ..create_spec("test")
+        },
     )
     .await
     .expect("should create notebook with deps");
@@ -4140,12 +3969,10 @@ async fn test_create_notebook_with_explicit_manager_no_deps() {
     // Create notebook with pixi manager, no deps
     let result = connect::connect_create(
         socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        Some(notebook_protocol::connection::PackageManager::Pixi),
-        vec![],
+        connect::CreateNotebookSpec {
+            package_manager: Some(notebook_protocol::connection::PackageManager::Pixi),
+            ..create_spec("test")
+        },
     )
     .await
     .expect("should create notebook with pixi manager");
@@ -4211,12 +4038,10 @@ async fn test_create_notebook_default_manager_with_deps() {
     // Create notebook with deps but no explicit package manager
     let result = connect::connect_create(
         socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec!["requests".to_string()],
+        connect::CreateNotebookSpec {
+            dependencies: vec!["requests".to_string()],
+            ..create_spec("test")
+        },
     )
     .await
     .expect("should create notebook with default manager + deps");
@@ -4280,12 +4105,10 @@ async fn test_create_notebook_with_deps_reports_no_trust_approval_needed() {
 
     let result = connect::connect_create(
         socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec!["scipy".to_string()],
+        connect::CreateNotebookSpec {
+            dependencies: vec!["scipy".to_string()],
+            ..create_spec("test")
+        },
     )
     .await
     .expect("create with explicit deps should succeed");
@@ -4318,17 +4141,9 @@ async fn test_create_notebook_with_no_deps_reports_no_trust_approval_needed() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    let result = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "test",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .expect("create with no deps should succeed");
+    let result = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .expect("create with no deps should succeed");
 
     assert!(
         !result.info.needs_trust_approval,
@@ -4362,17 +4177,9 @@ async fn test_auto_heartbeat_keeps_idle_peer_connected() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    let result = connect::connect_create(
-        socket_path.clone(),
-        "python",
-        None,
-        "heartbeat-peer",
-        false,
-        None,
-        vec![],
-    )
-    .await
-    .expect("client should connect");
+    let result = connect::connect_create(socket_path.clone(), create_spec("heartbeat-peer"))
+        .await
+        .expect("client should connect");
     let client = result.handle;
     assert_session_ready(&client, "heartbeat client").await;
 
