@@ -52,6 +52,7 @@
     "remark-math": "^6.0.0",
     "runtimed": "workspace:*",
     "rxjs": "^7.8.2",
+    "shiki": "4.1.0",
     "streamdown": "^2.5.0",
     "tailwind-merge": "^3.4.0"
   },

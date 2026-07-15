@@ -1,4 +1,42 @@
-import { Streamdown } from "streamdown";
+import { Streamdown, type Components } from "streamdown";
+import {
+  CodeBlock,
+  CodeBlockActions,
+  CodeBlockCopyButton,
+  CodeBlockHeader,
+  CodeBlockTitle,
+  CodeBlockFilename,
+} from "@/components/ui/code-block";
+import type { BundledLanguage } from "shiki";
+
+const codeBlockComponents: Components = {
+  pre: ({ node }) => {
+    const codeEl = (
+      node as {
+        children?: Array<{
+          tagName?: string;
+          properties?: Record<string, unknown>;
+          children?: Array<{ value?: string }>;
+        }>;
+      }
+    )?.children?.find((c) => c.tagName === "code");
+    const className = String(codeEl?.properties?.className ?? "");
+    const lang = (className.match(/language-(\S+)/)?.[1] ?? "text") as BundledLanguage;
+    const code = codeEl?.children?.map((c) => c.value ?? "").join("") ?? "";
+    return (
+      <CodeBlock code={code} language={lang} className="my-4 not-prose">
+        <CodeBlockHeader>
+          <CodeBlockTitle>
+            <CodeBlockFilename>{lang}</CodeBlockFilename>
+          </CodeBlockTitle>
+          <CodeBlockActions>
+            <CodeBlockCopyButton />
+          </CodeBlockActions>
+        </CodeBlockHeader>
+      </CodeBlock>
+    );
+  },
+};
 
 const GFM_SAMPLE = `
 # Heading 1
@@ -226,6 +264,7 @@ export function StreamdownFixture() {
         <Streamdown
           mode="static"
           className="prose prose-sm dark:prose-invert max-w-none [&_ul]:pl-5 [&_ol]:pl-5"
+          components={codeBlockComponents}
           linkSafety={{ enabled: false }}
           allowedTags={{ img: ["src", "alt", "title", "width", "height"] }}
         >

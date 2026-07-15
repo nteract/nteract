@@ -201,6 +201,9 @@ importers:
       runtimed:
         specifier: workspace:*
         version: link:packages/runtimed
+      shiki:
+        specifier: 4.1.0
+        version: 4.1.0
       tailwind-merge:
         specifier: ^3.4.0
         version: 3.5.0
@@ -540,6 +543,9 @@ importers:
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2
+      shiki:
+        specifier: 4.1.0
+        version: 4.1.0
       streamdown:
         specifier: ^2.5.0
         version: 2.5.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
