@@ -1226,6 +1226,203 @@ mod tests {
             .unwrap();
         assert_eq!(text, "final");
     }
+
+    #[tokio::test]
+    async fn await_all_executions_terminal_trailing_grace_catches_late_outputs() {
+        // The batch wait uses zero per-execution grace, so an execution whose
+        // manifests are still empty when it terminalizes must be covered by
+        // the trailing grace pass before the function returns.
+        use crate::execution_wait::{await_all_executions_terminal, AllExecutionsTerminal};
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(
+            &shared,
+            "exec-1",
+            "cell-1",
+            "done",
+            &[stream_output("all-done-output", "hello")],
+            Some(1),
+        );
+        set_execution(&shared, "exec-2", "cell-2", "done", &[], Some(2));
+
+        let shared_for_task = shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let mut st = shared_for_task.lock().unwrap();
+            st.state_doc
+                .append_output(
+                    "exec-2",
+                    &serde_json::json!({
+                        "output_type": "execute_result",
+                        "output_id": "all-late-output",
+                        "data": {"text/plain": {"inline": "late"}},
+                    }),
+                )
+                .unwrap();
+        });
+
+        let execution_ids = vec!["exec-1".to_string(), "exec-2".to_string()];
+        let outcome = await_all_executions_terminal(
+            &handle,
+            &execution_ids,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            AllExecutionsTerminal {
+                timed_out: false,
+                has_error: false,
+            }
+        );
+        // The late output must be visible by the time the batch wait returns.
+        let state = handle.get_runtime_state().unwrap();
+        assert_eq!(state.executions["exec-2"].outputs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn await_all_executions_terminal_reports_error_status() {
+        use crate::execution_wait::await_all_executions_terminal;
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(
+            &shared,
+            "exec-1",
+            "cell-1",
+            "done",
+            &[stream_output("all-ok-output", "ok")],
+            Some(1),
+        );
+        set_execution(
+            &shared,
+            "exec-2",
+            "cell-2",
+            "error",
+            &[serde_json::json!({
+                "output_type": "error",
+                "output_id": "all-error-output",
+                "ename": "ValueError",
+                "evalue": "boom",
+                "traceback": [],
+            })],
+            Some(2),
+        );
+
+        let execution_ids = vec!["exec-1".to_string(), "exec-2".to_string()];
+        let outcome = await_all_executions_terminal(
+            &handle,
+            &execution_ids,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(outcome.has_error);
+        assert!(!outcome.timed_out);
+    }
+
+    #[tokio::test]
+    async fn await_all_executions_terminal_kernel_failure_marks_error_and_stops() {
+        // When the kernel dies while an execution is still pending, the batch
+        // wait must report has_error and return promptly instead of spinning
+        // until the shared deadline: the kernel is gone, so pending cells
+        // cannot run. Executions that reached terminal state — collected
+        // before or after the failing one in sweep order — must still get
+        // the trailing grace pass, so outputs that are in flight when the
+        // kernel dies are visible by the time the batch reports the error.
+        use crate::execution_wait::{await_all_executions_terminal, AllExecutionsTerminal};
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(&shared, "exec-1", "cell-1", "done", &[], Some(1));
+        set_execution(&shared, "exec-2", "cell-2", "running", &[], None);
+        set_execution(&shared, "exec-3", "cell-3", "done", &[], Some(2));
+        {
+            let mut st = shared.lock().unwrap();
+            st.state_doc
+                .set_lifecycle(&runtime_doc::RuntimeLifecycle::Error)
+                .unwrap();
+        }
+
+        // Outputs for the terminal executions land only during the grace
+        // window, after the kernel has already failed.
+        let shared_for_task = shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let mut st = shared_for_task.lock().unwrap();
+            for (execution_id, output_id) in [
+                ("exec-1", "all-kernel-late-1"),
+                ("exec-3", "all-kernel-late-3"),
+            ] {
+                st.state_doc
+                    .append_output(
+                        execution_id,
+                        &serde_json::json!({
+                            "output_type": "execute_result",
+                            "output_id": output_id,
+                            "data": {"text/plain": {"inline": "late"}},
+                        }),
+                    )
+                    .unwrap();
+            }
+        });
+
+        let start = std::time::Instant::now();
+        let execution_ids = vec![
+            "exec-1".to_string(),
+            "exec-2".to_string(),
+            "exec-3".to_string(),
+        ];
+        let outcome = await_all_executions_terminal(
+            &handle,
+            &execution_ids,
+            std::time::Duration::from_secs(30),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            AllExecutionsTerminal {
+                timed_out: false,
+                has_error: true,
+            }
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "kernel failure must stop the wait well before the 30s deadline"
+        );
+        // The trailing grace pass ran despite the kernel failure: the late
+        // outputs are visible by the time the batch wait returns.
+        let state = handle.get_runtime_state().unwrap();
+        assert_eq!(state.executions["exec-1"].outputs.len(), 1);
+        assert_eq!(state.executions["exec-3"].outputs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn await_all_executions_terminal_times_out_on_shared_deadline() {
+        use crate::execution_wait::await_all_executions_terminal;
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        set_execution(
+            &shared,
+            "exec-1",
+            "cell-1",
+            "done",
+            &[stream_output("all-timeout-output", "ok")],
+            Some(1),
+        );
+        set_execution(&shared, "exec-2", "cell-2", "running", &[], None);
+
+        let execution_ids = vec!["exec-1".to_string(), "exec-2".to_string()];
+        let outcome = await_all_executions_terminal(
+            &handle,
+            &execution_ids,
+            std::time::Duration::from_millis(300),
+        )
+        .await;
+
+        assert!(outcome.timed_out);
+        assert!(!outcome.has_error);
+    }
 }
 
 // =========================================================================

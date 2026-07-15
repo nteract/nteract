@@ -68,8 +68,8 @@ pub mod sync_task;
 pub use broadcast::BroadcastReceiver;
 pub use error::SyncError;
 pub use execution_wait::{
-    await_execution_terminal, ExecutionTerminalError, ExecutionTerminalState,
-    DEFAULT_OUTPUT_SYNC_GRACE,
+    await_all_executions_terminal, await_execution_terminal, AllExecutionsTerminal,
+    ExecutionTerminalError, ExecutionTerminalState, DEFAULT_OUTPUT_SYNC_GRACE,
 };
 pub use execution_watch::{ExecutionProgressState, ExecutionTerminalReason, ExecutionWatcher};
 pub use handle::{DocHandle, SnapshotPairBytes};
