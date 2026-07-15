@@ -315,7 +315,7 @@ fn manifest_output_to_structured_with_resolved(
                 }
             }
 
-            merge_resolved_llm_plain(&mut data, resolved_output);
+            merge_resolved_priority_text(&mut data, resolved_output, blob_base_url);
 
             let mut result = json!({
                 "output_type": output_type,
@@ -332,16 +332,21 @@ fn manifest_output_to_structured_with_resolved(
     }
 }
 
-fn merge_resolved_llm_plain(
+/// Agents read priority text from the tool result itself; a blob URL is a
+/// fallback for content nothing resolved, never a substitute for text the
+/// resolver already holds. The data-map walk above emits blob URLs for
+/// blob-stored ContentRefs, including the CONTENT_PRIORITY text MIMEs, so
+/// resolved text replaces those URL placeholders. Inline content that came
+/// through the manifest (author-provided summaries under the CRDT inline
+/// threshold) stays; only absent entries and blob-URL placeholders yield.
+fn merge_resolved_priority_text(
     data: &mut serde_json::Map<String, Value>,
     resolved_output: Option<&Output>,
+    blob_base_url: &Option<String>,
 ) {
     let Some(resolved_output) = resolved_output else {
         return;
     };
-    if data.contains_key("text/llm+plain") {
-        return;
-    }
     if !matches!(
         resolved_output.output_type.as_str(),
         "display_data" | "execute_result"
@@ -351,11 +356,25 @@ fn merge_resolved_llm_plain(
     let Some(resolved_data) = resolved_output.data.as_ref() else {
         return;
     };
-    let Some(DataValue::Text(summary)) = resolved_data.get("text/llm+plain") else {
-        return;
+    let is_blob_url_placeholder = |value: &Value| -> bool {
+        let (Some(base), Some(s)) = (blob_base_url.as_ref(), value.as_str()) else {
+            return false;
+        };
+        s.starts_with(base.as_str()) && s[base.len()..].starts_with("/blob/")
     };
-
-    data.insert("text/llm+plain".to_string(), Value::String(summary.clone()));
+    for &mime in output_resolver::CONTENT_PRIORITY {
+        if let Some(DataValue::Text(text)) = resolved_data.get(mime) {
+            match data.get(mime) {
+                None => {
+                    data.insert(mime.to_string(), Value::String(text.clone()));
+                }
+                Some(existing) if is_blob_url_placeholder(existing) => {
+                    data.insert(mime.to_string(), Value::String(text.clone()));
+                }
+                Some(_) => {}
+            }
+        }
+    }
 }
 
 fn widget_model_id_from_content_ref(content_ref: &Value) -> Option<String> {
@@ -856,6 +875,99 @@ mod tests {
         assert_eq!(
             second_data["text/llm+plain"],
             "Plotly chart: aligned summary"
+        );
+    }
+
+    #[test]
+    fn structured_resolved_text_replaces_blob_url_placeholders() {
+        // A dataframe execute_result: every MIME crossed the inline threshold,
+        // so the manifest walk emits blob URLs for all of them, including the
+        // agent-facing text representations. The resolved text must replace
+        // those URL placeholders while the heavy payloads stay as URLs.
+        let manifest = json!({
+            "output_type": "execute_result",
+            "execution_count": 5,
+            "data": {
+                "application/vnd.apache.arrow.stream": blob_ref("arrow_hash", 500_000),
+                "text/html": blob_ref("html_hash", 20_000),
+                "text/llm+plain": blob_ref("llm_hash", 2_048),
+                "text/plain": blob_ref("plain_hash", 4_096),
+            },
+        });
+        let resolved_outputs_by_manifest = vec![Some(Output::execute_result(
+            HashMap::from([(
+                "text/llm+plain".to_string(),
+                runtimed_outputs::resolved_output::DataValue::Text(
+                    "DataFrame: 104 rows x 9 cols. Columns: client_id, ...".to_string(),
+                ),
+            )]),
+            5,
+        ))];
+        let blob_base = Some("http://localhost:9999".to_string());
+
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-df",
+            cell_type: "code",
+            source: "dim_clients.head()",
+            output_manifests: &[manifest],
+            execution_count: Some(5),
+            status: "done",
+            blob_base_url: &blob_base,
+            comms: None,
+            resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
+        });
+
+        let data = result["cell"]["outputs"][0]["data"]
+            .as_object()
+            .expect("output data should be an object");
+        assert_eq!(
+            data["text/llm+plain"], "DataFrame: 104 rows x 9 cols. Columns: client_id, ...",
+            "resolved priority text must replace the blob URL placeholder"
+        );
+        assert_eq!(
+            data["application/vnd.apache.arrow.stream"], "http://localhost:9999/blob/arrow_hash",
+            "heavy payloads keep their blob URLs"
+        );
+        assert_eq!(data["text/html"], "http://localhost:9999/blob/html_hash");
+    }
+
+    #[test]
+    fn structured_resolved_plain_text_replaces_url_when_no_llm_plain_resolved() {
+        // The resolver walks CONTENT_PRIORITY and may resolve text/plain when
+        // no llm+plain exists. That text must also land inline, not as a URL.
+        let manifest = json!({
+            "output_type": "execute_result",
+            "execution_count": 2,
+            "data": {
+                "text/plain": blob_ref("plain_hash", 4_096),
+            },
+        });
+        let resolved_outputs_by_manifest = vec![Some(Output::execute_result(
+            HashMap::from([(
+                "text/plain".to_string(),
+                runtimed_outputs::resolved_output::DataValue::Text(
+                    "0    1\ndtype: int64".to_string(),
+                ),
+            )]),
+            2,
+        ))];
+        let blob_base = Some("http://localhost:9999".to_string());
+
+        let result = cell_structured_content_from_manifests(CellStructuredContentManifestInput {
+            cell_id: "cell-series",
+            cell_type: "code",
+            source: "s",
+            output_manifests: &[manifest],
+            execution_count: Some(2),
+            status: "done",
+            blob_base_url: &blob_base,
+            comms: None,
+            resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
+        });
+
+        assert_eq!(
+            result["cell"]["outputs"][0]["data"]["text/plain"],
+            "0    1\ndtype: int64"
         );
     }
 
