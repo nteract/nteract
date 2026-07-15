@@ -69,7 +69,7 @@ export function startOidcCallback(deps: OidcCallbackStandaloneDeps = {}): OidcCa
   let retryInFlight = false;
   let status: OidcCallbackStatus = {
     kind: "loading",
-    message: "Completing sign-in...",
+    message: "Returning you to your notebook.",
   };
 
   const render = (next: OidcCallbackStatus) => {
@@ -109,7 +109,7 @@ export function startOidcCallback(deps: OidcCallbackStandaloneDeps = {}): OidcCa
       }).catch((error: unknown) => {
         console.warn("[notebook-cloud] app session exchange failed", error);
       });
-      render({ kind: "ready", message: "Signed in. Returning to the notebook..." });
+      render({ kind: "ready", message: "Returning you to your notebook." });
       navigateReplace(returnUrl);
     })
     .catch((error: unknown) => {
@@ -242,11 +242,11 @@ function renderOidcCallback(
   layout.setAttribute("aria-label", "nteract sign-in callback");
 
   const copy = element(doc, "div", "cloud-oidc-copy");
-  const brand = element(doc, "h1");
-  brand.textContent = "nteract";
-  const strapline = element(doc, "span");
-  strapline.textContent = "returning to the notebook";
-  copy.append(brand, strapline);
+  const kicker = element(doc, "div", "cloud-oidc-kicker");
+  kicker.textContent = "NTERACT";
+  const headline = element(doc, "h1");
+  headline.textContent = statusTitle(status.kind);
+  copy.append(kicker, headline);
 
   const panel = element(doc, "section", "cloud-oidc-panel");
   panel.dataset.mode = status.kind;
@@ -259,13 +259,9 @@ function renderOidcCallback(
   const icon = element(doc, "span", "cloud-oidc-status-icon");
   icon.setAttribute("aria-hidden", "true");
 
-  const statusCopy = element(doc, "div");
-  const title = element(doc, "h2");
-  title.textContent = statusTitle(status.kind);
   const message = element(doc, "p");
   message.textContent = status.message;
-  statusCopy.append(title, message);
-  statusRow.append(icon, statusCopy);
+  statusRow.append(icon, message);
   panel.append(statusRow);
 
   if (status.kind === "error" || status.kind === "empty") {
@@ -293,13 +289,13 @@ function renderOidcCallback(
 function statusTitle(kind: OidcCallbackStatus["kind"]): string {
   switch (kind) {
     case "ready":
-      return "Signed in";
+      return "Signed in.";
     case "error":
-      return "Sign-in needs attention";
+      return "Sign-in needs attention.";
     case "empty":
-      return "Nothing to finish";
+      return "Nothing to finish.";
     case "loading":
-      return "Completing sign-in";
+      return "Completing sign-in.";
   }
 }
 
@@ -326,174 +322,210 @@ function installOidcCallbackStyle(doc: Document): void {
 }
 
 function oidcCallbackStyle(): string {
+  // This entry stays standalone (no viewer stylesheet, see
+  // includeViewerStylesheet: false in the Worker), so it carries its own copy
+  // of the host tokens. Values mirror src/styles/notebook-base.css and the
+  // cloud-home atoms in viewer/index.css; if the host chrome retunes, retune
+  // here.
   return `
+:root {
+  color-scheme: light dark;
+  --background: #ffffff;
+  --foreground: oklch(0.145 0 0);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+  }
+}
+
 body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  margin: 0;
   min-height: 100vh;
 }
 
 .cloud-oidc-shell {
-  align-items: center;
-  background:
-    linear-gradient(140deg, color-mix(in oklch, var(--background) 88%, #178a7a 12%), transparent),
-    var(--background);
   box-sizing: border-box;
-  color: var(--foreground);
   display: flex;
+  justify-content: center;
   min-height: 100vh;
-  padding: 32px;
 }
 
 .cloud-oidc-layout {
-  align-items: center;
   display: grid;
-  gap: 40px;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(280px, 440px);
-  margin: 0 auto;
-  max-width: 920px;
-  width: 100%;
+  gap: clamp(2rem, 7vh, 4.5rem);
+  align-content: center;
+  padding-block: clamp(2rem, 10vh, 6rem);
+  width: min(34rem, calc(100vw - clamp(2rem, 8vw, 6rem)));
+}
+
+.cloud-oidc-copy {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+  text-align: center;
+}
+
+.cloud-oidc-kicker {
+  color: color-mix(in srgb, #0f766e 72%, var(--foreground) 28%);
+  font-size: 0.8125rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  line-height: 1;
 }
 
 .cloud-oidc-copy h1 {
-  font-size: 48px;
-  font-weight: 680;
+  color: var(--foreground);
+  font-size: clamp(2.25rem, 6vw, 3.25rem);
+  font-weight: 760;
   letter-spacing: 0;
   line-height: 1;
   margin: 0;
 }
 
-.cloud-oidc-copy span {
-  color: color-mix(in oklch, var(--foreground) 66%, transparent);
-  display: block;
-  font-size: 15px;
-  margin-top: 12px;
+.cloud-oidc-panel {
+  --cloud-oidc-panel-border: color-mix(in srgb, #10b981 68%, transparent);
+  --cloud-oidc-panel-wash: color-mix(in srgb, #10b981 5%, var(--background));
+  background: linear-gradient(
+    180deg,
+    var(--cloud-oidc-panel-wash) 0%,
+    color-mix(in srgb, var(--background) 98%, transparent) 64%,
+    transparent 100%
+  );
+  border-top: 1px solid var(--cloud-oidc-panel-border);
+  display: grid;
+  gap: 0.875rem;
+  padding: 0.75rem 0.25rem;
 }
 
-.cloud-oidc-panel {
-  background: color-mix(in oklch, var(--background) 94%, var(--foreground) 6%);
-  border: 1px solid color-mix(in oklch, var(--foreground) 14%, transparent);
-  border-radius: 8px;
-  box-shadow: 0 24px 70px color-mix(in oklch, var(--foreground) 10%, transparent);
-  padding: 24px;
+.cloud-oidc-panel[data-mode="empty"] {
+  --cloud-oidc-panel-border: color-mix(in srgb, var(--foreground) 28%, transparent);
+  --cloud-oidc-panel-wash: color-mix(in srgb, var(--foreground) 2%, var(--background));
+}
+
+.cloud-oidc-panel[data-mode="error"] {
+  --cloud-oidc-panel-border: color-mix(in srgb, #b42318 54%, transparent);
+  --cloud-oidc-panel-wash: color-mix(in srgb, #b42318 5%, var(--background));
 }
 
 .cloud-oidc-status {
-  align-items: flex-start;
+  align-items: start;
   display: grid;
-  gap: 16px;
-  grid-template-columns: 28px 1fr;
+  gap: 0.75rem;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.cloud-oidc-status p {
+  color: color-mix(in srgb, var(--foreground) 72%, transparent);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  margin: 0.125rem 0 0;
+  text-align: left;
 }
 
 .cloud-oidc-status-icon {
-  border: 2px solid color-mix(in oklch, var(--foreground) 20%, transparent);
+  border: 2px solid color-mix(in srgb, var(--foreground) 20%, transparent);
   border-radius: 999px;
   box-sizing: border-box;
   display: inline-block;
-  height: 28px;
-  margin-top: 2px;
+  height: 1.25rem;
+  margin-top: 0.125rem;
   position: relative;
-  width: 28px;
+  width: 1.25rem;
 }
 
 .cloud-oidc-status[data-mode="loading"] .cloud-oidc-status-icon {
   animation: cloud-oidc-spin 850ms linear infinite;
-  border-color: color-mix(in oklch, #178a7a 70%, var(--foreground) 30%);
+  border-color: color-mix(in srgb, #0f766e 70%, var(--foreground) 30%);
   border-right-color: transparent;
 }
 
 .cloud-oidc-status[data-mode="ready"] .cloud-oidc-status-icon {
-  background: color-mix(in oklch, #178a7a 18%, transparent);
-  border-color: #178a7a;
+  background: color-mix(in srgb, #10b981 18%, transparent);
+  border-color: #0f766e;
 }
 
 .cloud-oidc-status[data-mode="ready"] .cloud-oidc-status-icon::after {
-  border-bottom: 2px solid #178a7a;
-  border-right: 2px solid #178a7a;
+  border-bottom: 2px solid #0f766e;
+  border-right: 2px solid #0f766e;
   content: "";
-  height: 11px;
-  left: 9px;
+  height: 0.5rem;
+  left: 0.375rem;
   position: absolute;
-  top: 5px;
+  top: 0.125rem;
   transform: rotate(40deg);
-  width: 6px;
+  width: 0.25rem;
 }
 
 .cloud-oidc-status[data-mode="error"] .cloud-oidc-status-icon {
-  background: color-mix(in oklch, #c85040 14%, transparent);
-  border-color: #c85040;
+  background: color-mix(in srgb, #b42318 14%, transparent);
+  border-color: #b42318;
 }
 
 .cloud-oidc-status[data-mode="error"] .cloud-oidc-status-icon::before,
 .cloud-oidc-status[data-mode="error"] .cloud-oidc-status-icon::after {
-  background: #c85040;
+  background: #b42318;
+  border-radius: 999px;
   content: "";
-  left: 12px;
+  height: 0.625rem;
+  left: calc(50% - 1px);
   position: absolute;
+  top: calc(50% - 0.3125rem);
   width: 2px;
 }
 
 .cloud-oidc-status[data-mode="error"] .cloud-oidc-status-icon::before {
-  height: 11px;
-  top: 6px;
+  transform: rotate(45deg);
 }
 
 .cloud-oidc-status[data-mode="error"] .cloud-oidc-status-icon::after {
-  border-radius: 999px;
-  height: 2px;
-  top: 20px;
+  transform: rotate(-45deg);
 }
 
 .cloud-oidc-status[data-mode="empty"] .cloud-oidc-status-icon::before {
-  background: color-mix(in oklch, var(--foreground) 60%, transparent);
+  background: color-mix(in srgb, var(--foreground) 60%, transparent);
+  border-radius: 999px;
   content: "";
-  height: 10px;
-  left: 11px;
+  height: 2px;
+  left: calc(50% - 0.1875rem);
   position: absolute;
-  top: 8px;
-  width: 2px;
-}
-
-.cloud-oidc-status h2 {
-  font-size: 20px;
-  font-weight: 640;
-  letter-spacing: 0;
-  line-height: 1.2;
-  margin: 0;
-}
-
-.cloud-oidc-status p {
-  color: color-mix(in oklch, var(--foreground) 72%, transparent);
-  font-size: 14px;
-  line-height: 1.5;
-  margin: 8px 0 0;
+  top: calc(50% - 1px);
+  width: 0.375rem;
 }
 
 .cloud-oidc-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 24px;
+  gap: 0.5rem;
 }
 
 .cloud-oidc-button,
 .cloud-oidc-link {
   align-items: center;
+  background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
+  border: 1px solid color-mix(in srgb, var(--foreground) 16%, transparent);
   border-radius: 6px;
   box-sizing: border-box;
+  color: var(--foreground);
+  cursor: pointer;
   display: inline-flex;
   font: inherit;
-  font-size: 14px;
-  font-weight: 560;
+  font-size: 0.875rem;
   justify-content: center;
-  min-height: 36px;
-  padding: 0 14px;
+  min-height: 2.25rem;
+  padding-inline: 0.75rem;
   text-decoration: none;
 }
 
-.cloud-oidc-button {
-  background: #178a7a;
-  border: 1px solid #178a7a;
-  color: white;
-  cursor: pointer;
+.cloud-oidc-button:hover,
+.cloud-oidc-link:hover {
+  background: color-mix(in srgb, var(--background) 86%, var(--foreground) 10%);
 }
 
 .cloud-oidc-button:disabled {
@@ -501,31 +533,9 @@ body {
   opacity: 0.72;
 }
 
-.cloud-oidc-link {
-  border: 1px solid color-mix(in oklch, var(--foreground) 16%, transparent);
-  color: var(--foreground);
-}
-
 @keyframes cloud-oidc-spin {
   to {
     transform: rotate(360deg);
-  }
-}
-
-@media (max-width: 720px) {
-  .cloud-oidc-shell {
-    align-items: stretch;
-    padding: 24px;
-  }
-
-  .cloud-oidc-layout {
-    align-content: center;
-    gap: 24px;
-    grid-template-columns: 1fr;
-  }
-
-  .cloud-oidc-copy h1 {
-    font-size: 40px;
   }
 }
 `;
