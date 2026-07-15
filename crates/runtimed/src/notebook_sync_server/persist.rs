@@ -2096,27 +2096,16 @@ fn do_persist(data: &[u8], path: &Path) -> bool {
 /// path) must check the return value; earlier call sites that only care
 /// about best-effort debounced writes can ignore it.
 pub(crate) fn persist_notebook_bytes(data: &[u8], path: &Path) -> bool {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+    match write_file_atomic_sync(path, data) {
+        Ok(()) => true,
+        Err(e) => {
             warn!(
-                "[notebook-sync] Failed to create parent dir for {:?}: {}",
+                "[notebook-sync] Failed to save notebook doc {:?}: {}",
                 path, e
             );
-            return false;
+            false
         }
     }
-    let tmp = sibling_temp_path(path);
-    if let Err(e) = std::fs::write(&tmp, data) {
-        warn!("[notebook-sync] Failed to save notebook doc: {}", e);
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        warn!("[notebook-sync] Failed to save notebook doc: {}", e);
-        let _ = std::fs::remove_file(&tmp);
-        return false;
-    }
-    true
 }
 
 /// A unique same-directory temp path for atomically replacing `path`.
@@ -2133,23 +2122,49 @@ fn sibling_temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{file_name}.{}-{n}.tmp", std::process::id()))
 }
 
-/// Write `bytes` to `path` through a same-directory temp file + rename so a
-/// reader never observes a torn/partial file: the path always holds either
-/// the previous complete content or the new complete content. Preserves the
-/// destination's permissions when it already exists.
-async fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = sibling_temp_path(path);
-    tokio::fs::write(&tmp, bytes).await?;
-    if let Ok(meta) = tokio::fs::metadata(path).await {
-        let _ = tokio::fs::set_permissions(&tmp, meta.permissions()).await;
+/// Atomic-write core for the non-durable convenience tier (persisted
+/// notebook doc mirrors, autosave owner markers, comments sidecar docs).
+///
+/// Creates the parent directory, writes `bytes` to a same-directory temp
+/// file, preserves the destination's permissions when it already exists,
+/// and renames into place, removing the temp file on failure. A reader
+/// never observes a torn/partial file: the path always holds either the
+/// previous complete content or the new complete content.
+///
+/// Tier split: this core deliberately does not fsync. The durable fsync
+/// tier (`recovery.rs::replace_file_atomically` and
+/// `file_checkpoint.rs::RealCheckpointIo::replace_temp`) carries the
+/// crash-durability guarantees for journals and file checkpoints and must
+/// stay separate; do not merge it into this convenience helper.
+pub(crate) fn write_file_atomic_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-    match tokio::fs::rename(&tmp, path).await {
+    let tmp = sibling_temp_path(path);
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = tokio::fs::remove_file(&tmp).await;
+            let _ = std::fs::remove_file(&tmp);
             Err(e)
         }
     }
+}
+
+/// Async adapter over [`write_file_atomic_sync`] for callers already on the
+/// async save path; the blocking file I/O runs on the blocking pool.
+async fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    let bytes = bytes.to_vec();
+    tokio::task::spawn_blocking(move || write_file_atomic_sync(&path, &bytes))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 // =============================================================================
