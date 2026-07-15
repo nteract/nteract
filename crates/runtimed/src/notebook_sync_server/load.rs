@@ -1870,40 +1870,6 @@ fn degrade_external_source_revision(room: &NotebookRoom, reason: String) {
     warn!("[notebook-watch] {reason}");
 }
 
-/// Apply external .ipynb changes to the Automerge doc.
-///
-/// Compares cells by ID and:
-/// - Adds new cells
-/// - Removes deleted cells
-/// - Updates source, execution_count, and outputs for modified cells
-/// - Handles cell reordering by rebuilding the cell list
-///
-/// When a kernel is running, outputs and execution counts are preserved
-/// to avoid losing in-progress execution results.
-///
-/// Returns true only after changed NotebookDoc heads have a durable journal
-/// marker. Journal failure rolls the live document back before returning.
-#[cfg(test)]
-pub(crate) async fn apply_ipynb_changes(
-    room: &NotebookRoom,
-    external_cells: &[CellSnapshot],
-    external_outputs: &HashMap<String, Vec<serde_json::Value>>,
-    external_attachments: &HashMap<String, serde_json::Value>,
-    has_running_kernel: bool,
-) -> bool {
-    apply_ipynb_changes_inner(
-        room,
-        external_cells,
-        external_outputs,
-        external_attachments,
-        has_running_kernel,
-        None,
-        None,
-    )
-    .await
-    .changed()
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AppliedIpynbChanges {
     pub(crate) cells_changed: bool,
@@ -1918,7 +1884,7 @@ pub(crate) struct ExternalSourceRevision {
 }
 
 impl AppliedIpynbChanges {
-    fn changed(self) -> bool {
+    pub(crate) fn changed(self) -> bool {
         self.cells_changed || self.metadata_changed
     }
 }
@@ -1946,7 +1912,25 @@ pub(crate) async fn apply_ipynb_changes_from_source(
     .await
 }
 
-async fn apply_ipynb_changes_inner(
+/// Apply external .ipynb changes to the Automerge doc.
+///
+/// Compares cells by ID and:
+/// - Adds new cells
+/// - Removes deleted cells
+/// - Updates source, execution_count, and outputs for modified cells
+/// - Handles cell reordering by rebuilding the cell list
+///
+/// When a kernel is running, outputs and execution counts are preserved
+/// to avoid losing in-progress execution results.
+///
+/// A `None` source revision applies the changes without binding them to a
+/// source fingerprint; production file-watcher ingest goes through
+/// [`apply_ipynb_changes_from_source`] instead.
+///
+/// Reports changes only after changed NotebookDoc heads have a durable
+/// journal marker. Journal failure rolls the live document back before
+/// returning.
+pub(crate) async fn apply_ipynb_changes_inner(
     room: &NotebookRoom,
     external_cells: &[CellSnapshot],
     external_outputs: &HashMap<String, Vec<serde_json::Value>>,

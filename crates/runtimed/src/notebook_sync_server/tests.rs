@@ -4686,14 +4686,17 @@ async fn test_apply_ipynb_changes_clears_all_cells() {
     // Apply empty external cells - should delete all cells (we have
     // a save baseline confirming cell-1 was on disk before)
     let external_cells = vec![];
-    let changed = apply_ipynb_changes(
+    let changed = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &HashMap::new(),
         &HashMap::new(),
         false,
+        None, // external_metadata
+        None, // source_revision: exercise the no-source-revision path
     )
-    .await;
+    .await
+    .changed();
     assert!(changed, "Should apply changes to clear all cells");
 
     // Verify all cells were deleted
@@ -4727,14 +4730,17 @@ async fn test_apply_ipynb_changes_updates_execution_count() {
         attachments: std::collections::HashMap::new(),
     }];
 
-    let changed = apply_ipynb_changes(
+    let changed = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &HashMap::new(),
         &HashMap::new(),
         false,
+        None, // external_metadata
+        None, // source_revision: exercise the no-source-revision path
     )
-    .await;
+    .await
+    .changed();
     assert!(changed, "Should detect execution_count change");
 
     // Live execution_count is resolved from RuntimeStateDoc via synthetic execution_id.
@@ -4912,14 +4918,17 @@ async fn test_apply_ipynb_changes_updates_existing_cell_attachments() {
         }),
     )]);
 
-    let changed = apply_ipynb_changes(
+    let changed = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &HashMap::new(),
         &external_attachments,
         false,
+        None, // external_metadata
+        None, // source_revision: exercise the no-source-revision path
     )
-    .await;
+    .await
+    .changed();
     assert!(changed, "Should detect attachment changes");
 
     let cells = room.doc.read().await.get_cells();
@@ -4968,14 +4977,17 @@ async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running(
         attachments: std::collections::HashMap::new(),
     }];
 
-    let changed = apply_ipynb_changes(
+    let changed = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &HashMap::new(),
         &HashMap::new(),
         true,
+        None, // external_metadata
+        None, // source_revision: exercise the no-source-revision path
     )
-    .await;
+    .await
+    .changed();
     assert!(changed, "Should apply source change");
 
     let cells = {
@@ -5031,14 +5043,17 @@ async fn test_apply_ipynb_changes_new_cell_with_outputs_while_kernel_running() {
         vec![serde_json::json!({"output_type":"execute_result"})],
     );
 
-    let changed = apply_ipynb_changes(
+    let changed = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &external_outputs,
         &HashMap::new(),
         true,
+        None, // external_metadata
+        None, // source_revision: exercise the no-source-revision path
     )
-    .await;
+    .await
+    .changed();
     assert!(changed, "Should add new cell");
 
     let cells = {
@@ -5118,14 +5133,17 @@ async fn test_apply_ipynb_changes_wholesale_replacement() {
         },
     ];
 
-    let changed = apply_ipynb_changes(
+    let changed = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &HashMap::new(),
         &HashMap::new(),
         false,
+        None, // external_metadata
+        None, // source_revision: exercise the no-source-revision path
     )
-    .await;
+    .await
+    .changed();
     assert!(changed, "Should detect wholesale replacement");
 
     let cells = {
@@ -5182,14 +5200,17 @@ async fn test_apply_ipynb_changes_partial_overlap_preserves_unsaved() {
         attachments: std::collections::HashMap::new(),
     }];
 
-    let changed = apply_ipynb_changes(
+    let changed = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &HashMap::new(),
         &HashMap::new(),
         false,
+        None, // external_metadata
+        None, // source_revision: exercise the no-source-revision path
     )
-    .await;
+    .await
+    .changed();
     assert!(changed);
 
     let cells = {
@@ -5239,14 +5260,17 @@ async fn test_apply_ipynb_changes_no_save_snapshot_preserves_crdt_cells() {
     // External file has 0 cells (the autosave wrote an empty notebook)
     let external_cells: Vec<CellSnapshot> = vec![];
 
-    let changed = apply_ipynb_changes(
+    let changed = apply_ipynb_changes_inner(
         &room,
         &external_cells,
         &HashMap::new(),
         &HashMap::new(),
         false,
+        None, // external_metadata
+        None, // source_revision: exercise the no-source-revision path
     )
-    .await;
+    .await
+    .changed();
     // No changes should be applied — cells preserved
     assert!(
         !changed,
