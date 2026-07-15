@@ -783,34 +783,7 @@ pub(crate) fn apply_prepared_source_reconciliation(
     let change_hashes = changes.iter().map(automerge::Change::hash).collect();
     let heads = doc.get_heads();
     let snapshot = doc.save();
-    let executions = prepared
-        .prepared
-        .cells
-        .iter()
-        .filter_map(|prepared_cell| {
-            prepared_cell
-                .execution
-                .as_ref()
-                .map(|execution| StagedExecutionImport {
-                    execution_id: execution.execution_id.clone(),
-                    success: execution.success,
-                    execution_count: prepared_cell.cell.execution_count.parse::<i64>().ok(),
-                    outputs: prepared_cell.output_refs.clone(),
-                })
-        })
-        .collect();
-    let widget_comms = prepared
-        .prepared
-        .widget_comms
-        .iter()
-        .map(|comm| StagedWidgetCommImport {
-            comm_id: comm.comm_id.clone(),
-            model_module: comm.model_module.clone(),
-            model_name: comm.model_name.clone(),
-            state: comm.state.clone(),
-            seq: comm.seq,
-        })
-        .collect();
+    let (executions, widget_comms) = prepared_runtime_sidecars(&prepared.prepared);
 
     Ok(AppliedSourceReconciliation {
         fingerprint: prepared.prepared.fingerprint,
@@ -852,7 +825,9 @@ async fn stage_initial_import(
     let mut staged = NotebookDoc::load_with_actor(&genesis, &actor)
         .map_err(|error| format!("Failed to load canonical room genesis: {error}"))?;
     let mut change_batches = Vec::new();
-    let mut executions = Vec::new();
+    // Derive the sidecar imports while `prepared` is still whole; artifact
+    // construction below partially moves it.
+    let (executions, widget_comms) = prepared_runtime_sidecars(&prepared);
 
     for cells in prepared.cells.chunks(STREAMING_BATCH_SIZE) {
         let previous_heads = staged.get_heads();
@@ -874,12 +849,6 @@ async fn stage_initial_import(
                     .map_err(|error| {
                         format!("Failed to stage execution for {}: {error}", cell.id)
                     })?;
-                executions.push(StagedExecutionImport {
-                    execution_id: execution.execution_id.clone(),
-                    success: execution.success,
-                    execution_count: cell.execution_count.parse::<i64>().ok(),
-                    outputs: prepared_cell.output_refs.clone(),
-                });
             }
             staged
                 .set_cell_resolved_assets(&cell.id, &prepared_cell.resolved_assets)
@@ -914,17 +883,6 @@ async fn stage_initial_import(
             .await
             .map_err(|error| format!("Failed to build staged projection: {error:#}"))?,
     );
-    let widget_comms = prepared
-        .widget_comms
-        .into_iter()
-        .map(|comm| StagedWidgetCommImport {
-            comm_id: comm.comm_id,
-            model_module: comm.model_module,
-            model_name: comm.model_name,
-            state: comm.state,
-            seq: comm.seq,
-        })
-        .collect();
     let artifact = Arc::new(StagedImportArtifact {
         generation,
         fingerprint: prepared.fingerprint,
