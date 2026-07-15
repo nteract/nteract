@@ -19,6 +19,8 @@ use sha2::Digest as _;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use super::persist::write_file_atomic_sync;
+
 const INDEX_FILE: &str = "index.json";
 const INDEX_LOCK_FILE: &str = ".index.lock";
 const INDEX_VERSION: u32 = 1;
@@ -151,7 +153,7 @@ impl CommentsSidecarStore {
                         path.display()
                     );
                     let bytes = doc.save();
-                    write_file_atomic(&path, &bytes).with_context(|| {
+                    write_file_atomic_sync(&path, &bytes).with_context(|| {
                         format!(
                             "repair CommentsDoc {} at {}",
                             comments_doc_id,
@@ -188,7 +190,7 @@ impl CommentsSidecarStore {
             Ok((comments_doc_id, doc.save()))
         })?;
         let path = self.doc_path(&comments_doc_id);
-        write_file_atomic(&path, &bytes).with_context(|| {
+        write_file_atomic_sync(&path, &bytes).with_context(|| {
             format!(
                 "write CommentsDoc {} to {}",
                 comments_doc_id,
@@ -244,7 +246,7 @@ impl CommentsSidecarStore {
     fn save_index(&self, index: &CommentsIndex) -> anyhow::Result<()> {
         let path = self.index_path();
         let bytes = serde_json::to_vec_pretty(index)?;
-        write_file_atomic(&path, &bytes)
+        write_file_atomic_sync(&path, &bytes)
             .with_context(|| format!("write comments index {}", path.display()))
     }
 }
@@ -392,34 +394,6 @@ pub(crate) fn comments_doc_filename(comments_doc_id: &str) -> String {
         "{}.automerge",
         hex::encode(sha2::Sha256::digest(comments_doc_id.as_bytes()))
     )
-}
-
-fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = sibling_temp_path(path);
-    std::fs::write(&tmp, bytes)?;
-    if let Ok(meta) = std::fs::metadata(path) {
-        let _ = std::fs::set_permissions(&tmp, meta.permissions());
-    }
-    match std::fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(err)
-        }
-    }
-}
-
-fn sibling_temp_path(path: &Path) -> PathBuf {
-    static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "comments".to_string());
-    path.with_file_name(format!(".{file_name}.{}-{n}.tmp", std::process::id()))
 }
 
 #[cfg(test)]
@@ -688,7 +662,7 @@ mod tests {
         );
         let (tx, _) = broadcast::channel(16);
         let wrong_handle = CommentsDocHandle::new(wrong, tx);
-        write_file_atomic(
+        write_file_atomic_sync(
             &store.doc_path(expected_id),
             &wrong_handle.with_doc(|doc| Ok(doc.save())).unwrap(),
         )
@@ -738,7 +712,7 @@ mod tests {
         sync_pair_without_projection_check(&mut other, &mut base);
 
         let path = store.doc_path(expected_id);
-        write_file_atomic(&path, &base.save()).unwrap();
+        write_file_atomic_sync(&path, &base.save()).unwrap();
 
         let repaired = store.load_or_create(expected_id, &expected_ref).unwrap();
         repaired
