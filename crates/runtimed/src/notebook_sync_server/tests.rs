@@ -1818,20 +1818,18 @@ async fn test_file_backed_room_ignores_and_preserves_legacy_history_before_ipynb
     )
     .unwrap();
 
-    let room = NotebookRoom::new_fresh(
-        uuid,
-        Some(notebook_path.clone()),
-        tmp.path(),
-        blob_store,
-        false,
-    );
+    let (room, _guard, settled) =
+        materialized_room_from_disk_with(uuid, tmp.path(), blob_store, &notebook_path, tmp.path())
+            .await;
+    assert_source_ready(&settled);
 
     assert!(
         persist_path.exists(),
         "file-backed rooms preserve stale UUID-keyed history for manual recovery"
     );
 
-    let actors = room.doc.try_write().unwrap().contributing_actors();
+    let mut doc = room.doc.write().await;
+    let actors = doc.contributing_actors();
     assert!(
         actors.contains(&SCHEMA_SEED_ACTOR_LABEL.to_string()),
         "file-backed rooms should start from canonical seed history"
@@ -1841,18 +1839,11 @@ async fn test_file_backed_room_ignores_and_preserves_legacy_history_before_ipynb
         "stale legacy persisted actor must not contribute to file-backed rooms"
     );
 
-    {
-        let prepared = prepare_notebook_load(&notebook_path, &room.blob_store, None)
-            .await
-            .unwrap();
-        let mut doc = room.doc.write().await;
-        apply_notebook_load(&mut doc, None, None, prepared).unwrap();
-        assert_eq!(doc.cell_count(), 1);
-        let cells = doc.get_cells();
-        assert_eq!(cells[0].id, "ipynb-cell");
-        assert_eq!(cells[0].source, "print('ipynb')");
-        assert!(doc.get_cell("legacy-cell").is_none());
-    }
+    assert_eq!(doc.cell_count(), 1);
+    let cells = doc.get_cells();
+    assert_eq!(cells[0].id, "ipynb-cell");
+    assert_eq!(cells[0].source, "print('ipynb')");
+    assert!(doc.get_cell("legacy-cell").is_none());
 }
 
 #[tokio::test]
@@ -2588,6 +2579,66 @@ fn test_room_with_path_and_store(
     (room, notebook_path)
 }
 
+/// Materialize a room from an on-disk `.ipynb` through the production path:
+/// `get_or_create_room` claims the source generation before registry
+/// publication, and the room-owned task stages, journals, and publishes the
+/// import. Returns the room, its reservation guard, and the settled source
+/// state so callers can assert `Ready`/`Failed` and then read the doc,
+/// RuntimeStateDoc, and CommsDoc exactly as production peers do.
+async fn materialized_room_from_disk_with(
+    uuid: Uuid,
+    docs_dir: &Path,
+    blob_store: Arc<BlobStore>,
+    notebook_path: &Path,
+    execution_store_dir: &Path,
+) -> (Arc<NotebookRoom>, ReservationGuard, RoomSourceState) {
+    let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
+    let (room, guard) = get_or_create_room(
+        &rooms,
+        uuid,
+        RoomCreationOptions {
+            path: Some(notebook_path.to_path_buf()),
+            initial_load_execution_store_dir: Some(execution_store_dir),
+            docs_dir,
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
+    )
+    .await;
+    let settled = room
+        .lifecycle
+        .wait_for_source_settled(std::time::Duration::from_secs(10))
+        .await
+        .into_current();
+    (room, guard, settled)
+}
+
+/// [`materialized_room_from_disk_with`] with a fresh room UUID, the tempdir
+/// as docs dir, its own blob store, and an execution store rooted in the
+/// tempdir.
+async fn materialized_room_from_disk(
+    tmp: &tempfile::TempDir,
+    notebook_path: &Path,
+) -> (Arc<NotebookRoom>, ReservationGuard, RoomSourceState) {
+    materialized_room_from_disk_with(
+        Uuid::new_v4(),
+        tmp.path(),
+        test_blob_store(tmp),
+        notebook_path,
+        &tmp.path().join("execution-store"),
+    )
+    .await
+}
+
+/// Unwrap a settled source state that must be `Ready`.
+fn assert_source_ready(settled: &RoomSourceState) {
+    assert!(
+        matches!(settled, RoomSourceState::Ready(_)),
+        "initial materialization should settle Ready, got {settled:?}"
+    );
+}
+
 #[tokio::test]
 async fn file_backed_projection_read_requires_a_retained_artifact() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3115,7 +3166,7 @@ async fn external_watcher_conflict_publishes_structured_source_conflict() {
 async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
     use std::io::Write;
     let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "metadata.ipynb");
+    let notebook_path = tmp.path().join("metadata.ipynb");
 
     // Create existing file with unknown metadata fields
     {
@@ -3136,20 +3187,14 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
         .unwrap();
     }
 
-    // Load from disk first (populates doc with extras + runt). Then
+    // Materialize from disk first (populates doc with extras + runt). Then
     // edit + save. The doc is the source of truth for metadata; the
     // save path no longer reads the on-disk file to rescue unknown
     // keys, so they must be in the doc.
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &notebook_path).await;
+    assert_source_ready(&settled);
     {
-        let prepared = crate::notebook_sync_server::prepare_notebook_load(
-            &notebook_path,
-            &room.blob_store,
-            None,
-        )
-        .await
-        .unwrap();
         let mut doc = room.doc.write().await;
-        crate::notebook_sync_server::apply_notebook_load(&mut doc, None, None, prepared).unwrap();
         doc.add_cell(1, "cell1", "code").unwrap();
         doc.update_source("cell1", "x = 1").unwrap();
     }
@@ -3237,7 +3282,7 @@ async fn test_save_notebook_to_disk_enforces_nbformat_minor_5() {
 async fn test_save_persists_real_ids_for_legacy_notebook() {
     use std::io::Write;
     let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "legacy.ipynb");
+    let notebook_path = tmp.path().join("legacy.ipynb");
 
     // Pre-4.5 notebook with cells that have no `id` field.
     {
@@ -3257,14 +3302,8 @@ async fn test_save_persists_real_ids_for_legacy_notebook() {
         .unwrap();
     }
 
-    let blob_store = room.blob_store.clone();
-    {
-        let prepared = prepare_notebook_load(&notebook_path, &blob_store, None)
-            .await
-            .unwrap();
-        let mut doc = room.doc.write().await;
-        apply_notebook_load(&mut doc, None, None, prepared).unwrap();
-    }
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &notebook_path).await;
+    assert_source_ready(&settled);
 
     save_notebook_to_disk(&room, None).await.unwrap();
 
@@ -5232,7 +5271,7 @@ async fn test_apply_ipynb_changes_no_save_snapshot_preserves_crdt_cells() {
 }
 
 #[tokio::test]
-async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
+async fn test_initial_load_routes_outputs_through_blob_store() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
@@ -5299,53 +5338,61 @@ async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
     )
     .unwrap();
 
-    let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
-    let mut state_doc = RuntimeStateDoc::new();
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &ipynb_path).await;
+    assert_source_ready(&settled);
+    let get_outputs = |eid: &str| {
+        let eid = eid.to_string();
+        room.state
+            .with_doc(move |sd| Ok(sd.get_outputs(&eid)))
+            .unwrap()
+    };
+    // Doc reads stay inside this block so the room lock drops before the
+    // manifest resolution awaits below.
+    let (eid1, eid2, eid3) = {
+        let doc = room.doc.read().await;
+        assert_eq!(doc.cell_count(), 3);
 
-    let count = load_notebook_from_disk_with_state_doc(
-        &mut doc,
-        Some(&mut state_doc),
-        &ipynb_path,
-        &blob_store,
-    )
-    .await
-    .unwrap();
-    assert_eq!(count, 3);
+        let cells = doc.get_cells();
+        assert_eq!(cells.len(), 3);
 
-    let cells = doc.get_cells();
-    assert_eq!(cells.len(), 3);
-
-    // Each code cell with outputs should have an execution_id pointing to state_doc
-    for cell in &cells {
-        if let Some(eid) = doc.get_execution_id(&cell.id) {
-            let outputs = state_doc.get_outputs(&eid);
-            assert!(
-                !outputs.is_empty(),
-                "Cell {} should have outputs in state doc",
-                cell.id
-            );
-            for output_ref in &outputs {
+        // Each code cell with outputs should have an execution_id pointing to
+        // RuntimeStateDoc
+        for cell in &cells {
+            if let Some(eid) = doc.get_execution_id(&cell.id) {
+                let outputs = get_outputs(&eid);
                 assert!(
-                    output_ref.is_object(),
-                    "Cell {} output should be a manifest object, got: {}",
-                    cell.id,
-                    output_ref
-                );
-                assert!(
-                    output_ref.get("output_type").is_some(),
-                    "Cell {} output manifest should have output_type",
+                    !outputs.is_empty(),
+                    "Cell {} should have outputs in state doc",
                     cell.id
                 );
+                for output_ref in &outputs {
+                    assert!(
+                        output_ref.is_object(),
+                        "Cell {} output should be a manifest object, got: {}",
+                        cell.id,
+                        output_ref
+                    );
+                    assert!(
+                        output_ref.get("output_type").is_some(),
+                        "Cell {} output manifest should have output_type",
+                        cell.id
+                    );
+                }
             }
         }
-    }
+
+        (
+            doc.get_execution_id("cell-1")
+                .expect("cell-1 should have execution_id"),
+            doc.get_execution_id("cell-2")
+                .expect("cell-2 should have execution_id"),
+            doc.get_execution_id("cell-3")
+                .expect("cell-3 should have execution_id"),
+        )
+    };
 
     // Resolve cell-1's execute_result and verify round-trip
-    let eid1 = doc
-        .get_execution_id("cell-1")
-        .expect("cell-1 should have execution_id");
-    let outputs1 = state_doc.get_outputs(&eid1);
+    let outputs1 = get_outputs(&eid1);
     let manifest = &outputs1[0];
     let parsed_manifest: crate::output_store::OutputManifest =
         serde_json::from_value(manifest.clone()).unwrap();
@@ -5357,10 +5404,7 @@ async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
     assert_eq!(resolved["execution_count"], 1);
 
     // Resolve cell-2's display_data with the large image
-    let eid2 = doc
-        .get_execution_id("cell-2")
-        .expect("cell-2 should have execution_id");
-    let outputs2 = state_doc.get_outputs(&eid2);
+    let outputs2 = get_outputs(&eid2);
     let manifest = &outputs2[0];
     let parsed_manifest2: crate::output_store::OutputManifest =
         serde_json::from_value(manifest.clone()).unwrap();
@@ -5379,10 +5423,7 @@ async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
     assert_eq!(resolved["data"]["image/png"], large_image);
 
     // Resolve cell-3's stream output
-    let eid3 = doc
-        .get_execution_id("cell-3")
-        .expect("cell-3 should have execution_id");
-    let outputs3 = state_doc.get_outputs(&eid3);
+    let outputs3 = get_outputs(&eid3);
     let manifest = &outputs3[0];
     let parsed_manifest: crate::output_store::OutputManifest =
         serde_json::from_value(manifest.clone()).unwrap();
@@ -5395,7 +5436,7 @@ async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
 }
 
 #[tokio::test]
-async fn test_load_notebook_from_disk_hydrates_widget_metadata_into_runtime_comms() {
+async fn test_initial_load_hydrates_widget_metadata_into_runtime_comms() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
     let widget_bytes = b"widget-bytes";
@@ -5465,23 +5506,13 @@ async fn test_load_notebook_from_disk_hydrates_widget_metadata_into_runtime_comm
     )
     .unwrap();
 
-    let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
-    let mut state_doc = RuntimeStateDoc::new();
-    let mut comms_doc = runtime_doc::CommsDoc::new();
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &ipynb_path).await;
+    assert_source_ready(&settled);
 
-    load_notebook_from_disk_with_runtime_docs(
-        &mut doc,
-        Some(&mut state_doc),
-        Some(&mut comms_doc),
-        &ipynb_path,
-        &blob_store,
-    )
-    .await
-    .unwrap();
-
-    let comm = state_doc
-        .get_comm("slider-model")
+    let comm = room
+        .state
+        .with_doc(|sd| Ok(sd.get_comm("slider-model")))
+        .unwrap()
         .expect("widget metadata should hydrate RuntimeStateDoc topology");
     assert_eq!(comm.target_name, JUPYTER_WIDGET_TARGET);
     assert_eq!(comm.model_name, "IntSliderModel");
@@ -5492,8 +5523,10 @@ async fn test_load_notebook_from_disk_hydrates_widget_metadata_into_runtime_comm
         "mutable widget state should live in CommsDoc, not RuntimeStateDoc topology"
     );
 
-    let comm_state = comms_doc
-        .get_comm_state("slider-model")
+    let comm_state = room
+        .comms
+        .with_doc(|cd| Ok(cd.get_comm_state("slider-model")))
+        .unwrap()
         .expect("widget metadata should hydrate CommsDoc state");
     assert_eq!(
         comm_state["_model_name"],
@@ -5524,10 +5557,13 @@ async fn test_load_notebook_from_disk_hydrates_widget_metadata_into_runtime_comm
         Some(widget_bytes.as_slice())
     );
 
-    let eid = doc
+    let eid = room
+        .doc
+        .read()
+        .await
         .get_execution_id("cell-widget")
         .expect("widget output should still link through RuntimeStateDoc");
-    let outputs = state_doc.get_outputs(&eid);
+    let outputs = room.state.with_doc(|sd| Ok(sd.get_outputs(&eid))).unwrap();
     let parsed_manifest: crate::output_store::OutputManifest =
         serde_json::from_value(outputs[0].clone()).unwrap();
     let resolved = crate::output_store::resolve_manifest(&parsed_manifest, &blob_store)
@@ -5540,7 +5576,7 @@ async fn test_load_notebook_from_disk_hydrates_widget_metadata_into_runtime_comm
 }
 
 #[tokio::test]
-async fn test_load_notebook_reuses_matching_durable_execution_id() {
+async fn test_initial_load_reuses_matching_durable_execution_id() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
@@ -5573,21 +5609,34 @@ async fn test_load_notebook_reuses_matching_durable_execution_id() {
     .unwrap();
 
     let context_id = ipynb_path.to_string_lossy().to_string();
-    let mut first_doc = notebook_doc::NotebookDoc::new(&context_id);
-    let mut first_state = RuntimeStateDoc::new();
-    load_notebook_from_disk_with_state_doc(
-        &mut first_doc,
-        Some(&mut first_state),
-        &ipynb_path,
-        &blob_store,
-    )
-    .await
-    .unwrap();
-    let first_execution_id = first_doc.get_execution_id("cell-1").unwrap();
-    let outputs = first_state.get_outputs(&first_execution_id);
+    let store_dir = tmp.path().join("execution-store");
 
-    let store =
-        runtimed_client::execution_store::ExecutionStore::new(tmp.path().join("execution-store"));
+    // First materialization has no durable records, so it mints a synthetic
+    // execution. Capture its manifest refs to author a matching durable
+    // record for the reload.
+    let outputs = {
+        let (first_room, _guard, settled) = materialized_room_from_disk_with(
+            Uuid::new_v4(),
+            tmp.path(),
+            blob_store.clone(),
+            &ipynb_path,
+            &store_dir,
+        )
+        .await;
+        assert_source_ready(&settled);
+        let first_execution_id = first_room
+            .doc
+            .read()
+            .await
+            .get_execution_id("cell-1")
+            .unwrap();
+        first_room
+            .state
+            .with_doc(|sd| Ok(sd.get_outputs(&first_execution_id)))
+            .unwrap()
+    };
+
+    let store = runtimed_client::execution_store::ExecutionStore::new(store_dir.clone());
     store
         .write_record(runtimed_client::execution_store::ExecutionRecord {
             schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
@@ -5609,30 +5658,37 @@ async fn test_load_notebook_reuses_matching_durable_execution_id() {
         .await
         .unwrap();
 
-    let mut reload_doc = notebook_doc::NotebookDoc::new(&context_id);
-    let mut reload_state = RuntimeStateDoc::new();
-    load_notebook_from_disk_with_state_doc_and_execution_store(
-        &mut reload_doc,
-        Some(&mut reload_state),
+    let (reload_room, _guard, settled) = materialized_room_from_disk_with(
+        Uuid::new_v4(),
+        tmp.path(),
+        blob_store,
         &ipynb_path,
-        &blob_store,
-        Some(&store),
+        &store_dir,
     )
-    .await
-    .unwrap();
+    .await;
+    assert_source_ready(&settled);
 
     assert_eq!(
-        reload_doc.get_execution_id("cell-1").as_deref(),
+        reload_room
+            .doc
+            .read()
+            .await
+            .get_execution_id("cell-1")
+            .as_deref(),
         Some("durable-exec-1")
     );
-    let reloaded_execution = reload_state.get_execution("durable-exec-1").unwrap();
+    let reloaded_execution = reload_room
+        .state
+        .with_doc(|sd| Ok(sd.get_execution("durable-exec-1")))
+        .unwrap()
+        .unwrap();
     assert_eq!(reloaded_execution.execution_count, Some(7));
     assert_eq!(reloaded_execution.status, "error");
     assert_eq!(reloaded_execution.success, Some(false));
 }
 
 #[tokio::test]
-async fn test_load_notebook_mints_execution_id_when_durable_record_no_longer_matches() {
+async fn test_initial_load_mints_execution_id_when_durable_record_no_longer_matches() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
@@ -5665,8 +5721,8 @@ async fn test_load_notebook_mints_execution_id_when_durable_record_no_longer_mat
     .unwrap();
 
     let context_id = ipynb_path.to_string_lossy().to_string();
-    let store =
-        runtimed_client::execution_store::ExecutionStore::new(tmp.path().join("execution-store"));
+    let store_dir = tmp.path().join("execution-store");
+    let store = runtimed_client::execution_store::ExecutionStore::new(store_dir.clone());
     store
         .write_record(runtimed_client::execution_store::ExecutionRecord {
             schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
@@ -5692,25 +5748,27 @@ async fn test_load_notebook_mints_execution_id_when_durable_record_no_longer_mat
         .await
         .unwrap();
 
-    let mut doc = notebook_doc::NotebookDoc::new(&context_id);
-    let mut state_doc = RuntimeStateDoc::new();
-    load_notebook_from_disk_with_state_doc_and_execution_store(
-        &mut doc,
-        Some(&mut state_doc),
+    let (room, _guard, settled) = materialized_room_from_disk_with(
+        Uuid::new_v4(),
+        tmp.path(),
+        blob_store,
         &ipynb_path,
-        &blob_store,
-        Some(&store),
+        &store_dir,
     )
-    .await
-    .unwrap();
+    .await;
+    assert_source_ready(&settled);
 
-    let execution_id = doc.get_execution_id("cell-1").unwrap();
+    let execution_id = room.doc.read().await.get_execution_id("cell-1").unwrap();
     assert_ne!(execution_id, "durable-exec-1");
-    assert!(state_doc.get_execution(&execution_id).is_some());
+    assert!(room
+        .state
+        .with_doc(|sd| Ok(sd.get_execution(&execution_id)))
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
-async fn test_load_notebook_from_disk_resolves_nbformat_attachments() {
+async fn test_initial_load_resolves_nbformat_attachments() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
@@ -5740,15 +5798,13 @@ async fn test_load_notebook_from_disk_resolves_nbformat_attachments() {
     )
     .unwrap();
 
-    let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
-
-    let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
-        .await
-        .unwrap();
-    assert_eq!(count, 1);
-
-    let cells = doc.get_cells();
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &ipynb_path).await;
+    assert_source_ready(&settled);
+    let cells = {
+        let doc = room.doc.read().await;
+        assert_eq!(doc.cell_count(), 1);
+        doc.get_cells()
+    };
     assert_eq!(cells.len(), 1);
 
     let hash = cells[0]
@@ -5769,7 +5825,7 @@ async fn test_load_notebook_from_disk_resolves_nbformat_attachments() {
 }
 
 #[tokio::test]
-async fn test_load_notebook_from_disk_preserves_json_attachment_payloads() {
+async fn test_initial_load_preserves_json_attachment_payloads() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
@@ -5803,13 +5859,10 @@ async fn test_load_notebook_from_disk_preserves_json_attachment_payloads() {
     )
     .unwrap();
 
-    let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
-    load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
-        .await
-        .unwrap();
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &ipynb_path).await;
+    assert_source_ready(&settled);
 
-    let cells = doc.get_cells();
+    let cells = room.doc.read().await.get_cells();
     assert_eq!(cells.len(), 1);
     let reconstructed = attachment_refs_to_nbformat_value(&cells[0].attachments, &blob_store)
         .await
@@ -5818,9 +5871,8 @@ async fn test_load_notebook_from_disk_preserves_json_attachment_payloads() {
 }
 
 #[tokio::test]
-async fn test_load_notebook_from_disk_rejects_invalid_attachment_payloads() {
+async fn test_initial_load_rejects_invalid_attachment_payloads() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let blob_store = test_blob_store(&tmp);
 
     let notebook_json = serde_json::json!({
         "nbformat": 4,
@@ -5848,21 +5900,23 @@ async fn test_load_notebook_from_disk_rejects_invalid_attachment_payloads() {
     )
     .unwrap();
 
-    let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
-    let error = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
-        .await
-        .expect_err("invalid attachment payload should fail load");
+    let (_room, _guard, settled) = materialized_room_from_disk(&tmp, &ipynb_path).await;
+    let RoomSourceState::Failed(status) = settled else {
+        panic!("invalid attachment payload should fail materialization, got {settled:?}");
+    };
+    let error = status
+        .error
+        .expect("failed materialization should carry its error");
     assert!(
-        error.contains("base64 payload is invalid"),
-        "unexpected error: {error}"
+        error.message.contains("base64 payload is invalid"),
+        "unexpected error: {}",
+        error.message
     );
 }
 
 #[tokio::test]
-async fn test_load_notebook_from_disk_skips_code_cell_asset_resolution() {
+async fn test_initial_load_skips_code_cell_asset_resolution() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let blob_store = test_blob_store(&tmp);
     std::fs::write(tmp.path().join("image.png"), b"hello").unwrap();
 
     let notebook_json = serde_json::json!({
@@ -5888,15 +5942,10 @@ async fn test_load_notebook_from_disk_skips_code_cell_asset_resolution() {
     )
     .unwrap();
 
-    let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &ipynb_path).await;
+    assert_source_ready(&settled);
 
-    let count = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
-        .await
-        .unwrap();
-    assert_eq!(count, 1);
-
-    let cells = doc.get_cells();
+    let cells = room.doc.read().await.get_cells();
     assert_eq!(cells.len(), 1);
     assert!(cells[0].resolved_assets.is_empty());
 }
@@ -10858,7 +10907,7 @@ async fn test_save_round_trips_unknown_top_level_metadata() {
     // Regression test for Codex F3 on PR #2192: unknown top-level
     // metadata keys (jupytext, colab, etc.) must survive save.
     let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "with-jupytext.ipynb");
+    let notebook_path = tmp.path().join("with-jupytext.ipynb");
 
     std::fs::write(
         &notebook_path,
@@ -10876,17 +10925,8 @@ async fn test_save_round_trips_unknown_top_level_metadata() {
     )
     .unwrap();
 
-    {
-        let prepared = crate::notebook_sync_server::prepare_notebook_load(
-            &notebook_path,
-            &room.blob_store,
-            None,
-        )
-        .await
-        .unwrap();
-        let mut doc = room.doc.write().await;
-        crate::notebook_sync_server::apply_notebook_load(&mut doc, None, None, prepared).unwrap();
-    }
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &notebook_path).await;
+    assert_source_ready(&settled);
 
     save_notebook_to_disk(&room, None).await.unwrap();
 
@@ -10911,7 +10951,7 @@ async fn test_save_does_not_stamp_synthetic_runt_on_vanilla_notebook() {
     // `runt: { schema_version: "1" }` — that would churn every
     // git-tracked Jupyter notebook the user opens.
     let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "vanilla.ipynb");
+    let notebook_path = tmp.path().join("vanilla.ipynb");
 
     std::fs::write(
         &notebook_path,
@@ -10927,17 +10967,8 @@ async fn test_save_does_not_stamp_synthetic_runt_on_vanilla_notebook() {
     )
     .unwrap();
 
-    {
-        let prepared = crate::notebook_sync_server::prepare_notebook_load(
-            &notebook_path,
-            &room.blob_store,
-            None,
-        )
-        .await
-        .unwrap();
-        let mut doc = room.doc.write().await;
-        crate::notebook_sync_server::apply_notebook_load(&mut doc, None, None, prepared).unwrap();
-    }
+    let (room, _guard, settled) = materialized_room_from_disk(&tmp, &notebook_path).await;
+    assert_source_ready(&settled);
 
     save_notebook_to_disk(&room, None).await.unwrap();
 

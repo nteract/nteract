@@ -1495,17 +1495,6 @@ pub(crate) async fn retry_failed_room_initial_load_if_safe(
     true
 }
 
-/// Test helper for loading notebook cells and metadata from a `.ipynb` file
-/// into a `NotebookDoc`.
-#[cfg(test)]
-pub(crate) async fn load_notebook_from_disk(
-    doc: &mut NotebookDoc,
-    path: &std::path::Path,
-    blob_store: &BlobStore,
-) -> Result<usize, String> {
-    load_notebook_from_disk_with_state_doc(doc, None, path, blob_store).await
-}
-
 /// Test helper for loading a notebook from disk into the notebook doc and,
 /// optionally, the `RuntimeStateDoc`.
 #[cfg(test)]
@@ -1515,43 +1504,8 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc(
     path: &std::path::Path,
     blob_store: &BlobStore,
 ) -> Result<usize, String> {
-    load_notebook_from_disk_with_state_doc_and_execution_store(
-        doc, state_doc, path, blob_store, None,
-    )
-    .await
-}
-
-#[cfg(test)]
-pub(crate) async fn load_notebook_from_disk_with_runtime_docs(
-    doc: &mut NotebookDoc,
-    state_doc: Option<&mut RuntimeStateDoc>,
-    comms_doc: Option<&mut runtime_doc::CommsDoc>,
-    path: &std::path::Path,
-    blob_store: &BlobStore,
-) -> Result<usize, String> {
-    load_notebook_from_disk_with_runtime_docs_and_execution_store(
-        doc, state_doc, comms_doc, path, blob_store, None,
-    )
-    .await
-}
-
-#[cfg(test)]
-pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
-    doc: &mut NotebookDoc,
-    state_doc: Option<&mut RuntimeStateDoc>,
-    path: &std::path::Path,
-    blob_store: &BlobStore,
-    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
-) -> Result<usize, String> {
-    load_notebook_from_disk_with_runtime_docs_and_execution_store(
-        doc,
-        state_doc,
-        None,
-        path,
-        blob_store,
-        execution_store,
-    )
-    .await
+    let prepared = prepare_notebook_load(path, blob_store, None).await?;
+    apply_notebook_load(doc, state_doc, None, prepared)
 }
 
 /// Everything [`apply_notebook_load`] needs to mutate the docs, prepared by
@@ -1723,19 +1677,6 @@ pub(crate) fn apply_notebook_load(
     }
 
     Ok(cell_count)
-}
-
-#[cfg(test)]
-async fn load_notebook_from_disk_with_runtime_docs_and_execution_store(
-    doc: &mut NotebookDoc,
-    state_doc: Option<&mut RuntimeStateDoc>,
-    comms_doc: Option<&mut runtime_doc::CommsDoc>,
-    path: &std::path::Path,
-    blob_store: &BlobStore,
-    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
-) -> Result<usize, String> {
-    let prepared = prepare_notebook_load(path, blob_store, execution_store).await?;
-    apply_notebook_load(doc, state_doc, comms_doc, prepared)
 }
 
 #[derive(Debug, Clone)]
