@@ -593,8 +593,13 @@ pub fn assert_cell_exists(
 }
 
 /// Helper: create a text error result.
+///
+/// Error text is agent-channel content (`audience: [assistant]`): the agent
+/// recovers from it; the human render comes from `structuredContent`.
 pub fn tool_error(msg: &str) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::error(vec![Content::text(msg.to_string())]))
+    Ok(CallToolResult::error(vec![
+        crate::formatting::assistant_text(msg),
+    ]))
 }
 
 /// Convert a centralized session capability failure into a structured tool
@@ -609,7 +614,8 @@ pub fn session_access_error(
         },
         "session": error.readiness,
     });
-    let mut result = CallToolResult::error(vec![Content::text(details.to_string())]);
+    let mut result =
+        CallToolResult::error(vec![crate::formatting::assistant_text(details.to_string())]);
     result.structured_content = Some(details);
     Ok(result)
 }
@@ -623,20 +629,28 @@ pub fn execution_dispatch_error(
             "message": error.message,
         }
     });
-    let mut result = CallToolResult::error(vec![Content::text(details.to_string())]);
+    let mut result =
+        CallToolResult::error(vec![crate::formatting::assistant_text(details.to_string())]);
     result.structured_content = Some(details);
     Ok(result)
 }
 
 /// Helper: create a text success result.
+///
+/// Status text is agent-channel content (`audience: [assistant]`); the human
+/// render comes from `structuredContent` or the notebook itself.
 pub fn tool_success(msg: &str) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::success(vec![Content::text(
-        msg.to_string(),
-    )]))
+    Ok(CallToolResult::success(vec![
+        crate::formatting::assistant_text(msg),
+    ]))
 }
 
 /// Build a `CallToolResult` from an execution result, including structured content
 /// for the MCP Apps widget. Shared by cell_crud, editing, and execution tools.
+///
+/// Text content blocks are the agent channel (annotated `audience:
+/// [assistant]`, compact, with legibility pointers to blob-stored renders);
+/// `structured_content` is the complete, URL-rich human render contract.
 pub async fn build_execution_result(
     result: &crate::execution::ExecutionResult,
     handle: &notebook_sync::handle::DocHandle,
@@ -651,14 +665,20 @@ pub async fn build_execution_result(
     );
 
     let mut items = vec![
-        Content::text(header),
+        crate::formatting::assistant_text(header),
         cell_resource_content(handle.notebook_id(), &result.cell_id),
     ];
-    let output_summaries = crate::formatting::format_outputs_summary_lines(&result.outputs, 120);
+    let output_summaries = crate::formatting::format_outputs_summary_lines_aligned(
+        &result.resolved_outputs_by_manifest,
+        &result.output_manifests,
+        120,
+    );
     if output_summaries.is_empty() {
-        items.push(Content::text("Output summary: 0 outputs".to_string()));
+        items.push(crate::formatting::assistant_text(
+            "Output summary: 0 outputs",
+        ));
     } else {
-        items.push(Content::text(format!(
+        items.push(crate::formatting::assistant_text(format!(
             "Output summary:\n{}",
             output_summaries.join("\n")
         )));
@@ -955,6 +975,29 @@ mod tests {
         let link = decoded.as_resource_link().expect("resource link");
         assert_eq!(link.uri, expected_uri);
         assert_eq!(link.mime_type.as_deref(), Some("application/json"));
+    }
+
+    #[test]
+    fn tool_text_results_carry_assistant_audience() {
+        // Error/status text is agent-channel content; the assistant audience
+        // annotation lets renderers drop it from human views.
+        let ok = tool_success("done").unwrap();
+        assert_eq!(
+            ok.content[0].audience(),
+            Some(&vec![rmcp::model::Role::Assistant])
+        );
+
+        let err = tool_error("boom").unwrap();
+        assert_eq!(
+            err.content[0].audience(),
+            Some(&vec![rmcp::model::Role::Assistant])
+        );
+    }
+
+    #[test]
+    fn resource_links_stay_unannotated_for_both_audiences() {
+        let content = cell_resource_content("nb", "cell");
+        assert!(content.annotations.is_none());
     }
 
     #[test]
