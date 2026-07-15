@@ -105,6 +105,19 @@ section and `docs/adr/frontend-sync-bridge.md` Decision 8 before editing
   `test` script will not catch it. Full pattern: frontend-dev skill,
   "Module-Singleton Source Stores".
 
+## Visual language
+
+Cloud chrome is flat and Ink-forward. State tints are single solid
+`color-mix(...)` values; decorative gradients are prototype-era residue and
+must not be reintroduced, including when mirroring existing atoms into new
+surfaces (that is how they propagate). The one sanctioned gradient is the
+`.cloud-startup-line` skeleton shimmer, which is motion, not decoration.
+Separators are `border-top`/`border-right` hairlines with tinted washes, not
+raised cards or drop shadows. Standalone entries that skip the viewer
+stylesheet (the OIDC callback) carry mirrored tokens from
+`src/styles/notebook-base.css`; keep them in sync when the host chrome
+retunes.
+
 ## Verification
 
 Use the narrowest relevant command:
