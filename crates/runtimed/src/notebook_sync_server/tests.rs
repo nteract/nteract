@@ -1521,6 +1521,83 @@ async fn room_restart_preserves_third_revision_as_source_conflict_not_journal_fa
     );
 }
 
+/// A source file missing at restart proves neither side of a pending
+/// replacement. The room short-circuits before
+/// `resolve_recovered_file_checkpoint` is ever called: the read error becomes
+/// a startup source conflict, the pending intent and every checkpoint field
+/// survive verbatim, and nothing is committed as if a side had been chosen.
+#[tokio::test]
+async fn room_restart_with_missing_source_file_preserves_intent_without_resolving() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let path = tmp.path().join("checkpoint-missing-file.ipynb");
+    write_numbered_notebook(&path, 1).await;
+    let id = Uuid::new_v4();
+    let blob_store = test_blob_store(&tmp);
+    let room = NotebookRoom::new_fresh(
+        id,
+        Some(path.clone()),
+        &docs_dir,
+        Arc::clone(&blob_store),
+        false,
+    );
+    commit_test_room_source(&room).await;
+
+    let mut intended_bytes = tokio::fs::read(&path).await.unwrap();
+    intended_bytes.extend_from_slice(b"\n ");
+    let intended_fingerprint = super::recovery::source_fingerprint(&intended_bytes);
+    let manifest = room.durability.manifest();
+    room.durability
+        .prepare_file_checkpoint(
+            path.clone(),
+            intended_fingerprint,
+            manifest.durable_heads,
+            manifest.file_save_sequence.unwrap_or_default() + 1,
+            None,
+        )
+        .unwrap();
+    let manifest_at_crash = room.durability.manifest();
+    tokio::fs::remove_file(&path).await.unwrap();
+    drop(room);
+
+    let recovered = NotebookRoom::new_fresh(id, Some(path), &docs_dir, blob_store, false);
+    assert!(matches!(
+        recovered.lifecycle.source_state(),
+        RoomSourceState::Failed(ref status)
+            if status.error.as_ref().is_some_and(|error| error.code == "source_conflict")
+    ));
+    assert!(matches!(
+        recovered.lifecycle.availability(),
+        RoomAvailability::Degraded(_)
+    ));
+    let recovered_manifest = recovered.durability.manifest();
+    assert_eq!(
+        recovered_manifest.pending_file_checkpoint, manifest_at_crash.pending_file_checkpoint,
+        "the resolver never runs on missing bytes: the intent survives verbatim"
+    );
+    assert_eq!(
+        recovered_manifest.source_fingerprint, manifest_at_crash.source_fingerprint,
+        "missing bytes must not be treated as the intended replacement"
+    );
+    assert_eq!(
+        recovered_manifest.exported_heads,
+        manifest_at_crash.exported_heads
+    );
+    assert_eq!(
+        recovered_manifest.file_save_sequence,
+        manifest_at_crash.file_save_sequence
+    );
+    assert_eq!(
+        recovered_manifest.sequence, manifest_at_crash.sequence,
+        "restart with unreadable source appends nothing"
+    );
+    assert!(
+        !recovered.durability.status().is_degraded(),
+        "a missing source file is a reconciliation conflict, not failed journal durability"
+    );
+}
+
 #[tokio::test]
 async fn uuid_only_restart_attach_recovers_manifest_path_without_false_conflict() {
     let tmp = tempfile::TempDir::new().unwrap();
