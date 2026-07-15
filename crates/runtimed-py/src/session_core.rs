@@ -479,38 +479,25 @@ pub(crate) async fn connect_open(
     Ok((notebook_id, state, connection_info))
 }
 
-/// Connect and create a new notebook.
+/// Connect and create the notebook described by `spec`.
+///
+/// An empty `spec.actor_label` is replaced with the default label so the
+/// daemon always sees an operator for Python sessions.
 ///
 /// Returns (notebook_id, populated SessionState, NotebookConnectionInfo).
 pub(crate) async fn connect_create(
     socket_path: PathBuf,
-    runtime: &str,
-    working_dir: Option<PathBuf>,
-    actor_label: Option<&str>,
-    package_manager: Option<notebook_protocol::connection::PackageManager>,
-    dependencies: Vec<String>,
-    environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
+    mut spec: notebook_sync::connect::CreateNotebookSpec,
 ) -> PyResult<(String, SessionState, NotebookConnectionInfo)> {
-    let default_label;
-    let label = match actor_label {
-        Some(l) => l,
-        None => {
-            default_label = make_actor_label(DEFAULT_ACTOR_LABEL);
-            &default_label
-        }
-    };
-    let result = notebook_sync::connect::connect_create_with_environment_mode(
-        socket_path.clone(),
-        runtime,
-        working_dir.clone(),
-        label,
-        false,
-        package_manager,
-        dependencies,
-        environment_mode,
-    )
-    .await
-    .map_err(to_py_err)?;
+    if spec.actor_label.is_empty() {
+        spec.actor_label = make_actor_label(DEFAULT_ACTOR_LABEL);
+    }
+    let runtime = spec.runtime.clone();
+    let working_dir = spec.working_dir.clone();
+    let actor_label = spec.actor_label.clone();
+    let result = notebook_sync::connect::connect_create(socket_path.clone(), spec)
+        .await
+        .map_err(to_py_err)?;
     result
         .handle
         .await_session_ready()
@@ -530,14 +517,14 @@ pub(crate) async fn connect_create(
         kernel_started: false,
         kernel_type: None,
         env_source: None,
-        runtime: runtime.to_string(),
+        runtime: runtime.clone(),
         blob_base_url,
         blob_store_path,
         connection_info: Some(connection_info.clone()),
         notebook_path: working_dir.map(|p| p.to_string_lossy().to_string()),
         settings,
         peer_label: None, // Set by caller (Session/AsyncSession)
-        actor_label: actor_label.map(String::from),
+        actor_label: Some(actor_label),
     };
 
     hydrate_kernel_state(&mut state);

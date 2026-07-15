@@ -1434,15 +1434,17 @@ pub async fn create_notebook(
     let prev = previous_notebook_id(server).await;
 
     let outcome = async {
-        match notebook_sync::connect::connect_create_with_environment_mode(
+        match notebook_sync::connect::connect_create(
             server.socket_path.clone(),
-            runtime,
-            working_dir,
-            &server.get_peer_label().await,
-            ephemeral,
-            explicit_pkg_manager.clone(),
-            deps.clone(),
-            environment_mode,
+            notebook_sync::connect::CreateNotebookSpec {
+                working_dir,
+                actor_label: server.get_peer_label().await,
+                ephemeral,
+                package_manager: explicit_pkg_manager.clone(),
+                dependencies: deps.clone(),
+                environment_mode,
+                ..notebook_sync::connect::CreateNotebookSpec::new(runtime)
+            },
         )
         .await
         {
