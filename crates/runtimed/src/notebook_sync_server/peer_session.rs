@@ -536,7 +536,7 @@ mod tests {
     use super::*;
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::{
-        apply_ipynb_changes, save_notebook_to_disk, RoomInitialLoad, RoomInitialLoadStart,
+        apply_ipynb_changes_inner, save_notebook_to_disk, RoomInitialLoad, RoomInitialLoadStart,
     };
 
     #[derive(Default)]
@@ -1742,14 +1742,17 @@ mod tests {
             attachments: HashMap::new(),
         }];
 
-        let changed = apply_ipynb_changes(
+        let changed = apply_ipynb_changes_inner(
             &room,
             &external_cells,
             &HashMap::new(),
             &HashMap::new(),
             true,
+            None, // external_metadata
+            None, // source_revision: exercise the no-source-revision path
         )
-        .await;
+        .await
+        .changed();
         assert!(
             !changed,
             "unchanged disk contents should not roll back an immediate live edit"
