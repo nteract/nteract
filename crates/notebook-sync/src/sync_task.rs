@@ -186,8 +186,12 @@ impl ReactorState {
             next_confirm_sync_attempt: Instant::now(),
             sync_generation: 0,
             acked_sync_generation: 0,
-            stall_notebook_convergence: std::env::var(NOTEBOOK_SYNC_FAULT_ENV)
-                .is_ok_and(|value| value == STALL_NOTEBOOK_CONVERGENCE_FAULT),
+            // The fault switch is harness-only: release builds never read the
+            // env var, so a stray NTERACT_NOTEBOOK_SYNC_FAULT in a user
+            // environment cannot stall convergence.
+            stall_notebook_convergence: cfg!(any(test, debug_assertions))
+                && std::env::var(NOTEBOOK_SYNC_FAULT_ENV)
+                    .is_ok_and(|value| value == STALL_NOTEBOOK_CONVERGENCE_FAULT),
         }
     }
 }
