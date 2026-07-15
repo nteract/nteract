@@ -6,7 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
-import { isOnboardingPoolReady, type OnboardingPoolState, type PythonEnv } from "./pool-readiness";
+import {
+  hasOnboardingPoolError,
+  isOnboardingPoolReady,
+  onboardingPoolErrorMessage,
+  type OnboardingPoolState,
+  type PythonEnv,
+} from "./pool-readiness";
 import type { DaemonStatus } from "./types";
 
 type Runtime = "python" | "deno";
@@ -268,10 +274,28 @@ export default function App() {
 
           if (isOnboardingPoolReady(pythonEnv, state)) {
             setSelectedPoolReady(true);
+            setErrorMessage(null);
             setSteps((prev) =>
               prev.map((s) =>
                 s.id === "tools"
                   ? { ...s, label: `${envLabel} runtime ready`, status: "completed" }
+                  : s,
+              ),
+            );
+            return;
+          }
+
+          // A recorded warm-env failure means the daemon hit a real problem
+          // (bad package, import error, timeout, missing runtime). Surface it
+          // instead of spinning on "warming" until the poll cap — the daemon
+          // keeps retrying with backoff, so the user can still continue.
+          if (hasOnboardingPoolError(pythonEnv, state)) {
+            setPoolWaitTimedOut(true);
+            setErrorMessage(onboardingPoolErrorMessage(envLabel, selected));
+            setSteps((prev) =>
+              prev.map((s) =>
+                s.id === "tools"
+                  ? { ...s, label: `${envLabel} runtime setup failed`, status: "failed" }
                   : s,
               ),
             );
