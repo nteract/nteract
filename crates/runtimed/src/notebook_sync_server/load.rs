@@ -3,134 +3,12 @@ use std::collections::HashSet;
 use super::*;
 use base64::Engine as _;
 
-pub(crate) struct ParsedIpynbCells {
-    pub cells: Vec<CellSnapshot>,
-    pub outputs_by_cell: HashMap<String, Vec<serde_json::Value>>,
-    pub attachments: HashMap<String, serde_json::Value>,
-}
-
-/// Parse cells from a Jupyter notebook JSON object.
-///
-/// Returns `Some(ParsedIpynbCells)` if parsing succeeded (including empty
-/// `cells: []`), or `None` if the `cells` key is missing or invalid.
-///
-/// The source field can be either a string or an array of strings (lines).
-/// We normalize it to a single string.
-///
-/// For older notebooks (pre-nbformat 4.5) without cell IDs we derive a UUIDv5
-/// from the stable room identity and the legacy cell ordinal. Re-reading the
-/// same idless file for recovery or a watcher edit therefore retains the exact
-/// staged identity. The next save writes those IDs back, upgrading the file to
-/// nbformat 4.5 and removing the ordinal fallback.
-///
-/// Positions are generated incrementally using fractional indexing.
-pub(crate) fn parse_cells_from_ipynb_for_notebook(
-    json: &serde_json::Value,
-    notebook_id: uuid::Uuid,
-) -> Option<ParsedIpynbCells> {
-    use loro_fractional_index::FractionalIndex;
-
-    let cells_json = json.get("cells").and_then(|c| c.as_array())?;
-
-    let mut prev_position: Option<FractionalIndex> = None;
-    let mut outputs_by_cell: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
-    let mut attachments: HashMap<String, serde_json::Value> = HashMap::new();
-
-    let parsed_cells = cells_json
-        .iter()
-        .enumerate()
-        .map(|(index, cell)| {
-            let id = cell
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| legacy_cell_id(notebook_id, index));
-
-            let cell_type = cell
-                .get("cell_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("code")
-                .to_string();
-
-            let position = match &prev_position {
-                None => FractionalIndex::default(),
-                Some(prev) => FractionalIndex::new_after(prev),
-            };
-            let position_str = position.to_string();
-            prev_position = Some(position);
-
-            let source = match cell.get("source") {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(serde_json::Value::Array(arr)) => arr
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(""),
-                _ => String::new(),
-            };
-
-            let execution_count = match cell.get("execution_count") {
-                Some(serde_json::Value::Number(n)) => n.to_string(),
-                _ => "null".to_string(),
-            };
-
-            let outputs: Vec<serde_json::Value> = cell
-                .get("outputs")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if !outputs.is_empty() {
-                outputs_by_cell.insert(id.clone(), outputs);
-            }
-
-            if let Some(att) = cell.get("attachments") {
-                if att.is_object() {
-                    attachments.insert(id.clone(), att.clone());
-                }
-            }
-
-            let metadata = match cell.get("metadata") {
-                Some(v) if v.is_object() => v.clone(),
-                _ => serde_json::json!({}),
-            };
-
-            CellSnapshot {
-                id,
-                cell_type,
-                position: position_str,
-                source,
-                execution_count,
-                metadata,
-                resolved_assets: std::collections::HashMap::new(),
-                attachments: std::collections::HashMap::new(),
-            }
-        })
-        .collect();
-
-    Some(ParsedIpynbCells {
-        cells: parsed_cells,
-        outputs_by_cell,
-        attachments,
-    })
-}
-
 fn legacy_cell_id(notebook_id: uuid::Uuid, index: usize) -> String {
     uuid::Uuid::new_v5(
         &notebook_id,
         format!("nteract:legacy-nbformat-cell:{index}").as_bytes(),
     )
     .to_string()
-}
-
-/// Parse notebook metadata from a .ipynb JSON value.
-///
-/// Uses `NotebookMetadataSnapshot::from_metadata_value` which extracts
-/// kernelspec, language_info, and runt namespace from the metadata.
-pub(crate) fn parse_metadata_from_ipynb(
-    json: &serde_json::Value,
-) -> Option<NotebookMetadataSnapshot> {
-    let metadata = json.get("metadata")?;
-    Some(NotebookMetadataSnapshot::from_metadata_value(metadata))
 }
 
 /// Convert raw output JSON strings to blob store manifest references.
@@ -199,6 +77,45 @@ pub(crate) struct StreamingCell {
     pub(crate) metadata: serde_json::Value,
 }
 
+/// Split streaming cells into the watcher's diff shape: `CellSnapshot`s plus
+/// outputs keyed by cell id.
+///
+/// A cell gets an entry in the outputs map only when it actually has outputs,
+/// so callers may treat map membership as "has outputs".
+pub(crate) fn streaming_cells_into_snapshots(
+    cells: Vec<StreamingCell>,
+) -> (Vec<CellSnapshot>, HashMap<String, Vec<serde_json::Value>>) {
+    let mut outputs_by_cell = HashMap::new();
+    let snapshots = cells
+        .into_iter()
+        .map(|cell| {
+            let StreamingCell {
+                id,
+                cell_type,
+                position,
+                source,
+                execution_count,
+                outputs,
+                metadata,
+            } = cell;
+            if !outputs.is_empty() {
+                outputs_by_cell.insert(id.clone(), outputs);
+            }
+            CellSnapshot {
+                id,
+                cell_type,
+                position,
+                source,
+                execution_count,
+                metadata,
+                resolved_assets: HashMap::new(),
+                attachments: HashMap::new(),
+            }
+        })
+        .collect();
+    (snapshots, outputs_by_cell)
+}
+
 /// Convert a `jiter::JsonValue` to a `serde_json::Value`.
 ///
 /// Used to bridge jiter's fast zero-copy parsing with code that expects
@@ -237,11 +154,27 @@ fn jobj_get<'a, 's>(
     obj.iter().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
-/// Parse a notebook file into streaming cells using jiter for fast JSON parsing.
+/// Parse `.ipynb` bytes into streaming cells using jiter for fast JSON parsing.
 ///
-/// Returns `(cells, Option<metadata_snapshot>)`. Outputs are kept as
+/// This is the single notebook parser: initial load, source reconciliation,
+/// and the file watcher all read disk content through it. Outputs are kept as
 /// `serde_json::Value` so they can be passed directly to `create_manifest`
-/// without a serialize→parse round-trip.
+/// without a serialize→parse round-trip; the watcher adapts them to its
+/// diff shape via `streaming_cells_into_snapshots`.
+///
+/// The source field can be either a string or an array of strings (lines),
+/// normalized to a single string. Non-object entries in `cells` are dropped:
+/// no caller depends on synthesized placeholder cells (the watcher diffs by
+/// cell id and the baseline refresh maps id to source), and enumeration runs
+/// over the raw array so surviving idless cells keep their index-derived ids.
+///
+/// For older notebooks (pre-nbformat 4.5) without cell IDs we derive a UUIDv5
+/// from the stable room identity and the legacy cell ordinal. Re-reading the
+/// same idless file for recovery or a watcher edit therefore retains the exact
+/// staged identity. The next save writes those IDs back, upgrading the file to
+/// nbformat 4.5 and removing the ordinal fallback.
+///
+/// Positions are generated incrementally using fractional indexing.
 pub(crate) fn parse_notebook_jiter_for_notebook(
     bytes: &[u8],
     notebook_id: uuid::Uuid,
@@ -1651,22 +1584,22 @@ pub(crate) async fn prepare_notebook_load(
     blob_store: &BlobStore,
     execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
 ) -> Result<PreparedNotebookLoad, String> {
-    let content = tokio::fs::read_to_string(path)
+    let content = tokio::fs::read(path)
         .await
         .map_err(|e| format!("Failed to read notebook: {}", e))?;
-    let json: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("Invalid notebook JSON: {}", e))?;
 
     // Parse cells. Outputs come back in a parallel map keyed by cell_id —
     // they're destined for RuntimeStateDoc, keyed by a freshly-minted
     // synthetic execution_id per cell.
-    let ParsedIpynbCells {
-        cells,
-        outputs_by_cell,
+    let ParsedStreamingNotebook {
+        cells: streaming_cells,
+        metadata,
+        metadata_value,
         attachments: nbformat_attachments,
-    } = parse_cells_from_ipynb_for_notebook(&json, uuid::Uuid::nil())
-        .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
-    let widget_comms = widget_comms_from_notebook_metadata(json.get("metadata"), blob_store).await;
+    } = parse_notebook_jiter_for_notebook(&content, uuid::Uuid::nil())?;
+    let (cells, outputs_by_cell) = streaming_cells_into_snapshots(streaming_cells);
+    let widget_comms =
+        widget_comms_from_notebook_metadata(metadata_value.as_ref(), blob_store).await;
     let context_id = path.to_string_lossy().to_string();
     let durable_records = durable_execution_records(execution_store, &context_id).await;
     let mut claimed_execution_ids = HashSet::new();
@@ -1725,7 +1658,7 @@ pub(crate) async fn prepare_notebook_load(
     Ok(PreparedNotebookLoad {
         cells: prepared_cells,
         widget_comms,
-        metadata: parse_metadata_from_ipynb(&json),
+        metadata,
     })
 }
 

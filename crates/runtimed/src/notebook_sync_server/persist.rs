@@ -824,8 +824,8 @@ pub(crate) async fn refresh_primary_baseline_from_checkpoint(
         );
         return false;
     }
-    let json: serde_json::Value = match serde_json::from_slice(&bytes) {
-        Ok(json) => json,
+    let parsed = match parse_notebook_jiter_for_notebook(&bytes, room.id) {
+        Ok(parsed) => parsed,
         Err(error) => {
             warn!(
                 "[notebook-sync] Committed checkpoint {} could not rebuild its watcher baseline: {}",
@@ -833,13 +833,6 @@ pub(crate) async fn refresh_primary_baseline_from_checkpoint(
             );
             return false;
         }
-    };
-    let Some(parsed) = parse_cells_from_ipynb_for_notebook(&json, room.id) else {
-        warn!(
-            "[notebook-sync] Committed checkpoint {} has no valid cells baseline",
-            save_sequence
-        );
-        return false;
     };
     let sources = parsed
         .cells
@@ -2330,32 +2323,27 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         return;
     }
 
-    let json: serde_json::Value = match serde_json::from_str(&contents) {
-        Ok(j) => j,
-        Err(e) => {
-            // Partial write or invalid JSON - try again next event
-            debug!("[notebook-watch] Cannot parse {:?}: {}", notebook_path, e);
-            return;
-        }
-    };
-
-    // Parse cells from the .ipynb
-    // None = parse failure (missing cells key), Some([]) = valid empty notebook
-    let ParsedIpynbCells {
-        cells: external_cells,
-        outputs_by_cell: external_outputs,
+    // Parse the .ipynb with the shared notebook parser. `Err` covers a
+    // partial write (invalid JSON), a non-object root, and a missing or
+    // non-array `cells` key alike: none of them is an ingestable notebook
+    // revision, so skip and wait for the next event. A genuine empty
+    // notebook still has `cells: []` and parses successfully.
+    let ParsedStreamingNotebook {
+        cells: streaming_cells,
+        metadata: external_metadata,
         attachments: external_attachments,
-    } = match parse_cells_from_ipynb_for_notebook(&json, room.id) {
-        Some(parsed) => parsed,
-        None => {
+        metadata_value: _,
+    } = match parse_notebook_jiter_for_notebook(contents.as_bytes(), room.id) {
+        Ok(parsed) => parsed,
+        Err(e) => {
             warn!(
-                "[notebook-watch] Cannot parse cells from {:?} - skipping",
-                notebook_path
+                "[notebook-watch] Cannot parse cells from {:?} - skipping: {}",
+                notebook_path, e
             );
             return;
         }
     };
-    let external_metadata = parse_metadata_from_ipynb(&json);
+    let (external_cells, external_outputs) = streaming_cells_into_snapshots(streaming_cells);
 
     // Check if kernel is running (to preserve outputs)
     let has_kernel = room.has_kernel().await;
