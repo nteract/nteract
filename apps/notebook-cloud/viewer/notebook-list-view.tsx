@@ -35,7 +35,7 @@ import {
   type CloudPrototypeAuthState,
 } from "./collaborator-auth";
 import { cloudResponseError } from "./cloud-response";
-import { clearCloudAppSession, establishCloudAppSession } from "./app-session";
+import { clearCloudAppSession } from "./app-session";
 import {
   CloudNotebookDashboard,
   CloudNotebookDashboardSearchInput,
@@ -244,16 +244,11 @@ export function CloudNotebookListView({
   ]);
 
   const refreshList = () => {
+    // GET-first session diet: the status GET renews the cookie server-side
+    // and the auth store's fallback establish covers a truly missing session,
+    // so a manual refresh never re-validates upstream with a POST.
     if (authState.mode === "oidc" && authState.token) {
-      void establishCloudAppSession(authState)
-        .catch((error: unknown) => {
-          console.warn("[notebook-cloud] app session refresh before notebook list failed", error);
-        })
-        .finally(() => {
-          auth.refreshAppSessionStatus();
-          setRefreshIndex((value) => value + 1);
-        });
-      return;
+      auth.refreshAppSessionStatus();
     }
     setRefreshIndex((value) => value + 1);
   };

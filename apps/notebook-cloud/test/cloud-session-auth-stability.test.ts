@@ -17,6 +17,13 @@ function authState(overrides: Partial<CloudPrototypeAuthState> = {}): CloudProto
   };
 }
 
+/** Advance a flushed scheduler's virtual clock by `ms`, stopping at the target frame. */
+function advance(scheduler: VirtualTimeScheduler, ms: number): void {
+  scheduler.maxFrames = scheduler.frame + ms;
+  scheduler.schedule(() => {}, ms);
+  scheduler.flush();
+}
+
 /** Deps whose timers never fire (the scheduler is never flushed) and whose
  *  network operations are inert, so activate() only seeds synchronous state. */
 function inertDeps(session: CloudAppSession | null): CloudAuthStoreDeps {
@@ -88,6 +95,39 @@ describe("cloud session auth stability (store projections)", () => {
 
     assert.equal(keys.at(-1), "app-session");
     sub.unsubscribe();
+    dispose();
+  });
+
+  it("adopts a live cookie session across OIDC token churn without an establish POST", () => {
+    let current = authState({ token: "token-a" });
+    let establishCalls = 0;
+    const session: CloudAppSession = {
+      provider: "oidc",
+      expires_at: 100_000,
+      cache_key: "cache-a",
+    };
+    const store = new CloudAuthStore({ readAuthState: () => current });
+    const scheduler = new VirtualTimeScheduler(VirtualAction, Infinity);
+
+    const dispose = store.activate(
+      { authConfig: { oidc: null, localDev: null }, initialSession: session },
+      {
+        ...inertDeps(session),
+        scheduler,
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      },
+    );
+
+    // Boot tick adopts the live session; a token rotation alone must not
+    // re-validate upstream while the cookie still covers the page.
+    advance(scheduler, 0);
+    current = authState({ token: "token-b" });
+    store.refreshAuthState();
+    advance(scheduler, 60_000);
+
+    assert.equal(establishCalls, 0);
     dispose();
   });
 

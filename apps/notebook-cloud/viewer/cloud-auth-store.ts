@@ -1,8 +1,8 @@
 /**
  * Cloud viewer auth store: the single owner of prototype auth state, the
  * app-session view state, and the OIDC renewal notice, plus the drivers that
- * keep them fresh (OIDC token refresh, app-session status fetch, app-session
- * establish/bridge).
+ * keep them fresh (OIDC token refresh, app-session status fetch, and the
+ * GET-first app-session renewal with its fallback establish POST).
  *
  * Three module-level `BehaviorSubject`s, seeded synchronously at construction.
  * `cloudInstantPaintPrincipalMatcher` reads `authSnapshot`/`appSessionSnapshot`
@@ -71,10 +71,10 @@ import {
 } from "./oidc-auth";
 import { cloudAppSessionsEqual, type CloudAppSessionViewState } from "./use-cloud-auth";
 
-/** Cadence of the OIDC refresh and app-session establish timers. */
+/** Cadence of the OIDC refresh and app-session renewal drivers. */
 const AUTH_REFRESH_INTERVAL_MS = 60_000;
 
-/** Establish is not retried for an unchanged token inside this window. */
+/** The fallback establish POST is not retried for an unchanged token inside this window. */
 const ESTABLISH_BACKOFF_SECONDS = 5 * 60;
 
 const RENEWAL_IDLE: CloudAuthRenewalState = { kind: "idle", message: null };
@@ -250,6 +250,13 @@ export class CloudAuthStore {
   private establishedToken: string | null = null;
   private lastEstablishAtSeconds = 0;
   private establishInFlight: Promise<void> | null = null;
+  /**
+   * Activation epoch: bumped by `activate()` and its disposer. Async
+   * completions capture it at issue and drop their writes when it no longer
+   * matches, so work from a torn-down activation cannot mutate the module
+   * singleton's state.
+   */
+  private activationEpoch = 0;
 
   constructor(options: CloudAuthStoreOptions = {}) {
     this.readAuthState = options.readAuthState ?? cloudPrototypeAuthFromWindow;
@@ -335,6 +342,7 @@ export class CloudAuthStore {
    * virtual time and injected fakes.
    */
   activate(config: CloudAuthStoreConfig, deps: CloudAuthStoreDeps = {}): () => void {
+    this.activationEpoch += 1;
     this.authConfig = config.authConfig;
     this.autoRefreshOidc = config.autoRefreshOidc !== false;
     this.appSessionRefreshFallback = config.appSessionRefreshFallback === true;
@@ -406,9 +414,10 @@ export class CloudAuthStore {
         .subscribe(),
     );
 
-    // App-session establish/bridge: `renewIfNeeded` guards single-flight, token
-    // change, backoff, and renewal skew internally, so a plain trigger stream
-    // is enough.
+    // App-session renewal: GET-first. `renewIfNeeded` adopts a live cookie
+    // session without any network call, renews an expiring one through the
+    // status GET (the server slides the cookie on GET), and only falls back
+    // to the establish POST when the fetched status reports no session.
     subscription.add(
       merge(
         timer(0, AUTH_REFRESH_INTERVAL_MS, scheduler),
@@ -422,7 +431,10 @@ export class CloudAuthStore {
       this._appSessionFetch$.next();
     }
 
-    return () => subscription.unsubscribe();
+    return () => {
+      this.activationEpoch += 1;
+      subscription.unsubscribe();
+    };
   }
 
   private seedAppSession(initialSession: CloudAppSession | null): void {
@@ -465,6 +477,7 @@ export class CloudAuthStore {
   }
 
   private async runRefreshOidc(): Promise<void> {
+    const epoch = this.activationEpoch;
     const oidc = this.authConfig?.oidc ?? null;
     // The configured flag is the "refresh even without an app session" intent
     // (the notebook route enables it only for edit-mode links). An existing app
@@ -493,11 +506,20 @@ export class CloudAuthStore {
         storage: this.oidcStorage,
         nowSeconds: this.nowSeconds(),
       });
+      if (epoch !== this.activationEpoch) {
+        return;
+      }
       this.refreshAuthState();
       this.setRenewal(RENEWAL_IDLE);
     } catch (error) {
+      if (epoch !== this.activationEpoch) {
+        return;
+      }
       if (this.appSessionRefreshFallback) {
         const status = await this.readAppSessionStatusOp().catch(() => null);
+        if (epoch !== this.activationEpoch) {
+          return;
+        }
         if (cloudAppSessionIsFresh(status?.session, this.nowSeconds())) {
           console.warn(
             "[notebook-cloud] OIDC session refresh failed; continuing with app session cookie",
@@ -514,6 +536,15 @@ export class CloudAuthStore {
     }
   }
 
+  /**
+   * GET-first session diet. A page holding a live cookie session makes zero
+   * establish POSTs: the token is adopted as covered, and later OIDC token
+   * rotation alone never re-validates upstream. A present-but-expiring
+   * session renews through the status GET, whose response slides the cookie
+   * server-side. The establish POST is the fallback for exactly one case:
+   * the fetched status reported no session while the client holds a valid
+   * OIDC token.
+   */
   private renewIfNeeded(): void {
     const authState = this._authState$.getValue();
     if (authState.mode !== "oidc" || !authState.token) {
@@ -525,11 +556,18 @@ export class CloudAuthStore {
       return;
     }
     const nowSeconds = this.nowSeconds();
-    const tokenChanged = this.establishedToken !== authState.token;
-    const sessionNeedsRenewal = cloudAppSessionNeedsRenewal(view.session, nowSeconds);
-    if (!tokenChanged && !sessionNeedsRenewal) {
+    if (!cloudAppSessionNeedsRenewal(view.session, nowSeconds)) {
+      this.establishedToken = authState.token;
       return;
     }
+    if (view.session) {
+      // Inside the renewal window with a session still present: the GET is
+      // the renewal. If the session actually lapsed, the fetched null routes
+      // the next trigger into the fallback POST below.
+      this.refreshAppSessionStatus();
+      return;
+    }
+    const tokenChanged = this.establishedToken !== authState.token;
     if (this.establishInFlight) {
       return;
     }
@@ -537,9 +575,13 @@ export class CloudAuthStore {
       return;
     }
 
+    const epoch = this.activationEpoch;
     this.lastEstablishAtSeconds = nowSeconds;
     this.establishInFlight = this.establishAppSessionOp(authState)
       .then(() => {
+        if (epoch !== this.activationEpoch) {
+          return;
+        }
         this.establishedToken = authState.token;
         this.refreshAppSessionStatus();
       })

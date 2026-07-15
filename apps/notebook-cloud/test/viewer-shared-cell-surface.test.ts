@@ -766,15 +766,20 @@ test("cloud auth store re-establishes and refreshes cookie-backed state after OI
   );
 });
 
-test("cloud notebook list refresh re-establishes app sessions before listing notebooks", () => {
+test("cloud notebook list refresh stays on the GET-first session path", () => {
   const routeSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
   const routeSourceText = readFileSync(routeSourcePath, "utf8");
 
-  assert.match(routeSourceText, /import \{ clearCloudAppSession, establishCloudAppSession \}/);
+  assert.match(routeSourceText, /import \{ clearCloudAppSession \}/);
   assert.match(
     routeSourceText,
-    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*establishCloudAppSession\(authState\)[\s\S]*auth\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
-    "manual notebook-list refresh should re-run the trusted session exchange so pending invites can resolve",
+    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*auth\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
+    "manual notebook-list refresh reads session status; pending invites resolve on the cookie-authenticated list fetch itself (syncStoredAppSessionProfile)",
+  );
+  assert.doesNotMatch(
+    routeSourceText,
+    /establishCloudAppSession/,
+    "the list view never re-validates upstream with an establish POST; the missing-session fallback lives in the auth store",
   );
 });
 

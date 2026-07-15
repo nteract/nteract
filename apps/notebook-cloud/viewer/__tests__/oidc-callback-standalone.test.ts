@@ -140,6 +140,32 @@ describe("standalone OIDC callback entry", () => {
     expect(navigation.replace).toHaveBeenCalledWith("/n/private-demo");
   });
 
+  it("POSTs /api/auth/session exactly once on a successful callback", async () => {
+    const requests: Array<{ method: string; url: string }> = [];
+
+    startOidcCallback({
+      authConfig,
+      completeOidcRedirect: async () => ({ returnUrl: "/n/private-demo", token: oidcToken() }),
+      establishAppSession: (token, deps) =>
+        establishCloudAppSessionFromOidcTokenWithRetry(token, deps),
+      fetchImpl: async (input, init) => {
+        requests.push({ method: init?.method ?? "GET", url: String(input) });
+        return new Response(null, { status: 200 });
+      },
+      location,
+      navigate: navigation,
+      root,
+      sleep: async () => {},
+      storage,
+      timeoutSignal: stableTimeoutSignal,
+    });
+
+    await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith("/n/private-demo"));
+    // The callback is one of the two allowed establish POST sites (the other
+    // is the auth store's missing-session fallback); it never doubles up.
+    expect(requests).toEqual([{ method: "POST", url: "/api/auth/session" }]);
+  });
+
   it("still returns to the callback return URL when app-session retry fails twice", async () => {
     let fetchCalls = 0;
 

@@ -1046,30 +1046,68 @@ function withNoStore(response: Response): Response {
   return response;
 }
 
+/**
+ * Server-Timing phase timers for the session endpoint. Cloudflare advances
+ * `Date.now()` only across I/O, so each phase reports the awaited upstream or
+ * database time it wrapped; a near-zero `total` against a slow client-side
+ * trace points at scheduling upstream of the handler. Metric names are stable
+ * so traces stay comparable: `session_read`, `host_bootstrap`, `renew_cookie`
+ * (GET), `auth_validate`, `profile_sync`, `cookie_create` (POST), and `total`
+ * on every method.
+ */
+function appSessionServerTiming(): {
+  time<T>(name: string, op: () => Promise<T>): Promise<T>;
+  apply(response: Response): Response;
+} {
+  const startedAt = Date.now();
+  const phases: string[] = [];
+  return {
+    async time<T>(name: string, op: () => Promise<T>): Promise<T> {
+      const phaseStartedAt = Date.now();
+      try {
+        return await op();
+      } finally {
+        phases.push(`${name};dur=${Date.now() - phaseStartedAt}`);
+      }
+    },
+    apply(response: Response): Response {
+      response.headers.set(
+        "Server-Timing",
+        [...phases, `total;dur=${Date.now() - startedAt}`].join(", "),
+      );
+      return response;
+    },
+  };
+}
+
 async function routeAppSession(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
+  const timing = appSessionServerTiming();
+
   if (request.method === "GET") {
     const existingSession = appSessionConfigured(env)
-      ? await readCloudAppSession(env, request)
+      ? await timing.time("session_read", () => readCloudAppSession(env, request))
       : null;
     const bootstrapped =
       existingSession || !appSessionConfigured(env)
         ? null
-        : await hostSessionAppSessionCookie(request, env);
+        : await timing.time("host_bootstrap", () => hostSessionAppSessionCookie(request, env));
     const session = existingSession ?? bootstrapped?.session ?? null;
-    const response = await withAppSessionRenewalCookie(
-      json({ ok: true, session: session ? appSessionResponse(session) : null }),
-      env,
-      session,
+    const response = await timing.time("renew_cookie", () =>
+      withAppSessionRenewalCookie(
+        json({ ok: true, session: session ? appSessionResponse(session) : null }),
+        env,
+        session,
+      ),
     );
     if (bootstrapped?.cookie) {
       response.headers.append("Set-Cookie", bootstrapped.cookie);
       ctx.waitUntil(syncAuthenticatedProfile(env, bootstrapped.identity));
     }
-    return response;
+    return timing.apply(response);
   }
 
   const originRejection = rejectUntrustedMutationOrigin(request, env);
@@ -1080,7 +1118,7 @@ async function routeAppSession(
   if (request.method === "DELETE") {
     const response = json({ ok: true });
     response.headers.append("Set-Cookie", clearCloudAppSessionCookie());
-    return response;
+    return timing.apply(response);
   }
 
   if (request.method !== "POST") {
@@ -1090,21 +1128,28 @@ async function routeAppSession(
     return json({ error: "app sessions are not configured" }, 503);
   }
 
-  const identity = await authenticateRequestOrResponse(request, env);
+  // Same operations and ordering as `authenticateRequestOrResponse` with its
+  // default profile sync, split so each awaited phase reports its own timing.
+  const identity = await timing.time("auth_validate", () =>
+    authenticateRequestOrResponse(request, env, { syncProfile: false }),
+  );
   if (identity instanceof Response) {
-    return identity;
+    return timing.apply(identity);
   }
+  await timing.time("profile_sync", () => syncAuthenticatedProfile(env, identity));
   if (identity.metadata.provider !== "oidc") {
-    return json({ error: "app sessions require OIDC sign-in" }, 403);
+    return timing.apply(json({ error: "app sessions require OIDC sign-in" }, 403));
   }
 
-  const cookie = await createCloudAppSessionCookie(env, identity);
+  const cookie = await timing.time("cookie_create", () =>
+    createCloudAppSessionCookie(env, identity),
+  );
   const response = json({
     ok: true,
     expires_in: NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
   });
   response.headers.append("Set-Cookie", cookie);
-  return response;
+  return timing.apply(response);
 }
 
 async function hostSessionAppSessionCookie(
