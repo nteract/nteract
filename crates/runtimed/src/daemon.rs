@@ -6502,11 +6502,20 @@ impl Daemon {
             }
             Err(e) => {
                 error!("[runtimed] Conda warm-env subprocess failed: {}", e);
+                // A subprocess timeout is the #4017 signature (slow,
+                // download-dominated conda-forge install on Windows). Classify
+                // it as "timeout" so onboarding can show the retry-friendly
+                // message rather than a generic setup failure.
+                let error_kind = if e.contains("timed out") {
+                    "timeout"
+                } else {
+                    "setup_failed"
+                };
                 guard
                     .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: e,
-                        error_kind: "setup_failed".to_string(),
+                        error_kind: error_kind.to_string(),
                     }))
                     .await;
             }
