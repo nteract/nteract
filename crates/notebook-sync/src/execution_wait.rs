@@ -200,6 +200,112 @@ pub async fn await_execution_terminal(
     Ok(final_state)
 }
 
+/// Outcome of awaiting a batch of executions queued together (run-all).
+///
+/// Timeout and kernel failure map to fields rather than an error because a
+/// batch wait always has a reportable summary; callers read per-execution
+/// statuses from the RuntimeStateDoc afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllExecutionsTerminal {
+    /// The shared deadline elapsed before every execution reached terminal
+    /// status.
+    pub timed_out: bool,
+    /// Some execution terminalized as `"error"`, or the kernel failed
+    /// (`error`/`shutdown`) while an execution was still pending.
+    pub has_error: bool,
+}
+
+/// Wait for every execution in `execution_ids` to reach terminal status
+/// against one shared deadline, then run one trailing output-sync grace pass.
+///
+/// The per-execution waits use zero output-sync grace: with the default
+/// grace, N output-free executions would serialize into N x
+/// [`DEFAULT_OUTPUT_SYNC_GRACE`] of sleep on large notebooks. Output settling
+/// is instead deferred to a single trailing pass that re-awaits the
+/// non-cancelled executions concurrently under the default grace rules, so
+/// trailing executions with empty manifests or still-settling stream outputs
+/// share one grace window (bounded by the time remaining until the deadline)
+/// before this returns.
+///
+/// Error mappings:
+///
+/// * [`ExecutionTerminalError::Timeout`] on any execution sets `timed_out`
+///   and stops waiting — the deadline is shared, so it has elapsed for the
+///   remaining executions too, and no time remains for a grace pass.
+/// * [`ExecutionTerminalError::KernelFailed`] sets `has_error` and stops
+///   waiting for new terminal transitions — the kernel is gone, so pending
+///   executions cannot run. Executions that did reach terminal state still
+///   get the trailing grace pass, so their durable outputs sync before the
+///   batch reports.
+pub async fn await_all_executions_terminal(
+    handle: &DocHandle,
+    execution_ids: &[String],
+    timeout: Duration,
+) -> AllExecutionsTerminal {
+    let deadline = Instant::now() + timeout;
+    let mut has_error = false;
+
+    // ── Phase 1: all-terminal, zero grace, one shared deadline ──────────
+    let mut terminal: Vec<(&str, ExecutionTerminalState)> = Vec::with_capacity(execution_ids.len());
+    for execution_id in execution_ids {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match await_execution_terminal(handle, execution_id, remaining, Some(Duration::ZERO)).await
+        {
+            Ok(state) => {
+                has_error |= state.status == "error";
+                terminal.push((execution_id, state));
+            }
+            Err(ExecutionTerminalError::Timeout) => {
+                return AllExecutionsTerminal {
+                    timed_out: true,
+                    has_error,
+                };
+            }
+            // The kernel is gone, so this execution can never terminalize.
+            // Record the failure and keep sweeping: with the kernel in a
+            // failed lifecycle the remaining awaits return on their first
+            // poll — either an already-terminal state (collected for the
+            // trailing grace pass below) or another immediate KernelFailed —
+            // so the batch stops waiting for new terminal transitions while
+            // executions that did terminalize still get their grace window.
+            Err(ExecutionTerminalError::KernelFailed { .. }) => {
+                has_error = true;
+            }
+        }
+    }
+
+    // ── Phase 2: one trailing output-sync grace pass ─────────────────────
+    //
+    // Terminal status is written after outputs, but this replica can be a
+    // sync tick behind (see the module docs). Re-await the executions
+    // concurrently with the default grace rules; `await_execution_terminal`
+    // returns immediately for executions whose outputs are already settled,
+    // so the settle predicate stays in one place and the pass costs one
+    // grace window of wall clock, not one per execution.
+    let mut settle = tokio::task::JoinSet::new();
+    for (execution_id, state) in terminal {
+        // Cancelled executions never receive outputs; waiting on them would
+        // spend the full grace window for nothing.
+        if state.status == "cancelled" {
+            continue;
+        }
+        let handle = handle.clone();
+        let execution_id = execution_id.to_string();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        settle.spawn(async move {
+            // Best-effort: statuses are already terminal, so a grace pass
+            // cut short by the deadline does not change the outcome.
+            let _ = await_execution_terminal(&handle, &execution_id, remaining, None).await;
+        });
+    }
+    while settle.join_next().await.is_some() {}
+
+    AllExecutionsTerminal {
+        timed_out: false,
+        has_error,
+    }
+}
+
 fn stream_output_settle_window(outputs: &[serde_json::Value]) -> Option<(Duration, Duration)> {
     let has_blob_stream = outputs.iter().any(|output| {
         output.get("output_type").and_then(|t| t.as_str()) == Some("stream")

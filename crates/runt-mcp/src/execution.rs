@@ -5,12 +5,13 @@
 //! Automerge CRDT) for execution lifecycle state, using the CRDT as the
 //! source of truth instead of relying on broadcast hints.
 
-use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::collections::HashMap;
+use std::time::Duration;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use notebook_sync::execution_wait::{
-    await_execution_terminal, ExecutionTerminalError, ExecutionTerminalState,
+    await_all_executions_terminal, await_execution_terminal, ExecutionTerminalError,
+    ExecutionTerminalState,
 };
 use notebook_sync::handle::DocHandle;
 use runtimed_outputs::output_resolver;
@@ -281,8 +282,12 @@ pub async fn run_all_and_queue(handle: &DocHandle) -> Result<RunAllResult, Execu
 
 /// Run all cells and wait for completion.
 ///
-/// Composes `run_all_and_queue` with a polling phase that waits for all
-/// queued execution IDs to reach terminal status in the RuntimeStateDoc.
+/// Composes `run_all_and_queue` with `await_all_executions_terminal`, which
+/// waits for every queued execution ID to reach terminal status in the
+/// RuntimeStateDoc against one shared deadline, then runs a single trailing
+/// output-sync grace pass. Kernel failure while executions are still pending
+/// maps to `status: "error"` (the kernel is gone, so later cells cannot
+/// run); hitting the deadline maps to `status: "timed_out"`.
 ///
 /// Returns a lightweight `RunAllResult` with overall status. The caller should
 /// read the full notebook state after this returns to build the summary view.
@@ -296,51 +301,13 @@ pub async fn run_all_and_wait(
         return Ok(result);
     }
 
-    let execution_ids: HashSet<&str> = result
-        .cell_execution_ids
-        .values()
-        .map(|s| s.as_str())
-        .collect();
+    let execution_ids: Vec<String> = result.cell_execution_ids.values().cloned().collect();
+    let outcome = await_all_executions_terminal(handle, &execution_ids, timeout).await;
 
-    // Poll RuntimeStateDoc for all execution IDs to reach terminal status.
-    let deadline = Instant::now() + timeout;
-    let mut all_terminal = false;
-
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-
-        if let Ok(state) = handle.get_runtime_state() {
-            all_terminal = execution_ids.iter().all(|eid| {
-                state.executions.get(*eid).is_some_and(|exec| {
-                    exec.status == "done" || exec.status == "error" || exec.status == "cancelled"
-                })
-            });
-            if all_terminal {
-                break;
-            }
-        }
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    // Derive overall status.
-    let timed_out = !all_terminal;
-    let has_error = handle.get_runtime_state().ok().is_some_and(|state| {
-        execution_ids.iter().any(|eid| {
-            state
-                .executions
-                .get(*eid)
-                .is_some_and(|exec| exec.status == "error")
-        })
-    });
-
-    result.timed_out = timed_out;
-    result.status = if timed_out {
+    result.timed_out = outcome.timed_out;
+    result.status = if outcome.timed_out {
         "timed_out"
-    } else if has_error {
+    } else if outcome.has_error {
         "error"
     } else {
         "completed"
