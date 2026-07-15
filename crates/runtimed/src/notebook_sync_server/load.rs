@@ -2180,9 +2180,8 @@ pub(crate) async fn apply_ipynb_changes_inner(
                         }
                     }
 
-                    let metadata_changed = external_metadata.is_some_and(|metadata| {
-                        doc.get_metadata_snapshot().as_ref() != Some(metadata)
-                    });
+                    let metadata_changed = external_metadata
+                        .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
                     if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
                         doc.set_metadata_snapshot(metadata)?;
                     }
@@ -2502,9 +2501,8 @@ pub(crate) async fn apply_ipynb_changes_inner(
                 }
 
                 let cells_changed = changed;
-                let metadata_changed = external_metadata.is_some_and(|metadata| {
-                    doc.get_metadata_snapshot().as_ref() != Some(metadata)
-                });
+                let metadata_changed = external_metadata
+                    .is_some_and(|metadata| !doc.metadata_snapshot_matches(metadata));
                 if let Some(metadata) = external_metadata.filter(|_| metadata_changed) {
                     doc.set_metadata_snapshot(metadata)?;
                 }
