@@ -513,17 +513,15 @@ pub(super) fn queue_request_error(
 
 pub(super) fn queue_session_status(
     writer: &PeerWriter,
-    notebook_doc: notebook_protocol::protocol::NotebookDocPhaseWire,
-    runtime_state: notebook_protocol::protocol::RuntimeStatePhaseWire,
-    initial_load: notebook_protocol::protocol::InitialLoadPhaseWire,
+    phases: &super::peer_session::HandshakePhases,
 ) -> anyhow::Result<()> {
     writer.send_json(
         NotebookFrameType::SessionControl,
         &notebook_protocol::protocol::SessionControlMessage::SyncStatus(
             notebook_protocol::protocol::SessionSyncStatusWire {
-                notebook_doc,
-                runtime_state,
-                initial_load,
+                notebook_doc: phases.notebook_doc,
+                runtime_state: phases.runtime_state,
+                initial_load: phases.initial_load.clone(),
             },
         ),
     )
@@ -792,9 +790,11 @@ mod tests {
             .expect("runtime sync should enqueue");
         queue_session_status(
             &writer,
-            notebook_protocol::protocol::NotebookDocPhaseWire::Interactive,
-            notebook_protocol::protocol::RuntimeStatePhaseWire::Ready,
-            notebook_protocol::protocol::InitialLoadPhaseWire::Ready,
+            &crate::notebook_sync_server::peer_session::HandshakePhases {
+                notebook_doc: notebook_protocol::protocol::NotebookDocPhaseWire::Interactive,
+                runtime_state: notebook_protocol::protocol::RuntimeStatePhaseWire::Ready,
+                initial_load: notebook_protocol::protocol::InitialLoadPhaseWire::Ready,
+            },
         )
         .expect("session status should enqueue after runtime sync");
 

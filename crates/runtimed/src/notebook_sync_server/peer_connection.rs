@@ -5,6 +5,42 @@ use super::*;
 use anyhow::Context;
 use runtime_doc::RuntimeLifecycle;
 
+/// Identity and environment facts that are immutable for the lifetime of one
+/// peer connection. The handshake handler that resolved the room constructs
+/// this once, and the whole sync-loop call chain reads it as a single value.
+/// Per-call state (readers, writers, Automerge `peer_state`) stays in plain
+/// parameters.
+pub(crate) struct PeerConnectionContext {
+    pub(crate) room: Arc<NotebookRoom>,
+    pub(crate) rooms: NotebookRooms,
+    pub(crate) notebook_id: String,
+    pub(crate) daemon: std::sync::Arc<crate::daemon::Daemon>,
+    /// Unique id for this peer connection, minted at handshake time so
+    /// presence registration and disconnect cleanup name the same peer.
+    pub(crate) peer_id: String,
+    pub(crate) connection_identity: RoomConnectionIdentity,
+    /// Protocol version from the client preamble. v4 is required at
+    /// connection setup, so SessionControl frames are always supported.
+    pub(crate) client_protocol_version: u8,
+    /// Runtime used for kernel auto-launch. Usually the user's default;
+    /// CreateNotebook overrides it with the explicitly requested runtime.
+    pub(crate) default_runtime: crate::runtime::Runtime,
+    pub(crate) default_python_env: crate::settings_doc::PythonEnvType,
+    /// Project context for untitled-notebook detection; also published as the
+    /// local workstation attachment for non-hosted rooms.
+    pub(crate) working_dir: Option<PathBuf>,
+    /// File to stream into a fresh room before steady-state sync.
+    pub(crate) needs_load: Option<PathBuf>,
+}
+
+impl PeerConnectionContext {
+    /// Execution-store directory for this connection. Derived from the
+    /// daemon the context already carries so the two cannot disagree.
+    pub(crate) fn execution_store_dir(&self) -> &Path {
+        &self.daemon.config.execution_store_dir
+    }
+}
+
 /// Handle a single notebook sync client connection.
 ///
 /// The caller has already consumed the handshake frame and resolved the room.
@@ -21,33 +57,23 @@ use runtime_doc::RuntimeLifecycle;
 /// is already communicated in the NotebookConnectionInfo response.
 /// If `typed_capabilities` is true, the capabilities bootstrap is carried in a
 /// typed SessionControl frame instead of a standalone untyped JSON frame.
-#[allow(clippy::too_many_arguments)]
-pub async fn handle_notebook_sync_connection<R, W>(
+pub(crate) async fn handle_notebook_sync_connection<R, W>(
     reader: R,
     mut writer: W,
-    room: Arc<NotebookRoom>,
-    rooms: NotebookRooms,
-    notebook_id: String,
-    default_runtime: crate::runtime::Runtime,
-    default_python_env: crate::settings_doc::PythonEnvType,
-    daemon: std::sync::Arc<crate::daemon::Daemon>,
-    working_dir: Option<PathBuf>,
+    ctx: PeerConnectionContext,
     initial_metadata: Option<String>,
     skip_capabilities: bool,
     typed_capabilities: bool,
-    needs_load: Option<PathBuf>,
     // True if this is a newly-created notebook at a non-existent path.
     // Used to enable auto-launch for notebooks created via `runt notebook newfile.ipynb`.
     created_new_at_path: bool,
-    connection_identity: RoomConnectionIdentity,
-    // Protocol version from the client preamble. v4 is required at connection
-    // setup, so SessionControl frames are always supported.
-    client_protocol_version: u8,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    let room = &ctx.room;
+    let notebook_id = ctx.notebook_id.as_str();
     // Claim the room for this peer before any other await. Bumping the
     // generation here protects against two ghost-room reaper races:
     //   1. The reaper has already snapshotted candidates and is between
@@ -64,7 +90,7 @@ where
     room.connections.clear_kernel_torn_down();
 
     // Set working_dir on the room if provided (for untitled notebook project detection)
-    if let Some(wd) = working_dir {
+    if let Some(wd) = &ctx.working_dir {
         let update_workstation_directory = room.file_binding.path().await.is_none();
         {
             let mut room_wd = room.identity.working_dir.write().await;
@@ -95,7 +121,7 @@ where
                     match doc.set_metadata_snapshot(&snapshot) {
                         Ok(()) => {
                             super::durability::commit_daemon_notebook_mutation(
-                                &room,
+                                room,
                                 &mut doc,
                                 &baseline_heads,
                                 &rollback_snapshot,
@@ -138,12 +164,12 @@ where
     // write lock (deadlock prevention: no lock held across `.await`).
     {
         let trust_state = room.trust_state.read().await;
-        write_trust_to_runtime_state(&room, &trust_state);
+        write_trust_to_runtime_state(room, &trust_state);
     }
     // Re-verify trust from doc metadata — picks up trust signatures that were
     // written to the Automerge doc (e.g., from a previous approval or from
     // initial_metadata seeded above).
-    check_and_update_trust_state(&room).await;
+    check_and_update_trust_state(room).await;
 
     room.connections
         .active_peers
@@ -172,7 +198,7 @@ where
         // Check if notebook_id is a UUID (new unsaved notebook) vs a file path
         let path_snapshot = room.file_binding.path().await;
         let is_new_notebook = path_snapshot.as_ref().is_none_or(|p| !p.exists())
-            && uuid::Uuid::parse_str(&notebook_id).is_ok();
+            && uuid::Uuid::parse_str(notebook_id).is_ok();
 
         // Scope the trust_state read guard so it drops before
         // `has_kernel()` which acquires another lock (deadlock prevention).
@@ -225,8 +251,10 @@ where
             // Spawn auto-launch in background so we don't block sync
             let room_clone = room.clone();
             let panic_room = room.clone();
-            let notebook_id_clone = notebook_id.clone();
-            let daemon_clone = daemon.clone();
+            let notebook_id_clone = notebook_id.to_string();
+            let daemon_clone = ctx.daemon.clone();
+            let default_runtime = ctx.default_runtime.clone();
+            let default_python_env = ctx.default_python_env.clone();
             spawn_supervised(
                 "auto-launch-kernel",
                 async move {
@@ -293,8 +321,8 @@ where
             .context("serialize comments notebook ref for notebook sync capabilities")?;
         let caps = connection::ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
             .with_identity(
-                connection_identity.actor_label().as_str(),
-                connection_identity.scope().as_str(),
+                ctx.connection_identity.actor_label().as_str(),
+                ctx.connection_identity.scope().as_str(),
             )
             .with_comments_doc_identity(comments_doc_id, comments_notebook_ref);
         if typed_capabilities {
@@ -308,32 +336,23 @@ where
         }
     }
 
-    // Generate peer_id here so it's available for cleanup regardless of
-    // whether the sync loop exits with Ok or Err.
-    let peer_id = uuid::Uuid::new_v4().to_string();
-
-    let result = run_sync_loop_v2(
-        reader,
-        writer,
-        &room,
-        rooms.clone(),
-        notebook_id.clone(),
-        daemon.clone(),
-        needs_load.as_deref(),
-        &peer_id,
-        &connection_identity,
-        client_protocol_version,
-    )
-    .await;
+    let result = run_sync_loop_v2(reader, writer, &ctx).await;
 
     // Always clean up presence on disconnect, whether the sync loop
-    // exited cleanly (Ok) or with an error (Err). The peer_id was
-    // generated before starting the sync loop, so it is always
+    // exited cleanly (Ok) or with an error (Err). The peer_id is a
+    // connection-lifetime fact on the context, so it is always
     // available here. remove_peer is a no-op for unknown peers
     // (e.g. error before any presence was registered).
-    cleanup_presence_on_disconnect(&room, &peer_id).await;
+    cleanup_presence_on_disconnect(room, &ctx.peer_id).await;
 
-    handle_peer_disconnect(&room, rooms.clone(), &notebook_id, &peer_id, &daemon).await;
+    handle_peer_disconnect(
+        room,
+        ctx.rooms.clone(),
+        notebook_id,
+        &ctx.peer_id,
+        &ctx.daemon,
+    )
+    .await;
 
     result
 }
