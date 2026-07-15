@@ -250,10 +250,10 @@ export function AssistantPanel() {
             >
               <div
                 className={cn(
-                  "max-w-[85%] rounded-lg px-3 py-2 text-sm",
+                  "rounded-lg px-3 py-2 text-sm",
                   message.role === "user"
-                    ? "bg-primary text-primary-foreground whitespace-pre-wrap break-words"
-                    : "bg-muted text-foreground",
+                    ? "max-w-[85%] bg-primary text-primary-foreground whitespace-pre-wrap break-words"
+                    : "w-[calc(100%-2rem)] bg-muted text-foreground",
                   message.isError && "bg-destructive/10 text-destructive",
                 )}
               >
