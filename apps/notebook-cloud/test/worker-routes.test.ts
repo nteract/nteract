@@ -699,6 +699,14 @@ describe("Worker artifact routes", () => {
     assert.doesNotMatch(cookie, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(cookie, /session@example\.test/);
     assert.deepEqual(await response.json(), { ok: true, expires_in: 21_600 });
+
+    // Server-Timing explains where a slow exchange spends its time: upstream
+    // auth validation, profile sync, and cookie signing, each phased.
+    const serverTiming = response.headers.get("Server-Timing") ?? "";
+    assert.match(serverTiming, /(^|, )auth_validate;dur=\d+/);
+    assert.match(serverTiming, /(^|, )profile_sync;dur=\d+/);
+    assert.match(serverTiming, /(^|, )cookie_create;dur=\d+/);
+    assert.match(serverTiming, /(^|, )total;dur=\d+/);
   });
 
   it("reads app session cookie status without exposing identity credentials", async () => {
@@ -735,6 +743,14 @@ describe("Worker artifact routes", () => {
     assert.equal(body.session?.provider, "oidc");
     assert.equal(typeof body.session?.expires_at, "number");
     assert.equal(typeof body.session?.cache_key, "string");
+
+    // The GET never validates upstream: its Server-Timing phases are the
+    // cookie read and the sliding renewal, not auth_validate.
+    const serverTiming = response.headers.get("Server-Timing") ?? "";
+    assert.match(serverTiming, /(^|, )session_read;dur=\d+/);
+    assert.match(serverTiming, /(^|, )renew_cookie;dur=\d+/);
+    assert.match(serverTiming, /(^|, )total;dur=\d+/);
+    assert.doesNotMatch(serverTiming, /auth_validate/);
   });
 
   it("bootstraps an app session from a configured host session", async (t) => {
@@ -794,6 +810,11 @@ describe("Worker artifact routes", () => {
     assert.equal(typeof body.session?.expires_at, "number");
     assert.equal(typeof body.session?.cache_key, "string");
     assert.equal(env.DB.profiles.get("user:example:session%2Fcookie%20user")?.email_verified, 1);
+    assert.match(
+      response.headers.get("Server-Timing") ?? "",
+      /(^|, )host_bootstrap;dur=\d+/,
+      "host-session bootstrap must report its upstream identity phase",
+    );
   });
 
   for (const [label, claims] of [
@@ -1530,6 +1551,10 @@ describe("Worker artifact routes", () => {
     assert.match(cookie, /HttpOnly/);
     assert.match(cookie, /Secure/);
     assert.match(cookie, /SameSite=Lax/);
+
+    // The DELETE handler is a cookie clear with no awaited work: a near-zero
+    // total against a slow trace points upstream of the handler.
+    assert.match(response.headers.get("Server-Timing") ?? "", /(^|, )total;dur=\d+/);
   });
 
   it("serves the viewer runtimed WASM asset through the Worker assets binding", async () => {

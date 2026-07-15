@@ -400,6 +400,212 @@ describe("CloudAuthStore app-session establish driver", () => {
   });
 });
 
+describe("CloudAuthStore session diet (GET-first)", () => {
+  it("mounts with a live cookie session on one status GET and zero establish POSTs", async () => {
+    const scheduler = newScheduler();
+    const focus$ = new Subject<void>();
+    const visible$ = new Subject<boolean>();
+    let getCalls = 0;
+    let establishCalls = 0;
+    const live = appSession({ expires_at: 100_000 });
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+
+    const dispose = store.activate(
+      { authConfig: { oidc: null, localDev: null }, initialSession: null },
+      baseDeps({
+        scheduler,
+        windowFocus$: focus$,
+        documentVisible$: visible$,
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          return { ok: true, session: live };
+        },
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    await drainMicrotasks();
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+
+    // Cadence ticks, focus, and a visibility rise: the live session keeps
+    // covering the page, so nothing re-validates upstream.
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    focus$.next();
+    visible$.next(false);
+    visible$.next(true);
+    await drainMicrotasks();
+
+    assert.equal(getCalls, 1);
+    assert.equal(establishCalls, 0);
+    assert.equal(store.appSessionSnapshot.session, live);
+
+    dispose();
+  });
+
+  it("mounts with a fresh bootstrap session on zero session fetches of any kind", async () => {
+    const scheduler = newScheduler();
+    let getCalls = 0;
+    let establishCalls = 0;
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+
+    const dispose = store.activate(
+      {
+        authConfig: { oidc: null, localDev: null },
+        initialSession: appSession({ expires_at: 100_000 }),
+      },
+      baseDeps({
+        scheduler,
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          return { ok: true, session: appSession({ expires_at: 100_000 }) };
+        },
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    await drainMicrotasks();
+    advanceBy(scheduler, 0);
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+
+    assert.equal(getCalls, 0);
+    assert.equal(establishCalls, 0);
+
+    dispose();
+  });
+
+  it("renews an expiring session through the status GET, not an establish POST", async () => {
+    const scheduler = newScheduler();
+    let getCalls = 0;
+    let establishCalls = 0;
+    // Inside the 30-minute renewal window but still fresh: present, expiring.
+    const expiring = appSession({ expires_at: 1_000 });
+    const renewed = appSession({ expires_at: 100_000 });
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+
+    const dispose = store.activate(
+      { authConfig: { oidc: null, localDev: null }, initialSession: expiring },
+      baseDeps({
+        scheduler,
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          return { ok: true, session: renewed };
+        },
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    await drainMicrotasks();
+
+    // The boot tick sees the expiring session: the GET is the renewal (the
+    // server slides the cookie on GET).
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+    assert.equal(getCalls, 1);
+    assert.equal(establishCalls, 0);
+    assert.equal(store.appSessionSnapshot.session, renewed);
+
+    // Once renewed, later ticks cost nothing.
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(getCalls, 1);
+    assert.equal(establishCalls, 0);
+
+    dispose();
+  });
+
+  it("falls back to exactly one establish POST when the GET reports no session", async () => {
+    const scheduler = newScheduler();
+    let getCalls = 0;
+    let establishCalls = 0;
+    const established = appSession({ expires_at: 100_000 });
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+
+    const dispose = store.activate(
+      { authConfig: { oidc: null, localDev: null }, initialSession: null },
+      baseDeps({
+        scheduler,
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          return { ok: true, session: getCalls === 1 ? null : established };
+        },
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    // Initial GET reports no session; the settle edge fires the one fallback
+    // POST, whose completion refetches status and lands the session.
+    await drainMicrotasks();
+    assert.equal(establishCalls, 1);
+    assert.equal(getCalls, 2);
+    assert.equal(store.appSessionSnapshot.session, established);
+
+    advanceBy(scheduler, 0);
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(establishCalls, 1);
+    assert.equal(getCalls, 2);
+
+    dispose();
+  });
+
+  it("drops an establish completion that lands after dispose (stale epoch)", async () => {
+    let getCalls = 0;
+    let establishCalls = 0;
+    let resolveEstablish: (() => void) | undefined;
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+
+    const dispose = store.activate(
+      { authConfig: { oidc: null, localDev: null }, initialSession: null },
+      baseDeps({
+        scheduler: newScheduler(),
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          return { ok: true, session: null };
+        },
+        establishAppSession: () => {
+          establishCalls += 1;
+          return new Promise<void>((resolve) => {
+            resolveEstablish = resolve;
+          });
+        },
+      }),
+    );
+    await drainMicrotasks();
+    assert.equal(establishCalls, 1);
+    const getCallsBeforeDispose = getCalls;
+
+    dispose();
+    resolveEstablish?.();
+    await drainMicrotasks();
+    // The stale completion must not adopt the token or refetch status.
+    assert.equal(getCalls, getCallsBeforeDispose);
+
+    // A fresh activation still treats the token as never-established, so the
+    // fallback POST fires again instead of being swallowed by adopted state.
+    const disposeSecond = store.activate(
+      { authConfig: { oidc: null, localDev: null }, initialSession: null },
+      baseDeps({
+        scheduler: newScheduler(),
+        readAppSessionStatus: async () => ({ ok: true, session: null }),
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    await drainMicrotasks();
+    assert.equal(establishCalls, 2);
+
+    disposeSecond();
+  });
+});
+
 describe("CloudAuthStore renewal notice", () => {
   it("refreshAuthState clears a stale failure once storage no longer needs a refresh", async () => {
     const scheduler = newScheduler();
