@@ -1294,47 +1294,11 @@ impl NotebookRoom {
             // in the persisted Automerge doc we just loaded.
             None => match doc.get_metadata_snapshot() {
                 Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
-                None => TrustState {
-                    status: runt_trust::TrustStatus::NoDependencies,
-                    info: runt_trust::TrustInfo {
-                        status: runt_trust::TrustStatus::NoDependencies,
-                        uv_dependencies: vec![],
-                        approved_uv_dependencies: vec![],
-                        conda_dependencies: vec![],
-                        approved_conda_dependencies: vec![],
-                        conda_channels: vec![],
-                        approved_conda_channels: vec![],
-                        pixi_dependencies: vec![],
-                        approved_pixi_dependencies: vec![],
-                        pixi_pypi_dependencies: vec![],
-                        approved_pixi_pypi_dependencies: vec![],
-                        pixi_channels: vec![],
-                        approved_pixi_channels: vec![],
-                    },
-                    pending_launch: false,
-                },
+                None => TrustState::no_dependencies(),
             },
             Some(_) if recovered_record.is_some() => match doc.get_metadata_snapshot() {
                 Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
-                None => TrustState {
-                    status: runt_trust::TrustStatus::NoDependencies,
-                    info: runt_trust::TrustInfo {
-                        status: runt_trust::TrustStatus::NoDependencies,
-                        uv_dependencies: vec![],
-                        approved_uv_dependencies: vec![],
-                        conda_dependencies: vec![],
-                        approved_conda_dependencies: vec![],
-                        conda_channels: vec![],
-                        approved_conda_channels: vec![],
-                        pixi_dependencies: vec![],
-                        approved_pixi_dependencies: vec![],
-                        pixi_pypi_dependencies: vec![],
-                        approved_pixi_pypi_dependencies: vec![],
-                        pixi_channels: vec![],
-                        approved_pixi_channels: vec![],
-                    },
-                    pending_launch: false,
-                },
+                None => TrustState::no_dependencies(),
             },
             Some(p) => {
                 let mut initial = verify_trust_from_file(p, &trusted_packages);
@@ -1651,25 +1615,7 @@ impl NotebookRoom {
         let trust_state = match &path {
             None => match doc.get_metadata_snapshot() {
                 Some(snapshot) => verify_trust_from_snapshot(&snapshot, &trusted_packages),
-                None => TrustState {
-                    status: runt_trust::TrustStatus::NoDependencies,
-                    info: runt_trust::TrustInfo {
-                        status: runt_trust::TrustStatus::NoDependencies,
-                        uv_dependencies: vec![],
-                        approved_uv_dependencies: vec![],
-                        conda_dependencies: vec![],
-                        approved_conda_dependencies: vec![],
-                        conda_channels: vec![],
-                        approved_conda_channels: vec![],
-                        pixi_dependencies: vec![],
-                        approved_pixi_dependencies: vec![],
-                        pixi_pypi_dependencies: vec![],
-                        approved_pixi_pypi_dependencies: vec![],
-                        pixi_channels: vec![],
-                        approved_pixi_channels: vec![],
-                    },
-                    pending_launch: false,
-                },
+                None => TrustState::no_dependencies(),
             },
             Some(p) => {
                 let mut initial = verify_trust_from_file(p, &trusted_packages);

@@ -11,6 +11,33 @@ pub struct TrustState {
     pub pending_launch: bool,
 }
 
+impl TrustState {
+    /// Trust state for a notebook that declares no dependency metadata:
+    /// nothing needs approval and kernel launch is not gated. This is a
+    /// deliberate verdict, not a default; construct other states explicitly.
+    pub(crate) fn no_dependencies() -> Self {
+        TrustState {
+            status: runt_trust::TrustStatus::NoDependencies,
+            info: runt_trust::TrustInfo {
+                status: runt_trust::TrustStatus::NoDependencies,
+                uv_dependencies: vec![],
+                approved_uv_dependencies: vec![],
+                conda_dependencies: vec![],
+                approved_conda_dependencies: vec![],
+                conda_channels: vec![],
+                approved_conda_channels: vec![],
+                pixi_dependencies: vec![],
+                approved_pixi_dependencies: vec![],
+                pixi_pypi_dependencies: vec![],
+                approved_pixi_pypi_dependencies: vec![],
+                pixi_channels: vec![],
+                approved_pixi_channels: vec![],
+            },
+            pending_launch: false,
+        }
+    }
+}
+
 fn enrich_trust_info(room: &NotebookRoom, trust: &mut TrustState) {
     if let Err(error) = room.trusted_packages.enrich_info(&mut trust.info) {
         warn!(
