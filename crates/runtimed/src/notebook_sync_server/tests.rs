@@ -11022,49 +11022,37 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
     );
 }
 
-#[tokio::test]
-async fn test_file_watcher_replacement_drops_stale_top_level_metadata() {
+#[test]
+fn test_file_watcher_replacement_drops_stale_top_level_metadata() {
     // Codex P2#2 on PR #2198: the file-watcher path calls
     // set_metadata_snapshot with whatever the new on-disk file
     // parsed to. When a user deletes an unknown top-level key (say,
     // `colab`) from the .ipynb, the daemon must converge — not keep
-    // the stale Automerge map around forever. Simulate the reload by
-    // parsing two different on-disk states and applying each.
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (room, notebook_path) = test_room_with_path(&tmp, "watcher-reload.ipynb");
+    // the stale Automerge map around forever. Both states go through
+    // the seam every loader and the watcher share: the notebook parse
+    // plus `set_metadata_snapshot`.
+    let mut doc = notebook_doc::NotebookDoc::new("watcher-reload");
 
     // First state: both jupytext and colab present.
-    std::fs::write(
-        &notebook_path,
-        r#"{
- "cells": [],
- "metadata": {
-  "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
-  "language_info": {"name": "python", "version": "3.11.5"},
-  "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
-  "colab": {"kernel": {"name": "python3"}}
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}"#,
-    )
-    .unwrap();
-    {
-        let prepared = crate::notebook_sync_server::prepare_notebook_load(
-            &notebook_path,
-            &room.blob_store,
-            None,
-        )
-        .await
-        .unwrap();
-        let mut doc = room.doc.write().await;
-        crate::notebook_sync_server::apply_notebook_load(&mut doc, None, None, prepared).unwrap();
-    }
+    let first_json = serde_json::json!({
+        "cells": [],
+        "metadata": {
+            "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+            "language_info": {"name": "python", "version": "3.11.5"},
+            "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+            "colab": {"kernel": {"name": "python3"}}
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5
+    });
+    let first_meta =
+        parse_notebook_jiter_for_notebook(&serde_json::to_vec(&first_json).unwrap(), Uuid::nil())
+            .unwrap()
+            .metadata
+            .expect("metadata present");
+    doc.set_metadata_snapshot(&first_meta).unwrap();
 
-    let first = {
-        let doc = room.doc.read().await;
-        doc.get_metadata_snapshot().unwrap()
-    };
+    let first = doc.get_metadata_snapshot().unwrap();
     assert!(first.extras.contains_key("jupytext"));
     assert!(first.extras.contains_key("colab"));
 
@@ -11085,15 +11073,9 @@ async fn test_file_watcher_replacement_drops_stale_top_level_metadata() {
             .unwrap()
             .metadata
             .expect("metadata present");
-    {
-        let mut doc = room.doc.write().await;
-        doc.set_metadata_snapshot(&new_meta).unwrap();
-    }
+    doc.set_metadata_snapshot(&new_meta).unwrap();
 
-    let after = {
-        let doc = room.doc.read().await;
-        doc.get_metadata_snapshot().unwrap()
-    };
+    let after = doc.get_metadata_snapshot().unwrap();
     assert!(
         after.extras.contains_key("jupytext"),
         "jupytext must still be present after replace"
