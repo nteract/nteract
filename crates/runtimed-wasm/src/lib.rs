@@ -4454,6 +4454,35 @@ impl NotebookHandle {
         self.serialize_comments_projection_event()
     }
 
+    /// Add a reply authored by an AI agent to a comment thread in CommentsDoc.
+    ///
+    /// Identical to `reply_comment_thread`, but the message is committed under
+    /// `agent_actor_label` so it renders as an agent (Bot avatar, "on behalf
+    /// of" the local user) instead of the local author. Used by the in-comment
+    /// assistant (`@ana`).
+    pub fn reply_comment_thread_as_agent(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        body: &str,
+        after_message_id: Option<String>,
+        created_at: &str,
+        agent_actor_label: &str,
+    ) -> Result<JsValue, JsError> {
+        let comments_doc = self.comments_doc_mut()?;
+        comments_doc
+            .reply_as_agent(
+                thread_id,
+                message_id,
+                body,
+                after_message_id.as_deref(),
+                created_at,
+                agent_actor_label,
+            )
+            .map_err(|e| JsError::new(&format!("agent reply to comment thread: {e}")))?;
+        self.serialize_comments_projection_event()
+    }
+
     /// Mark a comment thread as resolved in CommentsDoc.
     pub fn resolve_comment_thread(
         &mut self,

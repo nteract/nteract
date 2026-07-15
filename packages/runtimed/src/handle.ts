@@ -328,6 +328,19 @@ export interface SyncableHandle {
     createdAt: string,
   ): FrameEvent;
 
+  /**
+   * Add a reply authored by an AI agent, committed under `agentActorLabel` so
+   * it renders as an agent instead of the local user.
+   */
+  reply_comment_thread_as_agent?(
+    threadId: string,
+    messageId: string,
+    body: string,
+    afterMessageId: string | null | undefined,
+    createdAt: string,
+    agentActorLabel: string,
+  ): FrameEvent;
+
   /** Resolve a comment thread. */
   resolve_comment_thread?(threadId: string, resolvedAt: string): FrameEvent;
 

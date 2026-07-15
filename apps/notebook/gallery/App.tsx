@@ -4,7 +4,6 @@ import { TelemetryDisclosureCard } from "@/components/TelemetryDisclosureCard";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PrivacySection } from "../settings/sections/Privacy";
-import { StreamdownFixture } from "./StreamdownFixture";
 
 /**
  * Standalone component gallery.
@@ -65,13 +64,6 @@ export default function App() {
           <div className="max-w-lg border rounded-lg p-4 bg-card">
             <PrivacySectionDemo />
           </div>
-        </Section>
-
-        <Section
-          title="Assistant markdown (Streamdown)"
-          description="GitHub-flavored Markdown fixture rendered with the same Streamdown props used in the assistant side panel — headings, inline styles, lists, task lists, fenced code blocks, tables, images, and blockquotes."
-        >
-          <StreamdownFixture />
         </Section>
       </main>
     </div>

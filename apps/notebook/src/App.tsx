@@ -92,8 +92,6 @@ import {
   DenoDependencyPanel as DenoDependencyHeader,
   UvDependencyPanel as DependencyHeader,
 } from "@/components/environment";
-import { Sparkles } from "lucide-react";
-import { AssistantPanel } from "./components/AssistantPanel";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
@@ -114,7 +112,12 @@ import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
-import { toggleAssistantPanel, useAssistantPanelOpen } from "./lib/assistant-panel-state";
+import {
+  assistantActorLabel,
+  buildAssistantMessages,
+  mentionsAssistant,
+  requestAssistantAnswer,
+} from "./lib/assistant-comments";
 import { getBlobResolver, useBlobPort, useBlobResolver } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
 import {
@@ -432,7 +435,6 @@ function AppContent() {
   const globalFind = useGlobalFind(cellIds);
 
   const { activePanelId: activeRailPanel, collapsed: railCollapsed } = useNotebookRailUiState();
-  const assistantPanelOpen = useAssistantPanelOpen();
   const stageHadFocusBeforeRailTakeoverRef = useRef(false);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
@@ -715,6 +717,60 @@ function AppContent() {
     [getEngine, refreshCommentsProjection],
   );
 
+  // Post an assistant ("@ana") answer as an agent-authored reply in `threadId`.
+  //
+  // Called fire-and-forget after a user comment/reply that mentions @ana lands.
+  // We assemble the prompt from the thread's freshly-projected context, stream
+  // the completion (buffered — see assistant-comments), then write the final
+  // answer as one reply committed under an agent actor so it renders with the
+  // Bot avatar. Errors surface as an agent reply rather than a silent drop.
+  const postAssistantReply = useCallback(
+    async (threadId: string, pendingUserBody: string) => {
+      const handle = getHandle();
+      if (!handle || typeof handle.reply_comment_thread_as_agent !== "function") return;
+      const agentActor = assistantActorLabel(localActor);
+
+      const postReply = (body: string) => {
+        const projection = refreshCommentsProjection() ?? commentsProjection;
+        const thread = projection?.threads.find((candidate) => candidate.id === threadId);
+        if (!thread) return;
+        const afterMessageId = thread.messages.at(-1)?.id ?? null;
+        try {
+          const event = handle.reply_comment_thread_as_agent?.(
+            threadId,
+            createLocalCommentEntityId("message"),
+            body,
+            afterMessageId,
+            new Date().toISOString(),
+            agentActor,
+          );
+          if (event) applyLocalCommentEvent(event);
+        } catch (error) {
+          logger.error("[assistant-comments] failed to post agent reply:", error);
+        }
+      };
+
+      try {
+        const projection = refreshCommentsProjection() ?? commentsProjection;
+        const thread = projection?.threads.find((candidate) => candidate.id === threadId);
+        if (!thread) return;
+        const messages = buildAssistantMessages({
+          anchor: thread.anchor,
+          priorMessages: thread.messages,
+          pendingUserBody,
+          assistantActorLabelValue: agentActor,
+        });
+        const answer = await requestAssistantAnswer({ messages });
+        postReply(answer);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        logger.warn("[assistant-comments] assistant request failed:", detail);
+        postReply(`⚠️ Sorry, I couldn't answer that: ${detail}`);
+      }
+    },
+    [applyLocalCommentEvent, commentsProjection, getHandle, localActor, refreshCommentsProjection],
+  );
+
   const handleCreateCommentThread = useCallback(
     async (anchor: CommentAnchor, body: string) => {
       if (!canMutateComments) {
@@ -731,9 +787,10 @@ function AppContent() {
         projection?.threads
           .filter((thread) => commentAnchorThreadOrderScope(thread.anchor) === orderScope)
           .at(-1)?.id ?? null;
+      const threadId = createLocalCommentEntityId("thread");
       try {
         const event = handle.create_comment_thread(
-          createLocalCommentEntityId("thread"),
+          threadId,
           createLocalCommentEntityId("message"),
           anchor,
           body,
@@ -748,6 +805,11 @@ function AppContent() {
         setCommentsError(message);
         throw error instanceof Error ? error : new Error(message);
       }
+      // Summon the assistant if the new comment mentions @ana. Fire-and-forget:
+      // the answer arrives as an agent reply in this thread once it streams in.
+      if (mentionsAssistant(body)) {
+        void postAssistantReply(threadId, body);
+      }
     },
     [
       applyLocalCommentEvent,
@@ -755,6 +817,7 @@ function AppContent() {
       commentsProjection,
       failCommentAction,
       getHandle,
+      postAssistantReply,
       refreshCommentsProjection,
     ],
   );
@@ -977,6 +1040,11 @@ function AppContent() {
         setCommentsError(message);
         throw error instanceof Error ? error : new Error(message);
       }
+      // Summon the assistant if the reply mentions @ana; its answer lands as a
+      // follow-up agent reply in this same thread.
+      if (mentionsAssistant(body)) {
+        void postAssistantReply(threadId, body);
+      }
     },
     [
       applyLocalCommentEvent,
@@ -984,6 +1052,7 @@ function AppContent() {
       commentsProjection,
       failCommentAction,
       getHandle,
+      postAssistantReply,
       refreshCommentsProjection,
     ],
   );
@@ -2015,33 +2084,16 @@ function AppContent() {
           updateVersion={updateVersion}
           onRestartToUpdate={restartToUpdate}
           trailingControls={
-            <>
-              {/* Connection/identity slot: renders nothing for a purely local
-                  session (isRemoteNotebookContext) — conditionality is the
-                  point. The source derives from daemon lifecycle events (the
-                  IPC transport's status is constant in practice), and the
-                  copy is scoped to the link it measures. */}
-              <NotebookConnectionIdentity
-                capabilities={shellCapabilities}
-                connectionStatus$={desktopConnectionStatus}
-                connectionLabel="Daemon connection"
-              />
-              <button
-                type="button"
-                onClick={toggleAssistantPanel}
-                data-testid="assistant-toggle"
-                aria-pressed={assistantPanelOpen}
-                className={cn(
-                  "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-                  "bg-violet-500/10 text-violet-600 hover:bg-violet-500/20 dark:text-violet-400",
-                  assistantPanelOpen && "ring-1 ring-current/25",
-                )}
-                title={assistantPanelOpen ? "Close assistant" : "Open assistant"}
-              >
-                <Sparkles className="size-3" />
-                <span>Assistant</span>
-              </button>
-            </>
+            // Connection/identity slot: renders nothing for a purely local
+            // session (isRemoteNotebookContext) — conditionality is the
+            // point. The source derives from daemon lifecycle events (the
+            // IPC transport's status is constant in practice), and the
+            // copy is scoped to the link it measures.
+            <NotebookConnectionIdentity
+              capabilities={shellCapabilities}
+              connectionStatus$={desktopConnectionStatus}
+              connectionLabel="Daemon connection"
+            />
           }
         />
         {globalFind.isOpen && (
@@ -2080,7 +2132,6 @@ function AppContent() {
         />
         <NotebookDocumentShell
           capabilities={shellCapabilities}
-          asideRight={assistantPanelOpen ? <AssistantPanel /> : null}
           stageLabel="Notebook editor"
           notices={
             sourceIssueNotice ? (

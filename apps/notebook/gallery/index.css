@@ -4,7 +4,6 @@
  * a drift from the real surface we're previewing.
  */
 @import "../settings/index.css";
-@import "streamdown/styles.css";
 
 /* The settings @source globs only cover settings/ and ../src/components/.
  * Add the two additional paths the gallery pulls components from so
