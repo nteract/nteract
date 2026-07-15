@@ -1751,19 +1751,16 @@ async fn test_new_fresh_preserves_but_ignores_legacy_persisted_doc_for_file_path
     // Use a fixed UUID so we can find the persist file again.
     let uuid = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-111111111111").unwrap();
 
-    // Create and persist a room with content using load_or_create (uses the UUID string)
-    {
-        let room = NotebookRoom::load_or_create(&uuid.to_string(), tmp.path(), blob_store.clone());
-        let mut doc = room.doc.try_write().unwrap();
-        doc.add_cell(0, "c1", "code").unwrap();
-        doc.update_source("c1", "old content").unwrap();
-        let bytes = doc.save();
-        persist_notebook_bytes(&bytes, &room.identity.persist_path);
-    }
-
-    // Verify persisted file exists
+    // Fabricate the legacy UUID-keyed persisted doc a prior session would
+    // have left on disk.
     let filename = notebook_doc_filename(&uuid.to_string());
     let persist_path = tmp.path().join(&filename);
+    {
+        let mut doc = notebook_doc::NotebookDoc::new_with_actor(&uuid.to_string(), "runtimed");
+        doc.add_cell(0, "c1", "code").unwrap();
+        doc.update_source("c1", "old content").unwrap();
+        persist_notebook_bytes(&doc.save(), &persist_path);
+    }
     assert!(persist_path.exists(), "Persisted file should exist");
 
     // Create a file-backed room. Legacy UUID-keyed persistence is not recovery
@@ -1854,19 +1851,16 @@ async fn test_new_fresh_loads_persisted_doc_for_untitled_notebook() {
     // Use a fixed UUID (untitled notebook — path=None)
     let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
 
-    // Create and persist a room with content using load_or_create
-    {
-        let room = NotebookRoom::load_or_create(&uuid.to_string(), tmp.path(), blob_store.clone());
-        let mut doc = room.doc.try_write().unwrap();
-        doc.add_cell(0, "c1", "code").unwrap();
-        doc.update_source("c1", "restored content").unwrap();
-        let bytes = doc.save();
-        persist_notebook_bytes(&bytes, &room.identity.persist_path);
-    }
-
-    // Verify persisted file exists
+    // Fabricate the persisted untitled doc a prior session would have left
+    // on disk.
     let filename = notebook_doc_filename(&uuid.to_string());
     let persist_path = tmp.path().join(&filename);
+    {
+        let mut doc = notebook_doc::NotebookDoc::new_with_actor(&uuid.to_string(), "runtimed");
+        doc.add_cell(0, "c1", "code").unwrap();
+        doc.update_source("c1", "restored content").unwrap();
+        persist_notebook_bytes(&doc.save(), &persist_path);
+    }
     assert!(persist_path.exists(), "Persisted file should exist");
 
     // Create fresh room for untitled notebook (path=None) — should load persisted doc
@@ -2101,15 +2095,15 @@ async fn test_new_fresh_untitled_trust_from_doc() {
 
     let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
 
-    // Create a room, write the metadata, and persist to disk.
+    // Fabricate the persisted untitled doc carrying the trust metadata, as a
+    // prior session would have left on disk.
     {
-        let room = NotebookRoom::load_or_create(notebook_id, tmp.path(), blob_store.clone());
-        {
-            let mut doc = room.doc.try_write().unwrap();
-            doc.set_metadata_snapshot(&snapshot).unwrap();
-            let bytes = doc.save();
-            persist_notebook_bytes(&bytes, &room.identity.persist_path);
-        }
+        let mut doc = notebook_doc::NotebookDoc::new_with_actor(notebook_id, "runtimed");
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+        persist_notebook_bytes(
+            &doc.save(),
+            &tmp.path().join(notebook_doc_filename(notebook_id)),
+        );
     }
 
     // Approve the dep in the allowlist; trust now lives there, not in
