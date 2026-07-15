@@ -8754,42 +8754,29 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
         ]
     });
 
-    let ipynb_path = tmp.path().join("legacy.ipynb");
-    std::fs::write(
-        &ipynb_path,
-        serde_json::to_string_pretty(&notebook_json).unwrap(),
-    )
-    .unwrap();
+    // --- Ingest 1: pre-v4 outputs carry no output_id fields ---
+    // Both notebook loaders ingest outputs through the same pair of shared
+    // helpers: `parse_notebook_jiter_for_notebook` for the .ipynb bytes and
+    // `output_value_to_manifest_ref` for each parsed output.
+    let bytes = serde_json::to_vec_pretty(&notebook_json).unwrap();
+    let parsed = parse_notebook_jiter_for_notebook(&bytes, Uuid::nil()).unwrap();
+    assert_eq!(parsed.cells.len(), 4);
 
-    // --- Load 1: pre-v4 notebook, no output_id fields ---
-    let notebook_id = ipynb_path.to_string_lossy().to_string();
-    let mut doc = notebook_doc::NotebookDoc::new(&notebook_id);
-    let mut state_doc = RuntimeStateDoc::new();
-    load_notebook_from_disk_with_state_doc(
-        &mut doc,
-        Some(&mut state_doc),
-        &ipynb_path,
-        &blob_store,
-    )
-    .await
-    .unwrap();
-
-    // Collect minted output_ids from RuntimeStateDoc
     let mut first_load_ids: Vec<(String, String)> = Vec::new();
-    for cell_id in ["cell-a", "cell-b", "cell-c", "cell-d"] {
-        let eid = doc
-            .get_execution_id(cell_id)
-            .unwrap_or_else(|| panic!("{cell_id} should have execution_id"));
-        let outputs = state_doc.get_outputs(&eid);
-        assert_eq!(outputs.len(), 1, "{cell_id} should have 1 output");
+    let mut first_load_manifests: Vec<(String, crate::output_store::OutputManifest)> = Vec::new();
+    for cell in &parsed.cells {
+        assert_eq!(cell.outputs.len(), 1, "{} should have 1 output", cell.id);
+        let manifest_ref = output_value_to_manifest_ref(&cell.outputs[0], &blob_store).await;
         let manifest: crate::output_store::OutputManifest =
-            serde_json::from_value(outputs[0].clone()).unwrap();
+            serde_json::from_value(manifest_ref).unwrap();
         let id = manifest.output_id().to_string();
         assert!(
             !id.is_empty(),
-            "{cell_id} should have a non-empty output_id"
+            "{} should have a non-empty output_id",
+            cell.id
         );
-        first_load_ids.push((cell_id.to_string(), id));
+        first_load_ids.push((cell.id.clone(), id));
+        first_load_manifests.push((cell.id.clone(), manifest));
     }
 
     // All IDs should be distinct
@@ -8798,13 +8785,10 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
     assert_eq!(id_set.len(), 4, "All output_ids should be unique");
 
     // --- Save: resolve manifests to .ipynb JSON ---
-    let mut saved_ids: Vec<(String, String)> = Vec::new();
-    for (cell_id, expected_id) in &first_load_ids {
-        let eid = doc.get_execution_id(cell_id).unwrap();
-        let outputs = state_doc.get_outputs(&eid);
-        let manifest: crate::output_store::OutputManifest =
-            serde_json::from_value(outputs[0].clone()).unwrap();
-        let resolved = crate::output_store::resolve_manifest(&manifest, &blob_store)
+    let mut resolved_outputs: Vec<(String, serde_json::Value)> = Vec::new();
+    for ((cell_id, expected_id), (_, manifest)) in first_load_ids.iter().zip(&first_load_manifests)
+    {
+        let resolved = crate::output_store::resolve_manifest(manifest, &blob_store)
             .await
             .unwrap();
         let saved_id = resolved["output_id"]
@@ -8814,23 +8798,11 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
             saved_id, expected_id,
             "{cell_id}: resolve_manifest should preserve output_id"
         );
-        saved_ids.push((cell_id.clone(), saved_id.to_string()));
+        resolved_outputs.push((cell_id.clone(), resolved));
     }
 
-    // --- Reload: simulate saving and reloading ---
-    // Build an .ipynb with output_id fields (as resolve_manifest now produces)
-    let mut cells_with_ids = Vec::new();
-    for (cell_id, _) in &first_load_ids {
-        let eid = doc.get_execution_id(cell_id).unwrap();
-        let outputs = state_doc.get_outputs(&eid);
-        let manifest: crate::output_store::OutputManifest =
-            serde_json::from_value(outputs[0].clone()).unwrap();
-        let resolved = crate::output_store::resolve_manifest(&manifest, &blob_store)
-            .await
-            .unwrap();
-        cells_with_ids.push((cell_id.clone(), resolved));
-    }
-
+    // --- Reload: re-ingest the saved .ipynb, whose outputs now carry
+    // output_id fields (as resolve_manifest produces them) ---
     let saved_notebook = serde_json::json!({
         "nbformat": 4,
         "nbformat_minor": 5,
@@ -8842,7 +8814,7 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
                 "source": "1 + 1",
                 "execution_count": 1,
                 "metadata": {},
-                "outputs": [cells_with_ids[0].1]
+                "outputs": [resolved_outputs[0].1]
             },
             {
                 "id": "cell-b",
@@ -8850,7 +8822,7 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
                 "source": "print('hi')",
                 "execution_count": 2,
                 "metadata": {},
-                "outputs": [cells_with_ids[1].1]
+                "outputs": [resolved_outputs[1].1]
             },
             {
                 "id": "cell-c",
@@ -8858,7 +8830,7 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
                 "source": "display('x')",
                 "execution_count": 3,
                 "metadata": {},
-                "outputs": [cells_with_ids[2].1]
+                "outputs": [resolved_outputs[2].1]
             },
             {
                 "id": "cell-d",
@@ -8866,36 +8838,20 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
                 "source": "1/0",
                 "execution_count": 4,
                 "metadata": {},
-                "outputs": [cells_with_ids[3].1]
+                "outputs": [resolved_outputs[3].1]
             }
         ]
     });
 
-    let ipynb_path2 = tmp.path().join("saved.ipynb");
-    std::fs::write(
-        &ipynb_path2,
-        serde_json::to_string_pretty(&saved_notebook).unwrap(),
-    )
-    .unwrap();
-
-    // Load the saved notebook
-    let mut doc2 = notebook_doc::NotebookDoc::new("reload-test");
-    let mut state_doc2 = RuntimeStateDoc::new();
-    load_notebook_from_disk_with_state_doc(
-        &mut doc2,
-        Some(&mut state_doc2),
-        &ipynb_path2,
-        &blob_store,
-    )
-    .await
-    .unwrap();
+    let saved_bytes = serde_json::to_vec_pretty(&saved_notebook).unwrap();
+    let reloaded = parse_notebook_jiter_for_notebook(&saved_bytes, Uuid::nil()).unwrap();
 
     // Verify IDs are stable across the round-trip
-    for (cell_id, expected_id) in &first_load_ids {
-        let eid = doc2.get_execution_id(cell_id).unwrap();
-        let outputs = state_doc2.get_outputs(&eid);
+    for (cell, (cell_id, expected_id)) in reloaded.cells.iter().zip(&first_load_ids) {
+        assert_eq!(&cell.id, cell_id);
+        let manifest_ref = output_value_to_manifest_ref(&cell.outputs[0], &blob_store).await;
         let manifest: crate::output_store::OutputManifest =
-            serde_json::from_value(outputs[0].clone()).unwrap();
+            serde_json::from_value(manifest_ref).unwrap();
         assert_eq!(
             manifest.output_id(),
             expected_id,

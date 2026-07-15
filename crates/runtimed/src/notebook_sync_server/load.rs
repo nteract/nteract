@@ -1495,19 +1495,6 @@ pub(crate) async fn retry_failed_room_initial_load_if_safe(
     true
 }
 
-/// Test helper for loading a notebook from disk into the notebook doc and,
-/// optionally, the `RuntimeStateDoc`.
-#[cfg(test)]
-pub(crate) async fn load_notebook_from_disk_with_state_doc(
-    doc: &mut NotebookDoc,
-    state_doc: Option<&mut RuntimeStateDoc>,
-    path: &std::path::Path,
-    blob_store: &BlobStore,
-) -> Result<usize, String> {
-    let prepared = prepare_notebook_load(path, blob_store, None).await?;
-    apply_notebook_load(doc, state_doc, None, prepared)
-}
-
 /// Everything [`apply_notebook_load`] needs to mutate the docs, prepared by
 /// [`prepare_notebook_load`] with no doc reference in scope. The split keeps
 /// the async blob-store work outside any doc lock (tokio-mutex discipline).
