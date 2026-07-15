@@ -1307,6 +1307,10 @@ fn snapshot_contains_heads(
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
+mod intent_crash_matrix_tests;
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use automerge::{transaction::Transactable, ReadDoc, ROOT};
 
