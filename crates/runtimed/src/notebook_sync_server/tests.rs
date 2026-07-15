@@ -4468,6 +4468,282 @@ fn test_parse_cells_from_ipynb_no_cells_key() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// .ipynb parser characterization: serde vs jiter over the same fixtures
+// (consolidation item 2, docs/memos/room-lifecycle-simplification-and-verification.md)
+//
+// Two parsers read .ipynb content today: `parse_cells_from_ipynb_for_notebook`
+// (serde, the watcher path in persist.rs plus the cfg(test) legacy loader) and
+// `parse_notebook_jiter_for_notebook` (jiter, the initial-load path). Each row
+// below pins BOTH parsers' current behavior over one fixture so the collapse
+// can map every divergence deliberately. All rows pass against the parsers as
+// they exist now.
+// ---------------------------------------------------------------------------
+
+/// Run both .ipynb parsers over the same fixture bytes.
+///
+/// The serde half mirrors its production call sites: callers first parse the
+/// bytes with serde_json, then hand the `Value` to the cell parser. A
+/// serde_json parse failure therefore surfaces as `None` here, matching the
+/// watcher's skip of unparseable JSON.
+fn parse_ipynb_with_both_parsers(
+    bytes: &[u8],
+) -> (
+    Option<ParsedIpynbCells>,
+    Result<ParsedStreamingNotebook, String>,
+) {
+    let serde_parsed = serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|json| parse_cells_from_ipynb_for_notebook(&json, Uuid::nil()));
+    let jiter_parsed = parse_notebook_jiter_for_notebook(bytes, Uuid::nil());
+    (serde_parsed, jiter_parsed)
+}
+
+/// Valid baseline: both parsers agree on ids, sources, cell types, execution
+/// counts, and metadata. The outputs SHAPE diverges by design: serde returns
+/// an outputs-by-cell-id map holding only non-empty entries; jiter carries a
+/// per-cell outputs vec (possibly empty).
+#[test]
+fn parser_characterization_valid_baseline() {
+    let fixture = br##"{
+        "cells": [
+            {"id": "a", "cell_type": "code", "source": "x = 1",
+             "execution_count": 3, "metadata": {"tags": ["t"]},
+             "outputs": [{"output_type": "stream", "name": "stdout", "text": "hi\n"}]},
+            {"id": "b", "cell_type": "markdown", "source": ["# Title\n", "Body"],
+             "metadata": {}},
+            {"id": "c", "cell_type": "code", "source": "y = 2",
+             "execution_count": null, "metadata": {}, "outputs": []}
+        ],
+        "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"}},
+        "nbformat": 4, "nbformat_minor": 5
+    }"##;
+
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(fixture);
+    let serde_parsed = serde_parsed.expect("serde parses the valid baseline");
+    let jiter_parsed = jiter_parsed.expect("jiter parses the valid baseline");
+
+    assert_eq!(serde_parsed.cells.len(), 3);
+    assert_eq!(jiter_parsed.cells.len(), 3);
+    for (s, j) in serde_parsed.cells.iter().zip(jiter_parsed.cells.iter()) {
+        assert_eq!(s.id, j.id);
+        assert_eq!(s.cell_type, j.cell_type);
+        assert_eq!(s.source, j.source);
+        assert_eq!(s.execution_count, j.execution_count);
+        assert_eq!(s.metadata, j.metadata);
+        assert_eq!(s.position, j.position);
+    }
+    assert_eq!(serde_parsed.cells[0].execution_count, "3");
+    assert_eq!(serde_parsed.cells[1].source, "# Title\nBody");
+
+    // Outputs shape: serde map holds ONLY the non-empty entry ("a"); cells
+    // with no outputs key ("b") or an empty array ("c") get no entry at all.
+    assert_eq!(serde_parsed.outputs_by_cell.len(), 1);
+    let serde_outputs = &serde_parsed.outputs_by_cell["a"];
+    // jiter attaches outputs per cell, empty vecs included.
+    assert_eq!(jiter_parsed.cells[0].outputs, *serde_outputs);
+    assert!(jiter_parsed.cells[1].outputs.is_empty());
+    assert!(jiter_parsed.cells[2].outputs.is_empty());
+
+    // Metadata: parse_metadata_from_ipynb (serde companion) and the jiter
+    // parser's embedded snapshot agree.
+    let json: serde_json::Value = serde_json::from_slice(fixture).unwrap();
+    let serde_metadata = parse_metadata_from_ipynb(&json).expect("metadata present");
+    assert_eq!(Some(serde_metadata), jiter_parsed.metadata);
+    assert_eq!(jiter_parsed.metadata_value.as_ref(), json.get("metadata"));
+}
+
+/// Divergence 1 (memo): non-object cell entries. serde synthesizes a default
+/// cell per entry (derived legacy id, cell_type "code", empty source,
+/// execution_count "null"); jiter drops the entry. Legacy id derivation for
+/// idless OBJECT cells uses the original array index in both parsers, so the
+/// kept cell retains the same identity either way.
+#[test]
+fn parser_characterization_non_object_cell_entries() {
+    let fixture = br#"{
+        "cells": [
+            42,
+            {"cell_type": "code", "source": "x = 1", "execution_count": null,
+             "metadata": {}, "outputs": []},
+            "bogus"
+        ],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5
+    }"#;
+
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(fixture);
+    let serde_parsed = serde_parsed.expect("serde tolerates non-object cell entries");
+    let jiter_parsed = jiter_parsed.expect("jiter tolerates non-object cell entries");
+
+    // serde: three cells, entries 0 and 2 synthesized from nothing.
+    assert_eq!(serde_parsed.cells.len(), 3);
+    for synthesized in [&serde_parsed.cells[0], &serde_parsed.cells[2]] {
+        assert!(uuid::Uuid::parse_str(&synthesized.id).is_ok());
+        assert_eq!(synthesized.cell_type, "code");
+        assert_eq!(synthesized.source, "");
+        assert_eq!(synthesized.execution_count, "null");
+        assert_eq!(synthesized.metadata, serde_json::json!({}));
+    }
+
+    // jiter: only the real cell survives.
+    assert_eq!(jiter_parsed.cells.len(), 1);
+    assert_eq!(jiter_parsed.cells[0].source, "x = 1");
+
+    // Identity retention: the idless kept cell derives the same legacy id
+    // (index 1) under both parsers, because jiter enumerates the raw array.
+    assert_eq!(serde_parsed.cells[1].id, jiter_parsed.cells[0].id);
+}
+
+/// Divergence 2 (memo): missing `cells` key. serde None-skips; jiter hard
+/// errors. Same split for a non-array `cells` value and a non-object root.
+/// The watcher (persist.rs process_watcher_event) treats the serde None as
+/// skip-and-return today; the collapse must map jiter's Err onto that same
+/// skip path, not onto a new failure mode.
+#[test]
+fn parser_characterization_missing_or_invalid_cells() {
+    // Missing cells key.
+    let missing = br#"{"metadata": {}, "nbformat": 4, "nbformat_minor": 5}"#;
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(missing);
+    assert!(serde_parsed.is_none());
+    assert!(jiter_parsed
+        .err()
+        .expect("jiter errors on a missing cells key")
+        .contains("no 'cells' key"));
+
+    // cells present but not an array.
+    let not_array = br#"{"cells": {}, "metadata": {}}"#;
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(not_array);
+    assert!(serde_parsed.is_none());
+    assert!(jiter_parsed
+        .err()
+        .expect("jiter errors on a non-array cells value")
+        .contains("not an array"));
+
+    // Root is valid JSON but not an object.
+    let not_object = br#"[1, 2, 3]"#;
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(not_object);
+    assert!(serde_parsed.is_none());
+    assert!(jiter_parsed
+        .err()
+        .expect("jiter errors on a non-object root")
+        .contains("not a JSON object"));
+}
+
+/// A genuine empty notebook (`cells: []`) parses under both.
+#[test]
+fn parser_characterization_empty_cells() {
+    let fixture = br#"{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}"#;
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(fixture);
+    let serde_parsed = serde_parsed.expect("serde parses cells: []");
+    let jiter_parsed = jiter_parsed.expect("jiter parses cells: []");
+    assert!(serde_parsed.cells.is_empty());
+    assert!(serde_parsed.outputs_by_cell.is_empty());
+    assert!(jiter_parsed.cells.is_empty());
+}
+
+/// Malformed `outputs` values (non-array) degrade to no outputs in both
+/// parsers: serde inserts no map entry, jiter attaches an empty vec.
+#[test]
+fn parser_characterization_malformed_outputs() {
+    let fixture = br#"{
+        "cells": [
+            {"id": "a", "cell_type": "code", "source": "x", "execution_count": null,
+             "metadata": {}, "outputs": "not-an-array"},
+            {"id": "b", "cell_type": "code", "source": "y", "execution_count": null,
+             "metadata": {}, "outputs": 7}
+        ],
+        "metadata": {}
+    }"#;
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(fixture);
+    let serde_parsed = serde_parsed.expect("serde tolerates malformed outputs");
+    let jiter_parsed = jiter_parsed.expect("jiter tolerates malformed outputs");
+    assert!(serde_parsed.outputs_by_cell.is_empty());
+    assert_eq!(jiter_parsed.cells.len(), 2);
+    assert!(jiter_parsed.cells.iter().all(|c| c.outputs.is_empty()));
+}
+
+/// Divergence beyond the memo's three: non-i64 `execution_count` values.
+/// serde stringifies any JSON number (floats included); jiter only accepts
+/// an i64 and maps everything else to "null". nbformat says int-or-null, so
+/// these are malformed inputs, but the strings land in NotebookDoc verbatim
+/// on the watcher path.
+#[test]
+fn parser_characterization_execution_count_numeric_edges() {
+    let fixture = br#"{
+        "cells": [
+            {"id": "f", "cell_type": "code", "source": "x", "execution_count": 2.5,
+             "metadata": {}, "outputs": []},
+            {"id": "g", "cell_type": "code", "source": "y",
+             "execution_count": 18446744073709551616,
+             "metadata": {}, "outputs": []}
+        ],
+        "metadata": {}
+    }"#;
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(fixture);
+    let serde_parsed = serde_parsed.expect("serde parses numeric-edge execution counts");
+    let jiter_parsed = jiter_parsed.expect("jiter parses numeric-edge execution counts");
+
+    // serde keeps the float's textual form; jiter demotes it to "null".
+    assert_eq!(serde_parsed.cells[0].execution_count, "2.5");
+    assert_eq!(jiter_parsed.cells[0].execution_count, "null");
+
+    // 2^64 overflows i64: serde stringifies serde_json's representation,
+    // jiter (which parses it as BigInt) demotes to "null".
+    assert_ne!(serde_parsed.cells[1].execution_count, "null");
+    assert_eq!(jiter_parsed.cells[1].execution_count, "null");
+}
+
+/// Divergence beyond the memo's three: numeric fidelity inside outputs.
+/// serde clones output values verbatim (integers beyond u64 become f64
+/// numbers at serde_json parse time); jiter parses them as BigInt and
+/// `jiter_to_serde` converts BigInt to a STRING. The same conversion applies
+/// to cell metadata and attachments on the jiter path.
+#[test]
+fn parser_characterization_bigint_output_values() {
+    let fixture = br#"{
+        "cells": [
+            {"id": "a", "cell_type": "code", "source": "x", "execution_count": 1,
+             "metadata": {},
+             "outputs": [{"output_type": "stream", "name": "stdout", "text": "hi",
+                          "big": 123456789012345678901234567890}]}
+        ],
+        "metadata": {}
+    }"#;
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(fixture);
+    let serde_parsed = serde_parsed.expect("serde parses bigint output values");
+    let jiter_parsed = jiter_parsed.expect("jiter parses bigint output values");
+
+    let serde_big = &serde_parsed.outputs_by_cell["a"][0]["big"];
+    let jiter_big = &jiter_parsed.cells[0].outputs[0]["big"];
+    assert!(
+        serde_big.is_number(),
+        "serde keeps the bigint as a (lossy f64) JSON number: {serde_big}"
+    );
+    assert_eq!(
+        jiter_big,
+        &serde_json::json!("123456789012345678901234567890"),
+        "jiter_to_serde converts BigInt to a string"
+    );
+}
+
+/// Divergence beyond the memo's three: duplicate JSON keys inside a cell.
+/// serde_json's map keeps the LAST duplicate; the jiter path's linear
+/// `jobj_get` finds the FIRST.
+#[test]
+fn parser_characterization_duplicate_keys() {
+    let fixture = br#"{
+        "cells": [
+            {"id": "a", "cell_type": "code", "source": "first", "source": "second",
+             "execution_count": null, "metadata": {}, "outputs": []}
+        ],
+        "metadata": {}
+    }"#;
+    let (serde_parsed, jiter_parsed) = parse_ipynb_with_both_parsers(fixture);
+    let serde_parsed = serde_parsed.expect("serde parses duplicate keys");
+    let jiter_parsed = jiter_parsed.expect("jiter parses duplicate keys");
+    assert_eq!(serde_parsed.cells[0].source, "second");
+    assert_eq!(jiter_parsed.cells[0].source, "first");
+}
+
 #[tokio::test]
 async fn test_apply_ipynb_changes_clears_all_cells() {
     // Valid "delete all cells" case — empty cells array from external
