@@ -97,43 +97,75 @@ pub enum Handshake {
     ///
     /// The daemon returns `NotebookConnectionInfo` before starting sync.
     /// After that, the connection becomes a normal notebook sync connection.
-    CreateNotebook {
-        /// Runtime type: "python" or "deno".
-        runtime: String,
-        /// Working directory for project file detection (pyproject.toml, pixi.toml, environment.yml).
-        /// Used since untitled notebooks have no path to derive working_dir from.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        working_dir: Option<String>,
-        /// Optional notebook_id hint for restoring an untitled notebook from a previous session.
-        /// If provided and the daemon has a persisted Automerge doc for this ID, the room is
-        /// reused instead of creating a fresh empty notebook. If the persisted doc doesn't exist,
-        /// a new notebook is created and this ID is used as the notebook_id/env_id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        notebook_id: Option<String>,
-        /// When true, the notebook exists only in memory — no .automerge persisted to disk.
-        /// Defaults to false (backward compat). MCP agents use true for scratch compute.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        ephemeral: Option<bool>,
-        /// Package manager preference: uv, conda, or pixi.
-        /// When set, the daemon creates only this manager's metadata section.
-        /// When None, the daemon uses its default_python_env setting.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        package_manager: Option<PackageManager>,
-        /// Environment inheritance mode: auto, project, or notebook.
-        /// Defaults to auto.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        environment_mode: Option<CreateNotebookEnvironmentMode>,
-        /// Dependencies to seed into notebook metadata before auto-launch.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        dependencies: Vec<String>,
-        /// When true, the daemon sends `NotebookConnectionInfo` as a typed
-        /// SessionControl frame instead of a standalone untyped JSON frame.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        typed_bootstrap: Option<bool>,
-        /// Self-declared operator suffix for the authenticated actor label.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        operator: Option<String>,
-    },
+    ///
+    /// The newtype body serializes flattened next to the `channel` tag, so
+    /// the wire shape is identical to inline variant fields.
+    CreateNotebook(CreateNotebookRequest),
+}
+
+/// Request body of the `CreateNotebook` handshake.
+///
+/// [`CreateNotebookRequest::new`] covers the common case: a non-ephemeral
+/// notebook with no seeded dependencies, a daemon-chosen notebook id, the
+/// daemon's default package manager, and auto environment mode.
+///
+/// Field order is the wire serialization order; keep it stable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateNotebookRequest {
+    /// Runtime type: "python" or "deno".
+    pub runtime: String,
+    /// Working directory for project file detection (pyproject.toml, pixi.toml, environment.yml).
+    /// Used since untitled notebooks have no path to derive working_dir from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    /// Optional notebook_id hint for restoring an untitled notebook from a previous session.
+    /// If provided and the daemon has a persisted Automerge doc for this ID, the room is
+    /// reused instead of creating a fresh empty notebook. If the persisted doc doesn't exist,
+    /// a new notebook is created and this ID is used as the notebook_id/env_id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notebook_id: Option<String>,
+    /// When true, the notebook exists only in memory; no .automerge is persisted to disk.
+    /// Defaults to false (backward compat). MCP agents use true for scratch compute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral: Option<bool>,
+    /// Package manager preference: uv, conda, or pixi.
+    /// When set, the daemon creates only this manager's metadata section.
+    /// When None, the daemon uses its default_python_env setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_manager: Option<PackageManager>,
+    /// Environment inheritance mode: auto, project, or notebook.
+    /// Defaults to auto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_mode: Option<CreateNotebookEnvironmentMode>,
+    /// Dependencies to seed into notebook metadata before auto-launch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
+    /// When true, the daemon sends `NotebookConnectionInfo` as a typed
+    /// SessionControl frame instead of a standalone untyped JSON frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed_bootstrap: Option<bool>,
+    /// Self-declared operator suffix for the authenticated actor label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+}
+
+impl CreateNotebookRequest {
+    /// Request for `runtime` with every optional field unset: non-ephemeral,
+    /// no seeded dependencies, daemon-chosen notebook id, daemon-default
+    /// package manager, auto environment mode.
+    pub fn new(runtime: impl Into<String>) -> Self {
+        Self {
+            runtime: runtime.into(),
+            working_dir: None,
+            notebook_id: None,
+            ephemeral: None,
+            package_manager: None,
+            environment_mode: None,
+            dependencies: Vec::new(),
+            typed_bootstrap: None,
+            operator: None,
+        }
+    }
 }
 
 pub const PROTOCOL_V4: &str = "v4";

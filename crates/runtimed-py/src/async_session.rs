@@ -160,15 +160,20 @@ impl AsyncSession {
         environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
     ) -> PyResult<Self> {
         let peer_label = Some(peer_label.unwrap_or_else(session_core::default_peer_label));
-        let actor_label = peer_label.as_deref().map(session_core::make_actor_label);
+        let actor_label = peer_label
+            .as_deref()
+            .map(session_core::make_actor_label)
+            .unwrap_or_default();
         let (notebook_id, mut state, _info) = session_core::connect_create(
             socket_path,
-            &runtime,
-            working_dir,
-            actor_label.as_deref(),
-            package_manager,
-            dependencies,
-            environment_mode,
+            notebook_sync::connect::CreateNotebookSpec {
+                working_dir,
+                actor_label,
+                package_manager,
+                dependencies,
+                environment_mode,
+                ..notebook_sync::connect::CreateNotebookSpec::new(runtime)
+            },
         )
         .await?;
         state.peer_label = peer_label.clone();

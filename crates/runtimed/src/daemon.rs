@@ -3034,31 +3034,9 @@ impl Daemon {
                 )
                 .await
             }
-            Handshake::CreateNotebook {
-                runtime,
-                working_dir,
-                notebook_id,
-                ephemeral,
-                package_manager,
-                environment_mode,
-                dependencies,
-                typed_bootstrap,
-                operator,
-            } => {
-                self.handle_create_notebook(
-                    stream,
-                    runtime,
-                    working_dir,
-                    notebook_id,
-                    ephemeral,
-                    package_manager,
-                    environment_mode,
-                    dependencies,
-                    typed_bootstrap.unwrap_or(false),
-                    operator,
-                    client_protocol_version,
-                )
-                .await
+            Handshake::CreateNotebook(request) => {
+                self.handle_create_notebook(stream, request, client_protocol_version)
+                    .await
             }
             Handshake::RuntimeAgent {
                 notebook_id,
@@ -3551,20 +3529,16 @@ impl Daemon {
                     }
                 }
                 let settings = self.settings.read().await.get_all();
-                return self
-                    .handle_create_notebook(
-                        stream,
+                let request = notebook_protocol::connection::CreateNotebookRequest {
+                    working_dir: Some(dir_path),
+                    typed_bootstrap: Some(typed_bootstrap),
+                    operator,
+                    ..notebook_protocol::connection::CreateNotebookRequest::new(
                         settings.default_runtime.to_string(),
-                        Some(dir_path),
-                        None,
-                        None,
-                        None,
-                        None,
-                        vec![],
-                        typed_bootstrap,
-                        operator,
-                        client_protocol_version,
                     )
+                };
+                return self
+                    .handle_create_notebook(stream, request, client_protocol_version)
                     .await;
             }
             Ok(_) => true,
@@ -3913,22 +3887,14 @@ impl Daemon {
 
     /// Handle a CreateNotebook connection.
     ///
+    /// Takes the parsed wire request from the `CreateNotebook` handshake.
     /// Daemon creates a room, seeds fresh notebooks with default metadata and
     /// one starter cell, and generates env_id as notebook_id.
     /// Returns NotebookConnectionInfo, then continues as normal notebook sync.
-    #[allow(clippy::too_many_arguments)]
     async fn handle_create_notebook<S>(
         self: Arc<Self>,
         stream: S,
-        runtime: String,
-        working_dir: Option<String>,
-        notebook_id_hint: Option<String>,
-        ephemeral: Option<bool>,
-        package_manager: Option<notebook_protocol::connection::PackageManager>,
-        environment_mode: Option<notebook_protocol::connection::CreateNotebookEnvironmentMode>,
-        dependencies: Vec<String>,
-        typed_bootstrap: bool,
-        operator: Option<String>,
+        request: notebook_protocol::connection::CreateNotebookRequest,
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
@@ -3936,8 +3902,21 @@ impl Daemon {
     {
         use notebook_protocol::connection::{
             send_json_frame, send_typed_bootstrap_frame, ConnectionBootstrap,
-            NotebookConnectionInfo, ProtocolCapabilities,
+            CreateNotebookRequest, NotebookConnectionInfo, ProtocolCapabilities,
         };
+
+        let CreateNotebookRequest {
+            runtime,
+            working_dir,
+            notebook_id: notebook_id_hint,
+            ephemeral,
+            package_manager,
+            environment_mode,
+            dependencies,
+            typed_bootstrap,
+            operator,
+        } = request;
+        let typed_bootstrap = typed_bootstrap.unwrap_or(false);
 
         info!(
             "[runtimed] CreateNotebook requested (runtime={}, working_dir={:?}, notebook_id_hint={:?}, environment_mode={})",

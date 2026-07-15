@@ -826,18 +826,18 @@ async fn initialize_notebook_sync_create(
 
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
+    // A bare operator label (no '/') rides the spec's actor_label field and
+    // reaches the wire as the operator suffix unchanged.
     let operator = desktop_operator_label();
-    let result = notebook_sync::connect::connect_create_relay_with_operator(
+    let result = notebook_sync::connect::connect_create_relay(
         socket_path,
-        &runtime,
-        working_dir,
-        notebook_id_hint,
+        notebook_sync::connect::CreateNotebookSpec {
+            working_dir,
+            notebook_id: notebook_id_hint,
+            actor_label: operator,
+            ..notebook_sync::connect::CreateNotebookSpec::new(runtime.as_str())
+        },
         frame_tx,
-        false,
-        None,
-        vec![],
-        None,
-        Some(operator),
     )
     .await
     .map_err(|e| format!("sync connect (create): {}", e))?;
