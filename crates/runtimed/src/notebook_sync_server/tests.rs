@@ -5264,6 +5264,189 @@ async fn test_apply_ipynb_changes_no_save_snapshot_preserves_crdt_cells() {
     );
 }
 
+/// Applying identical external content twice is a no-op the second time:
+/// no reported change AND no new Automerge changes (issue #4015). A
+/// spurious metadata_changed fires changed_tx (resetting the autosave
+/// debounce), commits a journal marker, and wakes the persist debouncer.
+///
+/// Exercises both suspect shapes:
+/// - a file whose metadata is empty while the doc carries internal keys
+///   (`runtime` scalar, `runt.env_id`) the .ipynb omits — the untitled
+///   autosave scenario from the issue's watcher log
+/// - a file with kernelspec, language_info, and an unknown top-level key
+#[tokio::test]
+async fn test_apply_ipynb_changes_identical_metadata_is_idempotent() {
+    let empty_metadata_fixture = br#"{
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [
+            {"id": "cell-1", "cell_type": "code", "source": "x = 1",
+             "execution_count": null, "metadata": {}, "outputs": []}
+        ]
+    }"# as &[u8];
+    let rich_metadata_fixture = br#"{
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {
+            "kernelspec": {"name": "python3", "display_name": "Python 3",
+                           "language": "python"},
+            "language_info": {"name": "python", "version": "3.12.1",
+                              "codemirror_mode": {"name": "ipython", "version": 3}},
+            "jupytext": {"formats": "ipynb,md"}
+        },
+        "cells": [
+            {"id": "cell-1", "cell_type": "code", "source": "x = 1",
+             "execution_count": null, "metadata": {}, "outputs": []}
+        ]
+    }"# as &[u8];
+
+    for (label, fixture) in [
+        ("empty-metadata", empty_metadata_fixture),
+        ("rich-metadata", rich_metadata_fixture),
+    ] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+        // The doc carries keys the .ipynb never has: the internal
+        // `runtime` scalar (stamped at bootstrap) and a runt-namespaced
+        // env_id. These must not make identical external content look
+        // permanently different.
+        {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata("runtime", "python").unwrap();
+            doc.with_metadata(|snap| {
+                snap.runt.env_id = Some("11111111-2222-3333-4444-555555555555".to_string());
+            })
+            .unwrap();
+        }
+
+        let parsed = parse_notebook_jiter_for_notebook(fixture, room.id).expect("fixture parses");
+        let external_metadata = parsed.metadata.expect("fixture has metadata");
+        let (external_cells, external_outputs) = streaming_cells_into_snapshots(parsed.cells);
+
+        let first = apply_ipynb_changes_inner(
+            &room,
+            &external_cells,
+            &external_outputs,
+            &parsed.attachments,
+            false,
+            Some(&external_metadata),
+            None,
+        )
+        .await;
+        assert!(
+            first.changed(),
+            "[{label}] first apply reconciles the doc to the external file"
+        );
+
+        let heads_after_first = room.doc.write().await.get_heads();
+
+        let second = apply_ipynb_changes_inner(
+            &room,
+            &external_cells,
+            &external_outputs,
+            &parsed.attachments,
+            false,
+            Some(&external_metadata),
+            None,
+        )
+        .await;
+        assert!(
+            !second.cells_changed,
+            "[{label}] second apply of identical content must report cells=false"
+        );
+        assert!(
+            !second.metadata_changed,
+            "[{label}] second apply of identical content must report metadata=false"
+        );
+
+        let heads_after_second = room.doc.write().await.get_heads();
+        assert_eq!(
+            heads_after_first, heads_after_second,
+            "[{label}] idempotent re-apply must produce zero new Automerge changes"
+        );
+    }
+}
+
+/// Companion to the idempotence test: a genuinely different metadata
+/// snapshot must still report metadata_changed=true and land in the doc.
+/// The idempotence fix normalizes the comparison; it must not swallow
+/// real deltas.
+#[tokio::test]
+async fn test_apply_ipynb_changes_genuine_metadata_change_still_reports() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+    let before = br#"{
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {
+            "kernelspec": {"name": "python3", "display_name": "Python 3",
+                           "language": "python"},
+            "jupytext": {"formats": "ipynb,md"}
+        },
+        "cells": [
+            {"id": "cell-1", "cell_type": "code", "source": "x = 1",
+             "execution_count": null, "metadata": {}, "outputs": []}
+        ]
+    }"#;
+    let after = br#"{
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {
+            "kernelspec": {"name": "deno", "display_name": "Deno",
+                           "language": "typescript"},
+            "custom_extension": {"enabled": true}
+        },
+        "cells": [
+            {"id": "cell-1", "cell_type": "code", "source": "x = 1",
+             "execution_count": null, "metadata": {}, "outputs": []}
+        ]
+    }"#;
+
+    let parsed_before = parse_notebook_jiter_for_notebook(before, room.id).expect("before parses");
+    let metadata_before = parsed_before.metadata.expect("before has metadata");
+    let (cells_before, outputs_before) = streaming_cells_into_snapshots(parsed_before.cells);
+    apply_ipynb_changes_inner(
+        &room,
+        &cells_before,
+        &outputs_before,
+        &parsed_before.attachments,
+        false,
+        Some(&metadata_before),
+        None,
+    )
+    .await;
+
+    let parsed_after = parse_notebook_jiter_for_notebook(after, room.id).expect("after parses");
+    let metadata_after = parsed_after.metadata.expect("after has metadata");
+    let (cells_after, outputs_after) = streaming_cells_into_snapshots(parsed_after.cells);
+    let applied = apply_ipynb_changes_inner(
+        &room,
+        &cells_after,
+        &outputs_after,
+        &parsed_after.attachments,
+        false,
+        Some(&metadata_after),
+        None,
+    )
+    .await;
+
+    assert!(
+        applied.metadata_changed,
+        "genuinely different metadata must report metadata=true"
+    );
+    let doc = room.doc.read().await;
+    let snapshot = doc.get_metadata_snapshot().expect("metadata present");
+    assert_eq!(snapshot.kernelspec.as_ref().unwrap().name, "deno");
+    assert!(snapshot.extras.contains_key("custom_extension"));
+    assert!(
+        !snapshot.extras.contains_key("jupytext"),
+        "stale extras key must be replaced by the new snapshot"
+    );
+}
+
 #[tokio::test]
 async fn test_initial_load_routes_outputs_through_blob_store() {
     let tmp = tempfile::TempDir::new().unwrap();

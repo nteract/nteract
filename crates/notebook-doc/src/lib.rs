@@ -813,6 +813,32 @@ impl NotebookDoc {
         Ok(())
     }
 
+    /// True when writing `snapshot` via [`Self::set_metadata_snapshot`] would
+    /// leave the readable metadata unchanged.
+    ///
+    /// Raw `snapshot == doc.get_metadata_snapshot()` comparisons are not
+    /// idempotence-safe because a write+read round trip normalizes the
+    /// snapshot in two ways:
+    ///
+    /// - an all-empty snapshot (a vanilla `.ipynb` with `"metadata": {}`)
+    ///   reads back as `None`, not `Some(default)` — the doc's metadata map
+    ///   may hold only internal reserved keys (`runtime`, `ephemeral`) that
+    ///   the snapshot never models
+    /// - extras entries under reserved keys are dropped on write and skipped
+    ///   on read, so they never surface in the doc's readable form
+    ///
+    /// External-apply paths (file watcher, recovery replay) must use this to
+    /// decide whether an incoming snapshot is a real change; comparing
+    /// unnormalized forms reports a permanent spurious delta for identical
+    /// input (issue #4015).
+    pub fn metadata_snapshot_matches(&self, snapshot: &metadata::NotebookMetadataSnapshot) -> bool {
+        let mut incoming = snapshot.clone();
+        incoming
+            .extras
+            .retain(|key, _| !is_snapshot_reserved_metadata_key(key));
+        self.get_metadata_snapshot().unwrap_or_default() == incoming
+    }
+
     /// Detect the notebook runtime from metadata (kernelspec + language_info).
     ///
     /// Returns `"python"`, `"deno"`, or `None` for unknown runtimes.
@@ -6646,6 +6672,50 @@ mod tests {
             !after_second.extras.contains_key("colab"),
             "stale extras key must be deleted when absent from replacement"
         );
+    }
+
+    #[test]
+    fn metadata_snapshot_matches_normalizes_the_doc_round_trip() {
+        use crate::metadata::{KernelspecSnapshot, NotebookMetadataSnapshot};
+        let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
+
+        // An all-empty snapshot matches a doc with no readable metadata,
+        // even though get_metadata_snapshot() returns None for that doc.
+        let empty = NotebookMetadataSnapshot::default();
+        assert!(doc.metadata_snapshot_matches(&empty));
+
+        // Internal reserved keys on the doc don't break the match: they
+        // never surface in the readable snapshot.
+        let meta_id = doc
+            .doc
+            .put_object(automerge::ROOT, "metadata", ObjType::Map)
+            .unwrap();
+        doc.doc.put(&meta_id, "runtime", "python").unwrap();
+        assert!(doc.metadata_snapshot_matches(&empty));
+
+        // Reserved keys in the incoming extras are dropped on write, so
+        // they don't count as a difference either.
+        let mut reserved_extras = NotebookMetadataSnapshot::default();
+        reserved_extras
+            .extras
+            .insert("runtime".to_string(), serde_json::json!("python"));
+        assert!(doc.metadata_snapshot_matches(&reserved_extras));
+
+        // A genuine difference still reports as one, and matches after
+        // the write lands.
+        let real = NotebookMetadataSnapshot {
+            kernelspec: Some(KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3".to_string(),
+                language: Some("python".to_string()),
+                extras: Default::default(),
+            }),
+            ..Default::default()
+        };
+        assert!(!doc.metadata_snapshot_matches(&real));
+        doc.set_metadata_snapshot(&real).unwrap();
+        assert!(doc.metadata_snapshot_matches(&real));
+        assert!(!doc.metadata_snapshot_matches(&empty));
     }
 
     #[test]
