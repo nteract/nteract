@@ -821,40 +821,15 @@ async fn reservation_guards_stack() {
 }
 
 #[tokio::test]
-async fn test_room_load_or_create_new() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let blob_store = test_blob_store(&tmp);
-    let room = NotebookRoom::load_or_create("test-nb", tmp.path(), blob_store);
-
-    let doc = room.doc.try_read().unwrap();
-    assert_eq!(doc.notebook_id(), Some("test-nb".to_string()));
-    assert_eq!(
-        doc.runtime_state_doc_id(),
-        Some(notebook_doc::default_runtime_state_doc_id("test-nb"))
-    );
-    assert_eq!(
-        doc.comms_doc_id(),
-        Some(notebook_doc::default_comms_doc_id("test-nb"))
-    );
-    assert_eq!(doc.cell_count(), 0);
-    assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 0);
-    drop(doc);
-
-    let runtime_state = room.state.read(|doc| doc.read_state()).unwrap();
-    assert_eq!(
-        runtime_state.runtime_state_doc_id.as_deref(),
-        Some(notebook_doc::default_runtime_state_doc_id("test-nb").as_str())
-    );
-}
-
-#[tokio::test]
 async fn test_room_persists_and_reloads() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
+    // Fixed UUID so the reloaded untitled room finds the persisted doc.
+    let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440002").unwrap();
 
-    // Create room and add a cell
+    // Create an untitled room and add a cell
     {
-        let room = NotebookRoom::load_or_create("persist-test", tmp.path(), blob_store.clone());
+        let room = NotebookRoom::new_fresh(uuid, None, tmp.path(), blob_store.clone(), false);
         let mut doc = room.doc.try_write().unwrap();
         doc.add_cell(0, "c1", "code").unwrap();
         doc.update_source("c1", "hello").unwrap();
@@ -862,9 +837,9 @@ async fn test_room_persists_and_reloads() {
         persist_notebook_bytes(&bytes, &room.identity.persist_path);
     }
 
-    // Load again — should have the cell
+    // Reload the untitled room; the persisted cell must survive
     {
-        let room = NotebookRoom::load_or_create("persist-test", tmp.path(), blob_store);
+        let room = NotebookRoom::new_fresh(uuid, None, tmp.path(), blob_store, false);
         let doc = room.doc.try_read().unwrap();
         assert_eq!(doc.cell_count(), 1);
         let cell = doc.get_cell("c1").unwrap();
@@ -1693,7 +1668,7 @@ async fn test_get_or_create_room_different_notebooks() {
 async fn test_room_peer_counting() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
-    let room = NotebookRoom::load_or_create("peer-test", tmp.path(), blob_store);
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
 
     assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 0);
 
@@ -1734,6 +1709,7 @@ async fn test_new_fresh_creates_empty_doc() {
     );
     assert_eq!(doc.comms_doc_id(), Some(comms_doc_id));
     assert_eq!(doc.cell_count(), 0);
+    assert_eq!(room.connections.active_peers.load(Ordering::Relaxed), 0);
     drop(doc);
 
     let runtime_state = room.state.read(|doc| doc.read_state()).unwrap();
@@ -1751,19 +1727,16 @@ async fn test_new_fresh_preserves_but_ignores_legacy_persisted_doc_for_file_path
     // Use a fixed UUID so we can find the persist file again.
     let uuid = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-111111111111").unwrap();
 
-    // Create and persist a room with content using load_or_create (uses the UUID string)
-    {
-        let room = NotebookRoom::load_or_create(&uuid.to_string(), tmp.path(), blob_store.clone());
-        let mut doc = room.doc.try_write().unwrap();
-        doc.add_cell(0, "c1", "code").unwrap();
-        doc.update_source("c1", "old content").unwrap();
-        let bytes = doc.save();
-        persist_notebook_bytes(&bytes, &room.identity.persist_path);
-    }
-
-    // Verify persisted file exists
+    // Fabricate the legacy UUID-keyed persisted doc a prior session would
+    // have left on disk.
     let filename = notebook_doc_filename(&uuid.to_string());
     let persist_path = tmp.path().join(&filename);
+    {
+        let mut doc = notebook_doc::NotebookDoc::new_with_actor(&uuid.to_string(), "runtimed");
+        doc.add_cell(0, "c1", "code").unwrap();
+        doc.update_source("c1", "old content").unwrap();
+        persist_notebook_bytes(&doc.save(), &persist_path);
+    }
     assert!(persist_path.exists(), "Persisted file should exist");
 
     // Create a file-backed room. Legacy UUID-keyed persistence is not recovery
@@ -1854,19 +1827,16 @@ async fn test_new_fresh_loads_persisted_doc_for_untitled_notebook() {
     // Use a fixed UUID (untitled notebook — path=None)
     let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
 
-    // Create and persist a room with content using load_or_create
-    {
-        let room = NotebookRoom::load_or_create(&uuid.to_string(), tmp.path(), blob_store.clone());
-        let mut doc = room.doc.try_write().unwrap();
-        doc.add_cell(0, "c1", "code").unwrap();
-        doc.update_source("c1", "restored content").unwrap();
-        let bytes = doc.save();
-        persist_notebook_bytes(&bytes, &room.identity.persist_path);
-    }
-
-    // Verify persisted file exists
+    // Fabricate the persisted untitled doc a prior session would have left
+    // on disk.
     let filename = notebook_doc_filename(&uuid.to_string());
     let persist_path = tmp.path().join(&filename);
+    {
+        let mut doc = notebook_doc::NotebookDoc::new_with_actor(&uuid.to_string(), "runtimed");
+        doc.add_cell(0, "c1", "code").unwrap();
+        doc.update_source("c1", "restored content").unwrap();
+        persist_notebook_bytes(&doc.save(), &persist_path);
+    }
     assert!(persist_path.exists(), "Persisted file should exist");
 
     // Create fresh room for untitled notebook (path=None) — should load persisted doc
@@ -2018,7 +1988,7 @@ async fn emptied_untitled_notebook_is_not_reseeded_on_reconnect() {
     //    every cell, leaving cell_count == 0 but recording the cell + delete in
     //    history. Persist the emptied doc to disk.
     {
-        let room = NotebookRoom::load_or_create(&uuid.to_string(), tmp.path(), blob_store.clone());
+        let room = NotebookRoom::new_fresh(uuid, None, tmp.path(), blob_store.clone(), false);
         let mut doc = room.doc.try_write().unwrap();
 
         assert!(
@@ -2101,15 +2071,15 @@ async fn test_new_fresh_untitled_trust_from_doc() {
 
     let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
 
-    // Create a room, write the metadata, and persist to disk.
+    // Fabricate the persisted untitled doc carrying the trust metadata, as a
+    // prior session would have left on disk.
     {
-        let room = NotebookRoom::load_or_create(notebook_id, tmp.path(), blob_store.clone());
-        {
-            let mut doc = room.doc.try_write().unwrap();
-            doc.set_metadata_snapshot(&snapshot).unwrap();
-            let bytes = doc.save();
-            persist_notebook_bytes(&bytes, &room.identity.persist_path);
-        }
+        let mut doc = notebook_doc::NotebookDoc::new_with_actor(notebook_id, "runtimed");
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+        persist_notebook_bytes(
+            &doc.save(),
+            &tmp.path().join(notebook_doc_filename(notebook_id)),
+        );
     }
 
     // Approve the dep in the allowlist; trust now lives there, not in
@@ -8895,7 +8865,7 @@ async fn test_pre_v4_ipynb_output_id_round_trip() {
 async fn test_room_for_capture() -> (NotebookRoom, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
-    let room = NotebookRoom::load_or_create("capture-test", tmp.path(), blob_store);
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
     // Seed the doc so `get_metadata_snapshot` returns Some, mirroring
     // what `create_empty_notebook` does on a fresh notebook.
     {
@@ -9013,7 +8983,7 @@ async fn capture_preserves_existing_env_id_across_calls() {
 async fn capture_handles_conda_section_independently() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
-    let room = NotebookRoom::load_or_create("capture-conda-test", tmp.path(), blob_store);
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
     {
         let mut doc = room.doc.write().await;
         let _ = create_empty_notebook(
