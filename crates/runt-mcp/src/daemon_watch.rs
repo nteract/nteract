@@ -477,7 +477,6 @@ async fn rejoin(
             {
                 Ok(r) => {
                     let handle = r.handle;
-                    let broadcast_rx = r.broadcast_rx;
                     if let Err(e) = handle
                         .await_session_ready_timeout(REJOIN_SESSION_READY_TIMEOUT)
                         .await
@@ -485,7 +484,7 @@ async fn rejoin(
                         Err(e)
                     } else {
                         let cell_count = handle.get_cells().len();
-                        Ok((handle, broadcast_rx, cell_count, r.info.notebook_id))
+                        Ok((handle, cell_count, r.info.notebook_id))
                     }
                 }
                 Err(e) => Err(e),
@@ -500,7 +499,6 @@ async fn rejoin(
             {
                 Ok(r) => {
                     let handle = r.handle;
-                    let broadcast_rx = r.broadcast_rx;
                     if let Err(e) = handle
                         .await_session_ready_timeout(REJOIN_SESSION_READY_TIMEOUT)
                         .await
@@ -508,7 +506,7 @@ async fn rejoin(
                         Err(e)
                     } else {
                         let cell_count = handle.get_cells().len();
-                        Ok((handle, broadcast_rx, cell_count, notebook_id.clone()))
+                        Ok((handle, cell_count, notebook_id.clone()))
                     }
                 }
                 Err(e) => Err(e),
@@ -516,15 +514,11 @@ async fn rejoin(
         };
 
         match result {
-            Ok((handle, broadcast_rx, new_cell_count, new_notebook_id)) => {
+            Ok((handle, new_cell_count, new_notebook_id)) => {
                 crate::presence::announce(&handle, &label).await;
 
-                let new_session = NotebookSession::local(
-                    handle,
-                    broadcast_rx,
-                    new_notebook_id,
-                    notebook_path.clone(),
-                );
+                let new_session =
+                    NotebookSession::local(handle, new_notebook_id, notebook_path.clone());
                 // Hold the publication lock across the check/install. Any
                 // active session is authoritative, even for the same UUID:
                 // an explicit tool activation may carry retained projection
@@ -644,7 +638,6 @@ async fn rejoin_hosted(
 
                 let new_session = NotebookSession::hosted(
                     result.handle,
-                    result.broadcast_rx,
                     notebook_id.clone(),
                     domain_config.base_url.clone(),
                 );

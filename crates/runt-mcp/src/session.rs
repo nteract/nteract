@@ -6,7 +6,6 @@ use notebook_sync::handle::DocHandle;
 use notebook_sync::status::{
     ConnectionState, InitialLoadPhase, NotebookDocPhase, RuntimeStatePhase,
 };
-use notebook_sync::BroadcastReceiver;
 use runtimed_client::protocol::{
     NotebookAvailabilityPhase, NotebookProjection, NotebookSourcePhase,
 };
@@ -116,7 +115,6 @@ pub struct SessionAccessError {
 }
 
 /// An active notebook session connected via the daemon.
-#[allow(dead_code)] // Fields used by tool handlers as more tools are ported
 pub struct NotebookSession {
     /// The Automerge document handle for this notebook.
     pub handle: DocHandle,
@@ -125,8 +123,6 @@ pub struct NotebookSession {
     /// The file path for file-backed notebooks (opened via `open_notebook`).
     /// `None` for ephemeral notebooks created via `create_notebook`.
     pub notebook_path: Option<String>,
-    /// Broadcast receiver for daemon events (execution done, outputs, etc.)
-    pub broadcast_rx: BroadcastReceiver,
     /// Session source. Hosted sessions do not depend on the local daemon.
     pub source: NotebookSessionSource,
     /// Monotonic MCP activation generation. Daemon rejoin/create legacy paths
@@ -138,16 +134,10 @@ pub struct NotebookSession {
 }
 
 impl NotebookSession {
-    pub fn local(
-        handle: DocHandle,
-        broadcast_rx: BroadcastReceiver,
-        notebook_id: String,
-        notebook_path: Option<String>,
-    ) -> Self {
+    pub fn local(handle: DocHandle, notebook_id: String, notebook_path: Option<String>) -> Self {
         let activation_target = format!("local:id:{notebook_id}");
         Self {
             handle,
-            broadcast_rx,
             notebook_id,
             notebook_path,
             source: NotebookSessionSource::Local,
@@ -159,7 +149,6 @@ impl NotebookSession {
 
     pub fn local_with_projection(
         handle: DocHandle,
-        broadcast_rx: BroadcastReceiver,
         notebook_id: String,
         notebook_path: Option<String>,
         activation_generation: u64,
@@ -168,7 +157,6 @@ impl NotebookSession {
     ) -> Self {
         Self {
             handle,
-            broadcast_rx,
             notebook_id,
             notebook_path,
             source: NotebookSessionSource::Local,
@@ -180,16 +168,10 @@ impl NotebookSession {
         }
     }
 
-    pub fn hosted(
-        handle: DocHandle,
-        broadcast_rx: BroadcastReceiver,
-        notebook_id: String,
-        domain: String,
-    ) -> Self {
+    pub fn hosted(handle: DocHandle, notebook_id: String, domain: String) -> Self {
         let activation_target = crate::cloud::hosted_notebook_url(&domain, &notebook_id);
         Self {
             handle,
-            broadcast_rx,
             notebook_id,
             notebook_path: None,
             source: NotebookSessionSource::Hosted { domain },
@@ -201,7 +183,6 @@ impl NotebookSession {
 
     pub fn hosted_activated(
         handle: DocHandle,
-        broadcast_rx: BroadcastReceiver,
         notebook_id: String,
         domain: String,
         activation_generation: u64,
@@ -209,7 +190,6 @@ impl NotebookSession {
     ) -> Self {
         Self {
             handle,
-            broadcast_rx,
             notebook_id,
             notebook_path: None,
             source: NotebookSessionSource::Hosted { domain },

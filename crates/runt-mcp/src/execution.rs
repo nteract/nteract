@@ -47,7 +47,7 @@ pub struct ExecutionResult {
     /// Agents can pass this to `get_cell(execution_id=...)` to read
     /// outputs for this specific execution, bypassing the cell's
     /// current pointer.
-    pub execution_id: Option<String>,
+    pub execution_id: String,
     /// Resolved outputs from the cell after execution.
     pub outputs: Vec<Output>,
     /// Output manifests that produced `outputs` and `resolved_outputs_by_manifest`.
@@ -110,7 +110,7 @@ pub async fn execute_and_wait(
         .await;
 
     let execution_id = match response {
-        Ok(NotebookResponse::CellQueued { execution_id, .. }) => Some(execution_id),
+        Ok(NotebookResponse::CellQueued { execution_id, .. }) => execution_id,
         Ok(NotebookResponse::Error { error })
         | Ok(NotebookResponse::GuardRejected { reason: error }) => {
             return Err(ExecutionDispatchError::not_ready(format!(
@@ -139,54 +139,37 @@ pub async fn execute_and_wait(
     let mut output_manifests: Vec<serde_json::Value> = Vec::new();
     let mut execution_count_from_wait: Option<i64> = None;
 
-    if let Some(ref eid) = execution_id {
-        match await_execution_terminal(handle, eid, timeout, None).await {
-            Ok(ExecutionTerminalState {
-                status,
-                success: s,
-                output_manifests: outs,
-                execution_count,
-            }) => {
-                final_status = status;
-                success = s;
-                output_manifests = outs;
-                execution_count_from_wait = execution_count;
-            }
-            Err(ExecutionTerminalError::Timeout) => {
-                // Leave `running` and fall through — caller can surface
-                // timeout based on the status field.
-            }
-            Err(ExecutionTerminalError::KernelFailed { reason }) => {
-                warn!("kernel failed during execution: {reason}");
-                final_status = "error".to_string();
-            }
+    match await_execution_terminal(handle, &execution_id, timeout, None).await {
+        Ok(ExecutionTerminalState {
+            status,
+            success: s,
+            output_manifests: outs,
+            execution_count,
+        }) => {
+            final_status = status;
+            success = s;
+            output_manifests = outs;
+            execution_count_from_wait = execution_count;
+        }
+        Err(ExecutionTerminalError::Timeout) => {
+            // Leave `running` and fall through — caller can surface
+            // timeout based on the status field.
+        }
+        Err(ExecutionTerminalError::KernelFailed { reason }) => {
+            warn!("kernel failed during execution: {reason}");
+            final_status = "error".to_string();
         }
     }
 
     // Step 4: Collect outputs from CRDT.
     // Prefer output hashes from RuntimeStateDoc (already returned above).
-    // Fall back to handle.get_cell() which reads via execution_id facade.
-    let execution_count = if let Some(count) = execution_count_from_wait {
-        Some(count.to_string())
-    } else if execution_id.is_none() {
-        // Fallback: find most recent execution for this cell with an execution_count
-        let ec = crate::tools::cell_read::get_cell_execution_count_from_runtime(handle, cell_id);
-        if ec.is_empty() {
-            None
-        } else {
-            Some(ec)
-        }
-    } else {
-        None
-    };
+    let execution_count = execution_count_from_wait.map(|count| count.to_string());
 
     let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
     let mut execution_cell_map = execution_cell_map(handle);
-    if let Some(eid) = &execution_id {
-        execution_cell_map
-            .entry(eid.clone())
-            .or_insert_with(|| cell_id.to_string());
-    }
+    execution_cell_map
+        .entry(execution_id.clone())
+        .or_insert_with(|| cell_id.to_string());
     // Execute paths (and `and_run` variants) always use preview mode —
     // agents that need unabridged output should call `get_cell(full_output=true)`
     // afterwards rather than paying for it on every run.
@@ -213,12 +196,6 @@ pub async fn execute_and_wait(
         let outputs = aligned.iter().flatten().cloned().collect();
         (outputs, aligned)
     };
-
-    // Determine status from outputs if we didn't get it from RuntimeState
-    if final_status == "idle" && outputs.iter().any(|o| o.output_type == "error") {
-        final_status = "error".to_string();
-        success = false;
-    }
 
     Ok(ExecutionResult {
         cell_id: cell_id.to_string(),

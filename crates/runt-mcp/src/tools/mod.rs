@@ -647,7 +647,7 @@ pub async fn build_execution_result(
         "code",
         result.execution_count.as_deref(),
         Some(&result.status),
-        result.execution_id.as_deref(),
+        Some(result.execution_id.as_str()),
     );
 
     let mut items = vec![
@@ -707,12 +707,10 @@ pub async fn build_execution_result(
             );
             // Inject execution_id into structured content so MCP App renderers
             // can associate outputs with a specific execution.
-            if let Some(ref eid) = result.execution_id {
-                cell_obj.insert(
-                    "execution_id".to_string(),
-                    serde_json::Value::String(eid.clone()),
-                );
-            }
+            cell_obj.insert(
+                "execution_id".to_string(),
+                serde_json::Value::String(result.execution_id.clone()),
+            );
         }
     }
     call_result.structured_content = structured_content;
