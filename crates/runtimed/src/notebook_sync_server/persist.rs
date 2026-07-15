@@ -2393,7 +2393,7 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
     }
 
     if room.durability.status().is_degraded() {
-        // `apply_ipynb_changes` rolls the NotebookDoc
+        // `apply_ipynb_changes_inner` rolls the NotebookDoc
         // back when its journal marker fails. Do not
         // apply metadata, advance source baselines, or
         // publish a recovery over that terminal state.
