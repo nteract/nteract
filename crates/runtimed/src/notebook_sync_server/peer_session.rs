@@ -3,8 +3,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use automerge::sync;
-#[cfg(test)]
-use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tracing::{info, warn};
 
@@ -20,6 +18,17 @@ struct InitialLoadFrameDrain<'a> {
     framed_reader: &'a mut connection::FramedReader,
     deferred_frames: &'a mut VecDeque<TypedNotebookFrame>,
     connection_identity: &'a RoomConnectionIdentity,
+}
+
+/// Connection-lifetime facts the initial-load stream reads. Every field is
+/// immutable for the life of the peer connection; per-call state (the writer,
+/// sync `peer_state`, the frame drain) stays in plain parameters.
+pub(crate) struct PeerSessionContext<'a> {
+    pub(crate) room: &'a Arc<NotebookRoom>,
+    pub(crate) needs_load: Option<&'a Path>,
+    pub(crate) execution_store_dir: &'a Path,
+    pub(crate) connection_identity: &'a RoomConnectionIdentity,
+    pub(crate) client_protocol_version: u8,
 }
 
 /// Drain client acknowledgements while the room materializes.
@@ -146,16 +155,19 @@ where
     Ok(sent)
 }
 
-struct InitialLoadSyncOutcome {
-    initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
-    notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
+/// The three wire phases advertised to the client through SessionControl
+/// SyncStatus frames. They always travel together: every status frame reports
+/// all three, and bootstrap advances them one at a time.
+#[derive(Debug, Clone)]
+pub(crate) struct HandshakePhases {
+    pub(crate) notebook_doc: notebook_protocol::protocol::NotebookDocPhaseWire,
+    pub(crate) runtime_state: notebook_protocol::protocol::RuntimeStatePhaseWire,
+    pub(crate) initial_load: notebook_protocol::protocol::InitialLoadPhaseWire,
 }
 
 pub(crate) async fn send_session_status<W>(
     writer: &mut W,
-    notebook_doc: notebook_protocol::protocol::NotebookDocPhaseWire,
-    runtime_state: notebook_protocol::protocol::RuntimeStatePhaseWire,
-    initial_load: notebook_protocol::protocol::InitialLoadPhaseWire,
+    phases: &HandshakePhases,
 ) -> anyhow::Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -165,9 +177,9 @@ where
         NotebookFrameType::SessionControl,
         &notebook_protocol::protocol::SessionControlMessage::SyncStatus(
             notebook_protocol::protocol::SessionSyncStatusWire {
-                notebook_doc,
-                runtime_state,
-                initial_load,
+                notebook_doc: phases.notebook_doc,
+                runtime_state: phases.runtime_state,
+                initial_load: phases.initial_load.clone(),
             },
         ),
     )
@@ -267,46 +279,38 @@ where
     Ok(())
 }
 
-/// Stream initial notebook file contents into the room before steady-state sync.
-///
-/// The caller passes `peer_state` from the initial notebook-doc sync so each
-/// streamed batch can produce deltas from the same baseline.
-///
-/// Test-only wrapper that supplies an inert frame drain (exhausted framed
-/// reader, no deferred frames, local connection identity) so ordering
-/// invariants can be asserted on the writer side without a live client
-/// stream.
-#[allow(clippy::too_many_arguments)]
+/// Test-only wrapper around [`stream_initial_load_inner`] that supplies an
+/// inert frame drain (exhausted framed reader, no deferred frames, local
+/// connection identity) so ordering invariants can be asserted on the writer
+/// side without a live client stream.
 #[cfg(test)]
-pub(crate) async fn stream_initial_load<R, W>(
-    _reader: &mut R,
+pub(crate) async fn stream_initial_load<W>(
     writer: &mut W,
     room: &Arc<NotebookRoom>,
     needs_load: Option<&Path>,
     execution_store_dir: &Path,
     peer_state: &mut sync::State,
-    notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
-    runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
-    initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
+    phases: HandshakePhases,
     client_protocol_version: u8,
 ) -> anyhow::Result<notebook_protocol::protocol::InitialLoadPhaseWire>
 where
-    R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let mut framed_reader = connection::FramedReader::spawn(tokio::io::empty(), 1);
     let mut deferred_frames = VecDeque::new();
     let connection_identity = RoomConnectionIdentity::local(Some("mcp:test".to_string())).await?;
-    Ok(stream_initial_load_inner(
-        writer,
+    let session = PeerSessionContext {
         room,
         needs_load,
         execution_store_dir,
-        peer_state,
-        notebook_doc_phase,
-        runtime_state_phase,
-        initial_load_phase,
+        connection_identity: &connection_identity,
         client_protocol_version,
+    };
+    Ok(stream_initial_load_inner(
+        writer,
+        &session,
+        peer_state,
+        phases,
         InitialLoadFrameDrain {
             framed_reader: &mut framed_reader,
             deferred_frames: &mut deferred_frames,
@@ -314,85 +318,70 @@ where
         },
     )
     .await?
-    .initial_load_phase)
+    .initial_load)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Stream initial notebook file contents into the room before steady-state sync.
+///
+/// The caller passes `peer_state` from the initial notebook-doc sync so each
+/// streamed batch can produce deltas from the same baseline. On success the
+/// notebook-doc and initial-load phases are updated in place; the
+/// runtime-state phase passes through untouched.
 pub(crate) async fn stream_initial_load_with_frame_drain<W>(
     framed_reader: &mut connection::FramedReader,
     writer: &mut W,
     deferred_frames: &mut VecDeque<TypedNotebookFrame>,
-    room: &Arc<NotebookRoom>,
-    needs_load: Option<&Path>,
-    execution_store_dir: &Path,
+    session: &PeerSessionContext<'_>,
     peer_state: &mut sync::State,
-    notebook_doc_phase: &mut notebook_protocol::protocol::NotebookDocPhaseWire,
-    runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
-    initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
-    client_protocol_version: u8,
-    connection_identity: &RoomConnectionIdentity,
-) -> anyhow::Result<notebook_protocol::protocol::InitialLoadPhaseWire>
+    phases: &mut HandshakePhases,
+) -> anyhow::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let outcome = stream_initial_load_inner(
+    *phases = stream_initial_load_inner(
         writer,
-        room,
-        needs_load,
-        execution_store_dir,
+        session,
         peer_state,
-        *notebook_doc_phase,
-        runtime_state_phase,
-        initial_load_phase,
-        client_protocol_version,
+        phases.clone(),
         InitialLoadFrameDrain {
             framed_reader,
             deferred_frames,
-            connection_identity,
+            connection_identity: session.connection_identity,
         },
     )
     .await?;
-    *notebook_doc_phase = outcome.notebook_doc_phase;
-    Ok(outcome.initial_load_phase)
+    Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn stream_initial_load_inner<W>(
     writer: &mut W,
-    room: &Arc<NotebookRoom>,
-    needs_load: Option<&Path>,
-    execution_store_dir: &Path,
+    session: &PeerSessionContext<'_>,
     peer_state: &mut sync::State,
-    mut notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
-    runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
-    initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
-    client_protocol_version: u8,
+    mut phases: HandshakePhases,
     mut frame_drain: InitialLoadFrameDrain<'_>,
-) -> anyhow::Result<InitialLoadSyncOutcome>
+) -> anyhow::Result<HandshakePhases>
 where
     W: AsyncWrite + Unpin,
 {
+    let room = session.room;
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
-    let mut source_state_rx = if let Some(load_path) = needs_load {
+    let mut source_state_rx = if let Some(load_path) = session.needs_load {
         start_room_initial_load(
             room,
             load_path.to_path_buf(),
-            execution_store_dir.to_path_buf(),
+            session.execution_store_dir.to_path_buf(),
         );
         room.initial_load.subscribe_authoritative()
     } else if room.is_loading()
         || matches!(
-            initial_load_phase,
+            phases.initial_load,
             notebook_protocol::protocol::InitialLoadPhaseWire::Streaming
                 | notebook_protocol::protocol::InitialLoadPhaseWire::Failed { .. }
         )
     {
         room.initial_load.subscribe_authoritative()
     } else {
-        return Ok(InitialLoadSyncOutcome {
-            initial_load_phase,
-            notebook_doc_phase,
-        });
+        return Ok(phases);
     };
 
     let mut generation = source_state_rx.borrow().generation();
@@ -418,23 +407,14 @@ where
                     notebook_doc_converged = converged;
                 }
                 if notebook_doc_converged {
-                    notebook_doc_phase =
+                    phases.notebook_doc =
                         notebook_protocol::protocol::NotebookDocPhaseWire::Interactive;
                 }
-                let phase = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
-                if client_protocol_version >= 3 {
-                    send_session_status(
-                        writer,
-                        notebook_doc_phase,
-                        runtime_state_phase,
-                        phase.clone(),
-                    )
-                    .await?;
+                phases.initial_load = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
+                if session.client_protocol_version >= 3 {
+                    send_session_status(writer, &phases).await?;
                 }
-                return Ok(InitialLoadSyncOutcome {
-                    initial_load_phase: phase,
-                    notebook_doc_phase,
-                });
+                return Ok(phases);
             }
             RoomInitialLoadState::Failed {
                 generation: settled_generation,
@@ -459,12 +439,11 @@ where
                     continue;
                 }
                 send_initial_load_doc_delta(writer, room, peer_state).await?;
-                let phase = notebook_protocol::protocol::InitialLoadPhaseWire::Failed {
+                phases.initial_load = notebook_protocol::protocol::InitialLoadPhaseWire::Failed {
                     reason: reason.clone(),
                 };
-                if client_protocol_version >= 3 {
-                    send_session_status(writer, notebook_doc_phase, runtime_state_phase, phase)
-                        .await?;
+                if session.client_protocol_version >= 3 {
+                    send_session_status(writer, &phases).await?;
                 }
                 return Err(anyhow::anyhow!("Initial materialization failed: {reason}"));
             }
@@ -626,6 +605,16 @@ mod tests {
 
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Phases as they stand when bootstrap reaches the initial-load stream:
+    /// both docs syncing, file contents still streaming.
+    fn bootstrap_phases() -> HandshakePhases {
+        HandshakePhases {
+            notebook_doc: NotebookDocPhaseWire::Syncing,
+            runtime_state: RuntimeStatePhaseWire::Syncing,
+            initial_load: InitialLoadPhaseWire::Streaming,
         }
     }
 
@@ -919,19 +908,15 @@ mod tests {
         ));
         assert!(room.initial_load.complete_ready(generation, 0));
 
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
         let phase = stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             None,
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await
@@ -946,20 +931,16 @@ mod tests {
         let room = test_room(&tmp);
         let load_path = tmp.path().join("source.ipynb");
         write_one_cell_notebook(&load_path).await;
-        let mut reader = tokio::io::empty();
         let mut writer = FailFirstWrite::expecting_partial_state(&room);
         let mut peer_state = sync::State::new();
 
         let err = stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await
@@ -1002,20 +983,16 @@ mod tests {
         let room = test_room(&tmp);
         let load_path = tmp.path().join("source.ipynb");
         write_one_cell_notebook(&load_path).await;
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
 
         let phase = stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             2,
         )
         .await
@@ -1045,20 +1022,16 @@ mod tests {
         let room = test_room(&tmp);
         let load_path = tmp.path().join("source.ipynb");
         write_one_cell_notebook(&load_path).await;
-        let mut reader = tokio::io::empty();
         let mut writer = FailFirstWrite::expecting_partial_state(&room);
         let mut peer_state = sync::State::new();
 
         stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             2,
         )
         .await
@@ -1082,20 +1055,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let room = test_room(&tmp);
         let load_path = tmp.path().join("does-not-exist.ipynb");
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
 
         let err = stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await
@@ -1134,19 +1103,15 @@ mod tests {
             .initial_load
             .complete_failed(generation, "source became unreadable".to_string()));
 
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
         let error = stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             None,
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await
@@ -1308,20 +1273,21 @@ mod tests {
             .complete_failed(generation, "source batch failed".to_string()));
         room.mark_load_failed();
 
-        let mut notebook_doc_phase = NotebookDocPhaseWire::Syncing;
+        let session = PeerSessionContext {
+            room: &room,
+            needs_load: None,
+            execution_store_dir: tmp.path(),
+            connection_identity: &identity,
+            client_protocol_version: 4,
+        };
+        let mut phases = bootstrap_phases();
         let error = stream_initial_load_with_frame_drain(
             &mut framed_reader,
             &mut writer,
             &mut deferred_frames,
-            &room,
-            None,
-            tmp.path(),
+            &session,
             &mut peer_state,
-            &mut notebook_doc_phase,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
-            4,
-            &identity,
+            &mut phases,
         )
         .await
         .expect_err("the source generation remains terminally failed");
@@ -1376,26 +1342,27 @@ mod tests {
         });
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
-        let mut notebook_doc_phase = NotebookDocPhaseWire::Syncing;
-        let phase = stream_initial_load_with_frame_drain(
+        let session = PeerSessionContext {
+            room: &room,
+            needs_load: None,
+            execution_store_dir: tmp.path(),
+            connection_identity: &identity,
+            client_protocol_version: 4,
+        };
+        let mut phases = bootstrap_phases();
+        stream_initial_load_with_frame_drain(
             &mut framed_reader,
             &mut writer,
             &mut deferred_frames,
-            &room,
-            None,
-            tmp.path(),
+            &session,
             &mut peer_state,
-            &mut notebook_doc_phase,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
-            4,
-            &identity,
+            &mut phases,
         )
         .await
         .expect("waiter should follow the recovered generation");
 
         recovery.await.unwrap();
-        assert_eq!(phase, InitialLoadPhaseWire::Ready);
+        assert_eq!(phases.initial_load, InitialLoadPhaseWire::Ready);
         assert!(matches!(
             room.initial_load.state(),
             RoomInitialLoadState::Ready {
@@ -1433,20 +1400,16 @@ mod tests {
             blob_store,
             false,
         ));
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
 
         let error = stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await
@@ -1490,20 +1453,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
 
         let phase = stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await
@@ -1586,20 +1545,16 @@ mod tests {
         let room = test_room(&tmp);
         let load_path = tmp.path().join("source.ipynb");
         write_one_cell_notebook(&load_path).await;
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
 
         let phase = stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await
@@ -1643,20 +1598,16 @@ mod tests {
         let room = test_room(&tmp);
         let load_path = tmp.path().join("source.ipynb");
         write_one_cell_notebook(&load_path).await;
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
 
         stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await
@@ -1695,20 +1646,16 @@ mod tests {
             blob_store,
             false,
         ));
-        let mut reader = tokio::io::empty();
         let mut writer = CaptureWriter::default();
         let mut peer_state = sync::State::new();
 
         stream_initial_load(
-            &mut reader,
             &mut writer,
             &room,
             Some(&load_path),
             tmp.path(),
             &mut peer_state,
-            NotebookDocPhaseWire::Syncing,
-            RuntimeStatePhaseWire::Syncing,
-            InitialLoadPhaseWire::Streaming,
+            bootstrap_phases(),
             4,
         )
         .await

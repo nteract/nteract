@@ -316,22 +316,21 @@ async fn notebook_doc_interactive_waits_for_initial_sync_convergence() {
     let (mut client_reader, mut client_writer) = tokio::io::split(client_io);
 
     let server_task = {
-        let room = room.clone();
-        let daemon = daemon.clone();
+        let ctx = PeerConnectionContext {
+            room: room.clone(),
+            rooms,
+            notebook_id,
+            daemon: daemon.clone(),
+            peer_id: "mcp-peer".to_string(),
+            connection_identity: identity,
+            client_protocol_version: notebook_protocol::connection::PROTOCOL_VERSION,
+            default_runtime: Default::default(),
+            default_python_env: Default::default(),
+            working_dir: None,
+            needs_load: None,
+        };
         tokio::spawn(async move {
-            super::peer_loop::run_sync_loop_v2(
-                server_reader,
-                server_writer,
-                &room,
-                rooms,
-                notebook_id,
-                daemon,
-                None,
-                "mcp-peer",
-                &identity,
-                notebook_protocol::connection::PROTOCOL_VERSION,
-            )
-            .await
+            super::peer_loop::run_sync_loop_v2(server_reader, server_writer, &ctx).await
         })
     };
 
@@ -436,23 +435,21 @@ async fn file_backed_initial_load_applies_buffered_replies_before_ready() {
     let (mut client_reader, mut client_writer) = tokio::io::split(client_io);
 
     let server_task = {
-        let room = room.clone();
-        let daemon = daemon.clone();
-        let load_path = load_path.clone();
+        let ctx = PeerConnectionContext {
+            room: room.clone(),
+            rooms,
+            notebook_id,
+            daemon: daemon.clone(),
+            peer_id: "mcp-peer".to_string(),
+            connection_identity: identity,
+            client_protocol_version: notebook_protocol::connection::PROTOCOL_VERSION,
+            default_runtime: Default::default(),
+            default_python_env: Default::default(),
+            working_dir: None,
+            needs_load: Some(load_path.clone()),
+        };
         tokio::spawn(async move {
-            super::peer_loop::run_sync_loop_v2(
-                server_reader,
-                server_writer,
-                &room,
-                rooms,
-                notebook_id,
-                daemon,
-                Some(load_path.as_path()),
-                "mcp-peer",
-                &identity,
-                notebook_protocol::connection::PROTOCOL_VERSION,
-            )
-            .await
+            super::peer_loop::run_sync_loop_v2(server_reader, server_writer, &ctx).await
         })
     };
 
@@ -571,23 +568,21 @@ async fn file_backed_initial_load_reaches_ready_without_streaming_replies() {
     let (mut client_reader, mut client_writer) = tokio::io::split(client_io);
 
     let server_task = {
-        let room = room.clone();
-        let daemon = daemon.clone();
-        let load_path = load_path.clone();
+        let ctx = PeerConnectionContext {
+            room: room.clone(),
+            rooms,
+            notebook_id,
+            daemon: daemon.clone(),
+            peer_id: "mcp-peer".to_string(),
+            connection_identity: identity,
+            client_protocol_version: notebook_protocol::connection::PROTOCOL_VERSION,
+            default_runtime: Default::default(),
+            default_python_env: Default::default(),
+            working_dir: None,
+            needs_load: Some(load_path.clone()),
+        };
         tokio::spawn(async move {
-            super::peer_loop::run_sync_loop_v2(
-                server_reader,
-                server_writer,
-                &room,
-                rooms,
-                notebook_id,
-                daemon,
-                Some(load_path.as_path()),
-                "mcp-peer",
-                &identity,
-                notebook_protocol::connection::PROTOCOL_VERSION,
-            )
-            .await
+            super::peer_loop::run_sync_loop_v2(server_reader, server_writer, &ctx).await
         })
     };
 

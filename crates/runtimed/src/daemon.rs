@@ -2985,20 +2985,24 @@ impl Daemon {
                 crate::notebook_sync_server::handle_notebook_sync_connection(
                     reader,
                     writer,
-                    room,
-                    self.notebook_rooms.clone(),
-                    notebook_id,
-                    default_runtime,
-                    default_python_env,
-                    self.clone(),
-                    working_dir_path,
+                    crate::notebook_sync_server::PeerConnectionContext {
+                        room,
+                        rooms: self.notebook_rooms.clone(),
+                        notebook_id,
+                        daemon: self.clone(),
+                        peer_id: uuid::Uuid::new_v4().to_string(),
+                        connection_identity,
+                        client_protocol_version,
+                        default_runtime,
+                        default_python_env,
+                        working_dir: working_dir_path,
+                        // No streaming load for direct NotebookSync handshake.
+                        needs_load: None,
+                    },
                     initial_metadata,
                     false, // Send ProtocolCapabilities for direct NotebookSync handshake
                     typed_bootstrap.unwrap_or(false),
-                    None,  // No streaming load for direct NotebookSync handshake
                     false, // Not a newly-created notebook at path
-                    connection_identity,
-                    client_protocol_version,
                 )
                 .await
             }
@@ -3417,20 +3421,25 @@ impl Daemon {
         crate::notebook_sync_server::handle_notebook_sync_connection(
             reader,
             writer,
-            room,
-            self.notebook_rooms.clone(),
-            notebook_id,
-            default_runtime,
-            default_python_env,
-            self.clone(),
-            None,  // working_dir: hosted rooms have no local project context
+            crate::notebook_sync_server::PeerConnectionContext {
+                room,
+                rooms: self.notebook_rooms.clone(),
+                notebook_id,
+                daemon: self.clone(),
+                peer_id: uuid::Uuid::new_v4().to_string(),
+                connection_identity,
+                client_protocol_version,
+                default_runtime,
+                default_python_env,
+                // Hosted rooms have no local project context.
+                working_dir: None,
+                // No streaming load; content arrives via the bridge.
+                needs_load: None,
+            },
             None,  // initial_metadata: the cloud room owns metadata
             true,  // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             false, // typed_capabilities unused when skipped
-            None,  // No streaming load; content arrives via the bridge
             false, // Not a newly-created notebook at a path
-            connection_identity,
-            client_protocol_version,
         )
         .await
     }
@@ -3855,20 +3864,23 @@ impl Daemon {
         crate::notebook_sync_server::handle_notebook_sync_connection(
             reader,
             writer,
-            room,
-            self.notebook_rooms.clone(),
-            notebook_id,
-            default_runtime,
-            default_python_env,
-            self.clone(),
-            working_dir_path,
+            crate::notebook_sync_server::PeerConnectionContext {
+                room,
+                rooms: self.notebook_rooms.clone(),
+                notebook_id,
+                daemon: self.clone(),
+                peer_id: uuid::Uuid::new_v4().to_string(),
+                connection_identity,
+                client_protocol_version,
+                default_runtime,
+                default_python_env,
+                working_dir: working_dir_path,
+                needs_load,
+            },
             None, // No initial_metadata - doc is already populated
             true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             false,
-            needs_load,
             created_new_at_path, // Enable auto-launch for notebooks created at non-existent paths
-            connection_identity,
-            client_protocol_version,
         )
         .await
     }
@@ -4126,20 +4138,24 @@ impl Daemon {
         crate::notebook_sync_server::handle_notebook_sync_connection(
             reader,
             writer,
-            room,
-            self.notebook_rooms.clone(),
-            notebook_id,
-            requested_runtime,
-            default_python_env,
-            self.clone(),
-            working_dir_path,
+            crate::notebook_sync_server::PeerConnectionContext {
+                room,
+                rooms: self.notebook_rooms.clone(),
+                notebook_id,
+                daemon: self.clone(),
+                peer_id: uuid::Uuid::new_v4().to_string(),
+                connection_identity,
+                client_protocol_version,
+                default_runtime: requested_runtime,
+                default_python_env,
+                working_dir: working_dir_path,
+                // No streaming load - doc was just created with empty cell.
+                needs_load: None,
+            },
             None, // No initial_metadata - doc is already populated
             true, // Skip ProtocolCapabilities - already sent in NotebookConnectionInfo
             false,
-            None,  // No streaming load - doc was just created with empty cell
             false, // UUID-based new notebook, handled by is_new_notebook check
-            connection_identity,
-            client_protocol_version,
         )
         .await
     }
