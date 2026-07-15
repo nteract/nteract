@@ -1121,7 +1121,6 @@ async fn connect_hosted_notebook(
 
             let session = NotebookSession::hosted_activated(
                 result.handle,
-                result.broadcast_rx,
                 notebook_id.clone(),
                 domain_config.base_url,
                 lease.generation(),
@@ -1182,7 +1181,6 @@ async fn connect_local_path_progressive(
 
     let mut session = NotebookSession::local_with_projection(
         result.handle,
-        result.broadcast_rx,
         notebook_id.clone(),
         Some(abs_path.to_string_lossy().into_owned()),
         lease.generation(),
@@ -1255,7 +1253,6 @@ async fn connect_local_id_progressive(
     }
     let mut session = NotebookSession::local_with_projection(
         result.handle,
-        result.broadcast_rx,
         notebook_id.clone(),
         notebook_path.clone(),
         lease.generation(),
@@ -1485,12 +1482,7 @@ pub async fn create_notebook(
                     )
                 };
 
-                let mut session = NotebookSession::local(
-                    result.handle,
-                    result.broadcast_rx,
-                    notebook_id.clone(),
-                    None,
-                );
+                let mut session = NotebookSession::local(result.handle, notebook_id.clone(), None);
                 session.reactivate(activation_lease.generation(), activation_lease.target());
 
                 let runtime_info = collect_runtime_info(&session.handle).await;
