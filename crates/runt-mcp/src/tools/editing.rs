@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -141,7 +141,9 @@ pub async fn replace_match(
     // Return diff
     let old_text = &source[span.start..span.end];
     let diff = format_edit_diff(cell_id, old_text, content);
-    Ok(CallToolResult::success(vec![Content::text(diff)]))
+    Ok(CallToolResult::success(vec![
+        crate::formatting::assistant_text(diff),
+    ]))
 }
 
 /// Replace a regex-matched span in a cell.
@@ -228,7 +230,9 @@ pub async fn replace_regex(
     // Return diff
     let old_text = &source[span.start..span.end];
     let diff = format_edit_diff(cell_id, old_text, content);
-    Ok(CallToolResult::success(vec![Content::text(diff)]))
+    Ok(CallToolResult::success(vec![
+        crate::formatting::assistant_text(diff),
+    ]))
 }
 
 /// Format a unified diff for an edit operation.

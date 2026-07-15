@@ -403,7 +403,7 @@ fn cell_resource_success(
     cell_id: &str,
 ) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![
-        Content::text(message),
+        crate::formatting::assistant_text(message),
         Content::resource_link(crate::resources::notebook_cell_resource_link(
             notebook_id,
             cell_id,
@@ -417,7 +417,9 @@ fn cell_resource_json_success(
     cell_id: &str,
 ) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![
-        Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
+        crate::formatting::assistant_text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+        ),
         Content::resource_link(crate::resources::notebook_cell_resource_link(
             notebook_id,
             cell_id,
@@ -430,7 +432,9 @@ fn cells_resource_json_success(
     notebook_id: &str,
 ) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![
-        Content::text(serde_json::to_string_pretty(&result).unwrap_or_default()),
+        crate::formatting::assistant_text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+        ),
         Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
     ]))
 }

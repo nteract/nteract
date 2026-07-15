@@ -2,11 +2,34 @@
 //!
 //! Converts notebook outputs to text for LLM consumption, with ANSI stripping
 //! and MIME type priority. Matches the Python MCP server's formatting behavior.
+//!
+//! # Two channels, two audiences
+//!
+//! MCP tool results serve two audiences. Content blocks are the AGENT channel:
+//! minimal tokens, maximal contextual understanding, navigable (pointers to
+//! fetch more). `structuredContent` is the HUMAN RENDER contract consumed by
+//! the MCP App renderer: complete and URL-rich, never token-optimized.
+//! Everything in this module shapes the agent channel; the human contract
+//! lives in `crate::structured`.
 
 use regex::Regex;
 use std::sync::LazyLock;
 
+use rmcp::model::{Content, Role};
+use runtimed_outputs::output_resolver::{content_ref_meta, CONTENT_PRIORITY};
 use runtimed_outputs::resolved_output::{DataValue, Output};
+
+/// Build a text `Content` block annotated `audience: [assistant]`.
+///
+/// Content blocks are the agent channel: minimal tokens, maximal contextual
+/// understanding, navigable pointers to fetch more. `structuredContent` is the
+/// human render contract (MCP App renderer): complete and URL-rich, never
+/// token-optimized. Annotating agent-channel text with the assistant audience
+/// lets renderers drop it from human views without guessing. Resource-link
+/// content items stay unannotated — both audiences navigate by them.
+pub fn assistant_text(text: impl Into<String>) -> Content {
+    Content::text(text.into()).with_audience(vec![Role::Assistant])
+}
 
 /// ANSI escape code regex — matches color codes, cursor movement, OSC sequences.
 #[allow(clippy::expect_used)] // Static regex, always valid
@@ -118,6 +141,8 @@ pub fn format_outputs_text(outputs: &[Output]) -> String {
 /// This gives MCP clients richer structure than a single concatenated string.
 /// When outputs exist but have no text representation, appends a summary
 /// so agents know execution produced output they can't see.
+///
+/// All text items are agent-channel content, annotated `audience: [assistant]`.
 pub fn outputs_to_content_items(outputs: &[Output]) -> Vec<rmcp::model::Content> {
     let mut items: Vec<rmcp::model::Content> = Vec::new();
     let mut omitted_count = 0usize;
@@ -125,7 +150,7 @@ pub fn outputs_to_content_items(outputs: &[Output]) -> Vec<rmcp::model::Content>
 
     for output in outputs {
         if let Some(text) = format_output_text(output) {
-            items.push(rmcp::model::Content::text(text));
+            items.push(assistant_text(text));
         } else if output.output_type == "display_data" || output.output_type == "execute_result" {
             omitted_count += 1;
             if let Some(data) = &output.data {
@@ -147,7 +172,7 @@ pub fn outputs_to_content_items(outputs: &[Output]) -> Vec<rmcp::model::Content>
         } else {
             format!(" ({})", omitted_mimes.join("; "))
         };
-        items.push(rmcp::model::Content::text(format!(
+        items.push(assistant_text(format!(
             "[{omitted_count} output(s) with non-text content{detail} — visible in the notebook UI]"
         )));
     }
@@ -167,6 +192,110 @@ pub fn format_outputs_summary_lines(outputs: &[Output], preview_chars: usize) ->
         .enumerate()
         .map(|(index, output)| format_output_summary_line(index, output, preview_chars))
         .collect()
+}
+
+/// Format summary lines from manifest-aligned resolved outputs.
+///
+/// Emits the same lines as [`format_outputs_summary_lines`], plus at most one
+/// [`rich_blob_note`] legibility line per output when its manifest carries
+/// blob-stored rich MIMEs. `resolved_by_manifest` and `manifests` are the
+/// parallel slices produced by `resolve_cell_outputs_for_llm_aligned`;
+/// unresolved manifests (`None`) get no summary line, so `out[index]`
+/// numbering matches the flattened output list used for content items.
+pub fn format_outputs_summary_lines_aligned(
+    resolved_by_manifest: &[Option<Output>],
+    manifests: &[serde_json::Value],
+    preview_chars: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut index = 0usize;
+    for (resolved, manifest) in resolved_by_manifest.iter().zip(manifests) {
+        let Some(output) = resolved else { continue };
+        lines.push(format_output_summary_line(index, output, preview_chars));
+        if let Some(note) = rich_blob_note(manifest) {
+            lines.push(note);
+        }
+        index += 1;
+    }
+    lines
+}
+
+/// Legibility line for an output manifest's blob-stored rich MIMEs.
+///
+/// Rich representations (arrow streams, html, images, viz specs — anything
+/// stored as a blob and rendered as a blob URL on the human channel) never
+/// arrive inline on the agent channel. This returns ONE compact line naming
+/// them with sizes so the agent knows the human already sees a full render
+/// and can fetch by URL only when it truly needs the bytes. The inline text
+/// MIMEs in `CONTENT_PRIORITY` are skipped — those arrive as agent text.
+///
+/// Returns `None` when the output has no blob-stored rich MIME, so the line
+/// appears at most once per output and only when it carries information.
+pub fn rich_blob_note(manifest: &serde_json::Value) -> Option<String> {
+    let data = manifest.get("data")?.as_object()?;
+    let mut entries: Vec<(&str, u64)> = data
+        .iter()
+        .filter(|(mime, _)| !CONTENT_PRIORITY.contains(&mime.as_str()))
+        .filter_map(|(mime, content_ref)| {
+            let meta = content_ref_meta(content_ref);
+            meta.blob_hash.map(|_| (mime.as_str(), meta.size))
+        })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    entries.sort_unstable_by_key(|(mime, _)| *mime);
+    let listed = entries
+        .iter()
+        .map(|(mime, size)| format!("{} {}", short_mime_label(mime), format_compact_size(*size)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "Rendered for humans in the notebook; fetch by URL only if needed: {listed}"
+    ))
+}
+
+/// Compact label for a MIME type in the legibility line.
+///
+/// `text/html` → `html`, `image/png` → `png`, `image/svg+xml` → `svg`,
+/// `application/vnd.plotly.v1+json` → `plotly.v1`. Arrow stream MIMEs get a
+/// fixed `apache-arrow` label because the generic subtype rule would keep
+/// the unhelpful `nteract.arrow-stream-manifest` spelling.
+fn short_mime_label(mime: &str) -> String {
+    if mime == notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME
+        || mime == notebook_doc::mime::ARROW_STREAM_MIME
+    {
+        return "apache-arrow".to_string();
+    }
+    let subtype = mime.rsplit('/').next().unwrap_or(mime);
+    let subtype = subtype.strip_prefix("vnd.").unwrap_or(subtype);
+    let subtype = subtype.split('+').next().unwrap_or(subtype);
+    subtype.to_string()
+}
+
+/// Format a byte count compactly: `512B`, `20KB`, `1.5MB`.
+///
+/// One decimal max; a trailing `.0` is dropped.
+pub fn format_compact_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let value = bytes as f64;
+    if value < KB {
+        format!("{bytes}B")
+    } else if value < MB {
+        format_scaled(value / KB, "KB")
+    } else {
+        format_scaled(value / MB, "MB")
+    }
+}
+
+fn format_scaled(value: f64, unit: &str) -> String {
+    let rounded = (value * 10.0).round() / 10.0;
+    if rounded.fract() == 0.0 {
+        format!("{rounded:.0}{unit}")
+    } else {
+        format!("{rounded:.1}{unit}")
+    }
 }
 
 fn format_output_summary_line(index: usize, output: &Output, preview_chars: usize) -> String {
@@ -566,6 +695,167 @@ mod tests {
         assert_eq!(items.len(), 1);
         let rendered = format!("{:?}", items[0]);
         assert!(rendered.contains("hidden"));
+    }
+
+    fn manifest(entries: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        let data: serde_json::Map<String, serde_json::Value> = entries
+            .iter()
+            .map(|(mime, content_ref)| (mime.to_string(), content_ref.clone()))
+            .collect();
+        serde_json::json!({ "output_type": "display_data", "data": data })
+    }
+
+    fn blob_ref(size: u64) -> serde_json::Value {
+        serde_json::json!({ "blob": "sha256:abc", "size": size })
+    }
+
+    fn inline_ref(text: &str) -> serde_json::Value {
+        serde_json::json!({ "inline": text })
+    }
+
+    // ── agent-channel audience annotations ──────────────────────
+
+    #[test]
+    fn assistant_text_sets_assistant_audience() {
+        let item = assistant_text("hello");
+        assert_eq!(item.audience(), Some(&vec![Role::Assistant]));
+        assert_eq!(item.as_text().expect("text content").text, "hello");
+    }
+
+    #[test]
+    fn outputs_to_content_items_annotates_every_text_item_for_assistant() {
+        // Both resolved output text and the omitted-content footer are
+        // agent-channel items; renderers may drop them from human views.
+        let outputs = vec![
+            Output::stream("stdout", "hello"),
+            Output::display_data(data(&[("image/png", DataValue::Binary(vec![0; 10]))])),
+        ];
+        let items = outputs_to_content_items(&outputs);
+        assert_eq!(items.len(), 2);
+        for item in &items {
+            assert_eq!(item.audience(), Some(&vec![Role::Assistant]));
+        }
+    }
+
+    // ── compact byte sizes ──────────────────────────────────────
+
+    #[test]
+    fn format_compact_size_scales_b_kb_mb() {
+        assert_eq!(format_compact_size(0), "0B");
+        assert_eq!(format_compact_size(512), "512B");
+        assert_eq!(format_compact_size(20 * 1024), "20KB");
+        assert_eq!(format_compact_size(500 * 1024), "500KB");
+        // One decimal max; kept only when it carries information.
+        assert_eq!(format_compact_size(84_480), "82.5KB");
+        assert_eq!(format_compact_size(1024 * 1024), "1MB");
+        assert_eq!(format_compact_size(1024 * 1024 + 512 * 1024), "1.5MB");
+    }
+
+    // ── legibility line for blob-stored rich MIMEs ──────────────
+
+    #[test]
+    fn rich_blob_note_lists_blob_mimes_with_sizes() {
+        let m = manifest(&[
+            ("text/plain", inline_ref("df")),
+            ("text/html", blob_ref(20 * 1024)),
+            ("image/png", blob_ref(84_480)),
+            (
+                notebook_doc::mime::ARROW_STREAM_MANIFEST_MIME,
+                blob_ref(500 * 1024),
+            ),
+        ]);
+        let note = rich_blob_note(&m).expect("rich blobs present");
+        assert_eq!(
+            note,
+            "Rendered for humans in the notebook; fetch by URL only if needed: \
+             apache-arrow 500KB, png 82.5KB, html 20KB"
+        );
+    }
+
+    #[test]
+    fn rich_blob_note_skips_content_priority_text_mimes() {
+        // The CONTENT_PRIORITY text MIMEs arrive inline on the agent channel
+        // even when blob-stored, so the note must not point at them.
+        let m = manifest(&[
+            ("text/llm+plain", blob_ref(1024)),
+            ("text/latex", blob_ref(1024)),
+            ("text/markdown", blob_ref(5 * 1024)),
+            ("text/plain", blob_ref(100 * 1024)),
+        ]);
+        assert_eq!(rich_blob_note(&m), None);
+    }
+
+    #[test]
+    fn rich_blob_note_ignores_inline_rich_mimes() {
+        // Inline payloads have no blob URL to fetch; nothing to point at.
+        let m = manifest(&[("application/json", inline_ref("{\"a\":1}"))]);
+        assert_eq!(rich_blob_note(&m), None);
+
+        let stream = serde_json::json!({
+            "output_type": "stream",
+            "name": "stdout",
+            "text": { "inline": "hi" },
+        });
+        assert_eq!(rich_blob_note(&stream), None);
+    }
+
+    #[test]
+    fn aligned_summary_appends_note_at_most_once_per_output() {
+        let manifests = vec![
+            manifest(&[
+                ("text/html", blob_ref(20 * 1024)),
+                ("image/png", blob_ref(2 * 1024)),
+            ]),
+            serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": { "inline": "hi" },
+            }),
+        ];
+        let resolved = vec![
+            Some(Output::display_data(data(&[(
+                "text/plain",
+                DataValue::Text("chart".into()),
+            )]))),
+            Some(Output::stream("stdout", "hi")),
+        ];
+
+        let lines = format_outputs_summary_lines_aligned(&resolved, &manifests, 20);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("out[0]: display_data"));
+        assert_eq!(
+            lines[1],
+            "Rendered for humans in the notebook; fetch by URL only if needed: \
+             png 2KB, html 20KB"
+        );
+        assert!(lines[2].starts_with("out[1]: stream(stdout)"));
+        // Two rich blobs on one output still produce exactly one line.
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("Rendered for humans"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn aligned_summary_skips_unresolved_manifests_and_keeps_numbering() {
+        let manifests = vec![
+            manifest(&[("image/png", blob_ref(1024))]),
+            serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": { "inline": "hi" },
+            }),
+        ];
+        let resolved = vec![None, Some(Output::stream("stdout", "hi"))];
+
+        let lines = format_outputs_summary_lines_aligned(&resolved, &manifests, 20);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("out[0]: stream(stdout)"));
+        // The unresolved manifest contributes neither a summary nor a note.
+        assert!(!lines[0].contains("Rendered for humans"));
     }
 
     #[test]

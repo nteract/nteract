@@ -1,6 +1,6 @@
 //! Read-only cell tools: get_cell, get_all_cells.
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -102,7 +102,7 @@ pub async fn get_cell(
             },
             "readiness": access.readiness,
         });
-        let mut result = CallToolResult::success(vec![Content::text(
+        let mut result = CallToolResult::success(vec![formatting::assistant_text(
             serde_json::to_string_pretty(&details).unwrap_or_default(),
         )]);
         result.structured_content = Some(details);
@@ -190,18 +190,18 @@ pub async fn get_cell(
     let mut items = Vec::new();
 
     if !cell.source.is_empty() {
-        items.push(Content::text(format!(
+        items.push(formatting::assistant_text(format!(
             "{header_with_tags}\n\n{}",
             cell.source
         )));
     } else {
-        items.push(Content::text(header_with_tags));
+        items.push(formatting::assistant_text(header_with_tags));
     }
 
     // Each output as a separate Content item (matches Python _cell_to_content)
     let output_summaries = output_summary_lines(&outputs, &raw_outputs, 120);
     if !output_summaries.is_empty() {
-        items.push(Content::text(format!(
+        items.push(formatting::assistant_text(format!(
             "Output summary:\n{}",
             output_summaries.join("\n")
         )));
@@ -315,7 +315,7 @@ pub async fn get_all_cells(
                 serde_json::to_string_pretty(&details).unwrap_or_default()
             }
         };
-        let mut result = CallToolResult::success(vec![Content::text(text)]);
+        let mut result = CallToolResult::success(vec![formatting::assistant_text(text)]);
         result.structured_content = Some(details);
         return Ok(result);
     }
@@ -391,7 +391,9 @@ pub async fn get_all_cells(
                 }));
             }
             let text = serde_json::to_string_pretty(&json_cells).unwrap_or_default();
-            Ok(CallToolResult::success(vec![Content::text(text)]))
+            Ok(CallToolResult::success(vec![formatting::assistant_text(
+                text,
+            )]))
         }
         GetAllCellsFormat::Rich => {
             let mut items = Vec::new();
@@ -431,10 +433,10 @@ pub async fn get_all_cells(
                 } else {
                     header
                 };
-                items.push(Content::text(text));
+                items.push(formatting::assistant_text(text));
                 let output_summaries = output_summary_lines(&outputs, raw_outputs, 120);
                 if !output_summaries.is_empty() {
-                    items.push(Content::text(format!(
+                    items.push(formatting::assistant_text(format!(
                         "Output summary:\n{}",
                         output_summaries.join("\n")
                     )));
