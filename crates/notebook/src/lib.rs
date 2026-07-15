@@ -156,6 +156,9 @@ impl WindowNotebookRegistry {
     }
 }
 
+// The only production caller is the macOS deferred-file-open path
+// (`find_pathless_window_label`); other targets compile it for tests only.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_reusable_startup_placeholder(context: &WindowNotebookContext) -> bool {
     context.hosted_locator.is_none() && context.path.lock().is_ok_and(|path| path.is_none())
 }
@@ -399,9 +402,9 @@ impl SyncReadyState {
             Ok(gates) => gates,
             Err(error) => error.into_inner(),
         };
-        if !gates
+        if gates
             .get(label)
-            .is_some_and(|gate| gate.generation == generation)
+            .is_none_or(|gate| gate.generation != generation)
         {
             return false;
         }
@@ -552,7 +555,7 @@ enum OpenMode {
     /// reconnect create the relay after the window already exists.
     Hosted {
         locator: String,
-        prepared: Option<PreparedHostedRelay>,
+        prepared: Option<Box<PreparedHostedRelay>>,
     },
 }
 
@@ -986,14 +989,14 @@ async fn prepare_hosted_relay(locator: &str) -> Result<PreparedHostedRelay, Stri
 async fn initialize_notebook_sync_hosted(
     window: tauri::WebviewWindow,
     locator: String,
-    prepared: Option<PreparedHostedRelay>,
+    prepared: Option<Box<PreparedHostedRelay>>,
     notebook_sync: SharedNotebookSync,
     sync_generation: Arc<AtomicU64>,
     notebook_id: Arc<Mutex<String>>,
 ) -> Result<(), String> {
     let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
     let prepared = match prepared {
-        Some(prepared) => prepared,
+        Some(prepared) => *prepared,
         None => prepare_hosted_relay(&locator).await?,
     };
     require_current_sync_generation(&sync_generation, current_generation, "hosted open")?;
@@ -2797,7 +2800,7 @@ async fn open_hosted_notebook_in_new_window(
         registry.inner(),
         OpenMode::Hosted {
             locator,
-            prepared: Some(prepared),
+            prepared: Some(Box::new(prepared)),
         },
         Some(label),
     )?;
