@@ -168,11 +168,18 @@ fn rejected(reason: &'static str) -> GuardRejection {
     GuardRejection { reason }
 }
 
+/// The reviewed-code identity of a code cell: what a user actually agreed to
+/// run when they approved trust. Cell id and ordering (the `Vec` position)
+/// catch inserted, removed, or reordered code; `source` catches edits. Runtime
+/// bookkeeping the guard deliberately ignores: `execution_id` is a pointer into
+/// RuntimeStateDoc outputs, and Run All stamps a fresh one on every code cell it
+/// queues. Including it would let Run All trip its own guard the moment the
+/// launch it requested stamps or clears an execution pointer, rejecting the user
+/// with "Notebook changed" over a change they never made.
 #[derive(Debug, PartialEq, Eq)]
 struct CodeCellGuardSnapshot {
     cell_id: String,
     source: String,
-    execution_id: Option<String>,
 }
 
 fn code_cell_guard_snapshots(doc: &NotebookDoc) -> Vec<CodeCellGuardSnapshot> {
@@ -180,7 +187,6 @@ fn code_cell_guard_snapshots(doc: &NotebookDoc) -> Vec<CodeCellGuardSnapshot> {
         .into_iter()
         .filter(|cell| cell.cell_type == "code")
         .map(|cell| CodeCellGuardSnapshot {
-            execution_id: doc.get_execution_id(&cell.id),
             cell_id: cell.id,
             source: cell.source,
         })
@@ -195,7 +201,6 @@ fn code_cell_guard_snapshots_at(
         .into_iter()
         .filter(|cell| cell.cell_type == "code")
         .map(|cell| CodeCellGuardSnapshot {
-            execution_id: doc.get_execution_id_at_heads(&cell.id, heads),
             cell_id: cell.id,
             source: cell.source,
         })
@@ -311,11 +316,6 @@ mod tests {
         let observed_heads = reordered.get_heads_hex();
         reordered.move_cell("cell-2", None).unwrap();
         assert_rejected(validate_run_all(&mut reordered, &observed_heads));
-
-        let mut executed = two_code_cells_doc();
-        let observed_heads = executed.get_heads_hex();
-        executed.set_execution_id("cell-2", Some("exec-2")).unwrap();
-        assert_rejected(validate_run_all(&mut executed, &observed_heads));
     }
 
     #[test]
@@ -328,6 +328,26 @@ mod tests {
         doc.update_source("markdown-1", "after").unwrap();
 
         validate_run_all(&mut doc, &observed_heads).unwrap();
+    }
+
+    /// Run All stamps a fresh execution pointer on every code cell it queues, and
+    /// the launch it requests can clear or re-stamp those pointers too. Observing
+    /// that churn after the user's click must not reject their Run All: the code
+    /// they approved is unchanged. This is the regression for the "Notebook
+    /// changed before Run All could start" banner that fired on a plain
+    /// add-a-dependency-then-Run-All flow.
+    #[test]
+    fn run_all_allows_execution_pointer_churn_after_observed_heads() {
+        let mut executed = two_code_cells_doc();
+        let observed_heads = executed.get_heads_hex();
+        executed.set_execution_id("cell-2", Some("exec-2")).unwrap();
+        validate_run_all(&mut executed, &observed_heads).unwrap();
+
+        let mut cleared = two_code_cells_doc();
+        cleared.set_execution_id("cell-1", Some("exec-1")).unwrap();
+        let observed_heads = cleared.get_heads_hex();
+        cleared.clear_outputs("cell-1").unwrap();
+        validate_run_all(&mut cleared, &observed_heads).unwrap();
     }
 
     #[test]
