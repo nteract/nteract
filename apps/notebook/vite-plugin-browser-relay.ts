@@ -117,6 +117,28 @@ function worktreeHash(repoRoot: string): string {
   return crypto.createHash("sha256").update(repoRoot).digest("hex").slice(0, 12);
 }
 
+function configDir(): string {
+  if (process.platform === "darwin")
+    return path.join(os.homedir(), "Library", "Application Support");
+  if (process.platform === "win32") {
+    return process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
+  }
+  return process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config");
+}
+
+function readSettingsJson(): Record<string, unknown> | null {
+  // Map cache namespace (runt-nightly / runt) to config namespace (nteract-nightly / nteract).
+  const cacheNamespace = process.env.RUNTIMED_CACHE_NAMESPACE ?? "runt-nightly";
+  const configNamespace = cacheNamespace === "runt-nightly" ? "nteract-nightly" : "nteract";
+  const settingsPath = path.join(configDir(), configNamespace, "settings.json");
+  try {
+    const raw = fs.readFileSync(settingsPath, "utf8");
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function resolveSocketPath(repoRoot: string): string {
   if (process.env.RUNTIMED_SOCKET_PATH) return process.env.RUNTIMED_SOCKET_PATH;
   const namespace = process.env.RUNTIMED_CACHE_NAMESPACE ?? "runt-nightly";
@@ -386,6 +408,7 @@ async function handleRelayConnection(
       info.comments_notebook_ref ?? info.capabilities?.comments_notebook_ref ?? null;
 
     const daemonInfoJson = await queryDaemonInfo(socketPath);
+    const settingsJson = readSettingsJson();
     control(ws, {
       type: "ready",
       payload: {
@@ -408,6 +431,7 @@ async function handleRelayConnection(
             is_dev_mode: daemonInfoJson.is_dev_mode ?? true,
           }
         : null,
+      settings: settingsJson,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
