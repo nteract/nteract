@@ -33,6 +33,56 @@ async fn wait_for_initial_load_before_notebook_writes(
         .ok()
 }
 
+/// Decide whether last-peer teardown may mutate the source `.ipynb`.
+///
+/// Initial file materialization is room-owned and can outlive the peer that
+/// caused it to start. Never project the room's partial document back into
+/// the source `.ipynb`: doing so can combine a prefix of loaded cells with
+/// hot dependency metadata and replace the complete file on disk. Bound only
+/// teardown's wait; the owner-lived source task may still make legitimate
+/// progress after a slow filesystem or large notebook delays it.
+///
+/// Writes are allowed only for a room with a saved path whose initial load
+/// settled as `NotNeeded` or `Ready` within
+/// [`LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT`]. Every other settle outcome
+/// (`Failed`, still `Loading`, or the wait timing out) warns and denies.
+async fn notebook_writes_allowed(room: &NotebookRoom, notebook_id: &str) -> bool {
+    if !room.file_binding.has_saved_path().await {
+        return false;
+    }
+    match wait_for_initial_load_before_notebook_writes(
+        &room.initial_load,
+        LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT,
+    )
+    .await
+    {
+        Some(RoomInitialLoadState::NotNeeded { .. }) | Some(RoomInitialLoadState::Ready { .. }) => {
+            true
+        }
+        Some(RoomInitialLoadState::Failed { generation, reason }) => {
+            warn!(
+                "[notebook-sync] Skipping final notebook writes for {} because initial load generation {} failed: {}",
+                notebook_id, generation, reason
+            );
+            false
+        }
+        Some(RoomInitialLoadState::Loading { generation }) => {
+            warn!(
+                "[notebook-sync] Skipping final notebook writes for {} because initial load generation {} is still loading",
+                notebook_id, generation
+            );
+            false
+        }
+        None => {
+            warn!(
+                "[notebook-sync] Skipping final notebook writes for {} after waiting {:?} for initial load to settle",
+                notebook_id, LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT
+            );
+            false
+        }
+    }
+}
+
 /// Handle a peer disconnecting from a room.
 ///
 /// When the last peer leaves we tear down the kernel and clean up the
@@ -303,53 +353,11 @@ pub(super) async fn handle_peer_disconnect(
                 .kernel_teardown_destructive
                 .store(false, Ordering::Release);
 
-            // Initial file materialization is room-owned and can outlive the
-            // peer that caused it to start. Never project the room's partial
-            // document back into the source `.ipynb`: doing so can combine a
-            // prefix of loaded cells with hot dependency metadata and replace
-            // the complete file on disk. Bound only teardown's wait; the
-            // owner-lived source task may still make legitimate progress after
-            // a slow filesystem or large notebook delays it.
-            //
-            // Kernel shutdown above is deliberately independent. On timeout or
-            // source failure we skip only notebook writes, then continue env
-            // cleanup below.
-            let has_saved_path = room_for_teardown.file_binding.has_saved_path().await;
-            let notebook_writes_allowed = if has_saved_path {
-                match wait_for_initial_load_before_notebook_writes(
-                    &room_for_teardown.initial_load,
-                    LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT,
-                )
-                .await
-                {
-                    Some(RoomInitialLoadState::NotNeeded { .. })
-                    | Some(RoomInitialLoadState::Ready { .. }) => true,
-                    Some(RoomInitialLoadState::Failed { generation, reason }) => {
-                        warn!(
-                            "[notebook-sync] Skipping final notebook writes for {} because initial load generation {} failed: {}",
-                            notebook_id_for_teardown, generation, reason
-                        );
-                        false
-                    }
-                    Some(RoomInitialLoadState::Loading { generation }) => {
-                        warn!(
-                            "[notebook-sync] Skipping final notebook writes for {} because initial load generation {} is still loading",
-                            notebook_id_for_teardown, generation
-                        );
-                        false
-                    }
-                    None => {
-                        warn!(
-                            "[notebook-sync] Skipping final notebook writes for {} after waiting {:?} for initial load to settle",
-                            notebook_id_for_teardown,
-                            LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT
-                        );
-                        false
-                    }
-                }
-            } else {
-                false
-            };
+            // Kernel shutdown above is deliberately independent of this
+            // decision. On timeout or source failure we skip only notebook
+            // writes, then continue env cleanup below.
+            let notebook_writes_allowed =
+                notebook_writes_allowed(&room_for_teardown, &notebook_id_for_teardown).await;
 
             // The source-settle wait can be long enough for a peer to
             // reconnect and launch a replacement kernel. Revalidate before
