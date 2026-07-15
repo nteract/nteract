@@ -223,12 +223,7 @@ body {
   border: 0;
   border-radius: 0;
   padding: 0.5rem clamp(0.5rem, 2vw, 1rem) 0.5rem clamp(0.75rem, 4vw, 2rem);
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, currentColor 9%, var(--background)) 0%,
-    color-mix(in srgb, currentColor 4%, var(--background)) 42%,
-    var(--background) 100%
-  );
+  background: color-mix(in srgb, currentColor 6%, var(--background));
 }
 
 @keyframes cloud-notice-enter {
@@ -2100,12 +2095,7 @@ body {
   --cloud-home-panel-wash: color-mix(in srgb, #10b981 5%, var(--background));
   border-top: 1px solid var(--cloud-home-panel-border);
   padding: 0.75rem 0.25rem;
-  background: linear-gradient(
-    180deg,
-    var(--cloud-home-panel-wash) 0%,
-    color-mix(in srgb, var(--background) 98%, transparent) 64%,
-    transparent 100%
-  );
+  background: var(--cloud-home-panel-wash);
 }
 
 .cloud-home-panel[data-mode="anonymous"],

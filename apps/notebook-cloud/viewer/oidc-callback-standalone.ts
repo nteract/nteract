@@ -392,12 +392,7 @@ body {
 .cloud-oidc-panel {
   --cloud-oidc-panel-border: color-mix(in srgb, #10b981 68%, transparent);
   --cloud-oidc-panel-wash: color-mix(in srgb, #10b981 5%, var(--background));
-  background: linear-gradient(
-    180deg,
-    var(--cloud-oidc-panel-wash) 0%,
-    color-mix(in srgb, var(--background) 98%, transparent) 64%,
-    transparent 100%
-  );
+  background: var(--cloud-oidc-panel-wash);
   border-top: 1px solid var(--cloud-oidc-panel-border);
   display: grid;
   gap: 0.875rem;
