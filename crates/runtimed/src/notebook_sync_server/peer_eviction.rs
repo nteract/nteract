@@ -143,6 +143,24 @@ pub(super) async fn handle_peer_disconnect(
         );
 
         spawn_best_effort("room-kernel-teardown", async move {
+            // Generation fence: teardown may proceed only while the room
+            // has no peers AND the connection generation still matches
+            // the snapshot taken at scheduling time. A fast reconnect
+            // bumps the generation, so a stale teardown never shoots a
+            // kernel the reconnected peer now owns. Evaluate this only
+            // inside a `serialize_with` critical section so the reads
+            // are consistent with connect-path mutations.
+            let teardown_fence_holds = || {
+                let no_peers = room_for_teardown
+                    .connections
+                    .active_peers
+                    .load(Ordering::Relaxed)
+                    == 0;
+                let same_generation =
+                    room_for_teardown.connections.connection_generation() == teardown_generation;
+                no_peers && same_generation
+            };
+
             // Outer loop wraps the teardown attempt so a flush timeout can
             // back off and retry rather than leak the kernel indefinitely.
             // Exits either by cancelling (peers reconnected) or by
@@ -233,16 +251,7 @@ pub(super) async fn handle_peer_disconnect(
             // kernel-side teardown on "no peers AND no reconnect since
             // scheduling."
             let should_teardown = rooms_for_teardown
-                .serialize_with(|| {
-                    let no_peers = room_for_teardown
-                        .connections
-                        .active_peers
-                        .load(Ordering::Relaxed)
-                        == 0;
-                    let same_generation = room_for_teardown.connections.connection_generation()
-                        == teardown_generation;
-                    no_peers && same_generation
-                })
+                .serialize_with(&teardown_fence_holds)
                 .await;
 
             if !should_teardown {
@@ -281,14 +290,7 @@ pub(super) async fn handle_peer_disconnect(
             // state if (and only if) we will actually proceed below.
             let still_valid = rooms_for_teardown
                 .serialize_with(|| {
-                    let no_peers = room_for_teardown
-                        .connections
-                        .active_peers
-                        .load(Ordering::Relaxed)
-                        == 0;
-                    let same_generation = room_for_teardown.connections.connection_generation()
-                        == teardown_generation;
-                    let ok = no_peers && same_generation;
+                    let ok = teardown_fence_holds();
                     if ok {
                         room_for_teardown
                             .connections
@@ -365,16 +367,7 @@ pub(super) async fn handle_peer_disconnect(
             // may now be a new session. A changed generation aborts this stale
             // teardown even if that peer has already disconnected again.
             let still_current_after_load_wait = rooms_for_teardown
-                .serialize_with(|| {
-                    let no_peers = room_for_teardown
-                        .connections
-                        .active_peers
-                        .load(Ordering::Relaxed)
-                        == 0;
-                    let same_generation = room_for_teardown.connections.connection_generation()
-                        == teardown_generation;
-                    no_peers && same_generation
-                })
+                .serialize_with(&teardown_fence_holds)
                 .await;
             if !still_current_after_load_wait {
                 debug!(
@@ -525,16 +518,7 @@ pub(super) async fn handle_peer_disconnect(
             // would orphan the resumed kernel. The room stays
             // resident, so aborting is the right move.
             let still_valid = rooms_for_teardown
-                .serialize_with(|| {
-                    let no_peers = room_for_teardown
-                        .connections
-                        .active_peers
-                        .load(Ordering::Relaxed)
-                        == 0;
-                    let same_generation = room_for_teardown.connections.connection_generation()
-                        == teardown_generation;
-                    no_peers && same_generation
-                })
+                .serialize_with(&teardown_fence_holds)
                 .await;
             if !still_valid {
                 debug!(
