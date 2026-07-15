@@ -27,6 +27,26 @@ function nextMessageId(): string {
   return `msg-${messageCounter}`;
 }
 
+function TypingIndicator() {
+  return (
+    <span className="inline-flex items-center gap-1 py-0.5" aria-label="Typing">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="size-1 rounded-full bg-foreground/40"
+          style={{ animation: `assistant-dot 1.4s cubic-bezier(0.4,0,0.6,1) ${i * 0.18}s infinite` }}
+        />
+      ))}
+      <style>{`
+        @keyframes assistant-dot {
+          0%, 100% { opacity: 0.2; transform: scale(0.75); }
+          50% { opacity: 0.85; transform: scale(1); }
+        }
+      `}</style>
+    </span>
+  );
+}
+
 /**
  * Assistant side panel — a standalone chat against the daemon's
  * `/assistant/chat` proxy. Does not read or write notebook state.
@@ -239,7 +259,7 @@ export function AssistantPanel() {
               >
                 {message.role === "assistant" ? (
                   message.content.length === 0 && message.isStreaming ? (
-                    <span className="text-muted-foreground">…</span>
+                    <TypingIndicator />
                   ) : (
                     <Streamdown
                       mode={message.isStreaming ? "streaming" : "static"}
