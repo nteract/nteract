@@ -371,7 +371,10 @@ async fn archive_and_reload_source(
             "[notebook-sync] Reconciled NotebookDoc committed for {}, but runtime sidecars could not be refreshed: {}",
             room.id, reason
         );
-        room.durability.mark_degraded(reason.clone());
+        room.durability.mark_degraded(
+            crate::notebook_sync_server::durability::DegradationKind::SourceState,
+            reason.clone(),
+        );
         let _ = room.state.with_doc(|state| {
             state.set_file_checkpoint(&exported_heads, save_sequence)?;
             state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
@@ -431,7 +434,10 @@ async fn finish_reconciliation(
         Err(error) => {
             let reason =
                 format!("reconciled source data committed, but its Ready marker failed: {error}");
-            room.durability.mark_degraded(reason.clone());
+            room.durability.mark_degraded(
+                crate::notebook_sync_server::durability::DegradationKind::DurabilityBoundary,
+                reason.clone(),
+            );
             let _ = room.state.with_doc(|state| {
                 state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
                     reason: reason.clone(),
@@ -474,7 +480,10 @@ async fn finish_reconciliation(
                 let reason = format!(
                 "reconciled source data committed, but its projection could not be retained: {error:#}"
             );
-                room.durability.mark_degraded(reason.clone());
+                room.durability.mark_degraded(
+                    crate::notebook_sync_server::durability::DegradationKind::SourceState,
+                    reason.clone(),
+                );
                 let _ = room.state.with_doc(|state| {
                     state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
                         reason: reason.clone(),

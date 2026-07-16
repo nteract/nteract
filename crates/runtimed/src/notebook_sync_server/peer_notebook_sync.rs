@@ -111,7 +111,10 @@ pub(super) async fn apply_notebook_doc_frame(
                     let document_heads = doc.get_heads_hex();
                     let reason =
                         format!("journal commit failed before peer acknowledgement: {error}");
-                    room.durability.mark_degraded(reason.clone());
+                    room.durability.mark_degraded(
+                        super::durability::DegradationKind::DurabilityBoundary,
+                        reason.clone(),
+                    );
                     room.lifecycle
                         .mark_degraded(reason.clone(), document_heads, document_readable);
                     let _ = room.state.with_doc(|state| {

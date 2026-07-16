@@ -22,6 +22,38 @@ use super::recovery::{
     RecoveryManifest, RecoverySourcePhase, RecoveryUnavailableReason, SourceFingerprint,
 };
 
+/// Structural classification of a room degradation. The kind is lifecycle
+/// policy, not display text: shutdown and reaping consult it through
+/// `RoomDurabilityStatus::requires_durability_repair`, so every mark site
+/// must declare which failure class it is reporting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DegradationKind {
+    /// The durability boundary itself failed: the journal cannot accept
+    /// records or has preserved corrupt data. The room must stay resident
+    /// for explicit repair because disk plus journal no longer reconstruct
+    /// its acknowledged state.
+    DurabilityBoundary,
+    /// A source-level conflict or failure while the recovery journal stays
+    /// healthy. Disk plus journal reconstruct the same degraded lifecycle
+    /// on reopen, so the room may be reaped or cleanly shut down.
+    SourceState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RoomDegradation {
+    pub(crate) kind: DegradationKind,
+    pub(crate) reason: String,
+}
+
+impl RoomDegradation {
+    fn boundary(reason: impl Into<String>) -> Self {
+        Self {
+            kind: DegradationKind::DurabilityBoundary,
+            reason: reason.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RoomDurabilityStatus {
     pub(crate) has_durable_record: bool,
@@ -32,12 +64,31 @@ pub(crate) struct RoomDurabilityStatus {
     pub(crate) source_phase: RecoverySourcePhase,
     pub(crate) source_fingerprint: SourceFingerprint,
     pub(crate) has_peer_changes: bool,
-    pub(crate) degraded_reason: Option<String>,
+    pub(crate) degraded: Option<RoomDegradation>,
 }
 
 impl RoomDurabilityStatus {
     pub(crate) fn is_degraded(&self) -> bool {
-        self.degraded_reason.is_some()
+        self.degraded.is_some()
+    }
+
+    pub(crate) fn degraded_reason(&self) -> Option<String> {
+        self.degraded
+            .as_ref()
+            .map(|degradation| degradation.reason.clone())
+    }
+
+    /// Only a failed durability boundary requires the room to stay resident
+    /// for repair. A `SourceState` degradation is durable recovery evidence,
+    /// not a storage failure.
+    pub(crate) fn requires_durability_repair(&self) -> bool {
+        matches!(
+            &self.degraded,
+            Some(RoomDegradation {
+                kind: DegradationKind::DurabilityBoundary,
+                ..
+            })
+        )
     }
 }
 
@@ -177,7 +228,8 @@ pub(crate) fn commit_daemon_notebook_mutation(
             let document_heads = doc.get_heads_hex();
             let reason =
                 format!("{operation} journal commit failed before acknowledgement: {error}");
-            room.durability.mark_degraded(reason.clone());
+            room.durability
+                .mark_degraded(DegradationKind::DurabilityBoundary, reason.clone());
             room.lifecycle
                 .mark_degraded(reason.clone(), document_heads, document_readable);
             let _ = room.state.with_doc(|state| {
@@ -195,7 +247,7 @@ struct DurabilityState {
     manifest: RecoveryManifest,
     durable_snapshot: Arc<[u8]>,
     has_durable_record: bool,
-    degraded_reason: Option<String>,
+    degraded: Option<RoomDegradation>,
 }
 
 /// Single serialization point for all durable NotebookDoc history in a room.
@@ -229,11 +281,15 @@ impl RoomDurability {
 
     /// Restore the exact latest complete record selected by recovery scanning.
     pub(crate) fn recovered(journal: RecoveryJournal, recovered: RecoveredJournalRecord) -> Self {
-        let degraded_reason = recovered
+        let degraded = recovered
             .ignored_tail
             .as_ref()
             .filter(|tail| !tail.is_repairable_torn_suffix())
-            .map(|tail| format!("recovery journal has preserved corrupt data: {tail:?}"));
+            .map(|tail| {
+                RoomDegradation::boundary(format!(
+                    "recovery journal has preserved corrupt data: {tail:?}"
+                ))
+            });
         let mut manifest = recovered.record.manifest;
         // A checkpoint that exported every durable head proves the file on
         // disk is a complete baseline for this journal, even when no import
@@ -245,7 +301,7 @@ impl RoomDurability {
         // fails finalization as a source conflict through the fingerprint
         // check, and an unresolved checkpoint intent keeps its dedicated
         // resolution path.
-        if degraded_reason.is_none()
+        if degraded.is_none()
             && matches!(
                 manifest.source_phase,
                 super::recovery::RecoverySourcePhase::Pending
@@ -261,7 +317,7 @@ impl RoomDurability {
             manifest,
             recovered.record.automerge_snapshot,
             true,
-            degraded_reason,
+            degraded,
         )
     }
 
@@ -286,13 +342,13 @@ impl RoomDurability {
         manifest: RecoveryManifest,
         durable_snapshot: Vec<u8>,
         has_durable_record: bool,
-        degraded_reason: Option<String>,
+        degraded: Option<RoomDegradation>,
     ) -> Self {
         let state = DurabilityState {
             manifest,
             durable_snapshot: durable_snapshot.into(),
             has_durable_record,
-            degraded_reason,
+            degraded,
         };
         let status = status_from_state(&state);
         let (status_tx, _) = watch::channel(status);
@@ -392,7 +448,7 @@ impl RoomDurability {
 
         if let Err(error) = journal.append(&promoted_manifest, &state.durable_snapshot) {
             let reason = error.to_string();
-            state.degraded_reason = Some(reason.clone());
+            state.degraded = Some(RoomDegradation::boundary(reason.clone()));
             self.status_tx.send_replace(status_from_state(&state));
             return Err(RoomDurabilityError::Journal(error));
         }
@@ -485,7 +541,7 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &committed_snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason.clone());
+                state.degraded = Some(RoomDegradation::boundary(reason.clone()));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
@@ -494,7 +550,7 @@ impl RoomDurability {
         state.manifest = manifest;
         state.durable_snapshot = committed_snapshot.into();
         state.has_durable_record = true;
-        state.degraded_reason = None;
+        state.degraded = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         Ok(DurableCommitOutcome::Committed(status))
@@ -574,7 +630,7 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &durable_snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason.clone());
+                state.degraded = Some(RoomDegradation::boundary(reason.clone()));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
@@ -583,7 +639,7 @@ impl RoomDurability {
         state.manifest = manifest;
         state.durable_snapshot = durable_snapshot.into();
         state.has_durable_record = true;
-        state.degraded_reason = None;
+        state.degraded = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         Ok(DurableCommitOutcome::Committed(status))
@@ -628,7 +684,7 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason.clone());
+                state.degraded = Some(RoomDegradation::boundary(reason.clone()));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
@@ -636,7 +692,7 @@ impl RoomDurability {
 
         state.manifest = manifest;
         state.has_durable_record = true;
-        state.degraded_reason = None;
+        state.degraded = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         Ok(DurableCommitOutcome::Committed(status))
@@ -693,7 +749,7 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason.clone());
+                state.degraded = Some(RoomDegradation::boundary(reason.clone()));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
@@ -734,7 +790,7 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason.clone());
+                state.degraded = Some(RoomDegradation::boundary(reason.clone()));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
@@ -787,14 +843,14 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason.clone());
+                state.degraded = Some(RoomDegradation::boundary(reason.clone()));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
         }
         state.manifest = manifest;
         state.has_durable_record = true;
-        state.degraded_reason = None;
+        state.degraded = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         Ok(DurableCommitOutcome::Committed(status))
@@ -894,7 +950,7 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason.clone());
+                state.degraded = Some(RoomDegradation::boundary(reason.clone()));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
@@ -975,7 +1031,7 @@ impl RoomDurability {
         state.manifest = manifest;
         state.durable_snapshot = Arc::from(snapshot);
         state.has_durable_record = true;
-        state.degraded_reason = None;
+        state.degraded = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         Ok(ReconciledSourceCommit {
@@ -1043,7 +1099,7 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason);
+                state.degraded = Some(RoomDegradation::boundary(reason));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
@@ -1052,7 +1108,7 @@ impl RoomDurability {
         state.manifest = manifest;
         state.durable_snapshot = snapshot.into();
         state.has_durable_record = true;
-        state.degraded_reason = None;
+        state.degraded = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         Ok(DurableCommitOutcome::Committed(status))
@@ -1126,7 +1182,7 @@ impl RoomDurability {
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &snapshot) {
                 let reason = error.to_string();
-                state.degraded_reason = Some(reason.clone());
+                state.degraded = Some(RoomDegradation::boundary(reason.clone()));
                 self.status_tx.send_replace(status_from_state(&state));
                 return Err(RoomDurabilityError::Journal(error));
             }
@@ -1134,15 +1190,22 @@ impl RoomDurability {
         state.manifest = manifest;
         state.durable_snapshot = snapshot.into();
         state.has_durable_record = true;
-        state.degraded_reason = None;
+        state.degraded = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         Ok(DurableCommitOutcome::Committed(status))
     }
 
-    pub(crate) fn mark_degraded(&self, reason: impl Into<String>) -> RoomDurabilityStatus {
+    pub(crate) fn mark_degraded(
+        &self,
+        kind: DegradationKind,
+        reason: impl Into<String>,
+    ) -> RoomDurabilityStatus {
         let mut state = self.lock_state();
-        state.degraded_reason = Some(reason.into());
+        state.degraded = Some(RoomDegradation {
+            kind,
+            reason: reason.into(),
+        });
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         status
@@ -1150,15 +1213,17 @@ impl RoomDurability {
 
     pub(crate) fn clear_degraded(&self) -> RoomDurabilityStatus {
         let mut state = self.lock_state();
-        state.degraded_reason = None;
+        state.degraded = None;
         let status = status_from_state(&state);
         self.status_tx.send_replace(status.clone());
         status
     }
 
     /// Wait until the latest durable snapshot contains every required change.
-    /// A degraded journal returns immediately instead of masquerading as a
-    /// timeout, and the wait always has a caller-supplied bound.
+    /// A failed durability boundary returns immediately instead of
+    /// masquerading as a timeout, and the wait always has a caller-supplied
+    /// bound. A `SourceState` degradation does not short-circuit: the journal
+    /// is healthy, so it can still satisfy the head barrier.
     pub(crate) async fn await_durable(
         &self,
         required_heads: &[String],
@@ -1169,7 +1234,11 @@ impl RoomDurability {
         let wait = async {
             loop {
                 let status = receiver.borrow().clone();
-                if let Some(reason) = &status.degraded_reason {
+                if let Some(RoomDegradation {
+                    kind: DegradationKind::DurabilityBoundary,
+                    reason,
+                }) = &status.degraded
+                {
                     return Err(RoomDurabilityError::Degraded(reason.clone()));
                 }
                 let snapshot = self.durable_snapshot();
@@ -1178,7 +1247,11 @@ impl RoomDurability {
                 }
                 if receiver.changed().await.is_err() {
                     let current = self.status();
-                    if let Some(reason) = current.degraded_reason {
+                    if let Some(RoomDegradation {
+                        kind: DegradationKind::DurabilityBoundary,
+                        reason,
+                    }) = current.degraded
+                    {
                         return Err(RoomDurabilityError::Degraded(reason));
                     }
                     return Err(RoomDurabilityError::TimedOut);
@@ -1211,7 +1284,7 @@ fn status_from_state(state: &DurabilityState) -> RoomDurabilityStatus {
         source_phase: state.manifest.source_phase,
         source_fingerprint: state.manifest.source_fingerprint,
         has_peer_changes: !state.manifest.peer_change_hashes.is_empty(),
-        degraded_reason: state.degraded_reason.clone(),
+        degraded: state.degraded.clone(),
     }
 }
 
@@ -1596,13 +1669,33 @@ mod tests {
     async fn degraded_barrier_fails_without_waiting_for_timeout() {
         let (snapshot, heads, encoded_heads, _) = snapshot_with_change(1);
         let durability = RoomDurability::volatile(Uuid::nil(), snapshot, heads);
-        durability.mark_degraded("disk full");
+        durability.mark_degraded(DegradationKind::DurabilityBoundary, "disk full");
 
         let error = durability
             .await_durable(&encoded_heads, Duration::from_secs(10))
             .await
             .unwrap_err();
         assert!(matches!(error, RoomDurabilityError::Degraded(reason) if reason == "disk full"));
+    }
+
+    /// A source-level degradation leaves the journal healthy, so a durable
+    /// snapshot that already contains the required heads still satisfies the
+    /// barrier instead of failing as a storage error.
+    #[tokio::test]
+    async fn source_state_degradation_does_not_fail_a_satisfied_barrier() {
+        let (snapshot, heads, encoded_heads, _) = snapshot_with_change(1);
+        let durability = RoomDurability::volatile(Uuid::nil(), snapshot, heads);
+        durability.mark_degraded(
+            DegradationKind::SourceState,
+            "source_conflict: disk changed while journal heads were not exported",
+        );
+
+        let status = durability
+            .await_durable(&encoded_heads, Duration::from_secs(10))
+            .await
+            .expect("a healthy journal must satisfy the barrier despite a source conflict");
+        assert!(status.is_degraded());
+        assert!(!status.requires_durability_repair());
     }
 
     #[test]

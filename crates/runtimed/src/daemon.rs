@@ -1670,7 +1670,7 @@ impl Daemon {
     /// recovery evidence and may be reaped or cleanly shut down; reopening
     /// reconstructs the same Degraded lifecycle from disk plus journal.
     fn room_requires_durability_repair(room: &crate::notebook_sync_server::NotebookRoom) -> bool {
-        room.durability.status().is_degraded()
+        room.durability.status().requires_durability_repair()
     }
 
     fn mark_room_durability_degraded(
@@ -1678,7 +1678,10 @@ impl Daemon {
         reason: String,
         document_heads: Vec<String>,
     ) {
-        room.durability.mark_degraded(reason.clone());
+        room.durability.mark_degraded(
+            crate::notebook_sync_server::durability::DegradationKind::DurabilityBoundary,
+            reason.clone(),
+        );
         room.lifecycle
             .mark_degraded(reason.clone(), document_heads, true);
         let _ = room.state.with_doc(|state| {
@@ -1747,7 +1750,7 @@ impl Daemon {
                 let reason = room
                     .durability
                     .status()
-                    .degraded_reason
+                    .degraded_reason()
                     .or_else(|| room.lifecycle.availability().status().reason.clone())
                     .unwrap_or_else(|| {
                         "room is degraded and requires explicit durability repair".to_string()
@@ -7518,8 +7521,10 @@ mod tests {
 
         // Model an asynchronous journal failure discovered by the causal
         // head barrier, after candidate selection and snapshot commit.
-        room.durability
-            .mark_degraded("injected durable wait failure");
+        room.durability.mark_degraded(
+            crate::notebook_sync_server::durability::DegradationKind::DurabilityBoundary,
+            "injected durable wait failure",
+        );
         Daemon::await_reaper_durability(
             &room,
             &required_heads,
@@ -7700,6 +7705,124 @@ mod tests {
             2,
             "the degraded recovery room and later publication must both remain resident"
         );
+    }
+
+    /// A source conflict with a healthy recovery journal is durable recovery
+    /// evidence, not a storage failure. Clean shutdown must release the room
+    /// instead of pinning the daemon alive until the conflict is reconciled
+    /// (issue #4062).
+    #[tokio::test]
+    async fn clean_shutdown_releases_room_with_healthy_journal_source_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let docs_dir = config.notebook_docs_dir.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let uuid = uuid::Uuid::new_v4();
+        let notebook_path = temp_dir.path().join("source-conflict.ipynb");
+        std::fs::write(
+            &notebook_path,
+            br#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+        )
+        .unwrap();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid,
+            Some(notebook_path.clone()),
+            &docs_dir,
+            daemon.blob_store.clone(),
+            false,
+        ));
+
+        // Journal the exact live heads first so the shutdown barrier lands on
+        // the already-durable path with the conflict marker still set. This is
+        // the incident shape: an idle conflicted room with nothing left to
+        // commit.
+        let (snapshot, heads, encoded_heads) = {
+            let mut doc = room.doc.write().await;
+            let heads = doc.get_heads();
+            let encoded = heads.iter().map(ToString::to_string).collect::<Vec<_>>();
+            let raw = heads.iter().map(|head| head.0).collect::<Vec<_>>();
+            (doc.save(), raw, encoded)
+        };
+        room.durability
+            .commit_snapshot(
+                &snapshot,
+                heads,
+                crate::notebook_sync_server::durability::DurableMutation::Daemon,
+            )
+            .unwrap();
+
+        let reason = format!(
+            "source_conflict: {} changed on disk while journal heads were not exported; both versions were preserved",
+            notebook_path.display()
+        );
+        room.durability.mark_degraded(
+            crate::notebook_sync_server::durability::DegradationKind::SourceState,
+            reason.clone(),
+        );
+        room.lifecycle.mark_source_conflict(reason, encoded_heads);
+        assert!(room.durability.status().is_degraded());
+        assert!(!Daemon::room_requires_durability_repair(&room));
+
+        let outcome = daemon
+            .notebook_rooms
+            .insert_or_get(uuid, room.clone(), Some(&notebook_path))
+            .await
+            .unwrap();
+        let (_, reservation) = outcome.into_parts();
+        drop(reservation);
+
+        daemon
+            .shutdown_notebook_rooms()
+            .await
+            .expect("a healthy-journal source conflict must not block clean shutdown");
+        assert_eq!(
+            daemon.notebook_rooms.len().await,
+            0,
+            "the conflicted room must be released with the rest of the registry"
+        );
+    }
+
+    /// A durability-boundary failure is the case the repair gate exists for:
+    /// the room must stay resident and clean shutdown must report it.
+    #[tokio::test]
+    async fn clean_shutdown_retains_room_with_durability_boundary_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let docs_dir = config.notebook_docs_dir.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let uuid = uuid::Uuid::new_v4();
+        let room = Arc::new(crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid,
+            None,
+            &docs_dir,
+            daemon.blob_store.clone(),
+            true,
+        ));
+        room.durability.mark_degraded(
+            crate::notebook_sync_server::durability::DegradationKind::DurabilityBoundary,
+            "injected journal failure",
+        );
+        assert!(Daemon::room_requires_durability_repair(&room));
+
+        let outcome = daemon
+            .notebook_rooms
+            .insert_or_get(uuid, room.clone(), None)
+            .await
+            .unwrap();
+        let (_, reservation) = outcome.into_parts();
+        drop(reservation);
+
+        let error = daemon
+            .shutdown_notebook_rooms()
+            .await
+            .expect_err("a failed durability boundary must block clean shutdown");
+        assert!(
+            error.to_string().contains("clean shutdown retained 1 room"),
+            "unexpected shutdown error: {error:#}"
+        );
+        assert_eq!(daemon.notebook_rooms.len().await, 1);
+        assert!(daemon.notebook_rooms.peek_uuid(uuid).await.is_some());
+        assert!(room.durability.status().requires_durability_repair());
     }
 
     #[test]

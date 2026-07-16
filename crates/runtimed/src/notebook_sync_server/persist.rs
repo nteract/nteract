@@ -160,7 +160,10 @@ fn degrade_file_checkpoint(
     exported_heads: &[[u8; 32]],
     reason: String,
 ) -> String {
-    durability.mark_degraded(reason.clone());
+    durability.mark_degraded(
+        super::durability::DegradationKind::DurabilityBoundary,
+        reason.clone(),
+    );
     lifecycle.mark_degraded(reason.clone(), checkpoint_heads_hex(exported_heads), true);
     let _ = runtime_state.with_doc(|state| {
         state.set_file_source_issue(Some(&runtime_doc::FileSourceIssue::Degraded {
@@ -730,7 +733,10 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
             let reason = format!(
                 "file checkpoint committed, but its recovered projection could not be retained: {error:#}"
             );
-            room.durability.mark_degraded(reason.clone());
+            room.durability.mark_degraded(
+                super::durability::DegradationKind::SourceState,
+                reason.clone(),
+            );
             room.lifecycle.mark_degraded(
                 reason.clone(),
                 checkpoint_heads_hex(&checkpoint.exported_heads),
@@ -1236,7 +1242,10 @@ pub(crate) async fn finalize_untitled_promotion(
     if let Err(error) = room.durability.promote_to_journal(recovery_journal) {
         let reason =
             format!("saved file checkpoint could not establish its recovery journal: {error}");
-        room.durability.mark_degraded(reason.clone());
+        room.durability.mark_degraded(
+            super::durability::DegradationKind::DurabilityBoundary,
+            reason.clone(),
+        );
         let document_heads = room.durability.status().durable_heads;
         room.lifecycle
             .mark_degraded(reason.clone(), document_heads, true);
@@ -1260,7 +1269,10 @@ pub(crate) async fn finalize_untitled_promotion(
             let reason = format!(
                 "saved file checkpoint could not retain its generation-owned projection: {error:#}"
             );
-            room.durability.mark_degraded(reason.clone());
+            room.durability.mark_degraded(
+                super::durability::DegradationKind::SourceState,
+                reason.clone(),
+            );
             room.lifecycle
                 .mark_degraded(reason.clone(), durability.durable_heads.clone(), true);
             let _ = room.state.with_doc(|state| {
@@ -2257,7 +2269,12 @@ pub(crate) async fn mark_external_source_conflict_if_needed(
         "source_conflict: {} changed on disk while journal heads were not exported; both versions were preserved",
         notebook_path.display()
     );
-    room.durability.mark_degraded(reason.clone());
+    // Both versions are preserved and the journal stays healthy, so this
+    // degradation must not pin the room resident through shutdown or reaping.
+    room.durability.mark_degraded(
+        super::durability::DegradationKind::SourceState,
+        reason.clone(),
+    );
     let document_heads = {
         let mut doc = room.doc.write().await;
         doc.get_heads_hex()
@@ -2351,7 +2368,10 @@ pub(crate) async fn process_watcher_event(room: &NotebookRoom, notebook_path: &P
         Ok(claim) => claim,
         Err(_) => {
             let reason = "external source checkpoint sequence exhausted".to_string();
-            room.durability.mark_degraded(reason.clone());
+            room.durability.mark_degraded(
+                super::durability::DegradationKind::DurabilityBoundary,
+                reason.clone(),
+            );
             let heads = room.durability.status().durable_heads;
             room.lifecycle.mark_degraded(reason.clone(), heads, true);
             return;

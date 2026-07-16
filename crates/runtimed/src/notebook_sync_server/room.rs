@@ -1432,14 +1432,17 @@ impl NotebookRoom {
                         let reason = format!(
                             "source_degraded: could not resolve interrupted file checkpoint: {error}"
                         );
-                        durability.mark_degraded(reason.clone());
+                        durability.mark_degraded(
+                            super::durability::DegradationKind::DurabilityBoundary,
+                            reason.clone(),
+                        );
                         startup_durability_degraded = Some(reason);
                     }
                 }
             }
         }
         if startup_durability_degraded.is_none() {
-            startup_durability_degraded = durability.status().degraded_reason;
+            startup_durability_degraded = durability.status().degraded_reason();
         }
         let lifecycle = RoomLifecycle::new(genesis_snapshot, document_heads);
         if durability.status().has_durable_record {
