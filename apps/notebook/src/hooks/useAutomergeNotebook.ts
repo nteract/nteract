@@ -392,6 +392,17 @@ export function useNotebook() {
           setLoadError(error instanceof Error ? error.message : String(error));
         });
       },
+      // A failed initial load is terminal for this room: the daemon closes
+      // the session right after sending the status, and every redial gets
+      // the same rejection. Latch the host's automatic reconnect loop off so
+      // it cannot hammer the daemon; the DaemonStatusBanner Retry goes
+      // through host.daemon.reconnect, which drops the latch.
+      onInitialLoadFailed: (reason) => {
+        host.daemon.autoReconnect?.latchFailure(reason);
+      },
+      onInitialLoadRecovered: () => {
+        host.daemon.autoReconnect?.clearLatch();
+      },
     });
 
     // ── Bootstrap / daemon lifecycle ─────────────────────────────

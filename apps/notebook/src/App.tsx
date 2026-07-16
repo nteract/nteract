@@ -1815,9 +1815,21 @@ function AppContent() {
       }
     });
 
-    // Listen for daemon disconnection (mid-session)
+    // Listen for daemon disconnection (mid-session). When the reconnect
+    // driver is latched (terminal initial-load failure), this close is the
+    // daemon rejecting the session. Present the terminal reason instead of
+    // a reconnect spinner. Retry clears the latch via host.daemon.reconnect.
     const unlistenDisconnect = host.daemonEvents.onDisconnected(() => {
       cancelReadyTimeout();
+      const reconnectState = host.daemon.autoReconnect?.getState();
+      if (reconnectState?.kind === "latched") {
+        setDaemonStatus({
+          status: "failed",
+          error: `Couldn't load this notebook: ${reconnectState.reason}`,
+          guidance: "Automatic reconnection is paused. Retry reconnects once.",
+        });
+        return;
+      }
       setDaemonStatus({
         status: "failed",
         error: "Runtime disconnected. Attempting to reconnect...",

@@ -502,10 +502,12 @@ describe("createTauriHost()", () => {
     host.daemonEvents.onDisconnected(second);
     await Promise.resolve();
 
+    // Three listeners: the host-level reconnect-governor listener installed
+    // at construction plus the two notification-only subscribers. One
+    // simulated Tauri event fires every registered callback once.
     const entries = capturedListens.filter((x) => x.event === "daemon:disconnected");
-    expect(entries).toHaveLength(2);
-    entries[0]?.cb({ payload: undefined });
-    entries[1]?.cb({ payload: undefined });
+    expect(entries).toHaveLength(3);
+    for (const entry of entries) entry.cb({ payload: undefined });
 
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
@@ -518,6 +520,31 @@ describe("createTauriHost()", () => {
 
     resolveReconnect();
     await reconnectPromiseOverride;
+  });
+
+  it("latched auto-reconnect suppresses the disconnect redial until a manual reconnect", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await Promise.resolve();
+
+    host.daemon.autoReconnect?.latchFailure("initial load failed");
+    expect(host.daemon.autoReconnect?.getState()).toEqual({
+      kind: "latched",
+      reason: "initial load failed",
+    });
+
+    const entries = capturedListens.filter((x) => x.event === "daemon:disconnected");
+    for (const entry of entries) entry.cb({ payload: undefined });
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([]);
+
+    // Manual Retry drops the latch and dials once.
+    await host.daemon.reconnect({ force: true });
+    expect(host.daemon.autoReconnect?.getState()).toEqual({ kind: "idle" });
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: true },
+      },
+    ]);
   });
 
   it("exposes a command registry", () => {

@@ -223,6 +223,30 @@ describe("startNotebookSyncStoreBridge", () => {
     bridge.stop();
   });
 
+  it("latches the reconnect driver when initial load fails and re-arms on recovery", () => {
+    const onInitialLoadFailed = vi.fn();
+    const onInitialLoadRecovered = vi.fn();
+    const { bridge, subjects } = startBridge({
+      onInitialLoadFailed,
+      onInitialLoadRecovered,
+    });
+
+    subjects.sessionStatus$.next(failedStatus("source_degraded: no baseline"));
+
+    expect(onInitialLoadFailed).toHaveBeenCalledWith(
+      "source_degraded: no baseline",
+    );
+    expect(onInitialLoadRecovered).not.toHaveBeenCalled();
+
+    // A later live session reporting any non-failed phase clears the latch.
+    subjects.sessionStatus$.next(readyStatus());
+
+    expect(onInitialLoadFailed).toHaveBeenCalledTimes(1);
+    expect(onInitialLoadRecovered).toHaveBeenCalledTimes(1);
+
+    bridge.stop();
+  });
+
   it("materializes and seeds app stores when initial sync becomes interactive", async () => {
     const {
       bridge,

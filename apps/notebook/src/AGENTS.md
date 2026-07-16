@@ -28,7 +28,7 @@ Host-platform side effects (Tauri IPC, plugin calls, window chrome) flow through
 | Namespace | Purpose |
 |-----------|---------|
 | `host.transport` | `NotebookTransport` shared by SyncEngine / NotebookClient |
-| `host.daemon` | `isConnected`, `reconnect`, `getInfo`, `getReadyInfo` |
+| `host.daemon` | `isConnected`, `reconnect`, `getInfo`, `getReadyInfo`, optional `autoReconnect` (backoff + terminal failed-load latch) |
 | `host.daemonEvents` | `onReady` / `onProgress` / `onDisconnected` / `onUnavailable` |
 | `host.relay` | `notifySyncReady()` outbound signal |
 | `host.blobs` | `port()` — daemon blob-server HTTP port |

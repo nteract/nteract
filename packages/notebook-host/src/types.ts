@@ -29,7 +29,13 @@
  *   point — not pre-optional now, to keep the contract honest.
  */
 
-import type { BlobRef, BlobResolver, NotebookTransport } from "runtimed";
+import type {
+  BlobRef,
+  BlobResolver,
+  NotebookTransport,
+  ReconnectGovernorState,
+} from "runtimed";
+import type { Observable } from "rxjs";
 import type { CommandRegistry } from "./commands";
 
 // ── Shared types ─────────────────────────────────────────────────────────
@@ -115,6 +121,24 @@ export type Unlisten = () => void;
 
 // ── Namespaces ───────────────────────────────────────────────────────────
 
+/**
+ * Control surface over the host's automatic reconnect loop.
+ *
+ * Present only on hosts that own such a loop (Tauri). The app latches the
+ * loop off when the daemon reports a terminal initial-load failure; the
+ * daemon closes the session right after that status, so reconnecting cannot
+ * succeed until the failure is resolved. `HostDaemon.reconnect` (the manual
+ * Retry path) drops the latch and restarts backoff before dialing.
+ */
+export interface HostAutoReconnect {
+  /** Stop automatic reconnection; `reason` renders in the terminal UI. */
+  latchFailure(reason: string): void;
+  /** Drop the latch after a live session reports a non-failed load. */
+  clearLatch(): void;
+  getState(): ReconnectGovernorState;
+  readonly state$: Observable<ReconnectGovernorState>;
+}
+
 /** Daemon connection state + diagnostics. */
 export interface HostDaemon {
   /** Fast synchronous-ish check; returns false when the daemon socket is down. */
@@ -130,6 +154,11 @@ export interface HostDaemon {
    * events aren't sticky, so the event-based path can miss the first fire.
    */
   getReadyInfo(): Promise<DaemonReadyPayload | null>;
+  /**
+   * Automatic-reconnect policy control, when this host runs such a loop.
+   * Consumers must tolerate absence (browser dev host reconnects on demand).
+   */
+  readonly autoReconnect?: HostAutoReconnect;
 }
 
 export type HostBlobRef = BlobRef;
