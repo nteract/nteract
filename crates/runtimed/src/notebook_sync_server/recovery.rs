@@ -159,6 +159,23 @@ impl RecoveryManifest {
         }
         Ok(())
     }
+
+    /// True when the recorded file checkpoint exported every durable head:
+    /// the file on disk is a complete baseline for this journal, with no
+    /// durable change left unexported. Head order is not significant.
+    pub(crate) fn file_checkpoint_covers_durable_heads(&self) -> bool {
+        if self.canonical_path.is_none()
+            || self.file_save_sequence.is_none()
+            || self.durable_heads.is_empty()
+        {
+            return false;
+        }
+        let mut exported = self.exported_heads.clone();
+        let mut durable = self.durable_heads.clone();
+        exported.sort_unstable();
+        durable.sort_unstable();
+        exported == durable
+    }
 }
 
 /// One independently recoverable journal record.
