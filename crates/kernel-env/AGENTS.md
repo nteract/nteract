@@ -110,6 +110,9 @@ The daemon maintains pre-created environments (base set + user's `default_packag
 - Warming loops replenish as environments are consumed
 - Pool entries named `runtimed-{uv,conda,pixi}-{uuid}`, content-free, claimable by any notebook
 
+Warm-env failures must surface in pool status with a real `error_kind` so
+onboarding does not spin forever waiting for `available > 0`.
+
 ### First-launch capture
 
 On first launch from pool:
