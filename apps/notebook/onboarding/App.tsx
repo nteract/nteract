@@ -253,6 +253,7 @@ export default function App() {
     const envLabel = PYTHON_ENV_LABELS[pythonEnv];
     setSelectedPoolReady(false);
     setPoolWaitTimedOut(false);
+    setErrorMessage(null);
     setSteps((prev) =>
       prev.map((s) =>
         s.id === "tools"
@@ -372,6 +373,7 @@ export default function App() {
     setPythonEnv(selected);
     setSelectedPoolReady(false);
     setPoolWaitTimedOut(false);
+    setErrorMessage(null);
     setSteps((prev) =>
       prev.map((s) =>
         s.id === "tools"
