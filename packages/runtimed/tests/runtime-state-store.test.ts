@@ -56,6 +56,50 @@ describe("RuntimeStateStore", () => {
     expect(seen).toEqual(["NotStarted", "Running"]);
   });
 
+  it("keeps the pill status while reconnect resets the store", () => {
+    const store = new RuntimeStateStore();
+    const seen = collect(store.throttledStatusKey$);
+
+    store.set(runningState("Idle"));
+    store.reset();
+
+    expect(store.isLoaded).toBe(false);
+    expect(store.snapshot).toBe(DEFAULT_RUNTIME_STATE);
+    expect(seen).toEqual([RUNTIME_STATUS.CONNECTING, RUNTIME_STATUS.RUNNING_IDLE]);
+  });
+
+  it("updates the pill status when the loaded gate reopens with fresh data", () => {
+    const store = new RuntimeStateStore();
+    const seen = collect(store.throttledStatusKey$);
+
+    store.set(runningState("Idle"));
+    store.reset();
+    store.set(
+      stateWith({
+        kernel: {
+          ...DEFAULT_RUNTIME_STATE.kernel,
+          lifecycle: { lifecycle: "Launching" },
+        },
+      }),
+    );
+
+    expect(seen).toEqual([
+      RUNTIME_STATUS.CONNECTING,
+      RUNTIME_STATUS.RUNNING_IDLE,
+      RUNTIME_STATUS.LAUNCHING,
+    ]);
+  });
+
+  it("shows a fresh session's real initial pill status once loaded", () => {
+    const store = new RuntimeStateStore();
+    const seen = collect(store.throttledStatusKey$);
+
+    store.set(DEFAULT_RUNTIME_STATE);
+
+    expect(store.isLoaded).toBe(true);
+    expect(seen).toEqual([RUNTIME_STATUS.CONNECTING, RUNTIME_STATUS.NOT_STARTED]);
+  });
+
   it("kernelInfo$ emits only when kernel type or env source changes", () => {
     const store = new RuntimeStateStore();
     const seen = collect(store.kernelInfo$);

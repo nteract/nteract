@@ -96,7 +96,9 @@ export function useWorkstationAttachment(): WorkstationAttachmentState | null {
 
 /**
  * Lifecycle status key with the busy flash suppressed by the shared
- * `throttleBusyStatus` pipeline.
+ * `throttleBusyStatus` pipeline. The underlying store gates reset windows on
+ * `loaded$`, so reconnects retain the last loaded runtime status until fresh
+ * RuntimeStateDoc data arrives.
  */
 export function useThrottledStatusKey(): RuntimeStatusKey {
   return useRuntimeProjection(runtimeStateStore.throttledStatusKey$);
