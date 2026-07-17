@@ -283,7 +283,7 @@ where
                             // to acquire the lock. But spawn_supervised's panic handler runs
                             // outside async context, so we still need spawn for the closure.
                             tokio::spawn(async move {
-                                // Auto-launch panic — no specific typed reason. Clear
+                                // Auto-launch panic, no specific typed reason. Clear
                                 // any stale error_reason so the frontend prompt isn't
                                 // stuck on an earlier missing_ipykernel, etc.
                                 if let Err(e) = r.state.with_doc(|sd| {
