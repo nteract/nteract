@@ -12,6 +12,13 @@
 //! ignored, and reaped by the next writer, so a crashed daemon can never
 //! brick a path. The registry stores facts only: no sockets are held open,
 //! and nothing in-process depends on a claim being present.
+//!
+//! A claim is held while the room serving the path has connected peers or
+//! unexported durable state, not for the room's whole residency: the
+//! daemon releases a clean idle room's claim after a short grace window
+//! and re-acquires on reconnect, so a closed notebook frees the path in
+//! about a minute instead of blocking other daemons for the resident-room
+//! TTL. The daemon's claim reconciler is the writer that maintains this.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,9 +30,9 @@ use std::time::Duration;
 /// writer.
 pub const FILE_CLAIM_SCHEMA_VERSION: u32 = 1;
 
-/// How long a claim stays live without a refresh. The owning daemon
-/// refreshes resident-room claims on its reaper interval (5 minutes), so
-/// this tolerates several missed sweeps before a live daemon's claim goes
+/// How long a claim stays live without a refresh. The owning daemon's
+/// claim reconciler renews held claims every few minutes, so this
+/// tolerates several missed renewals before a live daemon's claim goes
 /// stale. Expiry exists for pid reuse: a recycled pid would otherwise keep
 /// a crashed daemon's claim looking live forever.
 pub const FILE_CLAIM_TTL: Duration = Duration::from_secs(30 * 60);
@@ -65,6 +72,13 @@ pub struct FileClaim {
     pub path: String,
     /// Last write or refresh time, unix epoch milliseconds.
     pub refreshed_at_unix_ms: u64,
+}
+
+impl FileClaim {
+    /// Milliseconds since this claim was last written or refreshed.
+    pub fn age_ms(&self) -> u64 {
+        unix_now_ms().saturating_sub(self.refreshed_at_unix_ms)
+    }
 }
 
 /// Outcome of [`FileClaimRegistry::acquire`].

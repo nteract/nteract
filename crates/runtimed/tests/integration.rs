@@ -4318,19 +4318,38 @@ async fn test_auto_heartbeat_keeps_idle_peer_connected() {
 async fn start_claiming_daemon(
     claims_dir: &std::path::Path,
 ) -> (TempDir, std::path::PathBuf, tokio::task::JoinHandle<()>) {
+    let (temp_dir, socket_path, daemon_handle, _daemon) =
+        start_claiming_daemon_with(claims_dir, |_| {}).await;
+    (temp_dir, socket_path, daemon_handle)
+}
+
+/// `start_claiming_daemon` plus a config hook and the daemon handle, for
+/// tests that tune the claim grace or drive `reconcile_file_claims_once`
+/// synchronously instead of waiting on the reconciler interval.
+async fn start_claiming_daemon_with(
+    claims_dir: &std::path::Path,
+    tweak: impl FnOnce(&mut DaemonConfig),
+) -> (
+    TempDir,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<Daemon>,
+) {
     let temp_dir = TempDir::new().unwrap();
-    let config = DaemonConfig {
+    let mut config = DaemonConfig {
         file_claims_dir: Some(claims_dir.to_path_buf()),
         ..test_config(&temp_dir)
     };
+    tweak(&mut config);
     let socket_path = config.socket_path.clone();
     let daemon = Daemon::new_for_test(config).unwrap();
+    let run_daemon = daemon.clone();
     let daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
+        run_daemon.run().await.ok();
     });
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
-    (temp_dir, socket_path, daemon_handle)
+    (temp_dir, socket_path, daemon_handle, daemon)
 }
 
 /// Gracefully stop a daemon started by `start_claiming_daemon`.
@@ -4510,8 +4529,11 @@ async fn test_open_notebook_same_daemon_reopen_refreshes_claim() {
     stop_claiming_daemon(&socket_a, handle_a).await;
 }
 
-/// Evicting the room via ShutdownNotebook releases the claim, letting a
-/// second daemon open the path immediately.
+/// Evicting the room via ShutdownNotebook releases both the cross-daemon
+/// claim and the on-disk autosave owner marker, so a second daemon can not
+/// only open the path but also save to it. A claim release without the
+/// marker release would advertise a handoff the successor cannot use: its
+/// first save would refuse against the first daemon's live-pid marker.
 #[tokio::test]
 async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
     let claims_root = TempDir::new().unwrap();
@@ -4522,23 +4544,43 @@ async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
     let nb_path = dir_a.path().join("handed-off.ipynb");
     write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
     let canonical = std::fs::canonicalize(&nb_path).unwrap();
+    let marker_path = canonical.with_file_name("handed-off.ipynb.runtlock");
 
     let opened = connect::connect_open(socket_a.clone(), nb_path.clone(), "owner")
         .await
         .expect("daemon A should open the notebook");
+    let notebook_id = opened.info.notebook_id.clone();
+
+    // An explicit save stamps the autosave owner marker next to the file
+    // with daemon A's identity, exactly like any autosave would.
+    let save = opened
+        .handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: None,
+        })
+        .await
+        .expect("save on the owning daemon should succeed");
+    assert!(
+        matches!(
+            save,
+            NotebookResponse::NotebookSaved { .. }
+                | NotebookResponse::NotebookAlreadyCurrent { .. }
+        ),
+        "unexpected save response: {save:?}"
+    );
+    assert!(
+        marker_path.exists(),
+        "save must stamp the autosave owner marker"
+    );
     drop(opened);
 
     let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
     assert!(registry.read(&canonical).is_some());
 
-    // Close the room on daemon A; the claim must be released with it.
+    // Close the room on daemon A; the claim and the marker must be
+    // released with it.
     let pool_client_a = PoolClient::new(socket_a.clone());
-    // ShutdownNotebook takes the room UUID; reopen briefly to learn it.
-    let reopened = connect::connect_open(socket_a.clone(), nb_path.clone(), "owner")
-        .await
-        .expect("reopen on the owning daemon should succeed");
-    let notebook_id = reopened.info.notebook_id.clone();
-    drop(reopened);
     assert!(pool_client_a
         .shutdown_notebook(&notebook_id)
         .await
@@ -4547,9 +4589,192 @@ async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
         registry.read(&canonical).is_none(),
         "room eviction must release the file claim"
     );
+    assert!(
+        !marker_path.exists(),
+        "room eviction must release the autosave owner marker along with the claim"
+    );
 
-    // Daemon B can now open the path.
-    connect::connect_open(socket_b.clone(), nb_path.clone(), "successor")
+    // Daemon B can now open the path and save to it.
+    let successor = connect::connect_open(socket_b.clone(), nb_path.clone(), "successor")
+        .await
+        .expect("released claim should allow the other daemon to open");
+    assert_eq!(
+        registry.read(&canonical).unwrap().socket_path,
+        socket_b.to_string_lossy()
+    );
+    let successor_save = successor
+        .handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: None,
+        })
+        .await
+        .expect("successor daemon must be able to save after the handoff");
+    assert!(
+        matches!(
+            successor_save,
+            NotebookResponse::NotebookSaved { .. }
+                | NotebookResponse::NotebookAlreadyCurrent { .. }
+        ),
+        "unexpected successor save response: {successor_save:?}"
+    );
+    drop(successor);
+
+    stop_claiming_daemon(&socket_a, handle_a).await;
+    stop_claiming_daemon(&socket_b, handle_b).await;
+}
+
+/// The NotebookSync handshake with a path-shaped notebook_id passes the
+/// same claim gate as OpenNotebook: it acquires the claim when the path
+/// is free and is refused (without stealing) while a live foreign daemon
+/// claim holds it. Before the gate covered this entry, a path-shaped
+/// reconnect created a file-backed room around the guard, and the claim
+/// refresh then overwrote the foreign daemon's live claim.
+#[tokio::test]
+async fn test_notebook_sync_path_handshake_passes_claim_gate() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+    let (dir_a, socket_a, handle_a) = start_claiming_daemon(&claims_dir).await;
+    let (_dir_b, socket_b, handle_b) = start_claiming_daemon(&claims_dir).await;
+
+    let nb_path = dir_a.path().join("sync-attach.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+
+    // Free path: the path-shaped NotebookSync attach takes the claim.
+    let attached = connect::connect(
+        socket_a.clone(),
+        canonical.to_string_lossy().into_owned(),
+        "sync-owner",
+    )
+    .await
+    .expect("path-shaped NotebookSync attach should succeed on a free path");
+    let claim = registry
+        .read(&canonical)
+        .expect("path-shaped NotebookSync attach must record a claim");
+    assert_eq!(claim.socket_path, socket_a.to_string_lossy());
+
+    // Claimed path: daemon B's path-shaped attach is refused with the
+    // structured error and leaves daemon A's claim intact.
+    let refused = connect::connect(
+        socket_b.clone(),
+        canonical.to_string_lossy().into_owned(),
+        "sync-intruder",
+    )
+    .await;
+    match refused {
+        Err(error) => assert!(
+            error.to_string().contains("file_active_elsewhere"),
+            "expected structured file_active_elsewhere refusal, got {error}"
+        ),
+        Ok(_) => panic!("expected refusal, but the attach succeeded"),
+    }
+    assert_eq!(
+        registry.read(&canonical).unwrap().socket_path,
+        socket_a.to_string_lossy()
+    );
+
+    drop(attached);
+    stop_claiming_daemon(&socket_a, handle_a).await;
+    stop_claiming_daemon(&socket_b, handle_b).await;
+}
+
+/// The claim reconciler renews only this daemon's own registry records.
+/// A live foreign claim that appears on a path this daemon actively
+/// serves is warned about, never overwritten.
+#[tokio::test]
+async fn test_claim_reconciler_never_overwrites_live_foreign_claim() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+    let (dir_a, socket_a, handle_a, daemon_a) =
+        start_claiming_daemon_with(&claims_dir, |_| {}).await;
+
+    let nb_path = dir_a.path().join("not-stolen.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+
+    // Keep the connection alive: the room has an active peer, so the
+    // reconciler definitely wants the claim.
+    let opened = connect::connect_open(socket_a.clone(), nb_path.clone(), "owner")
+        .await
+        .expect("daemon A should open the notebook");
+
+    // A foreign daemon's live record lands on the path (live pid: this
+    // test process). Whatever wrote it, the reconciler must treat the
+    // registry as fact and not clobber it.
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+    registry
+        .record(
+            &canonical,
+            &foreign_claim_owner("/tmp/foreign-live.sock", std::process::id()),
+            "room-foreign",
+        )
+        .unwrap();
+
+    for _ in 0..3 {
+        daemon_a.reconcile_file_claims_once().await;
+    }
+    assert_eq!(
+        registry.read(&canonical).unwrap().socket_path,
+        "/tmp/foreign-live.sock",
+        "reconciler must never overwrite a live foreign claim"
+    );
+
+    drop(opened);
+    stop_claiming_daemon(&socket_a, handle_a).await;
+}
+
+/// Claims follow activity, not room residency: a clean idle room
+/// releases its claim (and the autosave owner marker) after the grace
+/// window, another daemon can then take the path, and reconnecting
+/// through the first daemon's still-resident room is refused with the
+/// structured error while the foreign claim is live.
+#[tokio::test]
+async fn test_idle_clean_room_releases_claim_and_hands_off() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+    let (dir_a, socket_a, handle_a, daemon_a) = start_claiming_daemon_with(&claims_dir, |config| {
+        config.file_claim_release_grace_ms = Some(50);
+    })
+    .await;
+    let (_dir_b, socket_b, handle_b) = start_claiming_daemon(&claims_dir).await;
+
+    let nb_path = dir_a.path().join("idle-handoff.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+    let marker_path = canonical.with_file_name("idle-handoff.ipynb.runtlock");
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+
+    let opened = connect::connect_open(socket_a.clone(), nb_path.clone(), "owner")
+        .await
+        .expect("daemon A should open the notebook");
+    assert!(registry.read(&canonical).is_some());
+    drop(opened);
+
+    // Poll the reconciler until the claim releases. Peer-disconnect
+    // accounting, the disconnect teardown (which stamps the room as
+    // settled after its final save), and the idle grace are all
+    // asynchronous; each pass re-evaluates the room.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        daemon_a.reconcile_file_claims_once().await;
+        if registry.read(&canonical).is_none() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "idle clean room must release its claim after the grace window"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        !marker_path.exists(),
+        "idle release must drop the autosave owner marker with the claim"
+    );
+
+    // Daemon B takes the freed path.
+    let successor = connect::connect_open(socket_b.clone(), nb_path.clone(), "successor")
         .await
         .expect("released claim should allow the other daemon to open");
     assert_eq!(
@@ -4557,6 +4782,84 @@ async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
         socket_b.to_string_lossy()
     );
 
+    // Daemon A's room is still resident, but residency no longer grants
+    // the path: reopening through A re-acquires via the gate and is
+    // refused while B's claim is live.
+    let refused = connect::connect_open(socket_a.clone(), nb_path.clone(), "stale-owner").await;
+    match refused {
+        Err(notebook_sync::error::SyncError::Protocol(message)) => assert!(
+            message.contains("file_active_elsewhere"),
+            "expected structured refusal, got {message}"
+        ),
+        Err(other) => panic!("expected file_active_elsewhere refusal, got {other:?}"),
+        Ok(_) => panic!("expected refusal, but the reopen succeeded"),
+    }
+    assert_eq!(
+        registry.read(&canonical).unwrap().socket_path,
+        socket_b.to_string_lossy(),
+        "refused reopen must not clobber the successor's claim"
+    );
+
+    drop(successor);
     stop_claiming_daemon(&socket_a, handle_a).await;
     stop_claiming_daemon(&socket_b, handle_b).await;
+}
+
+/// After an idle release, a reconnect through the same daemon re-acquires
+/// the claim (no foreign claim in the way), and a room with a connected
+/// peer never releases its claim no matter how many grace windows pass.
+#[tokio::test]
+async fn test_released_claim_reacquired_on_reconnect_and_held_under_peers() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+    let (dir_a, socket_a, handle_a, daemon_a) = start_claiming_daemon_with(&claims_dir, |config| {
+        config.file_claim_release_grace_ms = Some(50);
+    })
+    .await;
+
+    let nb_path = dir_a.path().join("rejoin.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+
+    let opened = connect::connect_open(socket_a.clone(), nb_path.clone(), "owner")
+        .await
+        .expect("daemon A should open the notebook");
+    drop(opened);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        daemon_a.reconcile_file_claims_once().await;
+        if registry.read(&canonical).is_none() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "idle clean room must release its claim after the grace window"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+
+    // Reconnect through the same daemon: the gate re-acquires the claim
+    // for the still-resident room.
+    let rejoined = connect::connect_open(socket_a.clone(), nb_path.clone(), "rejoiner")
+        .await
+        .expect("reconnect must re-acquire a released claim");
+    let claim = registry
+        .read(&canonical)
+        .expect("reconnect must write the claim back");
+    assert_eq!(claim.socket_path, socket_a.to_string_lossy());
+
+    // With the peer connected, grace windows elapse without releasing.
+    for _ in 0..4 {
+        sleep(Duration::from_millis(60)).await;
+        daemon_a.reconcile_file_claims_once().await;
+        assert!(
+            registry.read(&canonical).is_some(),
+            "a room with connected peers must keep its claim"
+        );
+    }
+
+    drop(rejoined);
+    stop_claiming_daemon(&socket_a, handle_a).await;
 }

@@ -953,6 +953,102 @@ impl Drop for ReservationGuard {
     }
 }
 
+/// This daemon's belief about the cross-channel file claim for a
+/// path-bound room (`runt_workspace::file_claims`).
+///
+/// A claim is held while the room has connected peers or unexported
+/// durable state (durable heads beyond exported heads). A clean idle
+/// room releases its claim after a grace window so another daemon
+/// process can take the path, and re-acquires when a peer reconnects
+/// or dirty state appears. This struct only tracks the local hold
+/// state and idle-grace clock; the registry on disk stays the shared
+/// source of truth, and `Daemon::reconcile_file_claims_once` is the
+/// writer that keeps the two aligned.
+///
+/// Uses `std::sync::Mutex`: all accesses are short synchronous reads
+/// and writes, never held across `.await`.
+pub struct FileClaimHold {
+    inner: std::sync::Mutex<FileClaimHoldInner>,
+}
+
+struct FileClaimHoldInner {
+    held: bool,
+    /// First observation of "no peers, nothing unexported". `None`
+    /// while the room wants its claim.
+    idle_clean_since: Option<std::time::Instant>,
+    /// Set after warning once about a live foreign claim occupying a
+    /// path this daemon still serves, so the reconciler does not
+    /// repeat the warning every tick. Cleared on re-acquisition.
+    foreign_conflict_warned: bool,
+}
+
+impl Default for FileClaimHold {
+    fn default() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(FileClaimHoldInner {
+                held: false,
+                idle_clean_since: None,
+                foreign_conflict_warned: false,
+            }),
+        }
+    }
+}
+
+impl FileClaimHold {
+    fn lock(&self) -> std::sync::MutexGuard<'_, FileClaimHoldInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The daemon acquired (or refreshed) the registry claim for this
+    /// room's path.
+    pub fn mark_held(&self) {
+        let mut inner = self.lock();
+        inner.held = true;
+        inner.idle_clean_since = None;
+        inner.foreign_conflict_warned = false;
+    }
+
+    /// The daemon released the registry claim (idle handoff, eviction).
+    pub fn mark_released(&self) {
+        let mut inner = self.lock();
+        inner.held = false;
+        inner.idle_clean_since = None;
+    }
+
+    /// The room wants its claim (peers connected or unexported state).
+    /// Clears any idle-grace clock and reports whether the claim is
+    /// currently believed held.
+    pub fn note_wanted(&self) -> bool {
+        let mut inner = self.lock();
+        inner.idle_clean_since = None;
+        inner.held
+    }
+
+    /// The room is idle and clean. Stamps the idle-grace clock on the
+    /// first observation; returns `true` once the claim is still held
+    /// and `grace` has elapsed with no `note_wanted`/`mark_held` in
+    /// between, i.e. the claim is due for release.
+    pub fn note_idle_clean(&self, grace: std::time::Duration) -> bool {
+        let mut inner = self.lock();
+        if !inner.held {
+            return false;
+        }
+        let since = *inner
+            .idle_clean_since
+            .get_or_insert_with(std::time::Instant::now);
+        since.elapsed() >= grace
+    }
+
+    /// One warning per foreign-conflict episode. Returns `true` the
+    /// first time it is called after a `mark_held`.
+    pub fn should_warn_foreign_conflict(&self) -> bool {
+        let mut inner = self.lock();
+        !std::mem::replace(&mut inner.foreign_conflict_warned, true)
+    }
+}
+
 pub(crate) struct SourceReconciliationClaim {
     room: Arc<NotebookRoom>,
 }
@@ -987,6 +1083,9 @@ pub struct NotebookRoom {
     pub(crate) source_reconciliation_claimed: AtomicBool,
     /// File binding owner: canonical .ipynb path, file watcher, autosave.
     pub file_binding: NotebookFileBinding,
+    /// Local hold state for the cross-channel file claim on this room's
+    /// path. Meaningless (and untouched) for rooms with no file binding.
+    pub file_claim_hold: FileClaimHold,
     /// Notebook identity: persist_path and working_dir.
     pub identity: RoomIdentity,
     /// Per-connection accounting: active_peers + had_peers.
@@ -994,6 +1093,14 @@ pub struct NotebookRoom {
     /// Hosted rooms are cloud-authoritative and must not auto-launch local kernels.
     /// Read via `is_hosted()`; set once via `mark_hosted()` before peers attach.
     pub(crate) hosted: AtomicBool,
+    /// Latched by eviction (reaper or ShutdownNotebook) after the final
+    /// autosave flush, right before the autosave owner marker and file
+    /// claim release hand the path to other daemon processes. Once set,
+    /// primary-path saves refuse and late disconnect-teardown work
+    /// aborts, so no straggler task can re-claim the marker or rewrite
+    /// the file after the handoff. Monotonic: an evicted room Arc is
+    /// never re-registered (reconnects mint a fresh room instance).
+    pub(crate) evicted: AtomicBool,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
@@ -1072,6 +1179,19 @@ impl NotebookRoom {
     /// Mark this room as hosted. This flag is monotonic for the room lifetime.
     pub fn mark_hosted(&self) {
         self.hosted.store(true, Ordering::Relaxed);
+    }
+
+    /// True once an eviction path has finished this room's final save and
+    /// is handing (or has handed) the path to other daemon processes.
+    pub fn is_evicted(&self) -> bool {
+        self.evicted.load(Ordering::Acquire)
+    }
+
+    /// Latch eviction. Call after the eviction path's final autosave
+    /// flush and before releasing the autosave owner marker; see the
+    /// `evicted` field docs for what the latch suppresses.
+    pub fn mark_evicted(&self) {
+        self.evicted.store(true, Ordering::Release);
     }
 
     /// Create a fresh room, ignoring any persisted state.
@@ -1562,9 +1682,11 @@ impl NotebookRoom {
             durability,
             source_reconciliation_claimed: AtomicBool::new(false),
             file_binding: NotebookFileBinding::new(path, ephemeral),
+            file_claim_hold: FileClaimHold::default(),
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
             hosted: AtomicBool::new(false),
+            evicted: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
