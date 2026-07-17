@@ -37,7 +37,7 @@ The first-party signed-out page (the "Sign in with Anaconda" screen) predates th
 
 ## Sequencing
 
-1. Session diet (this audit's companion PRs): client GET-first bootstrap, single POST at OIDC callback, worker instrumentation for the slow POST/DELETE.
+1. Session diet. LANDED (#4056, validated live on preview): client GET-first bootstrap, single POST at OIDC callback, `Server-Timing` instrumentation on the worker. Session calls across the full logout/login/open flow dropped from nine to three; signed-in mounts and post-callback reloads make zero.
 2. Immutable cache headers on hashed assets; SPA route for notebook open (app-shell arc).
 3. Sync-socket concurrency + DO wake measurement (progressive-connect arc).
 4. Dedup fixes (discovery, blobs, theme frame) as they are found in code.
