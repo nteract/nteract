@@ -2043,6 +2043,114 @@ async fn test_ghost_reaper_skips_reconnected_room() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// A `SourceState` degradation (healthy journal, conflicted source) does
+/// not pin a room resident: `requires_durability_repair()` lets the
+/// reaper's candidate filter and `remove_if` predicate pass. The reaper
+/// then runs steps clean shutdown does not — the persist-debouncer flush
+/// and the autosave-debouncer final save — against a Degraded room. The
+/// degraded-save guard in `save_notebook_to_disk` must keep that final
+/// save from overwriting the user's external edits on the conflicted
+/// file: the room is reaped and the on-disk bytes stay byte-identical.
+#[tokio::test]
+async fn test_ghost_reaper_sweeps_source_conflicted_room_without_touching_disk() {
+    use std::sync::atomic::Ordering;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    config.room_eviction_delay_ms = Some(0);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let nb_path = temp_dir.path().join("conflicted.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+
+    let notebook_id;
+    {
+        let result = connect::connect_open(socket_path.clone(), nb_path.clone(), "test")
+            .await
+            .unwrap();
+        notebook_id = result.info.notebook_id.clone();
+        let client = result.handle;
+        assert!(wait_for_session_ready(&client, SESSION_READY_TIMEOUT).await);
+    }
+
+    let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap();
+
+    // Wait for kernel teardown to stamp the timestamp so the room is a
+    // reaper candidate. Eviction flushes settle before this stamp lands.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(room) = daemon_for_inspect.test_get_room(uuid).await {
+            if room
+                .connections
+                .last_kernel_torn_down_at
+                .load(Ordering::Relaxed)
+                != 0
+                && room.connections.active_peers.load(Ordering::Relaxed) == 0
+            {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("kernel teardown did not stamp last_kernel_torn_down_at within 5s");
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    let room = daemon_for_inspect.test_get_room(uuid).await.unwrap();
+
+    // Quiesce the file watcher so the external overwrite below stays a
+    // plain on-disk fact instead of racing the injected conflict marker.
+    room.file_binding.shutdown_notebook_watcher().await;
+
+    // Leave the live doc ahead of disk. A direct doc mutation schedules no
+    // autosave, so the only save that could reach disk after this point is
+    // the reaper's own final autosave — the exact write the degraded-save
+    // guard must block.
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("c1", "unsaved_live_edit = 1").unwrap();
+    }
+
+    assert!(
+        daemon_for_inspect
+            .test_mark_room_source_conflict(
+                uuid,
+                "source_conflict: external source changed while journal heads were not exported; both versions were preserved",
+            )
+            .await
+    );
+
+    // The user's external edit is the current disk truth.
+    let external_bytes =
+        br#"{"cells":[],"metadata":{"edited":"externally"},"nbformat":4,"nbformat_minor":5}"#;
+    std::fs::write(&nb_path, external_bytes).unwrap();
+
+    let before = std::fs::read(&nb_path).unwrap();
+    daemon_for_inspect.ghost_room_reaper_sweep(0).await;
+    assert_eq!(
+        daemon_for_inspect.test_room_count().await,
+        0,
+        "a SourceState-degraded room must be reapable"
+    );
+    let after = std::fs::read(&nb_path).unwrap();
+    assert_eq!(
+        before, after,
+        "reaping a conflicted room must not rewrite the on-disk notebook"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 /// PR 1 codex P1: the connection-generation bump on peer connect must
 /// preempt an in-flight teardown that snapshotted the previous value.
 /// Stage a teardown task with a delay, reconnect a peer before the

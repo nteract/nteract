@@ -5067,6 +5067,27 @@ impl Daemon {
         self.notebook_rooms.len().await
     }
 
+    /// Test helper: put a resident room into the state a file-watcher
+    /// `SourceConflict` leaves behind — durability degraded as
+    /// `SourceState` (the journal itself is healthy) and lifecycle
+    /// degraded with the `source_conflict` code. `pub` so integration
+    /// tests (separate crate) can drive reaper sweeps against a
+    /// conflicted room; the marking internals are `pub(crate)`.
+    #[doc(hidden)]
+    pub async fn test_mark_room_source_conflict(&self, uuid: uuid::Uuid, reason: &str) -> bool {
+        let Some(room) = self.notebook_rooms.peek_uuid(uuid).await else {
+            return false;
+        };
+        let document_heads = room.durability.status().durable_heads;
+        room.durability.mark_degraded(
+            crate::notebook_sync_server::durability::DegradationKind::SourceState,
+            reason.to_string(),
+        );
+        room.lifecycle
+            .mark_source_conflict(reason.to_string(), document_heads);
+        true
+    }
+
     /// One sweep at production cap. Convenience wrapper around
     /// `ghost_room_reaper_sweep_with_cap` for tests that only want to
     /// drive the TTL layer.
@@ -7823,6 +7844,120 @@ mod tests {
         assert_eq!(daemon.notebook_rooms.len().await, 1);
         assert!(daemon.notebook_rooms.peek_uuid(uuid).await.is_some());
         assert!(room.durability.status().requires_durability_repair());
+    }
+
+    /// The other half of the #4062 contract: releasing a healthy-journal
+    /// source-conflict room on clean shutdown is only safe because disk plus
+    /// journal reconstruct the same Degraded lifecycle on reopen. The
+    /// conflict must surface again, not silently clear.
+    #[tokio::test]
+    async fn reopen_after_clean_shutdown_rehydrates_source_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = lease_test_config(&temp_dir);
+        let notebook_path = temp_dir.path().join("reopen-conflict.ipynb");
+        std::fs::write(&notebook_path, b"{}").unwrap();
+        let canonical_path = std::fs::canonicalize(&notebook_path).unwrap();
+        let notebook_id = uuid::Uuid::new_v4();
+
+        let daemon = Daemon::new_for_test(config.clone()).unwrap();
+        daemon.notebook_registry.record(
+            &canonical_path,
+            notebook_id,
+            &chrono::Utc::now().to_rfc3339(),
+        );
+        let manifest =
+            write_ready_recovery_with_peer_edit(&config, &canonical_path, notebook_id).await;
+        assert_ne!(
+            manifest.durable_heads, manifest.exported_heads,
+            "the journal must hold peer heads that were never exported to disk"
+        );
+
+        // External edit while journal heads were not exported: disk no
+        // longer matches the journal's staged source fingerprint.
+        std::fs::write(
+            &canonical_path,
+            br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[{"id":"disk-cell","cell_type":"code","metadata":{},"execution_count":null,"outputs":[],"source":["external_edit = 3\n"]}]}"#,
+        )
+        .unwrap();
+
+        // First open surfaces the conflict as a lifecycle degradation over a
+        // healthy journal.
+        {
+            let (room, _guard) = crate::notebook_sync_server::get_or_create_room_result(
+                &daemon.notebook_rooms,
+                notebook_id,
+                crate::notebook_sync_server::RoomCreationOptions {
+                    path: Some(canonical_path.clone()),
+                    initial_load_execution_store_dir: Some(&daemon.config.execution_store_dir),
+                    docs_dir: &daemon.config.notebook_docs_dir,
+                    blob_store: daemon.blob_store.clone(),
+                    ephemeral: false,
+                    trusted_packages: daemon.trusted_packages.clone(),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                room.lifecycle.availability(),
+                crate::notebook_sync_server::RoomAvailability::Degraded(_)
+            ));
+            assert!(!Daemon::room_requires_durability_repair(&room));
+        }
+
+        daemon
+            .shutdown_notebook_rooms()
+            .await
+            .expect("a healthy-journal source conflict must not block clean shutdown");
+        assert_eq!(daemon.notebook_rooms.len().await, 0);
+        drop(daemon);
+
+        // Re-create the daemon over the same cache dir and reopen: the
+        // conflict must be reconstructed from disk plus journal.
+        let restarted = Daemon::new_for_test(config).unwrap();
+        let resolved = restarted
+            .resolve_file_notebook_id(&canonical_path)
+            .await
+            .expect("journal identity discovery should survive the restart");
+        assert_eq!(resolved, notebook_id);
+        let (room, _guard) = crate::notebook_sync_server::get_or_create_room_result(
+            &restarted.notebook_rooms,
+            resolved,
+            crate::notebook_sync_server::RoomCreationOptions {
+                path: Some(canonical_path.clone()),
+                initial_load_execution_store_dir: Some(&restarted.config.execution_store_dir),
+                docs_dir: &restarted.config.notebook_docs_dir,
+                blob_store: restarted.blob_store.clone(),
+                ephemeral: false,
+                trusted_packages: restarted.trusted_packages.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let crate::notebook_sync_server::RoomAvailability::Degraded(status) =
+            room.lifecycle.availability()
+        else {
+            panic!("reopen must reconstruct the Degraded lifecycle, not clear the conflict");
+        };
+        let reason = status
+            .reason
+            .expect("rehydrated degradation must carry its reason");
+        assert!(
+            reason.contains("source_conflict"),
+            "unexpected rehydrated reason: {reason}"
+        );
+        let error = room
+            .lifecycle
+            .source_state()
+            .status()
+            .error
+            .clone()
+            .expect("rehydrated source axis must carry the structured error");
+        assert_eq!(error.code, "source_conflict");
+        assert!(
+            !room.durability.status().requires_durability_repair(),
+            "a rehydrated source conflict must stay reapable and shutdown-releasable"
+        );
     }
 
     #[test]

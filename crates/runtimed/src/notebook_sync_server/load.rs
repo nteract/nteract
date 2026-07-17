@@ -1748,9 +1748,19 @@ pub(crate) fn commit_file_watcher_changes(
                     &error,
                     super::durability::RoomDurabilityError::SourceConflict { .. }
                 );
+                // A source conflict is only SourceState when the rollback
+                // restored the live document: disk plus journal then
+                // reconstruct the same degraded lifecycle on reopen. If the
+                // rollback snapshot failed to load, the live doc still holds
+                // half-applied external changes, so the room must stay
+                // resident for repair.
                 let (kind, reason) = if source_conflict {
                     (
-                        super::durability::DegradationKind::SourceState,
+                        if document_readable {
+                            super::durability::DegradationKind::SourceState
+                        } else {
+                            super::durability::DegradationKind::DurabilityBoundary
+                        },
                         format!(
                             "source_conflict: external source changed while journal heads were not exported; both versions were preserved: {error}"
                         ),
