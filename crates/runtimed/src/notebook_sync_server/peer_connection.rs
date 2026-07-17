@@ -237,53 +237,78 @@ where
                 || created_new_at_path);
 
         if should_auto_launch {
-            info!(
-                "[notebook-sync] Auto-launching kernel for notebook {} (trust: {:?}, new: {})",
-                notebook_id, trust_status, is_new_notebook
-            );
-            // Write Resolving immediately so clients never see stale NotStarted
-            if let Err(e) = room
-                .state
-                .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
-            {
-                warn!("[runtime-state] {}", e);
+            // Single-flight admission: at most one auto-launch attempt per
+            // room. A connect that loses admission observes the in-flight
+            // attempt (or the previous failure) through RuntimeStateDoc, so
+            // a client reconnect loop cannot spawn agents at connect
+            // frequency. The gate check happens before the Resolving write
+            // so a skipped connect cannot mask a failed attempt's Error
+            // lifecycle.
+            match room.try_begin_auto_launch() {
+                super::room::AutoLaunchAdmission::Admitted(attempt) => {
+                    info!(
+                        "[notebook-sync] Auto-launching kernel for notebook {} (trust: {:?}, new: {})",
+                        notebook_id, trust_status, is_new_notebook
+                    );
+                    // Write Resolving immediately so clients never see stale NotStarted
+                    if let Err(e) = room
+                        .state
+                        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+                    {
+                        warn!("[runtime-state] {}", e);
+                    }
+                    // Spawn auto-launch in background so we don't block sync
+                    let room_clone = room.clone();
+                    let panic_room = room.clone();
+                    let notebook_id_clone = notebook_id.to_string();
+                    let daemon_clone = ctx.daemon.clone();
+                    let default_runtime = ctx.default_runtime.clone();
+                    let default_python_env = ctx.default_python_env.clone();
+                    spawn_supervised(
+                        "auto-launch-kernel",
+                        async move {
+                            auto_launch_kernel(
+                                &room_clone,
+                                &notebook_id_clone,
+                                default_runtime,
+                                default_python_env,
+                                daemon_clone,
+                                attempt,
+                            )
+                            .await;
+                        },
+                        move |_| {
+                            let r = panic_room;
+                            // with_doc is sync (std::sync::Mutex), so no need for tokio::spawn
+                            // to acquire the lock. But spawn_supervised's panic handler runs
+                            // outside async context, so we still need spawn for the closure.
+                            tokio::spawn(async move {
+                                // Auto-launch panic, no specific typed reason. Clear
+                                // any stale error_reason so the frontend prompt isn't
+                                // stuck on an earlier missing_ipykernel, etc.
+                                if let Err(e) = r.state.with_doc(|sd| {
+                                    sd.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)
+                                }) {
+                                    tracing::warn!("[runtime-state] {}", e);
+                                }
+                            });
+                        },
+                    );
+                }
+                super::room::AutoLaunchAdmission::InFlight => {
+                    debug!(
+                        "[notebook-sync] Auto-launch skipped for {}: attempt already in flight",
+                        notebook_id
+                    );
+                }
+                super::room::AutoLaunchAdmission::CoolingDown { remaining } => {
+                    debug!(
+                        "[notebook-sync] Auto-launch skipped for {}: cooling down after failed attempt ({}ms remaining)",
+                        notebook_id,
+                        remaining.as_millis()
+                    );
+                }
             }
-            // Spawn auto-launch in background so we don't block sync
-            let room_clone = room.clone();
-            let panic_room = room.clone();
-            let notebook_id_clone = notebook_id.to_string();
-            let daemon_clone = ctx.daemon.clone();
-            let default_runtime = ctx.default_runtime.clone();
-            let default_python_env = ctx.default_python_env.clone();
-            spawn_supervised(
-                "auto-launch-kernel",
-                async move {
-                    auto_launch_kernel(
-                        &room_clone,
-                        &notebook_id_clone,
-                        default_runtime,
-                        default_python_env,
-                        daemon_clone,
-                    )
-                    .await;
-                },
-                move |_| {
-                    let r = panic_room;
-                    // with_doc is sync (std::sync::Mutex), so no need for tokio::spawn
-                    // to acquire the lock. But spawn_supervised's panic handler runs
-                    // outside async context, so we still need spawn for the closure.
-                    tokio::spawn(async move {
-                        // Auto-launch panic — no specific typed reason. Clear
-                        // any stale error_reason so the frontend prompt isn't
-                        // stuck on an earlier missing_ipykernel, etc.
-                        if let Err(e) = r.state.with_doc(|sd| {
-                            sd.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)
-                        }) {
-                            tracing::warn!("[runtime-state] {}", e);
-                        }
-                    });
-                },
-            );
         } else if !has_kernel && matches!(trust_status, runt_trust::TrustStatus::Untrusted) {
             // Kernel blocked on trust approval — write this to RuntimeStateDoc
             // so the frontend shows "Awaiting Trust Approval" instead of "Initializing"
