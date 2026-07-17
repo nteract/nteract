@@ -234,9 +234,31 @@ impl RoomDurability {
             .as_ref()
             .filter(|tail| !tail.is_repairable_torn_suffix())
             .map(|tail| format!("recovery journal has preserved corrupt data: {tail:?}"));
+        let mut manifest = recovered.record.manifest;
+        // A checkpoint that exported every durable head proves the file on
+        // disk is a complete baseline for this journal, even when no import
+        // ever staged a source generation (a notebook created at a path is
+        // born without one; ordinary saves record checkpoints, not staged
+        // sources). Restore treats that manifest as durably staged so the
+        // room finalizes on the normal recovered path instead of failing
+        // materialization as source_degraded. A foreign disk write still
+        // fails finalization as a source conflict through the fingerprint
+        // check, and an unresolved checkpoint intent keeps its dedicated
+        // resolution path.
+        if degraded_reason.is_none()
+            && matches!(
+                manifest.source_phase,
+                super::recovery::RecoverySourcePhase::Pending
+                    | super::recovery::RecoverySourcePhase::Failed
+            )
+            && manifest.pending_file_checkpoint.is_none()
+            && manifest.file_checkpoint_covers_durable_heads()
+        {
+            manifest.source_phase = super::recovery::RecoverySourcePhase::DurablyStaged;
+        }
         Self::from_state(
             Some(journal),
-            recovered.record.manifest,
+            manifest,
             recovered.record.automerge_snapshot,
             true,
             degraded_reason,
@@ -1378,6 +1400,196 @@ mod tests {
             vec![change_hash]
         );
         assert_eq!(recovered.record.automerge_snapshot, snapshot);
+    }
+
+    /// A notebook created at a path never stages a source generation, so its
+    /// journal reads Pending with peer changes. When the file checkpoint
+    /// exported every durable head, the export is a complete baseline and
+    /// recovery must restore it as durably staged, not source_degraded.
+    #[test]
+    fn recovered_full_coverage_checkpoint_restores_as_staged_baseline() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let path = PathBuf::from("/tmp/notebook.ipynb");
+        let mut genesis_doc = AutoCommit::new();
+        let genesis = genesis_doc.save();
+        let durability = RoomDurability::journaled(
+            journal.clone(),
+            Uuid::nil(),
+            Some(path.clone()),
+            source_fingerprint(b""),
+            0,
+            genesis,
+        );
+        let (snapshot, heads, _encoded_heads, change_hash) = snapshot_with_change(7);
+        durability
+            .commit_snapshot(
+                &snapshot,
+                heads.clone(),
+                DurableMutation::Peer {
+                    change_hashes: vec![change_hash],
+                },
+            )
+            .unwrap();
+        let exported = source_fingerprint(b"exported ipynb bytes");
+        durability
+            .commit_file_checkpoint(path, exported, heads, 1)
+            .unwrap();
+        assert_eq!(
+            durability.manifest().source_phase,
+            RecoverySourcePhase::Pending
+        );
+
+        let recovered = match journal.load(exported).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("expected matching recovery, got {other:?}"),
+        };
+        assert_eq!(
+            recovered.record.manifest.source_phase,
+            RecoverySourcePhase::Pending
+        );
+
+        // No code path writes Failed today, but it is a serialized variant of
+        // the on-disk journal format, and restore already treats it exactly
+        // like Pending. The baseline promotion must cover it the same way so
+        // a journal written with Failed cannot restore as an unjoinable room.
+        let mut failed_record = recovered.clone();
+        failed_record.record.manifest.source_phase = RecoverySourcePhase::Failed;
+
+        let reloaded = RoomDurability::recovered(journal.clone(), recovered);
+        let manifest = reloaded.manifest();
+        assert_eq!(manifest.source_phase, RecoverySourcePhase::DurablyStaged);
+        assert!(manifest.file_checkpoint_covers_durable_heads());
+        // The restored baseline completes the normal recovered-source path.
+        reloaded.commit_source_ready(0).unwrap();
+        assert_eq!(reloaded.manifest().source_phase, RecoverySourcePhase::Ready);
+
+        let reloaded_from_failed = RoomDurability::recovered(journal, failed_record);
+        assert_eq!(
+            reloaded_from_failed.manifest().source_phase,
+            RecoverySourcePhase::DurablyStaged
+        );
+    }
+
+    /// A durable peer change committed after the last export means disk is a
+    /// stale prefix, not a complete baseline. Recovery must not claim it as
+    /// staged.
+    #[test]
+    fn recovered_checkpoint_with_unexported_tail_stays_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let path = PathBuf::from("/tmp/notebook.ipynb");
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "value", 1_i64).unwrap();
+        let first_snapshot = doc.save();
+        let first_heads = doc
+            .get_heads()
+            .iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>();
+        let first_hash = doc.get_changes(&[])[0].hash().0;
+        doc.put(ROOT, "value", 2_i64).unwrap();
+        let second_snapshot = doc.save();
+        let second_heads = doc
+            .get_heads()
+            .iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>();
+        let second_hash = doc
+            .get_changes(&[])
+            .iter()
+            .map(|change| change.hash().0)
+            .find(|hash| *hash != first_hash)
+            .unwrap();
+        let mut genesis_doc = AutoCommit::new();
+        let genesis = genesis_doc.save();
+        let durability = RoomDurability::journaled(
+            journal.clone(),
+            Uuid::nil(),
+            Some(path.clone()),
+            source_fingerprint(b""),
+            0,
+            genesis,
+        );
+        durability
+            .commit_snapshot(
+                &first_snapshot,
+                first_heads.clone(),
+                DurableMutation::Peer {
+                    change_hashes: vec![first_hash],
+                },
+            )
+            .unwrap();
+        let exported = source_fingerprint(b"exported ipynb bytes");
+        durability
+            .commit_file_checkpoint(path, exported, first_heads, 1)
+            .unwrap();
+        durability
+            .commit_snapshot(
+                &second_snapshot,
+                second_heads,
+                DurableMutation::Peer {
+                    change_hashes: vec![second_hash],
+                },
+            )
+            .unwrap();
+
+        let recovered = match journal.load(exported).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("expected matching recovery, got {other:?}"),
+        };
+        let reloaded = RoomDurability::recovered(journal, recovered);
+        let manifest = reloaded.manifest();
+        assert!(!manifest.file_checkpoint_covers_durable_heads());
+        assert_eq!(manifest.source_phase, RecoverySourcePhase::Pending);
+    }
+
+    /// An unresolved checkpoint intent owns its recovery through
+    /// `resolve_recovered_file_checkpoint`; the baseline restore must not
+    /// preempt that resolution.
+    #[test]
+    fn recovered_pending_checkpoint_intent_is_not_claimed_as_baseline() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let path = PathBuf::from("/tmp/notebook.ipynb");
+        let mut genesis_doc = AutoCommit::new();
+        let genesis = genesis_doc.save();
+        let durability = RoomDurability::journaled(
+            journal.clone(),
+            Uuid::nil(),
+            Some(path.clone()),
+            source_fingerprint(b""),
+            0,
+            genesis,
+        );
+        let (snapshot, heads, _encoded_heads, change_hash) = snapshot_with_change(7);
+        durability
+            .commit_snapshot(
+                &snapshot,
+                heads.clone(),
+                DurableMutation::Peer {
+                    change_hashes: vec![change_hash],
+                },
+            )
+            .unwrap();
+        let exported = source_fingerprint(b"exported ipynb bytes");
+        durability
+            .prepare_file_checkpoint(path, exported, heads, 1, None)
+            .unwrap();
+
+        // The journal's latest record is the crash shape: an intent written
+        // before its commit marker.
+        let recovered = match journal.load(exported).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("expected matching recovery, got {other:?}"),
+        };
+        assert!(recovered.record.manifest.pending_file_checkpoint.is_some());
+        let reloaded = RoomDurability::recovered(journal, recovered);
+        assert_eq!(
+            reloaded.manifest().source_phase,
+            RecoverySourcePhase::Pending
+        );
+        assert!(reloaded.manifest().pending_file_checkpoint.is_some());
     }
 
     #[tokio::test]
