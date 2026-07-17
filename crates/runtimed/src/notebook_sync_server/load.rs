@@ -1748,16 +1748,32 @@ pub(crate) fn commit_file_watcher_changes(
                     &error,
                     super::durability::RoomDurabilityError::SourceConflict { .. }
                 );
-                let reason = if source_conflict {
-                    format!(
-                        "source_conflict: external source changed while journal heads were not exported; both versions were preserved: {error}"
+                // A source conflict is only SourceState when the rollback
+                // restored the live document: disk plus journal then
+                // reconstruct the same degraded lifecycle on reopen. If the
+                // rollback snapshot failed to load, the live doc still holds
+                // half-applied external changes, so the room must stay
+                // resident for repair.
+                let (kind, reason) = if source_conflict {
+                    (
+                        if document_readable {
+                            super::durability::DegradationKind::SourceState
+                        } else {
+                            super::durability::DegradationKind::DurabilityBoundary
+                        },
+                        format!(
+                            "source_conflict: external source changed while journal heads were not exported; both versions were preserved: {error}"
+                        ),
                     )
                 } else {
-                    format!(
-                        "file watcher journal commit failed before external changes became visible: {error}"
+                    (
+                        super::durability::DegradationKind::DurabilityBoundary,
+                        format!(
+                            "file watcher journal commit failed before external changes became visible: {error}"
+                        ),
                     )
                 };
-                room.durability.mark_degraded(reason.clone());
+                room.durability.mark_degraded(kind, reason.clone());
                 if source_conflict {
                     room.lifecycle
                         .mark_source_conflict(reason.clone(), document_heads);
@@ -1817,7 +1833,11 @@ async fn complete_external_source_revision(
             "external source generation {} was staged but could not become Ready: {error}",
             status.source_generation
         );
-        degrade_external_source_revision(room, reason);
+        degrade_external_source_revision(
+            room,
+            super::durability::DegradationKind::SourceState,
+            reason,
+        );
         return false;
     }
     let projection = match super::projection::build_live_notebook_projection_for_generation(
@@ -1832,7 +1852,11 @@ async fn complete_external_source_revision(
                 "external source generation {} could not build its bounded projection: {error:#}",
                 status.source_generation
             );
-            degrade_external_source_revision(room, reason);
+            degrade_external_source_revision(
+                room,
+                super::durability::DegradationKind::SourceState,
+                reason,
+            );
             return false;
         }
     };
@@ -1844,7 +1868,11 @@ async fn complete_external_source_revision(
             "external source generation {} was staged but could not become Ready: {error}",
             status.source_generation
         );
-        degrade_external_source_revision(room, reason);
+        degrade_external_source_revision(
+            room,
+            super::durability::DegradationKind::DurabilityBoundary,
+            reason,
+        );
         return false;
     }
     room.lifecycle.complete_external_source_revision(
@@ -1857,9 +1885,13 @@ async fn complete_external_source_revision(
     true
 }
 
-fn degrade_external_source_revision(room: &NotebookRoom, reason: String) {
+fn degrade_external_source_revision(
+    room: &NotebookRoom,
+    kind: super::durability::DegradationKind,
+    reason: String,
+) {
     let document_heads = room.durability.status().durable_heads;
-    room.durability.mark_degraded(reason.clone());
+    room.durability.mark_degraded(kind, reason.clone());
     room.lifecycle
         .mark_degraded(reason.clone(), document_heads, true);
     let _ = room.state.with_doc(|state| {
@@ -2243,6 +2275,7 @@ pub(crate) async fn apply_ipynb_changes_inner(
             if let Err(error) = sidecars {
                 degrade_external_source_revision(
                     room,
+                    super::durability::DegradationKind::SourceState,
                     format!("external source runtime sidecars failed: {error}"),
                 );
                 return AppliedIpynbChanges::default();
@@ -2558,6 +2591,7 @@ pub(crate) async fn apply_ipynb_changes_inner(
         if let Err(error) = sidecars {
             degrade_external_source_revision(
                 room,
+                super::durability::DegradationKind::SourceState,
                 format!("external source runtime sidecars failed: {error}"),
             );
             return AppliedIpynbChanges::default();

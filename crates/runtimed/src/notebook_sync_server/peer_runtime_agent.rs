@@ -58,7 +58,10 @@ async fn apply_runtime_agent_notebook_doc_frame(
                     let reason = format!(
                         "journal commit failed before runtime-agent acknowledgement: {error}"
                     );
-                    room.durability.mark_degraded(reason.clone());
+                    room.durability.mark_degraded(
+                        super::durability::DegradationKind::DurabilityBoundary,
+                        reason.clone(),
+                    );
                     room.lifecycle
                         .mark_degraded(reason.clone(), document_heads, document_readable);
                     let _ = room.state.with_doc(|state| {
