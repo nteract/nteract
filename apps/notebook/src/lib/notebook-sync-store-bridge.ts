@@ -56,6 +56,15 @@ export interface NotebookSyncStoreBridgeOptions {
   setLoadError: (loadError: string | null) => void;
   bootstrapTimeoutMs?: number;
   onBootstrapTimeout?: () => void;
+  /**
+   * The daemon reported `initial_load: failed` for this room. The daemon
+   * closes the connection right after this status, so the caller should
+   * latch automatic reconnection off; redialing cannot succeed until the
+   * failure is resolved. Manual Retry (or a recovered load) re-arms it.
+   */
+  onInitialLoadFailed?: (reason: string) => void;
+  /** Any non-failed initial load phase on a live session; clears a latch. */
+  onInitialLoadRecovered?: () => void;
 }
 
 export interface NotebookSyncStoreBridge {
@@ -208,8 +217,12 @@ export function startNotebookSyncStoreBridge(
         options.setInitialLoadReadyForMutations(false);
         options.setLoadError(status.initial_load.reason);
         options.setIsLoading(false);
+        options.onInitialLoadFailed?.(status.initial_load.reason);
         return;
       }
+      // A live session reporting any non-failed phase proves the load is not
+      // terminally broken; idempotent latch-clear on the reconnect driver.
+      options.onInitialLoadRecovered?.();
 
       const initialLoadStreaming = isInitialLoadStreaming(status.initial_load);
       if (bootstrapTimeout !== null || interactiveReady || initialLoadStreaming) {

@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+pub mod file_claims;
 pub mod recent;
 
 // ============================================================================
@@ -130,6 +131,20 @@ pub fn desktop_display_name() -> &'static str {
 /// Channel-specific cache root directory name.
 pub fn cache_namespace() -> &'static str {
     cache_namespace_for(build_channel())
+}
+
+/// Directory name of the cache root shared by every channel and worktree.
+pub const SHARED_CACHE_NAMESPACE: &str = "runt-shared";
+
+/// Cache root shared by every daemon process regardless of channel or dev
+/// worktree: `~/.cache/runt-shared/`. Cross-process facts that stable,
+/// nightly, and per-worktree dev daemons must all see (e.g. file claims)
+/// live here, never under a per-channel `cache_namespace_for` root and
+/// never under a per-worktree subdirectory.
+pub fn shared_cache_root() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(SHARED_CACHE_NAMESPACE)
 }
 
 /// Channel-specific config root directory name.

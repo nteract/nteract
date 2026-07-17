@@ -98,6 +98,20 @@ pub struct DaemonConfig {
     /// set this so in-process daemon tests do not spawn the test harness binary
     /// when launching runtime agents.
     pub runtime_agent_exe: Option<PathBuf>,
+    /// Override for the cross-channel file-claim registry directory.
+    ///
+    /// `None` uses the shared root (`~/.cache/runt-shared/file-claims`),
+    /// which every daemon process must share for the open-time guard to
+    /// work. Tests inject a tempdir so they never touch the real shared
+    /// registry; `new_for_test` forces one when unset.
+    pub file_claims_dir: Option<PathBuf>,
+    /// Override for the file-claim idle release grace (milliseconds).
+    ///
+    /// A clean idle room (no peers, no unexported durable state) keeps its
+    /// cross-daemon claim for this long before the reconciler releases it,
+    /// so a window reload does not bounce the claim. `None` uses
+    /// `FILE_CLAIM_RELEASE_GRACE` (60s). Tests shrink it.
+    pub file_claim_release_grace_ms: Option<u64>,
 }
 
 impl Default for DaemonConfig {
@@ -125,6 +139,8 @@ impl Default for DaemonConfig {
             use_preferred_blob_port: true,
             settings_json_path: None,
             runtime_agent_exe: None,
+            file_claims_dir: None,
+            file_claim_release_grace_ms: None,
         }
     }
 }
@@ -439,6 +455,36 @@ const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 
 /// `last_kernel_torn_down_at`) and reaps them regardless of TTL.
 /// Active rooms (peers > 0 or kernel still running) are exempt.
 const MAX_RESIDENT_PEERLESS_ROOMS: usize = 32;
+/// How often the file-claim reconciler aligns the cross-daemon claim
+/// registry with each resident room's desired hold state (peers
+/// connected or unexported durable state → hold; clean idle → release
+/// after the grace window). Must be comfortably shorter than
+/// `FILE_CLAIM_RELEASE_GRACE` so the grace window is observed in more
+/// than one tick.
+const FILE_CLAIM_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+/// How long a clean idle room keeps its file claim before the
+/// reconciler hands the path back to other daemon processes. Long
+/// enough to survive a window reload, short enough that "close it in
+/// the other app first" resolves in about a minute even when nothing
+/// sends an explicit ShutdownNotebook.
+const FILE_CLAIM_RELEASE_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+/// Renew this daemon's own claim record when it is older than this.
+/// Several multiples of the reconcile interval (to skip pointless
+/// rewrites) and well inside `FILE_CLAIM_TTL` (30 min) so a held
+/// claim can never lapse into staleness between renewals.
+const FILE_CLAIM_RENEW_AFTER: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Outcome of [`Daemon::gate_file_claim`], the claim gate every
+/// path-bound peer entry passes through.
+pub(crate) enum FileClaimGate {
+    /// This daemon holds the claim (or the registry is unavailable,
+    /// which never blocks an open).
+    Proceed,
+    /// A live claim from another daemon process holds the path; refuse
+    /// the handshake with this structured `file_active_elsewhere`
+    /// message.
+    ActiveElsewhere(String),
+}
 const POOL_PACKAGE_HASH_VERSION: &str = "v1";
 const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plotly", "altair"];
 /// Extra package names that get auto-approved in the trusted-package
@@ -1167,6 +1213,12 @@ pub struct Daemon {
     pub(crate) trusted_packages: TrustedPackageStore,
     /// Persistent canonical-path -> stable notebook-id registry.
     pub(crate) notebook_registry: NotebookRegistry,
+    /// Cross-channel file-claim registry: leases naming which daemon
+    /// process serves each canonical notebook path, shared with every
+    /// other channel and worktree daemon. Written on file-backed room
+    /// open, refreshed on the reaper interval, released on room
+    /// close/eviction. See `runt_workspace::file_claims`.
+    pub(crate) file_claims: runt_workspace::file_claims::FileClaimRegistry,
     /// HTTP port for the blob server (set after startup).
     blob_port: Mutex<Option<u16>>,
     /// When the daemon process began. Reported via Ping for diagnostics.
@@ -1411,7 +1463,13 @@ impl Daemon {
     /// Test-only convenience that constructs a `Daemon` with an empty shell-env
     /// overlay. Integration tests reach this through the crate's public surface.
     #[doc(hidden)]
-    pub fn new_for_test(config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+    pub fn new_for_test(mut config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+        // Test daemons must never write into the real shared file-claim
+        // registry; force a config-scoped (tempdir-scoped) one when the
+        // test did not pick its own.
+        if config.file_claims_dir.is_none() {
+            config.file_claims_dir = Some(config.cache_dir.join("file-claims"));
+        }
         Self::new_with_overlay(config, || {
             crate::shell_env_overlay::ShellEnvOverlay::empty()
         })
@@ -1521,6 +1579,11 @@ impl Daemon {
             warn!("[notebook-registry] unavailable; notebook ids will be fresh per run: {reason}");
         }
 
+        let file_claims = match &config.file_claims_dir {
+            Some(dir) => runt_workspace::file_claims::FileClaimRegistry::at_dir(dir.clone()),
+            None => runt_workspace::file_claims::FileClaimRegistry::shared(),
+        };
+
         let initial_pool_settings = settings.get_all();
         let initial_uv_pool_size =
             effective_pool_target(config.uv_pool_size, initial_pool_settings.uv_pool_size);
@@ -1551,6 +1614,7 @@ impl Daemon {
             execution_store,
             trusted_packages,
             notebook_registry,
+            file_claims,
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
             notebook_rooms: Arc::new(RoomRegistry::new()),
@@ -1815,7 +1879,16 @@ impl Daemon {
             );
         }
 
-        let _drained_rooms = self.notebook_rooms.drain().await;
+        let drained_rooms = self.notebook_rooms.drain().await;
+        // Clean shutdown means this process no longer serves any path;
+        // release the claims so another daemon can open the files without
+        // waiting out the pid-liveness check on a lingering record.
+        let claim_owner = self.file_claim_owner();
+        for (_, room) in &drained_rooms {
+            if let Some(path) = room.file_binding.path().await {
+                let _ = self.file_claims.release(&path, &claim_owner);
+            }
+        }
         Ok(())
     }
 
@@ -2179,6 +2252,15 @@ impl Daemon {
         let reaper_daemon = self.clone();
         spawn_best_effort("ghost-room-reaper", async move {
             reaper_daemon.ghost_room_reaper_loop().await;
+        });
+
+        // Spawn the file-claim reconciler: holds cross-daemon claims for
+        // rooms with peers or unexported state, and releases the claim
+        // of a clean idle room after a short grace so other daemon
+        // processes can take the path without waiting on room eviction.
+        let claims_daemon = self.clone();
+        spawn_best_effort("file-claim-reconciler", async move {
+            claims_daemon.file_claim_reconciler_loop().await;
         });
 
         // Spawn the settings.json file watcher
@@ -2954,6 +3036,24 @@ impl Daemon {
                                 return Ok(());
                             }
                         };
+                        // Cross-daemon guard before creating the room, so a
+                        // refused handshake leaves no fresh room (watchers,
+                        // autosave) behind. The post-resolution gate below
+                        // covers every branch; this early check only avoids
+                        // the wasted room.
+                        match self.gate_file_claim(&canonical, stable_id) {
+                            FileClaimGate::Proceed => {}
+                            FileClaimGate::ActiveElsewhere(message) => {
+                                let (_reader, mut writer) = tokio::io::split(stream);
+                                send_error_response(
+                                    &mut writer,
+                                    message,
+                                    typed_bootstrap.unwrap_or(false),
+                                )
+                                .await?;
+                                return Ok(());
+                            }
+                        }
                         crate::notebook_sync_server::get_or_create_room_result(
                             &self.notebook_rooms,
                             stable_id,
@@ -2969,6 +3069,29 @@ impl Daemon {
                         .await?
                     }
                 };
+                // File-claim gate for whichever room this handshake landed
+                // on. Untitled rooms (no file binding) have nothing to
+                // claim. A UUID attach can land on a path-bound room
+                // (resident, or reloaded with its canonical path recovered
+                // from the journal), so the gate runs here, after room
+                // resolution, not only for path-shaped notebook ids. A
+                // live foreign claim refuses the attach instead of letting
+                // two daemon processes serve the same file.
+                if let Some(canonical) = room.file_binding.path().await {
+                    match self.gate_file_claim(&canonical, room.id) {
+                        FileClaimGate::Proceed => room.file_claim_hold.mark_held(),
+                        FileClaimGate::ActiveElsewhere(message) => {
+                            let (_reader, mut writer) = tokio::io::split(stream);
+                            send_error_response(
+                                &mut writer,
+                                message,
+                                typed_bootstrap.unwrap_or(false),
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                    }
+                }
                 self.mark_rooms_ever_seen();
                 let (reader, writer) = tokio::io::split(stream);
                 // Get user's default runtime and Python env preference for auto-launch
@@ -3447,6 +3570,222 @@ impl Daemon {
         .await
     }
 
+    /// This daemon's identity in the cross-channel file-claim registry.
+    /// The socket path is the claim identity (channel alone cannot tell
+    /// per-worktree dev daemons apart); the pid carries liveness.
+    pub(crate) fn file_claim_owner(&self) -> runt_workspace::file_claims::FileClaimOwner {
+        runt_workspace::file_claims::FileClaimOwner {
+            channel: runt_workspace::cache_namespace().to_string(),
+            socket_path: self.config.socket_path.to_string_lossy().into_owned(),
+            pid: std::process::id(),
+        }
+    }
+
+    /// The idle-grace window before a clean peer-less room's claim is
+    /// released. Config override for tests, `FILE_CLAIM_RELEASE_GRACE`
+    /// otherwise.
+    fn file_claim_release_grace(&self) -> std::time::Duration {
+        self.config
+            .file_claim_release_grace_ms
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(FILE_CLAIM_RELEASE_GRACE)
+    }
+
+    /// The single file-claim gate for peer entry to a path-bound room.
+    ///
+    /// Every handshake that attaches a peer to a room serving a canonical
+    /// path calls this: OpenNotebook (found room or about-to-create) and
+    /// the NotebookSync handshake (UUID attach and path attach alike).
+    /// No entry path can bind a path-backed room without either
+    /// holding the cross-daemon claim or refusing with the structured
+    /// `file_active_elsewhere` error. Same-owner claims refresh and
+    /// never refuse; stale claims (dead pid, lapsed refresh) are reaped
+    /// by the acquire; registry IO failure never blocks the open.
+    fn gate_file_claim(
+        &self,
+        canonical_path: &std::path::Path,
+        notebook_id: uuid::Uuid,
+    ) -> FileClaimGate {
+        let owner = self.file_claim_owner();
+        match self
+            .file_claims
+            .acquire(canonical_path, &owner, &notebook_id.to_string())
+        {
+            Ok(runt_workspace::file_claims::ClaimAttempt::Acquired) => FileClaimGate::Proceed,
+            Ok(runt_workspace::file_claims::ClaimAttempt::ForeignLive(claim)) => {
+                let message = runt_workspace::file_claims::file_active_elsewhere_message(
+                    canonical_path,
+                    &claim,
+                );
+                warn!("[runtimed] {}", message);
+                FileClaimGate::ActiveElsewhere(message)
+            }
+            Err(error) => {
+                warn!(
+                    "[runtimed] file-claim write failed for {:?}; opening without a claim: {}",
+                    canonical_path, error
+                );
+                FileClaimGate::Proceed
+            }
+        }
+    }
+
+    /// Background loop: align the claim registry with each resident
+    /// room's desired hold state on `FILE_CLAIM_RECONCILE_INTERVAL`.
+    async fn file_claim_reconciler_loop(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(FILE_CLAIM_RECONCILE_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            self.reconcile_file_claims_once().await;
+        }
+    }
+
+    /// One reconcile pass over every resident file-backed room.
+    ///
+    /// A room wants its claim while it has connected peers, unexported
+    /// durable state (durable heads beyond exported heads, a still-loading
+    /// source, or degraded durability), or a post-disconnect teardown that
+    /// has not completed (`last_kernel_torn_down_at` unset). The teardown
+    /// gate matters: the disconnect teardown performs one final `.ipynb`
+    /// save that re-claims the on-disk autosave owner marker, so releasing
+    /// the path before it completes would let that late save wedge a
+    /// successor daemon behind our live-pid marker.
+    ///
+    /// Wanted claims are acquired if missing and renewed while our own
+    /// record ages past `FILE_CLAIM_RENEW_AFTER`. A live foreign
+    /// claim is never overwritten: the registry states facts, and stealing
+    /// another daemon's lease would silently split-brain the file. A clean
+    /// idle room releases its claim (and the autosave owner marker) once
+    /// the idle-grace window elapses, handing the path to other daemon
+    /// processes while the room stays resident for fast rejoin.
+    ///
+    /// `pub` so integration tests can drive the reconciler synchronously
+    /// instead of waiting on `FILE_CLAIM_RECONCILE_INTERVAL`.
+    pub async fn reconcile_file_claims_once(&self) {
+        let owner = self.file_claim_owner();
+        let grace = self.file_claim_release_grace();
+        for (uuid, room) in self.notebook_rooms.snapshot().await {
+            let Some(path) = room.file_binding.path().await else {
+                continue;
+            };
+            let peers = room
+                .connections
+                .active_peers
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let durability = room.durability.status();
+            let unexported =
+                durability.durable_heads != durability.exported_heads || durability.is_degraded();
+            // Reconnects zero this stamp (`handle_join`), and the
+            // disconnect teardown sets it as its final step, after the
+            // last save. `None` therefore means "this daemon may still
+            // write the file", so keep the claim.
+            let teardown_settled = room.connections.last_kernel_torn_down_at().is_some();
+            let wants_claim = peers > 0 || unexported || room.is_loading() || !teardown_settled;
+
+            if wants_claim {
+                self.hold_wanted_file_claim(&owner, &path, uuid, &room);
+            } else if room.file_claim_hold.note_idle_clean(grace) {
+                // Re-read the peer count right before releasing: a peer
+                // that connected since the snapshot re-acquired through
+                // the gate, and releasing now would undo that.
+                if room
+                    .connections
+                    .active_peers
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    > 0
+                {
+                    room.file_claim_hold.note_wanted();
+                    continue;
+                }
+                crate::notebook_sync_server::release_autosave_owner_marker_for_path(&path).await;
+                if let Err(error) = self.file_claims.release(&path, &owner) {
+                    debug!(
+                        "[runtimed] file-claim release failed for {:?}: {}",
+                        path, error
+                    );
+                }
+                room.file_claim_hold.mark_released();
+                info!(
+                    "[runtimed] Released idle file claim for {:?} (room {} stays resident)",
+                    path, uuid
+                );
+            }
+        }
+    }
+
+    /// Keep a wanted claim held: acquire it when we do not hold one,
+    /// renew our own aging record, and warn (once per episode) when a
+    /// live foreign claim occupies a path this daemon actively serves.
+    fn hold_wanted_file_claim(
+        &self,
+        owner: &runt_workspace::file_claims::FileClaimOwner,
+        path: &std::path::Path,
+        uuid: uuid::Uuid,
+        room: &crate::notebook_sync_server::NotebookRoom,
+    ) {
+        let held = room.file_claim_hold.note_wanted();
+        if !held {
+            match self.file_claims.acquire(path, owner, &uuid.to_string()) {
+                Ok(runt_workspace::file_claims::ClaimAttempt::Acquired) => {
+                    room.file_claim_hold.mark_held();
+                    debug!("[runtimed] Re-acquired file claim for {:?}", path);
+                }
+                Ok(runt_workspace::file_claims::ClaimAttempt::ForeignLive(claim)) => {
+                    if room.file_claim_hold.should_warn_foreign_conflict() {
+                        warn!(
+                            "[runtimed] Room {} for {:?} is active here, but a live foreign claim \
+                             holds the path (socket {}); not stealing it. New opens will be \
+                             refused and source reconciliation is the backstop.",
+                            uuid, path, claim.socket_path
+                        );
+                    }
+                }
+                Err(error) => {
+                    debug!(
+                        "[runtimed] file-claim acquire failed for {:?}: {}",
+                        path, error
+                    );
+                }
+            }
+            return;
+        }
+        // Held: renew only our own record. Absent or stale records are
+        // restated (they are our fact to state); a live foreign claim is
+        // left alone.
+        match self.file_claims.read(path) {
+            Some(claim) if claim.socket_path == owner.socket_path => {
+                if u128::from(claim.age_ms()) >= FILE_CLAIM_RENEW_AFTER.as_millis() {
+                    if let Err(error) = self.file_claims.record(path, owner, &uuid.to_string()) {
+                        debug!(
+                            "[runtimed] file-claim renew failed for {:?}: {}",
+                            path, error
+                        );
+                    }
+                }
+            }
+            Some(claim) if self.file_claims.is_live(&claim) => {
+                if room.file_claim_hold.should_warn_foreign_conflict() {
+                    warn!(
+                        "[runtimed] Room {} for {:?} holds a claim locally, but the registry \
+                         shows a live foreign claim (socket {}); not overwriting it.",
+                        uuid, path, claim.socket_path
+                    );
+                }
+            }
+            _ => {
+                // Our record vanished or a foreign record went stale:
+                // restate the fact that this daemon serves the path.
+                if let Err(error) = self.file_claims.record(path, owner, &uuid.to_string()) {
+                    debug!(
+                        "[runtimed] file-claim restate failed for {:?}: {}",
+                        path, error
+                    );
+                }
+            }
+        }
+    }
+
     async fn handle_open_notebook<S>(
         self: Arc<Self>,
         stream: S,
@@ -3648,6 +3987,20 @@ impl Daemon {
             crate::notebook_sync_server::find_room_by_path(&self.notebook_rooms, &canonical_path)
                 .await
         {
+            // Same-process reopen: acquire (or refresh) through the gate.
+            // Usually this refreshes our own claim and proceeds, but a
+            // resident room whose claim was released while idle must
+            // re-acquire here, and if another daemon took the path in
+            // the meantime, this reopen is refused rather than
+            // split-braining the file under a live foreign claim.
+            match self.gate_file_claim(&canonical_path, existing.0.id) {
+                FileClaimGate::Proceed => {}
+                FileClaimGate::ActiveElsewhere(message) => {
+                    let (_reader, mut writer) = tokio::io::split(stream);
+                    send_error_response(&mut writer, message, typed_bootstrap).await?;
+                    return Ok(());
+                }
+            }
             existing
         } else {
             // Reopening the same file resolves to the same id across daemon
@@ -3660,6 +4013,18 @@ impl Daemon {
                     return Ok(());
                 }
             };
+            // Cross-daemon guard: refuse the open while another live daemon
+            // process (any channel, any worktree) holds a claim for this
+            // path. Gating before room creation keeps a refused open from
+            // leaving a fresh room (watchers, autosave) behind.
+            match self.gate_file_claim(&canonical_path, uuid) {
+                FileClaimGate::Proceed => {}
+                FileClaimGate::ActiveElsewhere(message) => {
+                    let (_reader, mut writer) = tokio::io::split(stream);
+                    send_error_response(&mut writer, message, typed_bootstrap).await?;
+                    return Ok(());
+                }
+            }
             let path = Some(canonical_path.clone());
             crate::notebook_sync_server::get_or_create_room_result(
                 &self.notebook_rooms,
@@ -3676,6 +4041,10 @@ impl Daemon {
             )
             .await?
         };
+        // The gate above either held the claim or refused the open;
+        // record the hold on whichever room we ended up with so the
+        // reconciler starts its lifecycle from "held".
+        room.file_claim_hold.mark_held();
         self.mark_rooms_ever_seen();
 
         // Get settings for sync and auto-launch (needed for both new and existing notebooks)
@@ -4781,7 +5150,9 @@ impl Daemon {
                 if let Some(room) = maybe_room {
                     // Shut down runtime agent via RPC before dropping handle.
                     // RuntimeAgentHandle doesn't own the Child (it's in a background
-                    // task), so dropping the handle alone doesn't kill it.
+                    // task), so dropping the handle alone doesn't kill it. This runs
+                    // before the autosave shutdown below so the final autosave can
+                    // capture any state the kernel teardown produced.
                     {
                         let has_runtime_agent =
                             room.runtime_agent_request_tx.lock().await.is_some();
@@ -4806,6 +5177,89 @@ impl Daemon {
                             *tx = None;
                         }
                     }
+
+                    // Hand the path to other daemon processes only after this
+                    // daemon's writers are gone, mirroring the reaper's eviction
+                    // ordering: journal barrier for the exact live heads, stop
+                    // the autosave task (it owns a room Arc and flushes one
+                    // final save), stop the file watchers, drop the on-disk
+                    // autosave owner marker, then release the cross-daemon
+                    // file claim. Releasing the claim any earlier invites a
+                    // successor daemon that cannot save past our live-pid marker
+                    // and could race a late autosave flush over its writes.
+                    //
+                    // Unlike the reaper, barrier failure cannot keep the room
+                    // resident (it is already out of the registry on an
+                    // explicit shutdown), so failures are logged and teardown
+                    // continues; the persisted doc and autosave save remain.
+                    let (snapshot, required_head_hashes, required_heads) = {
+                        let mut doc = room.doc.write().await;
+                        let heads = doc.get_heads();
+                        let encoded = heads.iter().map(ToString::to_string).collect::<Vec<_>>();
+                        let raw = heads.iter().map(|head| head.0).collect::<Vec<_>>();
+                        (doc.save(), raw, encoded)
+                    };
+                    let durability = Arc::clone(&room.durability);
+                    let durable_commit = tokio::task::spawn_blocking(move || {
+                        durability.commit_snapshot(
+                            &snapshot,
+                            required_head_hashes,
+                            crate::notebook_sync_server::durability::DurableMutation::Daemon,
+                        )
+                    })
+                    .await;
+                    match durable_commit {
+                        Ok(Ok(_)) => {
+                            const DURABLE_TIMEOUT: std::time::Duration =
+                                std::time::Duration::from_secs(5);
+                            if let Err(error) = Self::await_reaper_durability(
+                                &room,
+                                &required_heads,
+                                DURABLE_TIMEOUT,
+                            )
+                            .await
+                            {
+                                warn!(
+                                    "[runtimed] ShutdownNotebook durable-head wait failed for {}: {}",
+                                    notebook_id, error
+                                );
+                            }
+                        }
+                        Ok(Err(error)) => warn!(
+                            "[runtimed] ShutdownNotebook journal barrier failed for {}: {}",
+                            notebook_id, error
+                        ),
+                        Err(error) => warn!(
+                            "[runtimed] ShutdownNotebook journal task failed for {}: {}",
+                            notebook_id, error
+                        ),
+                    }
+                    const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
+                        std::time::Duration::from_secs(5);
+                    let _ = crate::notebook_sync_server::shutdown_autosave_debouncer(
+                        &room,
+                        &notebook_id,
+                        AUTOSAVE_SHUTDOWN_TIMEOUT,
+                    )
+                    .await;
+                    // Latch eviction between our final save (the autosave
+                    // shutdown above) and the marker release below: from here
+                    // on, any straggler save on this room Arc (a pending
+                    // disconnect-teardown, a lingering peer session) refuses
+                    // instead of re-claiming the marker after the handoff.
+                    room.mark_evicted();
+                    room.file_binding.shutdown_notebook_watcher().await;
+                    room.file_binding.shutdown_project_file_watcher().await;
+                    if let Some(path) = room.file_binding.path().await {
+                        crate::notebook_sync_server::release_autosave_owner_marker_for_path(&path)
+                            .await;
+                        let _ = self.file_claims.release(&path, &self.file_claim_owner());
+                    }
+                    // Take the persist debouncer so its senders drop and the task
+                    // exits with one final mirror flush instead of waiting on the
+                    // room Arc to unwind.
+                    let _ = room.persistence.take_debouncer();
+
                     info!("[runtimed] Evicted room for notebook: {}", notebook_id);
                     Response::NotebookShutdown { found: true }
                 } else {
@@ -5036,6 +5490,11 @@ impl Daemon {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
+            // File-claim renewal lives in the claim reconciler loop, not
+            // here: claims follow peers and unexported state, so most
+            // rooms this sweep sees (idle, clean, day-old) hold no claim
+            // to renew. Reaped rooms still release any remaining claim
+            // inside the sweep.
             self.ghost_room_reaper_sweep_with_cap(
                 RESIDENT_ROOM_TTL_SECS,
                 MAX_RESIDENT_PEERLESS_ROOMS,
@@ -5318,6 +5777,11 @@ impl Daemon {
             )
             .await;
 
+            // Latch eviction between the final save above and the marker
+            // release below, so a straggler save on this room Arc cannot
+            // re-claim the marker after the path is handed off.
+            room.mark_evicted();
+
             // Step 5: fire-and-forget watcher shutdowns. Each task
             // owns an `Arc<NotebookRoom>` and releases it on receipt
             // of the oneshot signal.
@@ -5325,6 +5789,7 @@ impl Daemon {
             room.file_binding.shutdown_project_file_watcher().await;
             if let Some(path) = path.as_ref() {
                 crate::notebook_sync_server::release_autosave_owner_marker_for_path(path).await;
+                let _ = self.file_claims.release(path, &self.file_claim_owner());
             }
 
             // Step 6: take the persist debouncer out so its senders

@@ -953,6 +953,102 @@ impl Drop for ReservationGuard {
     }
 }
 
+/// This daemon's belief about the cross-channel file claim for a
+/// path-bound room (`runt_workspace::file_claims`).
+///
+/// A claim is held while the room has connected peers or unexported
+/// durable state (durable heads beyond exported heads). A clean idle
+/// room releases its claim after a grace window so another daemon
+/// process can take the path, and re-acquires when a peer reconnects
+/// or dirty state appears. This struct only tracks the local hold
+/// state and idle-grace clock; the registry on disk stays the shared
+/// source of truth, and `Daemon::reconcile_file_claims_once` is the
+/// writer that keeps the two aligned.
+///
+/// Uses `std::sync::Mutex`: all accesses are short synchronous reads
+/// and writes, never held across `.await`.
+pub struct FileClaimHold {
+    inner: std::sync::Mutex<FileClaimHoldInner>,
+}
+
+struct FileClaimHoldInner {
+    held: bool,
+    /// First observation of "no peers, nothing unexported". `None`
+    /// while the room wants its claim.
+    idle_clean_since: Option<std::time::Instant>,
+    /// Set after warning once about a live foreign claim occupying a
+    /// path this daemon still serves, so the reconciler does not
+    /// repeat the warning every tick. Cleared on re-acquisition.
+    foreign_conflict_warned: bool,
+}
+
+impl Default for FileClaimHold {
+    fn default() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(FileClaimHoldInner {
+                held: false,
+                idle_clean_since: None,
+                foreign_conflict_warned: false,
+            }),
+        }
+    }
+}
+
+impl FileClaimHold {
+    fn lock(&self) -> std::sync::MutexGuard<'_, FileClaimHoldInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The daemon acquired (or refreshed) the registry claim for this
+    /// room's path.
+    pub fn mark_held(&self) {
+        let mut inner = self.lock();
+        inner.held = true;
+        inner.idle_clean_since = None;
+        inner.foreign_conflict_warned = false;
+    }
+
+    /// The daemon released the registry claim (idle handoff, eviction).
+    pub fn mark_released(&self) {
+        let mut inner = self.lock();
+        inner.held = false;
+        inner.idle_clean_since = None;
+    }
+
+    /// The room wants its claim (peers connected or unexported state).
+    /// Clears any idle-grace clock and reports whether the claim is
+    /// currently believed held.
+    pub fn note_wanted(&self) -> bool {
+        let mut inner = self.lock();
+        inner.idle_clean_since = None;
+        inner.held
+    }
+
+    /// The room is idle and clean. Stamps the idle-grace clock on the
+    /// first observation; returns `true` once the claim is still held
+    /// and `grace` has elapsed with no `note_wanted`/`mark_held` in
+    /// between, i.e. the claim is due for release.
+    pub fn note_idle_clean(&self, grace: std::time::Duration) -> bool {
+        let mut inner = self.lock();
+        if !inner.held {
+            return false;
+        }
+        let since = *inner
+            .idle_clean_since
+            .get_or_insert_with(std::time::Instant::now);
+        since.elapsed() >= grace
+    }
+
+    /// One warning per foreign-conflict episode. Returns `true` the
+    /// first time it is called after a `mark_held`.
+    pub fn should_warn_foreign_conflict(&self) -> bool {
+        let mut inner = self.lock();
+        !std::mem::replace(&mut inner.foreign_conflict_warned, true)
+    }
+}
+
 pub(crate) struct SourceReconciliationClaim {
     room: Arc<NotebookRoom>,
 }
@@ -962,6 +1058,96 @@ impl Drop for SourceReconciliationClaim {
         self.room
             .source_reconciliation_claimed
             .store(false, Ordering::Release);
+    }
+}
+
+/// Minimum spacing between auto-launch attempts after a failed one. A tight
+/// client reconnect loop must not respawn runtime agents at connect
+/// frequency; each failure holds the gate closed for this long.
+pub(crate) const AUTO_LAUNCH_FAILURE_COOLDOWN: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
+/// Per-room single-flight gate for kernel auto-launch.
+///
+/// At most one auto-launch attempt runs per room at a time; connects that
+/// arrive while an attempt is in flight observe that attempt through
+/// RuntimeStateDoc instead of spawning another agent. A failed attempt closes
+/// the gate for [`AUTO_LAUNCH_FAILURE_COOLDOWN`] so a reconnect loop cannot
+/// turn connect frequency into agent spawn frequency.
+///
+/// Sync-only state behind `std::sync::Mutex`; never hold the lock across an
+/// `.await`.
+#[derive(Default)]
+pub(crate) struct AutoLaunchGate {
+    state: std::sync::Mutex<AutoLaunchGateState>,
+}
+
+#[derive(Default)]
+struct AutoLaunchGateState {
+    in_flight: bool,
+    cooldown_until: Option<tokio::time::Instant>,
+}
+
+impl AutoLaunchGate {
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, AutoLaunchGateState> {
+        // Recover from poisoning: the guarded state is two plain fields and
+        // every critical section is trivially panic-free, so a poisoned lock
+        // carries no torn invariant. Recovering also keeps the token's Drop
+        // from double-panicking during unwind.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Outcome of asking the gate for permission to auto-launch.
+pub(crate) enum AutoLaunchAdmission {
+    /// Caller owns the attempt; the gate stays closed until the token drops.
+    Admitted(AutoLaunchAttempt),
+    /// Another attempt is in flight; observe it via RuntimeStateDoc.
+    InFlight,
+    /// A recent attempt failed; the gate reopens after `remaining`.
+    CoolingDown { remaining: std::time::Duration },
+}
+
+enum AutoLaunchOutcome {
+    /// Default: any drop without an explicit outcome (early return, panic
+    /// unwind, launch error) counts as a failure and arms the cooldown.
+    Failed,
+    /// Kernel launched; reopen the gate immediately.
+    Succeeded,
+    /// Benign abort (no peers left, kernel already present); reopen the gate
+    /// immediately so the next connect can launch without waiting.
+    Released,
+}
+
+/// Owned token for one auto-launch attempt. Dropping it reopens the gate;
+/// the drop path is where the failure cooldown is armed, so every early
+/// return and panic in the launch flow is covered without per-site calls.
+pub(crate) struct AutoLaunchAttempt {
+    room: Arc<NotebookRoom>,
+    outcome: AutoLaunchOutcome,
+}
+
+impl AutoLaunchAttempt {
+    /// Mark the attempt successful: reopen the gate with no cooldown.
+    pub(crate) fn succeed(mut self) {
+        self.outcome = AutoLaunchOutcome::Succeeded;
+    }
+
+    /// Mark the attempt a benign no-op: reopen the gate with no cooldown.
+    pub(crate) fn release_without_cooldown(mut self) {
+        self.outcome = AutoLaunchOutcome::Released;
+    }
+}
+
+impl Drop for AutoLaunchAttempt {
+    fn drop(&mut self) {
+        let mut st = self.room.auto_launch_gate.lock_state();
+        st.in_flight = false;
+        if matches!(self.outcome, AutoLaunchOutcome::Failed) {
+            st.cooldown_until = Some(tokio::time::Instant::now() + AUTO_LAUNCH_FAILURE_COOLDOWN);
+        }
     }
 }
 
@@ -987,6 +1173,9 @@ pub struct NotebookRoom {
     pub(crate) source_reconciliation_claimed: AtomicBool,
     /// File binding owner: canonical .ipynb path, file watcher, autosave.
     pub file_binding: NotebookFileBinding,
+    /// Local hold state for the cross-channel file claim on this room's
+    /// path. Meaningless (and untouched) for rooms with no file binding.
+    pub file_claim_hold: FileClaimHold,
     /// Notebook identity: persist_path and working_dir.
     pub identity: RoomIdentity,
     /// Per-connection accounting: active_peers + had_peers.
@@ -994,6 +1183,14 @@ pub struct NotebookRoom {
     /// Hosted rooms are cloud-authoritative and must not auto-launch local kernels.
     /// Read via `is_hosted()`; set once via `mark_hosted()` before peers attach.
     pub(crate) hosted: AtomicBool,
+    /// Latched by eviction (reaper or ShutdownNotebook) after the final
+    /// autosave flush, right before the autosave owner marker and file
+    /// claim release hand the path to other daemon processes. Once set,
+    /// primary-path saves refuse and late disconnect-teardown work
+    /// aborts, so no straggler task can re-claim the marker or rewrite
+    /// the file after the handoff. Monotonic: an evicted room Arc is
+    /// never re-registered (reconnects mint a fresh room instance).
+    pub(crate) evicted: AtomicBool,
     /// Blob store for output manifests.
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
@@ -1050,6 +1247,9 @@ pub struct NotebookRoom {
     /// sync handler to validate connections and prevent stale cleanup from
     /// clobbering state.
     pub current_runtime_agent_id: Arc<RwLock<Option<String>>>,
+    /// Single-flight gate for kernel auto-launch. All auto-launch admission
+    /// goes through [`NotebookRoom::try_begin_auto_launch`].
+    pub(crate) auto_launch_gate: AutoLaunchGate,
 }
 
 impl NotebookRoom {
@@ -1072,6 +1272,19 @@ impl NotebookRoom {
     /// Mark this room as hosted. This flag is monotonic for the room lifetime.
     pub fn mark_hosted(&self) {
         self.hosted.store(true, Ordering::Relaxed);
+    }
+
+    /// True once an eviction path has finished this room's final save and
+    /// is handing (or has handed) the path to other daemon processes.
+    pub fn is_evicted(&self) -> bool {
+        self.evicted.load(Ordering::Acquire)
+    }
+
+    /// Latch eviction. Call after the eviction path's final autosave
+    /// flush and before releasing the autosave owner marker; see the
+    /// `evicted` field docs for what the latch suppresses.
+    pub fn mark_evicted(&self) {
+        self.evicted.store(true, Ordering::Release);
     }
 
     /// Create a fresh room, ignoring any persisted state.
@@ -1562,9 +1775,11 @@ impl NotebookRoom {
             durability,
             source_reconciliation_claimed: AtomicBool::new(false),
             file_binding: NotebookFileBinding::new(path, ephemeral),
+            file_claim_hold: FileClaimHold::default(),
             identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
             hosted: AtomicBool::new(false),
+            evicted: AtomicBool::new(false),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
             trusted_packages,
@@ -1580,6 +1795,36 @@ impl NotebookRoom {
             runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
+            auto_launch_gate: AutoLaunchGate::default(),
+        })
+    }
+
+    /// Ask the auto-launch gate for permission to start an attempt.
+    ///
+    /// Returns `Admitted` with an owned token when no attempt is in flight
+    /// and no failure cooldown is active. The token must accompany the
+    /// attempt end to end: dropping it without calling
+    /// [`AutoLaunchAttempt::succeed`] or
+    /// [`AutoLaunchAttempt::release_without_cooldown`] counts as a failure
+    /// and arms [`AUTO_LAUNCH_FAILURE_COOLDOWN`].
+    pub(crate) fn try_begin_auto_launch(self: &Arc<Self>) -> AutoLaunchAdmission {
+        let now = tokio::time::Instant::now();
+        let mut st = self.auto_launch_gate.lock_state();
+        if st.in_flight {
+            return AutoLaunchAdmission::InFlight;
+        }
+        if let Some(until) = st.cooldown_until {
+            if now < until {
+                return AutoLaunchAdmission::CoolingDown {
+                    remaining: until - now,
+                };
+            }
+        }
+        st.in_flight = true;
+        st.cooldown_until = None;
+        AutoLaunchAdmission::Admitted(AutoLaunchAttempt {
+            room: Arc::clone(self),
+            outcome: AutoLaunchOutcome::Failed,
         })
     }
 

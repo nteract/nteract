@@ -60,6 +60,14 @@ export {
   type PollDefinition,
 } from "./poll";
 
+// Client reconnect policy: exponential backoff with jitter plus a terminal
+// failed-load latch (see reconnect-governor.ts)
+export {
+  ReconnectGovernor,
+  type ReconnectGovernorOptions,
+  type ReconnectGovernorState,
+} from "./reconnect-governor";
+
 // Local-first persistence: the NotebookDoc seed record plus the render-only
 // RuntimeStateDoc paint cache (see notebookDocChanged$ and the key-segment
 // docs in notebook-doc-persistence.ts)

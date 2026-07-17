@@ -384,6 +384,16 @@ export function useNotebook() {
       setLoadError,
       bootstrapTimeoutMs: BOOTSTRAP_INTERACTIVE_TIMEOUT_MS,
       onBootstrapTimeout: () => {
+        // Automatic recovery stays inside the governor: retryNow() dials
+        // immediately and, on failure, the backoff schedule resumes.
+        // host.daemon.reconnect is exclusive to the user's explicit Retry ,
+        // its reset() would cancel the governor's pending retry and replace
+        // it with one dial that schedules nothing on failure.
+        const autoReconnect = host.daemon.autoReconnect;
+        if (autoReconnect) {
+          autoReconnect.retryNow();
+          return;
+        }
         void host.daemon.reconnect({ force: true }).catch((error: unknown) => {
           logger.warn(
             "[automerge-notebook] forced reconnect after bootstrap timeout failed:",
@@ -391,6 +401,17 @@ export function useNotebook() {
           );
           setLoadError(error instanceof Error ? error.message : String(error));
         });
+      },
+      // A failed initial load is terminal for this room: the daemon closes
+      // the session right after sending the status, and every redial gets
+      // the same rejection. Latch the host's automatic reconnect loop off so
+      // it cannot hammer the daemon; the DaemonStatusBanner Retry goes
+      // through host.daemon.reconnect, which drops the latch.
+      onInitialLoadFailed: (reason) => {
+        host.daemon.autoReconnect?.latchFailure(reason);
+      },
+      onInitialLoadRecovered: () => {
+        host.daemon.autoReconnect?.clearLatch();
       },
     });
 
