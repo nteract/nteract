@@ -1448,13 +1448,27 @@ mod tests {
             recovered.record.manifest.source_phase,
             RecoverySourcePhase::Pending
         );
-        let reloaded = RoomDurability::recovered(journal, recovered);
+
+        // No code path writes Failed today, but it is a serialized variant of
+        // the on-disk journal format, and restore already treats it exactly
+        // like Pending. The baseline promotion must cover it the same way so
+        // a journal written with Failed cannot restore as an unjoinable room.
+        let mut failed_record = recovered.clone();
+        failed_record.record.manifest.source_phase = RecoverySourcePhase::Failed;
+
+        let reloaded = RoomDurability::recovered(journal.clone(), recovered);
         let manifest = reloaded.manifest();
         assert_eq!(manifest.source_phase, RecoverySourcePhase::DurablyStaged);
         assert!(manifest.file_checkpoint_covers_durable_heads());
         // The restored baseline completes the normal recovered-source path.
         reloaded.commit_source_ready(0).unwrap();
         assert_eq!(reloaded.manifest().source_phase, RecoverySourcePhase::Ready);
+
+        let reloaded_from_failed = RoomDurability::recovered(journal, failed_record);
+        assert_eq!(
+            reloaded_from_failed.manifest().source_phase,
+            RecoverySourcePhase::DurablyStaged
+        );
     }
 
     /// A durable peer change committed after the last export means disk is a
