@@ -2046,8 +2046,8 @@ async fn test_ghost_reaper_skips_reconnected_room() {
 /// A `SourceState` degradation (healthy journal, conflicted source) does
 /// not pin a room resident: `requires_durability_repair()` lets the
 /// reaper's candidate filter and `remove_if` predicate pass. The reaper
-/// then runs steps clean shutdown does not — the persist-debouncer flush
-/// and the autosave-debouncer final save — against a Degraded room. The
+/// then runs steps clean shutdown does not, the persist-debouncer flush
+/// and the autosave-debouncer final save, against a Degraded room. The
 /// degraded-save guard in `save_notebook_to_disk` must keep that final
 /// save from overwriting the user's external edits on the conflicted
 /// file: the room is reaped and the on-disk bytes stay byte-identical.
@@ -2113,7 +2113,7 @@ async fn test_ghost_reaper_sweeps_source_conflicted_room_without_touching_disk()
 
     // Leave the live doc ahead of disk. A direct doc mutation schedules no
     // autosave, so the only save that could reach disk after this point is
-    // the reaper's own final autosave — the exact write the degraded-save
+    // the reaper's own final autosave, the exact write the degraded-save
     // guard must block.
     {
         let mut doc = room.doc.write().await;

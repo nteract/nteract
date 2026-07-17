@@ -5068,7 +5068,7 @@ impl Daemon {
     }
 
     /// Test helper: put a resident room into the state a file-watcher
-    /// `SourceConflict` leaves behind — durability degraded as
+    /// `SourceConflict` leaves behind, durability degraded as
     /// `SourceState` (the journal itself is healthy) and lifecycle
     /// degraded with the `source_conflict` code. `pub` so integration
     /// tests (separate crate) can drive reaper sweeps against a
