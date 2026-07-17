@@ -350,6 +350,18 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
     }
 
     if is_primary_path {
+        // An evicted room already flushed its final save and handed (or is
+        // handing) the path to other daemon processes: the autosave owner
+        // marker and the cross-daemon file claim are released. A straggler
+        // save here (a late disconnect-teardown, a peer session still
+        // holding the room Arc) would re-claim the marker with this
+        // daemon's live pid and wedge the successor daemon's saves.
+        if room.is_evicted() {
+            return Err(SaveError::Unrecoverable(format!(
+                "notebook room for '{}' was evicted; refusing post-eviction save",
+                notebook_path.display()
+            )));
+        }
         if let Some(parent) = notebook_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
                 SaveError::Unrecoverable(format!(

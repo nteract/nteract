@@ -7495,10 +7495,12 @@ dependencies = [
  "core-foundation",
  "dirs",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

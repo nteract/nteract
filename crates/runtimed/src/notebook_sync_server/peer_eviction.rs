@@ -158,7 +158,11 @@ pub(super) async fn handle_peer_disconnect(
                     == 0;
                 let same_generation =
                     room_for_teardown.connections.connection_generation() == teardown_generation;
-                no_peers && same_generation
+                // An evicted room already ran its own teardown (final
+                // save, marker + claim release); this task must not
+                // save, rename, or clean anything after the handoff.
+                let not_evicted = !room_for_teardown.is_evicted();
+                no_peers && same_generation && not_evicted
             };
 
             // Outer loop wraps the teardown attempt so a flush timeout can

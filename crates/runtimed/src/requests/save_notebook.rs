@@ -14,6 +14,18 @@ use crate::notebook_sync_server::{
 };
 use crate::protocol::NotebookResponse;
 
+/// Best-effort cross-daemon claim write for a path this room now serves.
+/// Registry IO failure never blocks the save that just succeeded.
+fn record_file_claim(daemon: &Arc<Daemon>, room: &Arc<NotebookRoom>, path: &std::path::Path) {
+    if let Err(error) =
+        daemon
+            .file_claims
+            .record(path, &daemon.file_claim_owner(), &room.id.to_string())
+    {
+        warn!("[save] file-claim write failed for {:?}: {}", path, error);
+    }
+}
+
 pub(crate) async fn handle(
     room: &Arc<NotebookRoom>,
     daemon: &Arc<Daemon>,
@@ -259,6 +271,9 @@ async fn handle_with_intent(
         daemon
             .notebook_registry
             .record(&canonical, room.id, &registry_now);
+        // The room now serves a canonical path; publish the cross-daemon
+        // file claim so other channels' daemons refuse to open it.
+        record_file_claim(daemon, room, &canonical);
     } else if let Some(old) = old_path.as_ref() {
         let path_changed = old != &canonical;
         if path_changed {
@@ -270,9 +285,13 @@ async fn handle_with_intent(
             // different (or absent) file and must not resolve to this id.
             daemon.notebook_registry.forget(old);
             release_autosave_owner_marker_for_path(old).await;
+            // Move the cross-daemon file claim with the room too: this
+            // daemon no longer serves the old path.
+            let _ = daemon.file_claims.release(old, &daemon.file_claim_owner());
             daemon
                 .notebook_registry
                 .record(&canonical, room.id, &registry_now);
+            record_file_claim(daemon, room, &canonical);
         }
         // If path didn't change, this is save-in-place: nothing else.
     }

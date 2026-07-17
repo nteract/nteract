@@ -133,5 +133,6 @@ proptest = { workspace = true }
 serial_test = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 notebook-sync = { path = "../notebook-sync" }
+runt-workspace = { path = "../runt-workspace" }
 async-rust-lsp = "0.3"
 zeromq = "0.6"

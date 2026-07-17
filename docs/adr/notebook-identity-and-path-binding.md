@@ -77,6 +77,14 @@ The registry is the durable fix and is not a same-release change. The release st
 
 This restores ADR `mcp-session-lifecycle.md` Decision 8's invariant for sessions established by `notebook_id`. It is forward-compatible: even after the registry lands, carrying the path on the session and the rejoin target is still correct.
 
+## Decision 6: One daemon process serves a path at a time (cross-channel file claims)
+
+The registries above are daemon-local, so nothing stops a second daemon process (another channel, or another dev worktree) from opening the same `.ipynb` and split-braining it at save time. The guard is a shared lease registry at `~/.cache/runt-shared/file-claims/` (`runt_workspace::file_claims`): every handshake that attaches a peer to a path-bound room passes one claim gate that acquires the canonical path (channel, socket path, room id, pid) or refuses with a structured `file_active_elsewhere` error naming the owning channel and socket, surfaced verbatim through the handshake error field MCP clients already read.
+
+A claim follows activity, not room residency. It is held while the room has connected peers or unexported durable state (durable heads beyond the exported heads, i.e. a dirty journal); a clean idle room releases its claim after a short grace window (about a minute, enough to survive a window reload) while the room itself stays resident for fast rejoin, and re-acquires through the gate when a peer reconnects or through the reconciler when dirty state appears. If re-acquisition finds a live foreign claim, the open or reconnect fails with `file_active_elsewhere`; the daemon never overwrites a live foreign claim (a conflict where this daemon still serves the room is logged, not stolen). Claims also release on room eviction, explicit ShutdownNotebook (after the journal barrier, autosave shutdown, and autosave-owner-marker release, so the successor daemon can actually save), save-as (old path), and clean shutdown.
+
+Claims are leases, never locks: a dead pid or a lapsed refresh window makes a claim stale, and the next writer reaps it, so a crashed daemon cannot brick a path. The registry holds facts only; source-conflict reconciliation stays the last line of defense when a claim lied or a race slipped through.
+
 ## Rejected alternatives
 
 - **Path-encoded or path-derived ids.** Couples identity to location; every move mints a new id and you are back to needing a remap table. Rejected in Decision 1.
