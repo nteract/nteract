@@ -359,9 +359,12 @@ describe("createTauriHost()", () => {
     const unlisten = host.daemonEvents.onReady((p) => received.push(p));
     // Flush the listen() promise so the callback is registered.
     await Promise.resolve();
-    const entry = capturedListens.find((x) => x.event === "daemon:ready");
-    expect(entry).toBeTruthy();
-    entry?.cb({ payload: { runtime: "python" } });
+    // Two listeners share this event: the host-level reconnect-governor
+    // listener installed at construction (payload-ignoring) and the one this
+    // test installed. A real Tauri event fires every registered callback.
+    const entries = capturedListens.filter((x) => x.event === "daemon:ready");
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) entry.cb({ payload: { runtime: "python" } });
     expect(received).toContainEqual({ runtime: "python" });
     unlisten();
     await Promise.resolve();
@@ -376,8 +379,10 @@ describe("createTauriHost()", () => {
     await Promise.resolve();
     expect(capturedInvokes.map((x) => x.cmd)).not.toContain("get_daemon_ready_info");
 
-    const entry = capturedListens.find((x) => x.event === "daemon:ready");
-    entry?.cb({ payload: { runtime: "python" } });
+    // Fire every daemon:ready listener (the reconnect governor holds one
+    // too); only the subscriber this test installed records the payload.
+    const entries = capturedListens.filter((x) => x.event === "daemon:ready");
+    for (const entry of entries) entry.cb({ payload: { runtime: "python" } });
     expect(received).toEqual([{ runtime: "python" }]);
   });
 
