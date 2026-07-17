@@ -2265,6 +2265,7 @@ pub(crate) async fn apply_ipynb_changes_inner(
             if let Err(error) = sidecars {
                 degrade_external_source_revision(
                     room,
+                    super::durability::DegradationKind::SourceState,
                     format!("external source runtime sidecars failed: {error}"),
                 );
                 return AppliedIpynbChanges::default();
@@ -2580,6 +2581,7 @@ pub(crate) async fn apply_ipynb_changes_inner(
         if let Err(error) = sidecars {
             degrade_external_source_revision(
                 room,
+                super::durability::DegradationKind::SourceState,
                 format!("external source runtime sidecars failed: {error}"),
             );
             return AppliedIpynbChanges::default();
