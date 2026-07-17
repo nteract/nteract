@@ -359,9 +359,12 @@ describe("createTauriHost()", () => {
     const unlisten = host.daemonEvents.onReady((p) => received.push(p));
     // Flush the listen() promise so the callback is registered.
     await Promise.resolve();
-    const entry = capturedListens.find((x) => x.event === "daemon:ready");
-    expect(entry).toBeTruthy();
-    entry?.cb({ payload: { runtime: "python" } });
+    // Two listeners share this event: the host-level reconnect-governor
+    // listener installed at construction (payload-ignoring) and the one this
+    // test installed. A real Tauri event fires every registered callback.
+    const entries = capturedListens.filter((x) => x.event === "daemon:ready");
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) entry.cb({ payload: { runtime: "python" } });
     expect(received).toContainEqual({ runtime: "python" });
     unlisten();
     await Promise.resolve();
@@ -376,8 +379,10 @@ describe("createTauriHost()", () => {
     await Promise.resolve();
     expect(capturedInvokes.map((x) => x.cmd)).not.toContain("get_daemon_ready_info");
 
-    const entry = capturedListens.find((x) => x.event === "daemon:ready");
-    entry?.cb({ payload: { runtime: "python" } });
+    // Fire every daemon:ready listener (the reconnect governor holds one
+    // too); only the subscriber this test installed records the payload.
+    const entries = capturedListens.filter((x) => x.event === "daemon:ready");
+    for (const entry of entries) entry.cb({ payload: { runtime: "python" } });
     expect(received).toEqual([{ runtime: "python" }]);
   });
 
@@ -502,10 +507,12 @@ describe("createTauriHost()", () => {
     host.daemonEvents.onDisconnected(second);
     await Promise.resolve();
 
+    // Three listeners: the host-level reconnect-governor listener installed
+    // at construction plus the two notification-only subscribers. One
+    // simulated Tauri event fires every registered callback once.
     const entries = capturedListens.filter((x) => x.event === "daemon:disconnected");
-    expect(entries).toHaveLength(2);
-    entries[0]?.cb({ payload: undefined });
-    entries[1]?.cb({ payload: undefined });
+    expect(entries).toHaveLength(3);
+    for (const entry of entries) entry.cb({ payload: undefined });
 
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
@@ -518,6 +525,54 @@ describe("createTauriHost()", () => {
 
     resolveReconnect();
     await reconnectPromiseOverride;
+  });
+
+  it("latched auto-reconnect suppresses the disconnect redial until a manual reconnect", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await Promise.resolve();
+
+    host.daemon.autoReconnect?.latchFailure("initial load failed");
+    expect(host.daemon.autoReconnect?.getState()).toEqual({
+      kind: "latched",
+      reason: "initial load failed",
+    });
+
+    const entries = capturedListens.filter((x) => x.event === "daemon:disconnected");
+    for (const entry of entries) entry.cb({ payload: undefined });
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([]);
+
+    // Manual Retry drops the latch and dials once.
+    await host.daemon.reconnect({ force: true });
+    expect(host.daemon.autoReconnect?.getState()).toEqual({ kind: "idle" });
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: true },
+      },
+    ]);
+  });
+
+  it("autoReconnect.retryNow dials through the governor and no-ops while latched", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await Promise.resolve();
+
+    host.daemon.autoReconnect?.retryNow();
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: true },
+      },
+    ]);
+
+    // Link comes up (governor returns to idle), then the room load fails
+    // terminally: retryNow must not bypass the latch, that path is
+    // reserved for the manual Retry's reset.
+    for (const entry of capturedListens.filter((x) => x.event === "daemon:ready")) {
+      entry.cb({ payload: { runtime: "python" } });
+    }
+    host.daemon.autoReconnect?.latchFailure("initial load failed");
+    host.daemon.autoReconnect?.retryNow();
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toHaveLength(1);
   });
 
   it("exposes a command registry", () => {

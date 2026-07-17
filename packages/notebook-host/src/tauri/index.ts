@@ -24,7 +24,12 @@ import {
 } from "@tauri-apps/plugin-log";
 import { open as pluginOpenShell } from "@tauri-apps/plugin-shell";
 import { check as pluginCheckUpdate } from "@tauri-apps/plugin-updater";
-import { createHttpBlobResolver, type NotebookResponse, type NotebookTransport } from "runtimed";
+import {
+  ReconnectGovernor,
+  createHttpBlobResolver,
+  type NotebookResponse,
+  type NotebookTransport,
+} from "runtimed";
 import { createCommandRegistry } from "../commands";
 import { wireTauriMenuBridge } from "./menu-bridge";
 import { TauriTransport } from "./transport";
@@ -123,6 +128,25 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     return escalated;
   };
 
+  // The governor owns every automatic reconnect: `daemon:disconnected`
+  // triggers it exactly once per event through the host-level listeners
+  // below, so per-subscriber `onDisconnected` callbacks stay
+  // notification-only and backoff/latch policy lives in one place.
+  const reconnectGovernor = new ReconnectGovernor({
+    reconnect: () => reconnectDaemon(true),
+  });
+  _lastReconnectGovernorDispose?.();
+  const unlistenGovernorEvents = [
+    listenWebview<void>("daemon:disconnected", () => reconnectGovernor.connectionLost()),
+    listenWebview<DaemonReadyPayload>("daemon:ready", () =>
+      reconnectGovernor.connectionEstablished(),
+    ),
+  ];
+  _lastReconnectGovernorDispose = () => {
+    for (const unlisten of unlistenGovernorEvents) unlisten();
+    reconnectGovernor.dispose();
+  };
+
   const daemon: HostDaemon = {
     async isConnected() {
       try {
@@ -132,6 +156,12 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
       }
     },
     async reconnect(options) {
+      // Explicit user Retry only: drop any terminal latch and restart the
+      // backoff schedule, then dial once. Automatic recovery paths must use
+      // `autoReconnect.retryNow()` instead, this reset cancels the
+      // governor's pending retry and replaces it with a single dial whose
+      // failure schedules nothing.
+      reconnectGovernor.reset();
       await reconnectDaemon(options?.force === true);
     },
     async getInfo() {
@@ -140,6 +170,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async getReadyInfo() {
       return invoke<DaemonReadyPayload | null>("get_daemon_ready_info");
     },
+    autoReconnect: reconnectGovernor,
   };
 
   let blobResolver: HostBlobResolver | null = null;
@@ -216,11 +247,9 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
       };
     },
     onProgress: (cb) => listenWebview<DaemonProgressPayload>("daemon:progress", cb),
-    onDisconnected: (cb) =>
-      listenWebview<void>("daemon:disconnected", () => {
-        cb();
-        reconnectDaemon(true).catch(() => {});
-      }),
+    // Notification-only: the reconnect governor's host-level listener owns
+    // the automatic redial, so N subscribers never means N reconnect loops.
+    onDisconnected: (cb) => listenWebview<void>("daemon:disconnected", () => cb()),
     onUnavailable: (cb) => listenWebview<DaemonUnavailablePayload>("daemon:unavailable", cb),
   };
 
@@ -508,10 +537,20 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
  */
 let _lastMenuBridgeDispose: (() => void) | undefined;
 
+/**
+ * Internal: disposer for the previous host's reconnect governor and its
+ * host-level daemon lifecycle listeners. Same lifecycle story as the menu
+ * bridge above: one live governor per window, reclaimed when a new host is
+ * constructed (hot reload, tests).
+ */
+let _lastReconnectGovernorDispose: (() => void) | undefined;
+
 /** @internal Test helper — forget the most recent menu bridge disposer. */
 export function _resetMenuBridgeForTests(): void {
   _lastMenuBridgeDispose?.();
   _lastMenuBridgeDispose = undefined;
+  _lastReconnectGovernorDispose?.();
+  _lastReconnectGovernorDispose = undefined;
 }
 
 export { TauriTransport } from "./transport";

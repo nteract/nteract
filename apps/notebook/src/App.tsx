@@ -1086,10 +1086,12 @@ function AppContent() {
     onActivateCommentThread: handleActivateCommentThread,
   });
 
-  // Connection/identity slot source: daemon lifecycle, stable for the
-  // app's lifetime (the dot must transition on daemon restarts).
+  // Connection/identity slot source: daemon lifecycle plus the reconnect
+  // governor, stable for the app's lifetime (the dot must transition on
+  // daemon restarts, and must not claim "reconnecting" while the governor
+  // is latched terminal and nothing is redialing).
   const desktopConnectionStatus = useMemo(
-    () => createDesktopConnectionStatusSource(host.daemonEvents),
+    () => createDesktopConnectionStatusSource(host.daemonEvents, host.daemon.autoReconnect),
     [host],
   );
   useEffect(() => () => desktopConnectionStatus.dispose(), [desktopConnectionStatus]);
@@ -1815,9 +1817,21 @@ function AppContent() {
       }
     });
 
-    // Listen for daemon disconnection (mid-session)
+    // Listen for daemon disconnection (mid-session). When the reconnect
+    // driver is latched (terminal initial-load failure), this close is the
+    // daemon rejecting the session. Present the terminal reason instead of
+    // a reconnect spinner. Retry clears the latch via host.daemon.reconnect.
     const unlistenDisconnect = host.daemonEvents.onDisconnected(() => {
       cancelReadyTimeout();
+      const reconnectState = host.daemon.autoReconnect?.getState();
+      if (reconnectState?.kind === "latched") {
+        setDaemonStatus({
+          status: "failed",
+          error: `Couldn't load this notebook: ${reconnectState.reason}`,
+          guidance: "Automatic reconnection is paused. Retry reconnects once.",
+        });
+        return;
+      }
       setDaemonStatus({
         status: "failed",
         error: "Runtime disconnected. Attempting to reconnect...",

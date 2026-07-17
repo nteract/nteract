@@ -1,4 +1,4 @@
-import type { HostDaemonEvents } from "@nteract/notebook-host";
+import type { HostAutoReconnect, HostDaemonEvents } from "@nteract/notebook-host";
 import type { ConnectionStatus } from "runtimed";
 import type { NotebookConnectionStatusSource } from "@/components/notebook";
 
@@ -10,7 +10,7 @@ export interface DesktopConnectionStatusSource extends NotebookConnectionStatusS
 
 /**
  * Desktop connection-status source for the connection/identity slot,
- * derived from daemon lifecycle events.
+ * derived from daemon lifecycle events and the host's reconnect governor.
  *
  * The Tauri IPC transport's own `connectionStatus$` is honest about IPC
  * but constant in practice — the app never disconnects it, so a dot fed
@@ -24,12 +24,16 @@ export interface DesktopConnectionStatusSource extends NotebookConnectionStatusS
  *
  * - `onReady` → "online" (the host facade backfills from its cache, so a
  *   source created after the daemon is already up still reaches "online")
- * - `onDisconnected` → "reconnecting" (the host immediately starts its own
- *   reconnect — "reconnecting" is the truthful state, not "offline")
+ * - `onDisconnected` → "reconnecting" while the governor is armed (the
+ *   host redials on its own), but "offline" when the governor is latched
+ *   terminal, nothing is redialing, so a reconnecting dot would lie
+ * - a governor transition into "latched" demotes a live "reconnecting"
+ *   dot to "offline" (covers a latch that lands after the disconnect)
  * - `onUnavailable` → "offline"
  */
 export function createDesktopConnectionStatusSource(
   daemonEvents: Pick<HostDaemonEvents, "onReady" | "onDisconnected" | "onUnavailable">,
+  autoReconnect?: Pick<HostAutoReconnect, "getState" | "state$">,
 ): DesktopConnectionStatusSource {
   let current: ConnectionStatus = "connecting";
   const listeners = new Set<(status: ConnectionStatus) => void>();
@@ -43,9 +47,17 @@ export function createDesktopConnectionStatusSource(
 
   const unlisteners = [
     daemonEvents.onReady(() => next("online")),
-    daemonEvents.onDisconnected(() => next("reconnecting")),
+    daemonEvents.onDisconnected(() =>
+      next(autoReconnect?.getState().kind === "latched" ? "offline" : "reconnecting"),
+    ),
     daemonEvents.onUnavailable(() => next("offline")),
   ];
+
+  const latchSubscription = autoReconnect?.state$.subscribe((state) => {
+    if (state.kind === "latched" && current === "reconnecting") {
+      next("offline");
+    }
+  });
 
   return {
     getCurrent: () => current,
@@ -58,6 +70,7 @@ export function createDesktopConnectionStatusSource(
       for (const unlisten of unlisteners) {
         unlisten();
       }
+      latchSubscription?.unsubscribe();
       listeners.clear();
     },
   };
