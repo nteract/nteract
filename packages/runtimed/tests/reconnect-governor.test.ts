@@ -181,6 +181,32 @@ describe("ReconnectGovernor backoff", () => {
     h.governor.dispose();
   });
 
+  it("a loss in the same frame the stability window fires takes the fast path", async () => {
+    const h = createHarness({ stabilityWindowMs: 10_000 });
+
+    // Reach attempt 2 so a non-reset loss would schedule a delayed retry.
+    h.governor.connectionLost();
+    await dialResolvesThenDrops(h);
+    advanceBy(h.scheduler, 500);
+    h.dials.at(-1)?.resolve();
+    await drainMicrotasks();
+    h.governor.connectionEstablished();
+
+    // The timer fires at exactly the window boundary; the loss lands in the
+    // same virtual frame. The window elapsed, so the fast path is earned:
+    // attempt 1, immediate dial, and backoff still grows from there on the
+    // next consecutive loss.
+    advanceBy(h.scheduler, 10_000);
+    const before = h.dialFrames.length;
+    h.governor.connectionLost();
+    expect(h.dialFrames).toHaveLength(before + 1);
+    expect(h.governor.getState()).toEqual({ kind: "reconnecting", attempt: 1 });
+    await dialResolvesThenDrops(h);
+    expect(h.governor.getState()).toEqual({ kind: "waiting", attempt: 2, delayMs: 500 });
+
+    h.governor.dispose();
+  });
+
   it("connectionEstablished cancels a pending retry", async () => {
     const h = createHarness();
 

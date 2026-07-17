@@ -226,6 +226,11 @@ export class ReconnectGovernor {
     return Math.min(Math.max(Math.round(jittered), 0), this.maxDelayMs);
   }
 
+  // A drop right after the window fires gets one immediate redial: the
+  // window IS the definition of having earned the fast path back. The
+  // pathological flap cycle (up for exactly the window, then drop) dials
+  // once per stabilityWindowMs, the accepted floor, versus several per
+  // second unguarded.
   private armStabilityTimer(): void {
     this.cancelStabilityTimer();
     this.stabilityTimer = this.scheduler.schedule(() => {
