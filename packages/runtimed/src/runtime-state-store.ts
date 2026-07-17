@@ -25,12 +25,13 @@
 import {
   Observable,
   type SchedulerLike,
+  combineLatest,
   defer,
   distinctUntilChanged,
   map,
   of,
+  scan,
   shareReplay,
-  startWith,
   switchMap,
   timer,
 } from "rxjs";
@@ -59,6 +60,13 @@ import {
  * sees a "busy" flash for trivial executions.
  */
 export const BUSY_THROTTLE_MS = 60;
+
+const INITIAL_UNLOADED_STATUS_KEY = RUNTIME_STATUS.CONNECTING;
+
+interface RuntimeStatusGateState {
+  lastLoadedStatusKey: RuntimeStatusKey | null;
+  visibleStatusKey: RuntimeStatusKey;
+}
 
 /**
  * Hold back `RUNNING_BUSY` so quick execute→idle cycles never flash "busy".
@@ -126,22 +134,36 @@ export class RuntimeStateStore extends ObservableStore<RuntimeState> {
   );
 
   /**
+   * Runtime status for visible UI. During reconnect/reset the state snapshot
+   * returns to the default `NotStarted`, but `loaded$` is false, so that
+   * default is not authoritative. Hold the last loaded status key until a new
+   * RuntimeStateDoc snapshot opens the gate again. A first session with no
+   * prior loaded state uses a neutral connecting treatment until the first
+   * real snapshot arrives.
+   */
+  readonly visibleStatusKey$: Observable<RuntimeStatusKey> = combineLatest([
+    this.statusKey$,
+    this.loaded$,
+  ]).pipe(
+    scan(retainLastLoadedStatusKey, {
+      lastLoadedStatusKey: null,
+      visibleStatusKey: INITIAL_UNLOADED_STATUS_KEY,
+    } satisfies RuntimeStatusGateState),
+    map((state) => state.visibleStatusKey),
+    distinctUntilChanged(),
+    shareReplay({ bufferSize: 1, refCount: false }),
+  );
+
+  /**
    * Lifecycle status key with the busy flash suppressed
    * ([`throttleBusyStatus`], window [`BUSY_THROTTLE_MS`]). This is the
    * stream UI status indicators should render.
    *
    * Shared (`shareReplay`) so all subscribers ride one throttle pipeline
-   * and late subscribers get the current value synchronously. Seeded with
-   * the raw key at first subscribe — matching the old hook, a mount during
-   * a busy phase shows busy immediately; only *transitions* into busy are
-   * held back.
+   * and late subscribers get the current visible value synchronously.
    */
   readonly throttledStatusKey$: Observable<RuntimeStatusKey> = defer(() =>
-    this.statusKey$.pipe(
-      throttleBusyStatus(),
-      startWith(runtimeStatusKey(this.snapshot.kernel.lifecycle)),
-      distinctUntilChanged(),
-    ),
+    this.visibleStatusKey$.pipe(throttleBusyStatus(), distinctUntilChanged()),
   ).pipe(shareReplay({ bufferSize: 1, refCount: false }));
 
   /**
@@ -190,6 +212,28 @@ function envSyncStateEquals(a: EnvSyncState | null, b: EnvSyncState | null): boo
     arrayEquals(a.diff.added, b.diff.added) &&
     arrayEquals(a.diff.removed, b.diff.removed)
   );
+}
+
+function retainLastLoadedStatusKey(
+  previous: RuntimeStatusGateState,
+  [statusKey, loaded]: readonly [RuntimeStatusKey, boolean],
+): RuntimeStatusGateState {
+  if (loaded) {
+    return {
+      lastLoadedStatusKey: statusKey,
+      visibleStatusKey: statusKey,
+    };
+  }
+
+  const visibleStatusKey = previous.lastLoadedStatusKey ?? INITIAL_UNLOADED_STATUS_KEY;
+  if (previous.visibleStatusKey === visibleStatusKey && previous.lastLoadedStatusKey !== null) {
+    return previous;
+  }
+
+  return {
+    lastLoadedStatusKey: previous.lastLoadedStatusKey,
+    visibleStatusKey,
+  };
 }
 
 function arrayEquals(a: readonly string[], b: readonly string[]): boolean {
