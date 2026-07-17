@@ -5,18 +5,22 @@
 //!
 //! These tests spawn a real daemon and test client interactions.
 
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use comments_doc::local_path_comments_doc_id;
 use notebook_doc::presence::PresenceMessage;
 use notebook_protocol::connection::LaunchSpec;
 use notebook_sync::connect;
+use notebook_sync::ConnectionState;
 use notebook_wire::frame_types;
 use runtime_doc::RuntimeLifecycle;
 use runtimed::client::PoolClient;
-use runtimed::daemon::{Daemon, DaemonConfig};
+use runtimed::daemon::{Daemon, DaemonConfig, TestRecoveryManifestFacts, TestRoomRecoveryFacts};
 use runtimed::protocol::{DependencyGuard, NotebookRequest, NotebookResponse};
 use runtimed::EnvType;
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -123,6 +127,90 @@ fn test_config(temp_dir: &TempDir) -> DaemonConfig {
 
 fn test_runtime_agent_exe() -> Option<std::path::PathBuf> {
     option_env!("CARGO_BIN_EXE_runtimed").map(std::path::PathBuf::from)
+}
+
+const UNDEAD_ROOM_4065_STEM: &str =
+    "da7e893a89ff5536a4ef83a99531299e092fb557d1371cb72d6c303a8fc9ef32";
+
+struct PreparedUndeadRoomFixture {
+    notebook_path: PathBuf,
+    journal_path: PathBuf,
+    manifest: TestRecoveryManifestFacts,
+}
+
+fn undead_room_4065_fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("undead-room-4065")
+}
+
+fn prepare_undead_room_4065_fixture(
+    temp_dir: &TempDir,
+    config: &DaemonConfig,
+) -> PreparedUndeadRoomFixture {
+    let fixture_dir = undead_room_4065_fixture_dir();
+    std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
+
+    for extension in ["automerge", "recovery", "recovery.manifest.json"] {
+        let file_name = format!("{UNDEAD_ROOM_4065_STEM}.{extension}");
+        std::fs::copy(
+            fixture_dir.join(&file_name),
+            config.notebook_docs_dir.join(&file_name),
+        )
+        .unwrap();
+    }
+
+    let notebook_path = temp_dir.path().join("tinker1.ipynb");
+    std::fs::copy(fixture_dir.join("tinker1.ipynb"), &notebook_path).unwrap();
+    let canonical_path = std::fs::canonicalize(&notebook_path).unwrap();
+    let journal_path = config
+        .notebook_docs_dir
+        .join(format!("{UNDEAD_ROOM_4065_STEM}.recovery"));
+    let manifest = Daemon::test_rewrite_recovery_canonical_path(&journal_path, &canonical_path)
+        .expect("fixture recovery journal should be rewritable through recovery types");
+
+    let source_sha = hex::encode(Sha256::digest(std::fs::read(&canonical_path).unwrap()));
+    assert_eq!(
+        manifest.source_fingerprint_hex, source_sha,
+        "fixture notebook bytes must match the recovery manifest fingerprint"
+    );
+    assert_eq!(manifest.source_phase, "Pending");
+    assert_eq!(manifest.source_generation, 0);
+    assert_eq!(manifest.peer_change_count, 1);
+    assert_eq!(manifest.file_save_sequence, Some(1));
+    assert!(
+        manifest.full_head_coverage,
+        "the incident fixture must model a full file checkpoint baseline"
+    );
+    assert_eq!(manifest.durable_head_count, manifest.exported_head_count);
+
+    PreparedUndeadRoomFixture {
+        notebook_path: canonical_path,
+        journal_path,
+        manifest,
+    }
+}
+
+async fn wait_for_room_recovery_facts(
+    daemon: &Arc<Daemon>,
+    uuid: uuid::Uuid,
+    predicate: impl Fn(&TestRoomRecoveryFacts) -> bool,
+) -> TestRoomRecoveryFacts {
+    let start = std::time::Instant::now();
+    while start.elapsed() < SESSION_READY_TIMEOUT {
+        if let Some(facts) = daemon.test_room_recovery_facts(uuid).await {
+            if predicate(&facts) {
+                return facts;
+            }
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "room {uuid} did not reach expected recovery facts within {:?}: {:?}",
+        SESSION_READY_TIMEOUT,
+        daemon.test_room_recovery_facts(uuid).await
+    );
 }
 
 /// Max time we'll wait for a test daemon's socket to accept `ping`.
@@ -2039,6 +2127,133 @@ async fn test_ghost_reaper_skips_reconnected_room() {
     );
 
     drop(client);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_undead_room_4065_fixture_recovers_and_auto_launches_once() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let fixture = prepare_undead_room_4065_fixture(&temp_dir, &config);
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    daemon
+        .test_trust_notebook_file_dependencies(&fixture.notebook_path)
+        .expect("fixture dependencies should be trusted in the isolated test store");
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let owner = connect::connect_open(socket_path.clone(), fixture.notebook_path.clone(), "owner")
+        .await
+        .expect("incident fixture owner should open");
+    let notebook_uuid = uuid::Uuid::parse_str(&owner.info.notebook_id).unwrap();
+    assert_eq!(notebook_uuid, fixture.manifest.notebook_id);
+    assert_session_ready(&owner.handle, "undead-room owner").await;
+
+    let peer = connect::connect_open(socket_path.clone(), fixture.notebook_path.clone(), "peer")
+        .await
+        .expect("incident fixture peer should join");
+    assert_session_ready(&peer.handle, "undead-room peer").await;
+    let peer_status = peer.handle.status();
+    assert_eq!(peer_status.connection, ConnectionState::Connected);
+    assert!(
+        peer_status.session_ready(),
+        "peer must stay session-ready after joining recovered room: {peer_status:?}"
+    );
+
+    let facts = wait_for_room_recovery_facts(&daemon_for_inspect, notebook_uuid, |facts| {
+        facts.initial_load_state.starts_with("Ready")
+            && facts.availability == "Interactive"
+            && facts.source_phase == "Ready"
+            && facts.auto_launch_admissions == 1
+    })
+    .await;
+    assert!(
+        !facts.is_degraded,
+        "recovered room must not be degraded: {facts:?}"
+    );
+    assert_eq!(facts.durable_head_count, facts.exported_head_count);
+
+    let promoted = Daemon::test_recovery_manifest_facts(&fixture.journal_path)
+        .expect("promoted recovery manifest should be readable");
+    assert_eq!(promoted.source_phase, "Ready");
+    assert_eq!(promoted.source_generation, 0);
+    assert!(promoted.full_head_coverage);
+
+    drop(peer);
+    drop(owner);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_undead_room_4065_fixture_missing_exported_head_degrades() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let fixture = prepare_undead_room_4065_fixture(&temp_dir, &config);
+    let corrupted = Daemon::test_drop_recovery_exported_head(&fixture.journal_path)
+        .expect("fixture recovery journal should be corruptible through recovery types");
+    assert_eq!(corrupted.source_phase, "Pending");
+    assert!(!corrupted.full_head_coverage);
+    assert!(
+        corrupted.exported_head_count < corrupted.durable_head_count,
+        "negative control must remove checkpoint coverage"
+    );
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    daemon
+        .test_trust_notebook_file_dependencies(&fixture.notebook_path)
+        .expect("fixture dependencies should be trusted in the isolated test store");
+    let daemon_for_inspect = daemon.clone();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), fixture.notebook_path.clone(), "owner")
+        .await
+        .expect("handshake succeeds before the room reports source degradation");
+    let notebook_uuid = uuid::Uuid::parse_str(&opened.info.notebook_id).unwrap();
+    assert_eq!(notebook_uuid, fixture.manifest.notebook_id);
+
+    match opened
+        .handle
+        .await_session_ready_timeout(SESSION_READY_TIMEOUT)
+        .await
+    {
+        Err(notebook_sync::error::SyncError::Protocol(message)) => {
+            assert!(
+                message.contains("source_degraded"),
+                "negative control should fail as source_degraded, got {message}"
+            );
+        }
+        Err(notebook_sync::error::SyncError::Disconnected) => {}
+        Err(other) => panic!("expected source_degraded protocol failure, got {other:?}"),
+        Ok(()) => panic!("negative control should not become session-ready"),
+    }
+
+    let facts = wait_for_room_recovery_facts(&daemon_for_inspect, notebook_uuid, |facts| {
+        facts.initial_load_state.starts_with("Failed") && facts.availability == "Degraded"
+    })
+    .await;
+    assert!(
+        facts.initial_load_state.contains("source_degraded"),
+        "negative control must preserve the source_degraded reason: {facts:?}"
+    );
+    assert_eq!(facts.source_phase, "Pending");
+    assert_eq!(facts.exported_head_count, 0);
+
+    drop(opened);
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }

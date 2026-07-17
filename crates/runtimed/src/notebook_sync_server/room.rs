@@ -1086,6 +1086,7 @@ pub(crate) struct AutoLaunchGate {
 struct AutoLaunchGateState {
     in_flight: bool,
     cooldown_until: Option<tokio::time::Instant>,
+    admitted_count: u64,
 }
 
 impl AutoLaunchGate {
@@ -1822,10 +1823,17 @@ impl NotebookRoom {
         }
         st.in_flight = true;
         st.cooldown_until = None;
+        st.admitted_count = st.admitted_count.saturating_add(1);
         AutoLaunchAdmission::Admitted(AutoLaunchAttempt {
             room: Arc::clone(self),
             outcome: AutoLaunchOutcome::Failed,
         })
+    }
+
+    /// Test helper for integration coverage of the connection path.
+    #[doc(hidden)]
+    pub fn test_auto_launch_admissions(&self) -> u64 {
+        self.auto_launch_gate.lock_state().admitted_count
     }
 
     /// Check if this room has an active kernel.

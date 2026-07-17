@@ -1265,6 +1265,35 @@ pub struct DaemonAlreadyRunning {
     pub info: Box<DaemonInfo>,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestRecoveryManifestFacts {
+    pub notebook_id: uuid::Uuid,
+    pub canonical_path: Option<PathBuf>,
+    pub source_phase: String,
+    pub source_generation: u64,
+    pub durable_head_count: usize,
+    pub exported_head_count: usize,
+    pub peer_change_count: usize,
+    pub file_save_sequence: Option<u64>,
+    pub full_head_coverage: bool,
+    pub source_fingerprint_hex: String,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestRoomRecoveryFacts {
+    pub initial_load_state: String,
+    pub availability: String,
+    pub source_phase: String,
+    pub source_generation: u64,
+    pub durable_head_count: usize,
+    pub exported_head_count: usize,
+    pub is_degraded: bool,
+    pub degraded_reason: Option<String>,
+    pub auto_launch_admissions: u64,
+}
+
 pub(crate) struct SettingsJsonUpdate<T> {
     pub value: T,
     pub settings: SyncedSettings,
@@ -5515,6 +5544,144 @@ impl Daemon {
         uuid: uuid::Uuid,
     ) -> Option<Arc<crate::notebook_sync_server::NotebookRoom>> {
         self.notebook_rooms.peek_uuid(uuid).await
+    }
+
+    fn test_manifest_facts(
+        manifest: &crate::notebook_sync_server::recovery::RecoveryManifest,
+    ) -> TestRecoveryManifestFacts {
+        TestRecoveryManifestFacts {
+            notebook_id: manifest.notebook_id,
+            canonical_path: manifest.canonical_path.clone(),
+            source_phase: format!("{:?}", manifest.source_phase),
+            source_generation: manifest.source_generation,
+            durable_head_count: manifest.durable_heads.len(),
+            exported_head_count: manifest.exported_heads.len(),
+            peer_change_count: manifest.peer_change_hashes.len(),
+            file_save_sequence: manifest.file_save_sequence,
+            full_head_coverage: manifest.file_checkpoint_covers_durable_heads(),
+            source_fingerprint_hex: manifest.source_fingerprint.to_hex(),
+        }
+    }
+
+    /// Test helper: inspect the latest recovery journal record without
+    /// exposing the recovery primitive as public API.
+    #[doc(hidden)]
+    pub fn test_recovery_manifest_facts(
+        journal_path: &Path,
+    ) -> anyhow::Result<TestRecoveryManifestFacts> {
+        let journal = crate::notebook_sync_server::recovery::RecoveryJournal::new(journal_path);
+        let recovered = match journal.latest_record()? {
+            crate::notebook_sync_server::recovery::RecoveryLatestOutcome::Recovered(recovered) => {
+                recovered
+            }
+            crate::notebook_sync_server::recovery::RecoveryLatestOutcome::Unavailable {
+                reason,
+            } => {
+                anyhow::bail!("recovery journal unavailable: {reason:?}");
+            }
+        };
+        Ok(Self::test_manifest_facts(&recovered.record.manifest))
+    }
+
+    /// Test helper: rewrite the canonical path by appending a new recovery
+    /// record with the original Automerge snapshot unchanged.
+    #[doc(hidden)]
+    pub fn test_rewrite_recovery_canonical_path(
+        journal_path: &Path,
+        canonical_path: &Path,
+    ) -> anyhow::Result<TestRecoveryManifestFacts> {
+        let journal = crate::notebook_sync_server::recovery::RecoveryJournal::new(journal_path);
+        let recovered = match journal.latest_record()? {
+            crate::notebook_sync_server::recovery::RecoveryLatestOutcome::Recovered(recovered) => {
+                recovered
+            }
+            crate::notebook_sync_server::recovery::RecoveryLatestOutcome::Unavailable {
+                reason,
+            } => {
+                anyhow::bail!("recovery journal unavailable: {reason:?}");
+            }
+        };
+        let mut manifest = recovered.record.manifest.clone();
+        manifest.canonical_path = Some(canonical_path.to_path_buf());
+        journal.append(&manifest, &recovered.record.automerge_snapshot)?;
+        Ok(Self::test_manifest_facts(&manifest))
+    }
+
+    /// Test helper: append a copy of the latest journal record whose file
+    /// checkpoint no longer covers every durable head.
+    #[doc(hidden)]
+    pub fn test_drop_recovery_exported_head(
+        journal_path: &Path,
+    ) -> anyhow::Result<TestRecoveryManifestFacts> {
+        let journal = crate::notebook_sync_server::recovery::RecoveryJournal::new(journal_path);
+        let recovered = match journal.latest_record()? {
+            crate::notebook_sync_server::recovery::RecoveryLatestOutcome::Recovered(recovered) => {
+                recovered
+            }
+            crate::notebook_sync_server::recovery::RecoveryLatestOutcome::Unavailable {
+                reason,
+            } => {
+                anyhow::bail!("recovery journal unavailable: {reason:?}");
+            }
+        };
+        let mut manifest = recovered.record.manifest.clone();
+        anyhow::ensure!(
+            !manifest.exported_heads.is_empty(),
+            "fixture must have at least one exported head to corrupt"
+        );
+        manifest.exported_heads.pop();
+        journal.append(&manifest, &recovered.record.automerge_snapshot)?;
+        Ok(Self::test_manifest_facts(&manifest))
+    }
+
+    /// Test helper: approve the dependencies declared in a notebook file
+    /// using this daemon's isolated trusted-package store.
+    #[doc(hidden)]
+    pub fn test_trust_notebook_file_dependencies(
+        &self,
+        notebook_path: &Path,
+    ) -> anyhow::Result<()> {
+        let trust = crate::notebook_sync_server::verify_trust_from_file(
+            notebook_path,
+            &self.trusted_packages,
+        );
+        self.trusted_packages
+            .add_from_info(&trust.info, "integration-test")
+    }
+
+    /// Test helper: inspect recovery and launch state for a resident room.
+    #[doc(hidden)]
+    pub async fn test_room_recovery_facts(
+        &self,
+        uuid: uuid::Uuid,
+    ) -> Option<TestRoomRecoveryFacts> {
+        let room = self.notebook_rooms.peek_uuid(uuid).await?;
+        let availability = room.lifecycle.availability();
+        let durability = room.durability.status();
+        Some(TestRoomRecoveryFacts {
+            initial_load_state: format!("{:?}", room.initial_load.state()),
+            availability: match availability {
+                crate::notebook_sync_server::RoomAvailability::Attached(_) => {
+                    "Attached".to_string()
+                }
+                crate::notebook_sync_server::RoomAvailability::ProjectionReady(_) => {
+                    "ProjectionReady".to_string()
+                }
+                crate::notebook_sync_server::RoomAvailability::Interactive(_) => {
+                    "Interactive".to_string()
+                }
+                crate::notebook_sync_server::RoomAvailability::Degraded(_) => {
+                    "Degraded".to_string()
+                }
+            },
+            source_phase: format!("{:?}", durability.source_phase),
+            source_generation: durability.source_generation,
+            durable_head_count: durability.durable_heads.len(),
+            exported_head_count: durability.exported_heads.len(),
+            is_degraded: durability.is_degraded(),
+            degraded_reason: durability.degraded_reason(),
+            auto_launch_admissions: room.test_auto_launch_admissions(),
+        })
     }
 
     /// Test helper: count resident rooms. `pub` for the same reason as
