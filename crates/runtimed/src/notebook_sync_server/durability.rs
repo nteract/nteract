@@ -1406,6 +1406,10 @@ mod intent_crash_matrix_tests;
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
+mod property_tests;
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use automerge::{transaction::Transactable, ReadDoc, ROOT};
 
