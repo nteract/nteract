@@ -4421,7 +4421,7 @@ async fn test_open_notebook_refused_while_foreign_daemon_claim_is_live() {
 }
 
 /// A claim whose owner pid is dead is stale: the open reaps it and proceeds.
-/// This is the crash-safety path — a crashed daemon must not brick the file.
+/// This is the crash-safety path, a crashed daemon must not brick the file.
 #[tokio::test]
 async fn test_open_notebook_reaps_stale_claim_from_dead_pid() {
     let claims_root = TempDir::new().unwrap();
