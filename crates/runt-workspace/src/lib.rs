@@ -773,20 +773,19 @@ pub fn launchd_bootstrap_only() -> Result<(), String> {
     launchd_bootstrap(&plist, &domain)
 }
 
-/// Kickstart the daemon's launchd service.
-///
-/// Unlike `launchd_start()` which uses `bootstrap` (requires a plist file),
-/// `kickstart` works for SMAppService-registered agents where the plist is
-/// inside the app bundle and managed by the system. The `-k` flag kills any
-/// currently running instance before starting a new one.
 #[cfg(target_os = "macos")]
-pub fn launchd_kickstart() -> Result<(), String> {
+fn launchd_kickstart_inner(restart_running: bool) -> Result<(), String> {
     let uid = launchd_uid()?;
     let label = daemon_launchd_label();
     let service_target = format!("gui/{uid}/{label}");
 
-    let output = Command::new("launchctl")
-        .args(["kickstart", "-k", &service_target])
+    let mut command = Command::new("launchctl");
+    command.arg("kickstart");
+    if restart_running {
+        command.arg("-k");
+    }
+    let output = command
+        .arg(&service_target)
         .output()
         .map_err(|e| format!("Failed to run launchctl kickstart: {e}"))?;
 
@@ -796,6 +795,22 @@ pub fn launchd_kickstart() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Kickstart the daemon's launchd service without restarting a running daemon.
+///
+/// Unlike `launchd_start()` which uses `bootstrap` (requires a plist file),
+/// `kickstart` works for SMAppService-registered agents where the plist is
+/// inside the app bundle and managed by the system.
+#[cfg(target_os = "macos")]
+pub fn launchd_kickstart_start_only() -> Result<(), String> {
+    launchd_kickstart_inner(false)
+}
+
+/// Kickstart the daemon's launchd service, replacing any running instance.
+#[cfg(target_os = "macos")]
+pub fn launchd_kickstart() -> Result<(), String> {
+    launchd_kickstart_inner(true)
 }
 
 /// Check whether the daemon's launchd service is currently loaded.
