@@ -1,5 +1,6 @@
+import { BehaviorSubject } from "rxjs";
 import { describe, expect, it } from "vite-plus/test";
-import type { ConnectionStatus } from "runtimed";
+import type { ConnectionStatus, ReconnectGovernorState } from "runtimed";
 import { createDesktopConnectionStatusSource } from "../desktop-connection-status";
 
 function createFakeDaemonEvents() {
@@ -73,6 +74,62 @@ describe("createDesktopConnectionStatusSource", () => {
     const statuses: ConnectionStatus[] = [];
     source.subscribe((status) => statuses.push(status));
     expect(statuses).toEqual(["online"]);
+  });
+
+  it("maps disconnect to offline when the reconnect governor is latched", () => {
+    const fake = createFakeDaemonEvents();
+    const state$ = new BehaviorSubject<ReconnectGovernorState>({ kind: "idle" });
+    const source = createDesktopConnectionStatusSource(fake.daemonEvents, {
+      getState: () => state$.getValue(),
+      state$,
+    });
+    const statuses: ConnectionStatus[] = [];
+    source.subscribe((status) => statuses.push(status));
+
+    fake.fire("ready");
+    // Terminal initial-load failure latches the governor, then the daemon
+    // closes the session. Nothing is redialing, so "reconnecting" would lie.
+    state$.next({ kind: "latched", reason: "initial load failed" });
+    fake.fire("disconnected");
+
+    expect(statuses).toEqual(["connecting", "online", "offline"]);
+    expect(source.getCurrent()).toBe("offline");
+    source.dispose();
+  });
+
+  it("demotes reconnecting to offline when the latch lands after the disconnect", () => {
+    const fake = createFakeDaemonEvents();
+    const state$ = new BehaviorSubject<ReconnectGovernorState>({ kind: "idle" });
+    const source = createDesktopConnectionStatusSource(fake.daemonEvents, {
+      getState: () => state$.getValue(),
+      state$,
+    });
+    const statuses: ConnectionStatus[] = [];
+    source.subscribe((status) => statuses.push(status));
+
+    fake.fire("ready");
+    fake.fire("disconnected");
+    expect(source.getCurrent()).toBe("reconnecting");
+
+    state$.next({ kind: "latched", reason: "initial load failed" });
+    expect(statuses).toEqual(["connecting", "online", "reconnecting", "offline"]);
+
+    // Manual Retry succeeds: daemon:ready brings the dot back to online.
+    state$.next({ kind: "idle" });
+    fake.fire("ready");
+    expect(source.getCurrent()).toBe("online");
+    source.dispose();
+  });
+
+  it("dispose detaches the governor state subscription", () => {
+    const fake = createFakeDaemonEvents();
+    const state$ = new BehaviorSubject<ReconnectGovernorState>({ kind: "idle" });
+    const source = createDesktopConnectionStatusSource(fake.daemonEvents, {
+      getState: () => state$.getValue(),
+      state$,
+    });
+    source.dispose();
+    expect(state$.observed).toBe(false);
   });
 
   it("unsubscribe and dispose detach cleanly", () => {

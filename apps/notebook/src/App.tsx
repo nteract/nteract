@@ -1086,10 +1086,12 @@ function AppContent() {
     onActivateCommentThread: handleActivateCommentThread,
   });
 
-  // Connection/identity slot source: daemon lifecycle, stable for the
-  // app's lifetime (the dot must transition on daemon restarts).
+  // Connection/identity slot source: daemon lifecycle plus the reconnect
+  // governor, stable for the app's lifetime (the dot must transition on
+  // daemon restarts, and must not claim "reconnecting" while the governor
+  // is latched terminal and nothing is redialing).
   const desktopConnectionStatus = useMemo(
-    () => createDesktopConnectionStatusSource(host.daemonEvents),
+    () => createDesktopConnectionStatusSource(host.daemonEvents, host.daemon.autoReconnect),
     [host],
   );
   useEffect(() => () => desktopConnectionStatus.dispose(), [desktopConnectionStatus]);

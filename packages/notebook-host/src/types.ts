@@ -29,12 +29,7 @@
  *   point — not pre-optional now, to keep the contract honest.
  */
 
-import type {
-  BlobRef,
-  BlobResolver,
-  NotebookTransport,
-  ReconnectGovernorState,
-} from "runtimed";
+import type { BlobRef, BlobResolver, NotebookTransport, ReconnectGovernorState } from "runtimed";
 import type { Observable } from "rxjs";
 import type { CommandRegistry } from "./commands";
 
@@ -135,6 +130,12 @@ export interface HostAutoReconnect {
   latchFailure(reason: string): void;
   /** Drop the latch after a live session reports a non-failed load. */
   clearLatch(): void;
+  /**
+   * Pull the next automatic attempt forward to now (bootstrap timeout).
+   * Backoff survives a failed dial: the loop schedules the next attempt.
+   * No-op while latched; terminal failures go through the manual Retry.
+   */
+  retryNow(): void;
   getState(): ReconnectGovernorState;
   readonly state$: Observable<ReconnectGovernorState>;
 }

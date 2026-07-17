@@ -143,6 +143,27 @@ export class ReconnectGovernor {
   }
 
   /**
+   * Pull the next automatic attempt forward to now. For callers whose own
+   * signal (bootstrap timeout) says the link is dead even though no
+   * `connectionLost` fired, or one fired and the retry is still waiting.
+   * Unlike `reset()`, the backoff schedule survives: a failed dial
+   * schedules the next attempt instead of leaving nothing pending. No-op
+   * while latched (terminal failures need `reset()`) or while an attempt
+   * is already in flight.
+   */
+  retryNow(): void {
+    if (this.disposed) return;
+    const kind = this.getState().kind;
+    if (kind === "latched" || kind === "reconnecting") return;
+    this.cancelRetryTimer();
+    this.cancelStabilityTimer();
+    const attempt = Math.max(this.attempt, 1);
+    this.attempt = attempt;
+    const epoch = ++this.epoch;
+    this.runAttempt(attempt, epoch);
+  }
+
+  /**
    * Manual-retry intent: drop the latch, restart backoff from scratch, and
    * cancel any pending automatic attempt. The caller performs its own dial.
    */

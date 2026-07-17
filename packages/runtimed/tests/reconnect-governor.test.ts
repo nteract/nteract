@@ -197,6 +197,65 @@ describe("ReconnectGovernor backoff", () => {
   });
 });
 
+describe("ReconnectGovernor retryNow", () => {
+  it("pulls a waiting backoff attempt forward and resumes the schedule on failure", async () => {
+    const h = createHarness();
+
+    // Bootstrap-timeout scenario: the daemon died mid-load, the governor is
+    // waiting out a backoff delay when the caller demands an immediate dial.
+    h.governor.connectionLost();
+    await dialResolvesThenDrops(h);
+    expect(h.governor.getState()).toEqual({ kind: "waiting", attempt: 2, delayMs: 500 });
+
+    const beforeFrame = h.scheduler.frame;
+    h.governor.retryNow();
+    expect(h.dialFrames).toEqual([0, beforeFrame]);
+    expect(h.governor.getState()).toEqual({ kind: "reconnecting", attempt: 2 });
+
+    // The immediate dial fails: the backoff schedule resumes, not silence.
+    h.dials.at(-1)?.reject(new Error("daemon still down"));
+    await drainMicrotasks();
+    expect(h.governor.getState()).toEqual({ kind: "waiting", attempt: 3, delayMs: 1_000 });
+    advanceBy(h.scheduler, 1_000);
+    expect(h.dialFrames).toHaveLength(3);
+
+    h.governor.dispose();
+  });
+
+  it("dials from idle and enters the backoff loop on failure", async () => {
+    const h = createHarness();
+
+    h.governor.retryNow();
+    expect(h.dialFrames).toEqual([0]);
+    expect(h.governor.getState()).toEqual({ kind: "reconnecting", attempt: 1 });
+
+    h.dials[0]?.reject(new Error("daemon not listening"));
+    await drainMicrotasks();
+    expect(h.governor.getState()).toEqual({ kind: "waiting", attempt: 2, delayMs: 500 });
+
+    h.governor.dispose();
+  });
+
+  it("is a no-op while latched and while an attempt is in flight", async () => {
+    const h = createHarness();
+
+    h.governor.connectionLost();
+    expect(h.governor.getState()).toEqual({ kind: "reconnecting", attempt: 1 });
+    h.governor.retryNow();
+    expect(h.dialFrames).toHaveLength(1);
+
+    h.dials[0]?.resolve();
+    await drainMicrotasks();
+    h.governor.latchFailure("load failed");
+    h.governor.retryNow();
+    advanceBy(h.scheduler, 120_000);
+    expect(h.dialFrames).toHaveLength(1);
+    expect(h.governor.getState()).toEqual({ kind: "latched", reason: "load failed" });
+
+    h.governor.dispose();
+  });
+});
+
 describe("ReconnectGovernor terminal latch", () => {
   it("latchFailure cancels the pending retry and stops the loop", async () => {
     const h = createHarness();

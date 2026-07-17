@@ -552,6 +552,29 @@ describe("createTauriHost()", () => {
     ]);
   });
 
+  it("autoReconnect.retryNow dials through the governor and no-ops while latched", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await Promise.resolve();
+
+    host.daemon.autoReconnect?.retryNow();
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toEqual([
+      {
+        cmd: "reconnect_to_daemon",
+        args: { force: true },
+      },
+    ]);
+
+    // Link comes up (governor returns to idle), then the room load fails
+    // terminally: retryNow must not bypass the latch — that path is
+    // reserved for the manual Retry's reset.
+    for (const entry of capturedListens.filter((x) => x.event === "daemon:ready")) {
+      entry.cb({ payload: { runtime: "python" } });
+    }
+    host.daemon.autoReconnect?.latchFailure("initial load failed");
+    host.daemon.autoReconnect?.retryNow();
+    expect(capturedInvokes.filter((x) => x.cmd === "reconnect_to_daemon")).toHaveLength(1);
+  });
+
   it("exposes a command registry", () => {
     const host = createTauriHost({ transport: stubTransport });
     expect(host.commands).toBeTruthy();

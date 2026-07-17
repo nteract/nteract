@@ -156,8 +156,11 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
       }
     },
     async reconnect(options) {
-      // Explicit reconnect (Retry button, bootstrap-timeout recovery):
-      // drop any terminal latch and restart the backoff schedule, then dial.
+      // Explicit user Retry only: drop any terminal latch and restart the
+      // backoff schedule, then dial once. Automatic recovery paths must use
+      // `autoReconnect.retryNow()` instead — this reset cancels the
+      // governor's pending retry and replaces it with a single dial whose
+      // failure schedules nothing.
       reconnectGovernor.reset();
       await reconnectDaemon(options?.force === true);
     },

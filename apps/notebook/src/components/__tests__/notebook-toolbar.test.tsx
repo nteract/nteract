@@ -696,7 +696,9 @@ describe("connection/identity slot wiring", () => {
     expect(appSource).toMatch(
       /trailingControls=\{[\s\S]{0,600}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{desktopConnectionStatus\}[\s\S]{0,200}?connectionLabel="Daemon connection"/,
     );
-    expect(appSource).toMatch(/createDesktopConnectionStatusSource\(host\.daemonEvents\)/);
+    expect(appSource).toMatch(
+      /createDesktopConnectionStatusSource\(host\.daemonEvents, host\.daemon\.autoReconnect\)/,
+    );
     expect(appSource).not.toMatch(/connectionStatus\$=\{host\.transport\.connectionStatus\$\}/);
   });
 

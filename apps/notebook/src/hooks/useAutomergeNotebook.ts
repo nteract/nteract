@@ -384,6 +384,16 @@ export function useNotebook() {
       setLoadError,
       bootstrapTimeoutMs: BOOTSTRAP_INTERACTIVE_TIMEOUT_MS,
       onBootstrapTimeout: () => {
+        // Automatic recovery stays inside the governor: retryNow() dials
+        // immediately and, on failure, the backoff schedule resumes.
+        // host.daemon.reconnect is exclusive to the user's explicit Retry —
+        // its reset() would cancel the governor's pending retry and replace
+        // it with one dial that schedules nothing on failure.
+        const autoReconnect = host.daemon.autoReconnect;
+        if (autoReconnect) {
+          autoReconnect.retryNow();
+          return;
+        }
         void host.daemon.reconnect({ force: true }).catch((error: unknown) => {
           logger.warn(
             "[automerge-notebook] forced reconnect after bootstrap timeout failed:",
