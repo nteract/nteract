@@ -26,7 +26,7 @@ export interface DesktopConnectionStatusSource extends NotebookConnectionStatusS
  *   source created after the daemon is already up still reaches "online")
  * - `onDisconnected` → "reconnecting" while the governor is armed (the
  *   host redials on its own), but "offline" when the governor is latched
- *   terminal — nothing is redialing, so a reconnecting dot would lie
+ *   terminal, nothing is redialing, so a reconnecting dot would lie
  * - a governor transition into "latched" demotes a live "reconnecting"
  *   dot to "offline" (covers a latch that lands after the disconnect)
  * - `onUnavailable` → "offline"

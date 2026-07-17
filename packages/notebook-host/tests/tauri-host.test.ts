@@ -565,7 +565,7 @@ describe("createTauriHost()", () => {
     ]);
 
     // Link comes up (governor returns to idle), then the room load fails
-    // terminally: retryNow must not bypass the latch — that path is
+    // terminally: retryNow must not bypass the latch, that path is
     // reserved for the manual Retry's reset.
     for (const entry of capturedListens.filter((x) => x.event === "daemon:ready")) {
       entry.cb({ payload: { runtime: "python" } });
