@@ -13126,3 +13126,156 @@ async fn auto_launch_gate_admission_clears_stale_cooldown() {
         "success must not inherit the earlier failure's cooldown"
     );
 }
+
+/// A launch attempt with zero peers aborts benignly through the real
+/// `auto_launch_kernel` entry point: lifecycle lands back on NotStarted and
+/// the gate reopens with no cooldown, so the next connect launches
+/// immediately. Deleting the benign release at the no-peers exit turns this
+/// abort into a failure cooldown and fails the admission assertion below.
+#[tokio::test]
+async fn auto_launch_no_peers_abort_resets_lifecycle_and_reopens_gate() {
+    let (tmp, room) = gate_test_room();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a,
+        _ => panic!("first request must be admitted"),
+    };
+    // Mirror the connect path: Resolving is written right after admission.
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+        .unwrap();
+    assert_eq!(
+        room.connections
+            .active_peers
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "test premise: the admitted peer has already disconnected"
+    );
+
+    auto_launch_kernel(
+        &room,
+        &room.id.to_string(),
+        crate::runtime::Runtime::Python,
+        crate::settings_doc::PythonEnvType::Uv,
+        daemon,
+        attempt,
+    )
+    .await;
+
+    let lifecycle = room
+        .state
+        .read(|sd| sd.read_state().kernel.lifecycle)
+        .unwrap();
+    assert_eq!(
+        lifecycle,
+        RuntimeLifecycle::NotStarted,
+        "benign no-peers abort must reset the Resolving lifecycle"
+    );
+    // A subsequent connect re-triggers: admission must succeed immediately,
+    // with no failure cooldown from the benign abort.
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a.release_without_cooldown(),
+        AutoLaunchAdmission::InFlight => panic!("benign abort must release the gate"),
+        AutoLaunchAdmission::CoolingDown { .. } => {
+            panic!("benign abort must not arm the failure cooldown")
+        }
+    }
+}
+
+/// The no-peers abort re-admits a reconnect that raced the abort window
+/// (#4065 reconnect-loop workload): the reconnect bumped `active_peers` but
+/// was refused admission (`InFlight`) while the aborting task still held the
+/// gate, so the aborting task must hand itself a fresh token and retry on
+/// the reconnected peer's behalf. The peers re-check runs only after the
+/// token release; checked before, this connect would be stranded at
+/// NotStarted with no retry trigger.
+#[tokio::test]
+async fn auto_launch_no_peers_abort_readmits_reconnect_that_raced_the_abort() {
+    let (_tmp, room) = gate_test_room();
+
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a,
+        _ => panic!("first request must be admitted"),
+    };
+    // The reconnect landed during the abort window: peer count is back to 1
+    // but its connect saw InFlight and was swallowed.
+    room.connections
+        .active_peers
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        matches!(room.try_begin_auto_launch(), AutoLaunchAdmission::InFlight),
+        "the racing connect is refused while the abort is in progress"
+    );
+
+    let next = release_attempt_and_readmit_if_peer_waiting(&room, attempt)
+        .await
+        .expect("a waiting peer must be re-admitted for retry");
+
+    // The re-admitted token holds the gate for the retry.
+    assert!(
+        matches!(room.try_begin_auto_launch(), AutoLaunchAdmission::InFlight),
+        "the retry token must hold the gate"
+    );
+    next.release_without_cooldown();
+}
+
+/// When no peer raced the abort, the no-peers release stands: no retry
+/// token, gate open for whichever connect arrives next.
+#[tokio::test]
+async fn auto_launch_no_peers_abort_stands_when_no_peer_waiting() {
+    let (_tmp, room) = gate_test_room();
+
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a,
+        _ => panic!("first request must be admitted"),
+    };
+
+    let next = release_attempt_and_readmit_if_peer_waiting(&room, attempt).await;
+    assert!(next.is_none(), "no waiting peer means no retry token");
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a.release_without_cooldown(),
+        _ => panic!("gate must be open after the abort stands"),
+    }
+}
+
+/// Success disposition at the launch exit site: `finish_auto_launch_success`
+/// must write Running(Idle) and reopen the gate with no cooldown. Deleting
+/// `attempt.succeed()` inside it drops the token as a failure, arms the 5s
+/// cooldown after every successful launch, and fails the admission assertion.
+#[tokio::test]
+async fn auto_launch_success_disposition_reopens_gate_immediately() {
+    let (_tmp, room) = gate_test_room();
+
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a,
+        _ => panic!("first request must be admitted"),
+    };
+
+    finish_auto_launch_success(
+        &room,
+        "python",
+        "uv",
+        "runtime-agent:test",
+        LaunchedEnvConfig::default(),
+        attempt,
+    )
+    .await;
+
+    let lifecycle = room
+        .state
+        .read(|sd| sd.read_state().kernel.lifecycle)
+        .unwrap();
+    assert_eq!(
+        lifecycle,
+        RuntimeLifecycle::Running(KernelActivity::Idle),
+        "success bookkeeping must publish Running(Idle)"
+    );
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a.release_without_cooldown(),
+        AutoLaunchAdmission::InFlight => panic!("success must release the gate"),
+        AutoLaunchAdmission::CoolingDown { .. } => {
+            panic!("success must not arm the failure cooldown")
+        }
+    }
+}

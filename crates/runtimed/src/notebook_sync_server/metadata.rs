@@ -2875,20 +2875,105 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
 /// Auto-launch kernel for a trusted notebook when first peer connects.
 /// This is similar to handle_notebook_request(LaunchKernel) but without a request/response.
 ///
-/// Resolves the metadata snapshot from the Automerge doc (if the first client has
-/// already synced) or falls back to reading the .ipynb from disk.
+/// Loops over [`auto_launch_kernel_attempt`]: one iteration per admitted
+/// single-flight token. An iteration hands back a fresh token only when its
+/// benign no-peers abort raced a reconnect. That connect was refused
+/// admission (`InFlight`) while this task still held the gate and has no
+/// retry trigger of its own, so this task retries on its behalf.
 pub(crate) async fn auto_launch_kernel(
     room: &std::sync::Arc<NotebookRoom>,
     notebook_id: &str,
     default_runtime: crate::runtime::Runtime,
     default_python_env: crate::settings_doc::PythonEnvType,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
-    // Single-flight admission token from `NotebookRoom::try_begin_auto_launch`.
-    // This function owns the attempt end to end: dropping the token on any
-    // exit path that did not launch a kernel (and was not a benign abort)
-    // arms the failure cooldown, so early returns need no per-site handling.
     attempt: super::room::AutoLaunchAttempt,
 ) {
+    let mut attempt = attempt;
+    loop {
+        attempt = match auto_launch_kernel_attempt(
+            room,
+            notebook_id,
+            default_runtime.clone(),
+            default_python_env.clone(),
+            daemon.clone(),
+            attempt,
+        )
+        .await
+        {
+            Some(next) => next,
+            None => return,
+        };
+        info!(
+            "[notebook-sync] Auto-launch abort raced a reconnect for {}; retrying",
+            notebook_id
+        );
+        // The abort reset lifecycle to NotStarted; restore Resolving to
+        // mirror what the connect path writes after admission, so the
+        // reconnected peer never sits on stale NotStarted.
+        if let Err(e) = room
+            .state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+        {
+            warn!("[runtime-state] {}", e);
+        }
+    }
+}
+
+/// Benign no-peers abort for an in-flight auto-launch attempt.
+///
+/// Releases the single-flight token, then re-checks active peers only after
+/// the release. The order is load-bearing: a connect that lands during the
+/// abort window is refused admission (`InFlight`) and has no retry trigger of
+/// its own, so a peers check taken before the release could see 0, release
+/// the gate, and strand the reconnected peer at `NotStarted` with nobody left
+/// to launch. Checking after the release closes that window: either this
+/// call sees the peer and re-admits on its behalf, or the connect itself got
+/// admitted after the release and owns the next attempt.
+///
+/// Returns a fresh token when the caller should retry the launch; `None`
+/// when the abort stands or another caller won re-admission.
+pub(crate) async fn release_attempt_and_readmit_if_peer_waiting(
+    room: &std::sync::Arc<NotebookRoom>,
+    attempt: super::room::AutoLaunchAttempt,
+) -> Option<super::room::AutoLaunchAttempt> {
+    reset_starting_state(room, None).await;
+    attempt.release_without_cooldown();
+    if room
+        .connections
+        .active_peers
+        .load(std::sync::atomic::Ordering::Relaxed)
+        == 0
+    {
+        return None;
+    }
+    match room.try_begin_auto_launch() {
+        super::room::AutoLaunchAdmission::Admitted(next) => Some(next),
+        // InFlight: the racing connect was admitted after the release and
+        // owns the retry. CoolingDown: a concurrent failed attempt armed
+        // the gate between release and re-check; its Error lifecycle is
+        // the signal the connected peer observes.
+        _ => None,
+    }
+}
+
+/// One admitted auto-launch attempt, owned end to end.
+///
+/// Resolves the metadata snapshot from the Automerge doc (if the first client
+/// has already synced) or falls back to reading the .ipynb from disk.
+///
+/// Token disposition: dropping `attempt` on any exit path that did not launch
+/// a kernel (and was not a benign abort) arms the failure cooldown, so error
+/// returns need no per-site handling. Returns `Some(token)` only when a
+/// benign no-peers abort re-admitted a reconnect that raced it; the caller
+/// must retry with that token.
+async fn auto_launch_kernel_attempt(
+    room: &std::sync::Arc<NotebookRoom>,
+    notebook_id: &str,
+    default_runtime: crate::runtime::Runtime,
+    default_python_env: crate::settings_doc::PythonEnvType,
+    daemon: std::sync::Arc<crate::daemon::Daemon>,
+    attempt: super::room::AutoLaunchAttempt,
+) -> Option<super::room::AutoLaunchAttempt> {
     // Check if room still has peers (protect against race condition where client disconnects
     // before we finish launching)
     if room
@@ -2898,9 +2983,7 @@ pub(crate) async fn auto_launch_kernel(
         == 0
     {
         debug!("[notebook-sync] Auto-launch aborted: no peers remaining");
-        reset_starting_state(room, None).await;
-        attempt.release_without_cooldown();
-        return;
+        return release_attempt_and_readmit_if_peer_waiting(room, attempt).await;
     }
 
     // For saved notebooks, notebook_path_opt is the file path (kernel cwd = parent dir).
@@ -2978,7 +3061,7 @@ pub(crate) async fn auto_launch_kernel(
         if has_runtime_agent {
             debug!("[notebook-sync] Auto-launch skipped: runtime agent already exists");
             attempt.release_without_cooldown();
-            return;
+            return None;
         }
     }
 
@@ -2990,9 +3073,7 @@ pub(crate) async fn auto_launch_kernel(
         == 0
     {
         debug!("[notebook-sync] Auto-launch aborted: no peers (after status check)");
-        reset_starting_state(room, None).await;
-        attempt.release_without_cooldown();
-        return;
+        return release_attempt_and_readmit_if_peer_waiting(room, attempt).await;
     }
 
     // Clear any stale comm state from a previous kernel (in case it crashed)
@@ -3070,7 +3151,7 @@ pub(crate) async fn auto_launch_kernel(
                     &details,
                 )
                 .await;
-                return;
+                return None;
             }
         }
     };
@@ -3131,7 +3212,7 @@ pub(crate) async fn auto_launch_kernel(
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
-                return;
+                return None;
             }
         }
     }
@@ -3205,7 +3286,7 @@ pub(crate) async fn auto_launch_kernel(
                         Err(()) => {
                             reset_and_publish_prewarmed_acquire_error(room, env_source.as_str())
                                 .await;
-                            return;
+                            return None;
                         }
                     }
                 };
@@ -3265,7 +3346,7 @@ pub(crate) async fn auto_launch_kernel(
                                     env_source.as_str(),
                                 )
                                 .await;
-                                return;
+                                return None;
                             }
                         }
                     };
@@ -3297,7 +3378,7 @@ pub(crate) async fn auto_launch_kernel(
                     Ok(None) => None,
                     Err(()) => {
                         reset_and_publish_prewarmed_acquire_error(room, prewarmed.as_str()).await;
-                        return;
+                        return None;
                     }
                 };
                 ("python", prewarmed, pooled_env)
@@ -3337,7 +3418,7 @@ pub(crate) async fn auto_launch_kernel(
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
-                return;
+                return None;
             }
         }
     }
@@ -3398,7 +3479,7 @@ pub(crate) async fn auto_launch_kernel(
                         Some(KernelErrorReason::EnvironmentPrepareFailed),
                         &details,
                     );
-                    return;
+                    return None;
                 }
             }
         } else {
@@ -3490,7 +3571,7 @@ pub(crate) async fn auto_launch_kernel(
                                     Some(KernelErrorReason::EnvironmentPrepareFailed),
                                     &details,
                                 );
-                                return;
+                                return None;
                             }
                         }
                     }
@@ -3532,7 +3613,7 @@ pub(crate) async fn auto_launch_kernel(
                             Some(KernelErrorReason::EnvironmentPrepareFailed),
                             &details,
                         );
-                        return;
+                        return None;
                     }
                 }
             }
@@ -3618,7 +3699,7 @@ pub(crate) async fn auto_launch_kernel(
                                     Some(KernelErrorReason::EnvironmentPrepareFailed),
                                     &details,
                                 );
-                                return;
+                                return None;
                             }
                         }
                     }
@@ -3652,7 +3733,7 @@ pub(crate) async fn auto_launch_kernel(
                 details,
             )
             .await;
-            return;
+            return None;
         };
 
         let detected_yml = crate::project_file::DetectedProjectFile {
@@ -3677,7 +3758,7 @@ pub(crate) async fn auto_launch_kernel(
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
-                return;
+                return None;
             }
         }
 
@@ -3693,7 +3774,7 @@ pub(crate) async fn auto_launch_kernel(
                     &details,
                 )
                 .await;
-                return;
+                return None;
             }
         };
 
@@ -3819,7 +3900,7 @@ pub(crate) async fn auto_launch_kernel(
                             &details,
                         )
                         .await;
-                        return;
+                        return None;
                     }
                 } else {
                     true
@@ -3856,7 +3937,7 @@ pub(crate) async fn auto_launch_kernel(
                     &details,
                 )
                 .await;
-                return;
+                return None;
             }
             // The banner stays lit until a terminal phase is written. Emit Ready so
             // it clears whether the sync completed or we fell through to the existing env.
@@ -3891,7 +3972,7 @@ pub(crate) async fn auto_launch_kernel(
                     &details,
                 )
                 .await;
-                return;
+                return None;
             }
 
             match kernel_env::conda::prepare_environment_in(
@@ -3941,7 +4022,7 @@ pub(crate) async fn auto_launch_kernel(
                         &details,
                     )
                     .await;
-                    return;
+                    return None;
                 }
             }
         }
@@ -3998,7 +4079,7 @@ pub(crate) async fn auto_launch_kernel(
                     &details,
                 )
                 .await;
-                return;
+                return None;
             }
         }
     } else if matches!(env_source, EnvSource::PixiToml) {
@@ -4028,7 +4109,7 @@ pub(crate) async fn auto_launch_kernel(
                     &details,
                 )
                 .await;
-                return;
+                return None;
             }
         }
     }
@@ -4090,7 +4171,7 @@ pub(crate) async fn auto_launch_kernel(
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
-                return;
+                return None;
             }
         }
     }
@@ -4230,12 +4311,12 @@ pub(crate) async fn auto_launch_kernel(
                             "[notebook-sync] Runtime agent connect cancelled (superseded or died)"
                         );
                         reset_starting_state(room, Some(&runtime_agent_id)).await;
-                        return;
+                        return None;
                     }
                     TimedOneShot::TimedOut => {
                         warn!("[notebook-sync] Agent failed to connect within 30s");
                         reset_starting_state(room, Some(&runtime_agent_id)).await;
-                        return;
+                        return None;
                     }
                 }
 
@@ -4272,43 +4353,15 @@ pub(crate) async fn auto_launch_kernel(
                         env_source: es,
                     }) => {
                         // env path already registered for GC protection above (before spawn)
-
-                        // Store launched config for env sync drift detection
-                        {
-                            let mut lc = room.runtime_agent_launched_config.write().await;
-                            *lc = Some(launched_config.clone());
-                        }
-
-                        let es_label = es.as_str().to_string();
-                        publish_kernel_state_presence(
+                        finish_auto_launch_success(
                             room,
-                            presence::KernelStatus::Idle,
-                            &es_label,
+                            kernel_type,
+                            es.as_str(),
+                            &runtime_agent_id,
+                            launched_config.clone(),
+                            attempt,
                         )
                         .await;
-
-                        // Write Running(Idle) + kernel info to RuntimeStateDoc
-                        // so frontends see "idle" via CRDT sync.
-                        if let Err(e) = room.state.with_doc(|sd| {
-                            sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-                            sd.set_kernel_info(kernel_type, kernel_type, &es_label)?;
-                            sd.set_runtime_agent_id(&runtime_agent_id)?;
-                            // Fresh kernel is in sync with its launched config
-                            sd.set_env_sync(true, &[], &[], false, false)?;
-                            Ok(())
-                        }) {
-                            warn!("[runtime-state] {}", e);
-                        }
-
-                        info!(
-                            "[notebook-sync] Auto-launch via runtime agent succeeded: {} kernel with {} environment",
-                            kernel_type, es_label
-                        );
-
-                        // Reopen the single-flight gate with no cooldown; the
-                        // running kernel is what keeps later connects from
-                        // auto-launching again.
-                        attempt.succeed();
                     }
                     Ok(
                         notebook_protocol::protocol::RuntimeAgentResponse::Error { error }
@@ -4363,6 +4416,59 @@ pub(crate) async fn auto_launch_kernel(
             }
         }
     }
+
+    // Terminal: either the kernel launched (token consumed by
+    // `finish_auto_launch_success`) or a launch/agent error path above
+    // published its lifecycle and the token drops here as a failure,
+    // arming the cooldown.
+    None
+}
+
+/// Terminal bookkeeping for a kernel that launched: record the launched
+/// config for env-sync drift detection, publish Idle presence, write
+/// Running(Idle) + kernel info to RuntimeStateDoc, and mark the
+/// single-flight attempt successful.
+///
+/// The token disposition lives here so the success exit of the launch flow
+/// cannot drop the token as a failure, which would arm the failure cooldown
+/// after every successful launch and block the next legitimate auto-launch
+/// for the cooldown window. The gate reopens with no cooldown; the running
+/// kernel is what keeps later connects from auto-launching again.
+pub(crate) async fn finish_auto_launch_success(
+    room: &NotebookRoom,
+    kernel_type: &str,
+    env_source_label: &str,
+    runtime_agent_id: &str,
+    launched_config: LaunchedEnvConfig,
+    attempt: super::room::AutoLaunchAttempt,
+) {
+    // Store launched config for env sync drift detection
+    {
+        let mut lc = room.runtime_agent_launched_config.write().await;
+        *lc = Some(launched_config);
+    }
+
+    publish_kernel_state_presence(room, presence::KernelStatus::Idle, env_source_label).await;
+
+    // Write Running(Idle) + kernel info to RuntimeStateDoc
+    // so frontends see "idle" via CRDT sync.
+    if let Err(e) = room.state.with_doc(|sd| {
+        sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+        sd.set_kernel_info(kernel_type, kernel_type, env_source_label)?;
+        sd.set_runtime_agent_id(runtime_agent_id)?;
+        // Fresh kernel is in sync with its launched config
+        sd.set_env_sync(true, &[], &[], false, false)?;
+        Ok(())
+    }) {
+        warn!("[runtime-state] {}", e);
+    }
+
+    info!(
+        "[notebook-sync] Auto-launch via runtime agent succeeded: {} kernel with {} environment",
+        kernel_type, env_source_label
+    );
+
+    attempt.succeed();
 }
 
 /// Publish the daemon's `KernelState` presence so late-joining peers
