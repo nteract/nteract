@@ -2539,6 +2539,7 @@ fn test_room_with_path_and_store(
         runtime_agent_generation: Arc::new(AtomicU64::new(0)),
         next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         current_runtime_agent_id: Arc::new(RwLock::new(None)),
+        auto_launch_gate: AutoLaunchGate::default(),
     };
 
     (room, notebook_path)
@@ -12995,4 +12996,133 @@ async fn save_continuation_race_superseded_sequence_fails_manifest_triple_check_
         "after replayed stale s1 continuation",
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// Auto-launch single-flight gate (issue #4065: reconnect-loop spawn storm)
+// ---------------------------------------------------------------------------
+
+fn gate_test_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        tmp.path(),
+        blob_store,
+        false,
+    ));
+    (tmp, room)
+}
+
+/// Two concurrent auto-launch requests: the second must join the first
+/// attempt, not start its own. This is the single-flight property that keeps
+/// a client reconnect loop from spawning one runtime agent per connect.
+#[tokio::test(start_paused = true)]
+async fn auto_launch_gate_second_request_joins_in_flight_attempt() {
+    let (_tmp, room) = gate_test_room();
+
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a,
+        _ => panic!("first request must be admitted"),
+    };
+    assert!(
+        matches!(room.try_begin_auto_launch(), AutoLaunchAdmission::InFlight),
+        "second request must observe the in-flight attempt"
+    );
+
+    attempt.succeed();
+}
+
+/// A failed attempt closes the gate for the cooldown window, then a retry is
+/// admitted. Connect-frequency retries inside the window are rejected.
+#[tokio::test(start_paused = true)]
+async fn auto_launch_gate_failure_arms_cooldown_then_readmits() {
+    let (_tmp, room) = gate_test_room();
+
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a,
+        _ => panic!("first request must be admitted"),
+    };
+    // Dropping without an explicit outcome is the failure path (covers early
+    // returns and panics in auto_launch_kernel).
+    drop(attempt);
+
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::CoolingDown { remaining } => {
+            assert!(remaining <= AUTO_LAUNCH_FAILURE_COOLDOWN);
+            assert!(remaining > std::time::Duration::ZERO);
+        }
+        _ => panic!("request inside the cooldown window must be rejected"),
+    }
+
+    // Still cooling down just before the deadline.
+    tokio::time::advance(AUTO_LAUNCH_FAILURE_COOLDOWN - std::time::Duration::from_millis(1)).await;
+    assert!(matches!(
+        room.try_begin_auto_launch(),
+        AutoLaunchAdmission::CoolingDown { .. }
+    ));
+
+    // Past the deadline the next attempt is admitted.
+    tokio::time::advance(std::time::Duration::from_millis(2)).await;
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a.succeed(),
+        _ => panic!("retry after the cooldown must be admitted"),
+    }
+}
+
+/// Success reopens the gate immediately with no cooldown: the running kernel
+/// (not the gate) is what stops later connects from auto-launching again.
+#[tokio::test(start_paused = true)]
+async fn auto_launch_gate_success_reopens_without_cooldown() {
+    let (_tmp, room) = gate_test_room();
+
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a.succeed(),
+        _ => panic!("first request must be admitted"),
+    }
+    assert!(matches!(
+        room.try_begin_auto_launch(),
+        AutoLaunchAdmission::Admitted(_)
+    ));
+}
+
+/// Benign aborts (no peers left, kernel already present) release the gate
+/// with no cooldown so the next connect can launch without waiting.
+#[tokio::test(start_paused = true)]
+async fn auto_launch_gate_benign_release_reopens_without_cooldown() {
+    let (_tmp, room) = gate_test_room();
+
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a.release_without_cooldown(),
+        _ => panic!("first request must be admitted"),
+    }
+    assert!(matches!(
+        room.try_begin_auto_launch(),
+        AutoLaunchAdmission::Admitted(_)
+    ));
+}
+
+/// A successful attempt after a failed one clears the stale cooldown state:
+/// the failure deadline must not outlive the attempt that succeeded.
+#[tokio::test(start_paused = true)]
+async fn auto_launch_gate_admission_clears_stale_cooldown() {
+    let (_tmp, room) = gate_test_room();
+
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => drop(a),
+        _ => panic!("first request must be admitted"),
+    }
+    tokio::time::advance(AUTO_LAUNCH_FAILURE_COOLDOWN + std::time::Duration::from_millis(1)).await;
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(a) => a.succeed(),
+        _ => panic!("post-cooldown request must be admitted"),
+    }
+    assert!(
+        matches!(
+            room.try_begin_auto_launch(),
+            AutoLaunchAdmission::Admitted(_)
+        ),
+        "success must not inherit the earlier failure's cooldown"
+    );
 }

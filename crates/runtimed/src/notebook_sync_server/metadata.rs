@@ -2883,6 +2883,11 @@ pub(crate) async fn auto_launch_kernel(
     default_runtime: crate::runtime::Runtime,
     default_python_env: crate::settings_doc::PythonEnvType,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
+    // Single-flight admission token from `NotebookRoom::try_begin_auto_launch`.
+    // This function owns the attempt end to end: dropping the token on any
+    // exit path that did not launch a kernel (and was not a benign abort)
+    // arms the failure cooldown, so early returns need no per-site handling.
+    attempt: super::room::AutoLaunchAttempt,
 ) {
     // Check if room still has peers (protect against race condition where client disconnects
     // before we finish launching)
@@ -2894,6 +2899,7 @@ pub(crate) async fn auto_launch_kernel(
     {
         debug!("[notebook-sync] Auto-launch aborted: no peers remaining");
         reset_starting_state(room, None).await;
+        attempt.release_without_cooldown();
         return;
     }
 
@@ -2971,6 +2977,7 @@ pub(crate) async fn auto_launch_kernel(
         let has_runtime_agent = room.runtime_agent_handle.lock().await.is_some();
         if has_runtime_agent {
             debug!("[notebook-sync] Auto-launch skipped: runtime agent already exists");
+            attempt.release_without_cooldown();
             return;
         }
     }
@@ -2984,6 +2991,7 @@ pub(crate) async fn auto_launch_kernel(
     {
         debug!("[notebook-sync] Auto-launch aborted: no peers (after status check)");
         reset_starting_state(room, None).await;
+        attempt.release_without_cooldown();
         return;
     }
 
@@ -4296,6 +4304,11 @@ pub(crate) async fn auto_launch_kernel(
                             "[notebook-sync] Auto-launch via runtime agent succeeded: {} kernel with {} environment",
                             kernel_type, es_label
                         );
+
+                        // Reopen the single-flight gate with no cooldown; the
+                        // running kernel is what keeps later connects from
+                        // auto-launching again.
+                        attempt.succeed();
                     }
                     Ok(
                         notebook_protocol::protocol::RuntimeAgentResponse::Error { error }

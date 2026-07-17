@@ -965,6 +965,96 @@ impl Drop for SourceReconciliationClaim {
     }
 }
 
+/// Minimum spacing between auto-launch attempts after a failed one. A tight
+/// client reconnect loop must not respawn runtime agents at connect
+/// frequency; each failure holds the gate closed for this long.
+pub(crate) const AUTO_LAUNCH_FAILURE_COOLDOWN: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
+/// Per-room single-flight gate for kernel auto-launch.
+///
+/// At most one auto-launch attempt runs per room at a time; connects that
+/// arrive while an attempt is in flight observe that attempt through
+/// RuntimeStateDoc instead of spawning another agent. A failed attempt closes
+/// the gate for [`AUTO_LAUNCH_FAILURE_COOLDOWN`] so a reconnect loop cannot
+/// turn connect frequency into agent spawn frequency.
+///
+/// Sync-only state behind `std::sync::Mutex`; never hold the lock across an
+/// `.await`.
+#[derive(Default)]
+pub(crate) struct AutoLaunchGate {
+    state: std::sync::Mutex<AutoLaunchGateState>,
+}
+
+#[derive(Default)]
+struct AutoLaunchGateState {
+    in_flight: bool,
+    cooldown_until: Option<tokio::time::Instant>,
+}
+
+impl AutoLaunchGate {
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, AutoLaunchGateState> {
+        // Recover from poisoning: the guarded state is two plain fields and
+        // every critical section is trivially panic-free, so a poisoned lock
+        // carries no torn invariant. Recovering also keeps the token's Drop
+        // from double-panicking during unwind.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Outcome of asking the gate for permission to auto-launch.
+pub(crate) enum AutoLaunchAdmission {
+    /// Caller owns the attempt; the gate stays closed until the token drops.
+    Admitted(AutoLaunchAttempt),
+    /// Another attempt is in flight; observe it via RuntimeStateDoc.
+    InFlight,
+    /// A recent attempt failed; the gate reopens after `remaining`.
+    CoolingDown { remaining: std::time::Duration },
+}
+
+enum AutoLaunchOutcome {
+    /// Default: any drop without an explicit outcome (early return, panic
+    /// unwind, launch error) counts as a failure and arms the cooldown.
+    Failed,
+    /// Kernel launched; reopen the gate immediately.
+    Succeeded,
+    /// Benign abort (no peers left, kernel already present); reopen the gate
+    /// immediately so the next connect can launch without waiting.
+    Released,
+}
+
+/// Owned token for one auto-launch attempt. Dropping it reopens the gate;
+/// the drop path is where the failure cooldown is armed, so every early
+/// return and panic in the launch flow is covered without per-site calls.
+pub(crate) struct AutoLaunchAttempt {
+    room: Arc<NotebookRoom>,
+    outcome: AutoLaunchOutcome,
+}
+
+impl AutoLaunchAttempt {
+    /// Mark the attempt successful: reopen the gate with no cooldown.
+    pub(crate) fn succeed(mut self) {
+        self.outcome = AutoLaunchOutcome::Succeeded;
+    }
+
+    /// Mark the attempt a benign no-op: reopen the gate with no cooldown.
+    pub(crate) fn release_without_cooldown(mut self) {
+        self.outcome = AutoLaunchOutcome::Released;
+    }
+}
+
+impl Drop for AutoLaunchAttempt {
+    fn drop(&mut self) {
+        let mut st = self.room.auto_launch_gate.lock_state();
+        st.in_flight = false;
+        if matches!(self.outcome, AutoLaunchOutcome::Failed) {
+            st.cooldown_until = Some(tokio::time::Instant::now() + AUTO_LAUNCH_FAILURE_COOLDOWN);
+        }
+    }
+}
+
 pub struct NotebookRoom {
     /// Permanent, immutable UUID for this room, independent of the display
     /// path or string lookup keys used by callers. Rooms are still looked up
@@ -1050,6 +1140,9 @@ pub struct NotebookRoom {
     /// sync handler to validate connections and prevent stale cleanup from
     /// clobbering state.
     pub current_runtime_agent_id: Arc<RwLock<Option<String>>>,
+    /// Single-flight gate for kernel auto-launch. All auto-launch admission
+    /// goes through [`NotebookRoom::try_begin_auto_launch`].
+    pub(crate) auto_launch_gate: AutoLaunchGate,
 }
 
 impl NotebookRoom {
@@ -1580,6 +1673,36 @@ impl NotebookRoom {
             runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
+            auto_launch_gate: AutoLaunchGate::default(),
+        })
+    }
+
+    /// Ask the auto-launch gate for permission to start an attempt.
+    ///
+    /// Returns `Admitted` with an owned token when no attempt is in flight
+    /// and no failure cooldown is active. The token must accompany the
+    /// attempt end to end: dropping it without calling
+    /// [`AutoLaunchAttempt::succeed`] or
+    /// [`AutoLaunchAttempt::release_without_cooldown`] counts as a failure
+    /// and arms [`AUTO_LAUNCH_FAILURE_COOLDOWN`].
+    pub(crate) fn try_begin_auto_launch(self: &Arc<Self>) -> AutoLaunchAdmission {
+        let now = tokio::time::Instant::now();
+        let mut st = self.auto_launch_gate.lock_state();
+        if st.in_flight {
+            return AutoLaunchAdmission::InFlight;
+        }
+        if let Some(until) = st.cooldown_until {
+            if now < until {
+                return AutoLaunchAdmission::CoolingDown {
+                    remaining: until - now,
+                };
+            }
+        }
+        st.in_flight = true;
+        st.cooldown_until = None;
+        AutoLaunchAdmission::Admitted(AutoLaunchAttempt {
+            room: Arc::clone(self),
+            outcome: AutoLaunchOutcome::Failed,
         })
     }
 
