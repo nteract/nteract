@@ -77,6 +77,10 @@ The registry is the durable fix and is not a same-release change. The release st
 
 This restores ADR `mcp-session-lifecycle.md` Decision 8's invariant for sessions established by `notebook_id`. It is forward-compatible: even after the registry lands, carrying the path on the session and the rejoin target is still correct.
 
+## Decision 6: One daemon process serves a path at a time (cross-channel file claims)
+
+The registries above are daemon-local, so nothing stops a second daemon process (another channel, or another dev worktree) from opening the same `.ipynb` and split-braining it at save time. The guard is a shared lease registry at `~/.cache/runt-shared/file-claims/` (`runt_workspace::file_claims`): on file-backed open the daemon claims the canonical path (channel, socket path, room id, pid), refreshes claims for resident rooms on the reaper interval, and releases them on room close/eviction, save-as, and clean shutdown. An open that finds a live claim from a different socket path is refused with a structured `file_active_elsewhere` error that names the owning channel and socket, surfaced verbatim through the handshake error field MCP clients already read. Claims are leases, never locks: a dead pid or a lapsed refresh window makes a claim stale, and the next writer reaps it, so a crashed daemon cannot brick a path. The registry holds facts only; reconciliation stays the last line of defense when a claim lied.
+
 ## Rejected alternatives
 
 - **Path-encoded or path-derived ids.** Couples identity to location; every move mints a new id and you are back to needing a remap table. Rejected in Decision 1.

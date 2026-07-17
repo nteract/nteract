@@ -98,6 +98,13 @@ pub struct DaemonConfig {
     /// set this so in-process daemon tests do not spawn the test harness binary
     /// when launching runtime agents.
     pub runtime_agent_exe: Option<PathBuf>,
+    /// Override for the cross-channel file-claim registry directory.
+    ///
+    /// `None` uses the shared root (`~/.cache/runt-shared/file-claims`),
+    /// which every daemon process must share for the open-time guard to
+    /// work. Tests inject a tempdir so they never touch the real shared
+    /// registry; `new_for_test` forces one when unset.
+    pub file_claims_dir: Option<PathBuf>,
 }
 
 impl Default for DaemonConfig {
@@ -125,6 +132,7 @@ impl Default for DaemonConfig {
             use_preferred_blob_port: true,
             settings_json_path: None,
             runtime_agent_exe: None,
+            file_claims_dir: None,
         }
     }
 }
@@ -1167,6 +1175,12 @@ pub struct Daemon {
     pub(crate) trusted_packages: TrustedPackageStore,
     /// Persistent canonical-path -> stable notebook-id registry.
     pub(crate) notebook_registry: NotebookRegistry,
+    /// Cross-channel file-claim registry: leases naming which daemon
+    /// process serves each canonical notebook path, shared with every
+    /// other channel and worktree daemon. Written on file-backed room
+    /// open, refreshed on the reaper interval, released on room
+    /// close/eviction. See `runt_workspace::file_claims`.
+    pub(crate) file_claims: runt_workspace::file_claims::FileClaimRegistry,
     /// HTTP port for the blob server (set after startup).
     blob_port: Mutex<Option<u16>>,
     /// When the daemon process began. Reported via Ping for diagnostics.
@@ -1411,7 +1425,13 @@ impl Daemon {
     /// Test-only convenience that constructs a `Daemon` with an empty shell-env
     /// overlay. Integration tests reach this through the crate's public surface.
     #[doc(hidden)]
-    pub fn new_for_test(config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+    pub fn new_for_test(mut config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+        // Test daemons must never write into the real shared file-claim
+        // registry; force a config-scoped (tempdir-scoped) one when the
+        // test did not pick its own.
+        if config.file_claims_dir.is_none() {
+            config.file_claims_dir = Some(config.cache_dir.join("file-claims"));
+        }
         Self::new_with_overlay(config, || {
             crate::shell_env_overlay::ShellEnvOverlay::empty()
         })
@@ -1521,6 +1541,11 @@ impl Daemon {
             warn!("[notebook-registry] unavailable; notebook ids will be fresh per run: {reason}");
         }
 
+        let file_claims = match &config.file_claims_dir {
+            Some(dir) => runt_workspace::file_claims::FileClaimRegistry::at_dir(dir.clone()),
+            None => runt_workspace::file_claims::FileClaimRegistry::shared(),
+        };
+
         let initial_pool_settings = settings.get_all();
         let initial_uv_pool_size =
             effective_pool_target(config.uv_pool_size, initial_pool_settings.uv_pool_size);
@@ -1551,6 +1576,7 @@ impl Daemon {
             execution_store,
             trusted_packages,
             notebook_registry,
+            file_claims,
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
             notebook_rooms: Arc::new(RoomRegistry::new()),
@@ -1815,7 +1841,16 @@ impl Daemon {
             );
         }
 
-        let _drained_rooms = self.notebook_rooms.drain().await;
+        let drained_rooms = self.notebook_rooms.drain().await;
+        // Clean shutdown means this process no longer serves any path;
+        // release the claims so another daemon can open the files without
+        // waiting out the pid-liveness check on a lingering record.
+        let claim_owner = self.file_claim_owner();
+        for (_, room) in &drained_rooms {
+            if let Some(path) = room.file_binding.path().await {
+                let _ = self.file_claims.release(&path, &claim_owner);
+            }
+        }
         Ok(())
     }
 
@@ -3447,6 +3482,36 @@ impl Daemon {
         .await
     }
 
+    /// This daemon's identity in the cross-channel file-claim registry.
+    /// The socket path is the claim identity (channel alone cannot tell
+    /// per-worktree dev daemons apart); the pid carries liveness.
+    pub(crate) fn file_claim_owner(&self) -> runt_workspace::file_claims::FileClaimOwner {
+        runt_workspace::file_claims::FileClaimOwner {
+            channel: runt_workspace::cache_namespace().to_string(),
+            socket_path: self.config.socket_path.to_string_lossy().into_owned(),
+            pid: std::process::id(),
+        }
+    }
+
+    /// Refresh this daemon's file claims for every resident file-backed
+    /// room. Runs on the reaper interval; `FILE_CLAIM_TTL` is several
+    /// multiples of it, so missed sweeps do not let a live room's claim
+    /// lapse into staleness.
+    async fn refresh_file_claims(&self) {
+        let owner = self.file_claim_owner();
+        for (uuid, room) in self.notebook_rooms.snapshot().await {
+            let Some(path) = room.file_binding.path().await else {
+                continue;
+            };
+            if let Err(error) = self.file_claims.record(&path, &owner, &uuid.to_string()) {
+                debug!(
+                    "[runtimed] file-claim refresh failed for {:?}: {}",
+                    path, error
+                );
+            }
+        }
+    }
+
     async fn handle_open_notebook<S>(
         self: Arc<Self>,
         stream: S,
@@ -3644,10 +3709,24 @@ impl Daemon {
         // The registry's path map gives O(1) lookup without scanning all rooms.
         let docs_dir = self.config.notebook_docs_dir.clone();
         let canonical_path = PathBuf::from(&notebook_id);
+        let claim_owner = self.file_claim_owner();
         let (room, _room_guard) = if let Some(existing) =
             crate::notebook_sync_server::find_room_by_path(&self.notebook_rooms, &canonical_path)
                 .await
         {
+            // Same-process reopen: this daemon already serves the path, so
+            // refresh its claim and never refuse, even if a foreign record
+            // clobbered ours (both daemons then state facts; last writer
+            // wins and the durability layer stays the final defense).
+            if let Err(error) =
+                self.file_claims
+                    .record(&canonical_path, &claim_owner, &existing.0.id.to_string())
+            {
+                debug!(
+                    "[runtimed] file-claim refresh failed for {:?}: {}",
+                    canonical_path, error
+                );
+            }
             existing
         } else {
             // Reopening the same file resolves to the same id across daemon
@@ -3660,6 +3739,32 @@ impl Daemon {
                     return Ok(());
                 }
             };
+            // Cross-daemon guard: refuse the open while another live daemon
+            // process (any channel, any worktree) holds a claim for this
+            // path. Stale claims (dead pid, lapsed refresh) are reaped by
+            // the acquire; registry IO failures never block the open.
+            match self
+                .file_claims
+                .acquire(&canonical_path, &claim_owner, &uuid.to_string())
+            {
+                Ok(runt_workspace::file_claims::ClaimAttempt::Acquired) => {}
+                Ok(runt_workspace::file_claims::ClaimAttempt::ForeignLive(claim)) => {
+                    let message = runt_workspace::file_claims::file_active_elsewhere_message(
+                        &canonical_path,
+                        &claim,
+                    );
+                    warn!("[runtimed] {}", message);
+                    let (_reader, mut writer) = tokio::io::split(stream);
+                    send_error_response(&mut writer, message, typed_bootstrap).await?;
+                    return Ok(());
+                }
+                Err(error) => {
+                    warn!(
+                        "[runtimed] file-claim write failed for {:?}; opening without a claim: {}",
+                        canonical_path, error
+                    );
+                }
+            }
             let path = Some(canonical_path.clone());
             crate::notebook_sync_server::get_or_create_room_result(
                 &self.notebook_rooms,
@@ -4779,6 +4884,11 @@ impl Daemon {
                     Err(_) => None,
                 };
                 if let Some(room) = maybe_room {
+                    // The room is out of the registry; hand the path back to
+                    // other daemon processes by releasing its file claim.
+                    if let Some(path) = room.file_binding.path().await {
+                        let _ = self.file_claims.release(&path, &self.file_claim_owner());
+                    }
                     // Shut down runtime agent via RPC before dropping handle.
                     // RuntimeAgentHandle doesn't own the Child (it's in a background
                     // task), so dropping the handle alone doesn't kill it.
@@ -5036,6 +5146,10 @@ impl Daemon {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
+            // Renew this daemon's file-claim leases before reaping: any
+            // room still resident after the sweep keeps a fresh claim, and
+            // reaped rooms release theirs inside the sweep.
+            self.refresh_file_claims().await;
             self.ghost_room_reaper_sweep_with_cap(
                 RESIDENT_ROOM_TTL_SECS,
                 MAX_RESIDENT_PEERLESS_ROOMS,
@@ -5325,6 +5439,7 @@ impl Daemon {
             room.file_binding.shutdown_project_file_watcher().await;
             if let Some(path) = path.as_ref() {
                 crate::notebook_sync_server::release_autosave_owner_marker_for_path(path).await;
+                let _ = self.file_claims.release(path, &self.file_claim_owner());
             }
 
             // Step 6: take the persist debouncer out so its senders

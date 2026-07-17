@@ -4307,3 +4307,256 @@ async fn test_auto_heartbeat_keeps_idle_peer_connected() {
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
+
+// ============================================================================
+// Cross-channel file claims (issue #4053)
+// ============================================================================
+
+/// Start a daemon whose file-claim registry lives at `claims_dir`, with all
+/// other state isolated under a fresh tempdir. Returns the tempdir (keep it
+/// alive), the daemon socket path, and the running daemon task.
+async fn start_claiming_daemon(
+    claims_dir: &std::path::Path,
+) -> (TempDir, std::path::PathBuf, tokio::task::JoinHandle<()>) {
+    let temp_dir = TempDir::new().unwrap();
+    let config = DaemonConfig {
+        file_claims_dir: Some(claims_dir.to_path_buf()),
+        ..test_config(&temp_dir)
+    };
+    let socket_path = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+    (temp_dir, socket_path, daemon_handle)
+}
+
+/// Gracefully stop a daemon started by `start_claiming_daemon`.
+async fn stop_claiming_daemon(socket: &std::path::Path, handle: tokio::task::JoinHandle<()>) {
+    PoolClient::new(socket.to_path_buf()).shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+}
+
+fn foreign_claim_owner(socket: &str, pid: u32) -> runt_workspace::file_claims::FileClaimOwner {
+    runt_workspace::file_claims::FileClaimOwner {
+        channel: "runt".to_string(),
+        socket_path: socket.to_string(),
+        pid,
+    }
+}
+
+/// A second daemon process (different socket) with a live claim on the path
+/// refuses the open with the structured `file_active_elsewhere` error,
+/// delivered verbatim through the handshake error channel MCP clients read.
+#[tokio::test]
+async fn test_open_notebook_refused_while_foreign_daemon_claim_is_live() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+
+    let (dir_a, socket_a, handle_a) = start_claiming_daemon(&claims_dir).await;
+    let (_dir_b, socket_b, handle_b) = start_claiming_daemon(&claims_dir).await;
+
+    let nb_path = dir_a.path().join("claimed.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+
+    // Daemon A opens the file and takes the claim.
+    let opened = connect::connect_open(socket_a.clone(), nb_path.clone(), "owner")
+        .await
+        .expect("daemon A should open the notebook");
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+    let claim = registry
+        .read(&canonical)
+        .expect("daemon A should have claimed the path");
+    assert_eq!(claim.socket_path, socket_a.to_string_lossy());
+    assert_eq!(claim.pid, std::process::id());
+    assert_eq!(claim.notebook_id, opened.info.notebook_id);
+
+    // Daemon B (same test process, so the pid is live; different socket, so
+    // it is a different daemon) must refuse with the exact structured error.
+    let refused = connect::connect_open(socket_b.clone(), nb_path.clone(), "intruder").await;
+    let expected = format!(
+        "file_active_elsewhere: {} is open in {} (socket {}); connect there or close it first",
+        canonical.display(),
+        runt_workspace::cache_namespace(),
+        socket_a.display(),
+    );
+    match refused {
+        Err(notebook_sync::error::SyncError::Protocol(message)) => {
+            assert_eq!(message, expected);
+        }
+        Err(other) => panic!("expected verbatim file_active_elsewhere refusal, got {other:?}"),
+        Ok(_) => panic!("expected refusal, but the open succeeded"),
+    }
+
+    // Daemon B did not steal the claim.
+    assert_eq!(
+        registry.read(&canonical).unwrap().socket_path,
+        socket_a.to_string_lossy()
+    );
+
+    stop_claiming_daemon(&socket_a, handle_a).await;
+    stop_claiming_daemon(&socket_b, handle_b).await;
+}
+
+/// A claim whose owner pid is dead is stale: the open reaps it and proceeds.
+/// This is the crash-safety path — a crashed daemon must not brick the file.
+#[tokio::test]
+async fn test_open_notebook_reaps_stale_claim_from_dead_pid() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+    let (dir_a, socket_a, handle_a) = start_claiming_daemon(&claims_dir).await;
+
+    let nb_path = dir_a.path().join("crashed-owner.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+
+    // Fresh claim from a "crashed daemon": recent refresh, but a pid that
+    // cannot exist (u32::MAX exceeds every platform's pid range).
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+    registry
+        .record(
+            &canonical,
+            &foreign_claim_owner("/tmp/crashed-daemon.sock", u32::MAX),
+            "room-of-the-dead",
+        )
+        .unwrap();
+
+    let opened = connect::connect_open(socket_a.clone(), nb_path.clone(), "survivor")
+        .await
+        .expect("stale dead-pid claim must not brick the path");
+    let claim = registry.read(&canonical).unwrap();
+    assert_eq!(claim.socket_path, socket_a.to_string_lossy());
+    assert_eq!(claim.notebook_id, opened.info.notebook_id);
+
+    stop_claiming_daemon(&socket_a, handle_a).await;
+}
+
+/// A claim outside its refresh window is stale even when its pid is alive:
+/// the open reaps it and proceeds. This is the pid-reuse safety net.
+#[tokio::test]
+async fn test_open_notebook_reaps_stale_claim_past_refresh_window() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+    let (dir_a, socket_a, handle_a) = start_claiming_daemon(&claims_dir).await;
+
+    let nb_path = dir_a.path().join("expired-owner.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+
+    // Live pid (this test process), lapsed refresh: write the record
+    // directly so the timestamp predates the TTL window.
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+    let expired = runt_workspace::file_claims::FileClaim {
+        schema_version: runt_workspace::file_claims::FILE_CLAIM_SCHEMA_VERSION,
+        channel: "runt".to_string(),
+        socket_path: "/tmp/zombie-daemon.sock".to_string(),
+        notebook_id: "room-expired".to_string(),
+        pid: std::process::id(),
+        path: canonical.to_string_lossy().into_owned(),
+        refreshed_at_unix_ms: 0,
+    };
+    std::fs::create_dir_all(&claims_dir).unwrap();
+    std::fs::write(
+        registry.claim_file(&canonical),
+        serde_json::to_vec_pretty(&expired).unwrap(),
+    )
+    .unwrap();
+
+    connect::connect_open(socket_a.clone(), nb_path.clone(), "survivor")
+        .await
+        .expect("expired claim must not brick the path");
+    assert_eq!(
+        registry.read(&canonical).unwrap().socket_path,
+        socket_a.to_string_lossy()
+    );
+
+    stop_claiming_daemon(&socket_a, handle_a).await;
+}
+
+/// The same daemon reopening a path it already serves refreshes its own
+/// claim and never refuses.
+#[tokio::test]
+async fn test_open_notebook_same_daemon_reopen_refreshes_claim() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+    let (dir_a, socket_a, handle_a) = start_claiming_daemon(&claims_dir).await;
+
+    let nb_path = dir_a.path().join("reopened.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+
+    let first = connect::connect_open(socket_a.clone(), nb_path.clone(), "first")
+        .await
+        .expect("first open should succeed");
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+    let first_claim = registry.read(&canonical).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let second = connect::connect_open(socket_a.clone(), nb_path.clone(), "second")
+        .await
+        .expect("same-daemon reopen must never be refused");
+    assert_eq!(second.info.notebook_id, first.info.notebook_id);
+
+    let second_claim = registry.read(&canonical).unwrap();
+    assert_eq!(second_claim.socket_path, socket_a.to_string_lossy());
+    assert!(
+        second_claim.refreshed_at_unix_ms > first_claim.refreshed_at_unix_ms,
+        "reopen should refresh the claim lease"
+    );
+
+    stop_claiming_daemon(&socket_a, handle_a).await;
+}
+
+/// Evicting the room via ShutdownNotebook releases the claim, letting a
+/// second daemon open the path immediately.
+#[tokio::test]
+async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
+    let claims_root = TempDir::new().unwrap();
+    let claims_dir = claims_root.path().join("file-claims");
+    let (dir_a, socket_a, handle_a) = start_claiming_daemon(&claims_dir).await;
+    let (_dir_b, socket_b, handle_b) = start_claiming_daemon(&claims_dir).await;
+
+    let nb_path = dir_a.path().join("handed-off.ipynb");
+    write_test_ipynb(&nb_path, &[("c1", "code", "x = 1", vec![])]);
+    let canonical = std::fs::canonicalize(&nb_path).unwrap();
+
+    let opened = connect::connect_open(socket_a.clone(), nb_path.clone(), "owner")
+        .await
+        .expect("daemon A should open the notebook");
+    drop(opened);
+
+    let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
+    assert!(registry.read(&canonical).is_some());
+
+    // Close the room on daemon A; the claim must be released with it.
+    let pool_client_a = PoolClient::new(socket_a.clone());
+    // ShutdownNotebook takes the room UUID; reopen briefly to learn it.
+    let reopened = connect::connect_open(socket_a.clone(), nb_path.clone(), "owner")
+        .await
+        .expect("reopen on the owning daemon should succeed");
+    let notebook_id = reopened.info.notebook_id.clone();
+    drop(reopened);
+    assert!(pool_client_a
+        .shutdown_notebook(&notebook_id)
+        .await
+        .expect("shutdown_notebook request should succeed"));
+    assert!(
+        registry.read(&canonical).is_none(),
+        "room eviction must release the file claim"
+    );
+
+    // Daemon B can now open the path.
+    connect::connect_open(socket_b.clone(), nb_path.clone(), "successor")
+        .await
+        .expect("released claim should allow the other daemon to open");
+    assert_eq!(
+        registry.read(&canonical).unwrap().socket_path,
+        socket_b.to_string_lossy()
+    );
+
+    stop_claiming_daemon(&socket_a, handle_a).await;
+    stop_claiming_daemon(&socket_b, handle_b).await;
+}
