@@ -548,13 +548,14 @@ impl ServiceManager {
         }
 
         if start_after {
-            // Bootstrap only. The stop() call above is best-effort and may have
-            // already performed the launchd bootout, but upgrade intentionally
-            // does not issue another bootout here. Using launchd_start() would
-            // add a second bootout attempt and can put launchd into a
-            // transient error-5 state.
+            // Registering the launchd job is separate from waking the daemon.
+            // Avoid an extra bootout here because stop() already handled it.
             #[cfg(target_os = "macos")]
-            runt_workspace::launchd_bootstrap_only().map_err(ServiceError::StartFailed)?;
+            {
+                runt_workspace::launchd_bootstrap_only().map_err(ServiceError::StartFailed)?;
+                runt_workspace::launchd_kickstart_start_only()
+                    .map_err(ServiceError::StartFailed)?;
+            }
 
             #[cfg(not(target_os = "macos"))]
             self.start()?;
@@ -821,6 +822,8 @@ impl ServiceManager {
         } else {
             info!("[service] Launchd service already loaded");
         }
+        runt_workspace::launchd_kickstart_start_only().map_err(ServiceError::StartFailed)?;
+        info!("[service] Kickstarted launchd service");
         Ok(())
     }
 

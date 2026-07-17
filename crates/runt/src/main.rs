@@ -9,6 +9,7 @@ mod workstation_cli;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
+use std::future::Future;
 use std::time::Duration;
 use tabled::{settings::Style, Table, Tabled};
 
@@ -1212,6 +1213,112 @@ fn legacy_daemon_info_path() -> PathBuf {
     runt_workspace::daemon_base_dir().join("daemon.json")
 }
 
+const DAEMON_START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_START_CONFIRM_INTERVAL: Duration = Duration::from_millis(250);
+const DAEMON_START_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaemonStartupStatus {
+    Running,
+    NotRunning { detail: String },
+}
+
+impl DaemonStartupStatus {
+    fn is_running(&self) -> bool {
+        matches!(self, Self::Running)
+    }
+
+    fn detail(&self) -> &str {
+        match self {
+            Self::Running => "running",
+            Self::NotRunning { detail } => detail,
+        }
+    }
+}
+
+async fn probe_daemon_startup_status() -> DaemonStartupStatus {
+    let socket_path = runt_workspace::default_socket_path();
+    let daemon_info = tokio::time::timeout(
+        DAEMON_START_PROBE_TIMEOUT,
+        runtimed_client::singleton::query_daemon_info(socket_path.clone()),
+    )
+    .await;
+
+    let Some(info) = (match daemon_info {
+        Ok(info) => info,
+        Err(_) => {
+            return DaemonStartupStatus::NotRunning {
+                detail: format!(
+                    "timed out waiting for daemon info on {}",
+                    shorten_path(&socket_path)
+                ),
+            };
+        }
+    }) else {
+        return DaemonStartupStatus::NotRunning {
+            detail: format!(
+                "daemon socket {} did not return live daemon info",
+                shorten_path(&socket_path)
+            ),
+        };
+    };
+
+    let client = runtimed::client::PoolClient::new(PathBuf::from(&info.endpoint));
+    match tokio::time::timeout(DAEMON_START_PROBE_TIMEOUT, client.ping_version()).await {
+        Ok(Ok(_)) => DaemonStartupStatus::Running,
+        Ok(Err(error)) => DaemonStartupStatus::NotRunning {
+            detail: format!("daemon at {} did not answer ping: {error}", info.endpoint),
+        },
+        Err(_) => DaemonStartupStatus::NotRunning {
+            detail: format!("timed out pinging daemon at {}", info.endpoint),
+        },
+    }
+}
+
+async fn wait_for_daemon_start_confirmation<F, Fut>(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut status_probe: F,
+) -> DaemonStartupStatus
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = DaemonStartupStatus>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let status = status_probe().await;
+        if status.is_running() || tokio::time::Instant::now() >= deadline {
+            return status;
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let sleep_for = if poll_interval.is_zero() {
+            Duration::from_millis(1)
+        } else {
+            poll_interval.min(remaining)
+        };
+        tokio::time::sleep(sleep_for).await;
+    }
+}
+
+async fn confirm_daemon_started() -> Result<()> {
+    match wait_for_daemon_start_confirmation(
+        DAEMON_START_CONFIRM_TIMEOUT,
+        DAEMON_START_CONFIRM_INTERVAL,
+        probe_daemon_startup_status,
+    )
+    .await
+    {
+        DaemonStartupStatus::Running => Ok(()),
+        status => Err(anyhow::anyhow!(
+            "daemon did not become ready within {}s: {}",
+            DAEMON_START_CONFIRM_TIMEOUT.as_secs(),
+            status.detail()
+        )),
+    }
+}
+
 /// Three-step hybrid stop: socket shutdown → service manager → signal escalation.
 async fn stop_daemon_smart(
     manager: &mut runtimed_service::ServiceManager,
@@ -1555,6 +1662,10 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 runt_workspace::daemon_service_basename()
             );
             manager.start()?;
+            if let Err(e) = confirm_daemon_started().await {
+                eprintln!("Failed to start daemon: {e}");
+                std::process::exit(1);
+            }
             println!("Service started.");
         }
         DaemonCommands::Stop => {
@@ -1615,6 +1726,10 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
 
             // Start via service manager
             manager.start()?;
+            if let Err(e) = confirm_daemon_started().await {
+                eprintln!("Failed to restart daemon: {e}");
+                std::process::exit(1);
+            }
             println!("Service restarted.");
         }
         DaemonCommands::Install { binary } => {
@@ -4857,6 +4972,54 @@ mod tests {
         assert!(
             result.is_ok(),
             "Stopping non-existent process should succeed (already dead)"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_start_confirmation_returns_after_running_probe() {
+        let attempts = std::cell::Cell::new(0);
+
+        let status = super::wait_for_daemon_start_confirmation(
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+            || {
+                let attempt = attempts.get() + 1;
+                attempts.set(attempt);
+                async move {
+                    if attempt == 3 {
+                        DaemonStartupStatus::Running
+                    } else {
+                        DaemonStartupStatus::NotRunning {
+                            detail: format!("attempt {attempt} not ready"),
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(status, DaemonStartupStatus::Running);
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn daemon_start_confirmation_reports_last_probe_state_on_timeout() {
+        let status = super::wait_for_daemon_start_confirmation(
+            Duration::ZERO,
+            Duration::from_millis(1),
+            || async {
+                DaemonStartupStatus::NotRunning {
+                    detail: "launchd loaded service without a pid".to_string(),
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            DaemonStartupStatus::NotRunning {
+                detail: "launchd loaded service without a pid".to_string(),
+            }
         );
     }
 
