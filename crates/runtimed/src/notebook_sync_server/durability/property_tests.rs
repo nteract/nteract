@@ -12,9 +12,9 @@
 //!    (a) DurablyStaged/Ready (joinable via the recovered-source path),
 //!    (b) Pending with no peer changes (safe to regenerate),
 //!    (c) an unresolved pending file-checkpoint intent (resolvable via
-//!        [`RoomDurability::resolve_recovered_file_checkpoint`]),
+//!    [`RoomDurability::resolve_recovered_file_checkpoint`]),
 //!    (d) Pending/Failed with peer changes and durable heads strictly beyond
-//!        exported heads (requires explicit reconciliation).
+//!    exported heads (requires explicit reconciliation).
 //!    Case (d) is legal only when durable heads differ from exported heads,
 //!    and a manifest with a full-coverage checkpoint and no unresolved intent
 //!    must always land in (a) (the shared baseline normalization applied by
