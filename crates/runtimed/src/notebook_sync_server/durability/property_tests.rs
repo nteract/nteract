@@ -1,11 +1,12 @@
 //! Property-based recovery invariants for the [`RoomDurability`] journal
 //! state machine.
 //!
-//! A shadow model drives random command sequences (peer commits, direct and
-//! prepared file checkpoints, aborts, source-ready acks, crash/reloads)
-//! against a real journal and a growing Automerge document, so every head
-//! and change hash in the manifests is real. After every reload the recovered
-//! manifest must satisfy the anti-undead invariants:
+//! A shadow model drives random command sequences (peer commits through both
+//! the snapshot and merge-into-durable-union paths, direct and prepared file
+//! checkpoints, aborts, source-ready acks, crash/reloads) against a real
+//! journal and a growing Automerge document, so every head and change hash in
+//! the manifests is real. After every reload the recovered manifest must
+//! satisfy the anti-undead invariants:
 //!
 //! 1. Classification totality: the manifest falls into exactly one of
 //!    (a) DurablyStaged/Ready (joinable via the recovered-source path),
@@ -16,8 +17,9 @@
 //!        exported heads (requires explicit reconciliation).
 //!    Case (d) is legal only when durable heads differ from exported heads,
 //!    and a manifest with a full-coverage checkpoint and no unresolved intent
-//!    must always land in (a) (the baseline normalization in
-//!    [`RoomDurability::recovered`]).
+//!    must always land in (a) (the shared baseline normalization applied by
+//!    both [`RoomDurability::recovered`] and
+//!    [`RoomDurability::resolve_recovered_file_checkpoint`]).
 //! 2. `exported_heads` are always contained in the durable snapshot.
 //! 3. Recovery is idempotent: loading the same journal twice yields
 //!    bit-identical manifests, including the normalized phase.
@@ -28,24 +30,10 @@
 //! 6. `commit_source_ready` transitions only a DurablyStaged phase with the
 //!    matching generation (a Ready phase re-acks as `AlreadyDurable`; every
 //!    other phase/generation combination is rejected without an append).
-//!
-//! KNOWN DEFECT (excluded transition): resolving a recovered checkpoint
-//! intent does not re-apply the full-coverage baseline normalization. A crash
-//! between the atomic file replace and the checkpoint commit marker restores
-//! with a pending intent (so `recovered` skips normalization), and the
-//! resolve that finalizes the checkpoint leaves `source_phase` Pending even
-//! though the export now covers every durable head. Room restore reads that
-//! Pending-with-peer-changes shape as source_degraded, the same unjoinable
-//! shape the baseline normalization exists to prevent; only a second restart
-//! (which re-runs `recovered` on the resolved journal tail) heals the phase.
-//! The model mirrors the current behavior (phase stays Pending across
-//! resolution) and
-//! `resolved_full_coverage_checkpoint_restores_as_staged_baseline` below
-//! reproduces the defect as an ignored test.
 
 use std::path::PathBuf;
 
-use automerge::{transaction::Transactable, ActorId, AutoCommit, ChangeHash, ROOT};
+use automerge::{transaction::Transactable, ActorId, AutoCommit, Change, ChangeHash, ROOT};
 use proptest::prelude::*;
 use uuid::Uuid;
 
@@ -57,9 +45,14 @@ use crate::notebook_sync_server::recovery::{source_fingerprint, RecoveryLoadOutc
 /// asserting the documented rejection instead of skipping silently.
 #[derive(Debug, Clone, Copy)]
 enum Op {
-    /// Author a durable peer change; `concurrent` merges a forked actor so
-    /// the document genuinely has multiple heads.
+    /// Author a durable peer change committed as a full snapshot through
+    /// `commit_snapshot(Peer)`; `concurrent` merges a forked actor so the
+    /// document genuinely has multiple heads.
     PeerChange { concurrent: bool },
+    /// Author a durable peer change committed as raw changes through
+    /// `commit_peer_changes`, the production path that merges peer batches
+    /// into the durable union instead of replacing the snapshot.
+    PeerMerge { concurrent: bool },
     /// `commit_file_checkpoint` at the current durable heads without a
     /// prepared intent.
     DirectCheckpoint,
@@ -83,7 +76,8 @@ enum Op {
 
 fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
-        3 => any::<bool>().prop_map(|concurrent| Op::PeerChange { concurrent }),
+        2 => any::<bool>().prop_map(|concurrent| Op::PeerChange { concurrent }),
+        2 => any::<bool>().prop_map(|concurrent| Op::PeerMerge { concurrent }),
         2 => Just(Op::DirectCheckpoint),
         2 => Just(Op::PrepareCheckpoint),
         2 => Just(Op::CommitPrepared),
@@ -254,6 +248,7 @@ impl Runner {
     fn apply(&mut self, op: &Op) {
         match *op {
             Op::PeerChange { concurrent } => self.apply_peer_change(concurrent),
+            Op::PeerMerge { concurrent } => self.apply_peer_merge(concurrent),
             Op::DirectCheckpoint => self.apply_direct_checkpoint(),
             Op::PrepareCheckpoint => self.apply_prepare_checkpoint(),
             Op::CommitPrepared => self.apply_commit_prepared(),
@@ -264,7 +259,10 @@ impl Runner {
         self.check_live_manifest();
     }
 
-    fn apply_peer_change(&mut self, concurrent: bool) {
+    /// Author one peer edit (optionally with a genuinely concurrent forked
+    /// actor so the document has multiple heads) and return the new changes
+    /// since the pre-edit heads.
+    fn author_peer_edit(&mut self, concurrent: bool) -> Vec<Change> {
         self.edit_counter += 1;
         let edit = self.edit_counter;
         let baseline = self.doc.get_heads();
@@ -280,9 +278,18 @@ impl Runner {
                 .put(ROOT, format!("edit-{edit}"), edit as i64)
                 .unwrap();
         }
+        self.doc.get_changes(&baseline)
+    }
+
+    fn record_peer_commit(&mut self) {
+        self.model.durable_heads = self.current_heads();
+        self.model.has_peer_changes = true;
+        self.model.peer_after_last_checkpoint = true;
+    }
+
+    fn apply_peer_change(&mut self, concurrent: bool) {
         let change_hashes = self
-            .doc
-            .get_changes(&baseline)
+            .author_peer_edit(concurrent)
             .iter()
             .map(|change| change.hash().0)
             .collect::<Vec<_>>();
@@ -290,13 +297,32 @@ impl Runner {
         let snapshot = self.doc.save();
         let outcome = self.durability.commit_snapshot(
             &snapshot,
-            heads.clone(),
+            heads,
             DurableMutation::Peer { change_hashes },
         );
         self.expect_committed(outcome);
-        self.model.durable_heads = heads;
-        self.model.has_peer_changes = true;
-        self.model.peer_after_last_checkpoint = true;
+        self.record_peer_commit();
+    }
+
+    /// The production peer path: raw changes merged into the durable union by
+    /// `commit_peer_changes` instead of a caller-provided snapshot replacing
+    /// it. The union already contains every previously committed change, so
+    /// the merged heads must equal the live document heads.
+    fn apply_peer_merge(&mut self, concurrent: bool) {
+        let changes = self.author_peer_edit(concurrent);
+        let outcome = self.durability.commit_peer_changes(changes.clone());
+        self.expect_committed(outcome);
+        self.record_peer_commit();
+
+        // Re-sending the already-durable batch dedupes against both the
+        // union and the manifest hashes without appending.
+        let before = self.durability.manifest();
+        let again = self.durability.commit_peer_changes(changes).unwrap();
+        assert!(
+            matches!(again, DurableCommitOutcome::AlreadyDurable(_)),
+            "re-committing durable peer changes must be a no-op, got {again:?}"
+        );
+        assert_eq!(self.durability.manifest(), before);
     }
 
     fn apply_direct_checkpoint(&mut self) {
@@ -529,13 +555,18 @@ impl Runner {
                 self.model.peer_after_last_checkpoint = false;
             }
             self.model.pending = None;
-            // KNOWN DEFECT: resolution does not re-apply the full-coverage
-            // baseline normalization, so the phase stays Pending here even
-            // when the finalized checkpoint covers every durable head. See
-            // the module doc comment and the ignored reproduction test
-            // `resolved_full_coverage_checkpoint_restores_as_staged_baseline`.
-            // A later Reload in the same sequence exercises the heal: the
-            // resolved journal tail re-normalizes to DurablyStaged.
+            // Resolution re-applies the full-coverage baseline normalization
+            // once the intent is cleared, in either branch: a landed replace
+            // that finalized a covering checkpoint and an aborted replace
+            // whose prior checkpoint still covers every durable head both
+            // become joinable in this restart, not the next one.
+            if matches!(
+                self.model.phase,
+                RecoverySourcePhase::Pending | RecoverySourcePhase::Failed
+            ) && self.model.expected_coverage()
+            {
+                self.model.phase = RecoverySourcePhase::DurablyStaged;
+            }
             assert_eq!(manifest.source_phase, self.model.phase);
         }
     }
@@ -673,23 +704,42 @@ fn fixed_unexported_peer_tail_needs_reconciliation() {
 }
 
 /// A crash between the prepared intent and its commit marker resolves on
-/// reload, and the reload after that heals the phase through the baseline
-/// normalization.
+/// reload, and the resolution itself applies the baseline normalization: the
+/// finalized covering checkpoint is joinable in the same restart.
 #[test]
-fn fixed_crashed_intent_resolves_then_second_reload_normalizes() {
+fn fixed_crashed_intent_resolves_and_normalizes_in_one_restart() {
     let mut runner = Runner::new();
     runner.apply(&Op::PeerChange { concurrent: false });
     runner.apply(&Op::PrepareCheckpoint);
     runner.apply(&Op::Reload {
         replace_landed: true,
     });
-    // The resolve finalized the checkpoint but left the phase Pending (the
-    // known defect documented on the module).
-    assert_eq!(runner.model.phase, RecoverySourcePhase::Pending);
     assert!(runner.model.expected_coverage());
+    assert_eq!(runner.model.phase, RecoverySourcePhase::DurablyStaged);
+    // The restored baseline completes the normal recovered-source path.
+    runner.apply(&Op::SourceReady {
+        wrong_generation: false,
+    });
+    assert_eq!(runner.model.phase, RecoverySourcePhase::Ready);
     runner.apply(&Op::Reload {
         replace_landed: false,
     });
+    assert_eq!(runner.model.phase, RecoverySourcePhase::Ready);
+}
+
+/// An aborted intent leaves the previous covering checkpoint as the last
+/// committed export; clearing the intent restores it as a joinable baseline
+/// through the same normalization.
+#[test]
+fn fixed_aborted_intent_with_prior_covering_checkpoint_restores_joinable() {
+    let mut runner = Runner::new();
+    runner.apply(&Op::PeerChange { concurrent: false });
+    runner.apply(&Op::DirectCheckpoint);
+    runner.apply(&Op::PrepareCheckpoint);
+    runner.apply(&Op::Reload {
+        replace_landed: false,
+    });
+    assert!(runner.model.expected_coverage());
     assert_eq!(runner.model.phase, RecoverySourcePhase::DurablyStaged);
 }
 
@@ -716,17 +766,15 @@ fn fixed_checkpoint_coverage_is_order_insensitive() {
     assert!(!manifest.file_checkpoint_covers_durable_heads());
 }
 
-/// KNOWN DEFECT reproduction: resolving a recovered checkpoint intent whose
-/// replacement landed leaves `source_phase` Pending even though the finalized
-/// checkpoint covers every durable head. Invariant violated: a manifest with
-/// a full-coverage checkpoint and no unresolved intent must be joinable
-/// (case (a)), but this resolved state is Pending with peer changes, which
-/// room restore degrades as source_degraded until a second restart re-runs
-/// the baseline normalization in `RoomDurability::recovered`. The fix belongs
-/// in `resolve_recovered_file_checkpoint` (or its restore caller), not in
-/// this test.
+/// Resolving a recovered checkpoint intent whose replacement landed applies
+/// the full-coverage baseline normalization in the same restart. A crash
+/// between the atomic file replace and the intent-commit journal append
+/// restores with the intent pending (so `recovered` must not promote), and
+/// the resolve that finalizes the checkpoint leaves a manifest with a
+/// full-coverage checkpoint and no unresolved intent, which must be joinable
+/// (case (a)) immediately rather than reading as source_degraded until a
+/// second restart re-runs the normalization.
 #[test]
-#[ignore = "resolve_recovered_file_checkpoint does not re-apply the full-coverage baseline normalization; one-restart-late heal only"]
 fn resolved_full_coverage_checkpoint_restores_as_staged_baseline() {
     let directory = tempfile::tempdir().unwrap();
     let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
@@ -775,8 +823,8 @@ fn resolved_full_coverage_checkpoint_restores_as_staged_baseline() {
     let manifest = restarted.manifest();
     assert!(manifest.pending_file_checkpoint.is_none());
     assert!(manifest.file_checkpoint_covers_durable_heads());
-    // Fails today: the phase is Pending, so restore reports source_degraded
-    // for a disk file that is a byte-exact export of every durable head.
+    // The disk file is a byte-exact export of every durable head, so the
+    // resolved manifest is a joinable staged baseline in this restart.
     assert_eq!(manifest.source_phase, RecoverySourcePhase::DurablyStaged);
 }
 

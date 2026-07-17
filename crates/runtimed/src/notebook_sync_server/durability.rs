@@ -291,26 +291,8 @@ impl RoomDurability {
                 ))
             });
         let mut manifest = recovered.record.manifest;
-        // A checkpoint that exported every durable head proves the file on
-        // disk is a complete baseline for this journal, even when no import
-        // ever staged a source generation (a notebook created at a path is
-        // born without one; ordinary saves record checkpoints, not staged
-        // sources). Restore treats that manifest as durably staged so the
-        // room finalizes on the normal recovered path instead of failing
-        // materialization as source_degraded. A foreign disk write still
-        // fails finalization as a source conflict through the fingerprint
-        // check, and an unresolved checkpoint intent keeps its dedicated
-        // resolution path.
-        if degraded.is_none()
-            && matches!(
-                manifest.source_phase,
-                super::recovery::RecoverySourcePhase::Pending
-                    | super::recovery::RecoverySourcePhase::Failed
-            )
-            && manifest.pending_file_checkpoint.is_none()
-            && manifest.file_checkpoint_covers_durable_heads()
-        {
-            manifest.source_phase = super::recovery::RecoverySourcePhase::DurablyStaged;
+        if degraded.is_none() {
+            promote_full_coverage_checkpoint_baseline(&mut manifest);
         }
         Self::from_state(
             Some(journal),
@@ -836,6 +818,14 @@ impl RoomDurability {
                 observed_source: current_source_fingerprint,
             });
         }
+        // Resolution just cleared the intent, so the coverage evaluation runs
+        // on the post-resolution manifest. This is the same normalization
+        // restore applies: without it, a crash between the atomic file
+        // replace and the intent-commit journal append would restore as
+        // source_degraded until a second restart re-read the resolved tail.
+        if state.degraded.is_none() {
+            promote_full_coverage_checkpoint_baseline(&mut manifest);
+        }
         manifest.sequence = manifest
             .sequence
             .checked_add(1)
@@ -1285,6 +1275,34 @@ fn status_from_state(state: &DurabilityState) -> RoomDurabilityStatus {
         source_fingerprint: state.manifest.source_fingerprint,
         has_peer_changes: !state.manifest.peer_change_hashes.is_empty(),
         degraded: state.degraded.clone(),
+    }
+}
+
+/// Promote a manifest whose committed file checkpoint exported every durable
+/// head to a durably staged baseline.
+///
+/// Such a checkpoint proves the file on disk is a complete baseline for this
+/// journal, even when no import ever staged a source generation (a notebook
+/// created at a path is born without one; ordinary saves record checkpoints,
+/// not staged sources). Both restore ([`RoomDurability::recovered`]) and
+/// recovered-intent resolution
+/// ([`RoomDurability::resolve_recovered_file_checkpoint`]) reach this shape
+/// and must land in the joinable DurablyStaged phase instead of failing
+/// materialization as source_degraded. A foreign disk write still fails
+/// finalization as a source conflict through the fingerprint check.
+///
+/// The promotion never fires while a checkpoint intent is unresolved (its
+/// dedicated resolution path owns the transition) or when any durable head is
+/// missing from the export. Callers gate on their degraded state: a journal
+/// with preserved corrupt data must not be promoted.
+fn promote_full_coverage_checkpoint_baseline(manifest: &mut RecoveryManifest) {
+    if matches!(
+        manifest.source_phase,
+        RecoverySourcePhase::Pending | RecoverySourcePhase::Failed
+    ) && manifest.pending_file_checkpoint.is_none()
+        && manifest.file_checkpoint_covers_durable_heads()
+    {
+        manifest.source_phase = RecoverySourcePhase::DurablyStaged;
     }
 }
 
