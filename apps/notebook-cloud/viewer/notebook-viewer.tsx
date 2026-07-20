@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { AlertCircle, Check, Info, Loader2, PanelLeftOpen, X } from "lucide-react";
+import { AlertCircle, Check, Info, Loader2, LogIn, PanelLeftOpen, X } from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import {
   useHasIsolatedOutputs,
@@ -22,6 +22,7 @@ import {
   resolveMarkdownProjection,
 } from "@/lib/markdown-projection";
 import {
+  NotebookAccessGate,
   NotebookConnectionIdentity,
   NotebookCommentsPanel,
   NotebookDocumentToolbar,
@@ -197,6 +198,7 @@ import { CloudNotebookEditModeButton } from "./cloud-edit-mode-button";
 import { CloudNotebookTitle, cloudNotebookRouteTitle } from "./cloud-notebook-title";
 import {
   cloudNotebookDocumentTitle,
+  cloudNotebookGatedTitle,
   cloudNotebookTitleDisplay,
   cloudNotebookUrlAfterRename,
   type CloudNotebookCatalogResponse,
@@ -1611,9 +1613,34 @@ export function NotebookViewer({
   const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar(shellCapabilities, {
     reserve: editAccessPending,
   });
+  const notebookHasReadableSnapshot =
+    notebookCellIds.length > 0 ||
+    (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
+  // The route has no authenticated identity and the live-room join is retrying
+  // without a readable public snapshot: a hard sign-in wall, distinct from stale
+  // or expired auth. This owns the whole stage (NotebookAccessGate below) instead
+  // of riding the thin notice banner, so the signed-out canvas reads as gated
+  // rather than an empty/broken notebook.
+  const signedOutNotebookSignInRequired =
+    Boolean(authConfig.localDev || authConfig.oidc) &&
+    appSessionStatus.status !== "loading" &&
+    !hasAppSession &&
+    authState.mode === "anonymous" &&
+    !isPublicViewer &&
+    !notebookHasReadableSnapshot &&
+    status.kind === "loading" &&
+    Boolean(connectionError && isTransportReconnectError(connectionError));
   const notebookBodyAccessBlocked = cloudConnectionDiagnosticBlocksNotebookBody(connectionError);
+  // A signed-out gate blocks the body just like an access diagnostic: quiet the
+  // presence/edit/identity chrome so the header does not advertise collaboration
+  // affordances behind a sign-in wall.
+  const notebookStageGated = notebookBodyAccessBlocked || signedOutNotebookSignInRequired;
+  // Behind a gate the catalog title is unknown, so `notebookTitle` falls back to
+  // the humanized URL slug — a guessed, CSS-truncated fragment (e.g. "Ob…") that
+  // reads as broken. Show a clean intentional label instead until access resolves.
+  const gatedNotebookTitle = useMemo(cloudNotebookGatedTitle, []);
   const notebookHeaderChrome = projectCloudNotebookHeaderChrome({
-    bodyAccessBlocked: notebookBodyAccessBlocked,
+    bodyAccessBlocked: notebookStageGated,
     liveRoomAccessPending: liveRoomDisabledStatus?.kind === "loading",
   });
 
@@ -1624,7 +1651,7 @@ export function NotebookViewer({
       headerClassName="cloud-room-toolbar"
       presence={
         <CloudNotebookTitle
-          title={notebookTitle}
+          title={notebookStageGated ? gatedNotebookTitle : notebookTitle}
           renameTitle={catalogNotebookTitle?.trim() ?? ""}
           canRename={catalogAccessResolved && catalogGrantsDocumentEdit}
           renameSaving={notebookTitleSaving}
@@ -1718,20 +1745,10 @@ export function NotebookViewer({
       }}
     />
   );
-  const notebookHasReadableSnapshot =
-    notebookCellIds.length > 0 ||
-    (!connectionError && snapshotResolvedRef.current && status.kind === "ready");
-  const signedOutNotebookSignInRequired =
-    Boolean(authConfig.localDev || authConfig.oidc) &&
-    appSessionStatus.status !== "loading" &&
-    !hasAppSession &&
-    authState.mode === "anonymous" &&
-    !isPublicViewer &&
-    !notebookHasReadableSnapshot &&
-    status.kind === "loading" &&
-    Boolean(connectionError && isTransportReconnectError(connectionError));
   const notebookViewSurface = projectCloudNotebookViewSurface({
-    bodyAccessBlocked: notebookBodyAccessBlocked,
+    // A signed-out gate owns the stage: suppress the empty NotebookView so it
+    // does not paint a blank canvas behind the gate.
+    bodyAccessBlocked: notebookStageGated,
     cellCount: notebookCellIds.length,
     canEditStructure: shellCapabilities.canEditStructure,
     connectionError,
@@ -1811,6 +1828,7 @@ export function NotebookViewer({
     isPublicViewer,
     hasReadableSnapshot: notebookHasReadableSnapshot,
     signInRequired: signedOutNotebookSignInRequired,
+    signInRequiredOwnedByStage: signedOutNotebookSignInRequired,
     offlineMergeNotice,
     rendererAssetError,
     sustainedReconnecting,
@@ -1827,6 +1845,7 @@ export function NotebookViewer({
       isPublicViewer={isPublicViewer}
       hasReadableSnapshot={notebookHasReadableSnapshot}
       signInRequired={signedOutNotebookSignInRequired}
+      signInRequiredOwnedByStage={signedOutNotebookSignInRequired}
       offlineMergeNotice={offlineMergeNotice}
       rendererAssetError={rendererAssetError}
       sustainedReconnecting={sustainedReconnecting}
@@ -1836,6 +1855,26 @@ export function NotebookViewer({
       onRetryConnection={retryLiveConnection}
       onRetryRendererAssets={isolatedRenderer.retry}
       onSignInAgain={authConfig.localDev || authConfig.oidc ? beginNotebookAuth : undefined}
+    />
+  ) : null;
+
+  // Full-stage sign-in wall for a signed-out private notebook link. Owns the
+  // whole canvas (the empty NotebookView is suppressed and the rail hidden) so
+  // the surface reads as intentionally gated. The primary action reuses
+  // CloudNotebookSignInButton, the single sign-in source of truth, so its copy
+  // and OIDC-vs-localDev priority cannot drift from the rest of the app.
+  const signedOutGate = signedOutNotebookSignInRequired ? (
+    <NotebookAccessGate
+      tone="info"
+      icon={<LogIn aria-hidden="true" />}
+      title="Sign in to open this notebook"
+      detail="This notebook is private. Sign in with your account and we'll bring you straight back here."
+      primaryAction={
+        <div className="cloud-notebook-signed-out-actions cloud-notebook-gate-actions">
+          <CloudNotebookSignInButton authConfig={authConfig} authState={authState} />
+        </div>
+      }
+      data-testid="cloud-notebook-signed-out-gate"
     />
   ) : null;
 
@@ -1854,7 +1893,7 @@ export function NotebookViewer({
         notices={notices}
         noticesClassName="cloud-notebook-notices"
         capabilities={shellCapabilities}
-        rail={rail}
+        rail={notebookStageGated ? undefined : rail}
         stageLabel="Hosted notebook"
       >
         <h1 className="sr-only">{notebookTitle.title}</h1>
@@ -1866,6 +1905,7 @@ export function NotebookViewer({
             onSyncNeeded={handleSourceSyncNeeded}
             localActor={connectionActorLabel ?? ""}
           >
+            {signedOutGate}
             {notebookViewSurface.shouldRenderNotebookView ? (
               <NotebookView
                 cellIds={notebookCellIds}

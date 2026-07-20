@@ -2324,6 +2324,13 @@ body {
   }
 }
 
+/* Center the prominent sign-in button inside the full-stage access gate,
+   overriding the right-aligned dashboard/list treatment. */
+.cloud-notebook-gate-actions {
+  justify-content: center;
+  min-width: 0;
+}
+
 .cloud-share-panel {
   position: fixed;
   top: 4.75rem;

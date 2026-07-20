@@ -6,6 +6,7 @@ description: Cloud viewer empty, blocked, notice, auth recovery, and rail status
 import {
   ElementsAccessGateExample,
   ElementsEmptyStateExample,
+  ElementsFullStageGateExample,
   ElementsNoticeBannerExample,
   ElementsRailStatusExample,
   ElementsSessionExpiredReturnExample,
@@ -33,6 +34,15 @@ Full-stage blocked-room states for missing notebooks, missing access, and
 signed-out private notebook links.
 
 <ElementsAccessGateExample />
+
+## Full-stage gate (shared component)
+
+The shipping `NotebookAccessGate` primitive that the cloud viewer renders on the
+notebook stage for signed-out, no-access, and not-found paths. It fills the
+stage so a gated route reads as intentionally gated rather than as an empty or
+broken notebook, with one high-emphasis primary action.
+
+<ElementsFullStageGateExample />
 
 ## Notice banner
 

@@ -44,6 +44,23 @@ export function cloudNotebookDocumentTitle(displayTitle: string): string {
   return `nteract notebook: ${displayTitle.trim() || UNTITLED_NOTEBOOK_LABEL}`;
 }
 
+const GATED_NOTEBOOK_LABEL = "Private notebook";
+
+/**
+ * Intentional placeholder title for a gated notebook (signed-out or
+ * access-blocked). The catalog title is unknown in these states, and the route
+ * fallback humanizes the URL vanity slug into a guessed, CSS-truncated fragment
+ * (e.g. "Ob…") that reads as broken. Show a clean label instead until access
+ * resolves and the real catalog title arrives.
+ */
+export function cloudNotebookGatedTitle(): CloudNotebookTitleDisplay {
+  return {
+    label: GATED_NOTEBOOK_LABEL,
+    detail: null,
+    title: GATED_NOTEBOOK_LABEL,
+  };
+}
+
 export function cloudNotebookRouteTitleFromPathname(pathname: string): CloudNotebookTitleDisplay {
   const pathParts = pathname.split("/").filter(Boolean);
   const routeSlug = pathParts[0] === "n" ? pathParts[2] : null;

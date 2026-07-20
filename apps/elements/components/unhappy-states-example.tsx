@@ -1,3 +1,5 @@
+"use client";
+
 import {
   BookOpen,
   Check,
@@ -15,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { CSSProperties } from "react";
+import { NotebookAccessGate, type NotebookAccessGateTone } from "@/components/notebook";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -262,6 +265,78 @@ export function ElementsAccessGateExample() {
           <EmptyState {...state} className="min-h-[360px] px-6" />
         </div>
       ))}
+    </div>
+  );
+}
+
+const fullStageGates = [
+  {
+    icon: KeyRound,
+    tone: "info" as const,
+    title: "Sign in to open this notebook",
+    detail:
+      "This notebook is private. Sign in with your account and we'll bring you straight back here.",
+    primaryLabel: "Sign in with Anaconda",
+  },
+  {
+    icon: Lock,
+    tone: "attention" as const,
+    title: "This notebook is private",
+    detail: "Your account doesn't have access yet. Ask, and the owner gets a note right away.",
+    primaryLabel: "Request access",
+    note: "Signed in as alice@localhost",
+  },
+  {
+    icon: FileQuestion,
+    tone: "neutral" as const,
+    title: "Notebook not found",
+    detail:
+      "There is nothing at this address. It may have been deleted, or the link came through slightly wrong.",
+    secondaryLabel: "Back to your notebooks",
+  },
+] satisfies readonly {
+  icon: LucideIcon;
+  tone: NotebookAccessGateTone;
+  title: string;
+  detail: string;
+  primaryLabel?: string;
+  secondaryLabel?: string;
+  note?: string;
+}[];
+
+export function ElementsFullStageGateExample() {
+  return (
+    <div className="not-prose grid gap-3 lg:grid-cols-3">
+      {fullStageGates.map((gate) => {
+        const Icon = gate.icon;
+        return (
+          <div
+            key={gate.title}
+            className="flex min-h-[320px] overflow-hidden rounded-lg border border-border bg-background"
+          >
+            <NotebookAccessGate
+              tone={gate.tone}
+              icon={<Icon aria-hidden="true" />}
+              title={gate.title}
+              detail={gate.detail}
+              primaryAction={
+                gate.primaryLabel ? <Button size="sm">{gate.primaryLabel}</Button> : undefined
+              }
+              secondaryAction={
+                gate.secondaryLabel ? (
+                  <a
+                    href="/docs/cloud-dashboard"
+                    className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                  >
+                    {gate.secondaryLabel}
+                  </a>
+                ) : undefined
+              }
+              note={gate.note}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -203,7 +203,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sourceText, /<NotebookDocumentToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(
     sourceText,
-    /presence=\{[\s\S]*<CloudNotebookTitle[\s\S]*title=\{notebookTitle\}[\s\S]*canRename=\{catalogAccessResolved && catalogGrantsDocumentEdit\}[\s\S]*onRename=\{saveCloudNotebookTitle\}/,
+    /presence=\{[\s\S]*<CloudNotebookTitle[\s\S]*title=\{notebookStageGated \? gatedNotebookTitle : notebookTitle\}[\s\S]*canRename=\{catalogAccessResolved && catalogGrantsDocumentEdit\}[\s\S]*onRename=\{saveCloudNotebookTitle\}/,
   );
   assert.match(
     sourceText,
