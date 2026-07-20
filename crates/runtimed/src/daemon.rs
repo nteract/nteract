@@ -6279,6 +6279,48 @@ impl GcMarkSet {
 /// Disk is cheap; data loss isn't.
 pub(crate) const BLOB_GC_GRACE_SECS: u64 = 30 * 24 * 3600;
 
+/// Default overall timeout for a `runtimed warm-env` subprocess.
+///
+/// Covers the full solve + download + install + validate pipeline. On a slow
+/// machine or network, conda-forge downloads (win-64 pulls pywin32,
+/// vc14_runtime, etc.) can dominate this budget, so the value is intentionally
+/// generous and can be raised further via [`WARM_ENV_TIMEOUT_ENV`].
+pub(crate) const WARM_ENV_TIMEOUT_SECS: u64 = 900;
+
+/// Environment variable that overrides [`WARM_ENV_TIMEOUT_SECS`].
+///
+/// Field escape hatch for environments where the download-dominated conda
+/// install runs long (issue #4017 — slow/proxied home networks on Windows).
+pub(crate) const WARM_ENV_TIMEOUT_ENV: &str = "RUNTIMED_WARM_ENV_TIMEOUT_SECS";
+
+/// Effective warm-env subprocess timeout.
+///
+/// Reads [`WARM_ENV_TIMEOUT_ENV`] on each call. Invalid or zero values fall
+/// back to the compiled default with a warning.
+pub(crate) fn warm_env_timeout() -> std::time::Duration {
+    match std::env::var(WARM_ENV_TIMEOUT_ENV) {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(secs) if secs > 0 => std::time::Duration::from_secs(secs),
+            _ => {
+                warn!(
+                    "[runtimed] warm-env: ignoring invalid {}={:?}, using default {}s",
+                    WARM_ENV_TIMEOUT_ENV, val, WARM_ENV_TIMEOUT_SECS
+                );
+                std::time::Duration::from_secs(WARM_ENV_TIMEOUT_SECS)
+            }
+        },
+        Err(_) => std::time::Duration::from_secs(WARM_ENV_TIMEOUT_SECS),
+    }
+}
+
+/// Take the accumulated warm-env stderr tail, trimmed, if any non-empty text
+/// was captured. Consumes the buffer so the message is only attached once.
+fn drain_stderr_tail(tail: &std::sync::Arc<std::sync::Mutex<String>>) -> Option<String> {
+    let captured = std::mem::take(&mut *tail.lock().ok()?);
+    let trimmed = captured.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 /// Environment variable that overrides [`BLOB_GC_GRACE_SECS`].
 ///
 /// Primarily for development and tests that want a short grace period to
@@ -7116,11 +7158,20 @@ impl Daemon {
             }
             Err(e) => {
                 error!("[runtimed] Conda warm-env subprocess failed: {}", e);
+                // A subprocess timeout is the #4017 signature (slow,
+                // download-dominated conda-forge install on Windows). Classify
+                // it as "timeout" so onboarding can show the retry-friendly
+                // message rather than a generic setup failure.
+                let error_kind = if e.contains("timed out") {
+                    "timeout"
+                } else {
+                    "setup_failed"
+                };
                 guard
                     .fail_with(Some(PackageInstallError {
                         failed_package: None,
                         error_message: e,
-                        error_kind: "setup_failed".to_string(),
+                        error_kind: error_kind.to_string(),
                     }))
                     .await;
             }
@@ -7334,7 +7385,11 @@ impl Daemon {
     ///
     /// Config is sent as a single JSON object on the child's stdin.
     /// The child writes newline-delimited JSON events (progress + result) on
-    /// stdout. A 10-minute overall timeout kills the child if it hangs.
+    /// stdout. Its stderr (tracing logs, panics, native loader errors) is
+    /// captured and mirrored into the daemon log — the daemon is detached on
+    /// Windows, so inheriting stderr would drop those diagnostics on the floor
+    /// (issue #4017). A [`warm_env_timeout`]-bounded overall timeout kills the
+    /// child if it hangs.
     async fn spawn_warm_env(
         &self,
         env_type: EnvType,
@@ -7368,10 +7423,43 @@ impl Daemon {
             .arg("warm-env")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("Failed to spawn warm-env: {e}"))?;
+
+        // Drain the child's stderr into the daemon log. Retain the tail so a
+        // failure result with no `error` field (e.g. the child was killed by a
+        // native loader error before it could emit one) can still surface a
+        // real message instead of a generic placeholder.
+        let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let stderr_task = child.stderr.take().map(|stderr| {
+            let type_str = type_str.to_string();
+            let stderr_tail = stderr_tail.clone();
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    warn!("[runtimed] warm-env {type_str} stderr: {line}");
+                    if let Ok(mut tail) = stderr_tail.lock() {
+                        tail.push_str(&line);
+                        tail.push('\n');
+                        // Keep only the last ~2 KiB so a chatty child cannot
+                        // grow this buffer without bound. Snap to a UTF-8 char
+                        // boundary so slicing multibyte stderr never panics.
+                        if tail.len() > 2048 {
+                            let mut start = tail.len() - 2048;
+                            while start < tail.len() && !tail.is_char_boundary(start) {
+                                start += 1;
+                            }
+                            *tail = tail[start..].to_string();
+                        }
+                    }
+                }
+            })
+        });
 
         // Write config to stdin and close it so the child can proceed.
         {
@@ -7394,7 +7482,7 @@ impl Daemon {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         let mut last_result: Option<crate::warm_env::WarmEnvResult> = None;
 
-        let timeout = std::time::Duration::from_secs(600);
+        let timeout = warm_env_timeout();
         let read_result = tokio::time::timeout(timeout, async {
             while let Ok(Some(line)) = lines.next_line().await {
                 match serde_json::from_str::<crate::warm_env::WarmEnvEvent>(&line) {
@@ -7416,12 +7504,26 @@ impl Daemon {
             // Kill before waiting — don't block on a wedged child.
             let _ = child.kill().await;
             let _ = child.wait().await;
-            return Err("warm-env subprocess timed out after 10 minutes".to_string());
+            if let Some(task) = stderr_task {
+                let _ = task.await;
+            }
+            let tail = drain_stderr_tail(&stderr_tail);
+            return Err(format!(
+                "warm-env subprocess timed out after {}s{}",
+                timeout.as_secs(),
+                tail.map(|t| format!("; last stderr: {t}"))
+                    .unwrap_or_default()
+            ));
         }
 
         let status = child.wait().await;
+        // The stderr drain finishes once the pipe closes on child exit; await
+        // it so the tail buffer is complete before we read it for diagnostics.
+        if let Some(task) = stderr_task {
+            let _ = task.await;
+        }
 
-        if let Some(result) = last_result {
+        if let Some(mut result) = last_result {
             // Treat non-zero exit as failure even if the child emitted a
             // success result (it may have crashed during teardown).
             if let Ok(s) = &status {
@@ -7431,13 +7533,28 @@ impl Daemon {
                     ));
                 }
             }
+            // A failure result that carries no usable message (child died
+            // before writing one) still deserves the captured stderr tail.
+            if !result.success
+                && result
+                    .error
+                    .as_ref()
+                    .is_none_or(|message| message.trim().is_empty())
+            {
+                result.error = drain_stderr_tail(&stderr_tail)
+                    .map(|tail| format!("warm-env {type_str} failed; stderr: {tail}"));
+            }
             return Ok(result);
         }
 
+        let tail = drain_stderr_tail(&stderr_tail);
+        let tail_suffix = tail.map(|t| format!("; stderr: {t}")).unwrap_or_default();
         match status {
-            Ok(s) if s.success() => Err("warm-env exited 0 but no result event on stdout".into()),
-            Ok(s) => Err(format!("warm-env exited with status {s}")),
-            Err(e) => Err(format!("Failed to wait on warm-env: {e}")),
+            Ok(s) if s.success() => Err(format!(
+                "warm-env exited 0 but no result event on stdout{tail_suffix}"
+            )),
+            Ok(s) => Err(format!("warm-env exited with status {s}{tail_suffix}")),
+            Err(e) => Err(format!("Failed to wait on warm-env: {e}{tail_suffix}")),
         }
     }
 
@@ -10435,6 +10552,53 @@ mod tests {
     async fn blob_gc_default_grace_is_thirty_days() {
         // Guard constant — changing it silently would undo spec 1.
         assert_eq!(BLOB_GC_GRACE_SECS, 30 * 24 * 3600);
+    }
+
+    #[tokio::test]
+    async fn warm_env_timeout_respects_env_override() {
+        std::env::set_var(WARM_ENV_TIMEOUT_ENV, "1234");
+        assert_eq!(warm_env_timeout(), std::time::Duration::from_secs(1234));
+
+        // Zero and garbage both fall back to the compiled default.
+        std::env::set_var(WARM_ENV_TIMEOUT_ENV, "0");
+        assert_eq!(
+            warm_env_timeout(),
+            std::time::Duration::from_secs(WARM_ENV_TIMEOUT_SECS)
+        );
+
+        std::env::set_var(WARM_ENV_TIMEOUT_ENV, "not-a-number");
+        assert_eq!(
+            warm_env_timeout(),
+            std::time::Duration::from_secs(WARM_ENV_TIMEOUT_SECS)
+        );
+
+        std::env::remove_var(WARM_ENV_TIMEOUT_ENV);
+        assert_eq!(
+            warm_env_timeout(),
+            std::time::Duration::from_secs(WARM_ENV_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn drain_stderr_tail_returns_none_when_empty_or_whitespace() {
+        let empty = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        assert_eq!(drain_stderr_tail(&empty), None);
+
+        let whitespace = std::sync::Arc::new(std::sync::Mutex::new("  \n\t ".to_string()));
+        assert_eq!(drain_stderr_tail(&whitespace), None);
+    }
+
+    #[test]
+    fn drain_stderr_tail_trims_and_consumes() {
+        let tail = std::sync::Arc::new(std::sync::Mutex::new(
+            "\nImportError: DLL load failed\n".to_string(),
+        ));
+        assert_eq!(
+            drain_stderr_tail(&tail).as_deref(),
+            Some("ImportError: DLL load failed")
+        );
+        // Consumed — a second drain yields nothing.
+        assert_eq!(drain_stderr_tail(&tail), None);
     }
 
     #[tokio::test]
