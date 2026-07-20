@@ -21,7 +21,10 @@ import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-stat
 import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
+import { installStaleDeploymentRecovery } from "./stale-deployment-recovery";
 import "./index.css";
+
+installStaleDeploymentRecovery();
 
 const NotebookRoute = lazy(() =>
   loadNotebookRouteModule().then((module) => ({ default: module.NotebookRoute })),
