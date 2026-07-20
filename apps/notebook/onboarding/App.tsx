@@ -2,17 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AlertTriangle, ArrowLeft, Check, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import type { PoolState } from "runtimed";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
-import {
-  hasOnboardingPoolError,
-  isOnboardingPoolReady,
-  onboardingPoolErrorMessage,
-  type OnboardingPoolState,
-  type PythonEnv,
-} from "./pool-readiness";
+import { observeOnboardingPool, type OnboardingPoolGate } from "./pool-polling";
+import type { PythonEnv } from "./pool-readiness";
 import type { DaemonStatus } from "./types";
 
 type Runtime = "python" | "deno";
@@ -154,8 +150,6 @@ const BRAND_COLORS = {
   },
 };
 
-const IDLE_POOL_POLL_ATTEMPTS = 10;
-const WARMING_POOL_POLL_ATTEMPTS = 180;
 const LEARN_MORE_URL = "https://nteract.io/telemetry";
 const PYTHON_ENV_LABELS: Record<PythonEnv, string> = {
   uv: "UV",
@@ -182,8 +176,7 @@ export default function App() {
   ]);
   const [daemonReady, setDaemonReady] = useState(false);
   const [daemonFailed, setDaemonFailed] = useState(false);
-  const [selectedPoolReady, setSelectedPoolReady] = useState(false);
-  const [poolWaitTimedOut, setPoolWaitTimedOut] = useState(false);
+  const [poolGate, setPoolGate] = useState<OnboardingPoolGate | null>(null);
   const [setupComplete, setSetupComplete] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -251,109 +244,21 @@ export default function App() {
     if (!daemonReady || !pythonEnv) return;
 
     const envLabel = PYTHON_ENV_LABELS[pythonEnv];
-    setSelectedPoolReady(false);
-    setPoolWaitTimedOut(false);
-    setErrorMessage(null);
-    setSteps((prev) =>
-      prev.map((s) =>
-        s.id === "tools"
-          ? { ...s, label: `Checking ${envLabel} runtime`, status: "in_progress" }
-          : s,
-      ),
-    );
+    const subscription = observeOnboardingPool({
+      pythonEnv,
+      envLabel,
+      fetchPoolState: () => invoke<PoolState>("get_pool_status"),
+    }).subscribe((gate) => {
+      setPoolGate(gate);
+      setErrorMessage(gate.errorMessage);
+      setSteps((prev) =>
+        prev.map((step) =>
+          step.id === "tools" ? { ...step, label: gate.label, status: gate.stepStatus } : step,
+        ),
+      );
+    });
 
-    let cancelled = false;
-    let attempts = 0;
-    const pollPool = async () => {
-      while (!cancelled) {
-        attempts += 1;
-        try {
-          const state = await invoke<OnboardingPoolState>("get_pool_status");
-
-          const selected = state[pythonEnv] ?? { available: 0, warming: 0 };
-          const warming = selected.warming ?? 0;
-
-          if (isOnboardingPoolReady(pythonEnv, state)) {
-            setSelectedPoolReady(true);
-            setErrorMessage(null);
-            setSteps((prev) =>
-              prev.map((s) =>
-                s.id === "tools"
-                  ? { ...s, label: `${envLabel} runtime ready`, status: "completed" }
-                  : s,
-              ),
-            );
-            return;
-          }
-
-          // A recorded warm-env failure means the daemon hit a real problem
-          // (bad package, import error, timeout, missing runtime). Surface it
-          // instead of spinning on "warming" until the poll cap — the daemon
-          // keeps retrying with backoff, so the user can still continue.
-          if (hasOnboardingPoolError(pythonEnv, state)) {
-            setPoolWaitTimedOut(true);
-            setErrorMessage(onboardingPoolErrorMessage(envLabel, selected));
-            setSteps((prev) =>
-              prev.map((s) =>
-                s.id === "tools"
-                  ? { ...s, label: `${envLabel} runtime setup failed`, status: "failed" }
-                  : s,
-              ),
-            );
-            return;
-          }
-
-          if (warming > 0) {
-            setSteps((prev) =>
-              prev.map((s) =>
-                s.id === "tools"
-                  ? { ...s, label: `Warming ${envLabel} runtime`, status: "in_progress" }
-                  : s,
-              ),
-            );
-            if (attempts >= WARMING_POOL_POLL_ATTEMPTS) {
-              setPoolWaitTimedOut(true);
-              setSteps((prev) =>
-                prev.map((s) =>
-                  s.id === "tools"
-                    ? { ...s, label: `Still warming ${envLabel} runtime`, status: "failed" }
-                    : s,
-                ),
-              );
-              return;
-            }
-          } else if (attempts >= IDLE_POOL_POLL_ATTEMPTS) {
-            setPoolWaitTimedOut(true);
-            setSteps((prev) =>
-              prev.map((s) =>
-                s.id === "tools"
-                  ? { ...s, label: `Waiting for ${envLabel} runtime`, status: "failed" }
-                  : s,
-              ),
-            );
-            return;
-          }
-        } catch {
-          if (attempts >= IDLE_POOL_POLL_ATTEMPTS) {
-            setPoolWaitTimedOut(true);
-            setSteps((prev) =>
-              prev.map((s) =>
-                s.id === "tools"
-                  ? { ...s, label: `Waiting for ${envLabel} runtime`, status: "failed" }
-                  : s,
-              ),
-            );
-            return;
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    };
-
-    pollPool();
-    return () => {
-      cancelled = true;
-    };
+    return () => subscription.unsubscribe();
   }, [daemonReady, pythonEnv]);
 
   // Handle runtime selection
@@ -371,8 +276,7 @@ export default function App() {
   // Handle Python env selection with auto-advance to ready state
   const handlePythonEnvSelect = useCallback((selected: PythonEnv) => {
     setPythonEnv(selected);
-    setSelectedPoolReady(false);
-    setPoolWaitTimedOut(false);
+    setPoolGate(null);
     setErrorMessage(null);
     setSteps((prev) =>
       prev.map((s) =>
@@ -405,7 +309,7 @@ export default function App() {
     async (telemetryEnabled: boolean) => {
       if (!runtime || !pythonEnv) return;
       if (!daemonReady) return;
-      if (!selectedPoolReady && !poolWaitTimedOut) return;
+      if (!poolGate?.canContinue) return;
       if (isSubmitting) return;
       setIsSubmitting(true);
 
@@ -451,7 +355,7 @@ export default function App() {
         setErrorMessage("Failed to save settings. Please try again.");
       }
     },
-    [daemonReady, runtime, pythonEnv, selectedPoolReady, poolWaitTimedOut, isSubmitting],
+    [daemonReady, runtime, pythonEnv, poolGate?.canContinue, isSubmitting],
   );
 
   // Fallback path when the daemon failed to install. Still records the
@@ -487,7 +391,7 @@ export default function App() {
     runtime !== null &&
     pythonEnv !== null &&
     daemonReady &&
-    (selectedPoolReady || poolWaitTimedOut) &&
+    poolGate?.canContinue === true &&
     !setupComplete;
 
   // Page titles based on selections
