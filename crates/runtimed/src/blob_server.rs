@@ -595,9 +595,7 @@ async fn serve_assistant_chat(req: Request<hyper::body::Incoming>) -> Response<R
 
     // Stream the upstream body straight through, mapping reqwest errors to
     // io::Error for the StreamBody type.
-    let byte_stream = upstream
-        .bytes_stream()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e));
+    let byte_stream = upstream.bytes_stream().map_err(io::Error::other);
     let body = StreamBody::new(byte_stream.map_ok(Frame::data)).boxed();
 
     assistant_cors(

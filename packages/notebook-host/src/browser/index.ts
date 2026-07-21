@@ -51,6 +51,7 @@ type BrowserRelayControl =
       payload: DaemonReadyPayload;
       blob_port?: number | null;
       daemon?: DaemonInfo | null;
+      settings?: Partial<HostSyncedSettings> | null;
     }
   | { type: "progress"; payload: DaemonProgressPayload }
   | { type: "disconnected" }

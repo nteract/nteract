@@ -65,13 +65,11 @@ const outPath = videoPath.replace(/\.webm$/, "-2x.webm");
 
 if (hasFfmpeg()) {
   console.log(`Encoding 2x lossless → ${path.basename(outPath)}`);
-  execFileSync("ffmpeg", [
-    "-i", videoPath,
-    "-vf", "setpts=0.5*PTS",
-    "-c:v", "vp9",
-    "-lossless", "1",
-    "-y", outPath,
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync(
+    "ffmpeg",
+    ["-i", videoPath, "-vf", "setpts=0.5*PTS", "-c:v", "vp9", "-lossless", "1", "-y", outPath],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
   execFileSync("open", [outPath]);
 } else {
   console.warn("ffmpeg not found — opening original speed video.");

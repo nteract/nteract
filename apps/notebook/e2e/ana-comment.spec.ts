@@ -9,7 +9,19 @@ test.use({
   video: { mode: "on", size: { width: 1440, height: 900 } },
 });
 
+// Opt-in only: this spec talks to the real (non-mocked) Anaconda-hosted LLM
+// gateway and relies on `enable_comments` being synced from a local
+// settings.json via the Vite relay. Neither the auth nor the flag exists on CI
+// runners, so it can never pass there. Run it locally with the record-ui skill
+// by setting NTERACT_ASSISTANT_E2E=1.
+const ASSISTANT_E2E_ENABLED = /^(1|true|yes|on)$/i.test(process.env.NTERACT_ASSISTANT_E2E ?? "");
+
 test.describe("@ana in-comment assistant", () => {
+  test.skip(
+    !ASSISTANT_E2E_ENABLED,
+    "Set NTERACT_ASSISTANT_E2E=1 to run — needs the live Anaconda LLM gateway and comments enabled.",
+  );
+
   test("replies to a comment mentioning @ana with an agent-authored message", async ({ page }) => {
     test.setTimeout(180_000);
 
