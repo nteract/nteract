@@ -81,11 +81,12 @@ date:
 | Wire request | `NotebookRequest::{RunAllCells, RunAllCellsGuarded}` in `crates/notebook-protocol/src/protocol.rs` |
 | Local coordinator | `run_all_cells::handle_inner` in `crates/runtimed/src/requests/run_all_cells.rs` |
 | Hosted coordinator | `RoomHostHandle::handle_run_all_cells` in `crates/runtimed-wasm/src/lib.rs` |
-| Error normalization | `UserErrorOutput::from_iopub` in `crates/runtimed/src/user_error.rs` |
+| Error normalization | Public associated function `UserErrorOutput::from_iopub` in `crates/runtimed/src/user_error.rs` |
 | Lifecycle shape | `LifecycleSignal::CellError { execution_id: String }` in `crates/runtimed/src/output_prep.rs` |
 | Queue-clearing decision | `handle_lifecycle_signal` in `crates/runtimed/src/runtime_agent.rs` |
 | FIFO transition | `KernelState::{execution_done, process_next}` in `crates/runtimed/src/kernel_state.rs` |
 | Durable cancelled state | `RuntimeStateDoc::set_execution_cancelled` in `crates/runtime-doc/src/doc.rs` |
+| Python consumer | `AsyncNotebookSession::run_all_cells` in `crates/runtimed-py/src/async_session.rs`, backed by `session_core::run_all_cells` |
 
 ## Product contract
 
@@ -303,9 +304,12 @@ error. The product copy must state this plainly.
 - **MCP:** `run_all_cells` accepts the same enum. Wait mode returns aggregate
   status plus per-cell `done`, `error`, and `cancelled` results; a completed
   batch with allowed syntax errors is not reported as transport failure.
-- **Python:** `run_all_cells(failure_policy=...)` queues the same coordinator
-  intent and returns the accepted batch/member identities. Waiting APIs use
-  the same terminal predicate and aggregate vocabulary.
+- **Python:** the existing `AsyncNotebookSession::run_all_cells` binding in
+  `crates/runtimed-py/src/async_session.rs` gains a
+  `failure_policy=...` argument. Its `session_core::run_all_cells` path queues
+  the same coordinator intent and returns the accepted batch/member
+  identities. Waiting APIs use the same terminal predicate and aggregate
+  vocabulary.
 - **Unknown policy:** reject before allocating any execution IDs or stamping
   NotebookDoc pointers.
 
