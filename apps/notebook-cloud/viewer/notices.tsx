@@ -38,6 +38,13 @@ export interface CloudNotebookNoticesProps {
    */
   signInRequired?: boolean;
   /**
+   * The full-stage `NotebookAccessGate` owns the signed-out surface, so the
+   * thin inline sign-in banner must not double it. `signInRequired` still flows
+   * in to suppress the redundant "Loading notebook." status notice; only the
+   * banner itself is withheld.
+   */
+  signInRequiredOwnedByStage?: boolean;
+  /**
    * The live-room status has been "reconnecting" past the debounce window
    * (`useSustainedReconnecting`). Renders the single quiet reconnect line;
    * transport-loss `connectionError` strings are routed here instead of
@@ -125,6 +132,7 @@ export function cloudNotebookHasNotices({
   isPublicViewer = false,
   hasReadableSnapshot = false,
   signInRequired = false,
+  signInRequiredOwnedByStage = false,
   offlineMergeNotice = null,
   rendererAssetError = null,
   sustainedReconnecting = false,
@@ -148,7 +156,10 @@ export function cloudNotebookHasNotices({
     isPublicViewer,
   });
   const shouldShowSignInRequiredNotice =
-    signInRequired && !shouldShowAnonymousViewerAuthNotice && !hasAppSession;
+    signInRequired &&
+    !signInRequiredOwnedByStage &&
+    !shouldShowAnonymousViewerAuthNotice &&
+    !hasAppSession;
   const shouldShowAuthNotice =
     !shouldShowAnonymousViewerAuthNotice &&
     !shouldShowSignInRequiredNotice &&
@@ -184,6 +195,7 @@ export function CloudNotebookNotices({
   isPublicViewer = false,
   hasReadableSnapshot = false,
   signInRequired = false,
+  signInRequiredOwnedByStage = false,
   offlineMergeNotice = null,
   rendererAssetError = null,
   sustainedReconnecting = false,
@@ -204,6 +216,7 @@ export function CloudNotebookNotices({
       isPublicViewer,
       hasReadableSnapshot,
       signInRequired,
+      signInRequiredOwnedByStage,
       offlineMergeNotice,
       rendererAssetError,
       sustainedReconnecting,
@@ -230,7 +243,10 @@ export function CloudNotebookNotices({
     isPublicViewer,
   });
   const shouldShowSignInRequiredNotice =
-    signInRequired && !shouldShowAnonymousViewerAuthNotice && !hasAppSession;
+    signInRequired &&
+    !signInRequiredOwnedByStage &&
+    !shouldShowAnonymousViewerAuthNotice &&
+    !hasAppSession;
   const shouldShowAuthNotice =
     !shouldShowAnonymousViewerAuthNotice &&
     !shouldShowSignInRequiredNotice &&
