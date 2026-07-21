@@ -107,6 +107,7 @@ where
     if client_protocol_version >= 3 {
         send_session_status(&mut writer, &phases).await?;
     }
+    // Protocol v4 introduced the hosted_bridge_status SessionControl variant.
     if client_protocol_version >= 4 {
         let status = *hosted_bridge_status_rx.borrow_and_update();
         send_hosted_bridge_status(&mut writer, status).await?;
@@ -453,6 +454,7 @@ where
                 }
             }
 
+            // Older peers do not know the v4 hosted_bridge_status variant.
             result = hosted_bridge_status_rx.changed(), if client_protocol_version >= 4 => {
                 if result.is_err() {
                     return Ok(());

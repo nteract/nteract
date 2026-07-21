@@ -154,7 +154,7 @@ describe("createDesktopConnectionStatusSource", () => {
     source.dispose();
   });
 
-  it("does not mistake bridge recovery for a latched daemon reconnect", () => {
+  it("does not apply a daemon latch to composed bridge reconnecting", () => {
     const fake = createFakeDaemonEvents();
     const state$ = new BehaviorSubject<ReconnectGovernorState>({ kind: "idle" });
     const bridge$ = new BehaviorSubject<HostedBridgeStatus>("connected");
@@ -166,6 +166,9 @@ describe("createDesktopConnectionStatusSource", () => {
 
     fake.fire("ready");
     bridge$.next("reconnecting");
+    expect(source.getCurrent()).toBe("reconnecting");
+    // The daemon link remains online. The latch must inspect daemonStatus,
+    // not the composed current value supplied by the bridge's second hop.
     state$.next({ kind: "latched", reason: "unrelated terminal daemon state" });
 
     expect(source.getCurrent()).toBe("reconnecting");

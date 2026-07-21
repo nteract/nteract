@@ -222,6 +222,11 @@ async fn run_bridge(
         match transport.connect().await {
             Ok((source, sink)) => {
                 let Some(principal) = transport.principal().map(str::to_string) else {
+                    // Successful CloudWsFrameTransport::connect() promises a
+                    // principal, so this is an invariant failure rather than
+                    // ordinary reconnect churn. Keep retrying to avoid leaving
+                    // a retained dead handle, but report the terminal state
+                    // during backoff so the failure is not hidden.
                     warn!(
                         "[hosted-bridge] {} connected without a principal; retrying",
                         locator

@@ -357,10 +357,10 @@ describe("SyncEngine", () => {
       const statuses: HostedBridgeStatus[] = [];
       engine.hostedBridgeStatus$.subscribe((status) => statuses.push(status));
 
-      transport.deliver(Array.from([0x07, 1]));
-      transport.deliver(Array.from([0x07, 2]));
-      transport.deliver(Array.from([0x07, 3]));
-      transport.deliver(Array.from([0x07, 4]));
+      transport.deliver(Array.from([FrameType.SESSION_CONTROL, 1]));
+      transport.deliver(Array.from([FrameType.SESSION_CONTROL, 2]));
+      transport.deliver(Array.from([FrameType.SESSION_CONTROL, 3]));
+      transport.deliver(Array.from([FrameType.SESSION_CONTROL, 4]));
 
       expect(statuses).toEqual(["connecting", "connected", "reconnecting"]);
       engine.stop();
@@ -378,7 +378,7 @@ describe("SyncEngine", () => {
       engine.sessionStatus$.subscribe((status) => statuses.push(status));
 
       // First session reaches ready.
-      transport.deliver(Array.from([0x07, 1]));
+      transport.deliver(Array.from([FrameType.SESSION_CONTROL, 1]));
       expect(statuses.at(-1)?.runtime_state).toBe("ready");
 
       // Rebootstrap (daemon:ready path). ReplaySubject(1) must now carry
@@ -404,7 +404,7 @@ describe("SyncEngine", () => {
       const statuses: HostedBridgeStatus[] = [];
       engine.hostedBridgeStatus$.subscribe((status) => statuses.push(status));
 
-      transport.deliver(Array.from([0x07, 1]));
+      transport.deliver(Array.from([FrameType.SESSION_CONTROL, 1]));
       expect(statuses.at(-1)).toBe("connected");
 
       engine.resetForBootstrap();

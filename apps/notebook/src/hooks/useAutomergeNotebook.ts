@@ -198,7 +198,7 @@ export function useNotebook() {
   // source subscribes during render, then the active engine forwards into it.
   // A BehaviorSubject also gives the connection dot an honest first paint.
   const hostedBridgeStatusSubject = useMemo(
-    () => new BehaviorSubject<HostedBridgeStatus>("connecting"),
+    () => new BehaviorSubject<HostedBridgeStatus>("not_applicable"),
     [],
   );
   const hostedBridgeStatus$ = useMemo(
@@ -385,10 +385,12 @@ export function useNotebook() {
     transportRef.current = transport;
     engineRef.current = engine;
 
-    // Start the engine (subscribes to transport frames).
-    engine.start();
+    // Attach before start so even a synchronously replayed transport frame is
+    // visible to the app-level bridge.
     const hostedBridgeStatusSubscription =
       engine.hostedBridgeStatus$.subscribe(hostedBridgeStatusSubject);
+    // Start the engine (subscribes to transport frames).
+    engine.start();
 
     const storeBridge = startNotebookSyncStoreBridge({
       engine,
