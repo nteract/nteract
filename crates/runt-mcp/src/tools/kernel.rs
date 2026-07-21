@@ -10,6 +10,22 @@ use crate::NteractMcp;
 
 use super::{tool_error, tool_success};
 
+#[derive(Debug)]
+enum RestartRetryAccessError {
+    Disconnected,
+    SessionAccess(crate::session::SessionAccessError),
+}
+
+fn restart_retry_access(
+    access: Result<Option<crate::session::SessionAccess>, crate::session::SessionAccessError>,
+) -> Result<crate::session::SessionAccess, RestartRetryAccessError> {
+    match access {
+        Ok(Some(access)) => Ok(access),
+        Ok(None) => Err(RestartRetryAccessError::Disconnected),
+        Err(error) => Err(RestartRetryAccessError::SessionAccess(error)),
+    }
+}
+
 /// Interrupt the currently executing cell.
 pub async fn interrupt_kernel(
     server: &NteractMcp,
@@ -207,11 +223,12 @@ pub async fn restart_kernel(
             {
                 return super::session_access_error(error);
             }
-            match server
-                .session_access(crate::session::SessionRequirement::Execute)
-                .await
-            {
-                Ok(Some(access)) => {
+            match restart_retry_access(
+                server
+                    .session_access(crate::session::SessionRequirement::Execute)
+                    .await,
+            ) {
+                Ok(access) => {
                     if access.readiness.session_generation
                         != refreshed_access.readiness.session_generation
                         || access.readiness.target != refreshed_access.readiness.target
@@ -240,7 +257,10 @@ pub async fn restart_kernel(
                         })
                         .await
                 }
-                Ok(None) | Err(_) => Err(SyncError::Disconnected),
+                Err(RestartRetryAccessError::Disconnected) => Err(SyncError::Disconnected),
+                Err(RestartRetryAccessError::SessionAccess(error)) => {
+                    return super::session_access_error(error)
+                }
             }
         }
         other => other,
@@ -312,5 +332,59 @@ pub async fn restart_kernel(
         )),
         Ok(_) => tool_success(&serde_json::json!({ "restarted": true }).to_string()),
         Err(e) => tool_error(&format!("Failed to restart kernel: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn readiness(target: &str) -> crate::session::SessionReadiness {
+        crate::session::SessionReadiness {
+            session_generation: 7,
+            target: target.to_string(),
+            source_state: serde_json::json!({ "state": "ready" }),
+            projection_ready: true,
+            document_ready: true,
+            runtime_ready: true,
+            interactive: true,
+            projection_heads: vec!["notebook-head".to_string()],
+            runtime_state_heads: vec!["runtime-head".to_string()],
+            projection_completeness: Some("complete".to_string()),
+            capabilities: crate::session::SessionCapabilities {
+                read: true,
+                mutate: true,
+                execute: true,
+            },
+        }
+    }
+
+    #[test]
+    fn restart_retry_treats_missing_session_as_disconnected() {
+        let result = restart_retry_access(Ok(None));
+
+        assert!(matches!(result, Err(RestartRetryAccessError::Disconnected)));
+    }
+
+    #[test]
+    fn restart_retry_preserves_structured_session_access_error() {
+        let error = crate::session::SessionAccessError {
+            code: "session_superseded",
+            message: "A newer notebook target superseded this session".to_string(),
+            readiness: Box::new(readiness("notebook:new-target")),
+        };
+
+        let result = restart_retry_access(Err(error));
+        let Err(RestartRetryAccessError::SessionAccess(error)) = result else {
+            panic!("expected structured session access error");
+        };
+
+        assert_eq!(error.code, "session_superseded");
+        assert_eq!(
+            error.message,
+            "A newer notebook target superseded this session"
+        );
+        assert_eq!(error.readiness.session_generation, 7);
+        assert_eq!(error.readiness.target, "notebook:new-target");
     }
 }
