@@ -1755,6 +1755,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_self_tests() -> int:
+    self_test_count = 0
+
+    def check(condition: bool) -> None:
+        nonlocal self_test_count
+        self_test_count += 1
+        if not condition:
+            raise AssertionError(f"self-test {self_test_count} failed")
+
     head = "a" * 64
     valid_response = {
         "notebook_id": "00000000-0000-4000-8000-000000000001",
@@ -1785,16 +1793,16 @@ def run_self_tests() -> int:
         "structuredContent": valid_response,
     }
     connect_summary = summarize_connect(1.25, connect_result, None, ["stable-cell"])
-    assert connect_summary["ok"]
-    assert connect_summary["session_generation"] == 7
-    assert connect_summary["cell_ids"] == ["stable-cell"]
+    check(connect_summary["ok"])
+    check(connect_summary["session_generation"] == 7)
+    check(connect_summary["cell_ids"] == ["stable-cell"])
 
     invalid_response = json.loads(json.dumps(valid_response))
     invalid_response["readiness"]["projection"] = False
     invalid_response["capabilities"]["mutate"] = True
     invalid_errors = progressive_contract_errors(invalid_response)
-    assert "connect_notebook success must be ProjectionReady" in invalid_errors
-    assert "mutation capability opened before Interactive" in invalid_errors
+    check("connect_notebook success must be ProjectionReady" in invalid_errors)
+    check("mutation capability opened before Interactive" in invalid_errors)
 
     error_payload = {
         "error": {
@@ -1817,10 +1825,10 @@ def run_self_tests() -> int:
         "structuredContent": error_payload,
     }
     read_summary = summarize_get_all(2.5, read_result, None)
-    assert not read_summary["ok"]
-    assert read_summary["error_code"] == "notebook_not_ready"
-    assert read_summary["structured_state_errors"] == []
-    assert parse_json_value(f"prefix {json.dumps(error_payload)} suffix") == error_payload
+    check(not read_summary["ok"])
+    check(read_summary["error_code"] == "notebook_not_ready")
+    check(read_summary["structured_state_errors"] == [])
+    check(parse_json_value(f"prefix {json.dumps(error_payload)} suffix") == error_payload)
 
     runtime_closed = validate_runtime_not_ready(
         [
@@ -1830,17 +1838,17 @@ def run_self_tests() -> int:
             }
         ]
     )
-    assert runtime_closed["ok"]
-    assert runtime_closed["execute_and_runtime_closed_observed"]
+    check(runtime_closed["ok"])
+    check(runtime_closed["execute_and_runtime_closed_observed"])
 
     runtime_open_summary = json.loads(json.dumps(connect_summary))
     runtime_open_summary["readiness"]["runtime"] = True
     runtime_open_summary["capabilities"]["execute"] = True
-    assert not validate_runtime_not_ready([{"connects": [runtime_open_summary]}])["ok"]
+    check(not validate_runtime_not_ready([{"connects": [runtime_open_summary]}])["ok"])
 
     unsafe_runtime_summary = json.loads(json.dumps(connect_summary))
     unsafe_runtime_summary["capabilities"]["execute"] = True
-    assert not validate_runtime_not_ready([{"connects": [unsafe_runtime_summary]}])["ok"]
+    check(not validate_runtime_not_ready([{"connects": [unsafe_runtime_summary]}])["ok"])
 
     structured_runtime_closed = validate_runtime_not_ready(
         [
@@ -1854,8 +1862,8 @@ def run_self_tests() -> int:
             }
         ]
     )
-    assert structured_runtime_closed["ok"]
-    assert structured_runtime_closed["structured_transition_codes"] == ["notebook_not_ready"]
+    check(structured_runtime_closed["ok"])
+    check(structured_runtime_closed["structured_transition_codes"] == ["notebook_not_ready"])
 
     projection_payload = {
         "cells": [{"cell_id": "stable-cell", "cell_type": "code"}],
@@ -1874,8 +1882,8 @@ def run_self_tests() -> int:
         "structuredContent": projection_payload,
     }
     projection_summary = summarize_get_all(1.0, projection_result, None)
-    assert projection_summary["ok"]
-    assert projection_summary["projection_only"]
+    check(projection_summary["ok"])
+    check(projection_summary["projection_only"])
 
     stalled_observation = validate_stalled_peer_observation(
         connect_summary,
@@ -1883,15 +1891,17 @@ def run_self_tests() -> int:
         [read_summary],
         [read_summary],
     )
-    assert stalled_observation["ok"]
-    assert not validate_stalled_peer_observation(
-        connect_summary,
-        projection_summary,
-        [],
-        [],
-    )["ok"]
+    check(stalled_observation["ok"])
+    check(
+        not validate_stalled_peer_observation(
+            connect_summary,
+            projection_summary,
+            [],
+            [],
+        )["ok"]
+    )
 
-    print(json.dumps({"ok": True, "self_tests": 22}, sort_keys=True))
+    print(json.dumps({"ok": True, "self_tests": self_test_count}, sort_keys=True))
     return 0
 
 
