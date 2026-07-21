@@ -118,7 +118,9 @@ where
 /// Send a launch/restart request and, for a captured environment only, force
 /// one environment rebuild and one relaunch after a qualifying infrastructure
 /// failure. The existing fresh-port retry loop remains inside each launch
-/// attempt.
+/// attempt. Retry transport errors are normalized to `KernelLaunchFailed` so
+/// every caller's existing failure arm performs its contextual terminal-state
+/// transition after the rebuild's `PreparingEnv -> Launching` sequence.
 pub(crate) async fn send_runtime_agent_request_with_captured_env_repair<F>(
     room: &NotebookRoom,
     captured: Option<&CapturedEnv>,
@@ -208,7 +210,7 @@ where
     }
 }
 
-fn captured_env_repair_terminal_response(
+pub(crate) fn captured_env_repair_terminal_response(
     original_kind: notebook_protocol::protocol::KernelLaunchFailureKind,
     original_error: &str,
     retry_detail: &str,

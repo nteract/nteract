@@ -450,6 +450,10 @@ pub async fn rebuild_environment_unified(
     prepare_environment_unified_inner(deps, env_id, cache_dir, handler, true).await
 }
 
+fn unified_cache_is_reusable(force_rebuild: bool, env_exists: bool, python_exists: bool) -> bool {
+    !force_rebuild && env_exists && python_exists
+}
+
 async fn prepare_environment_unified_inner(
     deps: &UvDependencies,
     env_id: &str,
@@ -473,7 +477,7 @@ async fn prepare_environment_unified_inner(
     let python_path = venv_path.join("bin").join("python");
 
     // Cache hit
-    if !force_rebuild && venv_path.exists() && python_path.exists() {
+    if unified_cache_is_reusable(force_rebuild, venv_path.exists(), python_path.exists()) {
         info!("Using cached unified UV env at {:?}", venv_path);
         crate::gc::touch_last_used(&venv_path).await;
         crate::launcher::vendor_into_venv(&python_path)
@@ -1353,6 +1357,12 @@ mod tests {
         let h1 = compute_unified_env_hash(&deps, "abc");
         let h2 = compute_unified_env_hash(&deps, "abc");
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn forced_unified_rebuild_bypasses_an_otherwise_reusable_cache() {
+        assert!(unified_cache_is_reusable(false, true, true));
+        assert!(!unified_cache_is_reusable(true, true, true));
     }
 
     #[test]
