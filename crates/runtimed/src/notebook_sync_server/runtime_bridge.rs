@@ -133,7 +133,7 @@ where
 {
     run_with_one_captured_env_repair(
         captured.cloned(),
-        || send_runtime_agent_request_with_kernel_ports(room, |ports| build_request(ports)),
+        || send_runtime_agent_request_with_kernel_ports(room, &build_request),
         |captured| async move {
             rebuild_captured_environment(room, &captured)
                 .await
