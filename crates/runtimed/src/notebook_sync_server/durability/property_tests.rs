@@ -359,6 +359,16 @@ impl Runner {
         self.model.exported_heads = heads;
         self.model.has_checkpoint = true;
         self.model.peer_after_last_checkpoint = false;
+        // Mirror `promote_full_coverage_checkpoint_baseline`: direct commits
+        // have no pending intent or degradation in this model, and promotion
+        // preserves both generation and sequence.
+        if matches!(
+            self.model.phase,
+            RecoverySourcePhase::Pending | RecoverySourcePhase::Failed
+        ) && self.model.expected_coverage()
+        {
+            self.model.phase = RecoverySourcePhase::DurablyStaged;
+        }
     }
 
     fn apply_prepare_checkpoint(&mut self) {
@@ -417,6 +427,15 @@ impl Runner {
         self.model.has_checkpoint = true;
         self.model.pending = None;
         self.model.peer_after_last_checkpoint = false;
+        // Mirror `promote_full_coverage_checkpoint_baseline` after the commit
+        // clears the prepared intent.
+        if matches!(
+            self.model.phase,
+            RecoverySourcePhase::Pending | RecoverySourcePhase::Failed
+        ) && self.model.expected_coverage()
+        {
+            self.model.phase = RecoverySourcePhase::DurablyStaged;
+        }
     }
 
     fn apply_abort_prepared(&mut self) {
@@ -662,7 +681,7 @@ impl Runner {
 // --- Fixed sequences validating the model against known-good behavior ---
 
 /// The full recovered-baseline arc as one deterministic sequence: peer edits,
-/// a covering checkpoint, a crash, the normalized DurablyStaged restore, and
+/// a covering checkpoint, its immediate DurablyStaged baseline, a crash, and
 /// the source-ready completion to Ready.
 #[test]
 fn fixed_covering_checkpoint_reloads_joinable_and_completes_ready() {
@@ -683,11 +702,10 @@ fn fixed_covering_checkpoint_reloads_joinable_and_completes_ready() {
     assert_eq!(runner.model.phase, RecoverySourcePhase::Ready);
 }
 
-/// A peer commit after the last checkpoint makes disk a stale prefix: the
-/// reload must classify it as needing explicit reconciliation, never as a
-/// joinable baseline.
+/// A peer commit after a staged checkpoint makes disk a stale prefix, but the
+/// staged checkpoint remains a valid baseline for replaying the durable tail.
 #[test]
-fn fixed_unexported_peer_tail_needs_reconciliation() {
+fn fixed_unexported_peer_tail_keeps_staged_baseline() {
     let mut runner = Runner::new();
     runner.apply(&Op::PeerChange { concurrent: false });
     runner.apply(&Op::DirectCheckpoint);
@@ -696,7 +714,7 @@ fn fixed_unexported_peer_tail_needs_reconciliation() {
         replace_landed: false,
     });
     let manifest = runner.durability.manifest();
-    assert_eq!(classify(&manifest), RecoveryCase::NeedsReconciliation);
+    assert_eq!(classify(&manifest), RecoveryCase::Joinable);
     assert_ne!(
         sorted(&manifest.durable_heads),
         sorted(&manifest.exported_heads)

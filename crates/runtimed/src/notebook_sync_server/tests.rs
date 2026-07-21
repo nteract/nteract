@@ -3004,6 +3004,11 @@ async fn already_current_save_does_not_advance_checkpoint_or_saved_timestamp() {
     let first = save_notebook_to_disk(&room, None).await.unwrap();
     assert!(matches!(first, FileSaveOutcome::Saved { .. }));
     let first_runtime = room.state.read(|state| state.read_state()).unwrap();
+    let first_manifest = room.durability.manifest();
+    assert_eq!(
+        first_manifest.source_phase,
+        super::recovery::RecoverySourcePhase::DurablyStaged
+    );
 
     let second = save_notebook_to_disk(&room, None).await.unwrap();
     assert!(matches!(
@@ -3019,6 +3024,11 @@ async fn already_current_save_does_not_advance_checkpoint_or_saved_timestamp() {
         first_runtime.file_checkpoint
     );
     assert_eq!(second_runtime.last_saved, first_runtime.last_saved);
+    assert_eq!(
+        room.durability.manifest().sequence,
+        first_manifest.sequence,
+        "an already-current save must not append another journal record"
+    );
 }
 
 #[tokio::test]

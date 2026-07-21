@@ -691,18 +691,17 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
         super::file_checkpoint::SaveOutcome::Saved { checkpoint } => checkpoint,
         super::file_checkpoint::SaveOutcome::AlreadyCurrent { checkpoint, .. } => {
             // The coordinator skips its commit callback for an already-current
-            // file. Reconciliation still has new durable meaning: commit the
-            // selected source generation before restoring capabilities.
-            if matches!(intent, FileSaveIntent::Reconcile { .. }) {
-                commit_file_checkpoint_for_intent(
-                    &room.durability,
-                    &room.lifecycle,
-                    &room.state,
-                    &checkpoint,
-                    intent,
-                )
-                .map_err(SaveError::Retryable)?;
-            }
+            // file. The checkpoint can still have new durable meaning: an
+            // ordinary save may establish the room's first complete baseline,
+            // while reconciliation commits the selected source generation.
+            commit_file_checkpoint_for_intent(
+                &room.durability,
+                &room.lifecycle,
+                &room.state,
+                &checkpoint,
+                intent,
+            )
+            .map_err(SaveError::Retryable)?;
             let exported_heads = checkpoint_heads_hex(&checkpoint.exported_heads);
             debug!(
                 "[notebook-sync] File checkpoint already current for {:?} at sequence {}",
