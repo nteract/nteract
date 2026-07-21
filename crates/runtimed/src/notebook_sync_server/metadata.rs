@@ -1789,6 +1789,11 @@ pub(crate) fn captured_env_disk_state(captured: &CapturedEnv) -> CapturedEnvDisk
 /// The captured dependency snapshot and `env_id` are the sole identity input;
 /// callers must retain the snapshot from the original launch resolution rather
 /// than re-reading mutable notebook metadata after a failed handshake.
+///
+/// The caller must own the room's single-flight launch admission for the full
+/// rebuild and retry. This helper deliberately publishes `PreparingEnv` and
+/// then `Launching`; if the retry fails, the caller's terminal response arm
+/// replaces `Launching` with its contextual error/reset outcome.
 pub(crate) async fn rebuild_captured_environment(
     room: &NotebookRoom,
     captured: &CapturedEnv,

@@ -1362,6 +1362,8 @@ mod tests {
     #[test]
     fn forced_unified_rebuild_bypasses_an_otherwise_reusable_cache() {
         assert!(unified_cache_is_reusable(false, true, true));
+        // UV has no lock sidecar: bypassing this cache hit falls through to
+        // the backend's remove-and-recreate path.
         assert!(!unified_cache_is_reusable(true, true, true));
     }
 

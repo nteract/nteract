@@ -158,6 +158,9 @@ where
 {
     use notebook_protocol::protocol::RuntimeAgentResponse;
 
+    // `send` is called once for the original launch and at most once more
+    // after a successful captured-environment rebuild. Keeping it `FnMut`
+    // expresses that bounded sequential reuse without requiring allocation.
     let first_response = send().await?;
     let RuntimeAgentResponse::KernelLaunchFailed {
         kind,

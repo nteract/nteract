@@ -1539,6 +1539,8 @@ mod tests {
         assert!(unified_cache_is_reusable(false, true, true));
         assert!(!unified_cache_is_reusable(true, true, true));
         assert!(unified_lock_rebuild_is_applicable(true, true, true));
+        assert!(!unified_lock_rebuild_is_applicable(true, false, true));
+        assert!(!unified_lock_rebuild_is_applicable(true, false, false));
     }
 
     #[test]
