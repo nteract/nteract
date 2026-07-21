@@ -14,7 +14,7 @@ import { DirectTransport } from "../src/direct-transport";
 import { FrameType } from "../src/transport";
 import { mergeChangesets } from "../src/cell-changeset";
 import { diffExecutions } from "../src/runtime-state";
-import type { SessionStatus, SyncableHandle, FrameEvent } from "../src/handle";
+import type { FrameEvent, HostedBridgeStatus, SessionStatus, SyncableHandle } from "../src/handle";
 import type { CellChangeset } from "../src/cell-changeset";
 import type { RuntimeState } from "../src/runtime-state";
 
@@ -101,6 +101,10 @@ function commsDocSyncEvent(state: Record<string, Record<string, unknown>>): Fram
 
 function sessionStatusEvent(status: SessionStatus): FrameEvent {
   return { type: "session_control", status };
+}
+
+function hostedBridgeStatusEvent(status: HostedBridgeStatus): FrameEvent {
+  return { type: "hosted_bridge_status", hosted_bridge_status: status };
 }
 
 function pendingStatus(): SessionStatus {
@@ -340,6 +344,28 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("emits deduplicated hosted bridge status snapshots", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>)
+        .mockReturnValueOnce([hostedBridgeStatusEvent("connecting")])
+        .mockReturnValueOnce([hostedBridgeStatusEvent("connected")])
+        .mockReturnValueOnce([hostedBridgeStatusEvent("connected")])
+        .mockReturnValueOnce([hostedBridgeStatusEvent("reconnecting")]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const statuses: HostedBridgeStatus[] = [];
+      engine.hostedBridgeStatus$.subscribe((status) => statuses.push(status));
+
+      transport.deliver(Array.from([0x07, 1]));
+      transport.deliver(Array.from([0x07, 2]));
+      transport.deliver(Array.from([0x07, 3]));
+      transport.deliver(Array.from([0x07, 4]));
+
+      expect(statuses).toEqual(["connecting", "connected", "reconnecting"]);
+      engine.stop();
+    });
+
     it("resetForBootstrap emits a pending status so stale ready doesn't leak across reconnect", () => {
       (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValueOnce([
         sessionStatusEvent(interactiveStatus()),
@@ -365,6 +391,28 @@ describe("SyncEngine", () => {
       engine.sessionStatus$.subscribe((status) => (lateSeen = status));
       expect(lateSeen!.runtime_state).toBe("pending");
 
+      engine.stop();
+    });
+
+    it("resetForBootstrap does not replay stale connected bridge health", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValueOnce([
+        hostedBridgeStatusEvent("connected"),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+      const statuses: HostedBridgeStatus[] = [];
+      engine.hostedBridgeStatus$.subscribe((status) => statuses.push(status));
+
+      transport.deliver(Array.from([0x07, 1]));
+      expect(statuses.at(-1)).toBe("connected");
+
+      engine.resetForBootstrap();
+      expect(statuses.at(-1)).toBe("connecting");
+
+      let lateSeen: HostedBridgeStatus | null = null;
+      engine.hostedBridgeStatus$.subscribe((status) => (lateSeen = status));
+      expect(lateSeen).toBe("connecting");
       engine.stop();
     });
 

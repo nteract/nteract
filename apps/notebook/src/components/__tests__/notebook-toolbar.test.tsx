@@ -694,10 +694,10 @@ describe("connection/identity slot wiring", () => {
     // vp test runs from the repo root.
     const appSource = readFileSync(resolve(process.cwd(), "apps/notebook/src/App.tsx"), "utf8");
     expect(appSource).toMatch(
-      /trailingControls=\{[\s\S]{0,600}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{desktopConnectionStatus\}[\s\S]{0,200}?connectionLabel="Daemon connection"/,
+      /trailingControls=\{[\s\S]{0,600}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{desktopConnectionStatus\}[\s\S]{0,200}?connectionLabel=\{hostedNotebookUrl \? "Notebook connection" : "Daemon connection"\}/,
     );
     expect(appSource).toMatch(
-      /createDesktopConnectionStatusSource\(host\.daemonEvents, host\.daemon\.autoReconnect\)/,
+      /createDesktopConnectionStatusSource\([\s\S]{0,160}?host\.daemonEvents,[\s\S]{0,80}?host\.daemon\.autoReconnect,[\s\S]{0,80}?hostedBridgeStatus\$/,
     );
     expect(appSource).not.toMatch(/connectionStatus\$=\{host\.transport\.connectionStatus\$\}/);
   });

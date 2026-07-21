@@ -306,6 +306,18 @@ fn cloud_frame_rejection_error(payload: &[u8]) -> Option<std::io::Error> {
     ))
 }
 
+fn upgrade_rejection_error(
+    status: tokio_tungstenite::tungstenite::http::StatusCode,
+    body: &str,
+) -> std::io::Error {
+    let message = format!("upgrade rejected: HTTP {status}: {body}");
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        std::io::Error::new(std::io::ErrorKind::PermissionDenied, message)
+    } else {
+        std::io::Error::other(message)
+    }
+}
+
 fn is_recoverable_cloud_frame_rejection_error(error: &std::io::Error) -> bool {
     if error.kind() != std::io::ErrorKind::PermissionDenied {
         return false;
@@ -726,9 +738,7 @@ impl CloudWsFrameTransport {
                     .into_body()
                     .map(|b| String::from_utf8_lossy(&b).into_owned())
                     .unwrap_or_default();
-                return Err(std::io::Error::other(format!(
-                    "upgrade rejected: HTTP {status}: {body}"
-                )));
+                return Err(upgrade_rejection_error(status, &body));
             }
             Err(e) => return Err(std::io::Error::other(format!("websocket connect: {e}"))),
         };
@@ -827,6 +837,24 @@ mod tests {
     #[allow(dead_code)]
     fn cloud_transport_is_a_frame_transport() {
         assert_satisfies_frame_transport::<CloudWsFrameTransport>();
+    }
+
+    #[test]
+    fn upgrade_auth_rejections_are_permission_denied() {
+        use tokio_tungstenite::tungstenite::http::StatusCode;
+
+        assert_eq!(
+            upgrade_rejection_error(StatusCode::UNAUTHORIZED, "expired").kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            upgrade_rejection_error(StatusCode::FORBIDDEN, "scope denied").kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            upgrade_rejection_error(StatusCode::SERVICE_UNAVAILABLE, "retry").kind(),
+            std::io::ErrorKind::Other
+        );
     }
 
     #[test]

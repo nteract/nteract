@@ -32,7 +32,7 @@ use automerge::sync;
 use notebook_cloud_transport::CloudWsFrameTransport;
 use notebook_doc::diff::diff_metadata_touched;
 use notebook_protocol::connection::{FrameSink, FrameSource, FrameTransport};
-use notebook_wire::NotebookFrameType;
+use notebook_wire::{HostedBridgeStatusWire, NotebookFrameType};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
@@ -208,12 +208,16 @@ async fn run_bridge(
     mut request_rx: mpsc::Receiver<Vec<u8>>,
 ) {
     let mut backoff = BACKOFF_INITIAL;
+    let mut connected_once = false;
     loop {
         // A closed principal watch means the daemon dropped the handle; stop
         // dialing on behalf of a room nobody can reach.
         if principal_tx.is_closed() {
             return;
         }
+        room.broadcasts
+            .hosted_bridge_status_tx
+            .send_replace(retrying_status(connected_once));
         let connected_at = tokio::time::Instant::now();
         match transport.connect().await {
             Ok((source, sink)) => {
@@ -222,24 +226,75 @@ async fn run_bridge(
                         "[hosted-bridge] {} connected without a principal; retrying",
                         locator
                     );
+                    room.broadcasts
+                        .hosted_bridge_status_tx
+                        .send_replace(HostedBridgeStatusWire::TerminalError);
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(BACKOFF_MAX);
                     continue;
                 };
                 let _ = principal_tx.send(Some(principal.clone()));
+                connected_once = true;
+                room.broadcasts
+                    .hosted_bridge_status_tx
+                    .send_replace(HostedBridgeStatusWire::Connected);
                 info!(
                     "[hosted-bridge] {} attached as principal {}",
                     locator, principal
                 );
-                if let Err(e) = run_connection(&room, &locator, source, sink, &mut request_rx).await
-                {
-                    warn!("[hosted-bridge] {} connection ended: {}", locator, e);
-                } else {
-                    info!("[hosted-bridge] {} connection closed", locator);
+                match run_connection(&room, &locator, source, sink, &mut request_rx).await {
+                    Err(error) => {
+                        warn!("[hosted-bridge] {} connection ended: {}", locator, error);
+                        match classify_bridge_error(&transport, &error) {
+                            BridgeFailure::Recoverable => {
+                                room.broadcasts
+                                    .hosted_bridge_status_tx
+                                    .send_replace(HostedBridgeStatusWire::Reconnecting);
+                            }
+                            BridgeFailure::Authentication => {
+                                room.broadcasts
+                                    .hosted_bridge_status_tx
+                                    .send_replace(HostedBridgeStatusWire::AuthenticationFailed);
+                            }
+                            BridgeFailure::Terminal => {
+                                room.broadcasts
+                                    .hosted_bridge_status_tx
+                                    .send_replace(HostedBridgeStatusWire::TerminalError);
+                            }
+                        }
+                    }
+                    Ok(()) if transport.clean_eof_is_recoverable() => {
+                        info!(
+                            "[hosted-bridge] {} connection closed; reconnecting",
+                            locator
+                        );
+                        room.broadcasts
+                            .hosted_bridge_status_tx
+                            .send_replace(HostedBridgeStatusWire::Reconnecting);
+                    }
+                    Ok(()) => {
+                        info!("[hosted-bridge] {} connection closed", locator);
+                        room.broadcasts
+                            .hosted_bridge_status_tx
+                            .send_replace(HostedBridgeStatusWire::TerminalError);
+                    }
                 }
             }
-            Err(e) => {
-                warn!("[hosted-bridge] {} connect failed: {}", locator, e);
+            Err(error) => {
+                warn!("[hosted-bridge] {} connect failed: {}", locator, error);
+                match classify_connect_error(&transport, &error) {
+                    BridgeFailure::Recoverable => {}
+                    BridgeFailure::Authentication => {
+                        room.broadcasts
+                            .hosted_bridge_status_tx
+                            .send_replace(HostedBridgeStatusWire::AuthenticationFailed);
+                    }
+                    BridgeFailure::Terminal => {
+                        room.broadcasts
+                            .hosted_bridge_status_tx
+                            .send_replace(HostedBridgeStatusWire::TerminalError);
+                    }
+                }
             }
         }
         if connected_at.elapsed() >= BACKOFF_RESET_AFTER {
@@ -248,6 +303,59 @@ async fn run_bridge(
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeFailure {
+    Recoverable,
+    Authentication,
+    Terminal,
+}
+
+fn retrying_status(connected_once: bool) -> HostedBridgeStatusWire {
+    if connected_once {
+        HostedBridgeStatusWire::Reconnecting
+    } else {
+        HostedBridgeStatusWire::Connecting
+    }
+}
+
+fn classify_connect_error(
+    transport: &CloudWsFrameTransport,
+    error: &std::io::Error,
+) -> BridgeFailure {
+    // Some room-side control rejections intentionally use PermissionDenied
+    // while remaining retryable (for example a room that is still warming).
+    // Honor the transport's narrower classification before treating the
+    // remaining permission failures as authentication errors.
+    if transport.stream_error_is_recoverable(error) {
+        BridgeFailure::Recoverable
+    } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+        BridgeFailure::Authentication
+    } else {
+        BridgeFailure::Terminal
+    }
+}
+
+fn classify_stream_error(
+    transport: &CloudWsFrameTransport,
+    error: &std::io::Error,
+) -> BridgeFailure {
+    if transport.stream_error_is_recoverable(error) {
+        BridgeFailure::Recoverable
+    } else {
+        BridgeFailure::Terminal
+    }
+}
+
+fn classify_bridge_error(
+    transport: &CloudWsFrameTransport,
+    error: &anyhow::Error,
+) -> BridgeFailure {
+    error
+        .downcast_ref::<std::io::Error>()
+        .map(|error| classify_stream_error(transport, error))
+        .unwrap_or(BridgeFailure::Terminal)
 }
 
 /// Drive one live cloud connection until it drops.
@@ -712,8 +820,31 @@ mod tests {
         let room = test_room(&tmp);
 
         assert!(!room.is_hosted());
+        assert_eq!(
+            *room.broadcasts.hosted_bridge_status_tx.borrow(),
+            HostedBridgeStatusWire::NotApplicable
+        );
         room.mark_hosted();
         assert!(room.is_hosted());
+        assert_eq!(
+            *room.broadcasts.hosted_bridge_status_tx.borrow(),
+            HostedBridgeStatusWire::Connecting
+        );
+        room.broadcasts
+            .hosted_bridge_status_tx
+            .send_replace(HostedBridgeStatusWire::Connected);
+        room.mark_hosted();
+        assert_eq!(
+            *room.broadcasts.hosted_bridge_status_tx.borrow(),
+            HostedBridgeStatusWire::Connected,
+            "reusing a hosted room must not reset a live bridge to connecting"
+        );
+    }
+
+    #[test]
+    fn retrying_status_distinguishes_initial_connect_from_reconnect() {
+        assert_eq!(retrying_status(false), HostedBridgeStatusWire::Connecting);
+        assert_eq!(retrying_status(true), HostedBridgeStatusWire::Reconnecting);
     }
 
     async fn start_bridge(
@@ -786,6 +917,10 @@ mod tests {
 
         let principal = bridge.wait_for_principal(Duration::from_secs(10)).await;
         assert_eq!(principal.as_deref(), Some(CLOUD_PRINCIPAL));
+        assert_eq!(
+            *room.broadcasts.hosted_bridge_status_tx.borrow(),
+            HostedBridgeStatusWire::Connected
+        );
 
         // Cloud -> local: the fake room's seeded cell reaches the daemon room.
         let room_for_wait = room.clone();

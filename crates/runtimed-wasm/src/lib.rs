@@ -24,7 +24,9 @@ use notebook_doc::mime::{is_binary_mime, ResolvedContentRef};
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
-use notebook_wire::{frame_types, SessionControlMessage, SessionSyncStatusWire};
+use notebook_wire::{
+    frame_types, HostedBridgeStatusWire, SessionControlMessage, SessionSyncStatusWire,
+};
 use nteract_identity::{ActorLabel, ConnectionScope, Operator, Principal};
 use runtime_doc::{
     diff_output_ids_in_place, output_ids_for_execution, runtime_state_policy_snapshot,
@@ -281,6 +283,10 @@ pub enum FrameEvent {
     SessionControl {
         /// Full bootstrap/readiness snapshot for this socket.
         status: SessionSyncStatusWire,
+    },
+    /// Daemon-to-hosted-room bridge health.
+    HostedBridgeStatus {
+        hosted_bridge_status: HostedBridgeStatusWire,
     },
     /// Runtime state document was synced — frontend should update runtime state UI.
     RuntimeStateSyncApplied {
@@ -4819,6 +4825,11 @@ impl NotebookHandle {
                 match msg {
                     SessionControlMessage::SyncStatus(status) => {
                         events.push(FrameEvent::SessionControl { status });
+                    }
+                    SessionControlMessage::HostedBridgeStatus { status } => {
+                        events.push(FrameEvent::HostedBridgeStatus {
+                            hosted_bridge_status: status,
+                        });
                     }
                 }
             }

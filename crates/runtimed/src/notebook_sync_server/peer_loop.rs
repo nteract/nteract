@@ -18,11 +18,13 @@ use super::peer_presence::{
 };
 use super::peer_runtime_sync::{forward_runtime_state_broadcast, handle_runtime_state_frame};
 use super::peer_session::{
-    send_initial_notebook_doc_sync, send_initial_runtime_state_sync, send_session_status,
-    stream_initial_load_with_frame_drain, HandshakePhases, InitialSyncState, PeerSessionContext,
+    send_hosted_bridge_status, send_initial_notebook_doc_sync, send_initial_runtime_state_sync,
+    send_session_status, stream_initial_load_with_frame_drain, HandshakePhases, InitialSyncState,
+    PeerSessionContext,
 };
 use super::peer_writer::{
-    enqueue_notebook_request, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
+    enqueue_notebook_request, queue_hosted_bridge_status, queue_session_status,
+    spawn_peer_request_worker, spawn_peer_writer,
 };
 use super::*;
 use std::collections::VecDeque;
@@ -76,6 +78,7 @@ where
     let mut state_changed_rx = room.state.subscribe();
     let mut comms_changed_rx = room.comms.subscribe();
     let mut comments_changed_rx = room.comments.subscribe();
+    let mut hosted_bridge_status_rx = room.broadcasts.hosted_bridge_status_tx.subscribe();
 
     // PoolDoc — global daemon pool state (UV/Conda availability, errors).
     let mut pool_changed_rx = daemon.pool_doc_changed.subscribe();
@@ -103,6 +106,10 @@ where
 
     if client_protocol_version >= 3 {
         send_session_status(&mut writer, &phases).await?;
+    }
+    if client_protocol_version >= 4 {
+        let status = *hosted_bridge_status_rx.borrow_and_update();
+        send_hosted_bridge_status(&mut writer, status).await?;
     }
 
     // Fresh file-backed rooms stream the file itself as the initial doc sync.
@@ -444,6 +451,14 @@ where
                 {
                     return Ok(());
                 }
+            }
+
+            result = hosted_bridge_status_rx.changed(), if client_protocol_version >= 4 => {
+                if result.is_err() {
+                    return Ok(());
+                }
+                let status = *hosted_bridge_status_rx.borrow_and_update();
+                queue_hosted_bridge_status(&peer_writer, status)?;
             }
 
             // CommsDoc changed — push widget state updates to this client

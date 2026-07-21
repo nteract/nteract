@@ -310,6 +310,10 @@ pub struct RoomBroadcasts {
     /// Broadcast channel for presence frames (cursor, selection, kernel state).
     /// Carries raw presence bytes plus the peer_id to relay to other peers.
     pub presence_tx: broadcast::Sender<(String, Vec<u8>)>,
+    /// Current daemon-to-hosted-room bridge health. This watch channel is
+    /// control-plane state: every peer gets the latest value on attach and
+    /// subsequent transitions without coupling it to output/broadcast load.
+    pub hosted_bridge_status_tx: watch::Sender<notebook_wire::HostedBridgeStatusWire>,
     /// Transient peer state (cursors, selections, kernel status).
     /// Protected by RwLock for concurrent reads from multiple peer loops.
     pub presence: Arc<RwLock<PresenceState>>,
@@ -321,11 +325,14 @@ impl Default for RoomBroadcasts {
         let (file_dirty_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
         let (presence_tx, _) = broadcast::channel(64);
+        let (hosted_bridge_status_tx, _) =
+            watch::channel(notebook_wire::HostedBridgeStatusWire::NotApplicable);
         Self {
             changed_tx,
             file_dirty_tx,
             kernel_broadcast_tx,
             presence_tx,
+            hosted_bridge_status_tx,
             presence: Arc::new(RwLock::new(PresenceState::new())),
         }
     }
@@ -1272,7 +1279,11 @@ impl NotebookRoom {
 
     /// Mark this room as hosted. This flag is monotonic for the room lifetime.
     pub fn mark_hosted(&self) {
-        self.hosted.store(true, Ordering::Relaxed);
+        if !self.hosted.swap(true, Ordering::Relaxed) {
+            self.broadcasts
+                .hosted_bridge_status_tx
+                .send_replace(notebook_wire::HostedBridgeStatusWire::Connecting);
+        }
     }
 
     /// True once an eviction path has finished this room's final save and

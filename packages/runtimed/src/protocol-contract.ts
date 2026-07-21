@@ -2,6 +2,7 @@
 // Do not edit by hand.
 
 import type {
+  HostedBridgeStatus,
   InitialLoadPhase,
   NotebookDocPhase,
   RuntimeStatePhase,
@@ -83,10 +84,13 @@ export const NOTEBOOK_RESPONSE_RESULTS_EXHAUSTIVE: MissingUnionMember<
   ? true
   : never = true;
 
-export type SessionControlMessage = { type: "sync_status" } & SessionStatus;
+export type SessionControlMessage =
+  | ({ type: "sync_status" } & SessionStatus)
+  | { type: "hosted_bridge_status"; status: HostedBridgeStatus };
 
 export const SESSION_CONTROL_TYPES = [
   "sync_status",
+  "hosted_bridge_status",
 ] as const satisfies readonly SessionControlMessage["type"][];
 
 export const NOTEBOOK_DOC_PHASES = [

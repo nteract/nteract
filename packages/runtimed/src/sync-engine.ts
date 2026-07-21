@@ -54,6 +54,7 @@ import type {
   ExecutionQueueProjection,
   ExecutionViewChangeset,
   FrameEvent,
+  HostedBridgeStatus,
   InitialLoadPhase,
   SessionStatus,
   SyncableHandle,
@@ -351,6 +352,9 @@ export class SyncEngine {
   /** Remote peer presence updates (cursor, selection, snapshot, left, heartbeat). */
   readonly presence$: Observable<unknown>;
 
+  /** Daemon-to-hosted-room bridge health for the active room. */
+  readonly hostedBridgeStatus$: Observable<HostedBridgeStatus>;
+
   /** RuntimeState snapshots from the daemon's RuntimeStateDoc. */
   readonly runtimeState$: Observable<RuntimeState>;
 
@@ -485,6 +489,7 @@ export class SyncEngine {
   private readonly _cellChanges$ = new Subject<CellChangeset | null>();
   private readonly _broadcasts$ = new Subject<unknown>();
   private readonly _presence$ = new Subject<unknown>();
+  private readonly _hostedBridgeStatus$ = new ReplaySubject<HostedBridgeStatus>(1);
   private readonly _runtimeState$ = new Subject<RuntimeState>();
   private readonly _poolState$ = new Subject<PoolState>();
   private readonly _executionTransitions$ = new Subject<ExecutionTransition[]>();
@@ -513,6 +518,7 @@ export class SyncEngine {
     this.cellChanges$ = this._cellChanges$.asObservable();
     this.broadcasts$ = this._broadcasts$.asObservable();
     this.presence$ = this._presence$.asObservable();
+    this.hostedBridgeStatus$ = this._hostedBridgeStatus$.asObservable();
     this.runtimeState$ = this._runtimeState$.asObservable();
     this.poolState$ = this._poolState$.asObservable();
     this.executionTransitions$ = this._executionTransitions$.asObservable();
@@ -644,6 +650,21 @@ export class SyncEngine {
           } else {
             log.debug(`[sync-engine] session status: ${formatSessionStatus(next)}`);
           }
+        }),
+    );
+
+    sub.add(
+      frameEvents$
+        .pipe(
+          filter(
+            (event) => event.type === "hosted_bridge_status" && event.hosted_bridge_status != null,
+          ),
+          map((event) => event.hosted_bridge_status as HostedBridgeStatus),
+          distinctUntilChanged(),
+        )
+        .subscribe((status) => {
+          log.debug(`[sync-engine] hosted bridge status: ${status}`);
+          this._hostedBridgeStatus$.next(status);
         }),
     );
 
@@ -1661,6 +1682,9 @@ export class SyncEngine {
     this.commDiffState = { comms: {}, json: {} };
     this.lastRuntimeState = null;
     this.lastCommsState = null;
+    // Do not replay a previous hosted bridge's connected state into the new
+    // relay generation. Local rooms promptly replace this with not_applicable.
+    this._hostedBridgeStatus$.next("connecting");
     this._sessionStatus$.next({
       notebook_doc: "pending",
       runtime_state: "pending",

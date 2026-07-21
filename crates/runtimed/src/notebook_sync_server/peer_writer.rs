@@ -527,6 +527,16 @@ pub(super) fn queue_session_status(
     )
 }
 
+pub(super) fn queue_hosted_bridge_status(
+    writer: &PeerWriter,
+    status: notebook_protocol::protocol::HostedBridgeStatusWire,
+) -> anyhow::Result<()> {
+    writer.send_json(
+        NotebookFrameType::SessionControl,
+        &notebook_protocol::protocol::SessionControlMessage::HostedBridgeStatus { status },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -187,6 +187,7 @@ fn decode_sync_status(
     .expect("valid session control frame")
     {
         notebook_protocol::protocol::SessionControlMessage::SyncStatus(status) => Some(status),
+        notebook_protocol::protocol::SessionControlMessage::HostedBridgeStatus { .. } => None,
     }
 }
 

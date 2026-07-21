@@ -1,8 +1,13 @@
 import { startRelayBootstrapCoordinator, useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
+import type {
+  HostedBridgeStatus,
+  NotebookTransport,
+  SessionStatus,
+  SyncableHandle,
+} from "runtimed";
 import { NotebookHandleHost, SyncEngine, isDisplayCapableJupyterOutput } from "runtimed";
-import { Observable } from "rxjs";
+import { BehaviorSubject, Observable } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
 import {
   getBlobPort,
@@ -189,6 +194,17 @@ export function useNotebook() {
   // SyncEngine and transport refs — stable across re-renders.
   const engineRef = useRef<SyncEngine | null>(null);
   const transportRef = useRef<NotebookTransport | null>(null);
+  // This bridge must exist before the engine effect: App's desktop status
+  // source subscribes during render, then the active engine forwards into it.
+  // A BehaviorSubject also gives the connection dot an honest first paint.
+  const hostedBridgeStatusSubject = useMemo(
+    () => new BehaviorSubject<HostedBridgeStatus>("connecting"),
+    [],
+  );
+  const hostedBridgeStatus$ = useMemo(
+    () => hostedBridgeStatusSubject.asObservable(),
+    [hostedBridgeStatusSubject],
+  );
 
   // Refresh blob port on mount.
   useEffect(() => {
@@ -371,6 +387,8 @@ export function useNotebook() {
 
     // Start the engine (subscribes to transport frames).
     engine.start();
+    const hostedBridgeStatusSubscription =
+      engine.hostedBridgeStatus$.subscribe(hostedBridgeStatusSubject);
 
     const storeBridge = startNotebookSyncStoreBridge({
       engine,
@@ -487,6 +505,7 @@ export function useNotebook() {
       // Flush pending local changes before stopping.
       engine.flush();
       engine.stop();
+      hostedBridgeStatusSubscription.unsubscribe();
       // Do NOT call `transport.disconnect()`. The transport is owned by
       // the host (one shared instance across NotebookClient, SyncEngine,
       // frame-types outbound helpers, etc.) and must outlive this hook's
@@ -512,6 +531,7 @@ export function useNotebook() {
     bootstrap,
     handleHost,
     host,
+    hostedBridgeStatusSubject,
     materializeCells,
     notifyRelayReady,
     refreshCanAcceptCellMutations,
@@ -686,6 +706,7 @@ export function useNotebook() {
     getHandle,
     getEngine,
     sessionStatus$,
+    hostedBridgeStatus$,
     notebookDocChanged$,
     triggerSync,
     localActor,
