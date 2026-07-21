@@ -2023,7 +2023,7 @@ async fn handle_runtime_agent_request(
                         e
                     );
                     let error = format!("Failed to launch kernel: {e}");
-                    if !crate::kernel_launch_failure::uses_fresh_port_retry(kind) {
+                    if !crate::kernel_launch_failure::coordinator_may_retry(kind) {
                         if let Err(write_error) = record_kernel_launch_failed_state(
                             ctx,
                             &launch_kernel_type,
@@ -2194,7 +2194,7 @@ async fn handle_runtime_agent_request(
                         e
                     );
                     let error = format!("Failed to restart kernel: {e}");
-                    if !crate::kernel_launch_failure::uses_fresh_port_retry(kind) {
+                    if !crate::kernel_launch_failure::coordinator_may_retry(kind) {
                         if let Err(write_error) = record_kernel_launch_failed_state(
                             ctx,
                             &launch_kernel_type,

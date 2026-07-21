@@ -433,6 +433,30 @@ pub async fn prepare_environment_unified(
     cache_dir: &Path,
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<UvEnvironment> {
+    prepare_environment_unified_inner(deps, env_id, cache_dir, handler, false).await
+}
+
+/// Force-rebuild a notebook-captured UV environment at its unified hash.
+///
+/// Unlike [`prepare_environment_unified`], this skips the Python-exists cache
+/// hit. The path is still derived exclusively from the captured dependency
+/// declaration and `env_id`.
+pub async fn rebuild_environment_unified(
+    deps: &UvDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+    handler: Arc<dyn ProgressHandler>,
+) -> Result<UvEnvironment> {
+    prepare_environment_unified_inner(deps, env_id, cache_dir, handler, true).await
+}
+
+async fn prepare_environment_unified_inner(
+    deps: &UvDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+    handler: Arc<dyn ProgressHandler>,
+    force_rebuild: bool,
+) -> Result<UvEnvironment> {
     let hash = compute_unified_env_hash(deps, env_id);
     let venv_path = cache_dir.join(&hash);
 
@@ -449,7 +473,7 @@ pub async fn prepare_environment_unified(
     let python_path = venv_path.join("bin").join("python");
 
     // Cache hit
-    if venv_path.exists() && python_path.exists() {
+    if !force_rebuild && venv_path.exists() && python_path.exists() {
         info!("Using cached unified UV env at {:?}", venv_path);
         crate::gc::touch_last_used(&venv_path).await;
         crate::launcher::vendor_into_venv(&python_path)

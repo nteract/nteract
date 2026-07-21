@@ -81,10 +81,10 @@ pub(crate) async fn send_runtime_agent_request(
 /// failure.
 pub(crate) async fn send_runtime_agent_request_with_kernel_ports<F>(
     room: &NotebookRoom,
-    mut build_request: F,
+    build_request: F,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
 where
-    F: FnMut(
+    F: Fn(
         notebook_protocol::protocol::KernelPorts,
     ) -> notebook_protocol::protocol::RuntimeAgentRequest,
 {
@@ -113,6 +113,112 @@ where
     }
 
     unreachable!("kernel port launch retry loop must return from the final attempt")
+}
+
+/// Send a launch/restart request and, for a captured environment only, force
+/// one environment rebuild and one relaunch after a qualifying infrastructure
+/// failure. The existing fresh-port retry loop remains inside each launch
+/// attempt.
+pub(crate) async fn send_runtime_agent_request_with_captured_env_repair<F>(
+    room: &NotebookRoom,
+    captured: Option<&CapturedEnv>,
+    build_request: F,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
+where
+    F: Fn(
+        notebook_protocol::protocol::KernelPorts,
+    ) -> notebook_protocol::protocol::RuntimeAgentRequest,
+{
+    run_with_one_captured_env_repair(
+        captured.cloned(),
+        || send_runtime_agent_request_with_kernel_ports(room, &build_request),
+        |captured| async move {
+            rebuild_captured_environment(room, &captured)
+                .await
+                .map(|_| ())
+        },
+    )
+    .await
+}
+
+async fn run_with_one_captured_env_repair<Send, SendFuture, Repair, RepairFuture>(
+    captured: Option<CapturedEnv>,
+    mut send: Send,
+    repair: Repair,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
+where
+    Send: FnMut() -> SendFuture,
+    SendFuture: std::future::Future<
+        Output = anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>,
+    >,
+    Repair: FnOnce(CapturedEnv) -> RepairFuture,
+    RepairFuture: std::future::Future<Output = anyhow::Result<()>>,
+{
+    use notebook_protocol::protocol::RuntimeAgentResponse;
+
+    let first_response = send().await?;
+    let RuntimeAgentResponse::KernelLaunchFailed {
+        kind,
+        error: original_error,
+    } = &first_response
+    else {
+        return Ok(first_response);
+    };
+
+    if !crate::kernel_launch_failure::uses_captured_env_rebuild(*kind) {
+        return Ok(first_response);
+    }
+
+    let Some(captured) = captured else {
+        return Ok(first_response);
+    };
+    let original_kind = *kind;
+    let original_error = original_error.clone();
+
+    warn!(
+        "[notebook-sync] Captured environment for env_id={} failed during kernel startup; rebuilding once",
+        captured.env_id()
+    );
+
+    if let Err(rebuild_error) = repair(captured).await {
+        return Ok(captured_env_repair_terminal_response(
+            original_kind,
+            &original_error,
+            &format!("the rebuild failed: {rebuild_error}"),
+        ));
+    }
+
+    match send().await {
+        Ok(RuntimeAgentResponse::KernelLaunchFailed {
+            error: retry_error, ..
+        })
+        | Ok(RuntimeAgentResponse::Error { error: retry_error }) => {
+            Ok(captured_env_repair_terminal_response(
+                original_kind,
+                &original_error,
+                &format!("the retry failed: {retry_error}"),
+            ))
+        }
+        Ok(response) => Ok(response),
+        Err(retry_error) => Ok(captured_env_repair_terminal_response(
+            original_kind,
+            &original_error,
+            &format!("the retry could not be sent: {retry_error}"),
+        )),
+    }
+}
+
+fn captured_env_repair_terminal_response(
+    original_kind: notebook_protocol::protocol::KernelLaunchFailureKind,
+    original_error: &str,
+    retry_detail: &str,
+) -> notebook_protocol::protocol::RuntimeAgentResponse {
+    notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunchFailed {
+        kind: original_kind,
+        error: format!(
+            "{original_error}\nAutomatic captured-environment rebuild was attempted, but {retry_detail}."
+        ),
+    }
 }
 
 fn kernel_launch_retry_delay(
@@ -160,6 +266,10 @@ fn kernel_launch_failure_error(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use kernel_env::UvDependencies;
     use notebook_protocol::protocol::{KernelLaunchFailureKind, RuntimeAgentResponse};
 
     use super::*;
@@ -248,5 +358,208 @@ mod tests {
         };
 
         assert_eq!(kernel_launch_retry_delay(&response, 1, 4), None);
+    }
+
+    fn captured_uv() -> CapturedEnv {
+        CapturedEnv::Uv {
+            deps: UvDependencies {
+                dependencies: vec!["pandas".to_string()],
+                requires_python: None,
+                prerelease: None,
+            },
+            env_id: "captured-test".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn captured_env_failure_rebuilds_and_relaunches_exactly_once() {
+        let sends = Arc::new(AtomicUsize::new(0));
+        let repairs = Arc::new(AtomicUsize::new(0));
+
+        let response = run_with_one_captured_env_repair(
+            Some(captured_uv()),
+            {
+                let sends = sends.clone();
+                move || {
+                    let attempt = sends.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if attempt == 0 {
+                            Ok(RuntimeAgentResponse::KernelLaunchFailed {
+                                kind: KernelLaunchFailureKind::ProcessExited,
+                                error: "original launch failure".to_string(),
+                            })
+                        } else {
+                            Ok(RuntimeAgentResponse::KernelLaunched {
+                                env_source: notebook_protocol::connection::EnvSource::parse(
+                                    "uv:prewarmed",
+                                ),
+                            })
+                        }
+                    }
+                }
+            },
+            {
+                let repairs = repairs.clone();
+                move |_| {
+                    repairs.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(()))
+                }
+            },
+        )
+        .await
+        .expect("retry should complete");
+
+        assert!(matches!(
+            response,
+            RuntimeAgentResponse::KernelLaunched { .. }
+        ));
+        assert_eq!(sends.load(Ordering::SeqCst), 2);
+        assert_eq!(repairs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn non_captured_launch_never_rebuilds_or_retries() {
+        let sends = Arc::new(AtomicUsize::new(0));
+        let repairs = Arc::new(AtomicUsize::new(0));
+
+        let response = run_with_one_captured_env_repair(
+            None,
+            {
+                let sends = sends.clone();
+                move || {
+                    sends.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(RuntimeAgentResponse::KernelLaunchFailed {
+                        kind: KernelLaunchFailureKind::ProcessExited,
+                        error: "original launch failure".to_string(),
+                    }))
+                }
+            },
+            {
+                let repairs = repairs.clone();
+                move |_| {
+                    repairs.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(()))
+                }
+            },
+        )
+        .await
+        .expect("failure response should be returned");
+
+        assert!(matches!(
+            response,
+            RuntimeAgentResponse::KernelLaunchFailed { .. }
+        ));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+        assert_eq!(repairs.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn fresh_port_failure_never_enters_captured_env_rebuild_layer() {
+        let sends = Arc::new(AtomicUsize::new(0));
+        let repairs = Arc::new(AtomicUsize::new(0));
+
+        let response = run_with_one_captured_env_repair(
+            Some(captured_uv()),
+            {
+                let sends = sends.clone();
+                move || {
+                    sends.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(RuntimeAgentResponse::KernelLaunchFailed {
+                        kind: KernelLaunchFailureKind::PortBind,
+                        error: "fresh-port retries exhausted".to_string(),
+                    }))
+                }
+            },
+            {
+                let repairs = repairs.clone();
+                move |_| {
+                    repairs.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(()))
+                }
+            },
+        )
+        .await
+        .expect("port failure should be returned");
+
+        assert!(matches!(
+            response,
+            RuntimeAgentResponse::KernelLaunchFailed {
+                kind: KernelLaunchFailureKind::PortBind,
+                ..
+            }
+        ));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+        assert_eq!(repairs.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn second_failure_preserves_original_error_without_a_retry_loop() {
+        let sends = Arc::new(AtomicUsize::new(0));
+        let repairs = Arc::new(AtomicUsize::new(0));
+
+        let response = run_with_one_captured_env_repair(
+            Some(captured_uv()),
+            {
+                let sends = sends.clone();
+                move || {
+                    let attempt = sends.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(RuntimeAgentResponse::KernelLaunchFailed {
+                        kind: KernelLaunchFailureKind::ProcessExited,
+                        error: if attempt == 0 {
+                            "original launch failure".to_string()
+                        } else {
+                            "different retry failure".to_string()
+                        },
+                    }))
+                }
+            },
+            {
+                let repairs = repairs.clone();
+                move |_| {
+                    repairs.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(()))
+                }
+            },
+        )
+        .await
+        .expect("terminal response should be returned");
+
+        let RuntimeAgentResponse::KernelLaunchFailed { error, .. } = response else {
+            panic!("expected terminal launch failure");
+        };
+        assert!(error.starts_with("original launch failure"));
+        assert!(error.contains("Automatic captured-environment rebuild was attempted"));
+        assert!(error.contains("different retry failure"));
+        assert_eq!(sends.load(Ordering::SeqCst), 2);
+        assert_eq!(repairs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn rebuild_failure_preserves_original_error_without_relaunching() {
+        let sends = Arc::new(AtomicUsize::new(0));
+
+        let response = run_with_one_captured_env_repair(
+            Some(captured_uv()),
+            {
+                let sends = sends.clone();
+                move || {
+                    sends.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(RuntimeAgentResponse::KernelLaunchFailed {
+                        kind: KernelLaunchFailureKind::ToolBootstrap,
+                        error: "original launch failure".to_string(),
+                    }))
+                }
+            },
+            |_| std::future::ready(Err(anyhow::anyhow!("package index unavailable"))),
+        )
+        .await
+        .expect("terminal response should be returned");
+
+        let RuntimeAgentResponse::KernelLaunchFailed { error, .. } = response else {
+            panic!("expected terminal launch failure");
+        };
+        assert!(error.starts_with("original launch failure"));
+        assert!(error.contains("package index unavailable"));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
     }
 }
