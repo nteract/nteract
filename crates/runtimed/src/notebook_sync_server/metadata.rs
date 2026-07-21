@@ -1838,6 +1838,12 @@ pub(crate) async fn rebuild_captured_environment(
         *active_path = Some(env.venv_path.clone());
     }
 
+    // The runtime agent repeats this transition when it accepts the request,
+    // but publish it before the retry send so the rebuild's PreparingEnv state
+    // cannot remain visible during transport handoff.
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))?;
+
     Ok(env)
 }
 

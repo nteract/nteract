@@ -386,7 +386,9 @@ async fn prepare_environment_unified_inner(
 
     tokio::fs::create_dir_all(cache_dir).await?;
 
-    // Try lock-based rebuild before full re-creation
+    // Try lock-based rebuild before full re-creation. A forced rebuild enters
+    // this path even when Python exists because the launch handshake already
+    // proved the otherwise-usable environment cannot start a kernel.
     if env_path.exists() && (force_rebuild || !python_path.exists()) {
         if let Some(lock) = crate::lock::LockFile::read_from(&env_path).await {
             let expected_specs = build_spec_strings(deps);

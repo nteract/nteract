@@ -81,10 +81,10 @@ pub(crate) async fn send_runtime_agent_request(
 /// failure.
 pub(crate) async fn send_runtime_agent_request_with_kernel_ports<F>(
     room: &NotebookRoom,
-    build_request: F,
+    mut build_request: F,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
 where
-    F: Fn(
+    F: FnMut(
         notebook_protocol::protocol::KernelPorts,
     ) -> notebook_protocol::protocol::RuntimeAgentRequest,
 {
@@ -131,7 +131,7 @@ where
 {
     run_with_one_captured_env_repair(
         captured.cloned(),
-        || send_runtime_agent_request_with_kernel_ports(room, &build_request),
+        || send_runtime_agent_request_with_kernel_ports(room, |ports| build_request(ports)),
         |captured| async move {
             rebuild_captured_environment(room, &captured)
                 .await
@@ -530,6 +530,50 @@ mod tests {
         assert!(error.starts_with("original launch failure"));
         assert!(error.contains("Automatic captured-environment rebuild was attempted"));
         assert!(error.contains("different retry failure"));
+        assert_eq!(sends.load(Ordering::SeqCst), 2);
+        assert_eq!(repairs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_transport_failure_preserves_original_error_without_a_third_send() {
+        let sends = Arc::new(AtomicUsize::new(0));
+        let repairs = Arc::new(AtomicUsize::new(0));
+
+        let response = run_with_one_captured_env_repair(
+            Some(captured_uv()),
+            {
+                let sends = sends.clone();
+                move || {
+                    let attempt = sends.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if attempt == 0 {
+                            Ok(RuntimeAgentResponse::KernelLaunchFailed {
+                                kind: KernelLaunchFailureKind::ProcessExited,
+                                error: "original launch failure".to_string(),
+                            })
+                        } else {
+                            Err(anyhow::anyhow!("runtime-agent channel closed"))
+                        }
+                    }
+                }
+            },
+            {
+                let repairs = repairs.clone();
+                move |_| {
+                    repairs.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(()))
+                }
+            },
+        )
+        .await
+        .expect("transport failure should be normalized to a terminal response");
+
+        let RuntimeAgentResponse::KernelLaunchFailed { error, .. } = response else {
+            panic!("expected terminal launch failure");
+        };
+        assert!(error.starts_with("original launch failure"));
+        assert!(error.contains("the retry could not be sent"));
+        assert!(error.contains("runtime-agent channel closed"));
         assert_eq!(sends.load(Ordering::SeqCst), 2);
         assert_eq!(repairs.load(Ordering::SeqCst), 1);
     }
