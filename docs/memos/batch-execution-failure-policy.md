@@ -71,6 +71,22 @@ Consequently, two requested behaviors already exist: the syntax traceback is
 captured in the affected cell, and the kernel survives. The missing behavior
 is a durable, batch-scoped failure policy that can reach the queue decision.
 
+### Source audit
+
+The current-flow claims above were verified against these symbols at the draft
+date:
+
+| Boundary | Current symbol |
+|---|---|
+| Wire request | `NotebookRequest::{RunAllCells, RunAllCellsGuarded}` in `crates/notebook-protocol/src/protocol.rs` |
+| Local coordinator | `run_all_cells::handle_inner` in `crates/runtimed/src/requests/run_all_cells.rs` |
+| Hosted coordinator | `RoomHostHandle::handle_run_all_cells` in `crates/runtimed-wasm/src/lib.rs` |
+| Error normalization | `UserErrorOutput::from_iopub` in `crates/runtimed/src/user_error.rs` |
+| Lifecycle shape | `LifecycleSignal::CellError { execution_id: String }` in `crates/runtimed/src/output_prep.rs` |
+| Queue-clearing decision | `handle_lifecycle_signal` in `crates/runtimed/src/runtime_agent.rs` |
+| FIFO transition | `KernelState::{execution_done, process_next}` in `crates/runtimed/src/kernel_state.rs` |
+| Durable cancelled state | `RuntimeStateDoc::set_execution_cancelled` in `crates/runtime-doc/src/doc.rs` |
+
 ## Product contract
 
 ### Default Run All remains stop on error
@@ -131,14 +147,17 @@ Every member remains independently readable and waitable by execution ID.
 ## Smallest coherent protocol and state shape
 
 The names below are illustrative until implementation, but the semantics are
-required.
+required. They are not canonical schema names and must be reconciled with the
+execution-engine ADR when that proposal graduates; generated bindings should
+not be based on this sketch alone.
 
 ### Fail closed across version skew
 
 Do not add an optional field to the existing `RunAllCells` request and assume
-older daemons will reject it. Serde may ignore an unknown field, allowing an
-old daemon to queue the batch with stop-on-error semantics while a new client
-claims continuation is active.
+older daemons will reject it. `NotebookRequest` is an internally tagged serde
+enum without `deny_unknown_fields`; its current decoder ignores extra fields
+on a known variant. An old daemon could therefore queue the batch with
+stop-on-error semantics while a new client claims continuation is active.
 
 Use a distinct opt-in request discriminant, for example:
 
