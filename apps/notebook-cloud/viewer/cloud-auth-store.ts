@@ -277,9 +277,14 @@ export class CloudAuthStore {
       this.authState$,
       this.appSession$,
       this.appSessionLoading$,
+      this.renewal$,
     ]).pipe(
-      map(([authState, appSession, appSessionLoading]) =>
-        projectHostedCatalogAuthState(authState, { appSession, appSessionLoading }),
+      map(([authState, appSession, appSessionLoading, authRenewal]) =>
+        projectHostedCatalogAuthState(authState, {
+          appSession,
+          appSessionLoading,
+          authRenewal,
+        }),
       ),
       distinctUntilChanged(hostedCatalogAuthEquals),
       shareReplay({ bufferSize: 1, refCount: false }),
@@ -372,6 +377,14 @@ export class CloudAuthStore {
       pairwise(),
       filter(([wasSettled, isSettled]) => !wasSettled && isSettled),
     );
+    // Re-arm the app-session bridge when OIDC refresh turns an expired stored
+    // identity into a usable token. The initial session GET can settle before
+    // the upstream token refresh; without this edge both boot triggers are
+    // already spent and the cookie exchange waits for the 60-second cadence.
+    const oidcTokenChanged$ = this.authState$.pipe(
+      map((authState) => (authState.mode === "oidc" && authState.token ? authState.token : null)),
+      distinctUntilChanged(),
+    );
 
     this.seedAppSession(config.initialSession ?? null);
 
@@ -424,6 +437,7 @@ export class CloudAuthStore {
         focus$,
         visibleRise$,
         appSessionSettled$,
+        oidcTokenChanged$,
       ).subscribe(() => this.renewIfNeeded()),
     );
 

@@ -42,6 +42,23 @@ describe("hosted catalog auth projection", () => {
     assert.equal(projection.waitingForAppSession, false);
   });
 
+  it("keeps an expired OIDC identity in recovery while token renewal is active", () => {
+    const projection = projectHostedCatalogAuthState(auth("oidc_expired"), {
+      authRenewal: { kind: "refreshing", message: "Refreshing sign-in..." },
+    });
+
+    assert.equal(projection.signedIn, false);
+    assert.equal(projection.canFetchCatalog, false);
+    assert.equal(projection.showSignIn, false);
+    assert.equal(projection.waitingForAppSession, true);
+
+    const failed = projectHostedCatalogAuthState(auth("oidc_expired"), {
+      authRenewal: { kind: "failed", message: "Sign-in refresh failed." },
+    });
+    assert.equal(failed.showSignIn, true);
+    assert.equal(failed.waitingForAppSession, false);
+  });
+
   it("keeps local dev auth usable without app sessions", () => {
     const projection = projectHostedCatalogAuthState(auth("dev"));
 

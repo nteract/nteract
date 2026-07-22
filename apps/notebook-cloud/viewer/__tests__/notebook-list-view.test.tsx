@@ -73,7 +73,7 @@ describe("CloudNotebookListView", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 
-  it("starts the list fetch with OIDC credentials before app-session establishment settles", async () => {
+  it("waits for app-session confirmation before issuing the cookie-only list fetch", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(
         JSON.stringify({
@@ -96,53 +96,59 @@ describe("CloudNotebookListView", () => {
       await Promise.resolve();
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("No notebooks yet")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
   });
 
-  it("keeps a provisional OIDC 401 quiet while the app-session fallback catches up", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: "sign in to list notebooks" }), {
-          headers: { "Content-Type": "application/json" },
-          status: 401,
+  it("loads as soon as the auth store confirms an app session", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          notebooks: [notebook("nb-recovered", "Recovered Notebook")],
+          current_user_principal: "user:anaconda:alice%40example.test",
         }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            ok: true,
-            notebooks: [notebook("nb-recovered", "Recovered Notebook")],
-            current_user_principal: "user:anaconda:alice%40example.test",
-          }),
-          {
-            headers: { "Content-Type": "application/json" },
-            status: 200,
-          },
-        ),
-      );
+        {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        },
+      ),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
-    renderNotebookList(oidcAuth("alice@example.test"), { appSessionWaitDeadlineMs: 5 });
+    const store = renderNotebookList(oidcAuth("alice@example.test"), {
+      appSessionWaitDeadlineMs: 5_000,
+    });
 
     await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+
+    let dispose = () => {};
+    await act(async () => {
+      dispose = store.activate(
+        {
+          authConfig,
+          initialSession: {
+            provider: "oidc",
+            expires_at: 99_999,
+            cache_key: "session-a",
+          },
+        },
+        { now: () => 0 },
+      );
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
-    expect(screen.queryByText(/sign in to list notebooks/i)).toBeNull();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5);
-      await Promise.resolve();
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(screen.getByText("Recovered Notebook")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    dispose();
   });
 
   it("renders the true total count and visible cap in the dashboard header", async () => {
@@ -162,15 +168,30 @@ describe("CloudNotebookListView", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    renderNotebookList(oidcAuth("alice@example.test"), { appSessionWaitDeadlineMs: 5_000 });
+    const store = renderNotebookList(oidcAuth("alice@example.test"), {
+      appSessionWaitDeadlineMs: 5_000,
+    });
 
+    let dispose = () => {};
     await act(async () => {
+      dispose = store.activate(
+        {
+          authConfig,
+          initialSession: {
+            provider: "oidc",
+            expires_at: 99_999,
+            cache_key: "session-a",
+          },
+        },
+        { now: () => 0 },
+      );
       await Promise.resolve();
       await Promise.resolve();
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText("342 notebooks · showing 2 · 0 active now")).toBeTruthy();
+    dispose();
   });
 
   it("keeps cached notebooks visible when revalidation fails", async () => {

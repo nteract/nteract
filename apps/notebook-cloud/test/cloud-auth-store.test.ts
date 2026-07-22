@@ -83,6 +83,17 @@ function oidcAuth(): CloudPrototypeAuthState {
   };
 }
 
+function expiredOidcAuth(): CloudPrototypeAuthState {
+  return {
+    mode: "oidc_expired",
+    token: null,
+    user: "OIDC User",
+    oidcClaims: { sub: "subject-1" },
+    requestedScope: "editor",
+    problem: "Stored OIDC session is expired. Sign in again.",
+  };
+}
+
 function appSession(overrides: Partial<CloudAppSession> = {}): CloudAppSession {
   return { provider: "oidc", expires_at: 10_000, cache_key: "cache-a", ...overrides };
 }
@@ -306,6 +317,52 @@ describe("CloudAuthStore OIDC refresh driver", () => {
 });
 
 describe("CloudAuthStore app-session establish driver", () => {
+  it("establishes immediately when OIDC refresh finishes after the session probe", async () => {
+    const scheduler = newScheduler();
+    let currentAuth = expiredOidcAuth();
+    let resolveRefresh: ((token: CloudOidcTokenState) => void) | undefined;
+    const establishes: string[] = [];
+    const store = new CloudAuthStore({ readAuthState: () => currentAuth });
+
+    const dispose = store.activate(
+      { authConfig: { oidc: oidcConfig, localDev: null }, initialSession: null },
+      baseDeps({
+        scheduler,
+        now: () => 100_000,
+        oidcStorage: refreshableOidcStorage(),
+        readAppSessionStatus: async () => ({ ok: true, session: null }),
+        refreshOidcToken: () =>
+          new Promise<CloudOidcTokenState>((resolve) => {
+            resolveRefresh = resolve;
+          }),
+        establishAppSession: async (authState) => {
+          establishes.push(authState.token ?? "");
+        },
+      }),
+    );
+
+    // The initial status GET settles while OIDC refresh is still in flight.
+    // Its settle edge cannot establish from the expired auth snapshot.
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+    assert.deepEqual(establishes, []);
+
+    currentAuth = oidcAuth();
+    resolveRefresh?.({
+      accessToken: "oidc-token",
+      refreshToken: "stored-refresh",
+      expiresAt: 99_999,
+      claims: { sub: "subject-1" },
+    });
+    await drainMicrotasks();
+
+    // The refreshed auth transition must re-arm session establishment now,
+    // rather than leaving the page stuck until the 60-second cadence tick.
+    assert.deepEqual(establishes, ["oidc-token"]);
+
+    dispose();
+  });
+
   it("attempts once per token, holds off inside the 5-minute backoff, and retries after it", async () => {
     const scheduler = newScheduler();
     let nowMs = 0;
