@@ -366,7 +366,7 @@ function ViewableSection() {
           Every state shown at once. Adding a single action never resizes the bar.
         </p>
       </div>
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {viewableScenarios.map((s) => (
           <ScenarioCard key={s.id} scenario={s} />
         ))}
@@ -388,7 +388,7 @@ function NotViewableSection() {
           void.
         </p>
       </div>
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {gateScenarios.map((g) => (
           <div key={g.id} className="space-y-2">
             <span className="text-xs font-medium text-foreground">{g.label}</span>
@@ -427,7 +427,7 @@ function SpacingContrast() {
           proposed container adds breathing room so notices never touch the frame.
         </p>
       </div>
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <div className="space-y-2">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
             edge-to-edge (today)
