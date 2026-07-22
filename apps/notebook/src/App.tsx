@@ -379,6 +379,7 @@ function AppContent() {
     getHandle,
     getEngine,
     sessionStatus$,
+    hostedBridgeStatus$,
     notebookDocChanged$,
     triggerSync,
     localActor,
@@ -1091,8 +1092,13 @@ function AppContent() {
   // daemon restarts, and must not claim "reconnecting" while the governor
   // is latched terminal and nothing is redialing).
   const desktopConnectionStatus = useMemo(
-    () => createDesktopConnectionStatusSource(host.daemonEvents, host.daemon.autoReconnect),
-    [host],
+    () =>
+      createDesktopConnectionStatusSource(
+        host.daemonEvents,
+        host.daemon.autoReconnect,
+        hostedBridgeStatus$,
+      ),
+    [host, hostedBridgeStatus$],
   );
   useEffect(() => () => desktopConnectionStatus.dispose(), [desktopConnectionStatus]);
 
@@ -2028,12 +2034,13 @@ function AppContent() {
             // Connection/identity slot: renders nothing for a purely local
             // session (isRemoteNotebookContext) — conditionality is the
             // point. The source derives from daemon lifecycle events (the
-            // IPC transport's status is constant in practice), and the
-            // copy is scoped to the link it measures.
+            // IPC transport's status is constant in practice). Hosted rooms
+            // compose daemon and bridge health, so their copy names the whole
+            // notebook connection rather than only the first hop.
             <NotebookConnectionIdentity
               capabilities={shellCapabilities}
               connectionStatus$={desktopConnectionStatus}
-              connectionLabel="Daemon connection"
+              connectionLabel={hostedNotebookUrl ? "Notebook connection" : "Daemon connection"}
             />
           }
         />

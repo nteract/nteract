@@ -31,6 +31,14 @@ export interface SessionStatus {
   initial_load: InitialLoadPhase;
 }
 
+export type HostedBridgeStatus =
+  | "not_applicable"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "authentication_failed"
+  | "terminal_error";
+
 // ── FrameEvent ───────────────────────────────────────────────────────
 
 /** Attribution for text changes, produced by WASM sync. */
@@ -134,6 +142,7 @@ export interface CommentsProjection {
  * - `broadcast` — Daemon broadcast (kernel status, output, etc.)
  * - `presence` — Remote peer presence update
  * - `session_control` — Connection-local readiness / bootstrap status
+ * - `hosted_bridge_status` — Daemon-to-hosted-room bridge health
  * - `runtime_state_sync_applied` — RuntimeStateDoc sync applied
  * - `comms_doc_sync_applied` — CommsDoc sync applied
  * - `comments_doc_sync_applied` — CommentsDoc sync applied
@@ -158,6 +167,8 @@ export interface FrameEvent {
   projection?: CommentsProjection;
   /** Connection-local session status from SESSION_CONTROL frames. */
   status?: SessionStatus;
+  /** Daemon-to-hosted-room bridge status from SESSION_CONTROL frames. */
+  hosted_bridge_status?: HostedBridgeStatus;
   /**
    * Per-output diff for RuntimeStateSyncApplied events. Each `changed` entry
    * is `[output_id, narrowed_manifest]` — manifests are already MIME-narrowed

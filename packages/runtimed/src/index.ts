@@ -151,6 +151,7 @@ export type {
   ExecutionViewSnapshot,
   SyncableHandle,
   FrameEvent,
+  HostedBridgeStatus,
   LocalMutationResult,
   InitialLoadPhase,
   NotebookDocPhase,

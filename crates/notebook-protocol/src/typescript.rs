@@ -67,7 +67,7 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "blob_upload_error",
 ];
 
-pub const SESSION_CONTROL_TYPES: &[&str] = &["sync_status"];
+pub const SESSION_CONTROL_TYPES: &[&str] = &["sync_status", "hosted_bridge_status"];
 pub const NOTEBOOK_DOC_PHASES: &[&str] = &["pending", "syncing", "interactive"];
 pub const RUNTIME_STATE_PHASES: &[&str] = &["pending", "syncing", "ready"];
 pub const INITIAL_LOAD_PHASES: &[&str] = &["not_needed", "streaming", "ready", "failed"];
@@ -582,6 +582,7 @@ export function parseConnectionScope(value: string): ConnectionScope {{
 pub fn generated_protocol_contract_ts() -> String {
     format!(
         r#"{GENERATED_HEADER}import type {{
+  HostedBridgeStatus,
   InitialLoadPhase,
   NotebookDocPhase,
   RuntimeStatePhase,
@@ -616,7 +617,9 @@ export const NOTEBOOK_RESPONSE_RESULTS_EXHAUSTIVE: MissingUnionMember<
   ? true
   : never = true;
 
-export type SessionControlMessage = {{ type: "sync_status" }} & SessionStatus;
+export type SessionControlMessage =
+  | ({{ type: "sync_status" }} & SessionStatus)
+  | {{ type: "hosted_bridge_status"; status: HostedBridgeStatus }};
 
 export const SESSION_CONTROL_TYPES = [
 {}

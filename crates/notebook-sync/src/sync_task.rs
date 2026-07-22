@@ -968,6 +968,11 @@ impl SyncReactor {
                             status,
                         );
                     }
+                    SessionControlMessage::HostedBridgeStatus { .. } => {
+                        // Python/Rust notebook clients do not render desktop
+                        // bridge health. Keep the additive control message
+                        // forward-compatible without changing readiness.
+                    }
                 }
                 Ok(())
             }

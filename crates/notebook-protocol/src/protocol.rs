@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use crate::connection::{EnvSource, LaunchSpec};
 pub use notebook_wire::{
-    InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire, SessionControlMessage,
-    SessionSyncStatusWire,
+    HostedBridgeStatusWire, InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire,
+    SessionControlMessage, SessionSyncStatusWire,
 };
 use serde::{Deserialize, Serialize};
 

@@ -211,6 +211,23 @@ pub struct TypedNotebookFrame {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionControlMessage {
     SyncStatus(SessionSyncStatusWire),
+    HostedBridgeStatus { status: HostedBridgeStatusWire },
+}
+
+/// Daemon-to-hosted-room bridge health for a notebook room.
+///
+/// This is connection-local control state, not notebook or runtime document
+/// state. Local rooms report `NotApplicable`; hosted rooms advance through the
+/// remaining phases as the daemon's outbound bridge connects and recovers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedBridgeStatusWire {
+    NotApplicable,
+    Connecting,
+    Connected,
+    Reconnecting,
+    AuthenticationFailed,
+    TerminalError,
 }
 
 /// Full connection bootstrap/readiness snapshot.

@@ -187,6 +187,22 @@ where
     Ok(())
 }
 
+pub(crate) async fn send_hosted_bridge_status<W>(
+    writer: &mut W,
+    status: notebook_protocol::protocol::HostedBridgeStatusWire,
+) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    connection::send_typed_json_frame(
+        writer,
+        NotebookFrameType::SessionControl,
+        &notebook_protocol::protocol::SessionControlMessage::HostedBridgeStatus { status },
+    )
+    .await?;
+    Ok(())
+}
+
 /// State carried from the initial notebook-doc sync into the steady-state loop.
 ///
 /// See [`send_initial_notebook_doc_sync`]. `peer_state` tracks what the
@@ -1078,7 +1094,9 @@ mod tests {
 
         let statuses = decode_session_statuses(&writer.bytes);
         assert_eq!(statuses.len(), 1);
-        let SessionControlMessage::SyncStatus(status) = &statuses[0];
+        let SessionControlMessage::SyncStatus(status) = &statuses[0] else {
+            panic!("expected sync status");
+        };
         match &status.initial_load {
             InitialLoadPhaseWire::Failed { reason } => {
                 assert!(
@@ -1122,7 +1140,9 @@ mod tests {
             .contains("Initial materialization failed: source became unreadable"));
         let statuses = decode_session_statuses(&writer.bytes);
         assert_eq!(statuses.len(), 1);
-        let SessionControlMessage::SyncStatus(status) = &statuses[0];
+        let SessionControlMessage::SyncStatus(status) = &statuses[0] else {
+            panic!("expected sync status");
+        };
         assert_eq!(
             status.initial_load,
             InitialLoadPhaseWire::Failed {
@@ -1308,7 +1328,9 @@ mod tests {
         assert!(deferred_frames.is_empty());
         let statuses = decode_session_statuses(&writer.bytes);
         assert_eq!(statuses.len(), 1);
-        let SessionControlMessage::SyncStatus(status) = &statuses[0];
+        let SessionControlMessage::SyncStatus(status) = &statuses[0] else {
+            panic!("expected sync status");
+        };
         assert!(matches!(
             status.initial_load,
             InitialLoadPhaseWire::Failed { .. }
@@ -1372,7 +1394,9 @@ mod tests {
         ));
         let statuses = decode_session_statuses(&writer.bytes);
         assert_eq!(statuses.len(), 1);
-        let SessionControlMessage::SyncStatus(status) = &statuses[0];
+        let SessionControlMessage::SyncStatus(status) = &statuses[0] else {
+            panic!("expected sync status");
+        };
         assert_eq!(status.initial_load, InitialLoadPhaseWire::Ready);
     }
 
@@ -1586,7 +1610,9 @@ mod tests {
 
         let statuses = decode_session_statuses(&writer.bytes);
         assert_eq!(statuses.len(), 1);
-        let SessionControlMessage::SyncStatus(status) = &statuses[0];
+        let SessionControlMessage::SyncStatus(status) = &statuses[0] else {
+            panic!("expected sync status");
+        };
         assert_eq!(status.notebook_doc, NotebookDocPhaseWire::Syncing);
         assert_eq!(status.runtime_state, RuntimeStatePhaseWire::Syncing);
         assert_eq!(status.initial_load, InitialLoadPhaseWire::Ready);

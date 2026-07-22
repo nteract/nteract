@@ -29,9 +29,10 @@ export interface NotebookConnectionStatusSource {
  * consumer. Runtime-state stores are deliberately not blanked while a
  * transport reconnects, so this dot is what makes frozen kernel/execution
  * chrome interpretable during the offline window — for the link the host
- * actually measures: the cloud room transport on cloud, the daemon link on
- * desktop (daemon↔room health is future work; `connectionLabel` scopes the
- * copy to the measured link so the dot never overclaims).
+ * actually measures: the cloud room transport on cloud, the daemon link for
+ * local desktop notebooks, and the composed app↔daemon↔hosted-room path
+ * for hosted desktop notebooks. `connectionLabel` scopes the copy to that
+ * measured path so the dot never overclaims.
  *
  * Quiet-chrome rules (distilled from the pulled #3273/#3290/#3337/#3349
  * designs — hard constraints, not preferences):

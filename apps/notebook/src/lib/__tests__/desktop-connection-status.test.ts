@@ -1,6 +1,6 @@
 import { BehaviorSubject } from "rxjs";
 import { describe, expect, it } from "vite-plus/test";
-import type { ConnectionStatus, ReconnectGovernorState } from "runtimed";
+import type { ConnectionStatus, HostedBridgeStatus, ReconnectGovernorState } from "runtimed";
 import { createDesktopConnectionStatusSource } from "../desktop-connection-status";
 
 function createFakeDaemonEvents() {
@@ -65,6 +65,39 @@ describe("createDesktopConnectionStatusSource", () => {
     expect(statuses).toEqual(["connecting", "online"]);
   });
 
+  it("composes hosted bridge health with the live daemon connection", () => {
+    const fake = createFakeDaemonEvents();
+    const bridge$ = new BehaviorSubject<HostedBridgeStatus>("connecting");
+    const source = createDesktopConnectionStatusSource(fake.daemonEvents, undefined, bridge$);
+    const statuses: ConnectionStatus[] = [];
+    source.subscribe((status) => statuses.push(status));
+
+    fake.fire("ready");
+    bridge$.next("connected");
+    bridge$.next("reconnecting");
+    bridge$.next("connected");
+    bridge$.next("authentication_failed");
+
+    expect(statuses).toEqual(["connecting", "online", "reconnecting", "online", "offline"]);
+    source.dispose();
+  });
+
+  it("keeps daemon loss authoritative over stale bridge state", () => {
+    const fake = createFakeDaemonEvents();
+    const bridge$ = new BehaviorSubject<HostedBridgeStatus>("connected");
+    const source = createDesktopConnectionStatusSource(fake.daemonEvents, undefined, bridge$);
+    const statuses: ConnectionStatus[] = [];
+    source.subscribe((status) => statuses.push(status));
+
+    fake.fire("ready");
+    fake.fire("disconnected");
+    bridge$.next("connected");
+
+    expect(statuses).toEqual(["connecting", "online", "reconnecting"]);
+    expect(source.getCurrent()).toBe("reconnecting");
+    source.dispose();
+  });
+
   it("replays the current value to subscribers and supports getCurrent", () => {
     const fake = createFakeDaemonEvents();
     const source = createDesktopConnectionStatusSource(fake.daemonEvents);
@@ -121,6 +154,27 @@ describe("createDesktopConnectionStatusSource", () => {
     source.dispose();
   });
 
+  it("does not apply a daemon latch to composed bridge reconnecting", () => {
+    const fake = createFakeDaemonEvents();
+    const state$ = new BehaviorSubject<ReconnectGovernorState>({ kind: "idle" });
+    const bridge$ = new BehaviorSubject<HostedBridgeStatus>("connected");
+    const source = createDesktopConnectionStatusSource(
+      fake.daemonEvents,
+      { getState: () => state$.getValue(), state$ },
+      bridge$,
+    );
+
+    fake.fire("ready");
+    bridge$.next("reconnecting");
+    expect(source.getCurrent()).toBe("reconnecting");
+    // The daemon link remains online. The latch must inspect daemonStatus,
+    // not the composed current value supplied by the bridge's second hop.
+    state$.next({ kind: "latched", reason: "unrelated terminal daemon state" });
+
+    expect(source.getCurrent()).toBe("reconnecting");
+    source.dispose();
+  });
+
   it("dispose detaches the governor state subscription", () => {
     const fake = createFakeDaemonEvents();
     const state$ = new BehaviorSubject<ReconnectGovernorState>({ kind: "idle" });
@@ -130,6 +184,14 @@ describe("createDesktopConnectionStatusSource", () => {
     });
     source.dispose();
     expect(state$.observed).toBe(false);
+  });
+
+  it("dispose detaches the hosted bridge subscription", () => {
+    const fake = createFakeDaemonEvents();
+    const bridge$ = new BehaviorSubject<HostedBridgeStatus>("not_applicable");
+    const source = createDesktopConnectionStatusSource(fake.daemonEvents, undefined, bridge$);
+    source.dispose();
+    expect(bridge$.observed).toBe(false);
   });
 
   it("unsubscribe and dispose detach cleanly", () => {
