@@ -778,16 +778,27 @@ test("cloud notebook list refresh stays on the GET-first session path", () => {
   const routeSourceText = readFileSync(routeSourcePath, "utf8");
 
   assert.match(routeSourceText, /import \{ clearCloudAppSession \}/);
-  assert.match(
+  assert.match(routeSourceText, /const refreshList = \(\) => \{[\s\S]{0,500}?setRefreshIndex/);
+  assert.doesNotMatch(
     routeSourceText,
-    /const refreshList = \(\) => \{[\s\S]*authState\.mode === "oidc" && authState\.token[\s\S]*auth\.refreshAppSessionStatus\(\)[\s\S]*setRefreshIndex/,
-    "manual notebook-list refresh reads session status; pending invites resolve on the cookie-authenticated list fetch itself (syncStoredAppSessionProfile)",
+    /const refreshList = \(\) => \{[\s\S]{0,500}?refreshAppSessionStatus/,
+    "manual refresh should issue one list GET; that response renews the cookie and syncs the stored profile",
   );
   assert.doesNotMatch(
     routeSourceText,
     /establishCloudAppSession/,
     "the list view never re-validates upstream with an establish POST; the missing-session fallback lives in the auth store",
   );
+});
+
+test("readable cloud notebooks leave disconnected compute to the existing runtime controls", () => {
+  const sourcePath = new URL("../viewer/notebook-viewer.tsx", import.meta.url);
+  const sourceText = readFileSync(sourcePath, "utf8");
+
+  assert.doesNotMatch(sourceText, /ComputeDisconnectedNotice/);
+  assert.doesNotMatch(sourceText, /shouldRenderComputeDisconnectedNotice/);
+  assert.match(sourceText, /onStartRuntime: handleCloudStartRuntime/);
+  assert.match(sourceText, /workstationAction/);
 });
 
 test("cloud notebook list bounds app-session waits before catalog fetches", () => {

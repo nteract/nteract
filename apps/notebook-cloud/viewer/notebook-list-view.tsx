@@ -142,7 +142,18 @@ export function CloudNotebookListView({
     const initialState = seed
       ? { kind: "ready" as const, notebooks: seed.notebooks, totalCount: seed.totalCount }
       : { kind: "loading" as const };
-    const loadNotebookList = async (controller: AbortController, warningLabel: string) => {
+    let appSessionFallbackDeadline: number | null = null;
+    const clearAppSessionFallbackDeadline = () => {
+      if (appSessionFallbackDeadline !== null) {
+        window.clearTimeout(appSessionFallbackDeadline);
+        appSessionFallbackDeadline = null;
+      }
+    };
+    const loadNotebookList = async (
+      controller: AbortController,
+      warningLabel: string,
+      deferUnauthorized = false,
+    ) => {
       try {
         const response = await fetchCloudNotebookList(
           authState,
@@ -153,6 +164,20 @@ export function CloudNotebookListView({
         );
         if (controller.signal.aborted) return;
         if (!response.ok) {
+          if (response.status === 401 && deferUnauthorized && waitingForAppSession && !seed) {
+            // A valid browser OIDC session can briefly outrun its same-origin
+            // app-session exchange. Keep that provisional 401 inside the auth
+            // handshake instead of painting a false signed-out error between
+            // the bearer request and the cookie-backed retry.
+            appSessionFallbackDeadline = window.setTimeout(
+              () => {
+                appSessionFallbackDeadline = null;
+                void loadNotebookList(controller, " after app-session wait deadline", false);
+              },
+              Math.max(0, appSessionWaitDeadline),
+            );
+            return;
+          }
           const responseError = await cloudResponseError(response, "Unable to list notebooks");
           if (controller.signal.aborted) return;
           throw responseError;
@@ -176,6 +201,7 @@ export function CloudNotebookListView({
             ? body.current_user_avatar.trim()
             : null,
         );
+        clearAppSessionFallbackDeadline();
         setListState({ kind: "ready", notebooks: body.notebooks, totalCount });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -204,6 +230,7 @@ export function CloudNotebookListView({
         );
         return () => {
           window.clearTimeout(deadline);
+          clearAppSessionFallbackDeadline();
           controller.abort();
         };
       }
@@ -227,9 +254,10 @@ export function CloudNotebookListView({
 
     const controller = new AbortController();
     setListState(initialState);
-    void loadNotebookList(controller, "");
+    void loadNotebookList(controller, "", true);
 
     return () => {
+      clearAppSessionFallbackDeadline();
       controller.abort();
     };
   }, [
@@ -244,12 +272,9 @@ export function CloudNotebookListView({
   ]);
 
   const refreshList = () => {
-    // GET-first session diet: the status GET renews the cookie server-side
-    // and the auth store's fallback establish covers a truly missing session,
-    // so a manual refresh never re-validates upstream with a POST.
-    if (authState.mode === "oidc" && authState.token) {
-      auth.refreshAppSessionStatus();
-    }
+    // The list GET authenticates directly, renews a live app-session cookie,
+    // and syncs the stored profile. A parallel session-status GET only creates
+    // a second auth transition that can restart this list request mid-refresh.
     setRefreshIndex((value) => value + 1);
   };
 
