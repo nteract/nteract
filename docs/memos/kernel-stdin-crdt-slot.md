@@ -42,8 +42,8 @@ store.
 - Accept at most one reply for one live prompt.
 - Keep reply values out of documents, persistence, outputs, diagnostics, logs,
   analytics, and broadcasts.
-- Reuse RuntimeStateDoc's existing reliable sync, execution identity, and
-  terminal-state ordering.
+- Reuse RuntimeStateDoc's existing reliable sync and execution identity, and
+  require input-slot terminal state to precede execution terminal state.
 - Keep stdin default-off until every participating component advertises the
   capability.
 
@@ -97,12 +97,13 @@ presentation hint. Only the target connection renders the control, but filtering
 the UI is not a confidentiality boundary. Prompt metadata may also remain in
 Automerge history after the current map is replaced or removed.
 
-This proposal accepts that tradeoff for V1 because notebook collaborators
-already share the executed source and ordinary outputs, while the entered value
-is the credential-bearing material that requires strict handling. If product or
-security review requires prompt text itself to be actor-confidential, select the
-targeted-frame proposal instead. Creating a private per-actor CRDT solely for
-prompts would be more machinery than the reliable frame it replaces.
+This proposal does not accept that tradeoff on behalf of product or security.
+It asks for an explicit decision from both before implementation. Prompt strings
+can themselves contain sensitive, non-redactable context, such as an account,
+host, or credential purpose, even when the entered value is the primary secret.
+If prompt text must be actor-confidential, select the targeted-frame proposal
+instead. Creating a private per-actor CRDT solely for prompts would be more
+machinery than the reliable frame it replaces.
 
 Regardless of the selected transport, the entered value must stay ephemeral.
 
@@ -174,6 +175,12 @@ input: execution id, prompt id, target actor, execution generation, and
 `input_reply` to Jupyter, so duplicate or concurrent submissions cannot produce
 two kernel replies.
 
+Exactly one selected runtime peer owns an execution and its pending-input
+authority. A replacement runtime peer must not adopt a `waiting` slot from CRDT
+state: restart or ownership transfer cancels that slot and requires a new
+Jupyter prompt with a new id. Consume-once is therefore bounded to one runtime
+peer lifetime rather than inferred from Automerge conflict resolution.
+
 After accepting the request, the runtime peer:
 
 1. moves the response value into the Jupyter reply buffer;
@@ -201,9 +208,11 @@ cancellation behavior. If Jupyter has no true EOF-style input reply, interrupt
 or restart remains the reliable cancellation primitive; an empty string is
 valid input and must not be mislabeled as cancellation.
 
-Execution terminal state must remain causally after the final input-slot
-transition, just as it remains after final output state. A client that observes
-a terminal execution cannot continue submitting to an older waiting slot.
+Implementation must prove that execution terminal state is causally after the
+final input-slot transition, extending the existing output-before-terminal
+contract rather than assuming input ordering comes for free. A client that
+observes a terminal execution cannot continue submitting to an older waiting
+slot.
 
 ## Authority and writer policy
 
@@ -246,8 +255,9 @@ an authenticated delegation and return-routing contract before it can advertise
   notebook request-frame cap.
 - Only the exact initiating actor may render or answer the current prompt.
 - Runtime validation is consume-once and generation-qualified.
-- Prompt text visibility to other runtime-state readers is an accepted and
-  documented V1 tradeoff, not an assumed secret channel.
+- Prompt text visibility to other runtime-state readers is a proposed tradeoff
+  requiring explicit product and security approval, not an assumed secret
+  channel.
 
 ## Simplification relative to the targeted-frame proposal
 
@@ -311,8 +321,9 @@ Every slice can land with stdin default-off.
 Review should answer these questions before selecting this proposal over the
 targeted-frame alternative:
 
-1. Is room-wide visibility and CRDT retention of prompt text acceptable when
-   the reply value remains secret?
+1. Do product and security explicitly accept room-wide visibility and
+   non-redactable CRDT retention of prompt text when the reply value remains
+   secret?
 2. Does RuntimeStateDoc reliably reach the initiating UI quickly enough while a
    kernel is blocked on stdin?
 3. Can runtime-state ingress restrict prompt mutations to the selected runtime
