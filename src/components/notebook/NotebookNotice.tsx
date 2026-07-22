@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { AlertTriangle, Bug, CheckCircle2, Info, XCircle, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -40,6 +40,20 @@ const iconClassName: Record<NotebookNoticeTone, string> = {
   debug: "text-violet-600 dark:text-violet-300",
 };
 
+/**
+ * Per-tone default icon so shape — not just color — distinguishes severity
+ * (accessible for color-blind users and quicker to scan). A caller can still
+ * pass a more specific `icon` (e.g. CloudOff for reconnecting); when it does
+ * not, the tone picks the icon. Pass `icon={null}` to opt out entirely.
+ */
+const toneDefaultIcon: Record<NotebookNoticeTone, ReactNode> = {
+  info: <Info className="size-4" />,
+  warning: <AlertTriangle className="size-4" />,
+  error: <XCircle className="size-4" />,
+  success: <CheckCircle2 className="size-4" />,
+  debug: <Bug className="size-4" />,
+};
+
 export function NotebookNoticeStack({
   children,
   className,
@@ -69,10 +83,17 @@ export function NotebookNotice({
   contentClassName,
   "data-testid": dataTestId,
 }: NotebookNoticeProps) {
+  // `undefined` means "no explicit icon" → fall back to the tone default so
+  // shape signals severity. `null` is an explicit opt-out and renders nothing.
+  const resolvedIcon = icon === undefined ? toneDefaultIcon[tone] : icon;
   return (
     <div
       className={cn(
-        "flex min-w-0 items-start gap-3 border-b px-3 py-2 text-xs",
+        // min-h keeps the bar a stable height whether or not an action button
+        // is present, so adding a single button never grows a one-line row.
+        // items-start keeps the icon/actions pinned to the top when the body
+        // wraps to multiple lines (e.g. a collapsed traceback).
+        "flex min-h-9 min-w-0 items-start gap-3 border-b px-3 py-2 text-xs",
         toneClassName[tone],
         className,
       )}
@@ -80,7 +101,7 @@ export function NotebookNotice({
       data-tone={tone}
       data-testid={dataTestId}
     >
-      {icon ? (
+      {resolvedIcon ? (
         <span
           className={cn(
             "mt-0.5 flex size-4 shrink-0 items-center justify-center",
@@ -88,7 +109,7 @@ export function NotebookNotice({
           )}
           aria-hidden="true"
         >
-          {icon}
+          {resolvedIcon}
         </span>
       ) : null}
       <div className={cn("min-w-0 flex-1 space-y-1", contentClassName)}>
@@ -143,7 +164,10 @@ export function NotebookNoticeAction({
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex h-6 items-center gap-1 rounded px-2 text-xs font-medium transition-colors hover:bg-current/10",
+        // Reads as a real button: bordered chip with a solid-ish fill from the
+        // tone's currentColor, not a bare text link. h-6 + whitespace-nowrap
+        // keep it from growing the notice row or wrapping.
+        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-current/25 bg-current/10 px-2 text-xs font-medium transition-colors hover:bg-current/20",
         className,
       )}
       data-testid={dataTestId}

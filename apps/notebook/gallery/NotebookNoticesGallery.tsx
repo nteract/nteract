@@ -4,13 +4,13 @@ import {
   Cloud,
   CloudOff,
   Cpu,
+  FileQuestion,
   ImageOff,
   Loader2,
   LogIn,
   RotateCcw,
   RotateCw,
 } from "lucide-react";
-import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DaemonStatusBanner } from "@/components/notebook/DaemonStatusBanner";
 import {
@@ -31,18 +31,16 @@ import { cn } from "@/lib/utils";
  * shipped components so this doubles as the visual-review artifact for the
  * notice-consolidation work.
  *
- * Scenarios are grouped by the underlying reason a run is blocked:
- *   - runtime/compute not attached (the silent case today)
- *   - connection/transport loss
- *   - kernel launch/crash
- *   - auth / access
- *   - renderer assets
+ * The organizing rule (matching PR #4081): treatment depends on whether the
+ * notebook is still VIEWABLE.
+ *   - Viewable  → inline banner in the notices region; the notebook stays
+ *     readable/editable underneath.
+ *   - Not viewable (signed out, connection/access error) → full-stage
+ *     centered `NotebookAccessGate` that owns the whole canvas.
  *
- * Each scenario is shown inside a `ShellFrame` that mimics the real
- * toolbar → notices-slot → body layout, so edge spacing and how a notice
- * reads in context are both visible. A dedicated "spacing" section
- * contrasts edge-to-edge (today's desktop) against a padded container
- * (the proposed fix).
+ * Every scenario is rendered at once (no click-to-reveal) so the whole
+ * family can be scanned side by side. Icons differ per tone so color is not
+ * the only severity signal.
  */
 
 const LONG_TRACEBACK = `Traceback (most recent call last):
@@ -58,16 +56,15 @@ const DAEMON_SOCK_ERROR =
 interface Scenario {
   id: string;
   label: string;
-  /** Short human note describing the trigger, shown above the frame. */
+  /** Short human note describing the trigger. */
   note: string;
   render: () => React.ReactNode;
 }
 
 /**
  * Proposed NEW notice for the "no compute attached" case — the state in the
- * dev:browser screenshot that currently surfaces NO UI at all. Built here as
- * a mockup on top of the real `NotebookNotice` so the visual treatment can be
- * reviewed before it lands in production (`CloudNotebookNotices`).
+ * dev:browser screenshot that currently surfaces NO UI at all. The notebook
+ * is fully viewable, so this is an inline banner, not a gate.
  */
 function NoComputeNotice({ isOwner }: { isOwner: boolean }) {
   return (
@@ -90,23 +87,27 @@ function NoComputeNotice({ isOwner }: { isOwner: boolean }) {
   );
 }
 
-const scenarios: Scenario[] = [
+/**
+ * VIEWABLE states — the notebook renders underneath, so these are inline
+ * banners in the notices region.
+ */
+const viewableScenarios: Scenario[] = [
   {
     id: "no-compute-owner",
     label: "No compute (owner)",
-    note: "dev:browser / cloud, owner, no runtime peer attached. Today this is SILENT — no banner, no run button, no tooltip. This is the proposed new notice.",
+    note: "dev:browser / cloud, owner, no runtime peer attached. Today this is SILENT — no banner, no run button, no tooltip. Proposed new notice.",
     render: () => <NoComputeNotice isOwner />,
   },
   {
     id: "no-compute-viewer",
     label: "No compute (viewer)",
-    note: "Non-owner with no runtime attached. Cannot attach compute themselves. Proposed new notice.",
+    note: "Non-owner, no runtime attached. Cannot attach compute themselves. Proposed new notice.",
     render: () => <NoComputeNotice isOwner={false} />,
   },
   {
     id: "reconnecting",
     label: "Reconnecting",
-    note: "Transport link dropped past the 3s debounce (useSustainedReconnecting). Quiet, no CTA — the transport retries forever on its own.",
+    note: "Transport dropped past the 3s debounce. Quiet, no CTA — the transport retries forever on its own.",
     render: () => (
       <NotebookNotice tone="info" icon={<CloudOff className="h-4 w-4" />} title="Reconnecting.">
         Your edits are kept locally and will sync when the connection returns.
@@ -114,52 +115,9 @@ const scenarios: Scenario[] = [
     ),
   },
   {
-    id: "live-room-unavailable",
-    label: "Live room unavailable",
-    note: "failed to connect wss://… with no readable snapshot. cloudConnectionNoticeDisplay.",
-    render: () => (
-      <NotebookNotice
-        tone="warning"
-        icon={<CloudOff className="h-4 w-4" />}
-        title="Live room unavailable."
-        actions={
-          <NotebookNoticeAction icon={<RotateCcw className="h-3 w-3" />}>
-            Retry
-          </NotebookNoticeAction>
-        }
-      >
-        The notebook will load once the account or connection is refreshed.
-      </NotebookNotice>
-    ),
-  },
-  {
-    id: "runtime-unavailable",
-    label: "Runtime unavailable (desktop)",
-    note: "DaemonStatusBanner failed state. Today renders the raw sock-path error uncollapsed.",
-    render: () => (
-      <DaemonStatusBanner
-        status={{
-          status: "failed",
-          error: `Reconnection failed: ${DAEMON_SOCK_ERROR}`,
-          guidance: "Automatic reconnection is paused. Retry reconnects once.",
-        }}
-        onRetry={() => {}}
-        onDismiss={() => {}}
-      />
-    ),
-  },
-  {
-    id: "daemon-starting",
-    label: "Runtime starting (desktop)",
-    note: "DaemonStatusBanner progress state — calm info with spinner.",
-    render: () => (
-      <DaemonStatusBanner status={{ status: "waiting_for_ready", attempt: 2, max_attempts: 5 }} />
-    ),
-  },
-  {
     id: "kernel-launch",
     label: "Kernel failed to start",
-    note: "RuntimeLifecycle::Error with stderr tail. Traceback is COLLAPSED into a scroll box (max-h-32) with Copy + Retry — the pattern we want everywhere.",
+    note: "RuntimeLifecycle::Error with stderr tail. Traceback COLLAPSED into a scroll box with Copy + Retry — the pattern to standardize on.",
     render: () => (
       <KernelLaunchErrorBanner
         errorDetails={LONG_TRACEBACK}
@@ -181,51 +139,36 @@ const scenarios: Scenario[] = [
     ),
   },
   {
-    id: "sign-in-required",
-    label: "Sign in required",
-    note: "CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC (HTTP 401). Blocks the notebook body entirely.",
+    id: "runtime-unavailable",
+    label: "Runtime unavailable (desktop)",
+    note: "DaemonStatusBanner failed state. Today renders the raw sock-path error uncollapsed (a target for the sanitize/collapse fix).",
     render: () => (
-      <NotebookNotice
-        tone="warning"
-        icon={<LogIn className="h-4 w-4" />}
-        title="Sign in required."
-        actions={
-          <NotebookNoticeAction icon={<LogIn className="h-3 w-3" />}>
-            Sign in again
-          </NotebookNoticeAction>
-        }
-      >
-        Sign in again to open the live notebook room.
-      </NotebookNotice>
+      <DaemonStatusBanner
+        status={{
+          status: "failed",
+          error: `Reconnection failed: ${DAEMON_SOCK_ERROR}`,
+          guidance: "Automatic reconnection is paused. Retry reconnects once.",
+        }}
+        onRetry={() => {}}
+        onDismiss={() => {}}
+      />
     ),
   },
   {
-    id: "access-needed",
-    label: "Notebook access needed",
-    note: "CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC (HTTP 403).",
+    id: "daemon-starting",
+    label: "Runtime starting (desktop)",
+    note: "DaemonStatusBanner progress state — calm info with spinner.",
     render: () => (
-      <NotebookNotice
-        tone="warning"
-        icon={<Ban className="h-4 w-4" />}
-        title="Notebook access needed."
-        actions={
-          <NotebookNoticeAction icon={<RotateCcw className="h-3 w-3" />}>
-            Retry
-          </NotebookNoticeAction>
-        }
-      >
-        Ask the owner to share it, or refresh sign-in if an invite was just accepted.
-      </NotebookNotice>
+      <DaemonStatusBanner status={{ status: "waiting_for_ready", attempt: 2, max_attempts: 5 }} />
     ),
   },
   {
     id: "auth-attention",
     label: "Auth needs attention",
-    note: "authState.mode invalid / oidc_expired. Error tone.",
+    note: "authState.mode invalid / oidc_expired while a readable snapshot exists. Error tone; notebook still visible.",
     render: () => (
       <NotebookNotice
         tone="error"
-        icon={<AlertCircle className="h-4 w-4" />}
         title="Auth needs attention."
         actions={
           <NotebookNoticeAction icon={<LogIn className="h-3 w-3" />}>
@@ -240,7 +183,7 @@ const scenarios: Scenario[] = [
   {
     id: "refreshing-sign-in",
     label: "Refreshing sign-in",
-    note: "authRenewal.kind === refreshing. Transient, spinner, no CTA.",
+    note: "authRenewal.kind === refreshing. Transient, spinner, no CTA. (Explicit spinner icon overrides the tone default.)",
     render: () => (
       <NotebookNotice
         tone="info"
@@ -274,7 +217,7 @@ const scenarios: Scenario[] = [
   {
     id: "offline-merge",
     label: "Synced offline edits",
-    note: "Reconnect completed with locally-authored work pending. Success/info, informational.",
+    note: "Reconnect completed with locally-authored work pending. Informational.",
     render: () => (
       <NotebookNotice
         tone="info"
@@ -287,13 +230,80 @@ const scenarios: Scenario[] = [
   },
 ];
 
+interface GateScenario {
+  id: string;
+  label: string;
+  note: string;
+  tone: "neutral" | "info" | "attention";
+  icon: React.ReactNode;
+  title: string;
+  detail: string;
+  primaryAction?: React.ReactNode;
+}
+
+/**
+ * NOT-VIEWABLE states — the notebook cannot be shown at all, so these take
+ * over the whole stage as a centered `NotebookAccessGate` (the PR #4081
+ * pattern) rather than floating a banner over an empty void.
+ */
+const gateScenarios: GateScenario[] = [
+  {
+    id: "signed-out",
+    label: "Signed out (private)",
+    note: "signedOutNotebookSignInRequired. Private notebook, no session, no readable snapshot.",
+    tone: "info",
+    icon: <LogIn aria-hidden="true" />,
+    title: "Sign in to open this notebook",
+    detail:
+      "This notebook is private. Sign in with your account and we'll bring you straight back here.",
+    primaryAction: <Button size="sm">Sign in with Anaconda</Button>,
+  },
+  {
+    id: "no-access",
+    label: "No access",
+    note: "CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC (HTTP 403). Signed in, but not shared with this account.",
+    tone: "attention",
+    icon: <Ban aria-hidden="true" />,
+    title: "You don't have access",
+    detail: "Ask the owner to share this notebook with your account, then reload.",
+    primaryAction: (
+      <Button size="sm" variant="secondary">
+        Reload
+      </Button>
+    ),
+  },
+  {
+    id: "not-found",
+    label: "Not found",
+    note: "CLOUD_CONNECTION_NOT_FOUND_DIAGNOSTIC (HTTP 404). No such notebook — no action.",
+    tone: "neutral",
+    icon: <FileQuestion aria-hidden="true" />,
+    title: "Notebook not found",
+    detail: "This notebook may have been moved or deleted.",
+  },
+  {
+    id: "load-failed",
+    label: "Load failed (desktop)",
+    note: "Daemon-not-running load failure with nothing to show. Replaces the Tauri triple-treatment with one gate.",
+    tone: "attention",
+    icon: <CloudOff aria-hidden="true" />,
+    title: "Couldn't load this notebook",
+    detail: "The runtime isn't available right now. Reconnect to try again.",
+    primaryAction: (
+      <Button size="sm" variant="secondary">
+        <RotateCcw className="mr-1 size-3" />
+        Reconnect
+      </Button>
+    ),
+  },
+];
+
 export function NotebookNoticesGallery() {
   return (
     <div className="space-y-12">
-      <SingleNoticeExplorer />
-      <StackedExample />
+      <ViewableSection />
+      <NotViewableSection />
       <SpacingContrast />
-      <GateExample />
       <ToneReference />
     </div>
   );
@@ -304,7 +314,15 @@ export function NotebookNoticesGallery() {
  * body. `padded` toggles the proposed container padding so notices never
  * touch the edges.
  */
-function ShellFrame({ children, padded = true }: { children: React.ReactNode; padded?: boolean }) {
+function ShellFrame({
+  children,
+  padded = true,
+  showBody = true,
+}: {
+  children: React.ReactNode;
+  padded?: boolean;
+  showBody?: boolean;
+}) {
   return (
     <div className="overflow-hidden rounded-lg border bg-background shadow-sm">
       <div className="flex items-center gap-4 border-b bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
@@ -315,86 +333,84 @@ function ShellFrame({ children, padded = true }: { children: React.ReactNode; pa
         <span className="ml-auto">Python</span>
       </div>
       <div className={cn("border-b bg-background", padded ? "px-3 py-2" : "")}>{children}</div>
-      <div className="min-h-[120px] bg-background px-6 py-8 text-sm text-muted-foreground">
-        <code className="text-foreground/70">print(&apos;hello&apos;)</code>
-      </div>
+      {showBody ? (
+        <div className="min-h-[96px] bg-background px-6 py-8 text-sm text-muted-foreground">
+          <code className="text-foreground/70">print(&apos;hello&apos;)</code>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function SingleNoticeExplorer() {
-  const [selectedId, setSelectedId] = useState(scenarios[0].id);
-  const selected = scenarios.find((s) => s.id === selectedId) ?? scenarios[0];
-
+function ScenarioCard({ scenario }: { scenario: Scenario }) {
   return (
-    <section className="space-y-3">
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-xs font-medium text-foreground">{scenario.label}</span>
+      </div>
+      <p className="text-[11px] leading-4 text-muted-foreground">{scenario.note}</p>
+      <ShellFrame showBody={false}>{scenario.render()}</ShellFrame>
+    </div>
+  );
+}
+
+function ViewableSection() {
+  return (
+    <section className="space-y-4">
       <div className="space-y-1">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Blocked-run states
+          Notebook viewable → inline banner
         </h2>
         <p className="text-sm text-foreground/80">
-          Every notice that can prevent (or explain the inability to) run cells, in the shell
-          toolbar → notices → body layout. Pick a scenario.
+          The notebook still renders underneath, so the message is a banner in the notices region.
+          Every state shown at once. Adding a single action never resizes the bar.
         </p>
       </div>
-
-      <div className="flex flex-wrap items-center gap-1 rounded-md border bg-muted/50 p-1">
-        {scenarios.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => setSelectedId(s.id)}
-            className={cn(
-              "rounded-sm px-2 py-1 text-xs transition-colors",
-              s.id === selectedId
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {s.label}
-          </button>
+      <div className="grid gap-6 lg:grid-cols-2">
+        {viewableScenarios.map((s) => (
+          <ScenarioCard key={s.id} scenario={s} />
         ))}
       </div>
-
-      <p className="text-xs leading-5 text-muted-foreground">{selected.note}</p>
-
-      <ShellFrame>{selected.render()}</ShellFrame>
     </section>
   );
 }
 
-function StackedExample() {
+function NotViewableSection() {
   return (
-    <section className="space-y-3">
+    <section className="space-y-4">
       <div className="space-y-1">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Stacked (multiple at once)
+          Notebook not viewable → full-stage gate
         </h2>
         <p className="text-sm text-foreground/80">
-          When several are active, they pile in one `NotebookNoticeStack`. This is what the
-          consolidated single-location model should look like — one region, consistent spacing.
+          Nothing to show underneath (signed out, no access, not found, load failed), so the state
+          owns the whole canvas — the PR #4081 pattern — instead of floating a banner over an empty
+          void.
         </p>
       </div>
-      <ShellFrame>
-        <NotebookNoticeStack>
-          <NoComputeNotice isOwner />
-          <NotebookNotice tone="info" icon={<CloudOff className="h-4 w-4" />} title="Reconnecting.">
-            Your edits are kept locally and will sync when the connection returns.
-          </NotebookNotice>
-          <NotebookNotice
-            tone="warning"
-            icon={<ImageOff className="h-4 w-4" />}
-            title="Output renderer unavailable."
-            actions={
-              <NotebookNoticeAction icon={<RotateCcw className="h-3 w-3" />}>
-                Retry
-              </NotebookNoticeAction>
-            }
-          >
-            Rich outputs are paused because their renderer assets failed to load.
-          </NotebookNotice>
-        </NotebookNoticeStack>
-      </ShellFrame>
+      <div className="grid gap-6 lg:grid-cols-2">
+        {gateScenarios.map((g) => (
+          <div key={g.id} className="space-y-2">
+            <span className="text-xs font-medium text-foreground">{g.label}</span>
+            <p className="text-[11px] leading-4 text-muted-foreground">{g.note}</p>
+            <div className="overflow-hidden rounded-lg border bg-background shadow-sm">
+              <div className="flex items-center gap-4 border-b bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">Notebook</span>
+                <span className="ml-auto">Python</span>
+              </div>
+              <div className="flex min-h-[220px] flex-col">
+                <NotebookAccessGate
+                  tone={g.tone}
+                  icon={g.icon}
+                  title={g.title}
+                  detail={g.detail}
+                  primaryAction={g.primaryAction}
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -416,7 +432,7 @@ function SpacingContrast() {
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
             edge-to-edge (today)
           </span>
-          <ShellFrame padded={false}>
+          <ShellFrame padded={false} showBody={false}>
             <NoComputeNotice isOwner />
           </ShellFrame>
         </div>
@@ -424,40 +440,9 @@ function SpacingContrast() {
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
             padded (proposed)
           </span>
-          <ShellFrame padded>
+          <ShellFrame padded showBody={false}>
             <NoComputeNotice isOwner />
           </ShellFrame>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function GateExample() {
-  return (
-    <section className="space-y-3">
-      <div className="space-y-1">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Full-stage gate
-        </h2>
-        <p className="text-sm text-foreground/80">
-          Hard blockers (signed-out private notebook, not found) replace the body with a centered
-          `NotebookAccessGate` rather than a banner.
-        </p>
-      </div>
-      <div className="overflow-hidden rounded-lg border bg-background shadow-sm">
-        <div className="flex items-center gap-4 border-b bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Notebook</span>
-          <span className="ml-auto">Python</span>
-        </div>
-        <div className="min-h-[260px]">
-          <NotebookAccessGate
-            tone="info"
-            icon={<LogIn aria-hidden="true" />}
-            title="Sign in to open this notebook"
-            detail="This notebook is private. Sign in with your account and we'll bring you straight back here."
-            primaryAction={<Button size="sm">Sign in with Anaconda</Button>}
-          />
         </div>
       </div>
     </section>
@@ -473,17 +458,25 @@ function ToneReference() {
           Tone reference
         </h2>
         <p className="text-sm text-foreground/80">
-          The five `NotebookNotice` tones, for quick contrast in light and dark.
+          The five tones with their default per-tone icons — shape distinguishes severity, not just
+          color. The first three carry a single action to show the button treatment and stable bar
+          height.
         </p>
       </div>
-      <ShellFrame>
+      <ShellFrame showBody={false}>
         <NotebookNoticeStack>
-          {tones.map((tone) => (
+          {tones.map((tone, i) => (
             <NotebookNotice
               key={tone}
               tone={tone}
-              icon={<AlertCircle className="h-4 w-4" />}
               title={`${tone[0].toUpperCase()}${tone.slice(1)} tone.`}
+              actions={
+                i < 3 ? (
+                  <NotebookNoticeAction icon={<AlertCircle className="h-3 w-3" />}>
+                    Action
+                  </NotebookNoticeAction>
+                ) : null
+              }
             >
               The quick brown fox jumps over the lazy dog.
             </NotebookNotice>
