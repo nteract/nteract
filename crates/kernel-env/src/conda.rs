@@ -317,6 +317,42 @@ pub async fn prepare_environment_unified(
     cache_dir: &Path,
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<CondaEnvironment> {
+    prepare_environment_unified_inner(deps, env_id, cache_dir, handler, false).await
+}
+
+/// Force-rebuild a notebook-captured Conda environment at its unified hash.
+///
+/// A matching lock sidecar is consumed before the existing environment is
+/// removed, preserving the normal lock-assisted rebuild path. The target path
+/// remains derived exclusively from the captured declaration and `env_id`.
+pub async fn rebuild_environment_unified(
+    deps: &CondaDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+    handler: Arc<dyn ProgressHandler>,
+) -> Result<CondaEnvironment> {
+    prepare_environment_unified_inner(deps, env_id, cache_dir, handler, true).await
+}
+
+fn unified_cache_is_reusable(force_rebuild: bool, env_exists: bool, python_exists: bool) -> bool {
+    !force_rebuild && env_exists && python_exists
+}
+
+fn unified_lock_rebuild_is_applicable(
+    force_rebuild: bool,
+    env_exists: bool,
+    python_exists: bool,
+) -> bool {
+    env_exists && (force_rebuild || !python_exists)
+}
+
+async fn prepare_environment_unified_inner(
+    deps: &CondaDependencies,
+    env_id: &str,
+    cache_dir: &Path,
+    handler: Arc<dyn ProgressHandler>,
+    force_rebuild: bool,
+) -> Result<CondaEnvironment> {
     let hash = compute_unified_env_hash(deps, env_id);
     let env_path = cache_dir.join(&hash);
 
@@ -333,7 +369,7 @@ pub async fn prepare_environment_unified(
     let python_path = env_path.join("bin").join("python");
 
     // Cache hit
-    if env_path.exists() && python_path.exists() {
+    if unified_cache_is_reusable(force_rebuild, env_path.exists(), python_path.exists()) {
         info!("Using cached unified conda env at {:?}", env_path);
         crate::gc::touch_last_used(&env_path).await;
         crate::launcher::vendor_into_venv(&python_path)
@@ -362,8 +398,10 @@ pub async fn prepare_environment_unified(
 
     tokio::fs::create_dir_all(cache_dir).await?;
 
-    // Try lock-based rebuild before full re-creation
-    if env_path.exists() && !python_path.exists() {
+    // Try lock-based rebuild before full re-creation. A forced rebuild enters
+    // this path even when Python exists because the launch handshake already
+    // proved the otherwise-usable environment cannot start a kernel.
+    if unified_lock_rebuild_is_applicable(force_rebuild, env_path.exists(), python_path.exists()) {
         if let Some(lock) = crate::lock::LockFile::read_from(&env_path).await {
             let expected_specs = build_spec_strings(deps);
             let expected_channels = if deps.channels.is_empty() {
@@ -1494,6 +1532,15 @@ mod tests {
         let h1 = compute_unified_env_hash(&deps, "notebook-1");
         let h2 = compute_unified_env_hash(&deps, "notebook-2");
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn forced_unified_rebuild_bypasses_cache_and_uses_lock_path_when_available() {
+        assert!(unified_cache_is_reusable(false, true, true));
+        assert!(!unified_cache_is_reusable(true, true, true));
+        assert!(unified_lock_rebuild_is_applicable(true, true, true));
+        assert!(!unified_lock_rebuild_is_applicable(true, false, true));
+        assert!(!unified_lock_rebuild_is_applicable(true, false, false));
     }
 
     #[test]

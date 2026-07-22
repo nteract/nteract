@@ -22,6 +22,24 @@ pub(crate) fn uses_fresh_port_retry(kind: KernelLaunchFailureKind) -> bool {
     )
 }
 
+/// Whether a launch failure from a notebook-captured environment may be
+/// repaired by rebuilding that environment once.
+pub(crate) fn uses_captured_env_rebuild(kind: KernelLaunchFailureKind) -> bool {
+    matches!(
+        kind,
+        KernelLaunchFailureKind::ProcessExited
+            | KernelLaunchFailureKind::StartupTimeout
+            | KernelLaunchFailureKind::ToolBootstrap
+    )
+}
+
+/// Runtime-agent launch failures for which the coordinator owns a retry
+/// decision. The agent must not publish a terminal lifecycle before that
+/// decision is made.
+pub(crate) fn coordinator_may_retry(kind: KernelLaunchFailureKind) -> bool {
+    uses_fresh_port_retry(kind) || uses_captured_env_rebuild(kind)
+}
+
 fn classify_message(message: &str) -> KernelLaunchFailureKind {
     let lower = message.to_ascii_lowercase();
 
@@ -173,5 +191,44 @@ mod tests {
         ));
         assert!(!uses_fresh_port_retry(KernelLaunchFailureKind::Unsupported));
         assert!(!uses_fresh_port_retry(KernelLaunchFailureKind::Other));
+    }
+
+    #[test]
+    fn captured_env_rebuild_applies_only_to_environment_infrastructure_failures() {
+        assert!(uses_captured_env_rebuild(
+            KernelLaunchFailureKind::ProcessExited
+        ));
+        assert!(uses_captured_env_rebuild(
+            KernelLaunchFailureKind::StartupTimeout
+        ));
+        assert!(uses_captured_env_rebuild(
+            KernelLaunchFailureKind::ToolBootstrap
+        ));
+
+        for kind in [
+            KernelLaunchFailureKind::RetryableStartupTransport,
+            KernelLaunchFailureKind::PortBind,
+            KernelLaunchFailureKind::Misconfiguration,
+            KernelLaunchFailureKind::Unsupported,
+            KernelLaunchFailureKind::Other,
+        ] {
+            assert!(
+                !uses_captured_env_rebuild(kind),
+                "unexpected retry: {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn coordinator_owns_all_retryable_launch_failures() {
+        for kind in [
+            KernelLaunchFailureKind::RetryableStartupTransport,
+            KernelLaunchFailureKind::PortBind,
+            KernelLaunchFailureKind::ProcessExited,
+            KernelLaunchFailureKind::StartupTimeout,
+            KernelLaunchFailureKind::ToolBootstrap,
+        ] {
+            assert!(coordinator_may_retry(kind), "missing retry owner: {kind:?}");
+        }
     }
 }

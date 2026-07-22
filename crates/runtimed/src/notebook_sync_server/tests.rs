@@ -11385,6 +11385,47 @@ async fn reset_starting_state_error_variant_writes_details() {
     assert_eq!(state.kernel.error_reason.as_deref(), Some(""));
 }
 
+/// A transport failure while handing the rebuilt environment back to the
+/// runtime agent is normalized to the same `KernelLaunchFailed` variant that
+/// the auto-launch and manual-launch response arms terminalize. Keep the
+/// composed behavior covered so `Launching` cannot become a sticky state.
+#[tokio::test]
+async fn captured_env_retry_transport_failure_response_clears_launching() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "captured-retry-transport.ipynb");
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+        .unwrap();
+
+    let response = captured_env_repair_terminal_response(
+        notebook_protocol::protocol::KernelLaunchFailureKind::ProcessExited,
+        "original launch failure",
+        "the retry could not be sent: runtime-agent channel closed",
+    );
+    let notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunchFailed { error, .. } =
+        response
+    else {
+        panic!("expected normalized launch failure");
+    };
+
+    // This is the terminal response arm shared in shape by all three callers
+    // of send_runtime_agent_request_with_captured_env_repair.
+    reset_starting_state_with_outcome(
+        &room,
+        None,
+        ResetOutcome::Error {
+            reason: None,
+            details: &error,
+        },
+    )
+    .await;
+
+    let state = room.state.with_doc(|sd| Ok(sd.read_state())).unwrap();
+    assert!(matches!(state.kernel.lifecycle, RuntimeLifecycle::Error));
+    assert_eq!(state.kernel.error_details.as_deref(), Some(error.as_str()));
+    assert_eq!(state.env.progress, None);
+}
+
 #[tokio::test]
 async fn publish_environment_launch_error_writes_kernel_error_and_clears_env_progress() {
     let tmp = tempfile::TempDir::new().unwrap();

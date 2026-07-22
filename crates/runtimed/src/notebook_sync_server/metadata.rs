@@ -1784,6 +1784,74 @@ pub(crate) fn captured_env_disk_state(captured: &CapturedEnv) -> CapturedEnvDisk
     )
 }
 
+/// Force-rebuild an already-resolved notebook-captured environment.
+///
+/// The captured dependency snapshot and `env_id` are the sole identity input;
+/// callers must retain the snapshot from the original launch resolution rather
+/// than re-reading mutable notebook metadata after a failed handshake.
+///
+/// The caller must own the room's single-flight launch admission for the full
+/// rebuild and retry. This helper deliberately publishes `PreparingEnv` and
+/// then `Launching`; if the retry fails, the caller's terminal response arm
+/// replaces `Launching` with its contextual error/reset outcome.
+pub(crate) async fn rebuild_captured_environment(
+    room: &NotebookRoom,
+    captured: &CapturedEnv,
+) -> anyhow::Result<crate::PooledEnv> {
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::PreparingEnv))?;
+
+    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
+        crate::inline_env::RuntimeDocProgressHandler::new(room.state.clone()),
+    );
+
+    let env = match captured {
+        CapturedEnv::Uv { deps, env_id } => {
+            let rebuilt = kernel_env::uv::rebuild_environment_unified(
+                deps,
+                env_id,
+                &kernel_env::uv::default_cache_dir_uv(),
+                progress_handler,
+            )
+            .await?;
+            crate::PooledEnv {
+                env_type: crate::EnvType::Uv,
+                venv_path: rebuilt.venv_path,
+                python_path: rebuilt.python_path,
+                prewarmed_packages: deps.dependencies.clone(),
+            }
+        }
+        CapturedEnv::Conda { deps, env_id } => {
+            let rebuilt = kernel_env::conda::rebuild_environment_unified(
+                deps,
+                env_id,
+                &kernel_env::conda::default_cache_dir_conda(),
+                progress_handler,
+            )
+            .await?;
+            crate::PooledEnv {
+                env_type: crate::EnvType::Conda,
+                venv_path: rebuilt.env_path,
+                python_path: rebuilt.python_path,
+                prewarmed_packages: deps.dependencies.clone(),
+            }
+        }
+    };
+
+    {
+        let mut active_path = room.runtime_agent_env_path.write().await;
+        *active_path = Some(env.venv_path.clone());
+    }
+
+    // The runtime agent repeats this transition when it accepts the request,
+    // but publish it before the retry send so the rebuild's PreparingEnv state
+    // cannot remain visible during transport handoff.
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))?;
+
+    Ok(env)
+}
+
 /// Test-friendly form of [`captured_env_disk_state`] that accepts explicit
 /// cache dirs instead of using the channel defaults. The production call
 /// site always passes the defaults; tests pass tmpdirs.
@@ -4334,8 +4402,10 @@ async fn auto_launch_kernel_attempt(
                 launch_env_vars
                     .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
-                match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
-                    notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
+                match send_runtime_agent_request_with_captured_env_repair(
+                    room,
+                    captured_for_config,
+                    |kernel_ports| notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: kernel_type.to_string(),
                         env_source: env_source.clone(),
                         notebook_path: notebook_path_opt
@@ -4345,8 +4415,8 @@ async fn auto_launch_kernel_attempt(
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
-                    }
-                })
+                    },
+                )
                 .await
                 {
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {

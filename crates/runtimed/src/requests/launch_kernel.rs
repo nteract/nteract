@@ -34,7 +34,7 @@ use crate::notebook_sync_server::{
     project_environment_build_approved, promote_inline_deps_to_project,
     publish_environment_launch_error, publish_kernel_state_presence, reset_starting_state,
     reset_starting_state_with_outcome, resolve_metadata_snapshot,
-    send_runtime_agent_request_with_kernel_ports, try_conda_pool_for_inline_deps,
+    send_runtime_agent_request_with_captured_env_repair, try_conda_pool_for_inline_deps,
     try_uv_pool_for_inline_deps, CapturedEnvRuntime, NotebookRoom, ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
@@ -1540,8 +1540,10 @@ pub(crate) async fn handle(
                 };
             restart_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
             restart_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
-            match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
-                notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
+            match send_runtime_agent_request_with_captured_env_repair(
+                room,
+                captured_env_for_config.as_ref(),
+                |kernel_ports| notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
                     kernel_type: resolved_kernel_type.clone(),
                     env_source: resolved_env_source.clone(),
                     notebook_path: notebook_path
@@ -1551,8 +1553,8 @@ pub(crate) async fn handle(
                     kernel_ports,
                     env_vars: restart_env_vars.clone(),
                     redact_env_values_in_outputs,
-                }
-            })
+                },
+            )
             .await
             {
                 Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelRestarted {
@@ -1704,8 +1706,10 @@ pub(crate) async fn handle(
                 launch_env_vars
                     .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
-                match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
-                    notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
+                match send_runtime_agent_request_with_captured_env_repair(
+                    room,
+                    captured_env_for_config.as_ref(),
+                    |kernel_ports| notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: resolved_kernel_type.clone(),
                         env_source: resolved_env_source.clone(),
                         notebook_path: notebook_path
@@ -1715,8 +1719,8 @@ pub(crate) async fn handle(
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
-                    }
-                })
+                    },
+                )
                 .await
                 {
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
