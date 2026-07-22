@@ -924,18 +924,28 @@ impl RoomDurability {
                 )));
             }
         }
-        if state.has_durable_record && mutation_is_already_reflected(&state.manifest, &mutation) {
+        let already_reflected =
+            state.has_durable_record && mutation_is_already_reflected(&state.manifest, &mutation);
+        let mut manifest = state.manifest.clone();
+        if !already_reflected {
+            apply_mutation_to_manifest(&mut manifest, mutation);
+        }
+        // A successful ordinary save that exports every durable head is the
+        // same complete source baseline that restore and intent resolution
+        // already recognize. Stage it in the save's commit record so a room
+        // created at a path is joinable before it has to restart once.
+        if state.degraded.is_none() {
+            promote_full_coverage_checkpoint_baseline(&mut manifest);
+        }
+        if already_reflected && manifest == state.manifest {
             return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
                 &state,
             )));
         }
-
-        let mut manifest = state.manifest.clone();
         manifest.sequence = manifest
             .sequence
             .checked_add(1)
             .ok_or(RoomDurabilityError::SequenceExhausted)?;
-        apply_mutation_to_manifest(&mut manifest, mutation);
 
         if let Some(journal) = self.journal() {
             if let Err(error) = journal.append(&manifest, &state.durable_snapshot) {
@@ -1295,6 +1305,10 @@ fn status_from_state(state: &DurabilityState) -> RoomDurabilityStatus {
 /// dedicated resolution path owns the transition) or when any durable head is
 /// missing from the export. Callers gate on their degraded state: a journal
 /// with preserved corrupt data must not be promoted.
+///
+/// This normalization changes only `source_phase`. In particular it preserves
+/// both `source_generation` and journal `sequence`; the caller owns the append
+/// sequence for the record carrying the transition.
 fn promote_full_coverage_checkpoint_baseline(manifest: &mut RecoveryManifest) {
     if matches!(
         manifest.source_phase,
@@ -1497,12 +1511,11 @@ mod tests {
         assert_eq!(recovered.record.automerge_snapshot, snapshot);
     }
 
-    /// A notebook created at a path never stages a source generation, so its
-    /// journal reads Pending with peer changes. When the file checkpoint
-    /// exported every durable head, the export is a complete baseline and
-    /// recovery must restore it as durably staged, not source_degraded.
+    /// A notebook created at a path has no separately staged source
+    /// generation. Its first full-coverage file checkpoint is itself the
+    /// complete baseline and must become durably staged in the same commit.
     #[test]
-    fn recovered_full_coverage_checkpoint_restores_as_staged_baseline() {
+    fn full_coverage_checkpoint_commits_as_staged_baseline() {
         let directory = tempfile::tempdir().unwrap();
         let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
         let path = PathBuf::from("/tmp/notebook.ipynb");
@@ -1532,7 +1545,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             durability.manifest().source_phase,
-            RecoverySourcePhase::Pending
+            RecoverySourcePhase::DurablyStaged
         );
 
         let recovered = match journal.load(exported).unwrap() {
@@ -1541,8 +1554,56 @@ mod tests {
         };
         assert_eq!(
             recovered.record.manifest.source_phase,
-            RecoverySourcePhase::Pending
+            RecoverySourcePhase::DurablyStaged
         );
+
+        let reloaded = RoomDurability::recovered(journal, recovered);
+        assert_eq!(
+            reloaded.manifest().source_phase,
+            RecoverySourcePhase::DurablyStaged
+        );
+        reloaded.commit_source_ready(0).unwrap();
+        assert_eq!(reloaded.manifest().source_phase, RecoverySourcePhase::Ready);
+    }
+
+    /// Journals written before save-side baseline staging can still contain a
+    /// full-coverage Pending or Failed checkpoint. Restore promotes both
+    /// legacy shapes without changing their source generation.
+    #[test]
+    fn recovered_legacy_full_coverage_checkpoint_restores_as_staged_baseline() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let path = PathBuf::from("/tmp/notebook.ipynb");
+        let mut genesis_doc = AutoCommit::new();
+        let genesis = genesis_doc.save();
+        let durability = RoomDurability::journaled(
+            journal.clone(),
+            Uuid::nil(),
+            Some(path.clone()),
+            source_fingerprint(b""),
+            0,
+            genesis,
+        );
+        let (snapshot, heads, _encoded_heads, change_hash) = snapshot_with_change(7);
+        durability
+            .commit_snapshot(
+                &snapshot,
+                heads.clone(),
+                DurableMutation::Peer {
+                    change_hashes: vec![change_hash],
+                },
+            )
+            .unwrap();
+        let exported = source_fingerprint(b"exported ipynb bytes");
+        durability
+            .commit_file_checkpoint(path, exported, heads, 1)
+            .unwrap();
+
+        let mut recovered = match journal.load(exported).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("expected matching recovery, got {other:?}"),
+        };
+        recovered.record.manifest.source_phase = RecoverySourcePhase::Pending;
 
         // No code path writes Failed today, but it is a serialized variant of
         // the on-disk journal format, and restore already treats it exactly
@@ -1555,7 +1616,6 @@ mod tests {
         let manifest = reloaded.manifest();
         assert_eq!(manifest.source_phase, RecoverySourcePhase::DurablyStaged);
         assert!(manifest.file_checkpoint_covers_durable_heads());
-        // The restored baseline completes the normal recovered-source path.
         reloaded.commit_source_ready(0).unwrap();
         assert_eq!(reloaded.manifest().source_phase, RecoverySourcePhase::Ready);
 
@@ -1566,11 +1626,81 @@ mod tests {
         );
     }
 
-    /// A durable peer change committed after the last export means disk is a
-    /// stale prefix, not a complete baseline. Recovery must not claim it as
-    /// staged.
+    /// A checkpoint committed while the room is degraded remains Pending even
+    /// when it covers every durable head. Once the degradation is cleared,
+    /// recommitting that already-recorded checkpoint appends the missing staged
+    /// transition exactly once, then becomes idempotent. This is the durability
+    /// path used by an `AlreadyCurrent` save.
     #[test]
-    fn recovered_checkpoint_with_unexported_tail_stays_pending() {
+    fn repeated_full_coverage_checkpoint_stages_legacy_pending_record_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let path = PathBuf::from("/tmp/notebook.ipynb");
+        let mut genesis_doc = AutoCommit::new();
+        let genesis = genesis_doc.save();
+        let durability = RoomDurability::journaled(
+            journal.clone(),
+            Uuid::nil(),
+            Some(path.clone()),
+            source_fingerprint(b""),
+            0,
+            genesis,
+        );
+        let (snapshot, heads, _encoded_heads, change_hash) = snapshot_with_change(7);
+        durability
+            .commit_snapshot(
+                &snapshot,
+                heads.clone(),
+                DurableMutation::Peer {
+                    change_hashes: vec![change_hash],
+                },
+            )
+            .unwrap();
+        let exported = source_fingerprint(b"exported ipynb bytes");
+        durability.mark_degraded(
+            DegradationKind::SourceState,
+            "source projection unavailable",
+        );
+        durability
+            .commit_file_checkpoint(path.clone(), exported, heads.clone(), 1)
+            .unwrap();
+        assert_eq!(
+            durability.manifest().source_phase,
+            RecoverySourcePhase::Pending
+        );
+        let pending = match journal.load(exported).unwrap() {
+            RecoveryLoadOutcome::Match(recovered) => recovered,
+            other => panic!("expected matching recovery, got {other:?}"),
+        };
+        assert_eq!(
+            pending.record.manifest.source_phase,
+            RecoverySourcePhase::Pending
+        );
+
+        durability.clear_degraded();
+        let before_sequence = durability.manifest().sequence;
+        let promoted = durability
+            .commit_file_checkpoint(path.clone(), exported, heads.clone(), 1)
+            .unwrap();
+        assert!(matches!(promoted, DurableCommitOutcome::Committed(_)));
+        assert_eq!(
+            durability.manifest().source_phase,
+            RecoverySourcePhase::DurablyStaged
+        );
+        assert_eq!(durability.manifest().sequence, before_sequence + 1);
+
+        let repeated = durability
+            .commit_file_checkpoint(path, exported, heads, 1)
+            .unwrap();
+        assert!(matches!(repeated, DurableCommitOutcome::AlreadyDurable(_)));
+        assert_eq!(durability.manifest().sequence, before_sequence + 1);
+    }
+
+    /// A durable peer change committed after an already-staged baseline means
+    /// disk is a stale prefix, but the baseline remains valid: recovery can
+    /// replay the durable peer tail on top of it.
+    #[test]
+    fn recovered_checkpoint_with_unexported_tail_keeps_staged_baseline() {
         let directory = tempfile::tempdir().unwrap();
         let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
         let path = PathBuf::from("/tmp/notebook.ipynb");
@@ -1622,7 +1752,7 @@ mod tests {
         durability
             .commit_snapshot(
                 &second_snapshot,
-                second_heads,
+                second_heads.clone(),
                 DurableMutation::Peer {
                     change_hashes: vec![second_hash],
                 },
@@ -1636,7 +1766,13 @@ mod tests {
         let reloaded = RoomDurability::recovered(journal, recovered);
         let manifest = reloaded.manifest();
         assert!(!manifest.file_checkpoint_covers_durable_heads());
-        assert_eq!(manifest.source_phase, RecoverySourcePhase::Pending);
+        assert_eq!(manifest.source_phase, RecoverySourcePhase::DurablyStaged);
+        let required_heads = second_heads
+            .iter()
+            .copied()
+            .map(ChangeHash)
+            .collect::<Vec<_>>();
+        assert!(snapshot_contains_heads(&reloaded.durable_snapshot(), &required_heads).unwrap());
     }
 
     /// An unresolved checkpoint intent owns its recovery through
