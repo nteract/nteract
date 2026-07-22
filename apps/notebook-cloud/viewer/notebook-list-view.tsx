@@ -75,7 +75,6 @@ import {
 import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { preloadNotebookRoute } from "./notebook-route-preload";
-import type { CloudAppSessionViewState } from "./use-cloud-auth";
 
 const CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS = 8_000;
 const CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS = 20_000;
@@ -111,14 +110,11 @@ export function CloudNotebookListView({
   const [renameError, setRenameError] = useState<string | null>(null);
   const hostedAuth = useHostedCatalogAuth();
   const {
-    canFetchCatalog: cookieCanFetchNotebookList,
+    canFetchCatalog: canFetchNotebookList,
     hasAppSession,
     signedIn,
     waitingForAppSession,
   } = hostedAuth;
-  const canFetchNotebookList =
-    cookieCanFetchNotebookList ||
-    cloudNotebookListCanUseExistingCredentials(authState, appSessionStatus.status);
   const appSessionWaitDeadline =
     appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
   const dashboardModel = useMemo(
@@ -142,18 +138,7 @@ export function CloudNotebookListView({
     const initialState = seed
       ? { kind: "ready" as const, notebooks: seed.notebooks, totalCount: seed.totalCount }
       : { kind: "loading" as const };
-    let appSessionFallbackDeadline: number | null = null;
-    const clearAppSessionFallbackDeadline = () => {
-      if (appSessionFallbackDeadline !== null) {
-        window.clearTimeout(appSessionFallbackDeadline);
-        appSessionFallbackDeadline = null;
-      }
-    };
-    const loadNotebookList = async (
-      controller: AbortController,
-      warningLabel: string,
-      deferUnauthorized = false,
-    ) => {
+    const loadNotebookList = async (controller: AbortController, warningLabel: string) => {
       try {
         const response = await fetchCloudNotebookList(
           authState,
@@ -164,20 +149,6 @@ export function CloudNotebookListView({
         );
         if (controller.signal.aborted) return;
         if (!response.ok) {
-          if (response.status === 401 && deferUnauthorized && waitingForAppSession && !seed) {
-            // A valid browser OIDC session can briefly outrun its same-origin
-            // app-session exchange. Keep that provisional 401 inside the auth
-            // handshake instead of painting a false signed-out error between
-            // the bearer request and the cookie-backed retry.
-            appSessionFallbackDeadline = window.setTimeout(
-              () => {
-                appSessionFallbackDeadline = null;
-                void loadNotebookList(controller, " after app-session wait deadline", false);
-              },
-              Math.max(0, appSessionWaitDeadline),
-            );
-            return;
-          }
           const responseError = await cloudResponseError(response, "Unable to list notebooks");
           if (controller.signal.aborted) return;
           throw responseError;
@@ -201,7 +172,6 @@ export function CloudNotebookListView({
             ? body.current_user_avatar.trim()
             : null,
         );
-        clearAppSessionFallbackDeadline();
         setListState({ kind: "ready", notebooks: body.notebooks, totalCount });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -230,7 +200,6 @@ export function CloudNotebookListView({
         );
         return () => {
           window.clearTimeout(deadline);
-          clearAppSessionFallbackDeadline();
           controller.abort();
         };
       }
@@ -254,15 +223,13 @@ export function CloudNotebookListView({
 
     const controller = new AbortController();
     setListState(initialState);
-    void loadNotebookList(controller, "", true);
+    void loadNotebookList(controller, "");
 
     return () => {
-      clearAppSessionFallbackDeadline();
       controller.abort();
     };
   }, [
     appSessionStatus.session,
-    appSessionStatus.status,
     appSessionWaitDeadline,
     authState,
     bootstrap,
@@ -805,19 +772,6 @@ function cloudAuthWithScope(
         ...authState,
         requestedScope,
       };
-}
-
-function cloudNotebookListCanUseExistingCredentials(
-  authState: CloudPrototypeAuthState,
-  appSessionStatus: CloudAppSessionViewState["status"],
-): boolean {
-  if (authState.mode === "oidc" && authState.token) {
-    return true;
-  }
-  // The notebook list endpoint can also succeed with a same-origin app-session
-  // cookie before the status probe confirms it. Once that probe settles without
-  // a session, an expired OIDC token is not a durable fetch credential.
-  return authState.mode === "oidc_expired" && appSessionStatus === "loading";
 }
 
 function initialCloudNotebookListState(

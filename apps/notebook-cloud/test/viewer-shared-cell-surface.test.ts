@@ -769,7 +769,7 @@ test("cloud auth store re-establishes and refreshes cookie-backed state after OI
   );
   assert.match(
     routeSourceText,
-    /\[\s*appSessionStatus\.session,[\s\S]*authState,[\s\S]*bootstrap,[\s\S]*canFetchNotebookList,[\s\S]*refreshIndex,[\s\S]*waitingForAppSession,[\s\S]*\]/,
+    /\[\s*appSessionStatus\.session,[\s\S]*appSessionWaitDeadline,[\s\S]*authState,[\s\S]*bootstrap,[\s\S]*canFetchNotebookList,[\s\S]*refreshIndex,[\s\S]*waitingForAppSession,[\s\S]*\]/,
   );
 });
 
@@ -807,13 +807,13 @@ test("cloud notebook list bounds app-session waits before catalog fetches", () =
 
   assert.match(
     sourceText,
-    /const \{[\s\S]*canFetchCatalog: cookieCanFetchNotebookList,[\s\S]*hasAppSession,[\s\S]*signedIn,[\s\S]*waitingForAppSession,[\s\S]*\} = hostedAuth;/,
+    /const \{[\s\S]*canFetchCatalog: canFetchNotebookList,[\s\S]*hasAppSession,[\s\S]*signedIn,[\s\S]*waitingForAppSession,[\s\S]*\} = hostedAuth;/,
   );
   assert.match(sourceText, /const hostedAuth = useHostedCatalogAuth\(\);/);
-  assert.match(
+  assert.doesNotMatch(
     sourceText,
-    /const canFetchNotebookList =[\s\S]*cookieCanFetchNotebookList \|\|[\s\S]*cloudNotebookListCanUseExistingCredentials\(authState, appSessionStatus\.status\);/,
-    "bearer OIDC and still-loading app-session cookies should race the list fetch before the cookie exchange settles",
+    /cloudNotebookListCanUseExistingCredentials/,
+    "the list should trust the hosted-auth projection instead of speculating that a cookie exists",
   );
   assert.match(
     sourceText,
