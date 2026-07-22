@@ -31,9 +31,7 @@ import {
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
-  ComputeDisconnectedNotice,
   KernelLaunchErrorBanner,
-  isRuntimePeerDisconnectedErrorDetails,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   shouldShowKernelLaunchErrorBanner,
   shouldShowNotebookDocumentCommandToolbar,
@@ -1786,20 +1784,6 @@ export function NotebookViewer({
       errorReason: cloudKernelErrorReason,
       runtime: cloudKernelRuntime,
     }) && dismissedLaunchError !== cloudKernelErrorDetails;
-  const shouldRenderComputeDisconnectedNotice =
-    isRuntimePeerDisconnectedErrorDetails(cloudKernelErrorDetails) &&
-    dismissedLaunchError !== cloudKernelErrorDetails;
-  const computeDisconnectedNotice =
-    shouldRenderComputeDisconnectedNotice && cloudKernelErrorDetails ? (
-      <ComputeDisconnectedNotice
-        errorDetails={cloudKernelErrorDetails}
-        onRetry={() => {
-          setDismissedLaunchError(null);
-          handleCloudRestartRuntime();
-        }}
-        onDismiss={() => setDismissedLaunchError(cloudKernelErrorDetails)}
-      />
-    ) : null;
   const kernelLaunchNotice =
     shouldRenderKernelLaunchError && cloudKernelErrorDetails ? (
       <KernelLaunchErrorBanner
@@ -1812,9 +1796,8 @@ export function NotebookViewer({
       />
     ) : null;
   const diagnostics =
-    computeDisconnectedNotice || kernelLaunchNotice || accessRequestNotice ? (
+    kernelLaunchNotice || accessRequestNotice ? (
       <>
-        {computeDisconnectedNotice}
         {kernelLaunchNotice}
         {accessRequestNotice}
       </>

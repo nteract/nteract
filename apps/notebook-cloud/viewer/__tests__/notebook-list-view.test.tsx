@@ -100,6 +100,51 @@ describe("CloudNotebookListView", () => {
     expect(screen.getByText("No notebooks yet")).toBeTruthy();
   });
 
+  it("keeps a provisional OIDC 401 quiet while the app-session fallback catches up", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "sign in to list notebooks" }), {
+          headers: { "Content-Type": "application/json" },
+          status: 401,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            notebooks: [notebook("nb-recovered", "Recovered Notebook")],
+            current_user_principal: "user:anaconda:alice%40example.test",
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+            status: 200,
+          },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderNotebookList(oidcAuth("alice@example.test"), { appSessionWaitDeadlineMs: 5 });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+    expect(screen.queryByText(/sign in to list notebooks/i)).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5);
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Recovered Notebook")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
   it("renders the true total count and visible cap in the dashboard header", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(
