@@ -178,9 +178,22 @@ async fn handle_request(
     req: Request<hyper::body::Incoming>,
     store: Arc<BlobStore>,
 ) -> Result<Response<ResponseBody>, Infallible> {
-    let path = req.uri().path();
-    let method = req.method();
+    let path = req.uri().path().to_string();
+    let method = req.method().clone();
 
+    // Assistant chat proxy (POST + CORS preflight). This is the one
+    // non-GET, non-read-only route on this server — it forwards an
+    // OpenAI-style chat completion to the Anaconda-hosted gateway and
+    // streams the SSE response back. See `assistant_chat`.
+    if path == "/assistant/chat" {
+        return Ok(match method {
+            Method::OPTIONS => assistant_chat_preflight(),
+            Method::POST => serve_assistant_chat(req).await,
+            _ => text_response(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed"),
+        });
+    }
+
+    let path = path.as_str();
     let response = if method != Method::GET {
         text_response(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
     } else if path == "/health" {
@@ -500,6 +513,100 @@ pub(crate) fn wrap_for_mcp_app(code: &[u8]) -> Vec<u8> {
     out.extend_from_slice(code);
     out.extend_from_slice(EPILOGUE);
     out
+}
+
+/// Common CORS headers for the assistant chat route so the notebook app
+/// (served from Vite / Tauri origins) can call the daemon blob origin.
+fn assistant_cors(builder: hyper::http::response::Builder) -> hyper::http::response::Builder {
+    builder
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        .header("Access-Control-Allow-Headers", "Content-Type")
+}
+
+/// Answer a CORS preflight for `/assistant/chat`.
+fn assistant_chat_preflight() -> Response<ResponseBody> {
+    assistant_cors(Response::builder().status(StatusCode::NO_CONTENT))
+        .body(full_body(Bytes::new()))
+        .unwrap_or_else(|_| {
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        })
+}
+
+/// JSON error response for the assistant chat route (with CORS headers).
+fn assistant_error(status: StatusCode, message: &str) -> Response<ResponseBody> {
+    let body = serde_json::json!({ "error": message }).to_string();
+    assistant_cors(
+        Response::builder()
+            .status(status)
+            .header("Content-Type", "application/json"),
+    )
+    .body(full_body(body))
+    .unwrap_or_else(|_| text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"))
+}
+
+/// Proxy a chat completion request to the Anaconda gateway and stream the
+/// SSE response back to the browser.
+async fn serve_assistant_chat(req: Request<hyper::body::Incoming>) -> Response<ResponseBody> {
+    // Read the request body (small — just chat messages).
+    let body_bytes = match req.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            warn!("[assistant-chat] failed to read request body: {e}");
+            return assistant_error(StatusCode::BAD_REQUEST, "failed to read request body");
+        }
+    };
+    let json_body: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+        Ok(value) => value,
+        Err(e) => {
+            return assistant_error(StatusCode::BAD_REQUEST, &format!("invalid JSON body: {e}"));
+        }
+    };
+
+    // Resolve the Anaconda API key via the CLI.
+    let api_key = match crate::assistant_chat::fetch_api_key().await {
+        Ok(key) => key,
+        Err(e) => {
+            warn!("[assistant-chat] auth failed: {e}");
+            return assistant_error(
+                StatusCode::UNAUTHORIZED,
+                &format!("Anaconda auth failed: {e}"),
+            );
+        }
+    };
+
+    // Forward upstream.
+    let upstream = match crate::assistant_chat::forward_chat_completion(&api_key, json_body).await {
+        Ok(response) => response,
+        Err(e) => {
+            warn!("[assistant-chat] upstream request failed: {e}");
+            return assistant_error(StatusCode::BAD_GATEWAY, &format!("upstream error: {e}"));
+        }
+    };
+
+    let status = StatusCode::from_u16(upstream.status().as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let content_type = upstream
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("text/event-stream")
+        .to_string();
+
+    // Stream the upstream body straight through, mapping reqwest errors to
+    // io::Error for the StreamBody type.
+    let byte_stream = upstream.bytes_stream().map_err(io::Error::other);
+    let body = StreamBody::new(byte_stream.map_ok(Frame::data)).boxed();
+
+    assistant_cors(
+        Response::builder()
+            .status(status)
+            .header("Content-Type", content_type)
+            .header("Cache-Control", "no-store")
+            .header("X-Accel-Buffering", "no"),
+    )
+    .body(body)
+    .unwrap_or_else(|_| text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"))
 }
 
 /// Build a simple text response.

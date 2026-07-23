@@ -112,6 +112,12 @@ import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
+import {
+  assistantActorLabel,
+  buildAssistantMessages,
+  mentionsAssistant,
+  requestAssistantAnswer,
+} from "./lib/assistant-comments";
 import { getBlobResolver, useBlobPort, useBlobResolver } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
 import {
@@ -712,6 +718,60 @@ function AppContent() {
     [getEngine, refreshCommentsProjection],
   );
 
+  // Post an assistant ("@ana") answer as an agent-authored reply in `threadId`.
+  //
+  // Called fire-and-forget after a user comment/reply that mentions @ana lands.
+  // We assemble the prompt from the thread's freshly-projected context, stream
+  // the completion (buffered — see assistant-comments), then write the final
+  // answer as one reply committed under an agent actor so it renders with the
+  // Bot avatar. Errors surface as an agent reply rather than a silent drop.
+  const postAssistantReply = useCallback(
+    async (threadId: string, pendingUserBody: string) => {
+      const handle = getHandle();
+      if (!handle || typeof handle.reply_comment_thread_as_agent !== "function") return;
+      const agentActor = assistantActorLabel(localActor);
+
+      const postReply = (body: string) => {
+        const projection = refreshCommentsProjection() ?? commentsProjection;
+        const thread = projection?.threads.find((candidate) => candidate.id === threadId);
+        if (!thread) return;
+        const afterMessageId = thread.messages.at(-1)?.id ?? null;
+        try {
+          const event = handle.reply_comment_thread_as_agent?.(
+            threadId,
+            createLocalCommentEntityId("message"),
+            body,
+            afterMessageId,
+            new Date().toISOString(),
+            agentActor,
+          );
+          if (event) applyLocalCommentEvent(event);
+        } catch (error) {
+          logger.error("[assistant-comments] failed to post agent reply:", error);
+        }
+      };
+
+      try {
+        const projection = refreshCommentsProjection() ?? commentsProjection;
+        const thread = projection?.threads.find((candidate) => candidate.id === threadId);
+        if (!thread) return;
+        const messages = buildAssistantMessages({
+          anchor: thread.anchor,
+          priorMessages: thread.messages,
+          pendingUserBody,
+          assistantActorLabelValue: agentActor,
+        });
+        const answer = await requestAssistantAnswer({ messages });
+        postReply(answer);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        logger.warn("[assistant-comments] assistant request failed:", detail);
+        postReply(`⚠️ Sorry, I couldn't answer that: ${detail}`);
+      }
+    },
+    [applyLocalCommentEvent, commentsProjection, getHandle, localActor, refreshCommentsProjection],
+  );
+
   const handleCreateCommentThread = useCallback(
     async (anchor: CommentAnchor, body: string) => {
       if (!canMutateComments) {
@@ -728,9 +788,10 @@ function AppContent() {
         projection?.threads
           .filter((thread) => commentAnchorThreadOrderScope(thread.anchor) === orderScope)
           .at(-1)?.id ?? null;
+      const threadId = createLocalCommentEntityId("thread");
       try {
         const event = handle.create_comment_thread(
-          createLocalCommentEntityId("thread"),
+          threadId,
           createLocalCommentEntityId("message"),
           anchor,
           body,
@@ -745,6 +806,11 @@ function AppContent() {
         setCommentsError(message);
         throw error instanceof Error ? error : new Error(message);
       }
+      // Summon the assistant if the new comment mentions @ana. Fire-and-forget:
+      // the answer arrives as an agent reply in this thread once it streams in.
+      if (mentionsAssistant(body)) {
+        void postAssistantReply(threadId, body);
+      }
     },
     [
       applyLocalCommentEvent,
@@ -752,6 +818,7 @@ function AppContent() {
       commentsProjection,
       failCommentAction,
       getHandle,
+      postAssistantReply,
       refreshCommentsProjection,
     ],
   );
@@ -974,6 +1041,11 @@ function AppContent() {
         setCommentsError(message);
         throw error instanceof Error ? error : new Error(message);
       }
+      // Summon the assistant if the reply mentions @ana; its answer lands as a
+      // follow-up agent reply in this same thread.
+      if (mentionsAssistant(body)) {
+        void postAssistantReply(threadId, body);
+      }
     },
     [
       applyLocalCommentEvent,
@@ -981,6 +1053,7 @@ function AppContent() {
       commentsProjection,
       failCommentAction,
       getHandle,
+      postAssistantReply,
       refreshCommentsProjection,
     ],
   );

@@ -51,6 +51,7 @@ type BrowserRelayControl =
       payload: DaemonReadyPayload;
       blob_port?: number | null;
       daemon?: DaemonInfo | null;
+      settings?: Partial<HostSyncedSettings> | null;
     }
   | { type: "progress"; payload: DaemonProgressPayload }
   | { type: "disconnected" }
@@ -449,6 +450,13 @@ export async function createBrowserHost(
         blobPort = control.blob_port ?? blobPort;
         blobResolver = blobPort === null ? null : createHttpBlobResolver(blobPort, fetchImpl);
         daemonInfo = control.daemon ?? daemonInfo;
+        if (control.settings && typeof control.settings === "object") {
+          syncedSettingsSnapshot = {
+            ...syncedSettingsSnapshot,
+            ...(control.settings as HostSyncedSettings),
+          };
+          emitSettingsChanged();
+        }
         emit(readySubscribers, control.payload);
         break;
       case "progress":
