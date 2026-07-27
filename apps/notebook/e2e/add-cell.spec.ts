@@ -8,8 +8,8 @@ import {
 } from "./helpers";
 
 test.use({
-  viewport: { width: 1024, height: 700 },
-  video: { mode: "on", size: { width: 1024, height: 700 } },
+  viewport: { width: 600, height: 400 },
+  video: { mode: "on", size: { width: 600, height: 400 } },
 });
 
 test.describe("add cell", () => {
