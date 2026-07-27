@@ -9,16 +9,22 @@
  * anything written next to it does NOT survive a re-run; recordings/ does.)
  *
  * Usage:
- *   node e2e/show-video.mjs [spec-or-pattern]
+ *   node e2e/show-video.mjs [spec-or-pattern] [--serve]
  *
  * Examples:
  *   node e2e/show-video.mjs                        # most recent video overall
  *   node e2e/show-video.mjs ana-comment            # match dir name substring
  *   node e2e/show-video.mjs ana-comment.spec.ts    # same, strips extension
+ *   node e2e/show-video.mjs add-cell --serve       # serve over http (if file:// media is blocked)
+ *
+ * By default the viewer opens over file://. Some browsers refuse to load
+ * file:// media from a file:// page; pass --serve to spin up a localhost static
+ * server (with HTTP range support so scrubbing works) and open over http instead.
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,7 +32,11 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const resultsDir = path.join(appRoot, "test-results");
 const recordingsDir = path.join(appRoot, "e2e", "recordings");
 const viewerHtml = path.join(appRoot, "e2e", "video-viewer.html");
-const [, , rawPattern] = process.argv;
+
+// --serve is a flag anywhere in argv; the first non-flag arg is the pattern.
+const argv = process.argv.slice(2);
+const serve = argv.includes("--serve");
+const rawPattern = argv.find((a) => !a.startsWith("--")) ?? undefined;
 
 // Build a file:// URL to video-viewer.html carrying the recording's absolute
 // path as URL-safe base64 in ?v=. The viewer scales the 2x-density video down
@@ -40,6 +50,67 @@ function viewerUrlFor(absVideoPath) {
     .replace(/\//g, "_")
     .replace(/=+$/, "");
   return `file://${viewerHtml}?v=${b64}`;
+}
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".webm": "video/webm",
+  ".mp4": "video/mp4",
+};
+
+// Serve appRoot over localhost with HTTP range support (needed so the browser
+// can seek/scrub the video), open the viewer over http pointed at the recording,
+// and keep the process alive until Ctrl-C so playback keeps working.
+function serveAndOpen(absVideoPath) {
+  const server = http.createServer((req, res) => {
+    // Resolve the request path against appRoot, refusing traversal escapes.
+    // path.join normalizes `..`; the trailing-sep check rejects both escapes
+    // above appRoot and sibling dirs that merely share its name as a prefix.
+    const urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
+    const filePath = path.join(appRoot, urlPath);
+    if (filePath !== appRoot && !filePath.startsWith(appRoot + path.sep)) {
+      res.writeHead(403).end("forbidden");
+      return;
+    }
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      res.writeHead(404).end("not found");
+      return;
+    }
+    const type = MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream";
+    const range = req.headers.range;
+    if (range) {
+      // Parse "bytes=start-end"; serve a 206 partial so seeking works.
+      const match = /bytes=(\d*)-(\d*)/.exec(range);
+      const start = match && match[1] ? Number.parseInt(match[1], 10) : 0;
+      const end = match && match[2] ? Number.parseInt(match[2], 10) : stat.size - 1;
+      res.writeHead(206, {
+        "Content-Type": type,
+        "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": end - start + 1,
+      });
+      fs.createReadStream(filePath, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, { "Content-Type": type, "Content-Length": stat.size });
+      fs.createReadStream(filePath).pipe(res);
+    }
+  });
+
+  // Port 0 → OS picks a free port, so parallel worktrees never collide.
+  server.listen(0, "127.0.0.1", () => {
+    const { port } = server.address();
+    const rel = (p) => path.relative(appRoot, p).split(path.sep).map(encodeURIComponent).join("/");
+    const base = `http://127.0.0.1:${port}`;
+    const videoUrl = `${base}/${rel(absVideoPath)}`;
+    const url = `${base}/${rel(viewerHtml)}?src=${encodeURIComponent(videoUrl)}`;
+    execFileSync("open", [url]);
+    console.log(`Serving ${appRoot} at ${base}`);
+    console.log(`Viewer (proper scale on retina): ${url}`);
+    console.log("Press Ctrl-C to stop the server.");
+  });
 }
 
 // Sortable, filesystem-safe local timestamp (YYYYMMDD-HHMMSS) so archived
@@ -132,17 +203,25 @@ if (hasFfmpeg()) {
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
-  const url = viewerUrlFor(outPath);
-  execFileSync("open", [url]);
   console.log(`Done. Video: ${outPath}`);
-  console.log(`Viewer (proper scale on retina): ${url}`);
   console.log(`Kept in ${path.relative(appRoot, recordingsDir)}/ — prior recordings preserved.`);
+  if (serve) {
+    serveAndOpen(outPath);
+  } else {
+    const url = viewerUrlFor(outPath);
+    execFileSync("open", [url]);
+    console.log(`Viewer (proper scale on retina): ${url}`);
+  }
 } else {
   console.warn("ffmpeg not found — archiving original speed video.");
   const originalOut = outPath.replace(/-2x\.webm$/, ".webm");
   fs.copyFileSync(videoPath, originalOut);
-  const url = viewerUrlFor(originalOut);
-  execFileSync("open", [url]);
   console.log(`Done. Video: ${originalOut}`);
-  console.log(`Viewer (proper scale on retina): ${url}`);
+  if (serve) {
+    serveAndOpen(originalOut);
+  } else {
+    const url = viewerUrlFor(originalOut);
+    execFileSync("open", [url]);
+    console.log(`Viewer (proper scale on retina): ${url}`);
+  }
 }

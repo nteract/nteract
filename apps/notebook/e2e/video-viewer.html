@@ -89,21 +89,28 @@
         errorEl.textContent = message;
       }
 
+      // Resolution order:
+      //   ?src=<url>              a ready-made URL (e.g. http:// when served) — used as-is
+      //   ?v=<base64 abs path>    file:// path, base64
+      //   ?path=<encoded path>    file:// path, uri-encoded
       let absPath = null;
+      let src = null;
       try {
-        if (params.has("v")) absPath = decodeBase64Path(params.get("v"));
+        if (params.has("src")) src = params.get("src");
+        else if (params.has("v")) absPath = decodeBase64Path(params.get("v"));
         else if (params.has("path")) absPath = decodeURIComponent(params.get("path"));
       } catch (e) {
         fail("Could not decode the path param: " + e.message);
       }
 
-      if (!absPath) {
+      if (!src && !absPath) {
         fail(
-          "No video path. Open with ?v=<base64 abs path> or ?path=<encoded abs path>. " +
+          "No video. Open with ?src=<url>, ?v=<base64 abs path>, or ?path=<encoded abs path>. " +
             "Tip: node e2e/show-video.mjs prints a ready-to-open viewer URL.",
         );
       } else {
-        const src = toFileUrl(absPath);
+        if (!src) src = toFileUrl(absPath);
+        const label = absPath || src;
         video.src = src;
 
         const dpr = window.devicePixelRatio || 1;
@@ -118,14 +125,14 @@
           meta.innerHTML =
             `${video.videoWidth}×${video.videoHeight} intrinsic → ` +
             `${Math.round(cssWidth)}×${Math.round(cssHeight)} CSS ` +
-            `(dpr ${dpr}, divisor ${divisor})<br>${absPath}`;
+            `(dpr ${dpr}, divisor ${divisor})<br>${label}`;
         });
 
         video.addEventListener("error", () => {
           fail(
-            "Failed to load the video. If the browser blocks file:// media, open this " +
-              "page from a file:// URL (not http), or serve the recordings dir. Path: " +
-              absPath,
+            "Failed to load the video. If the browser blocks file:// media, re-run with " +
+              "`node e2e/show-video.mjs --serve` to open it over http instead. Path: " +
+              label,
           );
         });
       }
