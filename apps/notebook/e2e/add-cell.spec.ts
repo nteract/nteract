@@ -8,8 +8,11 @@ import {
 } from "./helpers";
 
 test.use({
+  // Keep the compact 600x400 framing (CSS px), but render at 2x device pixels
+  // so the video is crisp on retina displays instead of an upscaled 600px blur.
   viewport: { width: 600, height: 400 },
-  video: { mode: "on", size: { width: 600, height: 400 } },
+  deviceScaleFactor: 2,
+  video: { mode: "on", size: { width: 1200, height: 800 } },
 });
 
 test.describe("add cell", () => {
