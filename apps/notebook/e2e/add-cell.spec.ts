@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   executeCell,
+  markClipStart,
   openNotebookRoom,
   waitForKernelStatus,
   waitForOutputContaining,
@@ -18,6 +19,9 @@ test.describe("add cell", () => {
     const notebookId = crypto.randomUUID();
     await openNotebookRoom(page, notebookId);
     await waitForKernelStatus(page, "idle", 120_000);
+
+    // App is ready to drive — start the trimmed clip from here.
+    await markClipStart();
 
     // Count cells before adding.
     const cells = page.locator("[data-cell-type]");

@@ -1,4 +1,37 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import fs from "node:fs";
+import path from "node:path";
+import { expect, type Locator, type Page, test } from "@playwright/test";
+
+// Wall-clock time (ms) at which each test's video effectively began recording,
+// keyed by testId. Playwright starts recording at context creation and offers no
+// pause/resume, so we capture navigation start here and later write the elapsed
+// time to a sidecar file so show-video.mjs can trim the boring load prefix.
+const recordingStarts = new Map<string, number>();
+
+function markRecordingStart() {
+  recordingStarts.set(test.info().testId, Date.now());
+}
+
+/**
+ * Mark the current moment as where the interesting footage begins — the point
+ * the app is ready to be driven, whatever the next interaction is (typing,
+ * clicking, dragging). Writes the offset (seconds, relative to navigation start)
+ * to `video-trim.txt` in the test's output dir, next to `video.webm`.
+ * show-video.mjs reads it to trim the load/startup prefix before speeding up.
+ */
+export async function markClipStart(): Promise<void> {
+  const info = test.info();
+  const start = recordingStarts.get(info.testId);
+  if (start == null) return;
+  // Small safety margin so we never cut into the first interaction.
+  const offsetSeconds = Math.max(0, (Date.now() - start) / 1000 - 0.25);
+  await fs.promises.mkdir(info.outputDir, { recursive: true });
+  await fs.promises.writeFile(
+    path.join(info.outputDir, "video-trim.txt"),
+    offsetSeconds.toFixed(3),
+    "utf8",
+  );
+}
 
 export interface ExecutionPerformanceMark {
   name: string;
@@ -24,6 +57,7 @@ export interface ExecutionPerformanceSnapshot {
 }
 
 export async function waitForNotebookReady(page: Page, path = "/") {
+  markRecordingStart();
   await page.goto(path);
   await expect(page.getByTestId("notebook-toolbar")).toBeVisible({ timeout: 30_000 });
   // NotebookView marks sync complete once loading has finished without a load

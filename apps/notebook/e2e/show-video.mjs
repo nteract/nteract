@@ -63,15 +63,39 @@ if (videos.length > 1) {
 
 const outPath = videoPath.replace(/\.webm$/, "-2x.webm");
 
+// Specs can drop a `video-trim.txt` (seconds) next to the video to mark when the
+// app became ready for typing. Trim that boring load prefix before speeding up.
+function readTrimStart(videoFile) {
+  const trimFile = path.join(path.dirname(videoFile), "video-trim.txt");
+  if (!fs.existsSync(trimFile)) return 0;
+  const seconds = Number.parseFloat(fs.readFileSync(trimFile, "utf8").trim());
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+}
+
 if (hasFfmpeg()) {
-  console.log(`Encoding 2x lossless → ${path.basename(outPath)}`);
-  execFileSync("ffmpeg", [
-    "-i", videoPath,
-    "-vf", "setpts=0.5*PTS",
-    "-c:v", "vp9",
-    "-lossless", "1",
-    "-y", outPath,
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+  const trimStart = readTrimStart(videoPath);
+  const trimNote = trimStart > 0 ? ` (trimming first ${trimStart.toFixed(1)}s)` : "";
+  console.log(`Encoding 2x lossless → ${path.basename(outPath)}${trimNote}`);
+  // `-ss` before `-i` seeks to the ready-for-typing point; setpts then resets the
+  // trimmed clip's timestamps to zero before the 2x speed-up.
+  const seekArgs = trimStart > 0 ? ["-ss", trimStart.toFixed(3)] : [];
+  execFileSync(
+    "ffmpeg",
+    [
+      ...seekArgs,
+      "-i",
+      videoPath,
+      "-vf",
+      "setpts=0.5*PTS",
+      "-c:v",
+      "vp9",
+      "-lossless",
+      "1",
+      "-y",
+      outPath,
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
   execFileSync("open", [outPath]);
 } else {
   console.warn("ffmpeg not found — opening original speed video.");
