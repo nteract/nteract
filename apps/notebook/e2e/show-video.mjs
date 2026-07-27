@@ -25,7 +25,22 @@ import { fileURLToPath } from "node:url";
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const resultsDir = path.join(appRoot, "test-results");
 const recordingsDir = path.join(appRoot, "e2e", "recordings");
+const viewerHtml = path.join(appRoot, "e2e", "video-viewer.html");
 const [, , rawPattern] = process.argv;
+
+// Build a file:// URL to video-viewer.html carrying the recording's absolute
+// path as URL-safe base64 in ?v=. The viewer scales the 2x-density video down
+// to intrinsicWidth / devicePixelRatio, so it renders at the compact size the
+// spec framed for and stays crisp on retina — unlike QuickTime, which shows the
+// raw pixels oversized. Base64 sidesteps spaces/special chars in the path.
+function viewerUrlFor(absVideoPath) {
+  const b64 = Buffer.from(absVideoPath, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  return `file://${viewerHtml}?v=${b64}`;
+}
 
 // Sortable, filesystem-safe local timestamp (YYYYMMDD-HHMMSS) so archived
 // recordings list in chronological order and never collide across runs.
@@ -117,15 +132,17 @@ if (hasFfmpeg()) {
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
-  execFileSync("open", [outPath]);
+  const url = viewerUrlFor(outPath);
+  execFileSync("open", [url]);
+  console.log(`Done. Video: ${outPath}`);
+  console.log(`Viewer (proper scale on retina): ${url}`);
+  console.log(`Kept in ${path.relative(appRoot, recordingsDir)}/ — prior recordings preserved.`);
 } else {
   console.warn("ffmpeg not found — archiving original speed video.");
   const originalOut = outPath.replace(/-2x\.webm$/, ".webm");
   fs.copyFileSync(videoPath, originalOut);
-  execFileSync("open", [originalOut]);
+  const url = viewerUrlFor(originalOut);
+  execFileSync("open", [url]);
   console.log(`Done. Video: ${originalOut}`);
-  process.exit(0);
+  console.log(`Viewer (proper scale on retina): ${url}`);
 }
-
-console.log(`Done. Video: ${outPath}`);
-console.log(`Kept in ${path.relative(appRoot, recordingsDir)}/ — prior recordings preserved.`);

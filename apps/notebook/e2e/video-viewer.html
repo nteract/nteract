@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>e2e video viewer</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        gap: 12px;
+        background: #111;
+        color: #ddd;
+        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        padding: 24px;
+        box-sizing: border-box;
+      }
+      /*
+       * The video is captured at 2x device pixels (e.g. 1200x800) so it stays
+       * crisp on retina. Displaying it at its intrinsic CSS size would be twice
+       * as large as intended, so we scale it down to intrinsicWidth / dpr:
+       * on a 2x display that maps one video pixel to one physical pixel — the
+       * compact framing the spec designed for, at full sharpness. JS sets the
+       * width once metadata loads; --scale lets you override the divisor.
+       */
+      video {
+        display: block;
+        background: #000;
+        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+        image-rendering: -webkit-optimize-contrast;
+      }
+      #meta {
+        max-width: 90vw;
+        word-break: break-all;
+        opacity: 0.7;
+        text-align: center;
+      }
+      #error {
+        color: #ff8a80;
+        max-width: 80vw;
+        text-align: center;
+      }
+      a {
+        color: #82b1ff;
+      }
+    </style>
+  </head>
+  <body>
+    <video id="video" controls autoplay loop playsinline></video>
+    <div id="meta"></div>
+    <div id="error"></div>
+
+    <script>
+      // Query params:
+      //   ?v=<base64 of absolute path>   (URL-safe base64, tolerant of spaces)
+      //   ?path=<uri-encoded absolute path>
+      //   ?scale=<number>   divisor for the display size; default = devicePixelRatio
+      const params = new URLSearchParams(location.search);
+      const video = document.getElementById("video");
+      const meta = document.getElementById("meta");
+      const errorEl = document.getElementById("error");
+
+      function decodeBase64Path(value) {
+        // Accept URL-safe base64 and restore standard alphabet + padding.
+        let b64 = value.replace(/-/g, "+").replace(/_/g, "/");
+        while (b64.length % 4) b64 += "=";
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        return new TextDecoder().decode(bytes);
+      }
+
+      function toFileUrl(absPath) {
+        // Encode each segment so spaces/special chars are valid, keep the slashes.
+        const encoded = absPath
+          .split("/")
+          .map((seg) => encodeURIComponent(seg))
+          .join("/");
+        return "file://" + (encoded.startsWith("/") ? "" : "/") + encoded;
+      }
+
+      function fail(message) {
+        errorEl.textContent = message;
+      }
+
+      let absPath = null;
+      try {
+        if (params.has("v")) absPath = decodeBase64Path(params.get("v"));
+        else if (params.has("path")) absPath = decodeURIComponent(params.get("path"));
+      } catch (e) {
+        fail("Could not decode the path param: " + e.message);
+      }
+
+      if (!absPath) {
+        fail(
+          "No video path. Open with ?v=<base64 abs path> or ?path=<encoded abs path>. " +
+            "Tip: node e2e/show-video.mjs prints a ready-to-open viewer URL.",
+        );
+      } else {
+        const src = toFileUrl(absPath);
+        video.src = src;
+
+        const dpr = window.devicePixelRatio || 1;
+        const scaleParam = Number.parseFloat(params.get("scale"));
+        const divisor = Number.isFinite(scaleParam) && scaleParam > 0 ? scaleParam : dpr;
+
+        video.addEventListener("loadedmetadata", () => {
+          const cssWidth = video.videoWidth / divisor;
+          const cssHeight = video.videoHeight / divisor;
+          video.style.width = cssWidth + "px";
+          video.style.height = cssHeight + "px";
+          meta.innerHTML =
+            `${video.videoWidth}×${video.videoHeight} intrinsic → ` +
+            `${Math.round(cssWidth)}×${Math.round(cssHeight)} CSS ` +
+            `(dpr ${dpr}, divisor ${divisor})<br>${absPath}`;
+        });
+
+        video.addEventListener("error", () => {
+          fail(
+            "Failed to load the video. If the browser blocks file:// media, open this " +
+              "page from a file:// URL (not http), or serve the recordings dir. Path: " +
+              absPath,
+          );
+        });
+      }
+    </script>
+  </body>
+</html>
