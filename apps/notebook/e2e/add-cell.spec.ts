@@ -7,17 +7,29 @@ import {
   waitForOutputContaining,
 } from "./helpers";
 
+// Playwright's video recorder captures the viewport at its CSS pixel size and
+// ignores deviceScaleFactor, so a 600px viewport yields a 600px-wide video that
+// looks blurry upscaled on retina. Instead record at a real 1200x800 viewport
+// (crisp, full-resolution) and CSS-zoom the page 2x below, so the framing still
+// reads as the compact 600-wide layout while the video keeps 1200x800 pixels.
 test.use({
-  // Keep the compact 600x400 framing (CSS px), but render at 2x device pixels
-  // so the video is crisp on retina displays instead of an upscaled 600px blur.
-  viewport: { width: 600, height: 400 },
-  deviceScaleFactor: 2,
+  viewport: { width: 1200, height: 800 },
   video: { mode: "on", size: { width: 1200, height: 800 } },
 });
 
 test.describe("add cell", () => {
   test("add a code cell via the toolbar", async ({ page }) => {
     test.setTimeout(180_000);
+
+    // Zoom the UI 2x so the 1200x800 recording frames the same content a compact
+    // 600x400 window would, without sacrificing pixel resolution.
+    await page.addInitScript(() => {
+      const applyZoom = () => {
+        document.documentElement.style.setProperty("zoom", "2");
+      };
+      if (document.documentElement) applyZoom();
+      else document.addEventListener("DOMContentLoaded", applyZoom);
+    });
 
     const notebookId = crypto.randomUUID();
     await openNotebookRoom(page, notebookId);
