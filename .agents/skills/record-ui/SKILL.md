@@ -131,6 +131,21 @@ node e2e/show-frames.mjs <pattern>   # prints one absolute PNG path per line
 
 Then Read those paths to verify the UI, iterate, and re-run.
 
+## Videos persist for before/after comparison
+
+Playwright **wipes each test's output dir on every run**, so the source
+`video.webm` (and anything written beside it) does NOT survive a re-run. To keep
+before/after clips, `show-video.mjs` archives every encoded 2x video into a
+persistent, gitignored `e2e/recordings/` dir under a unique timestamped name:
+
+```
+apps/notebook/e2e/recordings/<spec-dir>-<YYYYMMDD-HHMMSS>-2x.webm
+```
+
+Re-running a spec and re-encoding never clobbers a prior recording — record the
+baseline, make the change, record again, and diff the two clips side by side in
+the browser. Prune `e2e/recordings/` by hand when you're done comparing.
+
 ## Typing text visibly
 
 Use `pressSequentially` (not `fill`) so the recording shows keystrokes:
@@ -210,25 +225,35 @@ await expect(messages.nth(1)).toHaveAttribute("data-agent", "true");
 
 ## First run in a fresh worktree (build time)
 
-The runner needs `target/debug/runt`. A fresh worktree has its own `target/`, so
-the first run triggers a `cargo build -p runt` that can take minutes — but only
-once, and **only when the daemon binary is missing**. For UI-only changes the
-Rust binary never changes: Vite hot-reloads the frontend, so once `runt` exists
-the loop is prompt → recording in seconds.
+The runner needs `target/debug/runt`, and the dev daemon needs
+`target/debug/runtimed` (the expensive pyo3/napi build). A fresh worktree has an
+empty `target/`, so the first run does a full **cold** `cargo build` — minutes.
+Worse, `cargo xtask dev-daemon` and the `nteract-dev` `up` tool run `cargo build`
+*every* time, so linking just the output binaries doesn't help: the build still
+recompiles from scratch against the empty fingerprint DB.
 
-To skip the cold build in a new worktree, point it at an already-built `runt`
-from another worktree before the first run:
+**Fix: share the whole `target/` with the root repo** (against a warm target,
+`cargo build` is a ~0.5s no-op, and the frontend hot-reloads via Vite):
 
 ```bash
-# from the new worktree's apps/notebook
-mkdir -p ../../target/debug
-ln -sf /path/to/other-worktree/target/debug/runt ../../target/debug/runt
+cd apps/notebook
+node e2e/link-build.mjs           # symlink target/ -> root repo's target/
+node e2e/link-build.mjs --status  # check current linkage
+node e2e/link-build.mjs --unlink  # restore an independent target/
 ```
 
-Only rebuild (`cargo build -p runt`, or the `nteract-dev` `up` tool with
-`rebuild=true`) when you actually changed Rust/daemon code. Don't symlink the
-whole `target/` dir across worktrees — divergent branches thrash cargo's
-fingerprints and cause *more* rebuilds.
+**Only link a UI-only worktree.** cargo file-locks the target dir, so concurrent
+builds serialize safely — the real hazard is fingerprint churn: if this
+worktree's *Rust* differs from the root's, building here recompiles those crates
+in the shared target and forces the backend dev to rebuild on their next
+`cargo build`. So keep this worktree's Rust in sync with main (pure TypeScript/UI
+work). For a branch that touches Rust, keep an independent target and pay the
+one-time cold build. Verify before linking:
+
+```bash
+git diff --name-only origin/main...HEAD | grep -E '\.rs$|Cargo\.(toml|lock)$'
+# empty output → safe to link
+```
 
 ## Workflow
 
