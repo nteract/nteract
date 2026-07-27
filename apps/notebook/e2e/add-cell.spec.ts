@@ -43,7 +43,8 @@ test.describe("add cell", () => {
     await expect(newCell).toBeVisible({ timeout: 10_000 });
     const editor = newCell.locator('.cm-content[contenteditable="true"]');
     await editor.click();
-    await editor.pressSequentially("print('hello from a new cell')", { delay: 40 });
+    await page.keyboard.insertText("print('hello from a new cell')");
+    await expect(editor).toContainText("hello from a new cell");
 
     // Run the cell and wait for its output to appear.
     await page.waitForTimeout(500);
