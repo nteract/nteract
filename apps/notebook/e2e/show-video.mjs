@@ -2,6 +2,12 @@
  * Find the most recent Playwright video for a spec (or test title pattern),
  * encode a 2x-speed lossless copy with ffmpeg, and open it.
  *
+ * The encoded copy is archived to a persistent, gitignored `e2e/recordings/`
+ * dir under a unique timestamped name, so re-running a spec never clobbers a
+ * prior recording — keep before/after clips open side by side. (Playwright
+ * wipes each test's own output dir on every run, so the source video.webm and
+ * anything written next to it does NOT survive a re-run; recordings/ does.)
+ *
  * Usage:
  *   node e2e/show-video.mjs [spec-or-pattern]
  *
@@ -18,7 +24,19 @@ import { fileURLToPath } from "node:url";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const resultsDir = path.join(appRoot, "test-results");
+const recordingsDir = path.join(appRoot, "e2e", "recordings");
 const [, , rawPattern] = process.argv;
+
+// Sortable, filesystem-safe local timestamp (YYYYMMDD-HHMMSS) so archived
+// recordings list in chronological order and never collide across runs.
+function timestamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+    `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  );
+}
 
 // Normalize: strip .spec.ts, .spec.js suffixes and use as substring match.
 const pattern = rawPattern ? rawPattern.replace(/\.spec\.[jt]s$/, "").toLowerCase() : null;
@@ -61,7 +79,10 @@ if (videos.length > 1) {
   console.log(`Found ${videos.length} videos — using most recent: ${dir}`);
 }
 
-const outPath = videoPath.replace(/\.webm$/, "-2x.webm");
+// Archive into the persistent recordings dir under a unique, sortable name
+// (spec dir + timestamp) so a re-run of the same spec keeps prior clips around.
+fs.mkdirSync(recordingsDir, { recursive: true });
+const outPath = path.join(recordingsDir, `${dir}-${timestamp()}-2x.webm`);
 
 // Specs can drop a `video-trim.txt` (seconds) next to the video to mark when the
 // app became ready for typing. Trim that boring load prefix before speeding up.
@@ -98,8 +119,13 @@ if (hasFfmpeg()) {
   );
   execFileSync("open", [outPath]);
 } else {
-  console.warn("ffmpeg not found — opening original speed video.");
-  execFileSync("open", [videoPath]);
+  console.warn("ffmpeg not found — archiving original speed video.");
+  const originalOut = outPath.replace(/-2x\.webm$/, ".webm");
+  fs.copyFileSync(videoPath, originalOut);
+  execFileSync("open", [originalOut]);
+  console.log(`Done. Video: ${originalOut}`);
+  process.exit(0);
 }
 
 console.log(`Done. Video: ${outPath}`);
+console.log(`Kept in ${path.relative(appRoot, recordingsDir)}/ — prior recordings preserved.`);
