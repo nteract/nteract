@@ -39,6 +39,9 @@ test.describe("<feature>", () => {
     await openNotebookRoom(page, notebookId);
     await waitForKernelStatus(page, "idle", 120_000);
 
+    // App is ready to drive — trim the load/kernel-startup prefix from here.
+    await markClipStart();
+
     // ... drive the UI ...
 
     await page.waitForTimeout(1_500); // let the recording settle
@@ -48,6 +51,16 @@ test.describe("<feature>", () => {
 
 **Critical placement:** `test.use(...)` must be at the top level of the file,
 not inside `describe`. Playwright ignores it inside a describe block.
+
+## Trimming the load prefix
+
+Playwright records the whole context lifetime and has no pause/resume, so every
+video opens with notebook load + kernel startup. Call `markClipStart()` at the
+point the app is ready to drive — whatever the first interaction is (typing,
+clicking, dragging). It writes the elapsed seconds to `video-trim.txt` next to
+`video.webm`. `show-video.mjs` seeks past that prefix (`ffmpeg -ss`) before the
+2x speed-up, so the clip starts on the interesting footage. Skip the call and
+the full video is used unchanged.
 
 ## Typing text visibly
 
