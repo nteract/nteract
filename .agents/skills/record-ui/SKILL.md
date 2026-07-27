@@ -5,26 +5,49 @@ description: Record a browser e2e video of any UI flow in the notebook app, then
 
 # Record UI Flow
 
-Use this skill to write a throwaway Playwright spec that records a UI flow,
-run it, and immediately view the result. The spec doesn't need to be committed
-unless it covers something worth keeping as a regression guard.
+Use this skill to write a throwaway Playwright spec that drives a UI flow. One
+run produces **two artifacts** from the same execution:
+
+- **`video.webm`** — the whole flow, for humans and PR attachments.
+- **`frame-<label>.png`** — labeled screenshots at points you mark with
+  `screenshot(page, "label")`. These are what an **agent** can actually Read to
+  verify its own work (I can view PNGs, not video).
+
+Both land in the gitignored, per-worktree `apps/notebook/test-results/<test>/`
+dir, so nothing commits and parallel worktrees never collide.
+
+The spec doesn't need to be committed unless it covers something worth keeping
+as a regression guard.
+
+## Agent self-check loop
+
+1. Write a spec that drives the change; drop `await screenshot(page, "NN-label")`
+   at each state worth inspecting.
+2. Run it (below). Get the PNG paths with `show-frames.mjs`.
+3. **Read the PNGs** to confirm the change looks right. Iterate on the code (and,
+   if needed, move/add `screenshot()` calls) and re-run until correct.
+4. The `.webm` from the final run is the artifact to attach to the PR.
 
 ## Quick reference
 
 ```bash
-# Run a specific spec (handles daemon + Vite lifecycle per worktree)
 cd apps/notebook
+
+# Run a spec (handles daemon + Vite lifecycle per worktree)
 node e2e/run-browser-e2e.mjs <spec-file>
 
-# Open the most recent video at 2x speed (lossless re-encode)
-node e2e/show-video.mjs [pattern]   # pattern = substring of spec/dir name
+# List the labeled screenshot PNGs from the last run (for the agent to Read)
+node e2e/show-frames.mjs [pattern]   # pattern = substring of spec/dir name
+
+# Open the most recent video at 2x speed (lossless re-encode; for humans)
+node e2e/show-video.mjs [pattern]
 ```
 
 ## Spec template
 
 ```ts
 import { expect, test } from "@playwright/test";
-import { openNotebookRoom, waitForKernelStatus } from "./helpers";
+import { markKernelReady, openNotebookRoom, screenshot } from "./helpers";
 
 test.use({
   viewport: { width: 1440, height: 900 },
@@ -37,12 +60,17 @@ test.describe("<feature>", () => {
 
     const notebookId = crypto.randomUUID();
     await openNotebookRoom(page, notebookId);
-    await waitForKernelStatus(page, "idle", 120_000);
 
-    // App is ready to drive — trim the load/kernel-startup prefix from here.
-    await markClipStart();
+    // Trim the load prefix. Pick the mark matching the surface you're demoing —
+    // markKernelReady here because this flow runs a cell. See "Trimming" below.
+    await markKernelReady(page);
 
-    // ... drive the UI ...
+    // ... drive the UI, snapshotting states the agent should inspect ...
+    await doSomething();
+    await screenshot(page, "01-after-something");
+
+    await doNextThing();
+    await screenshot(page, "02-after-next-thing");
 
     await page.waitForTimeout(1_500); // let the recording settle
   });
@@ -55,12 +83,53 @@ not inside `describe`. Playwright ignores it inside a describe block.
 ## Trimming the load prefix
 
 Playwright records the whole context lifetime and has no pause/resume, so every
-video opens with notebook load + kernel startup. Call `markClipStart()` at the
-point the app is ready to drive — whatever the first interaction is (typing,
-clicking, dragging). It writes the elapsed seconds to `video-trim.txt` next to
-`video.webm`. `show-video.mjs` seeks past that prefix (`ffmpeg -ss`) before the
-2x speed-up, so the clip starts on the interesting footage. Skip the call and
-the full video is used unchanged.
+video opens with notebook load + kernel startup. Mark where the interesting
+footage begins; `show-video.mjs` seeks past that prefix (`ffmpeg -ss`) before the
+2x speed-up. Skip the mark entirely and the full video is used unchanged.
+
+**"Ready" is per-surface, not one global flag.** Different surfaces settle at
+different times, so call the mark that matches the feature your video demos.
+Each named mark *waits for its own readiness signal, then* stamps the trim point,
+so the meaning is verified rather than implied by whatever you awaited above it:
+
+| Mark | Clip starts when… | Use for |
+|------|-------------------|---------|
+| `markCellsReady(page)` | doc synced + session ready (cells render, kernel may still be launching) | document edits: add/reorder/delete cells, markdown |
+| `markKernelReady(page)` | kernel is idle | flows that execute cells |
+| `markCommentsReady(page)` | Discussions panel mounted + composer visible (opens the rail if needed) | comment / @ana flows (needs `enable_comments`) |
+| `markClipStart()` | *right now*, asserts nothing | raw primitive — a surface with no named mark yet |
+
+Marking is idempotent and last-wins: if a flow crosses surfaces, call each mark
+in order and the clip starts at the latest one. Add a new `mark*Ready` helper in
+`helpers.ts` when you record a surface that doesn't have one — prefer that over
+sprinkling bare `markClipStart()` calls, so the readiness gate stays explicit.
+
+## Screenshots for agent inspection
+
+`screenshot(page, "label")` captures a crisp, full-res PNG at the current
+moment — the artifact an agent can Read (unlike the `.webm`). Prefer inline
+`screenshot()` calls over extracting frames from the video: `ffmpeg -ss` seeks
+by timestamp (brittle — shifts when the flow's timing changes, and the 2x
+re-encode renumbers frames), and video frames are scaled/mushy for small UI
+text. Screenshots are labeled, deterministic, and full-resolution.
+
+```ts
+await page.getByRole("button", { name: "Save" }).click();
+await screenshot(page, "01-after-save");   // → frame-01-after-save.png
+```
+
+- Label with a numeric prefix (`01-`, `02-`) so the files sort in flow order.
+- Files land next to `video.webm` in `test-results/<test>/`; the label is
+  sanitized to `frame-<label>.png`. Omit the label for an auto-index.
+- Each screenshot is also attached to the Playwright HTML report / trace.
+
+After the run, list them for reading:
+
+```bash
+node e2e/show-frames.mjs <pattern>   # prints one absolute PNG path per line
+```
+
+Then Read those paths to verify the UI, iterate, and re-run.
 
 ## Typing text visibly
 
@@ -125,6 +194,11 @@ await expect(messages.nth(1)).toHaveAttribute("data-agent", "true");
 
 | Helper | Purpose |
 |--------|---------|
+| `markCellsReady(page)` | Start the clip once cells render (doc synced + session ready) |
+| `markKernelReady(page)` | Start the clip once the kernel is idle (for exec flows) |
+| `markCommentsReady(page)` | Start the clip once the comments composer is ready |
+| `markClipStart()` | Raw primitive: start the clip now, asserting nothing |
+| `screenshot(page, label)` | Capture a labeled `frame-<label>.png` for agent inspection |
 | `openNotebookRoom(page, id)` | Navigate to a fresh ephemeral notebook room |
 | `openNotebookPath(page, path)` | Open a notebook by file path |
 | `waitForKernelStatus(page, status)` | Wait for kernel to reach a status (e.g. `"idle"`) |
@@ -134,9 +208,34 @@ await expect(messages.nth(1)).toHaveAttribute("data-agent", "true");
 | `executeCell(cell)` | Click the execute button on a cell |
 | `waitForOutputContaining(cell, text)` | Wait for output stream to contain text |
 
+## First run in a fresh worktree (build time)
+
+The runner needs `target/debug/runt`. A fresh worktree has its own `target/`, so
+the first run triggers a `cargo build -p runt` that can take minutes — but only
+once, and **only when the daemon binary is missing**. For UI-only changes the
+Rust binary never changes: Vite hot-reloads the frontend, so once `runt` exists
+the loop is prompt → recording in seconds.
+
+To skip the cold build in a new worktree, point it at an already-built `runt`
+from another worktree before the first run:
+
+```bash
+# from the new worktree's apps/notebook
+mkdir -p ../../target/debug
+ln -sf /path/to/other-worktree/target/debug/runt ../../target/debug/runt
+```
+
+Only rebuild (`cargo build -p runt`, or the `nteract-dev` `up` tool with
+`rebuild=true`) when you actually changed Rust/daemon code. Don't symlink the
+whole `target/` dir across worktrees — divergent branches thrash cargo's
+fingerprints and cause *more* rebuilds.
+
 ## Workflow
 
-1. Write spec to `apps/notebook/e2e/<name>.spec.ts`
+1. Write spec to `apps/notebook/e2e/<name>.spec.ts` with `screenshot()` calls at
+   states worth inspecting.
 2. Run: `node e2e/run-browser-e2e.mjs <name>.spec.ts`
-3. Open video: `node e2e/show-video.mjs <name>`
-4. Discard or commit the spec depending on whether it's worth keeping
+3. Read the frames: `node e2e/show-frames.mjs <name>` → Read each PNG path.
+4. Iterate on the code/spec and re-run until the UI is right.
+5. Human review / PR: `node e2e/show-video.mjs <name>` (2x), attach the `.webm`.
+6. Discard or commit the spec depending on whether it's worth keeping.

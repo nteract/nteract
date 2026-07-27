@@ -13,11 +13,15 @@ function markRecordingStart() {
 }
 
 /**
- * Mark the current moment as where the interesting footage begins — the point
- * the app is ready to be driven, whatever the next interaction is (typing,
- * clicking, dragging). Writes the offset (seconds, relative to navigation start)
- * to `video-trim.txt` in the test's output dir, next to `video.webm`.
- * show-video.mjs reads it to trim the load/startup prefix before speeding up.
+ * Low-level primitive: record "the trimmed clip starts *now*." Writes the offset
+ * (seconds, relative to navigation start) to `video-trim.txt` in the test's
+ * output dir, next to `video.webm`; show-video.mjs seeks past it before the 2x
+ * speed-up. Called again later, the latest offset wins.
+ *
+ * Prefer a named `mark*Ready` helper below: each waits for a specific readiness
+ * signal *before* stamping the clip start, so the mark's meaning is verified
+ * rather than implied by whatever happened to be awaited on the lines above it.
+ * Reach for this raw primitive only for a surface that has no named helper yet.
  */
 export async function markClipStart(): Promise<void> {
   const info = test.info();
@@ -31,6 +35,82 @@ export async function markClipStart(): Promise<void> {
     offsetSeconds.toFixed(3),
     "utf8",
   );
+}
+
+/**
+ * Clip starts once the notebook doc is synced and the runtime session is ready —
+ * cells render and the toolbar is live, but the kernel may still be launching.
+ * Use for flows that edit the document without executing (add/reorder/delete
+ * cells, markdown). Asserts `data-notebook-synced` + `data-session-ready`.
+ */
+export async function markCellsReady(page: Page, timeout = 120_000): Promise<void> {
+  await expect(page.locator("[data-notebook-synced]")).toHaveAttribute(
+    "data-notebook-synced",
+    "true",
+    { timeout },
+  );
+  await expect(page.locator("[data-session-ready]")).toHaveAttribute("data-session-ready", "true", {
+    timeout,
+  });
+  await markClipStart();
+}
+
+/**
+ * Clip starts once the kernel is idle (launched and ready to execute). Use for
+ * flows that run cells. Asserts `data-kernel-status="idle"`.
+ */
+export async function markKernelReady(page: Page, timeout = 120_000): Promise<void> {
+  await waitForKernelStatus(page, "idle", timeout);
+  await markClipStart();
+}
+
+/**
+ * Clip starts once the comments/Discussions panel is mounted and its composer is
+ * ready. Use for comment/@ana flows. Requires `enable_comments: true`. Opens the
+ * rail if it isn't already open, then asserts the composer textbox is visible.
+ */
+export async function markCommentsReady(page: Page, timeout = 30_000): Promise<void> {
+  const panel = page.getByTestId("notebook-comments-panel");
+  if ((await panel.count()) === 0) {
+    await page.getByRole("button", { name: "Discussions" }).click();
+  }
+  await expect(panel.getByRole("textbox", { name: /add a comment/i })).toBeVisible({ timeout });
+  await markClipStart();
+}
+
+// Monotonic counter per test so unlabeled screenshots still sort in call order.
+const screenshotSeq = new Map<string, number>();
+
+/**
+ * Capture a full-page screenshot at the current moment for agent inspection.
+ *
+ * The video (video.webm) records the whole flow for humans; these PNGs are the
+ * artifact an agent can actually Read. Drop a `screenshot("label")` call at each
+ * point of interest in the flow:
+ *
+ *   await doA();
+ *   await screenshot(page, "01-at-A");
+ *   await doB();
+ *   await screenshot(page, "02-at-B");
+ *
+ * Files land in the test's output dir (gitignored test-results/<test>/) as
+ * `frame-<label>.png`, so they never collide across worktrees and never commit.
+ * The label is sanitized; if omitted, an auto-incrementing index is used.
+ * Returns the absolute path so callers can log it.
+ */
+export async function screenshot(page: Page, label?: string): Promise<string> {
+  const info = test.info();
+  const seq = (screenshotSeq.get(info.testId) ?? 0) + 1;
+  screenshotSeq.set(info.testId, seq);
+  const index = String(seq).padStart(2, "0");
+  const safeLabel = label ? label.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") : "";
+  const name = safeLabel ? `frame-${safeLabel}.png` : `frame-${index}.png`;
+  await fs.promises.mkdir(info.outputDir, { recursive: true });
+  const filePath = path.join(info.outputDir, name);
+  await page.screenshot({ path: filePath, fullPage: false });
+  // Also attach to the Playwright report so it shows up in traces / HTML report.
+  await info.attach(safeLabel || `frame-${index}`, { path: filePath, contentType: "image/png" });
+  return filePath;
 }
 
 export interface ExecutionPerformanceMark {
