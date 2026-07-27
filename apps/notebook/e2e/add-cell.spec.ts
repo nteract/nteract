@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 import {
   executeCell,
-  markClipStart,
+  markKernelReady,
   openNotebookRoom,
-  waitForKernelStatus,
+  screenshot,
   waitForOutputContaining,
 } from "./helpers";
 
@@ -18,10 +18,10 @@ test.describe("add cell", () => {
 
     const notebookId = crypto.randomUUID();
     await openNotebookRoom(page, notebookId);
-    await waitForKernelStatus(page, "idle", 120_000);
 
-    // App is ready to drive — start the trimmed clip from here.
-    await markClipStart();
+    // This flow runs a cell, so the clip should start once the kernel is idle.
+    // markKernelReady asserts that state, then stamps the trim point.
+    await markKernelReady(page);
 
     // Count cells before adding.
     const cells = page.locator("[data-cell-type]");
@@ -29,12 +29,14 @@ test.describe("add cell", () => {
 
     // Let the empty notebook be visible for a moment.
     await page.waitForTimeout(1_000);
+    await screenshot(page, "01-empty-notebook");
 
     // Add a code cell via the toolbar.
     await page.getByTestId("add-code-cell-button").click();
 
     // Wait for the new cell to appear.
     await expect(cells).toHaveCount(before + 1, { timeout: 30_000 });
+    await screenshot(page, "02-cell-added");
 
     // Type some source into the freshly added cell so the video shows content.
     const newCell = page.locator('[data-cell-type="code"]').last();
@@ -47,6 +49,7 @@ test.describe("add cell", () => {
     await page.waitForTimeout(500);
     await executeCell(newCell);
     await waitForOutputContaining(newCell, "hello from a new cell", 60_000);
+    await screenshot(page, "03-output-rendered");
 
     await page.waitForTimeout(1_500); // let the recording settle
   });
