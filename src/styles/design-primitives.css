@@ -1,0 +1,144 @@
+/**
+ * Design primitives — the raw ramps exported from Figma (`primitives.json`).
+ *
+ * These are the bottom layer: literal values with no mode awareness. Semantic
+ * tokens in notebook-tokens.css reference them, and product code should reach
+ * for the semantic names (bg-background, text-muted-foreground, …) rather than
+ * a ramp step. Utilities like `bg-storm-700` exist for the cases where a design
+ * genuinely calls out a primitive.
+ *
+ * Brand ramps that share a name with a Tailwind palette (blue/yellow/red) are
+ * prefixed `brand-` so importing this file does not silently repaint every
+ * `text-red-500` in the app. Tailwind's own palette stays intact; cream-theme.css
+ * still overrides `--color-green-*` and friends per color theme.
+ */
+
+@theme {
+  /* ── storm — the neutral spine (backgrounds, text, borders) ── */
+  --color-storm-50: #fafafa;
+  --color-storm-100: #f3f5f8;
+  --color-storm-150: #e9eef4;
+  --color-storm-200: #e1e8f0;
+  --color-storm-250: #d7dfe9;
+  --color-storm-300: #ccd5e1;
+  --color-storm-400: #93a3bb;
+  --color-storm-500: #62748e;
+  --color-storm-600: #475569;
+  --color-storm-700: #37414f;
+  --color-storm-750: #2d3542;
+  --color-storm-800: #222934;
+  --color-storm-825: #1f252e;
+  --color-storm-850: #1c2027;
+  --color-storm-900: #141820;
+  --color-storm-950: #070707;
+
+  /* ── primary green — light-mode brand accent ── */
+  --color-primary-green-50: #e6faed;
+  --color-primary-green-100: #d6f5e3;
+  --color-primary-green-150: #c4f0d6;
+  --color-primary-green-200: #b2efc7;
+  --color-primary-green-300: #9fe7b5;
+  --color-primary-green-400: #8de7ac;
+  --color-primary-green-500: #72e198;
+  --color-primary-green-600: #5adb86;
+  --color-primary-green-700: #08ca4a;
+  --color-primary-green-750: #07b843;
+  --color-primary-green-800: #069a3b;
+  --color-primary-green-850: #068f35;
+  --color-primary-green-900: #046f29;
+  --color-primary-green-925: #03551f;
+  --color-primary-green-950: #023e18;
+
+  /* ── primary green (dark) — dark-mode brand accent ── */
+  --color-primary-green-dark-50: #f0f5ee;
+  --color-primary-green-dark-100: #e5f1e2;
+  --color-primary-green-dark-150: #daeed4;
+  --color-primary-green-dark-200: #ceedc4;
+  --color-primary-green-dark-300: #c1edb3;
+  --color-primary-green-dark-400: #b3efa1;
+  --color-primary-green-dark-500: #a5f28d;
+  --color-primary-green-dark-600: #96f778;
+  --color-primary-green-dark-700: #76f050;
+  --color-primary-green-dark-750: #58e92b;
+  --color-primary-green-dark-800: #44cd1a;
+  --color-primary-green-dark-850: #39a118;
+  --color-primary-green-dark-900: #2c7715;
+  --color-primary-green-dark-925: #1f4f10;
+  --color-primary-green-dark-950: #112909;
+
+  /* ── success green — status, not brand ── */
+  --color-success-green-50: #eaf6e9;
+  --color-success-green-100: #d8efd5;
+  --color-success-green-150: #c7e8c1;
+  --color-success-green-200: #bfe4bb;
+  --color-success-green-300: #a0d79a;
+  --color-success-green-400: #85cb7f;
+  --color-success-green-500: #75c56c;
+  --color-success-green-600: #5ab950;
+  --color-success-green-700: #31a824;
+  --color-success-green-750: #2d9921;
+  --color-success-green-800: #27851d;
+  --color-success-green-850: #23771a;
+  --color-success-green-900: #1b5c14;
+  --color-success-green-925: #184f11;
+  --color-success-green-950: #15470f;
+
+  /* ── brand blue — info, focus ring, links ── */
+  --color-brand-blue-50: #f0f6ff;
+  --color-brand-blue-100: #dde9fe;
+  --color-brand-blue-150: #b9d1fd;
+  --color-brand-blue-200: #78a3ff;
+  --color-brand-blue-300: #4b84ff;
+  --color-brand-blue-400: #3575ff;
+  --color-brand-blue-500: #1d6cf7;
+  --color-brand-blue-600: #1a61de;
+  --color-brand-blue-700: #1756c6;
+  --color-brand-blue-750: #1651b9;
+  --color-brand-blue-800: #114194;
+  --color-brand-blue-850: #0d316f;
+  --color-brand-blue-900: #0a2656;
+  --color-brand-blue-925: #001b56;
+  --color-brand-blue-950: #001b56;
+
+  /* ── brand yellow — warning ── */
+  --color-brand-yellow-50: #fff8e6;
+  --color-brand-yellow-100: #ffeed4;
+  --color-brand-yellow-150: #ffeab2;
+  --color-brand-yellow-200: #ffdf8c;
+  --color-brand-yellow-300: #ffce66;
+  --color-brand-yellow-400: #ffd158;
+  --color-brand-yellow-500: #ffc838;
+  --color-brand-yellow-600: #ffbf20;
+  --color-brand-yellow-700: #ffba06;
+  --color-brand-yellow-750: #e8a905;
+  --color-brand-yellow-800: #dba008;
+  --color-brand-yellow-850: #b58404;
+  --color-brand-yellow-900: #a27d03;
+  --color-brand-yellow-925: #8c6603;
+  --color-brand-yellow-950: #6b4e03;
+
+  /* ── brand red — destructive ── */
+  --color-brand-red-50: #fae6e6;
+  --color-brand-red-100: #f4c9c9;
+  --color-brand-red-150: #f0b0b0;
+  --color-brand-red-200: #e9a3a3;
+  --color-brand-red-300: #e98a8a;
+  --color-brand-red-400: #e66f6f;
+  --color-brand-red-500: #e05554;
+  --color-brand-red-600: #d93f3f;
+  --color-brand-red-700: #d00100;
+  --color-brand-red-750: #bd0100;
+  --color-brand-red-800: #a80000;
+  --color-brand-red-850: #940100;
+  --color-brand-red-900: #820000;
+  --color-brand-red-925: #720100;
+  --color-brand-red-950: #570000;
+
+  /* ── logo — fixed marks, not mode-derived (see --logo-* for the mode pair) ── */
+  --color-logo-mark: #31a824;
+  --color-logo-wordmark: #06262d;
+
+  /* ── translucent scrims, one per surface polarity ── */
+  --color-alpha-light-5: #5f6e9f1a;
+  --color-alpha-dark-5: #dee2eb1a;
+}

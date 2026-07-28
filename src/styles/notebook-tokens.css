@@ -1,4 +1,30 @@
-@custom-variant dark (&:is(.dark *));
+/**
+ * Semantic design tokens — the authoritative token set for every nteract
+ * surface (desktop shell, cloud viewer, Elements, sift, design-sync).
+ *
+ * Structure, bottom to top:
+ *   1. design-primitives.css — raw Figma ramps (storm, primary-green, …).
+ *   2. The `--mode-light-*` / `--mode-dark-*` banks below — the only place a
+ *      literal color value for a mode lives.
+ *   3. The three mode selectors, which do nothing but point the semantic names
+ *      at one bank or the other. Adding a token means one value in each bank
+ *      and one `var()` line per selector; it never means retyping a hex.
+ *   4. `@theme inline`, which exposes the semantic names as Tailwind utilities
+ *      (bg-background, text-muted-foreground, border-input, …).
+ *
+ * Product code should use the semantic utilities. Reach into a primitive ramp
+ * only when a design explicitly calls out a ramp step.
+ *
+ * Dark mode is dual-keyed on `.dark` and `[data-theme="dark"]` to match the
+ * isolated-renderer/host-bridge convention (isolated-renderer/styles.css,
+ * frame.html): consumers may signal dark via the class (app shell) or the
+ * attribute (iframe/demo hosts). The `prefers-color-scheme` block covers hosts
+ * that set no explicit signal at all; an explicit light signal opts out.
+ */
+
+@import "./design-primitives.css";
+
+@custom-variant dark (&:is(.dark *, [data-theme="dark"] *));
 
 @theme inline {
   --color-background: var(--background);
@@ -20,67 +46,388 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-ring-offset: var(--ring-offset);
+
+  /* Status intents. `warning`/`info`/`success` are surface washes paired with a
+     legible `-foreground`, so `bg-warning text-warning-foreground` reads in
+     both modes without per-mode opacity juggling. */
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-border: var(--warning-border);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+
+  /* Destructive has two shapes. `destructive` is the solid intent used by
+     `text-destructive` and the button's destructive variant; `destructive-wash`
+     is the tinted surface the design system pairs with solid red text. */
+  --color-destructive-wash: var(--destructive-wash);
+  --color-destructive-wash-foreground: var(--destructive-wash-foreground);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Mode-aware logo pair. The fixed brand marks stay on
+     --color-logo-mark/--color-logo-wordmark in design-primitives.css. */
+  --color-logo: var(--logo-mark);
+  --color-logo-text: var(--logo-wordmark);
+
+  /* Scrim ramp. Numbers follow Figma: a lower number is *more* opaque. */
+  --color-alpha-5: var(--alpha-5);
+  --color-alpha-10: var(--alpha-10);
+  --color-alpha-20: var(--alpha-20);
+  --color-alpha-30: var(--alpha-30);
+  --color-alpha-40: var(--alpha-40);
+  --color-alpha-50: var(--alpha-50);
+  --color-alpha-60: var(--alpha-60);
+  --color-alpha-70: var(--alpha-70);
+  --color-alpha-80: var(--alpha-80);
+  --color-alpha-90: var(--alpha-90);
+  --color-alpha-95: var(--alpha-95);
+
   --color-uv: #de5fe9;
 
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
-  --radius-4xl: calc(var(--radius) + 16px);
+  /* Radii are literal token values, not deltas off --radius: the Figma scale is
+     non-linear (2, 6, 8, 10, 14, 18, 22, 26), so arithmetic can't express it. */
+  --radius-xs: 2px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+  --radius-3xl: 22px;
+  --radius-4xl: 26px;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+   Mode banks — the single home for every literal per-mode color value.
+   ──────────────────────────────────────────────────────────────────────────── */
+
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  /* ── light ── */
+  --mode-light-background: #f3f5f8; /* storm-100 */
+  --mode-light-foreground: #141820; /* storm-900 */
+  --mode-light-card: #fafafa; /* storm-50 */
+  --mode-light-card-foreground: #141820;
+  --mode-light-popover: #fafafa;
+  --mode-light-popover-foreground: #141820;
+  --mode-light-primary: #08ca4a; /* primary-green-700 */
+  --mode-light-primary-foreground: #141820;
+  --mode-light-secondary: #262626;
+  --mode-light-secondary-foreground: #f5f5f5;
+  --mode-light-muted: #fafafa;
+  --mode-light-muted-foreground: #2d3542; /* storm-750 */
+  --mode-light-accent: #e9eef4; /* storm-150 */
+  --mode-light-accent-foreground: #2d3542;
+  --mode-light-border: #e1e8f0; /* storm-200 */
+  --mode-light-input: #ccd5e1; /* storm-300 */
+  --mode-light-ring: #1d4ed8;
+  --mode-light-ring-offset: #f3f5f8;
+  --mode-light-destructive: #d00100; /* brand-red-700 */
+  --mode-light-destructive-foreground: #fae6e6; /* brand-red-50 */
+  --mode-light-destructive-wash: #fae6e6;
+  --mode-light-destructive-wash-foreground: #d00100;
+  --mode-light-warning: #ffeed4; /* brand-yellow-100 */
+  --mode-light-warning-foreground: #6b4e03; /* brand-yellow-950 */
+  --mode-light-warning-border: #ffba06; /* brand-yellow-700 */
+  --mode-light-info: #dde9fe; /* brand-blue-100 */
+  --mode-light-info-foreground: #1a61de; /* brand-blue-600 */
+  --mode-light-success: #d8efd5; /* success-green-100 */
+  --mode-light-success-foreground: #15470f; /* success-green-950 */
+  --mode-light-chart-1: #ea580c;
+  --mode-light-chart-2: #0d9488;
+  --mode-light-chart-3: #164e63;
+  --mode-light-chart-4: #fbbf24;
+  --mode-light-chart-5: #e11d48;
+  --mode-light-sidebar: #f3f5f8;
+  --mode-light-sidebar-foreground: #070707; /* storm-950 */
+  --mode-light-sidebar-primary: #070707;
+  --mode-light-sidebar-primary-foreground: #fafafa;
+  --mode-light-sidebar-accent: #ccd5e1;
+  --mode-light-sidebar-accent-foreground: #37414f; /* storm-700 */
+  --mode-light-sidebar-border: #ccd5e1;
+  --mode-light-sidebar-ring: #1a61de;
+  --mode-light-logo-mark: #31a824; /* success-green-700 */
+  --mode-light-logo-wordmark: #06262d;
+  --mode-light-alpha-5: #10121af2;
+  --mode-light-alpha-10: #10121ae6;
+  --mode-light-alpha-20: #10121acc;
+  --mode-light-alpha-30: #10121ab3;
+  --mode-light-alpha-40: #10121a99;
+  --mode-light-alpha-50: #10121a80;
+  --mode-light-alpha-60: #10121a66;
+  --mode-light-alpha-70: #10121a4d;
+  --mode-light-alpha-80: #10121a33;
+  --mode-light-alpha-90: #10121a1a;
+  --mode-light-alpha-95: #10121a0d;
+
+  /* ── dark ── */
+  --mode-dark-background: #141820; /* storm-900 */
+  --mode-dark-foreground: #fafafa; /* storm-50 */
+  --mode-dark-card: #1c2027; /* storm-850 */
+  --mode-dark-card-foreground: #fafafa;
+  --mode-dark-popover: #1c2027;
+  --mode-dark-popover-foreground: #fafafa;
+  --mode-dark-primary: #96f778; /* primary-green-dark-600 */
+  --mode-dark-primary-foreground: #141820;
+  --mode-dark-secondary: #fafafa;
+  --mode-dark-secondary-foreground: #262626;
+  --mode-dark-muted: #1c2027;
+  --mode-dark-muted-foreground: #ccd5e1; /* storm-300 */
+  --mode-dark-accent: #070707; /* storm-950 */
+  --mode-dark-accent-foreground: #ccd5e1;
+  --mode-dark-border: #37414f; /* storm-700 */
+  --mode-dark-input: #475569; /* storm-600 */
+  --mode-dark-ring: #76f050; /* primary-green-dark-700 */
+  --mode-dark-ring-offset: #141820;
+  --mode-dark-destructive: #d00100; /* brand-red-700 */
+  --mode-dark-destructive-foreground: #fae6e6; /* brand-red-50 */
+  --mode-dark-destructive-wash: #d00100;
+  --mode-dark-destructive-wash-foreground: #fae6e6;
+  --mode-dark-warning: #ffba06; /* brand-yellow-700 */
+  --mode-dark-warning-foreground: #171717;
+  --mode-dark-warning-border: #ffba06;
+  --mode-dark-info: #1756c6; /* brand-blue-700 */
+  --mode-dark-info-foreground: #f0f6ff; /* brand-blue-50 */
+  --mode-dark-success: #1b5c14; /* success-green-900 */
+  --mode-dark-success-foreground: #eaf6e9; /* success-green-50 */
+  --mode-dark-chart-1: #c2410c;
+  --mode-dark-chart-2: #10b981;
+  --mode-dark-chart-3: #0891b2;
+  --mode-dark-chart-4: #f59e0b;
+  --mode-dark-chart-5: #f43f5e;
+  --mode-dark-sidebar: #141820;
+  --mode-dark-sidebar-foreground: #fafafa;
+  --mode-dark-sidebar-primary: #1a61de; /* brand-blue-600 */
+  --mode-dark-sidebar-primary-foreground: #fafafa;
+  --mode-dark-sidebar-accent: #222934; /* storm-800 */
+  --mode-dark-sidebar-accent-foreground: #ccd5e1;
+  --mode-dark-sidebar-border: #222934;
+  --mode-dark-sidebar-ring: #96f778;
+  --mode-dark-logo-mark: #96f778;
+  --mode-dark-logo-wordmark: #fafafa;
+  --mode-dark-alpha-5: #fbfbfbf2;
+  --mode-dark-alpha-10: #fbfbfbe6;
+  --mode-dark-alpha-20: #fbfbfbcc;
+  --mode-dark-alpha-30: #fbfbfbb3;
+  --mode-dark-alpha-40: #fbfbfb99;
+  --mode-dark-alpha-50: #fbfbfb80;
+  --mode-dark-alpha-60: #fbfbfb66;
+  --mode-dark-alpha-70: #fbfbfb4d;
+  --mode-dark-alpha-80: #fbfbfb33;
+  --mode-dark-alpha-90: #fbfbfb1a;
+  --mode-dark-alpha-95: #fbfbfb0d;
+}
+
+/* ── Light: the default, and whatever explicitly opts into light ── */
+:root,
+.light,
+[data-theme="light"] {
+  color-scheme: light;
+
+  --background: var(--mode-light-background);
+  --foreground: var(--mode-light-foreground);
+  --card: var(--mode-light-card);
+  --card-foreground: var(--mode-light-card-foreground);
+  --popover: var(--mode-light-popover);
+  --popover-foreground: var(--mode-light-popover-foreground);
+  --primary: var(--mode-light-primary);
+  --primary-foreground: var(--mode-light-primary-foreground);
+  --secondary: var(--mode-light-secondary);
+  --secondary-foreground: var(--mode-light-secondary-foreground);
+  --muted: var(--mode-light-muted);
+  --muted-foreground: var(--mode-light-muted-foreground);
+  --accent: var(--mode-light-accent);
+  --accent-foreground: var(--mode-light-accent-foreground);
+  --border: var(--mode-light-border);
+  --input: var(--mode-light-input);
+  --ring: var(--mode-light-ring);
+  --ring-offset: var(--mode-light-ring-offset);
+  --destructive: var(--mode-light-destructive);
+  --destructive-foreground: var(--mode-light-destructive-foreground);
+  --destructive-wash: var(--mode-light-destructive-wash);
+  --destructive-wash-foreground: var(--mode-light-destructive-wash-foreground);
+  --warning: var(--mode-light-warning);
+  --warning-foreground: var(--mode-light-warning-foreground);
+  --warning-border: var(--mode-light-warning-border);
+  --info: var(--mode-light-info);
+  --info-foreground: var(--mode-light-info-foreground);
+  --success: var(--mode-light-success);
+  --success-foreground: var(--mode-light-success-foreground);
+  --chart-1: var(--mode-light-chart-1);
+  --chart-2: var(--mode-light-chart-2);
+  --chart-3: var(--mode-light-chart-3);
+  --chart-4: var(--mode-light-chart-4);
+  --chart-5: var(--mode-light-chart-5);
+  --sidebar: var(--mode-light-sidebar);
+  --sidebar-foreground: var(--mode-light-sidebar-foreground);
+  --sidebar-primary: var(--mode-light-sidebar-primary);
+  --sidebar-primary-foreground: var(--mode-light-sidebar-primary-foreground);
+  --sidebar-accent: var(--mode-light-sidebar-accent);
+  --sidebar-accent-foreground: var(--mode-light-sidebar-accent-foreground);
+  --sidebar-border: var(--mode-light-sidebar-border);
+  --sidebar-ring: var(--mode-light-sidebar-ring);
+  --logo-mark: var(--mode-light-logo-mark);
+  --logo-wordmark: var(--mode-light-logo-wordmark);
+  --alpha-5: var(--mode-light-alpha-5);
+  --alpha-10: var(--mode-light-alpha-10);
+  --alpha-20: var(--mode-light-alpha-20);
+  --alpha-30: var(--mode-light-alpha-30);
+  --alpha-40: var(--mode-light-alpha-40);
+  --alpha-50: var(--mode-light-alpha-50);
+  --alpha-60: var(--mode-light-alpha-60);
+  --alpha-70: var(--mode-light-alpha-70);
+  --alpha-80: var(--mode-light-alpha-80);
+  --alpha-90: var(--mode-light-alpha-90);
+  --alpha-95: var(--mode-light-alpha-95);
+
   --radius: 0.625rem;
   --output-ui-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --output-mono-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --output-document-font: var(--output-ui-font);
 }
 
-/* Dual-keyed to match the isolated-renderer/host-bridge convention
-   (isolated-renderer/styles.css, frame.html): consumers may signal dark via
-   the .dark class (app shell) or data-theme="dark" (iframe/demo hosts). */
+/* ── Dark: explicit signal ── */
 .dark,
 [data-theme="dark"] {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  color-scheme: dark;
+
+  --background: var(--mode-dark-background);
+  --foreground: var(--mode-dark-foreground);
+  --card: var(--mode-dark-card);
+  --card-foreground: var(--mode-dark-card-foreground);
+  --popover: var(--mode-dark-popover);
+  --popover-foreground: var(--mode-dark-popover-foreground);
+  --primary: var(--mode-dark-primary);
+  --primary-foreground: var(--mode-dark-primary-foreground);
+  --secondary: var(--mode-dark-secondary);
+  --secondary-foreground: var(--mode-dark-secondary-foreground);
+  --muted: var(--mode-dark-muted);
+  --muted-foreground: var(--mode-dark-muted-foreground);
+  --accent: var(--mode-dark-accent);
+  --accent-foreground: var(--mode-dark-accent-foreground);
+  --border: var(--mode-dark-border);
+  --input: var(--mode-dark-input);
+  --ring: var(--mode-dark-ring);
+  --ring-offset: var(--mode-dark-ring-offset);
+  --destructive: var(--mode-dark-destructive);
+  --destructive-foreground: var(--mode-dark-destructive-foreground);
+  --destructive-wash: var(--mode-dark-destructive-wash);
+  --destructive-wash-foreground: var(--mode-dark-destructive-wash-foreground);
+  --warning: var(--mode-dark-warning);
+  --warning-foreground: var(--mode-dark-warning-foreground);
+  --warning-border: var(--mode-dark-warning-border);
+  --info: var(--mode-dark-info);
+  --info-foreground: var(--mode-dark-info-foreground);
+  --success: var(--mode-dark-success);
+  --success-foreground: var(--mode-dark-success-foreground);
+  --chart-1: var(--mode-dark-chart-1);
+  --chart-2: var(--mode-dark-chart-2);
+  --chart-3: var(--mode-dark-chart-3);
+  --chart-4: var(--mode-dark-chart-4);
+  --chart-5: var(--mode-dark-chart-5);
+  --sidebar: var(--mode-dark-sidebar);
+  --sidebar-foreground: var(--mode-dark-sidebar-foreground);
+  --sidebar-primary: var(--mode-dark-sidebar-primary);
+  --sidebar-primary-foreground: var(--mode-dark-sidebar-primary-foreground);
+  --sidebar-accent: var(--mode-dark-sidebar-accent);
+  --sidebar-accent-foreground: var(--mode-dark-sidebar-accent-foreground);
+  --sidebar-border: var(--mode-dark-sidebar-border);
+  --sidebar-ring: var(--mode-dark-sidebar-ring);
+  --logo-mark: var(--mode-dark-logo-mark);
+  --logo-wordmark: var(--mode-dark-logo-wordmark);
+  --alpha-5: var(--mode-dark-alpha-5);
+  --alpha-10: var(--mode-dark-alpha-10);
+  --alpha-20: var(--mode-dark-alpha-20);
+  --alpha-30: var(--mode-dark-alpha-30);
+  --alpha-40: var(--mode-dark-alpha-40);
+  --alpha-50: var(--mode-dark-alpha-50);
+  --alpha-60: var(--mode-dark-alpha-60);
+  --alpha-70: var(--mode-dark-alpha-70);
+  --alpha-80: var(--mode-dark-alpha-80);
+  --alpha-90: var(--mode-dark-alpha-90);
+  --alpha-95: var(--mode-dark-alpha-95);
+}
+
+/* ── Dark: system preference, for hosts that set no explicit signal ──
+   The `:not(...)` list is deliberately one selector, not chained `:not()`s:
+   a list takes the specificity of its most specific argument, so this stays at
+   (0,2,0) and cream-theme.css's `[data-color-theme="cream"]:not(.light)` can
+   still override it on source order. Chaining would make it (0,3,0) and no
+   color theme could opt out of the system-dark fallback. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light, [data-theme="light"]) {
+    color-scheme: dark;
+
+    --background: var(--mode-dark-background);
+    --foreground: var(--mode-dark-foreground);
+    --card: var(--mode-dark-card);
+    --card-foreground: var(--mode-dark-card-foreground);
+    --popover: var(--mode-dark-popover);
+    --popover-foreground: var(--mode-dark-popover-foreground);
+    --primary: var(--mode-dark-primary);
+    --primary-foreground: var(--mode-dark-primary-foreground);
+    --secondary: var(--mode-dark-secondary);
+    --secondary-foreground: var(--mode-dark-secondary-foreground);
+    --muted: var(--mode-dark-muted);
+    --muted-foreground: var(--mode-dark-muted-foreground);
+    --accent: var(--mode-dark-accent);
+    --accent-foreground: var(--mode-dark-accent-foreground);
+    --border: var(--mode-dark-border);
+    --input: var(--mode-dark-input);
+    --ring: var(--mode-dark-ring);
+    --ring-offset: var(--mode-dark-ring-offset);
+    --destructive: var(--mode-dark-destructive);
+    --destructive-foreground: var(--mode-dark-destructive-foreground);
+    --destructive-wash: var(--mode-dark-destructive-wash);
+    --destructive-wash-foreground: var(--mode-dark-destructive-wash-foreground);
+    --warning: var(--mode-dark-warning);
+    --warning-foreground: var(--mode-dark-warning-foreground);
+    --warning-border: var(--mode-dark-warning-border);
+    --info: var(--mode-dark-info);
+    --info-foreground: var(--mode-dark-info-foreground);
+    --success: var(--mode-dark-success);
+    --success-foreground: var(--mode-dark-success-foreground);
+    --chart-1: var(--mode-dark-chart-1);
+    --chart-2: var(--mode-dark-chart-2);
+    --chart-3: var(--mode-dark-chart-3);
+    --chart-4: var(--mode-dark-chart-4);
+    --chart-5: var(--mode-dark-chart-5);
+    --sidebar: var(--mode-dark-sidebar);
+    --sidebar-foreground: var(--mode-dark-sidebar-foreground);
+    --sidebar-primary: var(--mode-dark-sidebar-primary);
+    --sidebar-primary-foreground: var(--mode-dark-sidebar-primary-foreground);
+    --sidebar-accent: var(--mode-dark-sidebar-accent);
+    --sidebar-accent-foreground: var(--mode-dark-sidebar-accent-foreground);
+    --sidebar-border: var(--mode-dark-sidebar-border);
+    --sidebar-ring: var(--mode-dark-sidebar-ring);
+    --logo-mark: var(--mode-dark-logo-mark);
+    --logo-wordmark: var(--mode-dark-logo-wordmark);
+    --alpha-5: var(--mode-dark-alpha-5);
+    --alpha-10: var(--mode-dark-alpha-10);
+    --alpha-20: var(--mode-dark-alpha-20);
+    --alpha-30: var(--mode-dark-alpha-30);
+    --alpha-40: var(--mode-dark-alpha-40);
+    --alpha-50: var(--mode-dark-alpha-50);
+    --alpha-60: var(--mode-dark-alpha-60);
+    --alpha-70: var(--mode-dark-alpha-70);
+    --alpha-80: var(--mode-dark-alpha-80);
+    --alpha-90: var(--mode-dark-alpha-90);
+    --alpha-95: var(--mode-dark-alpha-95);
+  }
 }
 
 @keyframes queue-breathe {

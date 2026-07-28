@@ -2,24 +2,24 @@ export const CLOUD_VIEWER_THEME_STORAGE_KEY = "nteract.cloud.viewer.theme";
 
 export function viewerThemeFirstPaintStyle(): string {
   return `html {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: #f3f5f8;
+  --foreground: #141820;
   background: var(--background);
   color-scheme: light;
 }
 
 html.light,
 html[data-theme="light"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: #f3f5f8;
+  --foreground: #141820;
   background: var(--background);
   color-scheme: light;
 }
 
 html.dark,
 html[data-theme="dark"] {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
+  --background: #141820;
+  --foreground: #fafafa;
   background: var(--background);
   color-scheme: dark;
 }

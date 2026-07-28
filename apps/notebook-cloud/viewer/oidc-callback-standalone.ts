@@ -330,14 +330,14 @@ function oidcCallbackStyle(): string {
   return `
 :root {
   color-scheme: light dark;
-  --background: #ffffff;
-  --foreground: oklch(0.145 0 0);
+  --background: #f3f5f8;
+  --foreground: #141820;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
+    --background: #141820;
+    --foreground: #fafafa;
   }
 }
 

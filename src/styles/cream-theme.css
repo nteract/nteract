@@ -37,6 +37,46 @@
   --ring: #955f3b;
   --output-document-font: KaTeX_Main, Georgia, "Times New Roman", serif;
 
+  /* ── Semantic tokens added alongside notebook-tokens.css's mode banks.
+     Best-guess warm-palette values derived from the ramps above — not
+     sourced from Figma yet. Revisit against the real cream ramp once one
+     exists. Logo (--logo-mark/--logo-wordmark) is intentionally left
+     un-themed: brand mark stays constant across color themes. ── */
+  --ring-offset: #f5f2ec;
+  --destructive-wash: #f7e6e0;
+  --destructive-wash-foreground: #c4513a;
+  --warning: #f7ecd2;
+  --warning-foreground: #5c4419;
+  --warning-border: #d79921;
+  --info: #e4e9f0;
+  --info-foreground: #324863;
+  --success: #e5e4c4;
+  --success-foreground: #2e2d07;
+  --chart-1: #955f3b;
+  --chart-2: #5e5c0f;
+  --chart-3: #324863;
+  --chart-4: #d79921;
+  --chart-5: #c4513a;
+  --sidebar: #f0ede7;
+  --sidebar-foreground: #1e1a18;
+  --sidebar-primary: #955f3b;
+  --sidebar-primary-foreground: #fffdf9;
+  --sidebar-accent: #ebe6df;
+  --sidebar-accent-foreground: #1e1a18;
+  --sidebar-border: #d8cec3;
+  --sidebar-ring: #955f3b;
+  --alpha-5: #1e1a18f2;
+  --alpha-10: #1e1a18e6;
+  --alpha-20: #1e1a18cc;
+  --alpha-30: #1e1a18b3;
+  --alpha-40: #1e1a1899;
+  --alpha-50: #1e1a1880;
+  --alpha-60: #1e1a1866;
+  --alpha-70: #1e1a184d;
+  --alpha-80: #1e1a1833;
+  --alpha-90: #1e1a181a;
+  --alpha-95: #1e1a180d;
+
   /* ── Gruvbox green (idle status, success) ── */
   --color-green-50: #f4f3e6;
   --color-green-100: #e5e4c4;
@@ -176,6 +216,42 @@
   --ring: #d4896a;
   --output-document-font: KaTeX_Main, Georgia, "Times New Roman", serif;
 
+  /* ── Semantic tokens, best-guess warm-palette values (see light block note) ── */
+  --ring-offset: #1a1816;
+  --destructive-wash: #e07a64;
+  --destructive-wash-foreground: #1a1816;
+  --warning: #d79921;
+  --warning-foreground: #1a1816;
+  --warning-border: #d79921;
+  --info: #3f5878;
+  --info-foreground: #eef0f4;
+  --success: #3d3c0e;
+  --success-foreground: #d5d66c;
+  --chart-1: #d4896a;
+  --chart-2: #b8bb26;
+  --chart-3: #7a96b6;
+  --chart-4: #fabd2f;
+  --chart-5: #e07a64;
+  --sidebar: #201d1b;
+  --sidebar-foreground: #e8e2dc;
+  --sidebar-primary: #d4896a;
+  --sidebar-primary-foreground: #1a1816;
+  --sidebar-accent: #3a3533;
+  --sidebar-accent-foreground: #e8e2dc;
+  --sidebar-border: #3a3533;
+  --sidebar-ring: #d4896a;
+  --alpha-5: #e8e2dcf2;
+  --alpha-10: #e8e2dce6;
+  --alpha-20: #e8e2dccc;
+  --alpha-30: #e8e2dcb3;
+  --alpha-40: #e8e2dc99;
+  --alpha-50: #e8e2dc80;
+  --alpha-60: #e8e2dc66;
+  --alpha-70: #e8e2dc4d;
+  --alpha-80: #e8e2dc33;
+  --alpha-90: #e8e2dc1a;
+  --alpha-95: #e8e2dc0d;
+
   /* ── Gruvbox green (dark) ── */
   --color-green-50: #2a2a0a;
   --color-green-100: #3d3c0e;
@@ -313,6 +389,42 @@
     --border: rgba(255, 255, 255, 0.1);
     --input: rgba(255, 255, 255, 0.15);
     --ring: #d4896a;
+
+    /* ── Semantic tokens, best-guess warm-palette values (see light block note) ── */
+    --ring-offset: #1a1816;
+    --destructive-wash: #e07a64;
+    --destructive-wash-foreground: #1a1816;
+    --warning: #d79921;
+    --warning-foreground: #1a1816;
+    --warning-border: #d79921;
+    --info: #3f5878;
+    --info-foreground: #eef0f4;
+    --success: #3d3c0e;
+    --success-foreground: #d5d66c;
+    --chart-1: #d4896a;
+    --chart-2: #b8bb26;
+    --chart-3: #7a96b6;
+    --chart-4: #fabd2f;
+    --chart-5: #e07a64;
+    --sidebar: #201d1b;
+    --sidebar-foreground: #e8e2dc;
+    --sidebar-primary: #d4896a;
+    --sidebar-primary-foreground: #1a1816;
+    --sidebar-accent: #3a3533;
+    --sidebar-accent-foreground: #e8e2dc;
+    --sidebar-border: #3a3533;
+    --sidebar-ring: #d4896a;
+    --alpha-5: #e8e2dcf2;
+    --alpha-10: #e8e2dce6;
+    --alpha-20: #e8e2dccc;
+    --alpha-30: #e8e2dcb3;
+    --alpha-40: #e8e2dc99;
+    --alpha-50: #e8e2dc80;
+    --alpha-60: #e8e2dc66;
+    --alpha-70: #e8e2dc4d;
+    --alpha-80: #e8e2dc33;
+    --alpha-90: #e8e2dc1a;
+    --alpha-95: #e8e2dc0d;
 
     /* ── Gruvbox green (dark) ── */
     --color-green-50: #2a2a0a;
