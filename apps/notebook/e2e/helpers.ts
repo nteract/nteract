@@ -99,6 +99,8 @@ const screenshotSeq = new Map<string, number>();
  * Returns the absolute path so callers can log it.
  */
 export async function screenshot(page: Page, label?: string): Promise<string> {
+  if (process.env.CI) return "";
+
   const info = test.info();
   const seq = (screenshotSeq.get(info.testId) ?? 0) + 1;
   screenshotSeq.set(info.testId, seq);
@@ -108,7 +110,6 @@ export async function screenshot(page: Page, label?: string): Promise<string> {
   await fs.promises.mkdir(info.outputDir, { recursive: true });
   const filePath = path.join(info.outputDir, name);
   await page.screenshot({ path: filePath, fullPage: false });
-  // Also attach to the Playwright report so it shows up in traces / HTML report.
   await info.attach(safeLabel || `frame-${index}`, { path: filePath, contentType: "image/png" });
   return filePath;
 }
