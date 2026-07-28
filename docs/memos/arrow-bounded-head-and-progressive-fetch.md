@@ -116,9 +116,34 @@ already computes the right shape, so the producer sets `complete: false`,
 `sampled: true`, `sample_strategy: "head"`, and a truthful `total_rows` against
 a smaller `included_rows`. Consumers that already read `summary` need no change.
 
-Byte budget rather than row count. A 200-row slice of a text dataset is
-kilobytes; 200 rows of PerceptionBench is over 80 MB. The slice should shrink
-until it fits the budget.
+The size rule is a clamp, not a plain budget. Measured row sizes span roughly
+four orders of magnitude:
+
+| Shape | Rows | Bytes/row | Rows at 8 MB | Rows at 64 MB |
+| --- | --- | --- | --- | --- |
+| PerceptionBench (images) | 3,000 | 542 KB | 15 | 123 |
+| Text (~230 B rows) | 50,000 | 240 B | 34,952 | all 50,000 |
+| Skinny numeric (8x int64) | 100,000 | 64 B | all 100,000 | all 100,000 |
+
+A single byte budget serves neither end. At 8 MiB the image dataset yields 15
+rows, which is not a screenful. At 64 MiB the skinny table ships millions of
+rows nobody asked for. So:
+
+```
+rows = clamp(byte_budget / bytes_per_row, MIN_ROWS, MAX_ROWS)
+```
+
+With `MIN_ROWS = 100`, `byte_budget = 16 MiB`, and `MAX_ROWS = 50_000`, images
+clamp up to 100 rows and both text and skinny clamp down to 50,000.
+
+`MIN_ROWS` makes the byte budget soft, so it needs a hard ceiling above it or a
+5 MB/row video dataset would send 500 MB to honor the floor. `_MAX_PAYLOAD_BYTES`
+is already declared at 90 MiB and currently unreachable; this is the job it was
+written for. When the floor exceeds it, the slice shrinks below `MIN_ROWS`.
+
+`MAX_ROWS` is not a byte concern. Sift's scroll spacer hits browser
+element-height limits on million-row tables (`arrow-native-outputs.md`), so the
+renderer should not receive unbounded rows even when they are cheap.
 
 The renderer surfaces the cap rather than implying the table ended. `complete:
 false` already flows to `setStreamingDone`, so the footer needs to distinguish
@@ -138,6 +163,21 @@ and append only the new chunks.
 Key the effect on identity plus count rather than on every chunk hash. Retain
 the full-hash comparison as the correctness check that decides append versus
 rebuild, so a genuinely different manifest still rebuilds.
+
+Value-keying already works and is covered: `react.test.tsx` asserts that a new
+manifest object with identical content does not reload. The uncovered case is
+extension, and a probe that grows a manifest one chunk at a time measures the
+cost:
+
+| Chunks in manifest | Stores created | Total appends | Total fetches |
+| --- | --- | --- | --- |
+| 1 | 1 | 1 | 1 |
+| 4 | 4 | 10 | 10 |
+| 5 | 5 | 15 | 15 |
+
+Appends follow `N(N+1)/2`. A 200-chunk manifest costs 200 stores and 20,100
+fetches. The resolution layer is correct about identity and wrong about
+extension: it treats "one more chunk" as "a different table".
 
 This removes the O(N²) behavior and is a prerequisite for step 3. It is
 self-contained in `packages/sift` and testable without a kernel.
@@ -183,13 +223,13 @@ now" is the question to settle before the shape is fixed.
 
 ## Open Questions
 
-1. Default budget. 90 MiB matches the existing constant but is large for a
-   first paint. A smaller initial budget with push-driven follow-on chunks may
-   serve better once step 2 lands.
-2. Whether `complete: false` alone is enough for the renderer to distinguish a
+1. Whether `complete: false` alone is enough for the renderer to distinguish a
    capped table from one still receiving chunks, or whether the summary needs an
    explicit reason.
-3. `dx` naming. `DX_MAX_PAYLOAD_BYTES` and the `nteract.dx.*` comm namespace
+2. `dx` naming. `DX_MAX_PAYLOAD_BYTES` and the `nteract.dx.*` comm namespace
    predate the launcher owning this path. Worth deciding whether new surface
    inherits that prefix or takes a launcher-native name.
-4. Step 3 retention, per above.
+3. Step 3 retention, per above.
+4. Whether `MIN_ROWS`, `byte_budget`, and `MAX_ROWS` should be configurable per
+   host. Hosted viewers pay real network cost for a budget that is nearly free
+   on a desktop loopback blob server.
