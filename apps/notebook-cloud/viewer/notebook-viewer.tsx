@@ -31,6 +31,7 @@ import {
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
+  NotebookWorkstationsPanelAction,
   KernelLaunchErrorBanner,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   shouldShowKernelLaunchErrorBanner,
@@ -1581,6 +1582,14 @@ export function NotebookViewer({
             pairing={workstationPairing}
             onStartPairing={onStartPairing}
             onCancelPairing={onCancelPairing}
+          />
+        ) : undefined
+      }
+      workstationsPanelAction={
+        shouldShowCloudWorkstationsPanel ? (
+          <NotebookWorkstationsPanelAction
+            pairing={workstationPairing}
+            onStartPairing={onStartPairing}
           />
         ) : undefined
       }
