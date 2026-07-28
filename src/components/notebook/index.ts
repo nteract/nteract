@@ -262,12 +262,18 @@ export {
 } from "./NotebookPackageSummaryPanel";
 export {
   NotebookWorkstationsPanel,
-  PairingCommandList,
-  PairingCountdown,
-  type NotebookWorkstationPairingCommandView,
-  type NotebookWorkstationPairingView,
   type NotebookWorkstationsPanelProps,
 } from "./NotebookWorkstationsPanel";
+export {
+  WorkstationConnectDialog,
+  type NotebookWorkstationPairingCommandView,
+  type NotebookWorkstationPairingView,
+  type WorkstationConnectDialogProps,
+} from "./WorkstationConnectDialog";
+export {
+  WorkstationComputeNotice,
+  shouldShowWorkstationComputeNotice,
+} from "./WorkstationComputeNotice";
 export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";
 export { NotebookReadOnlyView, type NotebookReadOnlyViewProps } from "./NotebookReadOnlyView";
 export {
