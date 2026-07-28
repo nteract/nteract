@@ -487,7 +487,9 @@ jobs:
 
       - name: Install MCP client SDK
         shell: pwsh
-        run: pip install "mcp>=1.0"
+        # Capped below 2.0: it renames result fields to snake_case
+        # (`isError` -> `is_error`), which scripts/smoke-mcp.py still reads.
+        run: pip install "mcp>=1.0,<2"
 
       - name: Run daemon and smoke (single step)
         # Variant 1: keep the daemon and the smoke script inside one step,
@@ -695,7 +697,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install MCP client SDK
-        run: pip install "mcp>=1.0"
+        # Capped below 2.0: it renames result fields to snake_case
+        # (`isError` -> `is_error`), which scripts/smoke-mcp.py still reads.
+        run: pip install "mcp>=1.0,<2"
 
       - name: Run daemon and smoke
         timeout-minutes: 15
