@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test, type TestInfo } from "@playwright/test";
 
 // Wall-clock time (ms) at which each test's video effectively began recording,
 // keyed by testId. Playwright starts recording at context creation and offers no
@@ -8,15 +8,60 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 // time to a sidecar file so show-video.mjs can trim the boring load prefix.
 const recordingStarts = new Map<string, number>();
 
+// Recording mode (NTERACT_E2E_RECORD=1) turns on the video viewport/zoom in
+// playwright.config.ts plus pacing pauses and screenshot capture below, so a
+// normal suite run produces no video, no PNGs, and no pacing delay.
+const recording = /^(1|true|yes|on)$/i.test(process.env.NTERACT_E2E_RECORD ?? "");
+
 function markRecordingStart() {
   recordingStarts.set(test.info().testId, Date.now());
 }
 
+// Counterpart to the 1200x800 recording viewport set in playwright.config.ts:
+// zoom the UI 2x so the video frames the same content a compact 600x400 window
+// would, at full retina density. Playwright's recorder ignores
+// deviceScaleFactor, so CSS zoom is the only way to record above 1x.
+async function applyVideoZoom(page: Page) {
+  await page.addInitScript(() => {
+    const applyZoom = () => {
+      document.documentElement.style.setProperty("zoom", "2");
+    };
+    if (document.documentElement) applyZoom();
+    else document.addEventListener("DOMContentLoaded", applyZoom);
+  });
+}
+
+function slug(text: string) {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 /**
- * Low-level primitive: record "the trimmed clip starts *now*." Writes the offset
- * (seconds, relative to navigation start) to `video-trim.txt` in the test's
- * output dir, next to `video.webm`; show-video.mjs seeks past it before the 2x
- * speed-up. Called again later, the latest offset wins.
+ * Where show-video.mjs should archive this test's clip, as path segments:
+ * spec file, then each describe/test title. Playwright's own output dir flattens
+ * all of this into one dash-joined string, which is unreadable when a describe
+ * restates the filename ("add-cell-add-cell-..."); nesting keeps the structure
+ * and groups a spec's before/after clips in one folder.
+ */
+function archiveSegments(info: TestInfo) {
+  const specFile = path.basename(info.file);
+  const spec = specFile.replace(/\.spec\.[jt]s$/, "");
+  // titlePath leads with the spec filename (and, per the docs, possibly the
+  // project name) before the describe/test titles. Drop those by identity rather
+  // than by a fixed count, so we neither keep a duplicate nor eat a real title.
+  const titles = info.titlePath.filter((part) => part !== specFile && part !== info.project.name);
+  return [spec, ...titles].map(slug).filter(Boolean);
+}
+
+/**
+ * Low-level primitive: record "the trimmed clip starts *now*." Writes the trim
+ * offset (seconds, relative to navigation start) plus the archive path to
+ * `video-meta.json` in the test's output dir, next to `video.webm`;
+ * show-video.mjs seeks past the offset before the 2x speed-up. Called again
+ * later, the latest offset wins. A no-op when not recording.
  *
  * Prefer a named `mark*Ready` helper below: each waits for a specific readiness
  * signal *before* stamping the clip start, so the mark's meaning is verified
@@ -24,35 +69,29 @@ function markRecordingStart() {
  * Reach for this raw primitive only for a surface that has no named helper yet.
  */
 export async function markClipStart(): Promise<void> {
+  if (!recording) return;
+
   const info = test.info();
   const start = recordingStarts.get(info.testId);
-  if (start == null) return;
+  if (start == null) {
+    console.warn(
+      "markClipStart: no recording start for this test — navigate via " +
+        "openNotebookRoom/openNotebookPath/waitForNotebookReady. Video will not be trimmed.",
+    );
+    return;
+  }
   // Small safety margin so we never cut into the first interaction.
-  const offsetSeconds = Math.max(0, (Date.now() - start) / 1000 - 0.25);
+  const trimSeconds = Math.max(0, (Date.now() - start) / 1000 - 0.25);
   await fs.promises.mkdir(info.outputDir, { recursive: true });
   await fs.promises.writeFile(
-    path.join(info.outputDir, "video-trim.txt"),
-    offsetSeconds.toFixed(3),
+    path.join(info.outputDir, "video-meta.json"),
+    JSON.stringify(
+      { trimSeconds: Number(trimSeconds.toFixed(3)), segments: archiveSegments(info) },
+      null,
+      2,
+    ),
     "utf8",
   );
-}
-
-/**
- * Clip starts once the notebook doc is synced and the runtime session is ready —
- * cells render and the toolbar is live, but the kernel may still be launching.
- * Use for flows that edit the document without executing (add/reorder/delete
- * cells, markdown). Asserts `data-notebook-synced` + `data-session-ready`.
- */
-export async function markCellsReady(page: Page, timeout = 120_000): Promise<void> {
-  await expect(page.locator("[data-notebook-synced]")).toHaveAttribute(
-    "data-notebook-synced",
-    "true",
-    { timeout },
-  );
-  await expect(page.locator("[data-session-ready]")).toHaveAttribute("data-session-ready", "true", {
-    timeout,
-  });
-  await markClipStart();
 }
 
 /**
@@ -65,24 +104,21 @@ export async function markKernelReady(page: Page, timeout = 120_000): Promise<vo
 }
 
 /**
- * Clip starts once the comments/Discussions panel is mounted and its composer is
- * ready. Use for comment/@ana flows. Requires `enable_comments: true`. Opens the
- * rail if it isn't already open, then asserts the composer textbox is visible.
+ * Sleep only while recording, to pace the video (let a state be readable before
+ * the next interaction). A no-op otherwise, so pacing never slows real runs.
  */
-export async function markCommentsReady(page: Page, timeout = 30_000): Promise<void> {
-  const panel = page.getByTestId("notebook-comments-panel");
-  if ((await panel.count()) === 0) {
-    await page.getByRole("button", { name: "Discussions" }).click();
-  }
-  await expect(panel.getByRole("textbox", { name: /add a comment/i })).toBeVisible({ timeout });
-  await markClipStart();
+export async function pauseForVideo(page: Page, ms = 1_000): Promise<void> {
+  if (!recording) return;
+  await page.waitForTimeout(ms);
 }
 
 // Monotonic counter per test so unlabeled screenshots still sort in call order.
 const screenshotSeq = new Map<string, number>();
 
 /**
- * Capture a full-page screenshot at the current moment for agent inspection.
+ * Capture a screenshot at the current moment for agent inspection. Only writes
+ * in recording mode (NTERACT_E2E_RECORD=1) — a normal suite run produces no
+ * PNGs, so specs can keep their marks without every run littering artifacts.
  *
  * The video (video.webm) records the whole flow for humans; these PNGs are the
  * artifact an agent can actually Read. Drop a `screenshot("label")` call at each
@@ -96,17 +132,17 @@ const screenshotSeq = new Map<string, number>();
  * Files land in the test's output dir (gitignored test-results/<test>/) as
  * `frame-<label>.png`, so they never collide across worktrees and never commit.
  * The label is sanitized; if omitted, an auto-incrementing index is used.
- * Returns the absolute path so callers can log it.
+ * Returns the absolute path, or "" when not recording.
  */
 export async function screenshot(page: Page, label?: string): Promise<string> {
-  if (process.env.CI) return "";
+  if (!recording) return "";
 
   const info = test.info();
   const seq = (screenshotSeq.get(info.testId) ?? 0) + 1;
   screenshotSeq.set(info.testId, seq);
   const index = String(seq).padStart(2, "0");
   const safeLabel = label ? label.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") : "";
-  const name = safeLabel ? `frame-${safeLabel}.png` : `frame-${index}.png`;
+  const name = `frame-${index}${safeLabel ? `-${safeLabel}` : ""}.png`;
   await fs.promises.mkdir(info.outputDir, { recursive: true });
   const filePath = path.join(info.outputDir, name);
   await page.screenshot({ path: filePath, fullPage: false });
@@ -139,6 +175,7 @@ export interface ExecutionPerformanceSnapshot {
 
 export async function waitForNotebookReady(page: Page, path = "/") {
   markRecordingStart();
+  if (recording) await applyVideoZoom(page);
   await page.goto(path);
   await expect(page.getByTestId("notebook-toolbar")).toBeVisible({ timeout: 30_000 });
   // NotebookView marks sync complete once loading has finished without a load

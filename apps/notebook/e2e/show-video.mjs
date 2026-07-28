@@ -1,6 +1,9 @@
 /**
  * Find the most recent Playwright video for a spec (or test title pattern),
- * encode a 2x-speed lossless copy with ffmpeg, and open it.
+ * encode a 2x-speed copy with ffmpeg, and open it.
+ *
+ * Videos only exist for runs made in recording mode:
+ *   NTERACT_E2E_RECORD=1 node e2e/run-browser-e2e.mjs <spec>
  *
  * The encoded copy is archived to a persistent, gitignored `e2e/recordings/`
  * dir under a unique timestamped name, so re-running a spec never clobbers a
@@ -9,232 +12,128 @@
  * anything written next to it does NOT survive a re-run; recordings/ does.)
  *
  * Usage:
- *   node e2e/show-video.mjs [spec-or-pattern] [--serve]
+ *   node e2e/show-video.mjs [spec-or-pattern]
  *
  * Examples:
  *   node e2e/show-video.mjs                        # most recent video overall
  *   node e2e/show-video.mjs ana-comment            # match dir name substring
  *   node e2e/show-video.mjs ana-comment.spec.ts    # same, strips extension
- *   node e2e/show-video.mjs add-cell --serve       # serve over http (if file:// media is blocked)
- *
- * By default the viewer opens over file://. Some browsers refuse to load
- * file:// media from a file:// page; pass --serve to open over http instead,
- * backed by a shared, machine-wide localhost server (video-server.mjs) rooted at
- * the common ancestor of all worktrees. The first --serve spawns it detached; all
- * later runs (from any worktree) reuse the same process and port.
  */
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { deriveDocRoot, derivePort } from "./video-server.mjs";
+import { newestResultDir, resultsDir } from "./test-results.mjs";
 
-const appRoot = path.resolve(
-	path.dirname(fileURLToPath(import.meta.url)),
-	"..",
-);
-const resultsDir = path.join(appRoot, "test-results");
+const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const recordingsDir = path.join(appRoot, "e2e", "recordings");
 const viewerHtml = path.join(appRoot, "e2e", "video-viewer.html");
-const videoServer = path.join(appRoot, "e2e", "video-server.mjs");
 
-// --serve is a flag anywhere in argv; the first non-flag arg is the pattern.
-const argv = process.argv.slice(2);
-const serve = argv.includes("--serve");
-const rawPattern = argv.find((a) => !a.startsWith("--")) ?? undefined;
+const rawPattern = process.argv.slice(2).find((a) => !a.startsWith("--"));
 
-// Build a file:// URL to video-viewer.html carrying the recording's absolute
-// path as URL-safe base64 in ?v=. The viewer scales the 2x-density video down
-// to intrinsicWidth / devicePixelRatio, so it renders at the compact size the
-// spec framed for and stays crisp on retina — unlike QuickTime, which shows the
-// raw pixels oversized. Base64 sidesteps spaces/special chars in the path.
-function viewerUrlFor(absVideoPath) {
-	const b64 = Buffer.from(absVideoPath, "utf8")
-		.toString("base64")
-		.replace(/\+/g, "-")
-		.replace(/\//g, "_")
-		.replace(/=+$/, "");
-	return `file://${viewerHtml}?v=${b64}`;
-}
+// Write a viewer page next to the recording that references it by relative
+// filename, then open that page. The viewer scales the 2x-density video down to
+// intrinsicWidth / devicePixelRatio, so it renders at the compact size the spec
+// framed for and stays crisp on retina — unlike QuickTime, which shows the raw
+// pixels oversized.
+//
+// The video filename can't be passed as a ?v= query param: macOS `open` treats
+// a file:// URL as a path and silently strips the query string, so the page
+// would always load with no video.
+function openViewer(absVideoPath) {
+  const template = fs.readFileSync(viewerHtml, "utf8");
+  const videoFile = path.basename(absVideoPath);
+  const page = template.replace(/"__VIDEO_FILE__"/, JSON.stringify(videoFile));
+  const pagePath = absVideoPath.replace(/\.webm$/, ".html");
+  fs.writeFileSync(pagePath, page, "utf8");
 
-// Probe the shared video-server's /__health and return its doc root, or null if
-// nothing healthy is listening on `port`.
-async function probeServer(port) {
-	try {
-		const res = await fetch(`http://127.0.0.1:${port}/__health`, {
-			signal: AbortSignal.timeout(1000),
-		});
-		if (!res.ok) return null;
-		const body = await res.json();
-		return typeof body.root === "string" ? body.root : null;
-	} catch {
-		return null;
-	}
-}
-
-// Ensure the shared, machine-wide video-server is running and return its
-// { port, docRoot }. Reuses an already-healthy server (so all worktrees converge
-// on one process); otherwise spawns video-server.mjs detached so it outlives this
-// CLI, and waits for its /__health to come up.
-async function ensureServer() {
-	const docRoot = deriveDocRoot(appRoot);
-	const port = derivePort(docRoot);
-
-	const existing = await probeServer(port);
-	if (existing) return { port, docRoot: existing, reused: true };
-
-	const child = spawn(
-		"node",
-		[videoServer, "--root", docRoot, "--port", String(port)],
-		{
-			detached: true,
-			stdio: "ignore",
-		},
-	);
-	child.unref();
-
-	// Poll /__health until the detached server answers (or give up after ~5s).
-	for (let i = 0; i < 50; i++) {
-		const root = await probeServer(port);
-		if (root) return { port, docRoot: root, reused: false };
-		await new Promise((r) => setTimeout(r, 100));
-	}
-	throw new Error(`video-server did not come up on port ${port}`);
-}
-
-// Ensure the shared server is up, then open the viewer over http pointed at the
-// recording. Both the viewer HTML and the recording are addressed by their path
-// relative to the shared doc root, so one server reaches every worktree.
-async function serveAndOpen(absVideoPath) {
-	const { port, docRoot, reused } = await ensureServer();
-	const base = `http://127.0.0.1:${port}`;
-	const rel = (p) =>
-		"/" +
-		path.relative(docRoot, p).split(path.sep).map(encodeURIComponent).join("/");
-	const videoUrl = `${base}${rel(absVideoPath)}`;
-	const url = `${base}${rel(viewerHtml)}?src=${encodeURIComponent(videoUrl)}`;
-	execFileSync("open", [url]);
-	console.log(
-		`${reused ? "Reusing" : "Started"} shared video-server: ${base} (root ${docRoot})`,
-	);
-	console.log(`Viewer (proper scale on retina): ${url}`);
+  execFileSync("open", [pagePath]);
+  console.log(`Viewer (proper scale on retina): ${pagePath}`);
 }
 
 // Sortable, filesystem-safe local timestamp (YYYYMMDD-HHMMSS) so archived
 // recordings list in chronological order and never collide across runs.
 function timestamp() {
-	const d = new Date();
-	const p = (n) => String(n).padStart(2, "0");
-	return (
-		`${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
-		`-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
-	);
-}
-
-// Normalize: strip .spec.ts, .spec.js suffixes and use as substring match.
-const pattern = rawPattern
-	? rawPattern.replace(/\.spec\.[jt]s$/, "").toLowerCase()
-	: null;
-
-function findVideos() {
-	if (!fs.existsSync(resultsDir)) return [];
-	const entries = fs.readdirSync(resultsDir, { withFileTypes: true });
-	const dirs = entries
-		.filter((e) => e.isDirectory())
-		.map((e) => e.name)
-		.filter((name) => !pattern || name.toLowerCase().includes(pattern));
-
-	const videos = [];
-	for (const dir of dirs) {
-		const videoPath = path.join(resultsDir, dir, "video.webm");
-		if (fs.existsSync(videoPath)) {
-			const { mtimeMs } = fs.statSync(videoPath);
-			videos.push({ dir, videoPath, mtimeMs });
-		}
-	}
-	return videos.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+    `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  );
 }
 
 function hasFfmpeg() {
-	const result = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" });
-	return result.status === 0;
+  const result = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" });
+  return result.status === 0;
 }
 
-const videos = findVideos();
-
-if (videos.length === 0) {
-	const hint = pattern ? ` matching "${pattern}"` : "";
-	console.error(`No videos found in ${resultsDir}${hint}.`);
-	console.error("Run the spec first: node e2e/run-browser-e2e.mjs <spec>");
-	process.exit(1);
+const found = newestResultDir(rawPattern, (f) => f === "video.webm");
+if (!found) {
+  console.error(`No videos found in ${resultsDir}.`);
+  console.error("Record the spec first: NTERACT_E2E_RECORD=1 node e2e/run-browser-e2e.mjs <spec>");
+  process.exit(1);
 }
 
-const { videoPath, dir } = videos[0];
-if (videos.length > 1) {
-	console.log(`Found ${videos.length} videos — using most recent: ${dir}`);
+const videoPath = path.join(found.dir, "video.webm");
+
+// markClipStart() writes video-meta.json next to the video: `trimSeconds` (when
+// the app became ready, so we can cut the boring load prefix) and `segments`
+// (the archive path as spec/describe/test parts). Absent if the spec never
+// marked a clip start.
+function readMeta(videoFile) {
+  const metaFile = path.join(path.dirname(videoFile), "video-meta.json");
+  if (!fs.existsSync(metaFile)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(metaFile, "utf8"));
+  } catch {
+    return {};
+  }
 }
 
-// Archive into the persistent recordings dir under a unique, sortable name
-// (spec dir + timestamp) so a re-run of the same spec keeps prior clips around.
-fs.mkdirSync(recordingsDir, { recursive: true });
-const outPath = path.join(recordingsDir, `${dir}-${timestamp()}-2x.webm`);
+const meta = readMeta(videoPath);
+const trimStart = Number.isFinite(meta.trimSeconds) && meta.trimSeconds > 0 ? meta.trimSeconds : 0;
 
-// Specs can drop a `video-trim.txt` (seconds) next to the video to mark when the
-// app became ready for typing. Trim that boring load prefix before speeding up.
-function readTrimStart(videoFile) {
-	const trimFile = path.join(path.dirname(videoFile), "video-trim.txt");
-	if (!fs.existsSync(trimFile)) return 0;
-	const seconds = Number.parseFloat(fs.readFileSync(trimFile, "utf8").trim());
-	return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
-}
+// Archive into the persistent recordings dir, nested by spec/test so a spec's
+// before/after clips group together, and timestamped so a re-run never clobbers
+// a prior one. Falls back to Playwright's flat dir name if the spec never marked
+// a clip start (no video-meta.json).
+const segments = meta.segments?.length ? meta.segments : [found.name];
+const outDir = path.join(recordingsDir, ...segments.slice(0, -1));
+fs.mkdirSync(outDir, { recursive: true });
+const outPath = path.join(outDir, `${segments.at(-1)}-${timestamp()}.webm`);
 
 if (hasFfmpeg()) {
-	const trimStart = readTrimStart(videoPath);
-	const trimNote =
-		trimStart > 0 ? ` (trimming first ${trimStart.toFixed(1)}s)` : "";
-	console.log(`Encoding 2x lossless → ${path.basename(outPath)}${trimNote}`);
-	// `-ss` before `-i` seeks to the ready-for-typing point; setpts then resets the
-	// trimmed clip's timestamps to zero before the 2x speed-up.
-	const seekArgs = trimStart > 0 ? ["-ss", trimStart.toFixed(3)] : [];
-	execFileSync(
-		"ffmpeg",
-		[
-			...seekArgs,
-			"-i",
-			videoPath,
-			"-vf",
-			"setpts=0.5*PTS",
-			"-c:v",
-			"vp9",
-			"-lossless",
-			"1",
-			"-y",
-			outPath,
-		],
-		{ stdio: ["ignore", "ignore", "pipe"] },
-	);
-	console.log(`Done. Video: ${outPath}`);
-	console.log(
-		`Kept in ${path.relative(appRoot, recordingsDir)}/ — prior recordings preserved.`,
-	);
-	if (serve) {
-		await serveAndOpen(outPath);
-	} else {
-		const url = viewerUrlFor(outPath);
-		execFileSync("open", [url]);
-		console.log(`Viewer (proper scale on retina): ${url}`);
-	}
+  const trimNote = trimStart > 0 ? ` (trimming first ${trimStart.toFixed(1)}s)` : "";
+  console.log(`Encoding 2x → ${path.basename(outPath)}${trimNote}`);
+  // `-ss` before `-i` seeks to the ready-for-typing point; setpts then resets the
+  // trimmed clip's timestamps to zero before the 2x speed-up.
+  const seekArgs = trimStart > 0 ? ["-ss", trimStart.toFixed(3)] : [];
+  execFileSync(
+    "ffmpeg",
+    [
+      ...seekArgs,
+      "-i",
+      videoPath,
+      "-vf",
+      "setpts=0.5*PTS",
+      "-c:v",
+      "libvpx-vp9",
+      "-crf",
+      "30",
+      "-b:v",
+      "0",
+      "-y",
+      outPath,
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  console.log(`Done. Video: ${outPath}`);
+  console.log(`Kept in ${path.relative(appRoot, recordingsDir)}/ — prior recordings preserved.`);
+  openViewer(outPath);
 } else {
-	console.warn("ffmpeg not found — archiving original speed video.");
-	const originalOut = outPath.replace(/-2x\.webm$/, ".webm");
-	fs.copyFileSync(videoPath, originalOut);
-	console.log(`Done. Video: ${originalOut}`);
-	if (serve) {
-		await serveAndOpen(originalOut);
-	} else {
-		const url = viewerUrlFor(originalOut);
-		execFileSync("open", [url]);
-		console.log(`Viewer (proper scale on retina): ${url}`);
-	}
+  console.warn("ffmpeg not found — archiving original speed video.");
+  fs.copyFileSync(videoPath, outPath);
+  console.log(`Done. Video: ${outPath}`);
+  openViewer(outPath);
 }

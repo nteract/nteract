@@ -1,4 +1,12 @@
 <!doctype html>
+<!--
+  Template for the recording viewer. show-video.mjs copies this next to the
+  encoded .webm in e2e/recordings/ and substitutes the placeholder below with
+  the video's filename, so the page references it by *relative* path.
+
+  Why not a ?v= query param: macOS `open` treats a file:// URL as a path and
+  silently strips the query string, so the page would always load with no video.
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -19,7 +27,11 @@
         gap: 12px;
         background: #111;
         color: #ddd;
-        font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font:
+          13px/1.4 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
         padding: 24px;
         box-sizing: border-box;
       }
@@ -28,8 +40,7 @@
        * crisp on retina. Displaying it at its intrinsic CSS size would be twice
        * as large as intended, so we scale it down to intrinsicWidth / dpr:
        * on a 2x display that maps one video pixel to one physical pixel — the
-       * compact framing the spec designed for, at full sharpness. JS sets the
-       * width once metadata loads; --scale lets you override the divisor.
+       * compact framing the spec designed for, at full sharpness.
        */
       video {
         display: block;
@@ -48,9 +59,6 @@
         max-width: 80vw;
         text-align: center;
       }
-      a {
-        color: #82b1ff;
-      }
     </style>
   </head>
   <body>
@@ -59,83 +67,29 @@
     <div id="error"></div>
 
     <script>
-      // Query params:
-      //   ?v=<base64 of absolute path>   (URL-safe base64, tolerant of spaces)
-      //   ?path=<uri-encoded absolute path>
-      //   ?scale=<number>   divisor for the display size; default = devicePixelRatio
-      const params = new URLSearchParams(location.search);
+      const VIDEO_FILE = "__VIDEO_FILE__";
+
       const video = document.getElementById("video");
       const meta = document.getElementById("meta");
       const errorEl = document.getElementById("error");
 
-      function decodeBase64Path(value) {
-        // Accept URL-safe base64 and restore standard alphabet + padding.
-        let b64 = value.replace(/-/g, "+").replace(/_/g, "/");
-        while (b64.length % 4) b64 += "=";
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        return new TextDecoder().decode(bytes);
-      }
+      video.src = encodeURIComponent(VIDEO_FILE);
 
-      function toFileUrl(absPath) {
-        // Encode each segment so spaces/special chars are valid, keep the slashes.
-        const encoded = absPath
-          .split("/")
-          .map((seg) => encodeURIComponent(seg))
-          .join("/");
-        return "file://" + (encoded.startsWith("/") ? "" : "/") + encoded;
-      }
+      const dpr = window.devicePixelRatio || 1;
 
-      function fail(message) {
-        errorEl.textContent = message;
-      }
+      video.addEventListener("loadedmetadata", () => {
+        const cssWidth = video.videoWidth / dpr;
+        const cssHeight = video.videoHeight / dpr;
+        video.style.width = cssWidth + "px";
+        video.style.height = cssHeight + "px";
+        meta.innerHTML =
+          `${video.videoWidth}×${video.videoHeight} intrinsic → ` +
+          `${Math.round(cssWidth)}×${Math.round(cssHeight)} CSS (dpr ${dpr})<br>${VIDEO_FILE}`;
+      });
 
-      // Resolution order:
-      //   ?src=<url>              a ready-made URL (e.g. http:// when served) — used as-is
-      //   ?v=<base64 abs path>    file:// path, base64
-      //   ?path=<encoded path>    file:// path, uri-encoded
-      let absPath = null;
-      let src = null;
-      try {
-        if (params.has("src")) src = params.get("src");
-        else if (params.has("v")) absPath = decodeBase64Path(params.get("v"));
-        else if (params.has("path")) absPath = decodeURIComponent(params.get("path"));
-      } catch (e) {
-        fail("Could not decode the path param: " + e.message);
-      }
-
-      if (!src && !absPath) {
-        fail(
-          "No video. Open with ?src=<url>, ?v=<base64 abs path>, or ?path=<encoded abs path>. " +
-            "Tip: node e2e/show-video.mjs prints a ready-to-open viewer URL.",
-        );
-      } else {
-        if (!src) src = toFileUrl(absPath);
-        const label = absPath || src;
-        video.src = src;
-
-        const dpr = window.devicePixelRatio || 1;
-        const scaleParam = Number.parseFloat(params.get("scale"));
-        const divisor = Number.isFinite(scaleParam) && scaleParam > 0 ? scaleParam : dpr;
-
-        video.addEventListener("loadedmetadata", () => {
-          const cssWidth = video.videoWidth / divisor;
-          const cssHeight = video.videoHeight / divisor;
-          video.style.width = cssWidth + "px";
-          video.style.height = cssHeight + "px";
-          meta.innerHTML =
-            `${video.videoWidth}×${video.videoHeight} intrinsic → ` +
-            `${Math.round(cssWidth)}×${Math.round(cssHeight)} CSS ` +
-            `(dpr ${dpr}, divisor ${divisor})<br>${label}`;
-        });
-
-        video.addEventListener("error", () => {
-          fail(
-            "Failed to load the video. If the browser blocks file:// media, re-run with " +
-              "`node e2e/show-video.mjs --serve` to open it over http instead. Path: " +
-              label,
-          );
-        });
-      }
+      video.addEventListener("error", () => {
+        errorEl.textContent = "Failed to load the video: " + VIDEO_FILE;
+      });
     </script>
   </body>
 </html>
