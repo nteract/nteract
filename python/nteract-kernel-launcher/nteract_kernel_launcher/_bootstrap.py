@@ -61,6 +61,7 @@ from nteract_kernel_launcher._format import (
     has_arrow_stream_protocol,
     iter_arrow_stream_chunks,
 )
+from nteract_kernel_launcher._progressive import _summary_hints
 from nteract_kernel_launcher._refs import (
     BLOB_REF_MIME,
     BlobRef,
@@ -73,6 +74,9 @@ log = logging.getLogger("nteract_kernel_launcher")
 
 # Server-side blob ceiling is ~100 MiB; leave ~10 MiB for overhead.
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
+_ARROW_REPR_MIN_ROWS = int(os.environ.get("DX_ARROW_REPR_MIN_ROWS", "100"))
+_ARROW_REPR_BYTE_BUDGET = int(os.environ.get("DX_ARROW_REPR_BYTE_BUDGET", str(16 * 1024 * 1024)))
+_ARROW_REPR_MAX_ROWS = int(os.environ.get("DX_ARROW_REPR_MAX_ROWS", "50000"))
 _PLOTLY_RENDERER_ENTRYPOINTS = frozenset(
     {"plotly.express", "plotly.graph_objects", "plotly.graph_objs"}
 )
@@ -247,22 +251,47 @@ def _emit_arrow_stream(
     if not has_arrow_stream_protocol(source):
         return None
 
+    if total_rows is None:
+        total_rows = arrow_stream_row_count(source)
+
+    bounded_source = _bounded_arrow_table(source)
+    if bounded_source is not None:
+        source = bounded_source
+
     try:
-        chunks = list(
-            iter_arrow_stream_chunks(
-                source,
-                max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
-            )
+        chunks, stream_complete = _collect_arrow_chunks(
+            source,
+            bound_stream=bounded_source is None,
         )
+        while (
+            bounded_source is not None and sum(chunk.size for chunk in chunks) > _MAX_PAYLOAD_BYTES
+        ):
+            current_rows = bounded_source.num_rows
+            if current_rows == 0:
+                raise ValueError("Arrow schema exceeds the hard payload ceiling")
+            serialized_bytes = sum(chunk.size for chunk in chunks)
+            next_rows = min(
+                current_rows - 1,
+                current_rows * _MAX_PAYLOAD_BYTES // serialized_bytes,
+            )
+            bounded_source = bounded_source.slice(0, next_rows)
+            source = bounded_source
+            chunks, stream_complete = _collect_arrow_chunks(
+                source,
+                bound_stream=False,
+            )
     except Exception as exc:  # noqa: BLE001
         log.debug("arrow stream emit failed: %s", exc)
         return None
 
+    if not chunks:
+        log.debug("arrow stream emit produced no chunk within the repr ceiling")
+        return None
+
     included_rows = sum(chunk.row_count for chunk in chunks)
     if total_rows is None:
-        total_rows = arrow_stream_row_count(source)
-    if total_rows is None:
         total_rows = included_rows
+    complete = stream_complete and included_rows == total_rows
 
     def _summary(included: int, sampled: bool) -> str:
         if summary_fn is not None:
@@ -286,13 +315,144 @@ def _emit_arrow_stream(
             included_rows=included_rows,
             record_batch_count=chunk.record_batch_count,
             summary_fn=_summary,
+            complete=complete,
         )
 
     return _emit_arrow_stream_chunks(
         chunks,
         total_rows=total_rows,
         summary_fn=_summary,
+        complete=complete,
     )
+
+
+def _bounded_arrow_table(source: Any) -> Any | None:
+    """Return a measured, row-clamped Arrow head when ``source`` is sliceable.
+
+    Returns ``None`` when the head cannot be measured, which sends the source
+    down the streaming path in ``_collect_arrow_chunks``. That path bounds by
+    serialized chunk size and row count, so it needs no in-memory measurement.
+    ``Table.nbytes`` raises ``ArrowTypeError`` for ``string_view`` columns, the
+    layout Polars produces, so this is a reachable fallback rather than a
+    theoretical one.
+    """
+    try:
+        import pyarrow as pa
+    except Exception:
+        return None
+
+    if isinstance(source, pa.RecordBatch):
+        source = pa.Table.from_batches([source])
+    if not isinstance(source, pa.Table):
+        return None
+
+    total_rows = source.num_rows
+    if total_rows == 0:
+        return source
+
+    try:
+        budget_rows = _head_rows_within_bytes(
+            source,
+            byte_limit=_ARROW_REPR_BYTE_BUDGET,
+            max_rows=total_rows,
+        )
+        selected_rows = min(
+            total_rows,
+            max(
+                _ARROW_REPR_MIN_ROWS,
+                min(_ARROW_REPR_MAX_ROWS, budget_rows),
+            ),
+        )
+        selected_rows = _head_rows_within_bytes(
+            source,
+            byte_limit=_MAX_PAYLOAD_BYTES,
+            max_rows=selected_rows,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("arrow head measurement failed, falling back to stream bounds: %s", exc)
+        return None
+    return source.slice(0, selected_rows)
+
+
+def _head_rows_within_bytes(table: Any, *, byte_limit: int, max_rows: int) -> int:
+    """Find the largest measured head no larger than ``byte_limit``."""
+    low = 0
+    high = max(0, min(table.num_rows, max_rows))
+    while low < high:
+        middle = (low + high + 1) // 2
+        if table.slice(0, middle).nbytes <= byte_limit:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def _collect_arrow_chunks(
+    source: Any,
+    *,
+    bound_stream: bool,
+) -> tuple[list[Any], bool]:
+    """Collect chunks, stopping unknown/non-sliceable streams at repr limits."""
+    iterator = iter(
+        iter_arrow_stream_chunks(
+            source,
+            max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
+        )
+    )
+    chunks: list[Any] = []
+    included_rows = 0
+    included_bytes = 0
+
+    for chunk in iterator:
+        if bound_stream:
+            next_rows = included_rows + chunk.row_count
+            next_bytes = included_bytes + chunk.size
+            if next_rows > _ARROW_REPR_MAX_ROWS:
+                remaining_rows = _ARROW_REPR_MAX_ROWS - included_rows
+                if remaining_rows > 0:
+                    chunks.extend(
+                        _slice_arrow_chunk(
+                            chunk,
+                            row_count=remaining_rows,
+                            start_index=len(chunks),
+                        )
+                    )
+                return chunks, False
+            over_hard_limit = next_bytes > _MAX_PAYLOAD_BYTES
+            over_soft_limit = (
+                next_bytes > _ARROW_REPR_BYTE_BUDGET and included_rows >= _ARROW_REPR_MIN_ROWS
+            )
+            if over_hard_limit or over_soft_limit:
+                return chunks, False
+        chunks.append(chunk)
+        included_rows += chunk.row_count
+        included_bytes += chunk.size
+
+    return chunks, True
+
+
+def _slice_arrow_chunk(chunk: Any, *, row_count: int, start_index: int) -> list[Any]:
+    """Re-chunk a decoded head so non-sliceable sources still honor MAX_ROWS."""
+    import pyarrow as pa
+
+    table = pa.ipc.open_stream(pa.BufferReader(chunk.data)).read_all().slice(0, row_count)
+    pieces = list(
+        iter_arrow_stream_chunks(
+            table,
+            max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
+        )
+    )
+    return [
+        type(piece)(
+            index=start_index + offset,
+            data=piece.data,
+            content_hash=piece.content_hash,
+            size=piece.size,
+            row_count=piece.row_count,
+            record_batch_count=piece.record_batch_count,
+        )
+        for offset, piece in enumerate(pieces)
+    ]
 
 
 def _emit_arrow_stream_chunks(
@@ -300,24 +460,24 @@ def _emit_arrow_stream_chunks(
     *,
     total_rows: int,
     summary_fn: Callable[[int, bool], str],
+    complete: bool,
 ) -> dict:
-    """Emit a complete multi-chunk Arrow stream manifest."""
+    """Emit a multi-chunk Arrow stream manifest."""
     if not chunks:
         raise ValueError("at least one Arrow stream chunk is required")
     included_rows = sum(chunk.row_count for chunk in chunks)
-    sampled = included_rows != total_rows
+    summary_hints = _summary_hints(
+        total_rows=total_rows,
+        included_rows=included_rows,
+        complete=complete,
+    )
+    sampled = summary_hints["sampled"]
     llm_text: str | None = None
     try:
         llm_text = summary_fn(included_rows, sampled)
     except Exception as exc:  # noqa: BLE001
         log.debug("summary build failed: %s", exc)
 
-    summary_hints = {
-        "total_rows": total_rows,
-        "included_rows": included_rows,
-        "sampled": sampled,
-        "sample_strategy": "head" if sampled else "none",
-    }
     refs = [BlobRef(hash=chunk.content_hash, size=chunk.size) for chunk in chunks]
     bundle: dict[str, Any] = {
         BLOB_REF_MIME: build_multi_ref_bundle(
@@ -327,7 +487,7 @@ def _emit_arrow_stream_chunks(
         ),
         ARROW_STREAM_MANIFEST_MIME: build_arrow_stream_manifest_from_chunks(
             chunks,
-            complete=True,
+            complete=complete,
             summary=summary_hints,
         ),
     }
@@ -422,13 +582,21 @@ def _emit_table_bytes(
     included_rows: int,
     record_batch_count: int | None = None,
     summary_fn: Callable[[int, bool], str],
+    complete: bool | None = None,
 ) -> dict:
     """Stash bytes, build the ref bundle, attach a summary.
 
     ``summary_fn`` receives ``(included_rows, sampled)`` so per-domain
     summaries can name the sampling state honestly.
     """
-    sampled = included_rows != total_rows
+    if complete is None:
+        complete = included_rows == total_rows
+    summary_hints = _summary_hints(
+        total_rows=total_rows,
+        included_rows=included_rows,
+        complete=complete,
+    )
+    sampled = summary_hints["sampled"]
     llm_text: str | None = None
     try:
         llm_text = summary_fn(included_rows, sampled)
@@ -437,12 +605,6 @@ def _emit_table_bytes(
 
     h = hashlib.sha256(data).hexdigest()
     ref = BlobRef(hash=h, size=len(data))
-    summary_hints = {
-        "total_rows": total_rows,
-        "included_rows": included_rows,
-        "sampled": sampled,
-        "sample_strategy": "head" if sampled else "none",
-    }
     ref_bundle = build_ref_bundle(ref, content_type=content_type, summary=summary_hints)
     ref_bundle["buffer_index"] = 0
 
@@ -457,6 +619,7 @@ def _emit_table_bytes(
                 record_batch_count=record_batch_count,
                 summary=summary_hints,
             )
+            bundle[ARROW_STREAM_MANIFEST_MIME]["complete"] = complete
         except Exception as exc:  # noqa: BLE001
             log.debug("arrow manifest build failed: %s", exc)
     if llm_text is not None:

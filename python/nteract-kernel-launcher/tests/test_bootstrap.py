@@ -756,7 +756,7 @@ def test_emit_pyarrow_table_chunks_when_full_stream_exceeds_limit(monkeypatch):
     from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
     _buffer_hook.pending_buffers().clear()
-    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 1)
+    monkeypatch.setattr(_bootstrap, "DEFAULT_ARROW_CHUNK_BYTES", 1)
     table = _pa_table_with_hf_metadata()
 
     bundle = _bootstrap._arrow_stream_mimebundle(table)
@@ -777,6 +777,163 @@ def test_emit_pyarrow_table_chunks_when_full_stream_exceeds_limit(monkeypatch):
     assert [ref["hash"] for ref in refs] == [chunk["hash"] for chunk in manifest["chunks"]]
     for ref in refs:
         assert ref["hash"] in _buffer_hook.pending_buffers()
+
+
+def _rendered_arrow_table(bundle):
+    import io
+
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _buffer_hook
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    ref = bundle[BLOB_REF_MIME]
+    hashes = [item["hash"] for item in ref.get("refs", [ref])]
+    tables = [
+        pa.ipc.open_stream(io.BytesIO(_buffer_hook.pending_buffers()[hash_])).read_all()
+        for hash_ in hashes
+    ]
+    return pa.concat_tables(tables)
+
+
+def test_large_arrow_table_emits_bounded_head_with_honest_manifest(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    _buffer_hook.pending_buffers().clear()
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MIN_ROWS", 2)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 20)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 5)
+    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 1_000_000)
+    table = pa.table({"value": list(range(20))})
+
+    bundle = _bootstrap._arrow_stream_mimebundle(table)
+
+    assert bundle is not None
+    manifest = bundle[ARROW_STREAM_MANIFEST_MIME]
+    assert manifest["complete"] is False
+    assert manifest["summary"] == {
+        "total_rows": 20,
+        "included_rows": 2,
+        "sampled": True,
+        "sample_strategy": "head",
+    }
+    assert _rendered_arrow_table(bundle).column("value").to_pylist() == [0, 1]
+
+
+def test_small_arrow_table_is_unaffected_by_repr_bounds(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MIN_ROWS", 2)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 1_000)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 5)
+    table = pa.table({"value": [0, 1, 2]})
+
+    bundle = _bootstrap._arrow_stream_mimebundle(table)
+
+    assert bundle is not None
+    manifest = bundle[ARROW_STREAM_MANIFEST_MIME]
+    assert manifest["complete"] is True
+    assert manifest["summary"] == {
+        "total_rows": 3,
+        "included_rows": 3,
+        "sampled": False,
+        "sample_strategy": "none",
+    }
+    assert _rendered_arrow_table(bundle).num_rows == 3
+
+
+def test_fat_arrow_rows_clamp_up_to_min_rows(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MIN_ROWS", 10)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 100)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 50)
+    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 10_000)
+    table = pa.table({"value": ["x" * 50] * 100})
+
+    bundle = _bootstrap._arrow_stream_mimebundle(table)
+
+    assert bundle is not None
+    summary = bundle[ARROW_STREAM_MANIFEST_MIME]["summary"]
+    assert summary["included_rows"] == 10
+    assert summary["sampled"] is True
+
+
+def test_unmeasurable_table_degrades_instead_of_raising(monkeypatch):
+    """`Table.nbytes` raises for string_view, the layout Polars produces.
+
+    Head measurement runs before the emit try-block, so a measurement failure
+    must be swallowed by `_bounded_arrow_table` rather than propagating out of
+    the formatter. Serializing string_view is separately unsupported by the
+    installed pyarrow, so the bundle degrades to None; the point here is that
+    nothing raises.
+    """
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+
+    table = pa.table({"s": pa.array(["x" * 64] * 500, type=pa.string_view())})
+    try:
+        measurable = table.nbytes
+    except Exception:  # noqa: BLE001 - probing whether this build measures string_view
+        measurable = None
+    if measurable is not None:
+        pytest.skip("this pyarrow measures string_view tables; fallback not exercised")
+
+    # Falls back to the streaming path rather than raising out of the formatter.
+    assert _bootstrap._bounded_arrow_table(table) is None
+
+    # And the formatter as a whole degrades rather than raising.
+    assert _bootstrap._arrow_stream_mimebundle(table) is None
+
+
+def test_skinny_arrow_rows_clamp_down_to_max_rows(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MIN_ROWS", 2)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 1_000_000)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 25)
+    table = pa.table({"value": list(range(1_000))})
+
+    bundle = _bootstrap._arrow_stream_mimebundle(table)
+
+    assert bundle is not None
+    summary = bundle[ARROW_STREAM_MANIFEST_MIME]["summary"]
+    assert summary["included_rows"] == 25
+    assert summary["sampled"] is True
+
+
+def test_pathologically_fat_rows_shrink_below_min_for_hard_ceiling(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MIN_ROWS", 10)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 100)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 50)
+    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 700)
+    table = pa.table({"value": ["x" * 100] * 100})
+
+    bundle = _bootstrap._arrow_stream_mimebundle(table)
+
+    assert bundle is not None
+    manifest = bundle[ARROW_STREAM_MANIFEST_MIME]
+    summary = manifest["summary"]
+    assert 0 < summary["included_rows"] < 10
+    assert sum(chunk["size"] for chunk in manifest["chunks"]) <= 700
 
 
 def test_emit_pyarrow_record_batch_promotes_to_table():
