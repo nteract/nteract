@@ -500,6 +500,123 @@ describe("SiftTable", () => {
     vi.useFakeTimers();
   });
 
+  it("rebuilds rather than appending after another source takes over the engine", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true as const,
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      }),
+    );
+
+    const growing = (n: number): SiftSource => ({
+      kind: "arrow-stream-manifest",
+      manifest: {
+        chunks: Array.from({ length: n }, (_, i) => ({
+          url: `http://127.0.0.1:9000/blob/chunk-${i}`,
+          row_count: 100,
+        })),
+        complete: false,
+      },
+    });
+
+    const { rerender } = render(<SiftTable source={growing(1)} />);
+    await waitFor(() => {
+      expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
+    });
+
+    // `replaceData` frees the manifest store when this source takes the engine.
+    rerender(<SiftTable data={makeTableData([[1, "Alice", 95]])} />);
+    await waitFor(() => {
+      expect(predicateModule.free).toHaveBeenCalled();
+    });
+
+    // Returning to a manifest that looks like an extension must not append to
+    // the freed handle. It has to build a new store.
+    rerender(<SiftTable source={growing(2)} />);
+    await waitFor(() => {
+      expect(predicateModule.create_arrow_stream_store).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("clears a stale error once a later manifest update succeeds", async () => {
+    vi.useRealTimers();
+    let failNext = false;
+    vi.stubGlobal("fetch", () =>
+      failNext
+        ? Promise.resolve({ ok: false as const, status: 500, statusText: "boom" })
+        : Promise.resolve({
+            ok: true as const,
+            arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+          }),
+    );
+
+    const growing = (n: number, complete: boolean): SiftSource => ({
+      kind: "arrow-stream-manifest",
+      manifest: {
+        chunks: Array.from({ length: n }, (_, i) => ({
+          url: `http://127.0.0.1:9000/blob/chunk-${i}`,
+          row_count: 100,
+        })),
+        complete,
+      },
+    });
+
+    const { rerender, container } = render(<SiftTable source={growing(1, false)} />);
+    await waitFor(() => {
+      expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
+    });
+
+    failNext = true;
+    rerender(<SiftTable source={growing(2, false)} />);
+    await waitFor(() => {
+      expect(container.innerHTML).toMatch(/boom|Failed/i);
+    });
+
+    failNext = false;
+    rerender(<SiftTable source={growing(3, true)} />);
+    await waitFor(() => {
+      expect(predicateModule.finish_arrow_stream_store).toHaveBeenCalled();
+    });
+    expect(container.innerHTML).not.toMatch(/boom|Failed/i);
+  });
+
+  it("applies changed column overrides to a growing manifest", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true as const,
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      }),
+    );
+
+    const growing = (n: number): SiftSource => ({
+      kind: "arrow-stream-manifest",
+      manifest: {
+        chunks: Array.from({ length: n }, (_, i) => ({
+          url: `http://127.0.0.1:9000/blob/chunk-${i}`,
+          row_count: 100,
+        })),
+        complete: false,
+      },
+    });
+
+    const { rerender, container } = render(
+      <SiftTable source={growing(1)} columnOverrides={{ id: { label: "FIRST" } }} />,
+    );
+    await waitFor(() => {
+      expect(container.innerHTML).toMatch(/FIRST/);
+    });
+
+    // Overrides are applied while the store is built, so a change to them has
+    // to rebuild even though the manifest only grew.
+    rerender(<SiftTable source={growing(2)} columnOverrides={{ id: { label: "SECOND" } }} />);
+    await waitFor(() => {
+      expect(container.innerHTML).toMatch(/SECOND/);
+    });
+    expect(container.innerHTML).not.toMatch(/FIRST/);
+  });
+
   it("frees the WASM store on unmount after a manifest load", async () => {
     vi.useRealTimers();
     vi.stubGlobal("fetch", () =>

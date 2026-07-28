@@ -96,6 +96,8 @@ type ManifestStore = {
   tableData: TableData;
   columns: Column[];
   pandasIndexCols: Set<string>;
+  /** Overrides this store was built with. A change forces a rebuild. */
+  columnOverrides: Record<string, Partial<Column>> | undefined;
   finished: boolean;
   dispose: () => void;
 };
@@ -408,6 +410,11 @@ export function SiftTable({
     if (!dataSource || !containerRef.current) return;
     const startedAt = performance.now();
 
+    // This source now owns the engine. `replaceData` frees the manifest store
+    // it supersedes, so the ref must not outlive it: a later manifest that
+    // looked like an extension would otherwise append to a freed handle.
+    storeRef.current = null;
+
     if (engineRef.current) {
       engineRef.current.replaceData(dataSource);
       emitLoadMilestone(startedAt, {
@@ -636,6 +643,7 @@ export function SiftTable({
         tableData,
         columns,
         pandasIndexCols,
+        columnOverrides,
         finished: false,
         dispose: () => tableData.dispose?.(),
       };
@@ -645,16 +653,26 @@ export function SiftTable({
     }
 
     const existing = storeRef.current;
-    const run =
-      existing && extendsStore(existing, manifest)
-        ? appendRemainingChunks(existing)
-        : (() => {
-            // Not disposed here. The engine keeps rendering from the superseded
-            // store until the replacement mounts, and `replaceData` frees it at
-            // the swap. Disposing now would free the handle mid-render.
-            storeRef.current = null;
-            return loadFromManifest();
-          })();
+    // Column overrides are applied once, while the store is built. The append
+    // path cannot re-apply them to a mounted engine, so a change to them has to
+    // rebuild even when the manifest itself only grew.
+    const canExtend =
+      existing && existing.columnOverrides === columnOverrides && extendsStore(existing, manifest);
+    const run = canExtend
+      ? (() => {
+          // A previous run may have failed a chunk fetch and left the error
+          // showing. This attempt supersedes it; a fresh failure re-sets it.
+          setError(null);
+          setStatus("ready");
+          return appendRemainingChunks(existing);
+        })()
+      : (() => {
+          // Not disposed here. The engine keeps rendering from the superseded
+          // store until the replacement mounts, and `replaceData` frees it at
+          // the swap. Disposing now would free the handle mid-render.
+          storeRef.current = null;
+          return loadFromManifest();
+        })();
 
     run.catch((err) => {
       if (!cancelled) {
@@ -684,6 +702,10 @@ export function SiftTable({
   // - Arrow IPC: stream batches (existing behavior)
   useEffect(() => {
     if (!urlSource || !containerRef.current) return;
+
+    // See the `data` effect: this source takes over the engine, so the
+    // manifest store it supersedes must not stay reachable through the ref.
+    storeRef.current = null;
 
     const sourceUrl = urlSource;
     const startedAt = performance.now();
