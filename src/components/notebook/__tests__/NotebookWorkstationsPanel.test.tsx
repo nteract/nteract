@@ -5,7 +5,15 @@ import {
   projectNotebookWorkstationSelection,
   readOnlyNotebookShellCapabilities,
 } from "../capabilities";
-import { NotebookWorkstationsPanel } from "../NotebookWorkstationsPanel";
+import {
+  NotebookWorkstationsPanel,
+  NotebookWorkstationsPanelAction,
+} from "../NotebookWorkstationsPanel";
+
+// "Workstation details" is collapsed by default, so facts need an expand click.
+function expandWorkstationDetails() {
+  fireEvent.click(screen.getByRole("button", { name: "Workstation details" }));
+}
 
 const localReadyCapabilities: NotebookShellCapabilities = {
   ...readOnlyNotebookShellCapabilities,
@@ -80,6 +88,7 @@ const cloudPairingCommands = [
     id: "path",
     label: "Use installed CLI in this shell",
     command: 'export PATH="$HOME/.local/bin:$PATH"',
+    optional: true,
   },
   {
     id: "connect",
@@ -90,6 +99,7 @@ const cloudPairingCommands = [
     id: "run",
     label: "Linux user systemd service",
     command: "runt workstation service install --start",
+    recommended: true,
   },
   {
     id: "foreground-run",
@@ -102,10 +112,9 @@ const cloudPairingCommands = [
 describe("NotebookWorkstationsPanel", () => {
   it("renders a local executable runtime as a workstation target", () => {
     render(<NotebookWorkstationsPanel capabilities={localReadyCapabilities} />);
+    expandWorkstationDetails();
 
     expect(screen.queryByText("local-daemon")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "This machine" })).toBeVisible();
-    expect(screen.getByText("Ready")).toBeVisible();
     expect(screen.queryByText("The local daemon is available for this notebook.")).toBeNull();
     expect(screen.getByText("Local daemon")).toBeVisible();
     expect(screen.getByText("Notebook runtime")).toBeVisible();
@@ -154,15 +163,9 @@ describe("NotebookWorkstationsPanel", () => {
     };
 
     render(<NotebookWorkstationsPanel capabilities={capabilities} />);
+    expandWorkstationDetails();
 
     expect(screen.queryByText("workstation:none")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "No compute session" })).toBeVisible();
-    expect(screen.getByText("Offline")).toBeVisible();
-    expect(
-      screen.getByText(
-        "Start compute from a user-owned workstation to run cells in this notebook.",
-      ),
-    ).toBeVisible();
     expect(screen.getByText("Cloud room")).toBeVisible();
     expect(screen.queryByText("Kyle")).not.toBeInTheDocument();
     expect(screen.getByText("Not running")).toBeVisible();
@@ -233,7 +236,7 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.queryByTestId("workstation-registration-empty")).not.toBeInTheDocument();
   });
 
-  it("renders registered workstation targets with default and attach actions", () => {
+  it("lists registered workstations as icon, name, and status only", () => {
     const attached: string[] = [];
     const defaults: string[] = [];
     const selection = projectNotebookWorkstationSelection({
@@ -270,21 +273,126 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByText("id ws-lab2")).toBeVisible();
-    expect(screen.getByText("Lab2")).toBeVisible();
-    expect(screen.getByText("Default")).toBeVisible();
-    expect(screen.getByText("Env")).toBeVisible();
-    expect(screen.getByText("/home/ubuntu/project")).toBeVisible();
-    const attachButtons = screen.getAllByRole("button", { name: "Start" });
-    fireEvent.click(attachButtons[0]!);
-    expect(attached).toEqual(["ws-lab2"]);
+    expect(screen.getByRole("heading", { name: "Lab2" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Offline workstation" })).toBeVisible();
+    const rows = screen.getAllByTestId("registered-workstation");
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText("Online")).toBeVisible();
+    expect(within(rows[1]!).getByText("Offline")).toBeVisible();
 
-    expect(screen.getByText("Offline workstation")).toBeVisible();
-    expect(screen.getByText("No heartbeat from this workstation recently.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Set default" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Set default" }));
+    // Rows carry the status plus a right-aligned Start; no facts, ids, or defaults.
+    expect(screen.queryByText("id ws-lab2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Env")).not.toBeInTheDocument();
+    expect(screen.queryByText("/home/ubuntu/project")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No heartbeat from this workstation recently."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Set default" })).not.toBeInTheDocument();
+    expect(defaults).toEqual([]);
+
+    expect(within(rows[1]!).getByRole("button", { name: "Start" })).toBeDisabled();
+    fireEvent.click(within(rows[0]!).getByRole("button", { name: "Start" }));
+    expect(attached).toEqual(["ws-lab2"]);
+  });
+
+  it("opens details for the workstation picked from the list", () => {
+    const defaults: string[] = [];
+    const selection = projectNotebookWorkstationSelection({
+      canRegisterWorkstation: true,
+      canSelectWorkstation: true,
+      canSetDefaultWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [
+        {
+          id: "ws-lab2",
+          displayName: "Lab2",
+          defaultEnvironmentLabel: "Current Python",
+          environmentPolicy: "current_python",
+          provider: "runtime_peer",
+          status: "online",
+          workingDirectory: "/home/ubuntu/project",
+        },
+        {
+          id: "ws-offline",
+          displayName: "Offline workstation",
+          provider: "runtime_peer",
+          status: "offline",
+          statusMessage: "No heartbeat from this workstation recently.",
+        },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+        onAttachWorkstation={() => {}}
+        onSetDefaultWorkstation={(workstationId) => defaults.push(workstationId)}
+      />,
+    );
+
+    const details = () => screen.getByRole("region", { name: "Workstation details" });
+    const rows = () => screen.getAllByTestId("registered-workstation");
+
+    // Expanded with nothing selected: details guide the reader to the list instead of showing facts.
+    expect(rows().map((row) => row.dataset.selected)).toEqual(["false", "false"]);
+    expandWorkstationDetails();
+    expect(
+      within(details()).getByText("Select a workstation above to see its details."),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: /Lab2/ }));
+    expect(rows().map((row) => row.dataset.selected)).toEqual(["true", "false"]);
+    expect(within(details()).getByText("id ws-lab2")).toBeVisible();
+    expect(within(details()).getByText("/home/ubuntu/project")).toBeVisible();
+    expect(
+      within(details()).queryByText("Select a workstation above to see its details."),
+    ).not.toBeInTheDocument();
+
+    // Picking another workstation swaps the details and the selected row.
+    fireEvent.click(screen.getByRole("button", { name: /Offline workstation/ }));
+    expect(rows().map((row) => row.dataset.selected)).toEqual(["false", "true"]);
+    expect(within(details()).getByText("id ws-offline")).toBeVisible();
+    fireEvent.click(within(details()).getByRole("button", { name: "Set default" }));
     expect(defaults).toEqual(["ws-offline"]);
-    expect(attachButtons[1]).toBeDisabled();
+  });
+
+  it("shows provider, agent build, and heartbeat facts in the details section", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      registeredWorkstations: [
+        {
+          id: "ws-lab2",
+          displayName: "Lab2",
+          provider: "runtime_peer",
+          providerLabel: "Workstation agent",
+          installedBuild: "2026.7.1",
+          latestBuild: "2026.7.9",
+          isOutdated: true,
+          channel: "nightly",
+          status: "offline",
+          updatedAt: "2026-07-20T18:30:00.000Z",
+        },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Lab2/ }));
+    const details = within(screen.getByRole("region", { name: "Workstation details" }));
+    expect(details.getByText("Provider")).toBeVisible();
+    expect(details.getByText("Workstation agent")).toBeVisible();
+    expect(details.getByText("Agent build")).toBeVisible();
+    expect(details.getByText("2026.7.1")).toBeVisible();
+    expect(details.getByText("Update to 2026.7.9")).toBeVisible();
+    expect(details.getByText("Channel")).toBeVisible();
+    expect(details.getByText("nightly")).toBeVisible();
+    expect(details.getByText("Last seen")).toBeVisible();
   });
 
   it("renders accelerator capability, attention diagnostics, known-none, unknown, and offline facts", () => {
@@ -353,46 +461,43 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    const readyRow = screen
-      .getByRole("heading", { name: "Usable GPU" })
-      .closest('[data-testid="registered-workstation"]');
-    const attentionRow = screen
-      .getByRole("heading", { name: "GPU attention" })
-      .closest('[data-testid="registered-workstation"]');
-    const knownNoneRow = screen
-      .getByRole("heading", { name: "CPU workstation" })
-      .closest('[data-testid="registered-workstation"]');
-    const legacyRow = screen
-      .getByRole("heading", { name: "Older agent" })
-      .closest('[data-testid="registered-workstation"]');
-    const offlineRow = screen
-      .getByRole("heading", { name: "Offline GPU" })
-      .closest('[data-testid="registered-workstation"]');
+    // Facts live in the details section for whichever workstation the list selects.
+    const details = () => screen.getByRole("region", { name: "Workstation details" });
+    const selectRow = (name: string) => {
+      const row = screen
+        .getByRole("heading", { name })
+        .closest('[data-testid="registered-workstation"]');
+      expect(row).not.toBeNull();
+      fireEvent.click(within(row!).getByRole("button"));
+      return within(details());
+    };
 
-    expect(readyRow).not.toBeNull();
     expect(
-      within(readyRow!).getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]"),
+      selectRow("Usable GPU").getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]"),
     ).toHaveAttribute("data-tone", "positive");
-    expect(attentionRow).not.toBeNull();
+
+    const attention = selectRow("GPU attention");
     expect(
-      within(attentionRow!).getByText("NVIDIA driver is not visible to the workstation service."),
+      attention.getByText("NVIDIA driver is not visible to the workstation service."),
     ).toBeVisible();
-    expect(
-      within(attentionRow!).getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]"),
-    ).toHaveAttribute("data-tone", "attention");
-    expect(knownNoneRow).not.toBeNull();
-    expect(within(knownNoneRow!).queryByText("GPU")).not.toBeInTheDocument();
-    expect(legacyRow).not.toBeNull();
-    expect(within(legacyRow!).queryByText("GPU")).not.toBeInTheDocument();
+    expect(attention.getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]")).toHaveAttribute(
+      "data-tone",
+      "attention",
+    );
+
+    expect(selectRow("CPU workstation").queryByText("GPU")).not.toBeInTheDocument();
+    expect(selectRow("Older agent").queryByText("GPU")).not.toBeInTheDocument();
     expect(screen.queryByText("No GPU")).not.toBeInTheDocument();
-    expect(offlineRow).not.toBeNull();
-    expect(
-      within(offlineRow!).getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]"),
-    ).toHaveAttribute("data-tone", "neutral");
-    expect(within(offlineRow!).queryByText(/available/i)).not.toBeInTheDocument();
+
+    const offline = selectRow("Offline GPU");
+    expect(offline.getByText("1× NVIDIA A100 · 80 GiB").closest("[data-tone]")).toHaveAttribute(
+      "data-tone",
+      "neutral",
+    );
+    expect(offline.queryByText(/available/i)).not.toBeInTheDocument();
   });
 
-  it("keeps the detached cloud target compact when registered workstations are listed", () => {
+  it("shows only the registered list when the cloud room has no compute session", () => {
     const capabilities: NotebookShellCapabilities = {
       ...readOnlyNotebookShellCapabilities,
       access: {
@@ -450,21 +555,29 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "No compute session" })).toBeVisible();
+    expect(screen.queryByText("No compute session")).not.toBeInTheDocument();
     expect(
-      screen.getByText(
+      screen.queryByText(
         "Start compute from a user-owned workstation to run cells in this notebook.",
       ),
-    ).toBeVisible();
-    expect(screen.queryByText("Cloud room")).not.toBeInTheDocument();
-    expect(screen.queryByText("Not runnable")).not.toBeInTheDocument();
-    expect(screen.getByText("Lab2")).toBeVisible();
-    expect(screen.getByText("Current Python")).toBeVisible();
-    expect(screen.getByText("id ws-lab2")).toBeVisible();
-    expect(screen.getAllByText("No heartbeat from this workstation recently.")).toHaveLength(1);
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Lab2" })).toBeVisible();
+    // A per-workstation message never renders above the list.
+    expect(
+      screen.queryByText("No heartbeat from this workstation recently."),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Lab2/ }));
+    const details = within(screen.getByRole("region", { name: "Workstation details" }));
+    expect(details.getByText("Current Python")).toBeVisible();
+    expect(details.getByText("id ws-lab2")).toBeVisible();
+    // The raw per-workstation message never renders; status is conveyed by the label.
+    expect(
+      screen.queryByText("No heartbeat from this workstation recently."),
+    ).not.toBeInTheDocument();
   });
 
-  it("does not duplicate the attached workstation in the registered list", () => {
+  it("lists the attached workstation alongside the other registered ones", () => {
     const capabilities: NotebookShellCapabilities = {
       ...readOnlyNotebookShellCapabilities,
       canExecute: true,
@@ -541,14 +654,18 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Lab2" })).toBeVisible();
-    expect(screen.getAllByText("Workstation")).toHaveLength(1);
-    expect(screen.getAllByText("Current Python")).toHaveLength(1);
-    expect(screen.getByText("id ws-lab2")).toBeVisible();
-    expect(screen.getAllByTestId("registered-workstation")).toHaveLength(1);
+    // The attached workstation appears once, in the list — not restated as a target section.
+    expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(1);
+    expect(screen.getAllByTestId("registered-workstation")).toHaveLength(2);
+    expect(screen.queryByRole("region", { name: "Active workstation target" })).toBeNull();
     expect(screen.getByRole("heading", { name: "GPU host" })).toBeVisible();
-    expect(screen.getByText("CUDA Python")).toBeVisible();
-    expect(screen.getByText("id ws-gpu")).toBeVisible();
+
+    const details = () => within(screen.getByRole("region", { name: "Workstation details" }));
+    fireEvent.click(screen.getByRole("button", { name: /Lab2/ }));
+    expect(details().getByText("id ws-lab2")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /GPU host/ }));
+    expect(details().getByText("CUDA Python")).toBeVisible();
+    expect(details().getByText("id ws-gpu")).toBeVisible();
   });
 
   it("keeps an online registered workstation actionable when a matching attachment is stale", () => {
@@ -620,30 +737,27 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Previous compute session" })).toBeVisible();
+    expect(screen.queryByText("Previous compute session")).not.toBeInTheDocument();
     expect(screen.getAllByRole("heading", { name: "Lab2" })).toHaveLength(1);
-    expect(screen.getByText("Needs attention")).toBeVisible();
-    expect(
-      screen.getByText(
-        "Compute from Lab2 is no longer connected to this notebook. Start compute again from an available workstation.",
-      ),
-    ).toBeVisible();
     expect(screen.queryByText(/runtime peer disconnected/i)).not.toBeInTheDocument();
     expect(screen.queryByText("Runtime peer")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Current Python")).toHaveLength(1);
-    expect(screen.getAllByText("/home/ubuntu/project")).toHaveLength(1);
-    expect(screen.getAllByText("id ws-lab2")).toHaveLength(1);
-    expect(screen.getByTestId("registered-workstation")).toBeVisible();
-    expect(screen.getByText("Online")).toBeVisible();
-    expect(screen.getByText("Default")).toBeVisible();
+    const row = within(screen.getByTestId("registered-workstation"));
+    expect(row.getByText("Online")).toBeVisible();
     expect(screen.queryByText("Running")).not.toBeInTheDocument();
-    const attachButton = screen.getByRole("button", { name: "Start" });
+
+    const attachButton = row.getByRole("button", { name: "Start" });
     expect(attachButton).toBeEnabled();
     fireEvent.click(attachButton);
     expect(attached).toEqual(["ws-lab2"]);
+
+    fireEvent.click(screen.getByRole("button", { name: /Lab2/ }));
+    const details = within(screen.getByRole("region", { name: "Workstation details" }));
+    expect(details.getAllByText("Current Python")).toHaveLength(1);
+    expect(details.getAllByText("/home/ubuntu/project")).toHaveLength(1);
+    expect(details.getAllByText("id ws-lab2")).toHaveLength(1);
   });
 
-  it("explains stale cloud attachments to viewers without implementation terms", () => {
+  it("never leaks implementation terms from a stale cloud attachment", () => {
     const capabilities: NotebookShellCapabilities = {
       ...readOnlyNotebookShellCapabilities,
       access: {
@@ -672,12 +786,6 @@ describe("NotebookWorkstationsPanel", () => {
 
     render(<NotebookWorkstationsPanel capabilities={capabilities} />);
 
-    expect(screen.getByRole("heading", { name: "Previous compute session" })).toBeVisible();
-    expect(
-      screen.getByText(
-        "Compute from Lab2 is no longer connected to this notebook. The owner can start compute again from an available workstation.",
-      ),
-    ).toBeVisible();
     expect(screen.queryByText(/runtime peer disconnected/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/grace window/i)).not.toBeInTheDocument();
   });
@@ -705,7 +813,8 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Remote devbox" })).toBeVisible();
+    expandWorkstationDetails();
+
     expect(screen.getByText("Default env")).toBeVisible();
     expect(screen.getByText("Current Python")).toBeVisible();
     expect(screen.getByText("Resources")).toBeVisible();
@@ -717,18 +826,69 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.queryByText("RAM")).not.toBeInTheDocument();
   });
 
-  it("offers Add workstation and starts pairing", () => {
+  it("offers Add workstation from the rail header and starts pairing", () => {
     const started: number[] = [];
-    render(
+    const { rerender } = render(
+      <NotebookWorkstationsPanelAction onStartPairing={() => started.push(1)} />,
+    );
+
+    fireEvent.click(screen.getByTestId("workstation-add-button"));
+    expect(started).toHaveLength(1);
+
+    // The panel body never renders its own copy of the control.
+    rerender(
       <NotebookWorkstationsPanel
         capabilities={localReadyCapabilities}
         onStartPairing={() => started.push(1)}
       />,
     );
+    expect(screen.queryByTestId("workstation-add-button")).not.toBeInTheDocument();
+  });
 
-    const addButton = screen.getByTestId("workstation-add-button");
-    fireEvent.click(addButton);
-    expect(started).toHaveLength(1);
+  it("puts the pairing section above the registered workstation list", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      registeredWorkstations: [
+        { id: "ws-lab2", displayName: "Lab2", provider: "runtime_peer", status: "online" },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={localReadyCapabilities}
+        selection={selection}
+        pairing={{
+          code: "ABCD-EFGH-JKMN",
+          connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+          status: "pending",
+          workstationName: null,
+          error: null,
+        }}
+      />,
+    );
+
+    const card = screen.getByTestId("workstation-pairing-card");
+    const list = screen.getByRole("region", { name: "Registered workstations" });
+    expect(card.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("hides the header Add workstation control while pairing is in flight", () => {
+    render(
+      <NotebookWorkstationsPanelAction
+        pairing={{
+          code: "ABCD-EFGH-JKMN",
+          connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+          status: "pending",
+          workstationName: null,
+          error: null,
+        }}
+        onStartPairing={() => {}}
+      />,
+    );
+
+    expect(screen.queryByTestId("workstation-add-button")).not.toBeInTheDocument();
   });
 
   it("renders the pending pairing card with the connect command and countdown", () => {
@@ -749,30 +909,43 @@ describe("NotebookWorkstationsPanel", () => {
 
     expect(screen.getByTestId("workstation-pairing-command-list")).toBeVisible();
     expect(screen.getByText("Install nteract headless")).toBeVisible();
-    expect(screen.getByText("Use installed CLI in this shell")).toBeVisible();
     expect(screen.getByText("Pair this workstation")).toBeVisible();
     expect(screen.getByText("Linux user systemd service")).toBeVisible();
+    // Only the steps required to connect show up front; PATH export and
+    // platform alternatives are conditional and live under "Additional".
+    expect(screen.queryByText("Use installed CLI in this shell")).toBeNull();
     expect(screen.queryByText("Fresh Debian/Ubuntu only")).toBeNull();
     expect(screen.queryByText("macOS/non-systemd fallback")).toBeNull();
     const commands = screen.getAllByTestId("workstation-pairing-command");
     expect(commands.map((command) => command.textContent)).toEqual([
       "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
-      'export PATH="$HOME/.local/bin:$PATH"',
       "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
       "runt workstation service install --start",
     ]);
+    expect(screen.getByText("(recommended)")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Show additional setup options" }));
     const additionalCommands = within(
       screen.getByTestId("workstation-pairing-additional-commands"),
     );
     expect(additionalCommands.getByText("Fresh Debian/Ubuntu only")).toBeVisible();
+    expect(additionalCommands.getByText("Use installed CLI in this shell")).toBeVisible();
     expect(additionalCommands.getByText("macOS/non-systemd fallback")).toBeVisible();
-    expect(additionalCommands.getAllByText("(optional)")).toHaveLength(2);
+    expect(additionalCommands.getAllByText("(optional)")).toHaveLength(3);
     expect(
       additionalCommands
         .getAllByTestId("workstation-pairing-command")
         .map((command) => command.textContent),
-    ).toEqual(["sudo apt update && sudo apt install -y curl tmux", "runt workstation run"]);
+    ).toEqual([
+      "sudo apt update && sudo apt install -y curl tmux",
+      'export PATH="$HOME/.local/bin:$PATH"',
+      "runt workstation run",
+    ]);
+    // Each folded-away step explains why it's conditional, not a generic blurb.
+    expect(
+      additionalCommands.getByText(/Fresh Debian\/Ubuntu hosts may need curl and tmux/),
+    ).toBeVisible();
+    expect(additionalCommands.getByText(/a new terminal already has it on PATH/)).toBeVisible();
+    expect(additionalCommands.getByText(/foreground fallback in tmux/)).toBeVisible();
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
       /Waiting for the machine to connect/,
     );
@@ -792,7 +965,6 @@ describe("NotebookWorkstationsPanel", () => {
     expect(writeText).toHaveBeenCalledWith(
       [
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
-        'export PATH="$HOME/.local/bin:$PATH"',
         "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
         "runt workstation service install --start",
       ].join("\n"),

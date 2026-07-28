@@ -158,6 +158,8 @@ describe("useCloudWorkstationManager pairing", () => {
       "runt workstation run",
     ]);
     expect(pairing?.commands[0]?.optional).toBe(true);
+    expect(pairing?.commands[2]?.optional).toBe(true);
+    expect(pairing?.commands[4]?.recommended).toBe(true);
     expect(pairing?.commands[5]?.optional).toBe(true);
   });
 

@@ -29,6 +29,8 @@ export interface CloudWorkstationPairingCommand {
   label: string;
   command: string;
   optional?: boolean;
+  /** Not the only way to satisfy this step, but the one most hosts should use. */
+  recommended?: boolean;
 }
 
 interface CloudWorkstationsResponse {
@@ -241,6 +243,9 @@ export function cloudWorkstationPairingCommands(
       id: "path",
       label: "Use installed CLI in this shell",
       command: CLOUD_WORKSTATION_PATH_EXPORT_COMMAND,
+      // Only needed in the same shell you ran the installer in — a fresh
+      // terminal already has `runt` on PATH.
+      optional: true,
     },
     {
       id: "connect",
@@ -251,6 +256,7 @@ export function cloudWorkstationPairingCommands(
       id: "run",
       label: "Linux user systemd service",
       command: cloudWorkstationServiceInstallCommand(),
+      recommended: true,
     },
     {
       id: "foreground-run",
