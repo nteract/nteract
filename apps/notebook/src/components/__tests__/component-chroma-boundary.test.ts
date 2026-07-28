@@ -29,7 +29,6 @@ const RATCHET_RAW_PALETTE_FILES = [
   "src/components/markdown/markdown-typography.ts",
   "src/components/notebook/DebugBanner.tsx",
   "src/components/notebook/EnvBuildDecisionDialog.tsx",
-  "src/components/notebook/KernelLaunchErrorBanner.tsx",
   "src/components/notebook/NotebookAccessGate.tsx",
   "src/components/notebook/NotebookCommandToolbar.tsx",
   "src/components/notebook/NotebookConnectionIdentity.tsx",

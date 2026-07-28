@@ -1,8 +1,11 @@
 import { AlertCircle, Check, Copy, RotateCw, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { KERNEL_ERROR_REASON, type RuntimeLifecycle } from "runtimed";
-import { Button } from "@/components/ui/button";
-import { NotebookNotice } from "@/components/notebook/NotebookNotice";
+import {
+  NotebookNotice,
+  NotebookNoticeAction,
+  NotebookNoticeDetails,
+} from "@/components/notebook/NotebookNotice";
 
 const RUNTIME_PEER_DISCONNECTED_ERROR_PREFIX = "runtime peer disconnected:";
 
@@ -104,26 +107,20 @@ export function KernelLaunchErrorBanner({
       title="Kernel failed to start"
       onDismiss={onDismiss}
       details={
-        <pre className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded bg-red-950/5 px-2 py-1 font-mono text-[11px] leading-snug text-red-950/90 dark:bg-red-950/30 dark:text-red-100/90">
-          {errorDetails}
-        </pre>
+        <NotebookNoticeDetails label="Show error details">{errorDetails}</NotebookNoticeDetails>
       }
       actions={
         <>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-6 px-2 text-xs"
+          <NotebookNoticeAction
             onClick={copyDetails}
+            icon={copied ? <Check className="size-3" /> : <Copy className="size-3" />}
             data-testid="copy-kernel-launch-error"
           >
-            {copied ? <Check className="size-3 mr-1" /> : <Copy className="size-3 mr-1" />}
             {copied ? "Copied" : "Copy"}
-          </Button>
-          <Button size="sm" variant="secondary" className="h-6 px-2 text-xs" onClick={onRetry}>
-            <RotateCw className="size-3 mr-1" />
+          </NotebookNoticeAction>
+          <NotebookNoticeAction onClick={onRetry} icon={<RotateCw className="size-3" />}>
             Retry
-          </Button>
+          </NotebookNoticeAction>
         </>
       }
     />
@@ -149,18 +146,14 @@ export function ComputeDisconnectedNotice({
       icon={<WifiOff className="size-4" />}
       title="Compute disconnected"
       onDismiss={onDismiss}
-      details={
-        <span>
-          Run any cell to wake compute again
-          {reason ? `; last disconnect: ${reason}` : ""}.
-        </span>
-      }
       actions={
-        <Button size="sm" variant="secondary" className="h-6 px-2 text-xs" onClick={onRetry}>
-          <RotateCw className="size-3 mr-1" />
+        <NotebookNoticeAction onClick={onRetry} icon={<RotateCw className="size-3" />}>
           Retry
-        </Button>
+        </NotebookNoticeAction>
       }
-    />
+    >
+      Run any cell to wake compute again
+      {reason ? `; last disconnect: ${reason}` : ""}.
+    </NotebookNotice>
   );
 }

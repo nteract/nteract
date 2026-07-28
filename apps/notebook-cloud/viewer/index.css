@@ -168,6 +168,7 @@ body {
 
 .cloud-notebook-shell {
   --cloud-notice-height: 3rem;
+  --cloud-notice-max-height: 50vh;
 
   display: flex;
   position: relative;
@@ -196,11 +197,16 @@ body {
   overflow: hidden;
 }
 
+/* Notices grow with their content instead of being pinned to a single row:
+   an expanded traceback needs the space, and clamping it clipped the text into
+   the notebook body. `--cloud-notice-height` stays the collapsed floor so a
+   one-line bar keeps its familiar height; the max keeps a long detail block
+   from swallowing the notebook, scrolling inside the region instead. */
 .cloud-notebook-notices {
   display: grid;
-  flex: 0 0 var(--cloud-notice-height);
-  height: var(--cloud-notice-height);
+  flex: 0 0 auto;
   min-height: var(--cloud-notice-height);
+  max-height: var(--cloud-notice-max-height);
   z-index: 18;
   gap: 0;
   border-bottom: 1px solid var(--border);
@@ -217,9 +223,12 @@ body {
   gap: 0;
 }
 
+/* `justify-content` (not `align-items`) because the notice is a column: it
+   vertically centers a bare one-line bar inside the collapsed floor, and goes
+   inert once an expanded detail row pushes the notice past that floor. */
 .cloud-notebook-notices [data-slot="notebook-notice"] {
   min-height: var(--cloud-notice-height);
-  align-items: center;
+  justify-content: center;
   border: 0;
   border-radius: 0;
   padding: 0.5rem clamp(0.5rem, 2vw, 1rem) 0.5rem clamp(0.75rem, 4vw, 2rem);
