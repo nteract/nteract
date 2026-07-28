@@ -399,10 +399,23 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.match(sharingSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
   const sharePanelCss = cssText.match(/\.cloud-share-panel \{(?<body>[\s\S]*?)\n\}/)?.groups?.body;
   assert.ok(sharePanelCss);
-  assert.match(sharePanelCss, /position: fixed;/);
-  assert.match(sharePanelCss, /right: max\(0\.75rem, env\(safe-area-inset-right\)\);/);
   assert.match(sharePanelCss, /width: min\(30rem, calc\(100vw - 1\.5rem\)\);/);
-  assert.doesNotMatch(sharePanelCss, /position: absolute;/);
+  assert.doesNotMatch(sharePanelCss, /position: fixed;/);
+  assert.match(
+    sharingSourceText,
+    /import \{ Popover, PopoverContent, PopoverTrigger \} from "@\/components\/ui\/popover";/,
+  );
+  assert.match(sharingSourceText, /<Popover open=\{open\} onOpenChange=\{setOpen\}>/);
+  assert.match(
+    sharingSourceText,
+    /<PopoverTrigger className="cloud-share-trigger" title="Share notebook">/,
+  );
+  assert.match(
+    sharingSourceText,
+    /<PopoverContent className="cloud-share-panel" align="end" sideOffset=\{8\}>/,
+  );
+  assert.doesNotMatch(sharingSourceText, /<details/);
+  assert.doesNotMatch(sharingSourceText, /<summary/);
   assert.match(
     presenceSourceText,
     /function CloudPresenceStatus[\s\S]*const presence = useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\);[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);/,

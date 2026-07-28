@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Check, Globe2, Link2, Mail, ServerCog, Share2, Trash2, UserRound, X } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
 import {
@@ -329,16 +330,12 @@ export function CloudSharingControls({
   };
 
   return (
-    <details
-      className="cloud-share-menu"
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary title="Share notebook">
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger className="cloud-share-trigger" title="Share notebook">
         <Share2 aria-hidden="true" />
         <span>Share</span>
-      </summary>
-      <div className="cloud-share-panel">
+      </PopoverTrigger>
+      <PopoverContent className="cloud-share-panel" align="end" sideOffset={8}>
         <header>
           <div>
             <h2>Share notebook</h2>
@@ -553,8 +550,8 @@ export function CloudSharingControls({
             {message}
           </div>
         ) : null}
-      </div>
-    </details>
+      </PopoverContent>
+    </Popover>
   );
 }
 
