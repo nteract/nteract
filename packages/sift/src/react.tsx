@@ -513,7 +513,13 @@ export function SiftTable({
         mod.append_arrow_stream_chunk(store.handle, bytes);
         store.chunkKeys.push(chunkKeys[i]);
         store.tableData.rowCount = mod.num_rows(store.handle);
-        updateWasmSummaries(mod, store.handle, store.tableData, store.columns, store.pandasIndexCols);
+        updateWasmSummaries(
+          mod,
+          store.handle,
+          store.tableData,
+          store.columns,
+          store.pandasIndexCols,
+        );
         engineRef.current?.onBatchAppended();
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
