@@ -1,13 +1,13 @@
 # Arrow Bounded Head and Progressive Fetch
 
-**Status:** Proposed, 2026-07-28. Scoping for the automatic Arrow repr path.
-Steps 1 and 2 are specified; the pull channel in step 3 is deliberately left
-open.
+**Status:** Steps 1 and 2 implemented, 2026-07-28. The bounded head and
+append-only manifest growth landed together; the pull channel in step 3 remains
+open pending a handle-retention decision.
 
 ## Objective
 
-The automatic Arrow repr path serializes and transfers entire tables with no
-ceiling anywhere. Displaying a 1.63 GB Hugging Face dataset materializes every
+The automatic Arrow repr path serialized and transferred entire tables with no
+ceiling anywhere. Displaying a 1.63 GB Hugging Face dataset materialized every
 byte in the kernel, in the blob store, and in the browser.
 
 `arrow-native-outputs.md` already specifies the intended behavior:
@@ -17,7 +17,7 @@ byte in the kernel, in the blob store, and in the browser.
 > first display is visible.
 
 The producer implemented the "emit chunks" half and skipped the budget. This
-memo covers closing that gap, and separates it from the demand-driven fetch
+memo records closing that gap, and separates it from the demand-driven fetch
 question that `arrow-manifest-durable-storage-design.md` lists as an open gap.
 
 ## Reproduction
@@ -32,11 +32,11 @@ Observed: ~200 chunk blobs written, all fetched by the renderer. Kernel peak
 RSS 4.66 GB. The notebook document itself stays clean, so the cost is entirely
 in transfer and in the WASM store.
 
-## Current State
+## The Defects
 
-### The kernel has no total ceiling
+### The kernel had no total ceiling
 
-`_bootstrap.py:240`:
+`_emit_arrow_stream` drained the whole chunk iterator:
 
 ```python
 chunks = list(
@@ -47,10 +47,9 @@ chunks = list(
 )
 ```
 
-`max_chunk_bytes` bounds each chunk, not the total. `DEFAULT_ARROW_CHUNK_BYTES`
-is 8 MiB and `_MAX_PAYLOAD_BYTES` is 90 MiB, so the `min()` always returns
-8 MiB and the payload cap never constrains anything on this path. The `list()`
-then drains the whole iterator.
+`max_chunk_bytes` bounded each chunk, not the total. `DEFAULT_ARROW_CHUNK_BYTES`
+is 8 MiB and `_MAX_PAYLOAD_BYTES` is 90 MiB, so the `min()` always returned
+8 MiB and the payload cap never constrained anything on this path.
 
 `_dataset_mimebundle` (`_bootstrap.py:203`) reaches `ds.data.table` and hands
 the full table to that function, so Hugging Face datasets take the same
@@ -59,9 +58,9 @@ unbounded path as any `pa.Table`.
 The manifest reports `complete: true` and `sampled: false`, which is accurate
 but only because nothing ever samples.
 
-### The renderer has no ceiling either
+### The renderer had no ceiling either
 
-`react.tsx:531` appends every remaining chunk after first paint:
+The load effect appended every remaining chunk after first paint:
 
 ```ts
 for (let i = 1; i < chunks.length; i++) {
@@ -70,20 +69,20 @@ for (let i = 1; i < chunks.length; i++) {
 }
 ```
 
-No viewport check and no budget. The `yield` on line 533 keeps the UI
-responsive but does not bound the work.
+No viewport check and no budget. The `yield` kept the UI responsive but did
+not bound the work.
 
-### Manifest growth is quadratic
+### Manifest growth was quadratic
 
-`arrowStreamManifestKey` (`react.tsx:91`) folds every chunk URL and row count
-into the key, and the load effect depends on that key. Any manifest that grows
-by one chunk produces a new key, which tears the effect down, calls
-`create_arrow_stream_store()` fresh, and refetches chunks `0..n`.
+`arrowStreamManifestKey` folded every chunk URL and row count into the key, and
+the load effect depended on that key. Any manifest that grew by one chunk
+produced a new key, which tore the effect down, called
+`create_arrow_stream_store()` fresh, and refetched chunks `0..n`.
 
-Growing a manifest to N chunks therefore costs O(N²) fetches and O(N²) WASM
-appends. `display_arrow_stream` is correct on the producer side, but wiring it
-to the automatic path in this state would make large tables slower, not faster.
-This is the blocking defect for anything incremental, push or pull.
+Growing a manifest to N chunks therefore cost O(N²) fetches and O(N²) WASM
+appends. `display_arrow_stream` was correct on the producer side, but wiring it
+to the automatic path in that state would have made large tables slower, not
+faster. This was the blocking defect for anything incremental, push or pull.
 
 ### Display ids are available to the automatic path
 
@@ -104,17 +103,25 @@ the same seat `_buffer_hook` already occupies for buffer attachment.
 That makes progressive display available to bare last-expression reprs, not just
 to the explicit `display_arrow_stream` helper.
 
-## Proposal
+## What Landed
 
 ### Step 1: Bounded head with an honest manifest
 
-Give `_emit_arrow_stream` a total byte budget alongside the existing per-chunk
-size. Stop draining the iterator when the budget is spent.
+`_emit_arrow_stream` takes a total byte budget alongside the existing per-chunk
+size and stops draining the iterator when the budget is spent.
 
-The manifest must state what it did. `_summary_hints` in `_progressive.py`
-already computes the right shape, so the producer sets `complete: false`,
-`sampled: true`, `sample_strategy: "head"`, and a truthful `total_rows` against
-a smaller `included_rows`. Consumers that already read `summary` need no change.
+The manifest states what it did. `_summary_hints` already computed the right
+shape, so the producer sets `complete: false`, `sampled: true`,
+`sample_strategy: "head"`, and a truthful `total_rows` against a smaller
+`included_rows`. Consumers that already read `summary` needed no change.
+
+`total_rows` is exact only when `complete` is true. A source that cannot report
+its length, such as an unbounded `RecordBatchReader`, produces a manifest whose
+`total_rows` equals `included_rows` while more rows exist. Learning the true
+total would mean draining the stream, which is the cost this work exists to
+avoid, so `total_rows` is defined as a lower bound whenever `complete` is
+false. Consumers read `complete` before presenting it as a total. Recorded in
+`adr/arrow-c-stream-output-protocol.md`.
 
 The size rule is a clamp, not a plain budget. Measured row sizes span roughly
 four orders of magnitude:
@@ -145,24 +152,24 @@ written for. When the floor exceeds it, the slice shrinks below `MIN_ROWS`.
 element-height limits on million-row tables (`arrow-native-outputs.md`), so the
 renderer should not receive unbounded rows even when they are cheap.
 
-The renderer surfaces the cap rather than implying the table ended. `complete:
-false` already flows to `setStreamingDone`, so the footer needs to distinguish
-"still arriving" from "capped here".
+The renderer still needs to distinguish "still arriving" from "capped here" in
+the footer. `complete: false` flows to `setStreamingDone` either way, so that
+distinction is not yet surfaced to the reader. See open question 1.
 
-Shipped alone this trades a stability win for a capability regression: today you
-eventually get all 3000 rows, and afterward you get the head with no path to
-more. Step 1 therefore lands with `display_arrow_stream` documented as the
-explicit full-fidelity path.
+This trades a stability win for a capability regression: previously you
+eventually got all 3000 rows, and now you get the head with no path to more.
+`display_arrow_stream` is the explicit full-fidelity path until step 3 lands.
 
 ### Step 2: Append-only manifest growth
 
-Detect that an incoming manifest extends the previous one instead of replacing
-it. When chunks `0..k` are unchanged and `k+1..n` are new, keep the WASM store
-and append only the new chunks.
+An incoming manifest that extends the previous one keeps the WASM store and
+appends only the new chunks, rather than replacing it. `extendsStore` accepts an
+update when the head chunk matches and the already-appended chunks are a prefix
+of the new list; anything else rebuilds.
 
-Key the effect on identity plus count rather than on every chunk hash. Retain
-the full-hash comparison as the correctness check that decides append versus
-rebuild, so a genuinely different manifest still rebuilds.
+`appendRemainingChunks` resumes from `store.chunkKeys.length`, which grows only
+after a successful append, so a run cancelled mid-flight leaves an accurate
+resume point.
 
 Value-keying already works and is covered: `react.test.tsx` asserts that a new
 manifest object with identical content does not reload. The uncovered case is
@@ -179,8 +186,13 @@ Appends follow `N(N+1)/2`. A 200-chunk manifest costs 200 stores and 20,100
 fetches. The resolution layer is correct about identity and wrong about
 extension: it treats "one more chunk" as "a different table".
 
-This removes the O(N²) behavior and is a prerequisite for step 3. It is
-self-contained in `packages/sift` and testable without a kernel.
+This removes the O(N²) behavior and is a prerequisite for step 3.
+
+Store reuse across effect runs introduced three defects, all caught in review
+and fixed: a store surviving a source switch and being appended to after
+`replaceData` freed it, a chunk-fetch error that stayed on screen after a later
+update recovered the stream, and column overrides silently dropped when they
+changed alongside manifest growth.
 
 With steps 1 and 2 in place, the producer can raise the initial budget and push
 follow-on chunks after first paint, which is the behavior
@@ -188,7 +200,8 @@ follow-on chunks after first paint, which is the behavior
 
 ### Step 3: Demand-driven fetch
 
-Left open. The shape is understood but the retention policy is not settled.
+Not implemented. The shape is understood but the retention policy is not
+settled.
 
 The transport question is answered by existing precedent. `NteractKernel`
 already extends `msg_types` with `nteract_bokeh_patch_request` and friends
@@ -215,20 +228,23 @@ now" is the question to settle before the shape is fixed.
 
 ## Consequences
 
-- Large automatic reprs stop transferring unbounded bytes.
-- The `sampled` and `complete` fields start carrying real information.
-- Progressive display becomes available to bare last-expression reprs.
-- `_MAX_PAYLOAD_BYTES` becomes load-bearing instead of dead.
-- Steps 1 and 2 each fix a defect independently and can land separately.
+- Large automatic reprs no longer transfer unbounded bytes.
+- The `sampled` and `complete` fields carry real information.
+- `_MAX_PAYLOAD_BYTES` is load-bearing instead of dead.
+- Progressive display is now available to bare last-expression reprs, since
+  `NteractShellDisplayHook` can stamp a `display_id` on the formatter's behalf.
+  Nothing wires that up yet.
 
 ## Open Questions
 
 1. Whether `complete: false` alone is enough for the renderer to distinguish a
    capped table from one still receiving chunks, or whether the summary needs an
-   explicit reason.
-2. `dx` naming. `DX_MAX_PAYLOAD_BYTES` and the `nteract.dx.*` comm namespace
-   predate the launcher owning this path. Worth deciding whether new surface
-   inherits that prefix or takes a launcher-native name.
+   explicit reason. This also governs how the footer should present an open
+   manifest, given that `total_rows` is only a lower bound there.
+2. The `nteract.dx.*` comm namespace predates the launcher owning this path.
+   New launcher config uses `NTERACT_ARROW_REPR_*`; whether the reserved comm
+   namespace should follow is open, and renaming it carries a compatibility
+   cost the new env vars did not.
 3. Step 3 retention, per above.
 4. Whether `MIN_ROWS`, `byte_budget`, and `MAX_ROWS` should be configurable per
    host. Hosted viewers pay real network cost for a budget that is nearly free

@@ -271,7 +271,7 @@ def _emit_arrow_stream(
                 raise ValueError("Arrow schema exceeds the hard payload ceiling")
             serialized_bytes = sum(chunk.size for chunk in chunks)
             next_rows = min(
-                current_rows - 1,
+                current_rows // 2,
                 current_rows * _MAX_PAYLOAD_BYTES // serialized_bytes,
             )
             bounded_source = bounded_source.slice(0, next_rows)
@@ -356,13 +356,9 @@ def _bounded_arrow_table(source: Any) -> Any | None:
             byte_limit=_ARROW_REPR_BYTE_BUDGET,
             max_rows=total_rows,
         )
-        selected_rows = min(
-            total_rows,
-            max(
-                _ARROW_REPR_MIN_ROWS,
-                min(_ARROW_REPR_MAX_ROWS, budget_rows),
-            ),
-        )
+        # MAX_ROWS wins when contradictory overrides put it below MIN_ROWS.
+        min_rows = min(_ARROW_REPR_MIN_ROWS, _ARROW_REPR_MAX_ROWS)
+        selected_rows = min(total_rows, max(min_rows, min(_ARROW_REPR_MAX_ROWS, budget_rows)))
         selected_rows = _head_rows_within_bytes(
             source,
             byte_limit=_MAX_PAYLOAD_BYTES,
@@ -410,13 +406,16 @@ def _collect_arrow_chunks(
             if next_rows > _ARROW_REPR_MAX_ROWS:
                 remaining_rows = _ARROW_REPR_MAX_ROWS - included_rows
                 if remaining_rows > 0:
-                    chunks.extend(
-                        _slice_arrow_chunk(
-                            chunk,
-                            row_count=remaining_rows,
-                            start_index=len(chunks),
-                        )
+                    sliced_chunks = _slice_arrow_chunk(
+                        chunk,
+                        row_count=remaining_rows,
+                        start_index=len(chunks),
                     )
+                    for sliced_chunk in sliced_chunks:
+                        if included_bytes + sliced_chunk.size > _MAX_PAYLOAD_BYTES:
+                            return chunks, False
+                        chunks.append(sliced_chunk)
+                        included_bytes += sliced_chunk.size
                 return chunks, False
             over_hard_limit = next_bytes > _MAX_PAYLOAD_BYTES
             over_soft_limit = (

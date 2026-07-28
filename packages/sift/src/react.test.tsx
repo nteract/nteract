@@ -88,6 +88,9 @@ describe("SiftTable", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+    // Manifest tests stub `fetch`. Restoring here keeps a failing test from
+    // leaking its stub into the next one.
+    vi.unstubAllGlobals();
   });
 
   it("renders a table container", async () => {
@@ -419,7 +422,6 @@ describe("SiftTable", () => {
     }
 
     // One store for the whole run, and each chunk fetched and appended once.
-    // Before append-only growth this was 5 stores and 15 of each.
     expect(predicateModule.create_arrow_stream_store).toHaveBeenCalledTimes(1);
     expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(5);
     expect(fetchMock).toHaveBeenCalledTimes(5);
