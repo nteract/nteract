@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import logging
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from typing import Any
 ARROW_STREAM_MIME = "application/vnd.apache.arrow.stream"
 ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json"
 DEFAULT_ARROW_CHUNK_BYTES = 8 * 1024 * 1024
+
+log = logging.getLogger("nteract_kernel_launcher")
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,22 @@ def _row_count(obj: Any) -> int | None:
 def arrow_stream_row_count(obj: Any) -> int | None:
     """Return the best available row count for an Arrow stream producer."""
     return _row_count(obj)
+
+
+def build_arrow_stream_summary(
+    *,
+    total_rows: int | None,
+    included_rows: int,
+    complete: bool,
+) -> dict[str, Any]:
+    """Build the shared row-summary fields for an Arrow stream manifest."""
+    sampled = total_rows is not None and included_rows != total_rows
+    return {
+        "total_rows": total_rows if total_rows is not None else included_rows,
+        "included_rows": included_rows,
+        "sampled": sampled or not complete,
+        "sample_strategy": "none" if complete and not sampled else "head",
+    }
 
 
 def has_arrow_stream_protocol(obj: Any) -> bool:
@@ -270,6 +289,150 @@ def iter_arrow_stream_chunks(
             batches=batches,
             row_count=row_count,
         )
+
+
+def _head_rows_within_bytes(table: Any, *, byte_limit: int, max_rows: int) -> int:
+    """Find the largest measured head no larger than ``byte_limit``."""
+    low = 0
+    high = max(0, min(table.num_rows, max_rows))
+    while low < high:
+        middle = (low + high + 1) // 2
+        if table.slice(0, middle).nbytes <= byte_limit:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def _slice_arrow_chunk(
+    chunk: Any,
+    *,
+    row_count: int,
+    start_index: int,
+    max_chunk_bytes: int,
+) -> list[Any]:
+    """Re-chunk a decoded head so an aggregate row limit is exact."""
+    import pyarrow as pa
+
+    table = pa.ipc.open_stream(pa.BufferReader(chunk.data)).read_all().slice(0, row_count)
+    pieces = list(
+        iter_arrow_stream_chunks(
+            table,
+            max_chunk_bytes=max_chunk_bytes,
+        )
+    )
+    return [
+        type(piece)(
+            index=start_index + offset,
+            data=piece.data,
+            content_hash=piece.content_hash,
+            size=piece.size,
+            row_count=piece.row_count,
+            record_batch_count=piece.record_batch_count,
+        )
+        for offset, piece in enumerate(pieces)
+    ]
+
+
+def _collect_arrow_chunks(
+    source: Any,
+    *,
+    bound_stream: bool,
+    min_rows: int,
+    byte_budget: int,
+    max_rows: int,
+    max_payload_bytes: int,
+) -> tuple[list[Any], bool]:
+    """Collect chunks within explicit aggregate row and byte limits."""
+    max_chunk_bytes = min(DEFAULT_ARROW_CHUNK_BYTES, max_payload_bytes)
+    iterator = iter(
+        iter_arrow_stream_chunks(
+            source,
+            max_chunk_bytes=max_chunk_bytes,
+        )
+    )
+    chunks: list[Any] = []
+    included_rows = 0
+    included_bytes = 0
+
+    for chunk in iterator:
+        if bound_stream:
+            next_rows = included_rows + chunk.row_count
+            next_bytes = included_bytes + chunk.size
+            if next_rows > max_rows:
+                remaining_rows = max_rows - included_rows
+                if remaining_rows > 0:
+                    sliced_chunks = _slice_arrow_chunk(
+                        chunk,
+                        row_count=remaining_rows,
+                        start_index=len(chunks),
+                        max_chunk_bytes=max_chunk_bytes,
+                    )
+                    for sliced_chunk in sliced_chunks:
+                        if included_bytes + sliced_chunk.size > max_payload_bytes:
+                            return chunks, False
+                        chunks.append(sliced_chunk)
+                        included_bytes += sliced_chunk.size
+                return chunks, False
+            over_hard_limit = next_bytes > max_payload_bytes
+            over_soft_limit = next_bytes > byte_budget and included_rows >= min_rows
+            if over_hard_limit or over_soft_limit:
+                return chunks, False
+        chunks.append(chunk)
+        included_rows += chunk.row_count
+        included_bytes += chunk.size
+
+    return chunks, True
+
+
+def _bounded_arrow_table(
+    source: Any,
+    *,
+    min_rows: int,
+    byte_budget: int,
+    max_rows: int,
+    max_payload_bytes: int,
+) -> Any | None:
+    """Return a measured, row-clamped Arrow head when ``source`` is sliceable.
+
+    Returns ``None`` when the head cannot be measured, which sends the source
+    down the aggregate-bounded streaming path. That path bounds serialized
+    chunk size and row count without requiring in-memory measurement.
+    ``Table.nbytes`` raises ``ArrowTypeError`` for ``string_view`` columns, the
+    layout Polars produces, so this fallback is part of normal operation.
+    """
+    try:
+        import pyarrow as pa
+    except Exception:
+        return None
+
+    if isinstance(source, pa.RecordBatch):
+        source = pa.Table.from_batches([source])
+    if not isinstance(source, pa.Table):
+        return None
+
+    total_rows = source.num_rows
+    if total_rows == 0:
+        return source
+
+    try:
+        budget_rows = _head_rows_within_bytes(
+            source,
+            byte_limit=byte_budget,
+            max_rows=total_rows,
+        )
+        # max_rows wins when contradictory limits put it below min_rows.
+        clamped_min_rows = min(min_rows, max_rows)
+        selected_rows = min(total_rows, max(clamped_min_rows, min(max_rows, budget_rows)))
+        selected_rows = _head_rows_within_bytes(
+            source,
+            byte_limit=max_payload_bytes,
+            max_rows=selected_rows,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("arrow head measurement failed, falling back to stream bounds: %s", exc)
+        return None
+    return source.slice(0, selected_rows)
 
 
 def build_arrow_stream_manifest(

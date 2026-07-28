@@ -24,3 +24,12 @@ running code.
 The launcher performs a first-pass redaction of eligible environment variable
 values from rich traceback payloads before they leave the kernel process.
 Set `NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS=0` to disable this per kernel.
+
+## Arrow repr bounds
+
+Set `NTERACT_ARROW_REPR_MIN_ROWS=<rows>` to control the minimum head retained
+when the Arrow repr reaches its byte budget.
+Set `NTERACT_ARROW_REPR_BYTE_BUDGET=<bytes>` to control the target byte budget
+for the Arrow repr.
+Set `NTERACT_ARROW_REPR_MAX_ROWS=<rows>` to control the maximum head retained
+for the Arrow repr.

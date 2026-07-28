@@ -88,13 +88,47 @@ export type SiftTableProps = {
   style?: React.CSSProperties;
 };
 
+/** Live WASM store for one logical table, retained across manifest updates. */
+type ManifestStore = {
+  identity: string;
+  handle: number;
+  chunkKeys: string[];
+  tableData: TableData;
+  columns: Column[];
+  pandasIndexCols: Set<string>;
+  /** Overrides this store was built with. A change forces a rebuild. */
+  columnOverrides: Record<string, Partial<Column>> | undefined;
+  finished: boolean;
+  dispose: () => void;
+};
+
+function arrowStreamChunkKeys(manifest: ArrowStreamManifest): string[] {
+  return manifest.chunks.map((chunk) => `${chunk.url}\u0001${chunk.row_count ?? ""}`);
+}
+
 function arrowStreamManifestKey(manifest: ArrowStreamManifest | undefined): string | null {
   if (!manifest) return null;
   const complete = manifest.complete === false ? "open" : "complete";
-  const chunks = manifest.chunks
-    .map((chunk) => `${chunk.url}\u0001${chunk.row_count ?? ""}`)
-    .join("\u0000");
-  return `${complete}\u0002${chunks}`;
+  return `${complete}\u0002${arrowStreamChunkKeys(manifest).join("\u0000")}`;
+}
+
+/** Identifies the logical table. Stable while a progressive manifest grows. */
+function arrowStreamIdentityKey(manifest: ArrowStreamManifest): string | null {
+  const first = manifest.chunks[0];
+  return first ? `${first.url}\u0001${first.row_count ?? ""}` : null;
+}
+
+/**
+ * A manifest extends `store` when it names the same logical table and its
+ * leading chunks are the ones already appended. Anything else (a changed head,
+ * reordered chunks, a store already finished) rebuilds instead.
+ */
+function extendsStore(store: ManifestStore, manifest: ArrowStreamManifest): boolean {
+  if (store.finished) return false;
+  if (store.identity !== arrowStreamIdentityKey(manifest)) return false;
+  const keys = arrowStreamChunkKeys(manifest);
+  if (keys.length < store.chunkKeys.length) return false;
+  return store.chunkKeys.every((key, i) => key === keys[i]);
 }
 
 // --- Format detection ---
@@ -294,6 +328,8 @@ export function SiftTable({
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TableEngine | null>(null);
   const engineDivRef = useRef<HTMLDivElement | null>(null);
+  // Survives manifest updates so a growing manifest appends instead of rebuilding.
+  const storeRef = useRef<ManifestStore | null>(null);
   const footerControlRef = useRef<HTMLDivElement | null>(null);
   const footerControlRootRef = useRef<Root | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
@@ -354,6 +390,10 @@ export function SiftTable({
       engineRef.current = null;
       engineDivRef.current?.remove();
       engineDivRef.current = null;
+      // Manifest-effect cleanup deliberately leaves a mounted store alone, so
+      // unmount is the only place a committed store gets freed.
+      storeRef.current?.dispose();
+      storeRef.current = null;
       footerControlRootRef.current?.unmount();
       footerControlRootRef.current = null;
       footerControlRef.current = null;
@@ -369,6 +409,11 @@ export function SiftTable({
   useEffect(() => {
     if (!dataSource || !containerRef.current) return;
     const startedAt = performance.now();
+
+    // This source now owns the engine. `replaceData` frees the manifest store
+    // it supersedes, so the ref must not outlive it: a later manifest that
+    // looked like an extension would otherwise append to a freed handle.
+    storeRef.current = null;
 
     if (engineRef.current) {
       engineRef.current.replaceData(dataSource);
@@ -401,6 +446,7 @@ export function SiftTable({
     if (!manifestSource || !containerRef.current) return;
 
     const manifest = manifestSource;
+    const identity = arrowStreamIdentityKey(manifest);
     const startedAt = performance.now();
     let cancelled = false;
     let disposePendingStore: (() => void) | null = null;
@@ -435,6 +481,76 @@ export function SiftTable({
 
     type ChunkFetchResult = { ok: true; bytes: Uint8Array } | { ok: false; error: unknown };
 
+    const fetchChunkResult = (chunk: ArrowStreamManifestChunk, index: number) =>
+      fetchChunkBytes(chunk, index).then(
+        (bytes) => ({ ok: true as const, bytes }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    const readChunkBytes = async (fetchResult: Promise<ChunkFetchResult>) => {
+      const result = await fetchResult;
+      if (!result.ok) throw result.error;
+      return result.bytes;
+    };
+
+    /**
+     * Append manifest chunks from `store.chunkKeys.length` onward.
+     *
+     * `store.chunkKeys` grows only after a successful append, so it doubles as
+     * the resume point. A run cancelled mid-flight leaves it pointing at the
+     * last chunk actually in the store, and the next run picks up there.
+     */
+    async function appendRemainingChunks(store: ManifestStore) {
+      const mod = getModuleSync();
+      const chunks = manifest.chunks;
+      const chunkKeys = arrowStreamChunkKeys(manifest);
+
+      for (let i = store.chunkKeys.length; i < chunks.length; i++) {
+        if (cancelled) return;
+        await new Promise((r) => setTimeout(r, 0));
+        if (cancelled) return;
+        const bytes = await readChunkBytes(fetchChunkResult(chunks[i], i));
+        if (cancelled) return;
+        emitLoadMilestone(startedAt, {
+          source: "arrow-stream-manifest",
+          phase: "chunk-fetched",
+          chunkIndex: i,
+          chunkCount: chunks.length,
+          byteLength: bytes.byteLength,
+        });
+        mod.append_arrow_stream_chunk(store.handle, bytes);
+        store.chunkKeys.push(chunkKeys[i]);
+        store.tableData.rowCount = mod.num_rows(store.handle);
+        updateWasmSummaries(
+          mod,
+          store.handle,
+          store.tableData,
+          store.columns,
+          store.pandasIndexCols,
+        );
+        engineRef.current?.onBatchAppended();
+        emitLoadMilestone(startedAt, {
+          source: "arrow-stream-manifest",
+          phase: "chunk-appended",
+          chunkIndex: i,
+          chunkCount: chunks.length,
+          rowCount: store.tableData.rowCount,
+        });
+      }
+
+      if (cancelled || store.finished) return;
+      if (manifest.complete !== false) {
+        mod.finish_arrow_stream_store(store.handle);
+        store.finished = true;
+        engineRef.current?.setStreamingDone();
+        emitLoadMilestone(startedAt, {
+          source: "arrow-stream-manifest",
+          phase: "streaming-complete",
+          chunkCount: chunks.length,
+          rowCount: store.tableData.rowCount,
+        });
+      }
+    }
+
     async function loadFromManifest() {
       setStatus("loading");
       setError(null);
@@ -460,17 +576,6 @@ export function SiftTable({
       const mod = getModuleSync();
       const handle = mod.create_arrow_stream_store();
       disposePendingStore = () => mod.free(handle);
-
-      const fetchChunkResult = (chunk: ArrowStreamManifestChunk, index: number) =>
-        fetchChunkBytes(chunk, index).then(
-          (bytes) => ({ ok: true as const, bytes }),
-          (error: unknown) => ({ ok: false as const, error }),
-        );
-      const readChunkBytes = async (fetchResult: Promise<ChunkFetchResult>) => {
-        const result = await fetchResult;
-        if (!result.ok) throw result.error;
-        return result.bytes;
-      };
 
       const firstBytes = await readChunkBytes(fetchChunkResult(chunks[0], 0));
       if (cancelled) return;
@@ -528,45 +633,48 @@ export function SiftTable({
       });
       setStatus("ready");
 
-      for (let i = 1; i < chunks.length; i++) {
-        if (cancelled) return;
-        await new Promise((r) => setTimeout(r, 0));
-        if (cancelled) return;
-        const bytes = await readChunkBytes(fetchChunkResult(chunks[i], i));
-        if (cancelled) return;
-        emitLoadMilestone(startedAt, {
-          source: "arrow-stream-manifest",
-          phase: "chunk-fetched",
-          chunkIndex: i,
-          chunkCount: chunks.length,
-          byteLength: bytes.byteLength,
-        });
-        mod.append_arrow_stream_chunk(handle, bytes);
-        tableData.rowCount = mod.num_rows(handle);
-        updateWasmSummaries(mod, handle, tableData, columns, pandasIndexCols);
-        engineRef.current?.onBatchAppended();
-        emitLoadMilestone(startedAt, {
-          source: "arrow-stream-manifest",
-          phase: "chunk-appended",
-          chunkIndex: i,
-          chunkCount: chunks.length,
-          rowCount: tableData.rowCount,
-        });
-      }
+      // The store is mounted and owns its handle from here. Effect cleanup must
+      // not free it, or a manifest update would tear down a live table.
+      disposePendingStore = null;
+      const store: ManifestStore = {
+        identity: identity ?? "",
+        handle,
+        chunkKeys: arrowStreamChunkKeys(manifest).slice(0, 1),
+        tableData,
+        columns,
+        pandasIndexCols,
+        columnOverrides,
+        finished: false,
+        dispose: () => tableData.dispose?.(),
+      };
+      storeRef.current = store;
 
-      if (manifest.complete !== false) {
-        mod.finish_arrow_stream_store(handle);
-        engineRef.current?.setStreamingDone();
-        emitLoadMilestone(startedAt, {
-          source: "arrow-stream-manifest",
-          phase: "streaming-complete",
-          chunkCount: chunks.length,
-          rowCount: tableData.rowCount,
-        });
-      }
+      await appendRemainingChunks(store);
     }
 
-    loadFromManifest().catch((err) => {
+    const existing = storeRef.current;
+    // Column overrides are applied once, while the store is built. The append
+    // path cannot re-apply them to a mounted engine, so a change to them has to
+    // rebuild even when the manifest itself only grew.
+    const canExtend =
+      existing && existing.columnOverrides === columnOverrides && extendsStore(existing, manifest);
+    const run = canExtend
+      ? (() => {
+          // A previous run may have failed a chunk fetch and left the error
+          // showing. This attempt supersedes it; a fresh failure re-sets it.
+          setError(null);
+          setStatus("ready");
+          return appendRemainingChunks(existing);
+        })()
+      : (() => {
+          // Not disposed here. The engine keeps rendering from the superseded
+          // store until the replacement mounts, and `replaceData` frees it at
+          // the swap. Disposing now would free the handle mid-render.
+          storeRef.current = null;
+          return loadFromManifest();
+        })();
+
+    run.catch((err) => {
       if (!cancelled) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
@@ -594,6 +702,10 @@ export function SiftTable({
   // - Arrow IPC: stream batches (existing behavior)
   useEffect(() => {
     if (!urlSource || !containerRef.current) return;
+
+    // See the `data` effect: this source takes over the engine, so the
+    // manifest store it supersedes must not stay reachable through the ref.
+    storeRef.current = null;
 
     const sourceUrl = urlSource;
     const startedAt = performance.now();
