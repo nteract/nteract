@@ -24,12 +24,11 @@ user code runs. Four things happen on ``load_ipython_extension``:
    when they are first imported by user code. The bootstrap never imports
    these optional packages on the kernel startup path.
 
-No ``ipython_display_formatter`` handlers. The dx wheel needed one to
-divert bare-``df``-on-last-line from the bufferless displayhook path
-to ``publish_display_data`` (where the publisher hook could attach
-buffers). With the ``NteractShellDisplayHook`` hook chain, the default
-displayhook path carries buffers natively — the short-circuit becomes
-unnecessary.
+No ``ipython_display_formatter`` handlers are registered.
+``NteractShellDisplayHook`` and the display publisher both invoke the same
+buffer-hook chain, so ``execute_result``, ``display_data``, and
+``update_display_data`` attach buffered table payloads through their native
+paths.
 """
 
 from __future__ import annotations
@@ -54,14 +53,14 @@ from nteract_kernel_launcher._buffer_hook import pending_buffers
 from nteract_kernel_launcher._format import (
     ARROW_STREAM_MANIFEST_MIME,
     ARROW_STREAM_MIME,
-    DEFAULT_ARROW_CHUNK_BYTES,
+    _bounded_arrow_table,
+    _collect_arrow_chunks,
     arrow_stream_row_count,
     build_arrow_stream_manifest,
     build_arrow_stream_manifest_from_chunks,
+    build_arrow_stream_summary,
     has_arrow_stream_protocol,
-    iter_arrow_stream_chunks,
 )
-from nteract_kernel_launcher._progressive import _summary_hints
 from nteract_kernel_launcher._refs import (
     BLOB_REF_MIME,
     BlobRef,
@@ -74,9 +73,11 @@ log = logging.getLogger("nteract_kernel_launcher")
 
 # Server-side blob ceiling is ~100 MiB; leave ~10 MiB for overhead.
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
-_ARROW_REPR_MIN_ROWS = int(os.environ.get("DX_ARROW_REPR_MIN_ROWS", "100"))
-_ARROW_REPR_BYTE_BUDGET = int(os.environ.get("DX_ARROW_REPR_BYTE_BUDGET", str(16 * 1024 * 1024)))
-_ARROW_REPR_MAX_ROWS = int(os.environ.get("DX_ARROW_REPR_MAX_ROWS", "50000"))
+_ARROW_REPR_MIN_ROWS = int(os.environ.get("NTERACT_ARROW_REPR_MIN_ROWS", "100"))
+_ARROW_REPR_BYTE_BUDGET = int(
+    os.environ.get("NTERACT_ARROW_REPR_BYTE_BUDGET", str(16 * 1024 * 1024))
+)
+_ARROW_REPR_MAX_ROWS = int(os.environ.get("NTERACT_ARROW_REPR_MAX_ROWS", "50000"))
 _PLOTLY_RENDERER_ENTRYPOINTS = frozenset(
     {"plotly.express", "plotly.graph_objects", "plotly.graph_objs"}
 )
@@ -254,7 +255,13 @@ def _emit_arrow_stream(
     if total_rows is None:
         total_rows = arrow_stream_row_count(source)
 
-    bounded_source = _bounded_arrow_table(source)
+    bounded_source = _bounded_arrow_table(
+        source,
+        min_rows=_ARROW_REPR_MIN_ROWS,
+        byte_budget=_ARROW_REPR_BYTE_BUDGET,
+        max_rows=_ARROW_REPR_MAX_ROWS,
+        max_payload_bytes=_MAX_PAYLOAD_BYTES,
+    )
     if bounded_source is not None:
         source = bounded_source
 
@@ -262,6 +269,10 @@ def _emit_arrow_stream(
         chunks, stream_complete = _collect_arrow_chunks(
             source,
             bound_stream=bounded_source is None,
+            min_rows=_ARROW_REPR_MIN_ROWS,
+            byte_budget=_ARROW_REPR_BYTE_BUDGET,
+            max_rows=_ARROW_REPR_MAX_ROWS,
+            max_payload_bytes=_MAX_PAYLOAD_BYTES,
         )
         while (
             bounded_source is not None and sum(chunk.size for chunk in chunks) > _MAX_PAYLOAD_BYTES
@@ -279,6 +290,10 @@ def _emit_arrow_stream(
             chunks, stream_complete = _collect_arrow_chunks(
                 source,
                 bound_stream=False,
+                min_rows=_ARROW_REPR_MIN_ROWS,
+                byte_budget=_ARROW_REPR_BYTE_BUDGET,
+                max_rows=_ARROW_REPR_MAX_ROWS,
+                max_payload_bytes=_MAX_PAYLOAD_BYTES,
             )
     except Exception as exc:  # noqa: BLE001
         log.debug("arrow stream emit failed: %s", exc)
@@ -326,134 +341,6 @@ def _emit_arrow_stream(
     )
 
 
-def _bounded_arrow_table(source: Any) -> Any | None:
-    """Return a measured, row-clamped Arrow head when ``source`` is sliceable.
-
-    Returns ``None`` when the head cannot be measured, which sends the source
-    down the streaming path in ``_collect_arrow_chunks``. That path bounds by
-    serialized chunk size and row count, so it needs no in-memory measurement.
-    ``Table.nbytes`` raises ``ArrowTypeError`` for ``string_view`` columns, the
-    layout Polars produces, so this is a reachable fallback rather than a
-    theoretical one.
-    """
-    try:
-        import pyarrow as pa
-    except Exception:
-        return None
-
-    if isinstance(source, pa.RecordBatch):
-        source = pa.Table.from_batches([source])
-    if not isinstance(source, pa.Table):
-        return None
-
-    total_rows = source.num_rows
-    if total_rows == 0:
-        return source
-
-    try:
-        budget_rows = _head_rows_within_bytes(
-            source,
-            byte_limit=_ARROW_REPR_BYTE_BUDGET,
-            max_rows=total_rows,
-        )
-        # MAX_ROWS wins when contradictory overrides put it below MIN_ROWS.
-        min_rows = min(_ARROW_REPR_MIN_ROWS, _ARROW_REPR_MAX_ROWS)
-        selected_rows = min(total_rows, max(min_rows, min(_ARROW_REPR_MAX_ROWS, budget_rows)))
-        selected_rows = _head_rows_within_bytes(
-            source,
-            byte_limit=_MAX_PAYLOAD_BYTES,
-            max_rows=selected_rows,
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.debug("arrow head measurement failed, falling back to stream bounds: %s", exc)
-        return None
-    return source.slice(0, selected_rows)
-
-
-def _head_rows_within_bytes(table: Any, *, byte_limit: int, max_rows: int) -> int:
-    """Find the largest measured head no larger than ``byte_limit``."""
-    low = 0
-    high = max(0, min(table.num_rows, max_rows))
-    while low < high:
-        middle = (low + high + 1) // 2
-        if table.slice(0, middle).nbytes <= byte_limit:
-            low = middle
-        else:
-            high = middle - 1
-    return low
-
-
-def _collect_arrow_chunks(
-    source: Any,
-    *,
-    bound_stream: bool,
-) -> tuple[list[Any], bool]:
-    """Collect chunks, stopping unknown/non-sliceable streams at repr limits."""
-    iterator = iter(
-        iter_arrow_stream_chunks(
-            source,
-            max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
-        )
-    )
-    chunks: list[Any] = []
-    included_rows = 0
-    included_bytes = 0
-
-    for chunk in iterator:
-        if bound_stream:
-            next_rows = included_rows + chunk.row_count
-            next_bytes = included_bytes + chunk.size
-            if next_rows > _ARROW_REPR_MAX_ROWS:
-                remaining_rows = _ARROW_REPR_MAX_ROWS - included_rows
-                if remaining_rows > 0:
-                    sliced_chunks = _slice_arrow_chunk(
-                        chunk,
-                        row_count=remaining_rows,
-                        start_index=len(chunks),
-                    )
-                    for sliced_chunk in sliced_chunks:
-                        if included_bytes + sliced_chunk.size > _MAX_PAYLOAD_BYTES:
-                            return chunks, False
-                        chunks.append(sliced_chunk)
-                        included_bytes += sliced_chunk.size
-                return chunks, False
-            over_hard_limit = next_bytes > _MAX_PAYLOAD_BYTES
-            over_soft_limit = (
-                next_bytes > _ARROW_REPR_BYTE_BUDGET and included_rows >= _ARROW_REPR_MIN_ROWS
-            )
-            if over_hard_limit or over_soft_limit:
-                return chunks, False
-        chunks.append(chunk)
-        included_rows += chunk.row_count
-        included_bytes += chunk.size
-
-    return chunks, True
-
-
-def _slice_arrow_chunk(chunk: Any, *, row_count: int, start_index: int) -> list[Any]:
-    """Re-chunk a decoded head so non-sliceable sources still honor MAX_ROWS."""
-    import pyarrow as pa
-
-    table = pa.ipc.open_stream(pa.BufferReader(chunk.data)).read_all().slice(0, row_count)
-    pieces = list(
-        iter_arrow_stream_chunks(
-            table,
-            max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
-        )
-    )
-    return [
-        type(piece)(
-            index=start_index + offset,
-            data=piece.data,
-            content_hash=piece.content_hash,
-            size=piece.size,
-            row_count=piece.row_count,
-            record_batch_count=piece.record_batch_count,
-        )
-        for offset, piece in enumerate(pieces)
-    ]
-
-
 def _emit_arrow_stream_chunks(
     chunks: list[Any],
     *,
@@ -465,7 +352,7 @@ def _emit_arrow_stream_chunks(
     if not chunks:
         raise ValueError("at least one Arrow stream chunk is required")
     included_rows = sum(chunk.row_count for chunk in chunks)
-    summary_hints = _summary_hints(
+    summary_hints = build_arrow_stream_summary(
         total_rows=total_rows,
         included_rows=included_rows,
         complete=complete,
@@ -590,7 +477,7 @@ def _emit_table_bytes(
     """
     if complete is None:
         complete = included_rows == total_rows
-    summary_hints = _summary_hints(
+    summary_hints = build_arrow_stream_summary(
         total_rows=total_rows,
         included_rows=included_rows,
         complete=complete,

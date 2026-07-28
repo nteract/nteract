@@ -751,12 +751,12 @@ def test_emit_pyarrow_table_preserves_huggingface_kv_metadata():
 def test_emit_pyarrow_table_chunks_when_full_stream_exceeds_limit(monkeypatch):
     pytest.importorskip("pyarrow")
 
-    from nteract_kernel_launcher import _bootstrap, _buffer_hook
+    from nteract_kernel_launcher import _bootstrap, _buffer_hook, _format
     from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
     from nteract_kernel_launcher._refs import BLOB_REF_MIME
 
     _buffer_hook.pending_buffers().clear()
-    monkeypatch.setattr(_bootstrap, "DEFAULT_ARROW_CHUNK_BYTES", 1)
+    monkeypatch.setattr(_format, "DEFAULT_ARROW_CHUNK_BYTES", 1)
     table = _pa_table_with_hf_metadata()
 
     bundle = _bootstrap._arrow_stream_mimebundle(table)
@@ -871,15 +871,17 @@ def test_fat_arrow_rows_clamp_up_to_min_rows(monkeypatch):
 def test_max_rows_wins_over_contradictory_min_rows(monkeypatch):
     pa = pytest.importorskip("pyarrow")
 
-    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher import _format
 
-    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MIN_ROWS", 60)
-    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 1_000_000)
-    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 50)
-    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 1_000_000)
     table = pa.table({"value": list(range(100))})
 
-    bounded = _bootstrap._bounded_arrow_table(table)
+    bounded = _format._bounded_arrow_table(
+        table,
+        min_rows=60,
+        byte_budget=1_000_000,
+        max_rows=50,
+        max_payload_bytes=1_000_000,
+    )
 
     assert bounded is not None
     assert bounded.num_rows == 50
@@ -889,15 +891,24 @@ def test_unmeasurable_table_degrades_instead_of_raising(monkeypatch):
     """A measurement failure falls back to bounded streaming on every pyarrow."""
     pa = pytest.importorskip("pyarrow")
 
-    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher import _bootstrap, _format
 
     def fail_measurement(*args, **kwargs):
         raise RuntimeError("forced measurement failure")
 
-    monkeypatch.setattr(_bootstrap, "_head_rows_within_bytes", fail_measurement)
+    monkeypatch.setattr(_format, "_head_rows_within_bytes", fail_measurement)
     table = pa.table({"s": ["x"] * 500})
 
-    assert _bootstrap._bounded_arrow_table(table) is None
+    assert (
+        _format._bounded_arrow_table(
+            table,
+            min_rows=100,
+            byte_budget=16 * 1024 * 1024,
+            max_rows=50_000,
+            max_payload_bytes=90 * 1024 * 1024,
+        )
+        is None
+    )
 
     bundle = _bootstrap._arrow_stream_mimebundle(table)
     assert bundle is not None
@@ -956,7 +967,7 @@ def test_hard_ceiling_shrink_is_geometrically_bounded(monkeypatch):
 
     attempted_rows = []
 
-    def collect(source, *, bound_stream):
+    def collect(source, *, bound_stream, **limits):
         assert bound_stream is False
         attempted_rows.append(source.num_rows)
         return [SimpleNamespace(size=101, row_count=source.num_rows)], True
@@ -964,7 +975,7 @@ def test_hard_ceiling_shrink_is_geometrically_bounded(monkeypatch):
     source = SliceableSource(64)
     monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 100)
     monkeypatch.setattr(_bootstrap, "has_arrow_stream_protocol", lambda source: True)
-    monkeypatch.setattr(_bootstrap, "_bounded_arrow_table", lambda source: source)
+    monkeypatch.setattr(_bootstrap, "_bounded_arrow_table", lambda source, **limits: source)
     monkeypatch.setattr(_bootstrap, "_collect_arrow_chunks", collect)
 
     assert _bootstrap._emit_arrow_stream(source, total_rows=64) is None
@@ -972,18 +983,21 @@ def test_hard_ceiling_shrink_is_geometrically_bounded(monkeypatch):
 
 
 def test_stream_row_cap_slice_still_honors_hard_byte_ceiling(monkeypatch):
-    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher import _format
 
     source_chunk = SimpleNamespace(size=1, row_count=10)
     oversized_slice = SimpleNamespace(size=11, row_count=5)
-    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 5)
-    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 10)
-    monkeypatch.setattr(
-        _bootstrap, "iter_arrow_stream_chunks", lambda *args, **kwargs: [source_chunk]
-    )
-    monkeypatch.setattr(_bootstrap, "_slice_arrow_chunk", lambda *args, **kwargs: [oversized_slice])
+    monkeypatch.setattr(_format, "iter_arrow_stream_chunks", lambda *args, **kwargs: [source_chunk])
+    monkeypatch.setattr(_format, "_slice_arrow_chunk", lambda *args, **kwargs: [oversized_slice])
 
-    chunks, complete = _bootstrap._collect_arrow_chunks(object(), bound_stream=True)
+    chunks, complete = _format._collect_arrow_chunks(
+        object(),
+        bound_stream=True,
+        min_rows=1,
+        byte_budget=10,
+        max_rows=5,
+        max_payload_bytes=10,
+    )
 
     assert complete is False
     assert sum(chunk.size for chunk in chunks) <= 10
