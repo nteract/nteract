@@ -10,6 +10,7 @@
     "preview": "vp preview",
     "test:e2e:browser": "node e2e/run-browser-e2e.mjs",
     "test:e2e:browser:portless": "node e2e/run-browser-e2e.mjs --portless",
+    "test:e2e:record": "NTERACT_E2E_RECORD=1 node e2e/run-browser-e2e.mjs",
     "test:e2e:video": "node e2e/show-video.mjs"
   },
   "dependencies": {
