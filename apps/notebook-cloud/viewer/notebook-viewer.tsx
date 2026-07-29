@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { AlertCircle, Check, Info, Loader2, LogIn, PanelLeftOpen, X } from "lucide-react";
+import { AlertCircle, Check, Info, Loader2, LogIn, LogOut, PanelLeftOpen, X } from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import {
   useHasIsolatedOutputs,
@@ -55,6 +55,7 @@ import {
   type NotebookCommentDraftTarget,
 } from "@/components/notebook";
 import { resolveCommentsUiSurface } from "@/components/notebook/comments-ui-gate";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   openNotebookRailPanel,
   setActiveNotebookRailPanel,
@@ -144,6 +145,7 @@ import { cloudResponseError } from "./cloud-response";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
+import { clearCachedCloudNotebookList } from "./notebook-list-cache";
 import type { CloudAccessRequestNoticeProjection } from "./cloud-access-request-state";
 import {
   cloudNotebookCatalogAccessFromCatalogResponse,
@@ -1474,6 +1476,25 @@ export function NotebookViewer({
     accessRequest.reset();
     refreshAuthState();
   }, [accessRequest, refreshAuthState]);
+  // Clears the same state the notebook home clears — app session, dev auth,
+  // and the cached list — so signing out in one surface cannot leave the other
+  // showing a stale identity or notebook list.
+  const signOutOfNotebook = useCallback(() => {
+    auth.clearAppSessionStatus();
+    void clearCloudAppSession()
+      .catch((error: unknown) => {
+        console.warn("[notebook-cloud] app session clear failed", error);
+      })
+      .finally(() => auth.refreshAppSessionStatus());
+    try {
+      clearCachedCloudNotebookList(window.localStorage);
+    } catch {
+      // Private-mode storage denial is not a sign-out failure.
+    }
+    clearCloudPrototypeDevAuth(window.localStorage);
+    accessRequest.reset();
+    refreshAuthState();
+  }, [accessRequest, auth, refreshAuthState]);
   const beginNotebookAuth = useCallback(async () => {
     const method = cloudSignInMethodForConfig(authConfig);
     if (method === "oidc" && authConfig.oidc) {
@@ -1718,6 +1739,13 @@ export function NotebookViewer({
           <NotebookConnectionIdentity
             capabilities={shellCapabilities}
             connectionStatus$={connectionStatus$}
+            accountDetail={authState.oidcClaims?.email?.trim() ?? null}
+            accountActions={
+              <DropdownMenuItem onSelect={signOutOfNotebook}>
+                <LogOut aria-hidden="true" />
+                Sign out
+              </DropdownMenuItem>
+            }
           />
         ) : null
       }

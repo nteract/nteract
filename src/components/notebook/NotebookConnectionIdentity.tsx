@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ConnectionStatus } from "runtimed";
 import { cn } from "@/lib/utils";
+import { NotebookAccountMenu } from "./NotebookAccountMenu";
 import { NotebookActorAvatar } from "./NotebookIdentity";
 import { notebookToolbarActors } from "./NotebookToolbarIdentity";
 import type { NotebookShellCapabilities } from "./capabilities";
@@ -64,6 +65,8 @@ export interface NotebookConnectionIdentityProps {
    */
   connectionLabel?: string;
   className?: string;
+  accountActions?: ReactNode;
+  accountDetail?: string | null;
 }
 
 export function NotebookConnectionIdentity({
@@ -71,6 +74,8 @@ export function NotebookConnectionIdentity({
   connectionStatus$,
   connectionLabel,
   className,
+  accountActions,
+  accountDetail,
 }: NotebookConnectionIdentityProps) {
   const { status, announcedStatus } = useConnectionStatus(connectionStatus$);
   const statusText = formatStatusText(status, connectionLabel);
@@ -93,6 +98,35 @@ export function NotebookConnectionIdentity({
 
   const detail = `${actor.label} — ${statusText}`;
 
+  // Announces status CHANGES only — empty on initial render so a mount never
+  // speaks, and sources dedup repeated values so flaps don't spam.
+  const liveRegion = (
+    <span className="sr-only" aria-live="polite">
+      {announcement}
+    </span>
+  );
+
+  if (accountActions) {
+    return (
+      <NotebookAccountMenu
+        actor={actor}
+        detail={detail}
+        accountDetail={accountDetail}
+        showStatus
+        statusClassName={connectionDotTone(status)}
+        triggerExtra={liveRegion}
+        triggerClassName={cn(status !== "online" && "opacity-70", className)}
+        triggerProps={{
+          "data-slot": "notebook-connection-identity",
+          "data-state": status,
+          "data-actor-kind": actor.kind,
+        }}
+      >
+        {accountActions}
+      </NotebookAccountMenu>
+    );
+  }
+
   return (
     <div
       className={cn(
@@ -111,17 +145,12 @@ export function NotebookConnectionIdentity({
         <NotebookActorAvatar
           actor={actor}
           className="border-0"
-          size="sm"
+          size="default"
           statusClassName={connectionDotTone(status)}
         />
       </span>
       <span className="sr-only">{detail}</span>
-      {/* Announces status CHANGES only — empty on initial render so a mount
-          never speaks, and sources dedup repeated values so flaps don't
-          spam. */}
-      <span className="sr-only" aria-live="polite">
-        {announcement}
-      </span>
+      {liveRegion}
     </div>
   );
 }
