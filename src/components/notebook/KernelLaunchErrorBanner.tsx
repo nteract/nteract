@@ -103,7 +103,7 @@ export function KernelLaunchErrorBanner({
   return (
     <NotebookNotice
       tone="error"
-      icon={<AlertCircle className="size-4" />}
+      icon={<AlertCircle />}
       title="Kernel failed to start"
       onDismiss={onDismiss}
       details={
@@ -113,12 +113,12 @@ export function KernelLaunchErrorBanner({
         <>
           <NotebookNoticeAction
             onClick={copyDetails}
-            icon={copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+            icon={copied ? <Check /> : <Copy />}
             data-testid="copy-kernel-launch-error"
           >
             {copied ? "Copied" : "Copy"}
           </NotebookNoticeAction>
-          <NotebookNoticeAction onClick={onRetry} icon={<RotateCw className="size-3" />}>
+          <NotebookNoticeAction onClick={onRetry} icon={<RotateCw />}>
             Retry
           </NotebookNoticeAction>
         </>
@@ -143,11 +143,11 @@ export function ComputeDisconnectedNotice({
   return (
     <NotebookNotice
       tone="warning"
-      icon={<WifiOff className="size-4" />}
+      icon={<WifiOff />}
       title="Compute disconnected"
       onDismiss={onDismiss}
       actions={
-        <NotebookNoticeAction onClick={onRetry} icon={<RotateCw className="size-3" />}>
+        <NotebookNoticeAction onClick={onRetry} icon={<RotateCw />}>
           Retry
         </NotebookNoticeAction>
       }

@@ -258,7 +258,7 @@ function RuntimeBanners() {
         >
           <NotebookNotice
             tone="warning"
-            icon={<AlertTriangle className="size-4" aria-hidden="true" />}
+            icon={<AlertTriangle aria-hidden="true" />}
             title="Document attention needed."
             actions={<NotebookNoticeAction onClick={noop}>Review</NotebookNoticeAction>}
           >

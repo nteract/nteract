@@ -78,13 +78,11 @@ function NoComputeNotice({ isOwner }: { isOwner: boolean }) {
   return (
     <NotebookNotice
       tone="info"
-      icon={<Cpu className="h-4 w-4" />}
+      icon={<Cpu />}
       title="No compute attached."
       actions={
         isOwner ? (
-          <NotebookNoticeAction icon={<RotateCw className="h-3 w-3" />}>
-            Start compute
-          </NotebookNoticeAction>
+          <NotebookNoticeAction icon={<RotateCw />}>Start compute</NotebookNoticeAction>
         ) : null
       }
     >
@@ -117,7 +115,7 @@ const viewableScenarios: Scenario[] = [
     label: "Reconnecting",
     note: "Transport dropped past the 3s debounce. Quiet, no CTA — the transport retries forever on its own.",
     render: () => (
-      <NotebookNotice tone="info" icon={<CloudOff className="h-4 w-4" />} title="Reconnecting.">
+      <NotebookNotice tone="info" icon={<CloudOff />} title="Reconnecting.">
         Your edits are kept locally and will sync when the connection returns.
       </NotebookNotice>
     ),
@@ -141,7 +139,7 @@ const viewableScenarios: Scenario[] = [
     render: () => (
       <NotebookNotice
         tone="warning"
-        icon={<CloudOff className="h-4 w-4" />}
+        icon={<CloudOff />}
         title="Live room needs attention."
         details={
           <NotebookNoticeDetails label="Show error details">
@@ -197,11 +195,7 @@ const viewableScenarios: Scenario[] = [
       <NotebookNotice
         tone="error"
         title="Auth needs attention."
-        actions={
-          <NotebookNoticeAction icon={<LogIn className="h-3 w-3" />}>
-            Sign in again
-          </NotebookNoticeAction>
-        }
+        actions={<NotebookNoticeAction icon={<LogIn />}>Sign in again</NotebookNoticeAction>}
       >
         Your sign-in expired. Sign in again to keep editing.
       </NotebookNotice>
@@ -214,7 +208,7 @@ const viewableScenarios: Scenario[] = [
     render: () => (
       <NotebookNotice
         tone="info"
-        icon={<Loader2 className="h-4 w-4 animate-spin" />}
+        icon={<Loader2 className="animate-spin" />}
         title="Refreshing sign-in."
       >
         Reconnecting your account…
@@ -228,13 +222,9 @@ const viewableScenarios: Scenario[] = [
     render: () => (
       <NotebookNotice
         tone="warning"
-        icon={<ImageOff className="h-4 w-4" />}
+        icon={<ImageOff />}
         title="Output renderer unavailable."
-        actions={
-          <NotebookNoticeAction icon={<RotateCcw className="h-3 w-3" />}>
-            Retry
-          </NotebookNoticeAction>
-        }
+        actions={<NotebookNoticeAction icon={<RotateCcw />}>Retry</NotebookNoticeAction>}
       >
         Rich outputs are paused because their renderer assets failed to load. Code and text stay
         readable; retry to restore outputs.
@@ -248,7 +238,7 @@ const viewableScenarios: Scenario[] = [
     render: () => (
       <NotebookNotice
         tone="info"
-        icon={<Cloud className="h-4 w-4" />}
+        icon={<Cloud />}
         title="Synced your offline edits — 3 updates from collaborators merged."
       >
         A cell you edited offline was removed by a collaborator.
@@ -499,9 +489,7 @@ function ToneReference() {
               title={`${tone[0].toUpperCase()}${tone.slice(1)} tone.`}
               actions={
                 i < 3 ? (
-                  <NotebookNoticeAction icon={<AlertCircle className="h-3 w-3" />}>
-                    Action
-                  </NotebookNoticeAction>
+                  <NotebookNoticeAction icon={<AlertCircle />}>Action</NotebookNoticeAction>
                 ) : null
               }
             >

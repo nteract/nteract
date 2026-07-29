@@ -1,4 +1,4 @@
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import {
   NotebookNotice,
   NotebookNoticeAction,
@@ -44,12 +44,11 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
     return (
       <NotebookNotice
         tone="warning"
-        icon={<AlertTriangle className="size-4" />}
         title="Runtime unavailable"
         onDismiss={onDismiss}
         actions={
           onRetry ? (
-            <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw className="size-3" />}>
+            <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw />}>
               Retry
             </NotebookNoticeAction>
           ) : null
@@ -67,7 +66,7 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
   const message = getProgressMessage(status);
 
   return (
-    <NotebookNotice tone="info" icon={<Loader2 className="size-3 animate-spin" />} className="py-1">
+    <NotebookNotice tone="info" icon={<Loader2 className="animate-spin" />} className="py-1">
       {message}
     </NotebookNotice>
   );

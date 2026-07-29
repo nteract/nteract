@@ -47,6 +47,9 @@ const iconClassName: Record<NotebookNoticeTone, string> = {
  * pass a more specific `icon` (e.g. CloudOff for reconnecting); when it does
  * not, the tone picks the icon. Pass `icon={null}` to opt out entirely.
  *
+ * Callers pass shape only — this shell sizes notice icons to `size-4` and
+ * action icons to `size-3`. Do not put size classes on passed icons.
+ *
  * Components, not elements: module-scope JSX would evaluate at import time,
  * before consumers that install React globally (the node:test suites) run.
  */
@@ -90,7 +93,7 @@ export function NotebookNotice({
   // `undefined` means "no explicit icon" → fall back to the tone default so
   // shape signals severity. `null` is an explicit opt-out and renders nothing.
   const ToneIcon = toneDefaultIcon[tone];
-  const resolvedIcon = icon === undefined ? <ToneIcon className="size-4" /> : icon;
+  const resolvedIcon = icon === undefined ? <ToneIcon /> : icon;
   return (
     <div
       className={cn(
@@ -119,7 +122,9 @@ export function NotebookNotice({
         {resolvedIcon ? (
           <span
             className={cn(
-              "mt-0.5 flex size-4 shrink-0 items-center justify-center",
+              // Own icon size here so callers pass shape only (`<CloudOff />`,
+              // `<Loader2 className="animate-spin" />`) without restating size-*.
+              "mt-0.5 flex size-4 shrink-0 items-center justify-center [&_svg]:size-4",
               iconClassName[tone],
             )}
             aria-hidden="true"
@@ -196,8 +201,9 @@ export function NotebookNoticeAction({
       className={cn(
         // Reads as a real button: a borderless chip with a fill drawn from the
         // tone's currentColor, not a bare text link. h-6 + whitespace-nowrap
-        // keep it from growing the notice row or wrapping.
-        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-current/10 px-2 text-xs font-medium transition-colors hover:bg-current/20",
+        // keep it from growing the notice row or wrapping. Action icons are
+        // sized here (`[&_svg]:size-3`); callers pass shape only.
+        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-current/10 px-2 text-xs font-medium transition-colors hover:bg-current/20 [&_svg]:size-3",
         className,
       )}
       data-testid={dataTestId}
