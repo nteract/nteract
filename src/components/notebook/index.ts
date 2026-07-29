@@ -187,6 +187,11 @@ export {
   type NotebookConnectionStatusSource,
 } from "./NotebookConnectionIdentity";
 export {
+  NotebookAccountMenu,
+  NOTEBOOK_ACCOUNT_MENU_TRIGGER_CLASS,
+  type NotebookAccountMenuProps,
+} from "./NotebookAccountMenu";
+export {
   NotebookToolbarIdentity,
   notebookToolbarActors,
   type NotebookToolbarIdentityProps,

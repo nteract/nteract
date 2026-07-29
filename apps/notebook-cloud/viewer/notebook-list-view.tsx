@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type CSSProperties,
-  type FormEvent,
-} from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -17,8 +10,12 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import { colorForActorIdentity, contrastColorForActorIdentity } from "runtimed";
+// Not the `@/components/notebook` barrel: it pulls the notebook route into this
+// chunk and collapses the notebook-route CSS split `copy-viewer-assets` needs.
+import { NotebookAccountMenu } from "@/components/notebook/NotebookAccountMenu";
+import type { NotebookActorIdentity } from "@/components/notebook/capabilities";
 import { Button } from "@/components/ui/button";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -398,15 +395,12 @@ export function CloudNotebookListView({
   const [currentUserAvatar, setCurrentUserAvatar] = useState<string | null>(null);
   // Prefer the unified user store's display name (delivered with the list
   // response) over auth-claim parsing for the header identity.
-  const currentUserInitials = currentUserDisplay
-    ? cloudNotebookInitialsFromLabel(currentUserDisplay)
-    : cloudNotebookListCurrentUserInitials(authState);
-  // Deterministic per-identity avatar color via the same palette/contrast
-  // helpers as presence and cursors, but keyed on a best-effort self identity
-  // (auth claims, not the room actor label), so it replaces the fixed brand fill
-  // now; an exact cross-surface match waits on the user store's canonical
-  // self principal.
-  const currentUserColorKey = cloudNotebookListCurrentUserColorKey(authState);
+  const currentUserActor = cloudNotebookListCurrentUserActor(
+    authState,
+    currentUserDisplay,
+    currentUserAvatar,
+  );
+  const currentUserAccountDetail = cloudNotebookListAccountDetail(authState, currentUserDisplay);
 
   return (
     <main className="cloud-notebook-list-page nb-app">
@@ -452,32 +446,16 @@ export function CloudNotebookListView({
                   )}
                   {createState === "starting" ? "Creating" : "New notebook"}
                 </Button>
-                <Button type="button" variant="ghost" aria-label="Sign out" onClick={signOut}>
-                  <LogOut aria-hidden="true" />
-                  <span className="nb-btn-label">Sign out</span>
-                </Button>
-                <span
-                  className="nb-avatar-me"
-                  style={
-                    currentUserAvatar
-                      ? undefined
-                      : ({
-                          "--nb-avatar-bg": colorForActorIdentity(currentUserColorKey),
-                          "--nb-avatar-fg": contrastColorForActorIdentity(currentUserColorKey),
-                        } as CSSProperties)
-                  }
-                  title={currentUserDisplay ?? headerDetail}
+                <NotebookAccountMenu
+                  actor={currentUserActor}
+                  detail={currentUserDisplay ?? headerDetail}
+                  accountDetail={currentUserAccountDetail}
                 >
-                  {currentUserAvatar ? (
-                    <img
-                      className="nb-avatar-img"
-                      src={currentUserAvatar}
-                      alt={currentUserDisplay ?? headerDetail}
-                    />
-                  ) : (
-                    currentUserInitials
-                  )}
-                </span>
+                  <DropdownMenuItem onSelect={signOut}>
+                    <LogOut aria-hidden="true" />
+                    Sign out
+                  </DropdownMenuItem>
+                </NotebookAccountMenu>
               </div>
             </>
           ) : null}
@@ -710,35 +688,41 @@ function cloudNotebookListHeaderDetail(
   return firstName ? `by ${firstName}` : "Signed in";
 }
 
-function cloudNotebookListCurrentUserInitials(authState: CloudPrototypeAuthState): string {
+function cloudNotebookListCurrentUserActor(
+  authState: CloudPrototypeAuthState,
+  displayName: string | null,
+  avatarUrl: string | null,
+): NotebookActorIdentity {
   const label =
+    displayName?.trim() ||
     authState.oidcClaims?.name?.trim() ||
     authState.oidcClaims?.email?.trim() ||
     (authState.mode === "dev" ? authState.user?.trim() : "") ||
     "You";
-  return cloudNotebookInitialsFromLabel(label);
-}
-
-function cloudNotebookListCurrentUserColorKey(authState: CloudPrototypeAuthState): string {
-  return (
+  const id =
     authState.oidcClaims?.sub?.trim() ||
     (authState.mode === "dev" ? authState.user?.trim() : "") ||
     authState.oidcClaims?.email?.trim() ||
-    "you"
-  );
+    "you";
+  return {
+    id,
+    label,
+    detail: null,
+    kind: "human",
+    imageUrl: avatarUrl,
+  };
 }
 
-function cloudNotebookInitialsFromLabel(label: string): string {
-  const parts = label
-    .replace(/[_+.-]+/gu, " ")
-    .trim()
-    .split(/\s+/u)
-    .filter(Boolean);
-  const initials =
-    parts.length >= 2
-      ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`
-      : (parts[0]?.slice(0, 2) ?? "YO");
-  return initials.toUpperCase();
+function cloudNotebookListAccountDetail(
+  authState: CloudPrototypeAuthState,
+  displayName: string | null,
+): string | null {
+  const email = authState.oidcClaims?.email?.trim();
+  if (!email) {
+    return authState.mode === "dev" ? "Local auth" : null;
+  }
+  const label = displayName?.trim() || authState.oidcClaims?.name?.trim() || "";
+  return email === label ? null : email;
 }
 
 function cloudNotebookListFirstName(authState: CloudPrototypeAuthState): string | null {
