@@ -619,6 +619,30 @@ describe("SiftTable", () => {
     expect(container.innerHTML).not.toMatch(/FIRST/);
   });
 
+  it("frees a store whose first chunk fetch fails, without waiting for unmount", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({ ok: false as const, status: 500, statusText: "boom" }),
+    );
+
+    render(
+      <SiftTable
+        source={{
+          kind: "arrow-stream-manifest",
+          manifest: {
+            chunks: [{ url: "http://127.0.0.1:9000/blob/chunk-0" }],
+            complete: true,
+          },
+        }}
+      />,
+    );
+
+    // The engine never took ownership, so nothing else will release it.
+    await waitFor(() => {
+      expect(predicateModule.free).toHaveBeenCalledWith(9);
+    });
+  });
+
   it("frees the WASM store on unmount after a manifest load", async () => {
     vi.useRealTimers();
     vi.stubGlobal("fetch", () =>

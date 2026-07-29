@@ -679,6 +679,12 @@ export function SiftTable({
         })();
 
     run.catch((err) => {
+      // A store that failed before mounting has no owner: the engine never
+      // took it and `replaceData` will never free it. Release it here instead
+      // of holding the handle until the next effect run or unmount. Mounted
+      // stores have already cleared this, so the append path is unaffected.
+      disposePendingStore?.();
+      disposePendingStore = null;
       if (!cancelled) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
