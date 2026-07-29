@@ -150,7 +150,7 @@ New clients receive widget topology via RuntimeStateDoc sync and widget state vi
 
 ### Reserved comm namespace: `nteract.dx.*`
 
-The `nteract.dx.*` prefix is reserved for nteract's own kernel-side protocols. `comm_open` / `comm_msg` / `comm_close` traffic for this namespace is filtered out of runtime comm topology/state and `NotebookBroadcast::Comm`, so it never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning, and current blob refs ride IOPub `display_data` buffers through `preflight_ref_buffers`.
+The `nteract.dx.*` prefix is reserved for nteract's own kernel-side protocols. `comm_open` / `comm_msg` / `comm_close` traffic for this namespace is filtered out of runtime comm topology/state and `NotebookBroadcast::Comm`, so it never reaches `WidgetStore`. v1 has no live `nteract.dx.blob` handler; reserved messages are dropped with a warning, and current kernel-emitted output blobs ride IOPub rich-output buffers (`display_data`, `execute_result`, or `update_display_data`) through `preflight_ref_buffers`.
 
 ## Development workflow
 
