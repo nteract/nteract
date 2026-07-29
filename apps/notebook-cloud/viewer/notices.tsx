@@ -3,7 +3,6 @@ import { AlertCircle, Cloud, CloudOff, ImageOff, Loader2, LogIn, RotateCcw } fro
 import {
   NotebookNotice,
   NotebookNoticeAction,
-  NotebookNoticeDetails,
   NotebookNoticeStack,
 } from "@/components/notebook/NotebookNotice";
 import { prototypeAuthSummary, type CloudPrototypeAuthState } from "./collaborator-auth";
@@ -238,7 +237,6 @@ export function CloudNotebookNotices({
     !(connectionNotice && status.kind === "loading") &&
     !signInRequired &&
     !isStatusDerivedFromConnectionError(status, connectionError);
-  const statusMessage = splitNoticeMessage(status.message);
   const shouldShowAnonymousViewerAuthNotice = shouldShowCloudAnonymousViewerAuthNotice({
     authState,
     hasAppSession,
@@ -364,13 +362,6 @@ export function CloudNotebookNotices({
               onSignInAgain={onSignInAgain}
             />
           }
-          details={
-            connectionNotice.details ? (
-              <NotebookNoticeDetails label="Show error details">
-                {connectionNotice.details}
-              </NotebookNoticeDetails>
-            ) : undefined
-          }
         >
           {connectionNotice.message}
         </NotebookNotice>
@@ -410,15 +401,8 @@ export function CloudNotebookNotices({
             )
           }
           title={status.kind === "error" ? "Unable to load notebook." : "Loading notebook."}
-          details={
-            statusMessage.details ? (
-              <NotebookNoticeDetails label="Show error details">
-                {statusMessage.details}
-              </NotebookNoticeDetails>
-            ) : undefined
-          }
         >
-          {statusMessage.summary}
+          {status.message}
         </NotebookNotice>
       ) : null}
     </NotebookNoticeStack>
@@ -563,44 +547,12 @@ function isStatusDerivedFromConnectionError(
   );
 }
 
-/**
- * Longest machine-derived message kept inline on the notice bar. Past this a
- * lead line stays on the bar and the whole string moves behind a disclosure,
- * matching the kernel-launch banner: the notices region grows with content, so
- * an unbounded wall of stderr would otherwise shove the notebook down the page.
- */
-const NOTICE_INLINE_MESSAGE_MAX = 160;
-
-/**
- * Split a free-form error string into the line that goes on the bar and the
- * full text for the disclosure. Human-authored notice copy is short and skips
- * this entirely; only daemon/transport/asset strings can run long or multiline.
- */
-export function splitNoticeMessage(message: string): {
-  summary: string;
-  details: string | null;
-} {
-  const full = message.trim();
-  const firstLine = (full.split("\n", 1)[0] ?? "").trim();
-  if (firstLine === full && full.length <= NOTICE_INLINE_MESSAGE_MAX) {
-    return { summary: full, details: null };
-  }
-  if (firstLine.length <= NOTICE_INLINE_MESSAGE_MAX) {
-    return { summary: firstLine, details: full };
-  }
-  const clipped = firstLine.slice(0, NOTICE_INLINE_MESSAGE_MAX);
-  const lastSpace = clipped.lastIndexOf(" ");
-  const summary = lastSpace > NOTICE_INLINE_MESSAGE_MAX / 2 ? clipped.slice(0, lastSpace) : clipped;
-  return { summary: `${summary.trimEnd()}…`, details: full };
-}
-
 function cloudConnectionNoticeDisplay(
   error: string,
   hasReadableSnapshot: boolean,
 ): {
   title: string;
   message: string;
-  details?: string | null;
   tone: "warning" | "success";
 } | null {
   if (isTransportReconnectError(error)) {
@@ -651,11 +603,9 @@ function cloudConnectionNoticeDisplay(
   }
 
   if (isRuntimedWasmAssetFailure(error)) {
-    const { summary, details } = splitNoticeMessage(sanitizeCloudConnectionError(error));
     return {
       title: "Notebook engine failed to load.",
-      message: summary,
-      details,
+      message: sanitizeCloudConnectionError(error),
       tone: "warning",
     };
   }
@@ -675,11 +625,9 @@ function cloudConnectionNoticeDisplay(
     };
   }
 
-  const { summary, details } = splitNoticeMessage(sanitizeCloudConnectionError(error));
   return {
     title: "Live room needs attention.",
-    message: summary,
-    details,
+    message: sanitizeCloudConnectionError(error),
     tone: "warning",
   };
 }

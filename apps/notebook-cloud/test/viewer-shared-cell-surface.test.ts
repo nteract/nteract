@@ -617,14 +617,9 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   const noticesCss = cssText.match(/\.cloud-notebook-notices \{(?<body>[\s\S]*?)\n\}/)?.groups
     ?.body;
   assert.ok(noticesCss);
-  // Notices size to content above a collapsed floor with no cap and no scroll
-  // surface of their own: long error text lives behind the details disclosure,
-  // whose <pre> owns the only scrolling.
-  assert.match(noticesCss, /flex: 0 0 auto;/);
-  assert.match(noticesCss, /min-height: var\(--cloud-notice-height\);/);
-  assert.doesNotMatch(noticesCss, /max-height:/);
-  assert.doesNotMatch(noticesCss, /\n {2}height: var\(--cloud-notice-height\);/);
-  assert.doesNotMatch(noticesCss, /overflow/);
+  assert.match(noticesCss, /flex: 0 0 var\(--cloud-notice-height\);/);
+  assert.match(noticesCss, /height: var\(--cloud-notice-height\);/);
+  assert.match(noticesCss, /overflow-y: auto;/);
   assert.match(noticesCss, /animation: cloud-notice-enter/);
   assert.doesNotMatch(noticesCss, /position: absolute;/);
   assert.match(
