@@ -1,7 +1,7 @@
 use arrow::array::{
     Array, BinaryArray, BinaryViewArray, BooleanArray, Float64Array, Int32Array, Int64Array,
-    LargeBinaryArray, LargeListArray, LargeStringArray, ListArray, StringArray, StructArray,
-    UInt32Array, UInt64Array,
+    LargeBinaryArray, LargeListArray, LargeStringArray, ListArray, StringArray, StringViewArray,
+    StructArray, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::ipc::reader::StreamReader;
@@ -36,6 +36,8 @@ struct DataStore {
     num_cols: usize,
     col_names: Vec<String>,
     col_types: Vec<String>, // "numeric", "categorical", "boolean", "timestamp", "image"
+    /// Set once the value-based image sniff has run over the first batches.
+    image_columns_refined: bool,
     col_timezones: Vec<Option<String>>,
     /// Original column arrays saved before casting, keyed by column index.
     /// Used to restore original data when casting back to the original type.
@@ -94,6 +96,166 @@ impl DataStore {
             | DataType::Decimal256(_, _) => "numeric",
             DataType::Timestamp(_, _) | DataType::Date32 | DataType::Date64 => "timestamp",
             _ => "categorical",
+        }
+    }
+}
+
+/// Leading non-null values inspected when deciding if a column holds images.
+const IMAGE_SNIFF_SAMPLE: usize = 32;
+/// Bytes read from each value while sniffing. A data URI declares itself in its
+/// first few bytes, so there is no reason to walk a multi-kilobyte payload.
+const IMAGE_SNIFF_PREFIX: usize = 64;
+
+/// True for `data:image/<type>;base64,<payload>`.
+///
+/// Percent-encoded data URIs (`data:image/svg+xml,<svg .../>`) are excluded:
+/// they carry no base64 payload to decode, so they stay on the text path.
+fn looks_like_base64_image(value: &str) -> bool {
+    let end = value
+        .char_indices()
+        .nth(IMAGE_SNIFF_PREFIX)
+        .map_or(value.len(), |(i, _)| i);
+    let head = &value[..end];
+    head.starts_with("data:image/") && head.contains(";base64,")
+}
+
+/// Payload bytes of a base64 data URI, or empty when it is not one.
+fn decode_base64_image(value: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    if !looks_like_base64_image(value) {
+        return Vec::new();
+    }
+    let Some(comma) = value.find(";base64,") else {
+        return Vec::new();
+    };
+    let payload = &value[comma + ";base64,".len()..];
+    base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .unwrap_or_default()
+}
+
+/// Bytes for one image element, whether it is a data-URI string or an
+/// HF `Struct{bytes,path}`.
+fn bytes_from_image_element(array: &dyn Array, idx: usize) -> Vec<u8> {
+    if let Some(value) = string_value_at(array, idx) {
+        return decode_base64_image(value);
+    }
+    extract_bytes_from_struct(array, idx)
+}
+
+/// String value at `row`, for the three Arrow string layouts.
+fn string_value_at(array: &dyn Array, row: usize) -> Option<&str> {
+    if cell_is_null(array, row) {
+        return None;
+    }
+    if let Some(a) = array.as_any().downcast_ref::<StringArray>() {
+        return Some(a.value(row));
+    }
+    if let Some(a) = array.as_any().downcast_ref::<LargeStringArray>() {
+        return Some(a.value(row));
+    }
+    if let Some(a) = array.as_any().downcast_ref::<StringViewArray>() {
+        return Some(a.value(row));
+    }
+    None
+}
+
+/// Whether a column could hold data-URI images, judged on type alone. Only
+/// these are worth sampling.
+fn is_sniffable_string_data_type(dt: &DataType) -> bool {
+    match dt {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => true,
+        DataType::List(field) | DataType::LargeList(field) => matches!(
+            field.data_type(),
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+        ),
+        _ => false,
+    }
+}
+
+/// Sample a column and report whether every value seen is a base64 image.
+///
+/// Requires unanimity rather than a majority: a false positive routes a text
+/// column through the image path, where cells render blank. A false negative
+/// only leaves the column as text, which is what it would have been anyway.
+fn column_sniffs_as_images(batches: &[RecordBatch], col: usize) -> bool {
+    let mut seen = 0usize;
+    let mut matched = 0usize;
+
+    for batch in batches {
+        if col >= batch.num_columns() {
+            return false;
+        }
+        let column = batch.column(col);
+        for row in 0..column.len() {
+            if seen >= IMAGE_SNIFF_SAMPLE {
+                return seen > 0 && matched == seen;
+            }
+            if cell_is_null(column.as_ref(), row) {
+                continue;
+            }
+            match column.data_type() {
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                    let Some(value) = string_value_at(column.as_ref(), row) else {
+                        continue;
+                    };
+                    seen += 1;
+                    if looks_like_base64_image(value) {
+                        matched += 1;
+                    }
+                }
+                DataType::List(_) | DataType::LargeList(_) => {
+                    let inner = match column.data_type() {
+                        DataType::List(_) => column
+                            .as_any()
+                            .downcast_ref::<ListArray>()
+                            .map(|l| l.value(row)),
+                        _ => column
+                            .as_any()
+                            .downcast_ref::<LargeListArray>()
+                            .map(|l| l.value(row)),
+                    };
+                    let Some(inner) = inner else { continue };
+                    for i in 0..inner.len() {
+                        let Some(value) = string_value_at(inner.as_ref(), i) else {
+                            continue;
+                        };
+                        seen += 1;
+                        if looks_like_base64_image(value) {
+                            matched += 1;
+                        }
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    seen > 0 && matched == seen
+}
+
+/// Upgrade string columns whose values are base64 data URIs to `"image"`.
+///
+/// Type alone cannot answer this: `List<Utf8>` is how several HuggingFace
+/// datasets carry images, and it is also how they carry ordinary text.
+fn refine_image_columns(store: &mut DataStore) {
+    if store.image_columns_refined || store.batches.is_empty() {
+        return;
+    }
+    let Some(schema) = store.schema.clone() else {
+        return;
+    };
+    store.image_columns_refined = true;
+
+    for (col, field) in schema.fields().iter().enumerate() {
+        if store.col_types.get(col).map(String::as_str) == Some("image") {
+            continue;
+        }
+        if !is_sniffable_string_data_type(field.data_type()) {
+            continue;
+        }
+        if column_sniffs_as_images(&store.batches, col) {
+            store.col_types[col] = "image".to_string();
         }
     }
 }
@@ -298,6 +460,7 @@ fn empty_streaming_store() -> DataStore {
         num_cols: 0,
         col_names: Vec::new(),
         col_types: Vec::new(),
+        image_columns_refined: false,
         col_timezones: Vec::new(),
         original_columns: HashMap::new(),
         streaming_complete: false,
@@ -335,6 +498,8 @@ fn append_batches_to_store(
         store.total_rows += batch.num_rows();
         store.batches.push(batch);
     }
+
+    refine_image_columns(store);
 
     Ok(())
 }
@@ -811,6 +976,12 @@ fn cell_image_count_for(store: &DataStore, row: usize, col: usize) -> usize {
                 1
             }
         }
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+            match string_value_at(column.as_ref(), local_row) {
+                Some(v) if looks_like_base64_image(v) => 1,
+                _ => 0,
+            }
+        }
         DataType::List(_) => column
             .as_any()
             .downcast_ref::<ListArray>()
@@ -839,6 +1010,14 @@ fn cell_bytes_at_for(store: &DataStore, row: usize, col: usize, idx: usize) -> V
         return Vec::new();
     }
     match column.data_type() {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+            if idx != 0 {
+                return Vec::new();
+            }
+            string_value_at(column.as_ref(), local_row)
+                .map(decode_base64_image)
+                .unwrap_or_default()
+        }
         DataType::Struct(_) => {
             if idx != 0 {
                 return Vec::new();
@@ -853,7 +1032,7 @@ fn cell_bytes_at_for(store: &DataStore, row: usize, col: usize, idx: usize) -> V
             if idx >= inner.len() {
                 return Vec::new();
             }
-            extract_bytes_from_struct(inner.as_ref(), idx)
+            bytes_from_image_element(inner.as_ref(), idx)
         }
         DataType::LargeList(_) => {
             let Some(list) = column.as_any().downcast_ref::<LargeListArray>() else {
@@ -863,7 +1042,7 @@ fn cell_bytes_at_for(store: &DataStore, row: usize, col: usize, idx: usize) -> V
             if idx >= inner.len() {
                 return Vec::new();
             }
-            extract_bytes_from_struct(inner.as_ref(), idx)
+            bytes_from_image_element(inner.as_ref(), idx)
         }
         _ => Vec::new(),
     }
@@ -2545,6 +2724,7 @@ mod tests {
             col_timezones: vec![None],
             original_columns: HashMap::new(),
             streaming_complete: true,
+            image_columns_refined: false,
         };
         let formatter = ArrayFormatter::try_new(&second_metrics, &Default::default()).unwrap();
         let selected = formatter.value(0).to_string();
@@ -2599,6 +2779,7 @@ mod tests {
             col_timezones: vec![None, None, None, None],
             original_columns: HashMap::new(),
             streaming_complete: true,
+            image_columns_refined: false,
         };
 
         let out = viewport_cells_for(&store, &[1, 0]);
@@ -2643,6 +2824,7 @@ mod tests {
             col_timezones: vec![None],
             original_columns: HashMap::new(),
             streaming_complete: true,
+            image_columns_refined: false,
         };
 
         let out = viewport_cells_for(&store, &[0, 2]);
@@ -2703,7 +2885,111 @@ mod tests {
             col_timezones: vec![None],
             original_columns: HashMap::new(),
             streaming_complete: true,
+            image_columns_refined: false,
         }
+    }
+
+    /// Build a store the way the streaming path does, so the value-based
+    /// image sniff actually runs over the batches.
+    fn store_from_string_column(field_type: DataType, array: ArrayRef) -> DataStore {
+        let schema = Arc::new(Schema::new(vec![Field::new("col", field_type, true)]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![array]).expect("record batch");
+        let mut store = empty_streaming_store();
+        append_batches_to_store(&mut store, schema, vec![batch]).expect("append");
+        store
+    }
+
+    fn data_uri(payload: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(payload)
+        )
+    }
+
+    #[test]
+    fn sniff_accepts_base64_data_uri_and_rejects_percent_encoded() {
+        assert!(looks_like_base64_image(&data_uri("hello")));
+        assert!(looks_like_base64_image("data:image/jpeg;base64,/9j/4AAQ"));
+        // Percent-encoded SVG carries no base64 payload, so it stays text.
+        assert!(!looks_like_base64_image("data:image/svg+xml,<svg/>"));
+        assert!(!looks_like_base64_image("just some prose"));
+        assert!(!looks_like_base64_image("data:text/plain;base64,aGk="));
+    }
+
+    #[test]
+    fn sniff_ignores_payload_past_the_prefix_window() {
+        // A declaration far beyond the sniff window must not count.
+        let late = format!("{}data:image/png;base64,AAAA", "x".repeat(200));
+        assert!(!looks_like_base64_image(&late));
+    }
+
+    #[test]
+    fn string_column_of_data_uris_is_detected_as_image() {
+        let values: Vec<String> = (0..4).map(|i| data_uri(&format!("img{i}"))).collect();
+        let arr = StringArray::from(values.iter().map(String::as_str).collect::<Vec<_>>());
+        let store = store_from_string_column(DataType::Utf8, Arc::new(arr) as ArrayRef);
+
+        assert_eq!(store.col_types[0], "image");
+        assert_eq!(cell_image_count_for(&store, 0, 0), 1);
+        assert_eq!(cell_bytes_at_for(&store, 0, 0, 0), b"img0");
+        assert_eq!(cell_bytes_at_for(&store, 3, 0, 0), b"img3");
+    }
+
+    #[test]
+    fn list_of_data_uris_is_detected_as_image() {
+        let mut builder = arrow::array::ListBuilder::new(arrow::array::StringBuilder::new());
+        for i in 0..3 {
+            builder.values().append_value(data_uri(&format!("cell{i}")));
+            builder.append(true);
+        }
+        let arr = builder.finish();
+        let dt = arr.data_type().clone();
+        let store = store_from_string_column(dt, Arc::new(arr) as ArrayRef);
+
+        assert_eq!(store.col_types[0], "image");
+        assert_eq!(cell_image_count_for(&store, 1, 0), 1);
+        assert_eq!(cell_bytes_at_for(&store, 1, 0, 0), b"cell1");
+    }
+
+    #[test]
+    fn plain_text_column_is_not_detected_as_image() {
+        let arr = StringArray::from(vec!["alpha", "beta", "gamma"]);
+        let store = store_from_string_column(DataType::Utf8, Arc::new(arr) as ArrayRef);
+        assert_eq!(store.col_types[0], "categorical");
+    }
+
+    #[test]
+    fn mixed_column_is_not_detected_as_image() {
+        // One non-image value demotes the column: rendering prose through the
+        // image path would show blank cells.
+        let uri = data_uri("img");
+        let arr = StringArray::from(vec![uri.as_str(), uri.as_str(), "not an image"]);
+        let store = store_from_string_column(DataType::Utf8, Arc::new(arr) as ArrayRef);
+        assert_eq!(store.col_types[0], "categorical");
+    }
+
+    #[test]
+    fn all_null_column_is_not_detected_as_image() {
+        let arr = StringArray::from(vec![None as Option<&str>, None, None]);
+        let store = store_from_string_column(DataType::Utf8, Arc::new(arr) as ArrayRef);
+        assert_eq!(store.col_types[0], "categorical");
+    }
+
+    #[test]
+    fn nulls_do_not_count_against_a_real_image_column() {
+        let uri = data_uri("img");
+        let arr = StringArray::from(vec![Some(uri.as_str()), None, Some(uri.as_str())]);
+        let store = store_from_string_column(DataType::Utf8, Arc::new(arr) as ArrayRef);
+        assert_eq!(store.col_types[0], "image");
+        assert_eq!(cell_image_count_for(&store, 1, 0), 0);
+    }
+
+    #[test]
+    fn percent_encoded_data_uri_column_stays_text() {
+        let arr = StringArray::from(vec!["data:image/svg+xml,<svg/>", "data:image/svg+xml,<g/>"]);
+        let store = store_from_string_column(DataType::Utf8, Arc::new(arr) as ArrayRef);
+        assert_eq!(store.col_types[0], "categorical");
     }
 
     #[test]
@@ -2857,6 +3143,7 @@ mod tests {
             col_timezones: vec![None],
             original_columns: HashMap::new(),
             streaming_complete: true,
+            image_columns_refined: false,
         }
     }
 
@@ -2908,6 +3195,7 @@ mod tests {
             col_timezones: vec![None],
             original_columns: HashMap::new(),
             streaming_complete: true,
+            image_columns_refined: false,
         };
 
         let out = viewport_cells_for(&store, &[0]);
