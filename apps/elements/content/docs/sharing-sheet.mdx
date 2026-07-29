@@ -1,0 +1,52 @@
+---
+title: Sharing sheet
+description: Every reachable state of the notebook sharing popover, rebuilt on shared shadcn primitives.
+---
+
+import { SharingSheetExample } from "@/components/sharing-sheet-example";
+
+`CloudSharingControls` (`apps/notebook-cloud/viewer/sharing-controls.tsx`) is
+the owner-facing sharing popover: public link toggle, email invites, edit
+access requests, current access, and compute (runtime peer) access. It is
+built entirely from shared primitives in `src/components/ui` — `Popover`,
+`Button`, `Input`, `Select`, `Label`, `Separator` — plus Tailwind utility
+classes, with no component-local CSS.
+
+This fixture recreates the panel's exact JSX/Tailwind structure with static
+per-scenario props instead of the live `CloudSharingFactsStore` projection, so
+every reachable state can be reviewed and screenshotted without a hosted
+notebook. Keep this fixture's markup in sync with the real component when
+either changes.
+
+<SharingSheetExample />
+
+## States covered
+
+- **Owner, public link off** — baseline: link access disabled, one collaborator.
+- **Public link enabled** — the public-link row joins current access with a
+  success-toned "Enabled" state.
+- **Pending invite + edit request** — an email invite and an edit-access
+  request both need owner action.
+- **Compute access** — a runtime peer appears in its own ledger below people.
+- **Loading access** — the panel just opened; the access fetch is in flight.
+- **Owner only** — empty state: no collaborators, invites, or link access.
+- **Load error** — the access list failed to load; the host error surfaces
+  inline at the bottom of the panel.
+- **Invalid invite email** — the invite form rejects a malformed address
+  before it reaches the host.
+- **Link copied** — the copy-link confirmation message after a successful
+  clipboard write.
+
+## Implementation intent
+
+- Every icon in the panel is explicitly sized (`size-3.5` / `size-4`) rather
+  than relying on lucide's unscaled default, so nothing renders oversized
+  inside the ~13px panel type.
+- Only the public-link and public-access-row globe icons render at full
+  `text-emerald-700` opacity; every other row icon uses `text-muted-foreground`
+  so identity rows stay quiet next to the public-link state.
+- Severity reads through color, not weight: emerald for public/success state,
+  amber for pending requests and invites, destructive tokens for errors.
+- The panel has no fixed height; `PopoverContent` scrolls internally via
+  `max-h-[calc(100vh-5.5rem)] overflow-y-auto` so long access lists don't push
+  off-screen.

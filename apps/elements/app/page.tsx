@@ -20,6 +20,7 @@ import {
   Rows3,
   Search,
   Server,
+  Share2,
   ShieldCheck,
   SlidersHorizontal,
   SquareCode,
@@ -75,6 +76,12 @@ const catalogGroups = [
         description: "Notebook home, continuation, workstation context, and sharing previews.",
         href: "/docs/cloud-dashboard",
         icon: LayoutDashboard,
+      },
+      {
+        title: "Sharing sheet",
+        description: "Every reachable sharing popover state on shared shadcn primitives.",
+        href: "/docs/sharing-sheet",
+        icon: Share2,
       },
       {
         title: "Site chrome",

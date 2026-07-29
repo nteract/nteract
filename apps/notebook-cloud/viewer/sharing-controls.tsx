@@ -1,6 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { Check, Globe2, Link2, Mail, ServerCog, Share2, Trash2, UserRound, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
 import {
@@ -331,54 +351,77 @@ export function CloudSharingControls({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger className="cloud-share-trigger" title="Share notebook">
-        <Share2 aria-hidden="true" />
-        <span>Share</span>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="sm" className="gap-1.5" title="Share notebook">
+          <Share2 className="size-3.5" aria-hidden="true" />
+          <span>Share</span>
+        </Button>
       </PopoverTrigger>
-      <PopoverContent className="cloud-share-panel" align="end" sideOffset={8}>
-        <header>
-          <div>
-            <h2>Share notebook</h2>
-            <p>Invite people, review requests, and manage link access.</p>
+      <PopoverContent
+        className="w-[min(30rem,calc(100vw-1.5rem))] max-h-[calc(100vh-5.5rem)] overflow-y-auto p-0"
+        align="end"
+        sideOffset={8}
+      >
+        <header className="flex items-start justify-between gap-3 border-b px-4 py-3.5">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold">Share notebook</h2>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              Invite people, review requests, and manage link access.
+            </p>
           </div>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
+            className="shrink-0 gap-1.5"
             aria-label={sharingFacts.copyLinkLabel}
             onClick={() => void copyPublicLink()}
           >
-            <Link2 aria-hidden="true" />
-            <span className="cloud-share-copy-label-full">{sharingFacts.copyLinkLabel}</span>
-            <span className="cloud-share-copy-label-compact">
-              {sharingFacts.compactCopyLinkLabel}
-            </span>
-          </button>
+            <Link2 className="size-3.5" aria-hidden="true" />
+            <span className="hidden sm:inline">{sharingFacts.copyLinkLabel}</span>
+            <span className="sm:hidden">{sharingFacts.compactCopyLinkLabel}</span>
+          </Button>
         </header>
 
-        <section className="cloud-share-public" aria-label="Public link access">
-          <div>
-            <Globe2 aria-hidden="true" />
-            <div>
-              <strong>Anyone with the link</strong>
-              <span>
+        <section
+          className="mx-4 mt-3 flex items-start justify-between gap-3 border-l-2 border-emerald-500/70 bg-emerald-500/[0.06] py-2.5 pl-3 pr-2.5"
+          aria-label="Public link access"
+        >
+          <div className="flex min-w-0 items-start gap-2.5">
+            <Globe2
+              className="mt-0.5 size-4 shrink-0 text-emerald-700 dark:text-emerald-300"
+              aria-hidden="true"
+            />
+            <div className="min-w-0">
+              <strong className="block text-sm font-semibold">Anyone with the link</strong>
+              <span className="text-xs leading-5 text-muted-foreground">
                 {publicEnabled
                   ? "Can view this notebook without signing in"
                   : "Link access is off. Only listed people can open this notebook"}
               </span>
             </div>
           </div>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
             disabled={busyAction === "public" || loadState === "loading"}
             onClick={() => void togglePublicAccess()}
           >
             {publicEnabled ? "Disable" : "Enable"}
-          </button>
+          </Button>
         </section>
 
-        <form className="cloud-share-invite" onSubmit={submitInvite}>
-          <label htmlFor="cloud-share-invite-email">
-            <span>Invite by email</span>
-            <input
+        <form
+          className="grid gap-2 px-4 py-3.5 sm:grid-cols-[minmax(0,1fr)_9rem_auto]"
+          onSubmit={submitInvite}
+        >
+          <div className="grid gap-1.5">
+            <Label htmlFor="cloud-share-invite-email" className="text-xs text-muted-foreground">
+              Invite by email
+            </Label>
+            <Input
               id="cloud-share-invite-email"
               name="invite-email"
               type="email"
@@ -390,128 +433,176 @@ export function CloudSharingControls({
                 setFormError(null);
               }}
             />
-          </label>
-          <label htmlFor="cloud-share-invite-scope">
-            <span>Access</span>
-            <select
-              id="cloud-share-invite-scope"
-              name="invite-scope"
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="cloud-share-invite-scope" className="text-xs text-muted-foreground">
+              Access
+            </Label>
+            <Select
               value={inviteScope}
-              onChange={(event) => setInviteScope(event.target.value as CloudShareInviteScope)}
+              onValueChange={(value) => setInviteScope(value as CloudShareInviteScope)}
             >
-              <option value="viewer">Can view</option>
-              <option value="editor">Can edit</option>
-            </select>
-          </label>
-          <button type="submit" disabled={!inviteReady || busyAction === "invite"}>
-            <Mail aria-hidden="true" />
+              <SelectTrigger id="cloud-share-invite-scope">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="viewer">Can view</SelectItem>
+                <SelectItem value="editor">Can edit</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            type="submit"
+            className="self-end gap-1.5"
+            disabled={!inviteReady || busyAction === "invite"}
+          >
+            <Mail className="size-3.5" aria-hidden="true" />
             Invite
-          </button>
+          </Button>
           {formError ? (
-            <div className="cloud-auth-form-error" role="alert">
+            <div
+              className="col-span-full rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs leading-5 text-destructive"
+              role="alert"
+            >
               {formError}
             </div>
           ) : null}
         </form>
 
         {accessProjection.accessRequestRows.length > 0 ? (
-          <section
-            className="cloud-share-current cloud-share-requests"
-            aria-label="Edit access requests"
-          >
-            <div className="cloud-share-current-heading">
-              <div>
-                <h3>Edit requests</h3>
-                <p>Approve collaborators you recognize, or dismiss stale requests.</p>
+          <>
+            <Separator />
+            <section
+              className="border-l-2 border-amber-500/60 bg-amber-500/[0.05] px-4 py-3.5"
+              aria-label="Edit access requests"
+            >
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold">Edit requests</h3>
+                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                    Approve collaborators you recognize, or dismiss stale requests.
+                  </p>
+                </div>
+                {accessProjection.accessRequestSummary ? (
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {accessProjection.accessRequestSummary}
+                  </span>
+                ) : null}
               </div>
-              {accessProjection.accessRequestSummary ? (
-                <span>{accessProjection.accessRequestSummary}</span>
-              ) : null}
-            </div>
-            <ul>
-              {accessProjection.accessRequestRows.map((row) => (
-                <li key={row.id} title={row.title}>
-                  <CloudShareRowIcon row={row} />
-                  <div>
-                    <strong>{row.label}</strong>
-                    <span>{row.detail}</span>
-                  </div>
-                  <div className="cloud-share-row-actions">
-                    <span className="cloud-share-badge">{row.badge}</span>
-                    <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
-                      {row.stateLabel}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Approve ${row.label}`}
-                      title={`Approve ${row.label}`}
-                      disabled={busyAction === `${row.id}:approve`}
-                      onClick={() => void resolveAccessRequest(row, "approve")}
-                    >
-                      <Check aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Deny ${row.label}`}
-                      title={`Deny ${row.label}`}
-                      disabled={busyAction === `${row.id}:deny`}
-                      onClick={() => void resolveAccessRequest(row, "deny")}
-                    >
-                      <X aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Dismiss ${row.label}`}
-                      title={`Dismiss ${row.label}`}
-                      disabled={busyAction === `${row.id}:dismiss`}
-                      onClick={() => void resolveAccessRequest(row, "dismiss")}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
+              <ul className="divide-y divide-border/70">
+                {accessProjection.accessRequestRows.map((row) => (
+                  <li
+                    key={row.id}
+                    title={row.title}
+                    className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-2.5"
+                  >
+                    <CloudShareRowIcon row={row} />
+                    <div className="min-w-0">
+                      <strong className="block truncate text-sm font-medium">{row.label}</strong>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {row.detail}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>
+                      <CloudShareStateLabel tone={row.stateTone}>
+                        {row.stateLabel}
+                      </CloudShareStateLabel>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0"
+                        aria-label={`Approve ${row.label}`}
+                        title={`Approve ${row.label}`}
+                        disabled={busyAction === `${row.id}:approve`}
+                        onClick={() => void resolveAccessRequest(row, "approve")}
+                      >
+                        <Check className="size-3.5" aria-hidden="true" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0"
+                        aria-label={`Deny ${row.label}`}
+                        title={`Deny ${row.label}`}
+                        disabled={busyAction === `${row.id}:deny`}
+                        onClick={() => void resolveAccessRequest(row, "deny")}
+                      >
+                        <X className="size-3.5" aria-hidden="true" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0"
+                        aria-label={`Dismiss ${row.label}`}
+                        title={`Dismiss ${row.label}`}
+                        disabled={busyAction === `${row.id}:dismiss`}
+                        onClick={() => void resolveAccessRequest(row, "dismiss")}
+                      >
+                        <Trash2 className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </>
         ) : null}
 
-        <section className="cloud-share-current" aria-label="Current notebook access">
-          <div className="cloud-share-current-heading">
-            <h3>Current access</h3>
+        <Separator />
+        <section className="px-4 py-3.5" aria-label="Current notebook access">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Current access</h3>
             {accessProjection.notebookAccessSummary ? (
-              <span>{accessProjection.notebookAccessSummary}</span>
+              <span className="text-xs text-muted-foreground">
+                {accessProjection.notebookAccessSummary}
+              </span>
             ) : null}
           </div>
           {sharingFacts.showInitialAccessLoading ? (
-            <div className="cloud-share-empty">Loading access...</div>
+            <div className="py-2 text-xs text-muted-foreground">Loading access...</div>
           ) : accessProjection.notebookAccessRows.length === 0 ? (
-            <div className="cloud-share-empty">Only the owner can access this notebook.</div>
+            <div className="py-2 text-xs text-muted-foreground">
+              Only the owner can access this notebook.
+            </div>
           ) : (
-            <ul>
+            <ul className="divide-y divide-border/70">
               {accessProjection.notebookAccessRows.map((row) => (
-                <li key={row.id} title={row.title}>
+                <li
+                  key={row.id}
+                  title={row.title}
+                  className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-2.5"
+                >
                   <CloudShareRowIcon row={row} />
-                  <div>
-                    <strong>{row.label}</strong>
-                    <span>{row.detail}</span>
+                  <div className="min-w-0">
+                    <strong className="block truncate text-sm font-medium">{row.label}</strong>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {row.detail}
+                    </span>
                   </div>
-                  <div className="cloud-share-row-actions">
-                    <span className="cloud-share-badge">{row.badge}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>
                     {row.stateLabel ? (
-                      <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
+                      <CloudShareStateLabel tone={row.stateTone}>
                         {row.stateLabel}
-                      </span>
+                      </CloudShareStateLabel>
                     ) : null}
                     {row.removable ? (
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0"
                         aria-label={`Remove ${row.label}`}
                         title={`Remove ${row.label}`}
                         disabled={busyAction === row.id}
                         onClick={() => void removeAccessRow(row)}
                       >
-                        <Trash2 aria-hidden="true" />
-                      </button>
+                        <Trash2 className="size-3.5" aria-hidden="true" />
+                      </Button>
                     ) : null}
                   </div>
                 </li>
@@ -521,32 +612,51 @@ export function CloudSharingControls({
         </section>
 
         {accessProjection.runtimeAccessRows.length > 0 ? (
-          <section className="cloud-share-current cloud-share-runtime" aria-label="Compute access">
-            <div className="cloud-share-current-heading">
-              <h3>Compute access</h3>
-              {accessProjection.runtimeAccessSummary ? (
-                <span>{accessProjection.runtimeAccessSummary}</span>
-              ) : null}
-            </div>
-            <ul>
-              {accessProjection.runtimeAccessRows.map((row) => (
-                <li key={row.id} title={row.title}>
-                  <CloudShareRowIcon row={row} />
-                  <div>
-                    <strong>{row.label}</strong>
-                    <span>{row.detail}</span>
-                  </div>
-                  <div className="cloud-share-row-actions">
-                    <span className="cloud-share-badge">{row.badge}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
+          <>
+            <Separator />
+            <section className="px-4 py-3.5" aria-label="Compute access">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold">Compute access</h3>
+                {accessProjection.runtimeAccessSummary ? (
+                  <span className="text-xs text-muted-foreground">
+                    {accessProjection.runtimeAccessSummary}
+                  </span>
+                ) : null}
+              </div>
+              <ul className="divide-y divide-border/70">
+                {accessProjection.runtimeAccessRows.map((row) => (
+                  <li
+                    key={row.id}
+                    title={row.title}
+                    className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-2.5"
+                  >
+                    <CloudShareRowIcon row={row} />
+                    <div className="min-w-0">
+                      <strong className="block truncate text-sm font-medium">{row.label}</strong>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {row.detail}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </>
         ) : null}
 
         {message ? (
-          <div className="cloud-share-message" data-kind={messageKind}>
+          <div
+            className={cn(
+              "mx-4 mb-3.5 rounded-md border px-2.5 py-2 text-xs leading-5",
+              messageKind === "error"
+                ? "border-destructive/40 bg-destructive/10 text-destructive"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+            )}
+            data-kind={messageKind}
+          >
             {message}
           </div>
         ) : null}
@@ -555,20 +665,42 @@ export function CloudSharingControls({
   );
 }
 
+function CloudShareStateLabel({
+  tone,
+  children,
+}: {
+  tone: CloudShareAccessRow["stateTone"];
+  children: ReactNode;
+}) {
+  return (
+    <span
+      className={cn(
+        "text-xs font-semibold",
+        tone === "success" && "text-emerald-700 dark:text-emerald-300",
+        tone === "pending" && "text-amber-700 dark:text-amber-300",
+        !tone && "text-muted-foreground",
+      )}
+      data-tone={tone ?? undefined}
+    >
+      {children}
+    </span>
+  );
+}
+
 function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
   if (row.kind === "invite") {
-    return <Mail aria-hidden="true" />;
+    return <Mail className="size-4 text-muted-foreground" aria-hidden="true" />;
   }
   if (row.kind === "access_request") {
-    return <UserRound aria-hidden="true" />;
+    return <UserRound className="size-4 text-muted-foreground" aria-hidden="true" />;
   }
   if (row.kind === "acl" && row.scope === "runtime_peer") {
-    return <ServerCog aria-hidden="true" />;
+    return <ServerCog className="size-4 text-muted-foreground" aria-hidden="true" />;
   }
   if (row.acl.subject_kind === "public") {
-    return <Globe2 aria-hidden="true" />;
+    return <Globe2 className="size-4 text-emerald-700 dark:text-emerald-300" aria-hidden="true" />;
   }
-  return <UserRound aria-hidden="true" />;
+  return <UserRound className="size-4 text-muted-foreground" aria-hidden="true" />;
 }
 
 function accessRequestActionMessage(
