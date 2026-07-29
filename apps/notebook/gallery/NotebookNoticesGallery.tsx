@@ -21,6 +21,7 @@ import { NotebookAccessGate } from "@/components/notebook/NotebookAccessGate";
 import {
   NotebookNotice,
   NotebookNoticeAction,
+  NotebookNoticeDetails,
   NotebookNoticeStack,
 } from "@/components/notebook/NotebookNotice";
 import { cn } from "@/lib/utils";
@@ -49,6 +50,13 @@ const LONG_TRACEBACK = `Traceback (most recent call last):
   File "/opt/anaconda3/lib/python3.13/runpy.py", line 148, in _get_module_details
     return _get_module_details(pkg_main_name, error)
 ModuleNotFoundError: No module named 'ipykernel_launcher'`;
+
+const LONG_ROOM_ERROR = `cloud room rejected frame: room session escalation refused the requested editor scope
+  requested: editor (write cells, write structure, execute)
+  granted:   viewer (read cells, read outputs)
+  reason:    the notebook ACL lists this account as a viewer, and no pending edit-access request was found
+  room:      wss://notebooks.example/rooms/9f3c1e7a-4b2d-4c88-a1f0-5e6d7c8b9a01
+  attempt:   3 of 3 (escalation ladder exhausted; the transport will not retry on its own)`;
 
 const DAEMON_SOCK_ERROR =
   "sync connect (create): Daemon is not running. Endpoint not found at /Users/erikayee/Library/Caches/runt-nightly/worktrees/e0dd4fbd4f3b/runtimed.sock.";
@@ -124,6 +132,25 @@ const viewableScenarios: Scenario[] = [
         onRetry={() => {}}
         onDismiss={() => {}}
       />
+    ),
+  },
+  {
+    id: "long-cloud-message",
+    note: "Cloud connection/load error whose raw text runs long. A lead line stays on the bar and the rest collapses — the region grows with content, so nothing is clipped and nothing scrolls except the open block.",
+    label: "Long cloud error",
+    render: () => (
+      <NotebookNotice
+        tone="warning"
+        icon={<CloudOff className="h-4 w-4" />}
+        title="Live room needs attention."
+        details={
+          <NotebookNoticeDetails label="Show error details">
+            {LONG_ROOM_ERROR}
+          </NotebookNoticeDetails>
+        }
+      >
+        cloud room rejected frame: room session escalation refused the requested editor scope
+      </NotebookNotice>
     ),
   },
   {

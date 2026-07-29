@@ -1,4 +1,5 @@
 import { AlertTriangle, Bug, CheckCircle2, ChevronRight, Info, XCircle, X } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -45,13 +46,16 @@ const iconClassName: Record<NotebookNoticeTone, string> = {
  * (accessible for color-blind users and quicker to scan). A caller can still
  * pass a more specific `icon` (e.g. CloudOff for reconnecting); when it does
  * not, the tone picks the icon. Pass `icon={null}` to opt out entirely.
+ *
+ * Components, not elements: module-scope JSX would evaluate at import time,
+ * before consumers that install React globally (the node:test suites) run.
  */
-const toneDefaultIcon: Record<NotebookNoticeTone, ReactNode> = {
-  info: <Info className="size-4" />,
-  warning: <AlertTriangle className="size-4" />,
-  error: <XCircle className="size-4" />,
-  success: <CheckCircle2 className="size-4" />,
-  debug: <Bug className="size-4" />,
+const toneDefaultIcon: Record<NotebookNoticeTone, LucideIcon> = {
+  info: Info,
+  warning: AlertTriangle,
+  error: XCircle,
+  success: CheckCircle2,
+  debug: Bug,
 };
 
 export function NotebookNoticeStack({
@@ -85,7 +89,8 @@ export function NotebookNotice({
 }: NotebookNoticeProps) {
   // `undefined` means "no explicit icon" → fall back to the tone default so
   // shape signals severity. `null` is an explicit opt-out and renders nothing.
-  const resolvedIcon = icon === undefined ? toneDefaultIcon[tone] : icon;
+  const ToneIcon = toneDefaultIcon[tone];
+  const resolvedIcon = icon === undefined ? <ToneIcon className="size-4" /> : icon;
   return (
     <div
       className={cn(

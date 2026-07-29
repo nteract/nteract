@@ -11,7 +11,11 @@ import {
   CLOUD_CONNECTION_SIGN_IN_DIAGNOSTIC,
   cloudConnectionErrorAcceptsAccessDiagnostic,
 } from "../viewer/connection-diagnostics";
-import { CloudNotebookNotices, cloudNotebookHasNotices } from "../viewer/notices";
+import {
+  CloudNotebookNotices,
+  cloudNotebookHasNotices,
+  splitNoticeMessage,
+} from "../viewer/notices";
 
 globalThis.React = React;
 
@@ -445,6 +449,79 @@ test("connection notice sanitizer redacts http(s) URLs down to host and path", (
   assert.match(html, /https:\/\/cdn\.example\/assets\/runtimed_wasm_bg\.wasm/);
   assert.doesNotMatch(html, /SECRET/);
   assert.doesNotMatch(html, /token=/);
+});
+
+test("short single-line notice copy stays entirely on the bar", () => {
+  assert.deepEqual(splitNoticeMessage("Live room needs attention."), {
+    summary: "Live room needs attention.",
+    details: null,
+  });
+});
+
+test("multiline notice copy keeps a lead line on the bar and the rest in details", () => {
+  const { summary, details } = splitNoticeMessage(
+    "Failed to prepare environment\nTraceback (most recent call last):\n  ModuleNotFoundError",
+  );
+
+  assert.equal(summary, "Failed to prepare environment");
+  assert.match(details ?? "", /ModuleNotFoundError$/);
+});
+
+test("a long single-line message is clipped on a word boundary with the full text in details", () => {
+  const long = `cloud room rejected frame: ${"solver-conflict ".repeat(20)}`;
+  const { summary, details } = splitNoticeMessage(long);
+
+  assert.ok(summary.length < long.trim().length);
+  assert.ok(summary.endsWith("…"));
+  assert.doesNotMatch(summary, /solver-con…$/);
+  assert.equal(details, long.trim());
+});
+
+test("a long connection error collapses behind a disclosure instead of growing the bar", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: `cloud room rejected frame: ${"detail-token ".repeat(30)}`,
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onRetryConnection: () => {},
+    }),
+  );
+
+  assert.match(html, /Live room needs attention/);
+  assert.match(html, /<details/);
+  assert.match(html, /Show error details/);
+  // The bar carries a clipped lead line; the full string lives only in the
+  // disclosure, so the header can never grow unbounded.
+  const bar = html.slice(0, html.indexOf("<details"));
+  assert.match(bar, /cloud room rejected frame/);
+  assert.match(bar, /…/);
+  const barTokens = bar.match(/detail-token/g)?.length ?? 0;
+  const detailTokens = html.slice(html.indexOf("<details")).match(/detail-token/g)?.length ?? 0;
+  assert.equal(detailTokens, 30);
+  assert.ok(barTokens < detailTokens);
+});
+
+test("a long load error routes its raw text through the details disclosure", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("oidc"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      hasAppSession: true,
+      status: {
+        kind: "error",
+        message: "Notebook load failed\nEndpoint not found at /tmp/runtimed.sock",
+      },
+      onResetAuth: () => {},
+    }),
+  );
+
+  assert.match(html, /Unable to load notebook/);
+  assert.match(html, /Notebook load failed/);
+  assert.match(html, /Show error details/);
+  assert.match(html, /Endpoint not found at/);
 });
 
 test("cloud notebook notices keep dev diagnostics inside the shared stack", () => {

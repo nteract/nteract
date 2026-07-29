@@ -610,7 +610,6 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   assert.match(sourceText, /cloud-notebook-shell--command-toolbar/);
   assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*position: relative;/);
   assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*--cloud-notice-height: 3rem;/);
-  assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*--cloud-notice-max-height: 50vh;/);
   assert.match(
     cssText,
     /\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-height: 3rem;/,
@@ -618,13 +617,14 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   const noticesCss = cssText.match(/\.cloud-notebook-notices \{(?<body>[\s\S]*?)\n\}/)?.groups
     ?.body;
   assert.ok(noticesCss);
-  // Notices size to content between a collapsed floor and a viewport-relative
-  // cap, so an expanded traceback is readable instead of clipped to one row.
+  // Notices size to content above a collapsed floor with no cap and no scroll
+  // surface of their own: long error text lives behind the details disclosure,
+  // whose <pre> owns the only scrolling.
   assert.match(noticesCss, /flex: 0 0 auto;/);
   assert.match(noticesCss, /min-height: var\(--cloud-notice-height\);/);
-  assert.match(noticesCss, /max-height: var\(--cloud-notice-max-height\);/);
+  assert.doesNotMatch(noticesCss, /max-height:/);
   assert.doesNotMatch(noticesCss, /\n {2}height: var\(--cloud-notice-height\);/);
-  assert.match(noticesCss, /overflow-y: auto;/);
+  assert.doesNotMatch(noticesCss, /overflow/);
   assert.match(noticesCss, /animation: cloud-notice-enter/);
   assert.doesNotMatch(noticesCss, /position: absolute;/);
   assert.match(

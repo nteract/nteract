@@ -168,7 +168,6 @@ body {
 
 .cloud-notebook-shell {
   --cloud-notice-height: 3rem;
-  --cloud-notice-max-height: 50vh;
 
   display: flex;
   position: relative;
@@ -200,20 +199,18 @@ body {
 /* Notices grow with their content instead of being pinned to a single row:
    an expanded traceback needs the space, and clamping it clipped the text into
    the notebook body. `--cloud-notice-height` stays the collapsed floor so a
-   one-line bar keeps its familiar height; the max keeps a long detail block
-   from swallowing the notebook, scrolling inside the region instead. */
+   one-line bar keeps its familiar height. No cap and no scrolling here — long
+   error text lives behind a disclosure whose own <pre> scrolls, so the region
+   never becomes a second scroll surface competing with the notebook. */
 .cloud-notebook-notices {
   display: grid;
   flex: 0 0 auto;
   min-height: var(--cloud-notice-height);
-  max-height: var(--cloud-notice-max-height);
   z-index: 18;
   gap: 0;
   border-bottom: 1px solid var(--border);
   background: var(--background);
   padding: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   box-shadow: 0 4px 10px color-mix(in srgb, #000 4%, transparent);
   animation: cloud-notice-enter 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
