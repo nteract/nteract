@@ -1,9 +1,11 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
+  Check,
   ChevronDown,
   CircleAlert,
   CircleCheck,
   Cloud,
+  Copy,
   Cpu,
   FolderOpen,
   Gauge,
@@ -14,6 +16,7 @@ import {
   Server,
   ServerCog,
   ServerOff,
+  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -29,6 +32,25 @@ import {
 } from "./capabilities";
 import { cn } from "@/lib/utils";
 
+export interface NotebookWorkstationPairingView {
+  code: string;
+  connectCommand: string;
+  commands?: readonly NotebookWorkstationPairingCommandView[];
+  expiresAt: string;
+  status: "pending" | "redeemed" | "registered" | "expired";
+  workstationName: string | null;
+  error: string | null;
+}
+
+export interface NotebookWorkstationPairingCommandView {
+  id: string;
+  label: string;
+  command: string;
+  optional?: boolean;
+  /** Not the only way to satisfy this step, but the one most hosts should use. */
+  recommended?: boolean;
+}
+
 export interface NotebookWorkstationsPanelProps {
   capabilities: NotebookShellCapabilities;
   selection?: NotebookWorkstationSelectionProjection | null;
@@ -36,6 +58,9 @@ export interface NotebookWorkstationsPanelProps {
   className?: string;
   onAttachWorkstation?: (workstationId: string) => void;
   onSetDefaultWorkstation?: (workstationId: string) => void;
+  pairing?: NotebookWorkstationPairingView | null;
+  onStartPairing?: () => void;
+  onCancelPairing?: () => void;
   statusMessage?: string | null;
 }
 
@@ -46,6 +71,9 @@ export function NotebookWorkstationsPanel({
   className,
   onAttachWorkstation,
   onSetDefaultWorkstation,
+  pairing = null,
+  onStartPairing,
+  onCancelPairing,
   statusMessage = null,
 }: NotebookWorkstationsPanelProps) {
   const [selectedWorkstationId, setSelectedWorkstationId] = useState<string | null>(null);
@@ -68,8 +96,20 @@ export function NotebookWorkstationsPanel({
       className={cn("flex min-h-full flex-col gap-3 text-sm", className)}
       data-testid="notebook-workstations-panel"
     >
+      {/* Pairing opens directly under the rail header so the flow reads top-down. */}
+      {pairing ? (
+        <WorkstationPairingCard
+          pairing={pairing}
+          onCancel={onCancelPairing}
+          onRestart={onStartPairing}
+        />
+      ) : null}
+
       {hasVisibleRegisteredWorkstations ? (
-        <section aria-label="Registered workstations" className="-mx-3 -mt-3 flex-1">
+        <section
+          aria-label="Registered workstations"
+          className={cn("-mx-3 flex-1", pairing ? undefined : "-mt-3")}
+        >
           <ul className="divide-y divide-border/70 border-b border-border/70">
             {registeredWorkstations.map((workstation) => (
               <RegisteredWorkstationRow
@@ -147,7 +187,7 @@ export function NotebookWorkstationsPanel({
         </PanelSection>
       </section>
 
-      {showRegistrationPrompt ? (
+      {showRegistrationPrompt && !pairing ? (
         <section
           className="space-y-1.5 text-xs"
           aria-label="Workstation setup"
@@ -167,17 +207,17 @@ export function NotebookWorkstationsPanel({
 }
 
 export interface NotebookWorkstationsPanelActionProps {
-  /** Hidden while the connect dialog is up; it already owns that flow. */
-  pairingOpen?: boolean;
+  /** Hidden while pairing is in flight; the panel already shows that card. */
+  pairing?: NotebookWorkstationPairingView | null;
   onStartPairing?: () => void;
 }
 
 /** Add workstation control for the rail header, inline with the panel title. */
 export function NotebookWorkstationsPanelAction({
-  pairingOpen = false,
+  pairing = null,
   onStartPairing,
 }: NotebookWorkstationsPanelActionProps) {
-  if (!onStartPairing || pairingOpen) return null;
+  if (!onStartPairing || pairing) return null;
 
   return (
     <Button
@@ -230,6 +270,342 @@ function PanelSection({
         {children}
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function WorkstationPairingCard({
+  pairing,
+  onCancel,
+  onRestart,
+}: {
+  pairing: NotebookWorkstationPairingView;
+  onCancel?: () => void;
+  onRestart?: () => void;
+}) {
+  const structuredCommands =
+    pairing.commands && pairing.commands.length > 0 ? pairing.commands : null;
+  const hasStructuredCommands = structuredCommands !== null;
+  const pairingCommands: readonly NotebookWorkstationPairingCommandView[] = structuredCommands ?? [
+    {
+      id: "connect",
+      label: "Connect workstation",
+      command: pairing.connectCommand,
+    },
+  ];
+  const hasServiceCommand = pairingCommands.some((command) =>
+    command.command.includes("workstation service"),
+  );
+  const hasForegroundFallback = pairingCommands.some((command) => command.id === "foreground-run");
+  const hasAdditionalCommands = pairingCommands.some((command) => command.optional === true);
+  const serviceHelpText = pairingCommandHelpText(hasServiceCommand, hasForegroundFallback);
+
+  return (
+    <section
+      className="space-y-2 rounded-md border border-border/70 px-2.5 py-2"
+      aria-label="Connect a machine"
+      data-testid="workstation-pairing-card"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-sm font-medium">Connect a machine</h4>
+        {onCancel ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-6"
+            aria-label="Dismiss pairing"
+            onClick={onCancel}
+          >
+            <X className="size-3.5" aria-hidden="true" />
+          </Button>
+        ) : null}
+      </div>
+
+      {pairing.status === "registered" ? (
+        <div className="space-y-2 text-xs">
+          <div className="flex min-w-0 items-center gap-2 text-foreground">
+            <CircleCheck className="size-4 shrink-0 text-emerald-500" aria-hidden="true" />
+            <span data-testid="workstation-pairing-status" aria-live="polite">
+              {pairing.workstationName ?? "Workstation"} is connected.
+            </span>
+          </div>
+          {hasStructuredCommands ? (
+            <div className="space-y-2">
+              <p className="leading-5 text-muted-foreground">
+                Finish setup with the keep-available command if you have not run it yet:
+              </p>
+              <PairingCommandList commands={pairingCommands} />
+              {hasAdditionalCommands ? null : (
+                <p className="leading-5 text-muted-foreground">{serviceHelpText}</p>
+              )}
+            </div>
+          ) : null}
+          {onCancel ? (
+            <Button type="button" variant="secondary" size="sm" onClick={onCancel}>
+              Done
+            </Button>
+          ) : null}
+        </div>
+      ) : pairing.status === "expired" ? (
+        <div className="space-y-2 text-xs" aria-live="polite">
+          <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+            <CircleAlert className="size-4 shrink-0 text-amber-500" aria-hidden="true" />
+            <span data-testid="workstation-pairing-status">
+              {pairing.error ?? "The pairing code expired before a machine connected."}
+            </span>
+          </div>
+          {onRestart ? (
+            <Button type="button" variant="outline" size="sm" onClick={onRestart}>
+              Generate a new code
+            </Button>
+          ) : null}
+        </div>
+      ) : (
+        <div className="space-y-2 text-xs">
+          <p className="leading-5 text-muted-foreground">
+            {pairingCommands.length === 1
+              ? "Run this in a terminal on the machine you want to attach:"
+              : "Run these in a terminal on the machine you want to attach:"}
+          </p>
+          <PairingCommandList commands={pairingCommands} />
+          {hasAdditionalCommands ? null : (
+            <p className="leading-5 text-muted-foreground">{serviceHelpText}</p>
+          )}
+          <p className="leading-5 text-muted-foreground" aria-live="polite">
+            {pairing.status === "redeemed" ? (
+              <span data-testid="workstation-pairing-status">
+                Machine connected; registering...
+              </span>
+            ) : (
+              <span data-testid="workstation-pairing-status">
+                Waiting for the machine to connect.
+                <PairingCountdown expiresAt={pairing.expiresAt} />
+              </span>
+            )}
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function pairingCommandHelpText(
+  hasServiceCommand: boolean,
+  hasForegroundFallback: boolean,
+): string {
+  if (hasServiceCommand && hasForegroundFallback) {
+    return "The Linux service command keeps this workstation available. Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing.";
+  }
+  if (hasServiceCommand) {
+    return "The Linux service command keeps this workstation available after pairing.";
+  }
+  return "Keep the command running until the workstation appears in the panel.";
+}
+
+// Each optional step is hidden for a different reason; say why instead of a
+// generic "run these if they apply" blurb once more than one is folded away.
+function additionalSetupHelpText(
+  additionalCommands: readonly NotebookWorkstationPairingCommandView[],
+): string {
+  const ids = new Set(additionalCommands.map((command) => command.id));
+  const notes: string[] = [];
+  if (ids.has("debian-prep")) {
+    notes.push("Fresh Debian/Ubuntu hosts may need curl and tmux before the install command.");
+  }
+  if (ids.has("path")) {
+    notes.push(
+      "Only needed in the same terminal you ran the install command in — a new terminal already has it on PATH.",
+    );
+  }
+  if (ids.has("foreground-run")) {
+    notes.push(
+      "Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing.",
+    );
+  }
+  if (notes.length > 0) {
+    return notes.join(" ");
+  }
+  return "Run optional setup commands only when they match the host you are attaching.";
+}
+
+export function PairingCommandList({
+  commands,
+}: {
+  commands: readonly NotebookWorkstationPairingCommandView[];
+}) {
+  const requiredCommands = commands.filter((command) => command.optional !== true);
+  const primaryCommands = requiredCommands.length > 0 ? requiredCommands : commands;
+  const additionalCommands =
+    requiredCommands.length > 0 ? commands.filter((command) => command.optional === true) : [];
+  const hasAdditionalCommands = additionalCommands.length > 0;
+  const [additionalOpen, setAdditionalOpen] = useState(false);
+  const bulkCommandText = primaryCommands.map((command) => command.command).join("\n");
+  const hasLinuxServiceBundle = commands.some((command) =>
+    command.command.includes("workstation service"),
+  );
+  const copyLabel = hasLinuxServiceBundle
+    ? "Linux workstation setup commands"
+    : "workstation setup commands";
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopied(false), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  return (
+    <div className="space-y-1.5" data-testid="workstation-pairing-command-list">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10.5px] font-medium uppercase tracking-normal text-muted-foreground">
+          Setup commands
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-7 shrink-0"
+          aria-label={copied ? `Copied ${copyLabel}` : `Copy ${copyLabel}`}
+          title={copied ? "Copied" : `Copy ${copyLabel}`}
+          disabled={!bulkCommandText}
+          onClick={() => {
+            void navigator.clipboard.writeText(bulkCommandText).then(() => setCopied(true));
+          }}
+        >
+          {copied ? (
+            <Check className="size-3.5 text-emerald-500" aria-hidden="true" />
+          ) : (
+            <Copy className="size-3.5" aria-hidden="true" />
+          )}
+        </Button>
+      </div>
+      <ol className="space-y-1.5">
+        {primaryCommands.map((command, index) => (
+          <PairingCommandItem key={command.id} command={command} index={index} />
+        ))}
+      </ol>
+      {hasAdditionalCommands ? (
+        <Collapsible open={additionalOpen} onOpenChange={setAdditionalOpen} className="pt-0.5">
+          <CollapsibleTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-ml-1 h-7 px-1.5 text-[11px] text-muted-foreground"
+              aria-label={
+                additionalOpen ? "Hide additional setup options" : "Show additional setup options"
+              }
+            >
+              <ChevronDown
+                className={cn("size-3.5 transition-transform", additionalOpen && "rotate-180")}
+                aria-hidden="true"
+              />
+              Additional setup options
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent
+            className="mt-1.5 space-y-2 rounded-md border border-border/60 bg-muted/[0.03] p-2"
+            data-testid="workstation-pairing-additional-commands"
+          >
+            <ul className="space-y-1.5">
+              {additionalCommands.map((command) => (
+                <PairingCommandItem key={command.id} command={command} />
+              ))}
+            </ul>
+            <p className="leading-5 text-muted-foreground">
+              {additionalSetupHelpText(additionalCommands)}
+            </p>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
+    </div>
+  );
+}
+
+function PairingCommandItem({
+  command,
+  index,
+}: {
+  command: NotebookWorkstationPairingCommandView;
+  index?: number;
+}) {
+  return (
+    <li className="space-y-1">
+      <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-muted-foreground">
+        {typeof index === "number" ? (
+          <span className="font-medium text-foreground">{index + 1}.</span>
+        ) : null}
+        <span className="truncate">{command.label}</span>
+        {command.optional ? (
+          <span className="shrink-0 text-muted-foreground">(optional)</span>
+        ) : command.recommended ? (
+          <span className="shrink-0 text-muted-foreground">(recommended)</span>
+        ) : null}
+      </div>
+      <PairingCommand command={command.command} label={command.label} />
+    </li>
+  );
+}
+
+function PairingCommand({ command, label }: { command: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopied(false), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  return (
+    <div className="flex items-start gap-1.5">
+      <code
+        className="min-w-0 flex-1 rounded bg-muted/40 px-2 py-1.5 font-mono text-[11px] leading-4 break-all whitespace-pre-wrap"
+        data-testid="workstation-pairing-command"
+      >
+        {command}
+      </code>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-7 shrink-0"
+        aria-label={copied ? `Copied ${label} command` : `Copy ${label} command`}
+        title={copied ? "Copied" : `Copy ${label}`}
+        onClick={() => {
+          void navigator.clipboard.writeText(command).then(() => setCopied(true));
+        }}
+      >
+        {copied ? (
+          <Check className="size-3.5 text-emerald-500" aria-hidden="true" />
+        ) : (
+          <Copy className="size-3.5" aria-hidden="true" />
+        )}
+      </Button>
+    </div>
+  );
+}
+
+export function PairingCountdown({ expiresAt }: { expiresAt: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const remainingMs = Date.parse(expiresAt) - now;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    return null;
+  }
+  const totalSeconds = Math.floor(remainingMs / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return (
+    <span>
+      {" "}
+      Code expires in {minutes}:{seconds.toString().padStart(2, "0")}.
+    </span>
   );
 }
 

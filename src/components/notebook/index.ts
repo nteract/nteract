@@ -263,15 +263,13 @@ export {
 export {
   NotebookWorkstationsPanel,
   NotebookWorkstationsPanelAction,
+  PairingCommandList,
+  PairingCountdown,
+  type NotebookWorkstationPairingCommandView,
+  type NotebookWorkstationPairingView,
   type NotebookWorkstationsPanelActionProps,
   type NotebookWorkstationsPanelProps,
 } from "./NotebookWorkstationsPanel";
-export {
-  WorkstationConnectDialog,
-  type NotebookWorkstationPairingCommandView,
-  type NotebookWorkstationPairingView,
-  type WorkstationConnectDialogProps,
-} from "./WorkstationConnectDialog";
 export {
   WorkstationComputeNotice,
   shouldShowWorkstationComputeNotice,

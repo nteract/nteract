@@ -33,7 +33,6 @@ import {
   NotebookWorkstationsPanel,
   NotebookWorkstationsPanelAction,
   WorkstationComputeNotice,
-  WorkstationConnectDialog,
   shouldShowWorkstationComputeNotice,
   KernelLaunchErrorBanner,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
@@ -1584,13 +1583,16 @@ export function NotebookViewer({
             busyWorkstationId={busyWorkstationId}
             onAttachWorkstation={onAttachWorkstation}
             onSetDefaultWorkstation={onSetDefaultWorkstation}
+            pairing={workstationPairing}
+            onStartPairing={onStartPairing}
+            onCancelPairing={onCancelPairing}
           />
         ) : undefined
       }
       workstationsPanelAction={
         shouldShowCloudWorkstationsPanel ? (
           <NotebookWorkstationsPanelAction
-            pairingOpen={workstationPairing !== null}
+            pairing={workstationPairing}
             onStartPairing={onStartPairing}
           />
         ) : undefined
@@ -1807,17 +1809,13 @@ export function NotebookViewer({
       />
     ) : null;
   // A fresh cloud notebook has nowhere to run and only says so inside the
-  // collapsed workstations rail; this raises it onto the stage. Suppressed while
-  // the connect dialog is open so the notice does not sit behind its own answer.
-  const computeNotice =
-    workstationPairing === null &&
-    shouldShowWorkstationComputeNotice({
-      canRegisterWorkstation,
-      launchReadinessState: workstationLaunchReadiness.state,
-    }) &&
-    onStartPairing ? (
-      <WorkstationComputeNotice onConnect={onStartPairing} />
-    ) : null;
+  // collapsed workstations rail; this raises it onto the stage.
+  const computeNotice = shouldShowWorkstationComputeNotice({
+    canRegisterWorkstation,
+    launchReadinessState: workstationLaunchReadiness.state,
+  }) ? (
+    <WorkstationComputeNotice onConnect={handleOpenWorkstationsRail} />
+  ) : null;
   const diagnostics =
     kernelLaunchNotice || accessRequestNotice || computeNotice ? (
       <>
@@ -1887,13 +1885,6 @@ export function NotebookViewer({
 
   return (
     <NotebookHostProvider host={cloudNotebookHost}>
-      {/* Outside the shell: raised from either the notice or the rail panel, so
-          it must outlive a rail panel switch or a collapse. */}
-      <WorkstationConnectDialog
-        pairing={workstationPairing}
-        onCancel={onCancelPairing}
-        onRestart={onStartPairing}
-      />
       <NotebookDocumentShell
         rootElement="main"
         className={
