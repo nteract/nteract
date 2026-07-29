@@ -7,16 +7,20 @@ import { SharingSheetExample } from "@/components/sharing-sheet-example";
 
 `CloudSharingControls` (`apps/notebook-cloud/viewer/sharing-controls.tsx`) is
 the owner-facing sharing popover: public link toggle, email invites, edit
-access requests, current access, and compute (runtime peer) access. It is
+access requests, current access, and compute (runtime peer) access. The
+popover body is `CloudSharingPanel`
+(`apps/notebook-cloud/viewer/sharing-panel.tsx`), a presentational component
 built entirely from shared primitives in `src/components/ui` — `Popover`,
 `Button`, `Input`, `Select`, `Label`, `Separator` — plus Tailwind utility
 classes, with no component-local CSS.
 
-This fixture recreates the panel's exact JSX/Tailwind structure with static
-per-scenario props instead of the live `CloudSharingFactsStore` projection, so
-every reachable state can be reviewed and screenshotted without a hosted
-notebook. Keep this fixture's markup in sync with the real component when
-either changes.
+This fixture imports `CloudSharingPanel` directly and drives it with static
+ACL/invite/access-request rows through the real `buildCloudShareAccessProjection`
+projection (`apps/notebook-cloud/viewer/sharing-client.ts`), instead of a
+hand-copied JSX recreation. Every reachable state can be reviewed and
+screenshotted without a hosted notebook, and the markup can't drift from the
+real component since it's the same component — only the fixture data below
+needs updating when new states are added.
 
 <SharingSheetExample />
 

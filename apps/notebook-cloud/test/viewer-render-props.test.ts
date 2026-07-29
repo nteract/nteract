@@ -185,6 +185,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   const presenceSourceText = readFileSync(presenceSourcePath, "utf8");
   const sharingSourcePath = new URL("../viewer/sharing-controls.tsx", import.meta.url);
   const sharingSourceText = readFileSync(sharingSourcePath, "utf8");
+  const sharingPanelSourcePath = new URL("../viewer/sharing-panel.tsx", import.meta.url);
+  const sharingPanelSourceText = readFileSync(sharingPanelSourcePath, "utf8");
   const titleSourcePath = new URL("../viewer/cloud-notebook-title.tsx", import.meta.url);
   const titleSourceText = readFileSync(titleSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
@@ -343,7 +345,6 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.doesNotMatch(sourceText, /projectCloudAccessFacts\(/);
   assert.match(sharingSourceText, /export function CloudSharingControls/);
-  assert.match(sharingSourceText, /Invite people, review requests, and manage link access\./);
   assert.match(sharingSourceText, /CloudSharingFactsStore/);
   assert.match(
     sharingSourceText,
@@ -372,38 +373,58 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.ok(silentSetIndex < snapshotSubscribeIndex);
   assert.ok(snapshotSubscribeIndex < flushIndex);
   assert.doesNotMatch(cloudFactsReactSource, /useLayoutEffect\(\(\) => \{\s*store\.set\(source\)/);
-  assert.match(sharingSourceText, /aria-label="Edit access requests"/);
-  assert.match(sharingSourceText, /<h3 className="text-sm font-semibold">Edit requests<\/h3>/);
-  assert.match(sharingSourceText, /accessProjection\.accessRequestRows\.map/);
-  assert.match(sharingSourceText, /accessProjection\.accessRequestSummary/);
-  assert.match(sharingSourceText, /aria-label="Compute access"/);
-  assert.match(sharingSourceText, /accessProjection\.runtimeAccessRows\.map/);
-  assert.match(sharingSourceText, /function CloudShareStateLabel/);
-  assert.match(sharingSourceText, /<CloudShareStateLabel tone=\{row\.stateTone\}>/);
-  assert.match(sharingSourceText, /Can view this notebook without signing in/);
-  assert.match(sharingSourceText, /Link access is off\. Only listed people can open this notebook/);
-  assert.match(sharingSourceText, /aria-label=\{sharingFacts\.copyLinkLabel\}/);
-  assert.match(sharingSourceText, /sharingFacts\.compactCopyLinkLabel/);
+  // The popover body is CloudSharingPanel, a presentational component
+  // extracted so the Elements fixture can render it directly instead of
+  // hand-copying JSX that could drift from the real markup.
   assert.match(
     sharingSourceText,
+    /import \{[\s\S]*CloudSharingPanel,[\s\S]*\} from "\.\/sharing-panel";/,
+  );
+  assert.match(sharingSourceText, /<CloudSharingPanel/);
+  assert.doesNotMatch(sharingSourceText, /function CloudSharingPanel/);
+  assert.match(sharingPanelSourceText, /export function CloudSharingPanel/);
+  assert.match(sharingPanelSourceText, /Invite people, review requests, and manage link access\./);
+  assert.match(sharingPanelSourceText, /aria-label="Edit access requests"/);
+  assert.match(sharingPanelSourceText, /<h3 className="text-sm font-semibold">Edit requests<\/h3>/);
+  assert.match(sharingPanelSourceText, /accessProjection\.accessRequestRows\.map/);
+  assert.match(sharingPanelSourceText, /accessProjection\.accessRequestSummary/);
+  assert.match(sharingPanelSourceText, /aria-label="Compute access"/);
+  assert.match(sharingPanelSourceText, /accessProjection\.runtimeAccessRows\.map/);
+  assert.match(sharingPanelSourceText, /function CloudShareStateLabel/);
+  assert.match(sharingPanelSourceText, /<CloudShareStateLabel tone=\{row\.stateTone\}>/);
+  assert.match(sharingPanelSourceText, /Can view this notebook without signing in/);
+  assert.match(
+    sharingPanelSourceText,
+    /Link access is off\. Only listed people can open this notebook/,
+  );
+  assert.match(sharingPanelSourceText, /aria-label=\{copyLinkLabel\}/);
+  assert.match(sharingPanelSourceText, /compactCopyLinkLabel/);
+  assert.match(
+    sharingPanelSourceText,
     /accessProjection\.notebookAccessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong className="block truncate text-sm font-medium">\{row\.label\}<\/strong>/,
   );
   assert.match(
-    sharingSourceText,
+    sharingPanelSourceText,
     /accessProjection\.accessRequestRows\.map\(\(row\) =>[\s\S]*aria-label=\{`Approve \$\{row\.label\}`\}/,
   );
-  assert.match(sharingSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
+  assert.match(sharingPanelSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
+  assert.match(sharingPanelSourceText, /import \{ Button \} from "@\/components\/ui\/button";/);
+  assert.match(sharingPanelSourceText, /import \{ Input \} from "@\/components\/ui\/input";/);
+  assert.match(
+    sharingPanelSourceText,
+    /import \{\s*Select,\s*SelectContent,\s*SelectItem,\s*SelectTrigger,\s*SelectValue,\s*\} from "@\/components\/ui\/select";/,
+  );
+  assert.match(
+    sharingPanelSourceText,
+    /import \{ Separator \} from "@\/components\/ui\/separator";/,
+  );
+  assert.doesNotMatch(sharingPanelSourceText, /<details/);
+  assert.doesNotMatch(sharingPanelSourceText, /<summary/);
+  assert.doesNotMatch(sharingPanelSourceText, /className="cloud-share-/);
   assert.match(
     sharingSourceText,
     /import \{ Popover, PopoverContent, PopoverTrigger \} from "@\/components\/ui\/popover";/,
   );
-  assert.match(sharingSourceText, /import \{ Button \} from "@\/components\/ui\/button";/);
-  assert.match(sharingSourceText, /import \{ Input \} from "@\/components\/ui\/input";/);
-  assert.match(
-    sharingSourceText,
-    /import \{\s*Select,\s*SelectContent,\s*SelectItem,\s*SelectTrigger,\s*SelectValue,\s*\} from "@\/components\/ui\/select";/,
-  );
-  assert.match(sharingSourceText, /import \{ Separator \} from "@\/components\/ui\/separator";/);
   assert.match(sharingSourceText, /<Popover open=\{open\} onOpenChange=\{setOpen\}>/);
   assert.match(sharingSourceText, /<PopoverTrigger asChild>/);
   assert.match(
