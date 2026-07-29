@@ -453,7 +453,11 @@ export function SiftTable({
 
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
-        engineRef.current.replaceData(tableData);
+        // A reused engine keeps whatever streaming state the previous
+        // manifest settled on, so an open stream re-arms the guard here.
+        engineRef.current.replaceData(tableData, {
+          streaming: manifest.complete === false,
+        });
         disposePendingStore = null;
         return;
       }

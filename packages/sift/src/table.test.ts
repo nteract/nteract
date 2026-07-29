@@ -119,6 +119,57 @@ describe("createTable", () => {
     engine = createTable(container, data);
   });
 
+  describe("streaming guard across data swaps", () => {
+    function statusClass(root: HTMLElement): string {
+      const el = root.querySelector(".sift-status-indicator");
+      return el?.className ?? "";
+    }
+
+    function mount(): { engine: TableEngine; root: HTMLDivElement } {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      return { engine: createTable(root, makeTableData(makeRows(4))), root };
+    }
+
+    it("re-arms when an open stream replaces a finished one", () => {
+      const { engine: local, root } = mount();
+
+      local.setStreamingDone();
+      expect(statusClass(root)).toContain("sift-status-ready");
+
+      // A reused engine must not carry the finished state into a new stream:
+      // casts are gated on this flag and a schema mismatch would crash WASM.
+      local.replaceData(makeTableData(makeRows(4)), { streaming: true });
+      expect(statusClass(root)).toContain("sift-status-streaming");
+      expect(statusClass(root)).not.toContain("sift-status-ready");
+
+      local.destroy();
+      root.remove();
+    });
+
+    it("leaves the guard alone when the caller says nothing", () => {
+      const { engine: local, root } = mount();
+
+      local.setStreamingDone();
+      local.replaceData(makeTableData(makeRows(4)));
+      expect(statusClass(root)).toContain("sift-status-ready");
+
+      local.destroy();
+      root.remove();
+    });
+
+    it("settles a still-open engine when the replacement is complete", () => {
+      const { engine: local, root } = mount();
+
+      expect(statusClass(root)).toContain("sift-status-streaming");
+      local.replaceData(makeTableData(makeRows(4)), { streaming: false });
+      expect(statusClass(root)).toContain("sift-status-ready");
+
+      local.destroy();
+      root.remove();
+    });
+  });
+
   afterEach(() => {
     engine.destroy();
     container.remove();
