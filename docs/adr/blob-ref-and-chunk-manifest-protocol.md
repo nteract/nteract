@@ -161,6 +161,13 @@ Each `chunks[]` entry names a blob ref by hash. Each chunk is independently
 decodable as an Arrow IPC stream mini-stream. Consumers concatenate logical
 rows in ascending `index` order, not by reassembling raw bytes.
 
+A manifest may also carry `blobs[]`, a side-car list of refs the manifest owns
+that are not part of the row stream. Unlike `chunks[]`, entries are not ordered
+and carry no row semantics; they are addressable payloads the renderer resolves
+on demand. Ref collection already walks this slot alongside `chunks[]` and
+`coalesced` in the publish path (`crates/runt-publish/src/lib.rs`), in hosted
+snapshot dependency collection, and in the cloud viewer.
+
 The manifest may later grow `coalesced` entries for derived artifacts. Unknown
 fields must be preserved at save/load boundaries.
 
@@ -179,7 +186,8 @@ blobs explicit:
 ```
 
 The transform applies only to known blob-bearing manifest slots such as
-`chunks[].hash`, `coalesced.hash`, and `coalesced.segments[].hash`. A schema
+`chunks[].hash`, `blobs[].hash`, `coalesced.hash`, and
+`coalesced.segments[].hash`. A schema
 fingerprint like `schema.hash` remains a string until schema bytes are stored
 as an actual blob.
 
