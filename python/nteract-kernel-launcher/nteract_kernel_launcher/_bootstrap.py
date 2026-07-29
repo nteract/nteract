@@ -24,12 +24,11 @@ user code runs. Four things happen on ``load_ipython_extension``:
    when they are first imported by user code. The bootstrap never imports
    these optional packages on the kernel startup path.
 
-No ``ipython_display_formatter`` handlers. The dx wheel needed one to
-divert bare-``df``-on-last-line from the bufferless displayhook path
-to ``publish_display_data`` (where the publisher hook could attach
-buffers). With the ``NteractShellDisplayHook`` hook chain, the default
-displayhook path carries buffers natively — the short-circuit becomes
-unnecessary.
+No ``ipython_display_formatter`` handlers are registered.
+``NteractShellDisplayHook`` and the display publisher both invoke the same
+buffer-hook chain, so ``execute_result``, ``display_data``, and
+``update_display_data`` attach buffered table payloads through their native
+paths.
 """
 
 from __future__ import annotations
@@ -54,12 +53,13 @@ from nteract_kernel_launcher._buffer_hook import pending_buffers
 from nteract_kernel_launcher._format import (
     ARROW_STREAM_MANIFEST_MIME,
     ARROW_STREAM_MIME,
-    DEFAULT_ARROW_CHUNK_BYTES,
+    _bounded_arrow_table,
+    _collect_arrow_chunks,
     arrow_stream_row_count,
     build_arrow_stream_manifest,
     build_arrow_stream_manifest_from_chunks,
+    build_arrow_stream_summary,
     has_arrow_stream_protocol,
-    iter_arrow_stream_chunks,
 )
 from nteract_kernel_launcher._refs import (
     BLOB_REF_MIME,
@@ -73,6 +73,11 @@ log = logging.getLogger("nteract_kernel_launcher")
 
 # Server-side blob ceiling is ~100 MiB; leave ~10 MiB for overhead.
 _MAX_PAYLOAD_BYTES = int(os.environ.get("DX_MAX_PAYLOAD_BYTES", str(90 * 1024 * 1024)))
+_ARROW_REPR_MIN_ROWS = int(os.environ.get("NTERACT_ARROW_REPR_MIN_ROWS", "100"))
+_ARROW_REPR_BYTE_BUDGET = int(
+    os.environ.get("NTERACT_ARROW_REPR_BYTE_BUDGET", str(16 * 1024 * 1024))
+)
+_ARROW_REPR_MAX_ROWS = int(os.environ.get("NTERACT_ARROW_REPR_MAX_ROWS", "50000"))
 _PLOTLY_RENDERER_ENTRYPOINTS = frozenset(
     {"plotly.express", "plotly.graph_objects", "plotly.graph_objs"}
 )
@@ -247,22 +252,61 @@ def _emit_arrow_stream(
     if not has_arrow_stream_protocol(source):
         return None
 
+    if total_rows is None:
+        total_rows = arrow_stream_row_count(source)
+
+    bounded_source = _bounded_arrow_table(
+        source,
+        min_rows=_ARROW_REPR_MIN_ROWS,
+        byte_budget=_ARROW_REPR_BYTE_BUDGET,
+        max_rows=_ARROW_REPR_MAX_ROWS,
+        max_payload_bytes=_MAX_PAYLOAD_BYTES,
+    )
+    if bounded_source is not None:
+        source = bounded_source
+
     try:
-        chunks = list(
-            iter_arrow_stream_chunks(
-                source,
-                max_chunk_bytes=min(DEFAULT_ARROW_CHUNK_BYTES, _MAX_PAYLOAD_BYTES),
-            )
+        chunks, stream_complete = _collect_arrow_chunks(
+            source,
+            bound_stream=bounded_source is None,
+            min_rows=_ARROW_REPR_MIN_ROWS,
+            byte_budget=_ARROW_REPR_BYTE_BUDGET,
+            max_rows=_ARROW_REPR_MAX_ROWS,
+            max_payload_bytes=_MAX_PAYLOAD_BYTES,
         )
+        while (
+            bounded_source is not None and sum(chunk.size for chunk in chunks) > _MAX_PAYLOAD_BYTES
+        ):
+            current_rows = bounded_source.num_rows
+            if current_rows == 0:
+                raise ValueError("Arrow schema exceeds the hard payload ceiling")
+            serialized_bytes = sum(chunk.size for chunk in chunks)
+            next_rows = min(
+                current_rows // 2,
+                current_rows * _MAX_PAYLOAD_BYTES // serialized_bytes,
+            )
+            bounded_source = bounded_source.slice(0, next_rows)
+            source = bounded_source
+            chunks, stream_complete = _collect_arrow_chunks(
+                source,
+                bound_stream=False,
+                min_rows=_ARROW_REPR_MIN_ROWS,
+                byte_budget=_ARROW_REPR_BYTE_BUDGET,
+                max_rows=_ARROW_REPR_MAX_ROWS,
+                max_payload_bytes=_MAX_PAYLOAD_BYTES,
+            )
     except Exception as exc:  # noqa: BLE001
         log.debug("arrow stream emit failed: %s", exc)
         return None
 
+    if not chunks:
+        log.debug("arrow stream emit produced no chunk within the repr ceiling")
+        return None
+
     included_rows = sum(chunk.row_count for chunk in chunks)
     if total_rows is None:
-        total_rows = arrow_stream_row_count(source)
-    if total_rows is None:
         total_rows = included_rows
+    complete = stream_complete and included_rows == total_rows
 
     def _summary(included: int, sampled: bool) -> str:
         if summary_fn is not None:
@@ -286,12 +330,14 @@ def _emit_arrow_stream(
             included_rows=included_rows,
             record_batch_count=chunk.record_batch_count,
             summary_fn=_summary,
+            complete=complete,
         )
 
     return _emit_arrow_stream_chunks(
         chunks,
         total_rows=total_rows,
         summary_fn=_summary,
+        complete=complete,
     )
 
 
@@ -300,24 +346,24 @@ def _emit_arrow_stream_chunks(
     *,
     total_rows: int,
     summary_fn: Callable[[int, bool], str],
+    complete: bool,
 ) -> dict:
-    """Emit a complete multi-chunk Arrow stream manifest."""
+    """Emit a multi-chunk Arrow stream manifest."""
     if not chunks:
         raise ValueError("at least one Arrow stream chunk is required")
     included_rows = sum(chunk.row_count for chunk in chunks)
-    sampled = included_rows != total_rows
+    summary_hints = build_arrow_stream_summary(
+        total_rows=total_rows,
+        included_rows=included_rows,
+        complete=complete,
+    )
+    sampled = summary_hints["sampled"]
     llm_text: str | None = None
     try:
         llm_text = summary_fn(included_rows, sampled)
     except Exception as exc:  # noqa: BLE001
         log.debug("summary build failed: %s", exc)
 
-    summary_hints = {
-        "total_rows": total_rows,
-        "included_rows": included_rows,
-        "sampled": sampled,
-        "sample_strategy": "head" if sampled else "none",
-    }
     refs = [BlobRef(hash=chunk.content_hash, size=chunk.size) for chunk in chunks]
     bundle: dict[str, Any] = {
         BLOB_REF_MIME: build_multi_ref_bundle(
@@ -327,7 +373,7 @@ def _emit_arrow_stream_chunks(
         ),
         ARROW_STREAM_MANIFEST_MIME: build_arrow_stream_manifest_from_chunks(
             chunks,
-            complete=True,
+            complete=complete,
             summary=summary_hints,
         ),
     }
@@ -422,13 +468,21 @@ def _emit_table_bytes(
     included_rows: int,
     record_batch_count: int | None = None,
     summary_fn: Callable[[int, bool], str],
+    complete: bool | None = None,
 ) -> dict:
     """Stash bytes, build the ref bundle, attach a summary.
 
     ``summary_fn`` receives ``(included_rows, sampled)`` so per-domain
     summaries can name the sampling state honestly.
     """
-    sampled = included_rows != total_rows
+    if complete is None:
+        complete = included_rows == total_rows
+    summary_hints = build_arrow_stream_summary(
+        total_rows=total_rows,
+        included_rows=included_rows,
+        complete=complete,
+    )
+    sampled = summary_hints["sampled"]
     llm_text: str | None = None
     try:
         llm_text = summary_fn(included_rows, sampled)
@@ -437,12 +491,6 @@ def _emit_table_bytes(
 
     h = hashlib.sha256(data).hexdigest()
     ref = BlobRef(hash=h, size=len(data))
-    summary_hints = {
-        "total_rows": total_rows,
-        "included_rows": included_rows,
-        "sampled": sampled,
-        "sample_strategy": "head" if sampled else "none",
-    }
     ref_bundle = build_ref_bundle(ref, content_type=content_type, summary=summary_hints)
     ref_bundle["buffer_index"] = 0
 
@@ -457,6 +505,7 @@ def _emit_table_bytes(
                 record_batch_count=record_batch_count,
                 summary=summary_hints,
             )
+            bundle[ARROW_STREAM_MANIFEST_MIME]["complete"] = complete
         except Exception as exc:  # noqa: BLE001
             log.debug("arrow manifest build failed: %s", exc)
     if llm_text is not None:

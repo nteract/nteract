@@ -31,6 +31,7 @@ import {
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
+  NotebookWorkstationsPanelAction,
   WorkstationComputeNotice,
   WorkstationConnectDialog,
   shouldShowWorkstationComputeNotice,
@@ -1583,6 +1584,12 @@ export function NotebookViewer({
             busyWorkstationId={busyWorkstationId}
             onAttachWorkstation={onAttachWorkstation}
             onSetDefaultWorkstation={onSetDefaultWorkstation}
+          />
+        ) : undefined
+      }
+      workstationsPanelAction={
+        shouldShowCloudWorkstationsPanel ? (
+          <NotebookWorkstationsPanelAction
             pairingOpen={workstationPairing !== null}
             onStartPairing={onStartPairing}
           />

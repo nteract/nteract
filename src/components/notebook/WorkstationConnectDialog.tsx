@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, ChevronDown, CircleAlert, CircleCheck, Copy, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
 export interface NotebookWorkstationPairingView {
@@ -26,6 +27,8 @@ export interface NotebookWorkstationPairingCommandView {
   label: string;
   command: string;
   optional?: boolean;
+  /** Not the only way to satisfy this step, but the one most hosts should use. */
+  recommended?: boolean;
 }
 
 export interface WorkstationConnectDialogProps {
@@ -197,6 +200,32 @@ function pairingCommandHelpText(
   return "Keep the command running until the workstation appears in the panel.";
 }
 
+// Each optional step is hidden for a different reason; say why instead of a
+// generic "run these if they apply" blurb once more than one is folded away.
+function additionalSetupHelpText(
+  additionalCommands: readonly NotebookWorkstationPairingCommandView[],
+): string {
+  const ids = new Set(additionalCommands.map((command) => command.id));
+  const notes: string[] = [];
+  if (ids.has("debian-prep")) {
+    notes.push("Fresh Debian/Ubuntu hosts may need curl and tmux before the install command.");
+  }
+  if (ids.has("path")) {
+    notes.push(
+      "Only needed in the same terminal you ran the install command in — a new terminal already has it on PATH.",
+    );
+  }
+  if (ids.has("foreground-run")) {
+    notes.push(
+      "Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing.",
+    );
+  }
+  if (notes.length > 0) {
+    return notes.join(" ");
+  }
+  return "Run optional setup commands only when they match the host you are attaching.";
+}
+
 function PairingCommandList({
   commands,
 }: {
@@ -207,13 +236,11 @@ function PairingCommandList({
   const additionalCommands =
     requiredCommands.length > 0 ? commands.filter((command) => command.optional === true) : [];
   const hasAdditionalCommands = additionalCommands.length > 0;
-  const additionalPanelId = useId();
   const [additionalOpen, setAdditionalOpen] = useState(false);
   const bulkCommandText = primaryCommands.map((command) => command.command).join("\n");
   const hasLinuxServiceBundle = commands.some((command) =>
     command.command.includes("workstation service"),
   );
-  const hasForegroundFallback = commands.some((command) => command.id === "foreground-run");
   const copyLabel = hasLinuxServiceBundle
     ? "Linux workstation setup commands"
     : "workstation setup commands";
@@ -257,44 +284,38 @@ function PairingCommandList({
         ))}
       </ol>
       {hasAdditionalCommands ? (
-        <div className="pt-0.5">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="-ml-1 h-7 px-1.5 text-[11px] text-muted-foreground"
-            aria-expanded={additionalOpen}
-            aria-controls={additionalPanelId}
-            aria-label={
-              additionalOpen ? "Hide additional setup options" : "Show additional setup options"
-            }
-            onClick={() => setAdditionalOpen((open) => !open)}
-          >
-            <ChevronDown
-              className={cn("size-3.5 transition-transform", additionalOpen && "rotate-180")}
-              aria-hidden="true"
-            />
-            Additional setup options
-          </Button>
-          {additionalOpen ? (
-            <div
-              id={additionalPanelId}
-              className="mt-1.5 space-y-2 rounded-md border border-border/60 bg-muted/[0.03] p-2"
-              data-testid="workstation-pairing-additional-commands"
+        <Collapsible open={additionalOpen} onOpenChange={setAdditionalOpen} className="pt-0.5">
+          <CollapsibleTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-ml-1 h-7 px-1.5 text-[11px] text-muted-foreground"
+              aria-label={
+                additionalOpen ? "Hide additional setup options" : "Show additional setup options"
+              }
             >
-              <ul className="space-y-1.5">
-                {additionalCommands.map((command) => (
-                  <PairingCommandItem key={command.id} command={command} />
-                ))}
-              </ul>
-              <p className="leading-5 text-muted-foreground">
-                {hasLinuxServiceBundle && hasForegroundFallback
-                  ? "Fresh Debian/Ubuntu hosts may need curl and tmux before the install command. Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing."
-                  : "Run optional setup commands only when they match the host you are attaching."}
-              </p>
-            </div>
-          ) : null}
-        </div>
+              <ChevronDown
+                className={cn("size-3.5 transition-transform", additionalOpen && "rotate-180")}
+                aria-hidden="true"
+              />
+              Additional setup options
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent
+            className="mt-1.5 space-y-2 rounded-md border border-border/60 bg-muted/[0.03] p-2"
+            data-testid="workstation-pairing-additional-commands"
+          >
+            <ul className="space-y-1.5">
+              {additionalCommands.map((command) => (
+                <PairingCommandItem key={command.id} command={command} />
+              ))}
+            </ul>
+            <p className="leading-5 text-muted-foreground">
+              {additionalSetupHelpText(additionalCommands)}
+            </p>
+          </CollapsibleContent>
+        </Collapsible>
       ) : null}
     </div>
   );
@@ -316,6 +337,8 @@ function PairingCommandItem({
         <span className="truncate">{command.label}</span>
         {command.optional ? (
           <span className="shrink-0 text-muted-foreground">(optional)</span>
+        ) : command.recommended ? (
+          <span className="shrink-0 text-muted-foreground">(recommended)</span>
         ) : null}
       </div>
       <PairingCommand command={command.command} label={command.label} />

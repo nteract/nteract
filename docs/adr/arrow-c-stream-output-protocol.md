@@ -117,8 +117,22 @@ Summary hints in manifests should be cheap and explicit:
 }
 ```
 
-If a future first-paint path emits only a head sample, the manifest must say
-that honestly rather than pretending the table is complete.
+The automatic repr path emits a bounded head rather than the whole table, so
+the manifest says so rather than pretending the table is complete:
+`complete: false`, `sampled: true`, `sample_strategy: "head"`, and a smaller
+`included_rows`. See `memos/arrow-bounded-head-and-progressive-fetch.md` for
+the size rule that picks the head.
+
+`total_rows` is exact only when `complete` is true. When `complete` is false it
+is a lower bound: a source that cannot report its length, such as an unbounded
+`RecordBatchReader`, yields a manifest whose `total_rows` equals
+`included_rows` even though more rows exist. Counting the true total would mean
+draining the stream, which is the cost the bounded head exists to avoid.
+
+Consumers must therefore read `complete` before presenting `total_rows` as a
+total. Rendering "`included_rows` of `total_rows`" is correct for a complete
+manifest and misleading for an open one, where "`included_rows` loaded, more
+available" is the honest phrasing.
 
 ## Decision 6: Vendor MIME is the incubation boundary
 

@@ -37,6 +37,8 @@ export interface NotebookRailProps {
   packagesPanel: ReactNode;
   commentsPanel?: ReactNode;
   workstationsPanel?: ReactNode;
+  /** Rendered inline with the Workstations panel title. */
+  workstationsPanelAction?: ReactNode;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   onSelectOutlineItem?: (item: NotebookOutlineItem) => void;
@@ -61,6 +63,7 @@ export function NotebookRail({
   packagesPanel,
   commentsPanel,
   workstationsPanel,
+  workstationsPanelAction,
   onActivePanelChange,
   onCollapsedChange,
   onSelectOutlineItem,
@@ -90,8 +93,8 @@ export function NotebookRail({
       activePanelId={activePanelId}
       collapsed={collapsed}
       items={railButtons}
-      panelEyebrow="Notebook"
       panelTitle={title}
+      panelAction={activePanelId === "workstations" ? workstationsPanelAction : undefined}
       panelClassName={NOTEBOOK_RAIL_PANEL_CLASS_NAME}
       className={className}
       dataTestId="notebook-rail"

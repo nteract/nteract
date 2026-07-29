@@ -18,6 +18,7 @@ const cloudPairingCommands = [
     id: "path",
     label: "Use installed CLI in this shell",
     command: 'export PATH="$HOME/.local/bin:$PATH"',
+    optional: true,
   },
   {
     id: "connect",
@@ -28,6 +29,7 @@ const cloudPairingCommands = [
     id: "run",
     label: "Linux user systemd service",
     command: "runt workstation service install --start",
+    recommended: true,
   },
   {
     id: "foreground-run",
@@ -62,30 +64,43 @@ describe("WorkstationConnectDialog", () => {
     expect(screen.getByText("ABCD-EFGH-JKMN")).toBeVisible();
     expect(screen.getByTestId("workstation-pairing-command-list")).toBeVisible();
     expect(screen.getByText("Install nteract headless")).toBeVisible();
-    expect(screen.getByText("Use installed CLI in this shell")).toBeVisible();
     expect(screen.getByText("Pair this workstation")).toBeVisible();
     expect(screen.getByText("Linux user systemd service")).toBeVisible();
+    // Only the steps required to connect show up front; PATH export and
+    // platform alternatives are conditional and live under "Additional".
+    expect(screen.queryByText("Use installed CLI in this shell")).toBeNull();
     expect(screen.queryByText("Fresh Debian/Ubuntu only")).toBeNull();
     expect(screen.queryByText("macOS/non-systemd fallback")).toBeNull();
     const commands = screen.getAllByTestId("workstation-pairing-command");
     expect(commands.map((command) => command.textContent)).toEqual([
       "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
-      'export PATH="$HOME/.local/bin:$PATH"',
       "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
       "runt workstation service install --start",
     ]);
+    expect(screen.getByText("(recommended)")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Show additional setup options" }));
     const additionalCommands = within(
       screen.getByTestId("workstation-pairing-additional-commands"),
     );
     expect(additionalCommands.getByText("Fresh Debian/Ubuntu only")).toBeVisible();
+    expect(additionalCommands.getByText("Use installed CLI in this shell")).toBeVisible();
     expect(additionalCommands.getByText("macOS/non-systemd fallback")).toBeVisible();
-    expect(additionalCommands.getAllByText("(optional)")).toHaveLength(2);
+    expect(additionalCommands.getAllByText("(optional)")).toHaveLength(3);
     expect(
       additionalCommands
         .getAllByTestId("workstation-pairing-command")
         .map((command) => command.textContent),
-    ).toEqual(["sudo apt update && sudo apt install -y curl tmux", "runt workstation run"]);
+    ).toEqual([
+      "sudo apt update && sudo apt install -y curl tmux",
+      'export PATH="$HOME/.local/bin:$PATH"',
+      "runt workstation run",
+    ]);
+    // Each folded-away step explains why it's conditional, not a generic blurb.
+    expect(
+      additionalCommands.getByText(/Fresh Debian\/Ubuntu hosts may need curl and tmux/),
+    ).toBeVisible();
+    expect(additionalCommands.getByText(/a new terminal already has it on PATH/)).toBeVisible();
+    expect(additionalCommands.getByText(/foreground fallback in tmux/)).toBeVisible();
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
       /Waiting for the machine to connect/,
     );
@@ -99,7 +114,6 @@ describe("WorkstationConnectDialog", () => {
     expect(writeText).toHaveBeenCalledWith(
       [
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
-        'export PATH="$HOME/.local/bin:$PATH"',
         "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
         "runt workstation service install --start",
       ].join("\n"),

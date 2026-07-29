@@ -377,6 +377,7 @@ describe("cloud workstations client", () => {
           id: "path",
           label: "Use installed CLI in this shell",
           command: CLOUD_WORKSTATION_PATH_EXPORT_COMMAND,
+          optional: true,
         },
         {
           id: "connect",
@@ -387,6 +388,7 @@ describe("cloud workstations client", () => {
           id: "run",
           label: "Linux user systemd service",
           command: cloudWorkstationServiceInstallCommand(),
+          recommended: true,
         },
         {
           id: "foreground-run",

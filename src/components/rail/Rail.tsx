@@ -23,6 +23,8 @@ export interface RailProps<PanelId extends string = string> {
   onActivePanelChange: (panelId: PanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   panelEyebrow?: string;
+  /** Rendered inline with the panel title, right-aligned. */
+  panelAction?: ReactNode;
   panelClassName?: string;
   className?: string;
   dataTestId?: string;
@@ -36,6 +38,7 @@ export function Rail<PanelId extends string = string>({
   items,
   panelTitle,
   panelEyebrow,
+  panelAction,
   panelClassName,
   children,
   onActivePanelChange,
@@ -95,6 +98,7 @@ export function Rail<PanelId extends string = string>({
                 data-slot={panelTitleRowSlot}
               >
                 <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
+                {panelAction}
               </div>
             </div>
           </div>

@@ -262,6 +262,8 @@ export {
 } from "./NotebookPackageSummaryPanel";
 export {
   NotebookWorkstationsPanel,
+  NotebookWorkstationsPanelAction,
+  type NotebookWorkstationsPanelActionProps,
   type NotebookWorkstationsPanelProps,
 } from "./NotebookWorkstationsPanel";
 export {

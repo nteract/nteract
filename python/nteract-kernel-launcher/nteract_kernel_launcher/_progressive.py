@@ -13,24 +13,10 @@ from nteract_kernel_launcher._format import (
     DEFAULT_ARROW_CHUNK_BYTES,
     ArrowStreamChunk,
     build_arrow_stream_manifest_from_chunks,
+    build_arrow_stream_summary,
     iter_arrow_stream_chunks,
 )
 from nteract_kernel_launcher._refs import BLOB_REF_MIME, BlobRef, build_ref_bundle
-
-
-def _summary_hints(
-    *,
-    total_rows: int | None,
-    included_rows: int,
-    complete: bool,
-) -> dict[str, Any]:
-    sampled = total_rows is not None and included_rows != total_rows
-    return {
-        "total_rows": total_rows if total_rows is not None else included_rows,
-        "included_rows": included_rows,
-        "sampled": sampled or not complete,
-        "sample_strategy": "none" if complete and not sampled else "head",
-    }
 
 
 def _summary_text(summary: dict[str, Any], *, complete: bool) -> str:
@@ -51,7 +37,7 @@ def _bundle_for_progressive_chunk(
     include_blob_ref: bool,
 ) -> dict[str, Any]:
     included_rows = sum(chunk.row_count for chunk in chunks)
-    summary = _summary_hints(
+    summary = build_arrow_stream_summary(
         total_rows=total_rows,
         included_rows=included_rows,
         complete=complete,
