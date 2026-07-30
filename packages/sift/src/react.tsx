@@ -416,7 +416,7 @@ export function SiftTable({
     storeRef.current = null;
 
     if (engineRef.current) {
-      engineRef.current.replaceData(dataSource);
+      engineRef.current.replaceData(dataSource, { streaming: false });
       emitLoadMilestone(startedAt, {
         source: "table-data",
         phase: "engine-data-replaced",
@@ -433,6 +433,7 @@ export function SiftTable({
       onChange: stableOnChange,
       footerControl: getFooterControlElement(),
     });
+    engineRef.current.setStreamingDone();
     emitLoadMilestone(startedAt, {
       source: "table-data",
       phase: "engine-mounted",

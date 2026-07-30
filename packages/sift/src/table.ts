@@ -2156,14 +2156,15 @@ export function createTable(
   }
 
   function replaceData(newData: TableData, replaceOptions?: ReplaceDataOptions) {
-    if (replaceOptions?.streaming !== undefined) {
-      setStreamingState(replaceOptions.streaming);
-    }
+    const replacementStreaming = replaceOptions?.streaming ?? streaming;
     const preserved = preserveStateFor(newData.columns, replaceOptions);
 
     if (!sameColumnShape(newData.columns)) {
       destroy();
       const replacement = createTable(container, newData, options);
+      if (!replacementStreaming) {
+        replacement.setStreamingDone();
+      }
       Object.assign(api, replacement);
       if (preserved.sort) {
         replacement.setSort(preserved.sort.column, preserved.sort.direction);
@@ -2175,6 +2176,10 @@ export function createTable(
         if (newIndex !== -1) replacement.setFilter(newIndex, preservedFilter.filter);
       }
       return;
+    }
+
+    if (replaceOptions?.streaming !== undefined) {
+      setStreamingState(replaceOptions.streaming);
     }
 
     const oldData = data;

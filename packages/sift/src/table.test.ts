@@ -168,6 +168,26 @@ describe("createTable", () => {
       local.destroy();
       root.remove();
     });
+
+    it("preserves the requested guard when a new column shape rebuilds the engine", () => {
+      const { engine: local, root } = mount();
+      const columns = makeColumns().slice(0, 2);
+
+      local.replaceData(
+        makeTableDataWithColumns(
+          [
+            [1, "Alice"],
+            [2, "Bob"],
+          ],
+          columns,
+        ),
+        { streaming: false },
+      );
+      expect(statusClass(root)).toContain("sift-status-ready");
+
+      local.destroy();
+      root.remove();
+    });
   });
 
   afterEach(() => {
