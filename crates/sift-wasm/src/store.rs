@@ -36,7 +36,8 @@ struct DataStore {
     num_cols: usize,
     col_names: Vec<String>,
     col_types: Vec<String>, // "numeric", "categorical", "boolean", "timestamp", "image"
-    /// Set once the value-based image sniff has run over the first batches.
+    /// Set once every candidate column has either sampled enough leading
+    /// non-null values, found a non-image value, or reached stream completion.
     image_columns_refined: bool,
     col_timezones: Vec<Option<String>>,
     /// Original column arrays saved before casting, keyed by column index.
@@ -178,19 +179,22 @@ fn is_sniffable_string_data_type(dt: &DataType) -> bool {
 /// Requires unanimity rather than a majority: a false positive routes a text
 /// column through the image path, where cells render blank. A false negative
 /// only leaves the column as text, which is what it would have been anyway.
-fn column_sniffs_as_images(batches: &[RecordBatch], col: usize) -> bool {
-    let mut seen = 0usize;
-    let mut matched = 0usize;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImageColumnSniff {
+    Pending,
+    Image,
+    NotImage,
+}
 
-    for batch in batches {
+fn sniff_image_column(store: &DataStore, col: usize) -> ImageColumnSniff {
+    let mut seen = 0usize;
+
+    for batch in &store.batches {
         if col >= batch.num_columns() {
-            return false;
+            return ImageColumnSniff::NotImage;
         }
         let column = batch.column(col);
         for row in 0..column.len() {
-            if seen >= IMAGE_SNIFF_SAMPLE {
-                return seen > 0 && matched == seen;
-            }
             if cell_is_null(column.as_ref(), row) {
                 continue;
             }
@@ -199,9 +203,12 @@ fn column_sniffs_as_images(batches: &[RecordBatch], col: usize) -> bool {
                     let Some(value) = string_value_at(column.as_ref(), row) else {
                         continue;
                     };
+                    if !looks_like_base64_image(value) {
+                        return ImageColumnSniff::NotImage;
+                    }
                     seen += 1;
-                    if looks_like_base64_image(value) {
-                        matched += 1;
+                    if seen >= IMAGE_SNIFF_SAMPLE {
+                        return ImageColumnSniff::Image;
                     }
                 }
                 DataType::List(_) | DataType::LargeList(_) => {
@@ -220,18 +227,29 @@ fn column_sniffs_as_images(batches: &[RecordBatch], col: usize) -> bool {
                         let Some(value) = string_value_at(inner.as_ref(), i) else {
                             continue;
                         };
+                        if !looks_like_base64_image(value) {
+                            return ImageColumnSniff::NotImage;
+                        }
                         seen += 1;
-                        if looks_like_base64_image(value) {
-                            matched += 1;
+                        if seen >= IMAGE_SNIFF_SAMPLE {
+                            return ImageColumnSniff::Image;
                         }
                     }
                 }
-                _ => return false,
+                _ => return ImageColumnSniff::NotImage,
             }
         }
     }
 
-    seen > 0 && matched == seen
+    if store.streaming_complete {
+        if seen > 0 {
+            ImageColumnSniff::Image
+        } else {
+            ImageColumnSniff::NotImage
+        }
+    } else {
+        ImageColumnSniff::Pending
+    }
 }
 
 /// Upgrade string columns whose values are base64 data URIs to `"image"`.
@@ -239,13 +257,17 @@ fn column_sniffs_as_images(batches: &[RecordBatch], col: usize) -> bool {
 /// Type alone cannot answer this: `List<Utf8>` is how several HuggingFace
 /// datasets carry images, and it is also how they carry ordinary text.
 fn refine_image_columns(store: &mut DataStore) {
-    if store.image_columns_refined || store.batches.is_empty() {
+    if store.image_columns_refined {
+        return;
+    }
+    if store.batches.is_empty() {
+        store.image_columns_refined = store.streaming_complete;
         return;
     }
     let Some(schema) = store.schema.clone() else {
         return;
     };
-    store.image_columns_refined = true;
+    let mut pending = false;
 
     for (col, field) in schema.fields().iter().enumerate() {
         if store.col_types.get(col).map(String::as_str) == Some("image") {
@@ -254,10 +276,14 @@ fn refine_image_columns(store: &mut DataStore) {
         if !is_sniffable_string_data_type(field.data_type()) {
             continue;
         }
-        if column_sniffs_as_images(&store.batches, col) {
-            store.col_types[col] = "image".to_string();
+        match sniff_image_column(store, col) {
+            ImageColumnSniff::Pending => pending = true,
+            ImageColumnSniff::Image => store.col_types[col] = "image".to_string(),
+            ImageColumnSniff::NotImage => {}
         }
     }
+
+    store.image_columns_refined = !pending;
 }
 
 fn is_binary_data_type(dt: &DataType) -> bool {
@@ -525,6 +551,7 @@ fn store_batches(
     let mut store = empty_streaming_store();
     append_batches_to_store(&mut store, schema, batches)?;
     store.streaming_complete = true;
+    refine_image_columns(&mut store);
 
     let handle = {
         let mut h = NEXT_HANDLE.lock().unwrap_or_else(|e| e.into_inner());
@@ -616,6 +643,7 @@ pub fn finish_arrow_stream_store(handle: u32) -> Result<(), JsValue> {
             .get_mut(&handle)
             .ok_or_else(|| JsValue::from_str(&format!("Invalid handle: {}", handle)))?;
         store.streaming_complete = true;
+        refine_image_columns(store);
         Ok(())
     })
 }
@@ -2896,6 +2924,8 @@ mod tests {
         let batch = RecordBatch::try_new(schema.clone(), vec![array]).expect("record batch");
         let mut store = empty_streaming_store();
         append_batches_to_store(&mut store, schema, vec![batch]).expect("append");
+        store.streaming_complete = true;
+        refine_image_columns(&mut store);
         store
     }
 
@@ -2974,6 +3004,45 @@ mod tests {
         let arr = StringArray::from(vec![None as Option<&str>, None, None]);
         let store = store_from_string_column(DataType::Utf8, Arc::new(arr) as ArrayRef);
         assert_eq!(store.col_types[0], "categorical");
+    }
+
+    #[test]
+    fn image_sniff_waits_for_non_null_values_across_stream_chunks() {
+        let schema = Arc::new(Schema::new(vec![Field::new("image", DataType::Utf8, true)]));
+        let null_chunk = ipc_stream(
+            schema.clone(),
+            vec![Arc::new(StringArray::from(vec![None::<&str>, None])) as ArrayRef],
+        );
+        let first = data_uri("first");
+        let second = data_uri("second");
+        let image_chunk = ipc_stream(
+            schema,
+            vec![Arc::new(StringArray::from(vec![first.as_str(), second.as_str()])) as ArrayRef],
+        );
+        let handle = create_arrow_stream_store();
+
+        append_arrow_stream_chunk(handle, &null_chunk).expect("append null-only chunk");
+        let after_nulls = with_store(handle, |store| {
+            (store.image_columns_refined, store.col_types[0].clone())
+        })
+        .expect("store");
+        assert_eq!(after_nulls, (false, "categorical".to_string()));
+
+        append_arrow_stream_chunk(handle, &image_chunk).expect("append image chunk");
+        let before_finish = with_store(handle, |store| {
+            (store.image_columns_refined, store.col_types[0].clone())
+        })
+        .expect("store");
+        assert_eq!(before_finish, (false, "categorical".to_string()));
+
+        finish_arrow_stream_store(handle).expect("finish stream");
+        let after_finish = with_store(handle, |store| {
+            (store.image_columns_refined, store.col_types[0].clone())
+        })
+        .expect("store");
+        assert_eq!(after_finish, (true, "image".to_string()));
+
+        free(handle);
     }
 
     #[test]

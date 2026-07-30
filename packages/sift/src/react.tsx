@@ -95,11 +95,11 @@ type ManifestStore = {
   chunkKeys: string[];
   tableData: TableData;
   columns: Column[];
+  refreshColumnTypes: (columnOverrides?: Record<string, Partial<Column>>) => TableData | null;
   pandasIndexCols: Set<string>;
   /** Overrides this store was built with. A change forces a rebuild. */
   columnOverrides: Record<string, Partial<Column>> | undefined;
   finished: boolean;
-  dispose: () => void;
 };
 
 function arrowStreamChunkKeys(manifest: ArrowStreamManifest): string[] {
@@ -392,7 +392,7 @@ export function SiftTable({
       engineDivRef.current = null;
       // Manifest-effect cleanup deliberately leaves a mounted store alone, so
       // unmount is the only place a committed store gets freed.
-      storeRef.current?.dispose();
+      storeRef.current?.tableData.dispose?.();
       storeRef.current = null;
       footerControlRootRef.current?.unmount();
       footerControlRootRef.current = null;
@@ -524,6 +524,11 @@ export function SiftTable({
         });
         mod.append_arrow_stream_chunk(store.handle, bytes);
         store.chunkKeys.push(chunkKeys[i]);
+        const refinedTableData = store.refreshColumnTypes(store.columnOverrides);
+        if (refinedTableData) {
+          store.tableData = refinedTableData;
+          store.columns = refinedTableData.columns;
+        }
         store.tableData.rowCount = mod.num_rows(store.handle);
         updateWasmSummaries(
           mod,
@@ -532,7 +537,11 @@ export function SiftTable({
           store.columns,
           store.pandasIndexCols,
         );
-        engineRef.current?.onBatchAppended();
+        if (refinedTableData) {
+          engineRef.current?.replaceData(store.tableData, { streaming: true });
+        } else {
+          engineRef.current?.onBatchAppended();
+        }
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
           phase: "chunk-appended",
@@ -546,7 +555,22 @@ export function SiftTable({
       if (manifest.complete !== false) {
         mod.finish_arrow_stream_store(store.handle);
         store.finished = true;
-        engineRef.current?.setStreamingDone();
+        const refinedTableData = store.refreshColumnTypes(store.columnOverrides);
+        if (refinedTableData) {
+          store.tableData = refinedTableData;
+          store.columns = refinedTableData.columns;
+          store.tableData.rowCount = mod.num_rows(store.handle);
+          updateWasmSummaries(
+            mod,
+            store.handle,
+            store.tableData,
+            store.columns,
+            store.pandasIndexCols,
+          );
+          engineRef.current?.replaceData(store.tableData, { streaming: false });
+        } else {
+          engineRef.current?.setStreamingDone();
+        }
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
           phase: "streaming-complete",
@@ -605,7 +629,8 @@ export function SiftTable({
         mod.num_rows(handle),
       );
       const pandasIndexCols = pandasIndexColumnsFromHints(columnHints);
-      const { tableData, columns, prefetchViewport } = createWasmTableData(handle);
+      const { tableData, columns, prefetchViewport, refreshColumnTypes } =
+        createWasmTableData(handle);
       disposePendingStore = () => tableData.dispose?.();
       tableData.prefetchViewport = prefetchViewport;
       tableData.recomputeSummaries = () =>
@@ -647,10 +672,10 @@ export function SiftTable({
         chunkKeys: arrowStreamChunkKeys(manifest).slice(0, 1),
         tableData,
         columns,
+        refreshColumnTypes,
         pandasIndexCols,
         columnOverrides,
         finished: false,
-        dispose: () => tableData.dispose?.(),
       };
       storeRef.current = store;
 

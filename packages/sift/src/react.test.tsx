@@ -13,7 +13,9 @@ const predicateModule = vi.hoisted(() => ({
   num_rows: vi.fn(() => 2),
   num_cols: vi.fn(() => 2),
   col_names: vi.fn(() => ["id", "name"]),
-  col_type: vi.fn((_handle: number, col: number) => (col === 0 ? "numeric" : "categorical")),
+  col_type: vi.fn((_handle: number, col: number): string =>
+    col === 0 ? "numeric" : "categorical",
+  ),
   col_timezone: vi.fn(() => null),
   store_histogram: vi.fn(() => []),
   store_temporal_histogram: vi.fn(() => []),
@@ -30,6 +32,8 @@ const predicateModule = vi.hoisted(() => ({
     col === 0 ? String(row + 1) : `row ${row + 1}`,
   ),
   get_cell_f64: vi.fn((_handle: number, row: number) => row + 1),
+  get_cell_image_count: vi.fn(() => 0),
+  get_cell_image_bytes_at: vi.fn(() => new Uint8Array()),
   free: vi.fn(),
 }));
 
@@ -506,6 +510,41 @@ describe("SiftTable", () => {
     });
     expect(predicateModule.create_arrow_stream_store).toHaveBeenCalledTimes(1);
     expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+    vi.useFakeTimers();
+  });
+
+  it("refreshes mounted columns when stream completion refines an image type", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true as const,
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      }),
+    );
+    predicateModule.col_type.mockImplementation((_handle: number, col: number) => {
+      if (col === 0) return "numeric";
+      return predicateModule.finish_arrow_stream_store.mock.calls.length > 0
+        ? "image"
+        : "categorical";
+    });
+
+    const source: SiftSource = {
+      kind: "arrow-stream-manifest",
+      manifest: {
+        chunks: [{ url: "http://127.0.0.1:9000/blob/chunk-0", row_count: 2 }],
+        complete: true,
+      },
+    };
+    const { container } = render(<SiftTable source={source} />);
+
+    await waitFor(() => {
+      expect(predicateModule.finish_arrow_stream_store).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(container.querySelectorAll('.sift-type-icon[title="image"]')).toHaveLength(1);
+    });
 
     vi.unstubAllGlobals();
     vi.useFakeTimers();
