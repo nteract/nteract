@@ -19,12 +19,6 @@ export interface NotebookNoticeProps {
   "data-testid"?: string;
 }
 
-export interface NotebookNoticeStackProps {
-  children: ReactNode;
-  className?: string;
-  "data-testid"?: string;
-}
-
 const toneClassName: Record<NotebookNoticeTone, string> = {
   info: "border-sky-500/25 bg-sky-500/10 text-sky-950 dark:text-sky-100",
   warning: "border-amber-500/30 bg-amber-500/10 text-amber-950 dark:text-amber-100",
@@ -60,22 +54,6 @@ const toneDefaultIcon: Record<NotebookNoticeTone, LucideIcon> = {
   success: CheckCircle2,
   debug: Bug,
 };
-
-export function NotebookNoticeStack({
-  children,
-  className,
-  "data-testid": dataTestId,
-}: NotebookNoticeStackProps) {
-  return (
-    <div
-      className={cn("flex flex-col gap-1", className)}
-      data-slot="notebook-notice-stack"
-      data-testid={dataTestId}
-    >
-      {children}
-    </div>
-  );
-}
 
 export function NotebookNotice({
   tone = "info",
@@ -175,6 +153,28 @@ export function NotebookNotice({
           icon, not sharing the flex row with the icon/dismiss) so code blocks
           and tracebacks read edge-to-edge. */}
       {details ? <div className="mt-1 min-w-0">{details}</div> : null}
+    </div>
+  );
+}
+
+export interface NotebookNoticeStackProps {
+  children: ReactNode;
+  className?: string;
+  "data-testid"?: string;
+}
+
+export function NotebookNoticeStack({
+  children,
+  className,
+  "data-testid": dataTestId,
+}: NotebookNoticeStackProps) {
+  return (
+    <div
+      className={cn("flex flex-col gap-1", className)}
+      data-slot="notebook-notice-stack"
+      data-testid={dataTestId}
+    >
+      {children}
     </div>
   );
 }
