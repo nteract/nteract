@@ -324,36 +324,6 @@ export function NotebookNoticesGallery() {
   );
 }
 
-/**
- * Frame that mimics the real shell: a toolbar row, the notices region, and a
- * body. Notices sit edge-to-edge in the region (matching shipping desktop/cloud).
- */
-function ShellFrame({
-  children,
-  showBody = true,
-}: {
-  children: React.ReactNode;
-  showBody?: boolean;
-}) {
-  return (
-    <div className="overflow-hidden rounded-lg border bg-background shadow-sm">
-      <div className="flex items-center gap-4 border-b bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">Notebook</span>
-        <span>Code</span>
-        <span>Markdown</span>
-        <span className="opacity-50">Start compute</span>
-        <span className="ml-auto">Python</span>
-      </div>
-      <div className="border-b bg-background">{children}</div>
-      {showBody ? (
-        <div className="min-h-[96px] bg-background px-6 py-8 text-sm text-muted-foreground">
-          <code className="text-foreground/70">print(&apos;hello&apos;)</code>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function ScenarioCard({ scenario }: { scenario: Scenario }) {
   return (
     <div className="space-y-2">
@@ -361,7 +331,7 @@ function ScenarioCard({ scenario }: { scenario: Scenario }) {
         <span className="text-xs font-medium text-foreground">{scenario.label}</span>
       </div>
       <p className="text-[11px] leading-4 text-muted-foreground">{scenario.note}</p>
-      <ShellFrame showBody={false}>{scenario.render()}</ShellFrame>
+      <div className="overflow-hidden rounded-lg border">{scenario.render()}</div>
     </div>
   );
 }
@@ -405,20 +375,14 @@ function NotViewableSection() {
           <div key={g.id} className="space-y-2">
             <span className="text-xs font-medium text-foreground">{g.label}</span>
             <p className="text-[11px] leading-4 text-muted-foreground">{g.note}</p>
-            <div className="overflow-hidden rounded-lg border bg-background shadow-sm">
-              <div className="flex items-center gap-4 border-b bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Notebook</span>
-                <span className="ml-auto">Python</span>
-              </div>
-              <div className="flex min-h-[220px] flex-col">
-                <NotebookAccessGate
-                  tone={g.tone}
-                  icon={g.icon}
-                  title={g.title}
-                  detail={g.detail}
-                  primaryAction={g.primaryAction}
-                />
-              </div>
+            <div className="flex min-h-[220px] flex-col overflow-hidden rounded-lg border bg-background">
+              <NotebookAccessGate
+                tone={g.tone}
+                icon={g.icon}
+                title={g.title}
+                detail={g.detail}
+                primaryAction={g.primaryAction}
+              />
             </div>
           </div>
         ))}
@@ -441,8 +405,8 @@ function ToneReference() {
           height.
         </p>
       </div>
-      <ShellFrame showBody={false}>
-        <NotebookNoticeStack>
+      <div className="overflow-hidden rounded-lg border">
+        <NotebookNoticeStack className="gap-0">
           {tones.map((tone, i) => (
             <NotebookNotice
               key={tone}
@@ -458,7 +422,7 @@ function ToneReference() {
             </NotebookNotice>
           ))}
         </NotebookNoticeStack>
-      </ShellFrame>
+      </div>
     </section>
   );
 }
