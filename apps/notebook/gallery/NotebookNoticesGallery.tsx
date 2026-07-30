@@ -331,7 +331,7 @@ function ScenarioCard({ scenario }: { scenario: Scenario }) {
         <span className="text-xs font-medium text-foreground">{scenario.label}</span>
       </div>
       <p className="text-[11px] leading-4 text-muted-foreground">{scenario.note}</p>
-      <div className="overflow-hidden rounded-lg border">{scenario.render()}</div>
+      {scenario.render()}
     </div>
   );
 }
@@ -405,24 +405,22 @@ function ToneReference() {
           height.
         </p>
       </div>
-      <div className="overflow-hidden rounded-lg border">
-        <NotebookNoticeStack className="gap-0">
-          {tones.map((tone, i) => (
-            <NotebookNotice
-              key={tone}
-              tone={tone}
-              title={`${tone[0].toUpperCase()}${tone.slice(1)} tone.`}
-              actions={
-                i < 3 ? (
-                  <NotebookNoticeAction icon={<AlertCircle />}>Action</NotebookNoticeAction>
-                ) : null
-              }
-            >
-              The quick brown fox jumps over the lazy dog.
-            </NotebookNotice>
-          ))}
-        </NotebookNoticeStack>
-      </div>
+      <NotebookNoticeStack className="gap-0">
+        {tones.map((tone, i) => (
+          <NotebookNotice
+            key={tone}
+            tone={tone}
+            title={`${tone[0].toUpperCase()}${tone.slice(1)} tone.`}
+            actions={
+              i < 3 ? (
+                <NotebookNoticeAction icon={<AlertCircle />}>Action</NotebookNoticeAction>
+              ) : null
+            }
+          >
+            The quick brown fox jumps over the lazy dog.
+          </NotebookNotice>
+        ))}
+      </NotebookNoticeStack>
     </section>
   );
 }
