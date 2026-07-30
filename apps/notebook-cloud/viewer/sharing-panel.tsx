@@ -99,7 +99,7 @@ export function CloudSharingPanel({
       </header>
 
       <section
-        className="mx-4 mt-3 flex items-start justify-between gap-3 border-l-2 border-emerald-500/70 bg-emerald-500/[0.06] py-2.5 pl-3 pr-2.5"
+        className="flex items-start justify-between gap-3 border-b border-l-2 border-b-border border-l-emerald-500/70 bg-emerald-500/[0.06] px-4 py-3"
         aria-label="Public link access"
       >
         <div className="flex min-w-0 items-start gap-2.5">
