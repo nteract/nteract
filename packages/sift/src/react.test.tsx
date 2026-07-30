@@ -184,6 +184,15 @@ describe("SiftTable", () => {
     expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ totalCount: 2 });
   });
 
+  it("settles table data as complete on initial mount", async () => {
+    const { container } = render(<SiftTable data={makeTableData([[1, "Alice", 95]])} />);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(container.querySelector(".sift-status-indicator")?.className).toContain(
+      "sift-status-ready",
+    );
+  });
+
   it("renders container for url prop without loading flash", async () => {
     // Mock fetch to never resolve (simulating slow load)
     vi.stubGlobal("fetch", () => new Promise(() => {}));
@@ -522,7 +531,7 @@ describe("SiftTable", () => {
       },
     });
 
-    const { rerender } = render(<SiftTable source={growing(1)} />);
+    const { container, rerender } = render(<SiftTable source={growing(1)} />);
     await waitFor(() => {
       expect(predicateModule.append_arrow_stream_chunk).toHaveBeenCalledTimes(1);
     });
@@ -532,6 +541,9 @@ describe("SiftTable", () => {
     await waitFor(() => {
       expect(predicateModule.free).toHaveBeenCalled();
     });
+    expect(container.querySelector(".sift-status-indicator")?.className).toContain(
+      "sift-status-ready",
+    );
 
     // Returning to a manifest that looks like an extension must not append to
     // the freed handle. It has to build a new store.
@@ -617,6 +629,30 @@ describe("SiftTable", () => {
       expect(container.innerHTML).toMatch(/SECOND/);
     });
     expect(container.innerHTML).not.toMatch(/FIRST/);
+  });
+
+  it("frees a store whose first chunk fetch fails, without waiting for unmount", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({ ok: false as const, status: 500, statusText: "boom" }),
+    );
+
+    render(
+      <SiftTable
+        source={{
+          kind: "arrow-stream-manifest",
+          manifest: {
+            chunks: [{ url: "http://127.0.0.1:9000/blob/chunk-0" }],
+            complete: true,
+          },
+        }}
+      />,
+    );
+
+    // The engine never took ownership, so nothing else will release it.
+    await waitFor(() => {
+      expect(predicateModule.free).toHaveBeenCalledWith(9);
+    });
   });
 
   it("frees the WASM store on unmount after a manifest load", async () => {

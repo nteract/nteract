@@ -416,7 +416,7 @@ export function SiftTable({
     storeRef.current = null;
 
     if (engineRef.current) {
-      engineRef.current.replaceData(dataSource);
+      engineRef.current.replaceData(dataSource, { streaming: false });
       emitLoadMilestone(startedAt, {
         source: "table-data",
         phase: "engine-data-replaced",
@@ -433,6 +433,7 @@ export function SiftTable({
       onChange: stableOnChange,
       footerControl: getFooterControlElement(),
     });
+    engineRef.current.setStreamingDone();
     emitLoadMilestone(startedAt, {
       source: "table-data",
       phase: "engine-mounted",
@@ -453,7 +454,11 @@ export function SiftTable({
 
     function mountEngine(tableData: TableData) {
       if (engineRef.current) {
-        engineRef.current.replaceData(tableData);
+        // A reused engine keeps whatever streaming state the previous
+        // manifest settled on, so an open stream re-arms the guard here.
+        engineRef.current.replaceData(tableData, {
+          streaming: manifest.complete === false,
+        });
         disposePendingStore = null;
         return;
       }
@@ -675,6 +680,12 @@ export function SiftTable({
         })();
 
     run.catch((err) => {
+      // A store that failed before mounting has no owner: the engine never
+      // took it and `replaceData` will never free it. Release it here instead
+      // of holding the handle until the next effect run or unmount. Mounted
+      // stores have already cleared this, so the append path is unaffected.
+      disposePendingStore?.();
+      disposePendingStore = null;
       if (!cancelled) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
