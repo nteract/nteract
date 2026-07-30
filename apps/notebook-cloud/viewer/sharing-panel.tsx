@@ -358,16 +358,18 @@ export function CloudSharingPanel({
       ) : null}
 
       {message ? (
-        <div
-          className={cn(
-            "mx-4 mb-3.5 rounded-md border px-2.5 py-2 text-xs leading-5",
-            messageKind === "error"
-              ? "border-destructive/40 bg-destructive/10 text-destructive"
-              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-          )}
-          data-kind={messageKind}
-        >
-          {message}
+        <div className="px-4 pt-3.5 pb-4">
+          <div
+            className={cn(
+              "rounded-md border px-2.5 py-2 text-xs leading-5",
+              messageKind === "error"
+                ? "border-destructive/40 bg-destructive/10 text-destructive"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+            )}
+            data-kind={messageKind}
+          >
+            {message}
+          </div>
         </div>
       ) : null}
     </>
