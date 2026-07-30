@@ -24,7 +24,6 @@ import {
   NotebookNoticeDetails,
   NotebookNoticeStack,
 } from "@/components/notebook/NotebookNotice";
-import { cn } from "@/lib/utils";
 
 /**
  * Notice gallery — every notification/banner/gate that can prevent (or
@@ -320,7 +319,6 @@ export function NotebookNoticesGallery() {
     <div className="space-y-12">
       <ViewableSection />
       <NotViewableSection />
-      <SpacingContrast />
       <ToneReference />
     </div>
   );
@@ -328,16 +326,13 @@ export function NotebookNoticesGallery() {
 
 /**
  * Frame that mimics the real shell: a toolbar row, the notices region, and a
- * body. `padded` toggles the proposed container padding so notices never
- * touch the edges.
+ * body. Notices sit edge-to-edge in the region (matching shipping desktop/cloud).
  */
 function ShellFrame({
   children,
-  padded = true,
   showBody = true,
 }: {
   children: React.ReactNode;
-  padded?: boolean;
   showBody?: boolean;
 }) {
   return (
@@ -349,7 +344,7 @@ function ShellFrame({
         <span className="opacity-50">Start compute</span>
         <span className="ml-auto">Python</span>
       </div>
-      <div className={cn("border-b bg-background", padded ? "px-3 py-2" : "")}>{children}</div>
+      <div className="border-b bg-background">{children}</div>
       {showBody ? (
         <div className="min-h-[96px] bg-background px-6 py-8 text-sm text-muted-foreground">
           <code className="text-foreground/70">print(&apos;hello&apos;)</code>
@@ -427,40 +422,6 @@ function NotViewableSection() {
             </div>
           </div>
         ))}
-      </div>
-    </section>
-  );
-}
-
-function SpacingContrast() {
-  return (
-    <section className="space-y-3">
-      <div className="space-y-1">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Spacing: edge-to-edge vs padded
-        </h2>
-        <p className="text-sm text-foreground/80">
-          Today (desktop) notices sit edge-to-edge with only the atom&apos;s own `px-3`. The
-          proposed container adds breathing room so notices never touch the frame.
-        </p>
-      </div>
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        <div className="space-y-2">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
-            edge-to-edge (today)
-          </span>
-          <ShellFrame padded={false} showBody={false}>
-            <NoComputeNotice isOwner />
-          </ShellFrame>
-        </div>
-        <div className="space-y-2">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
-            padded (proposed)
-          </span>
-          <ShellFrame padded showBody={false}>
-            <NoComputeNotice isOwner />
-          </ShellFrame>
-        </div>
       </div>
     </section>
   );
