@@ -20,6 +20,7 @@ import {
   Rows3,
   Search,
   Server,
+  Settings,
   ShieldCheck,
   SlidersHorizontal,
   SquareCode,
@@ -75,6 +76,12 @@ const catalogGroups = [
         description: "Notebook home, continuation, workstation context, and sharing previews.",
         href: "/docs/cloud-dashboard",
         icon: LayoutDashboard,
+      },
+      {
+        title: "Settings drawer",
+        description: "Account and appearance preferences sliding in from the avatar menu.",
+        href: "/docs/settings-drawer",
+        icon: Settings,
       },
       {
         title: "Site chrome",

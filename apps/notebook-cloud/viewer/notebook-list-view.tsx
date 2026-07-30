@@ -8,11 +8,13 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Settings,
   Sparkles,
 } from "lucide-react";
 // Not the `@/components/notebook` barrel: it pulls the notebook route into this
 // chunk and collapses the notebook-route CSS split `copy-viewer-assets` needs.
 import { NotebookAccountMenu } from "@/components/notebook/NotebookAccountMenu";
+import { NotebookSettingsDrawer } from "@/components/notebook/NotebookSettingsDrawer";
 import type { NotebookActorIdentity } from "@/components/notebook/capabilities";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
@@ -25,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useColorThemePreference } from "@/hooks/useColorThemePreference";
 import { useTheme } from "@/hooks/useTheme";
 import {
   clearCloudPrototypeDevAuth,
@@ -69,7 +72,11 @@ import {
   readCachedCloudNotebookList,
   writeCachedCloudNotebookList,
 } from "./notebook-list-cache";
-import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
+import {
+  applyDocumentTheme,
+  CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
+  CLOUD_VIEWER_THEME_STORAGE_KEY,
+} from "./theme";
 import { CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { preloadNotebookRoute } from "./notebook-route-preload";
 
@@ -85,7 +92,11 @@ export function CloudNotebookListView({
   appSessionWaitDeadlineMs,
   authConfig,
 }: CloudNotebookListViewProps) {
-  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { colorTheme, setColorTheme } = useColorThemePreference(
+    CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const auth = useCloudAuthStore();
   const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
@@ -451,6 +462,10 @@ export function CloudNotebookListView({
                   detail={currentUserDisplay ?? headerDetail}
                   accountDetail={currentUserAccountDetail}
                 >
+                  <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                    <Settings aria-hidden="true" />
+                    Settings
+                  </DropdownMenuItem>
                   <DropdownMenuItem onSelect={signOut}>
                     <LogOut aria-hidden="true" />
                     Sign out
@@ -486,6 +501,31 @@ export function CloudNotebookListView({
           onTitleChange={setCreateTitle}
         />
       ) : null}
+      <NotebookSettingsDrawer
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        theme={theme}
+        onThemeChange={setTheme}
+        colorTheme={colorTheme}
+        onColorThemeChange={setColorTheme}
+        actor={signedIn ? currentUserActor : null}
+        accountDetail={currentUserAccountDetail}
+        accountActions={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="self-start"
+            onClick={() => {
+              setSettingsOpen(false);
+              signOut();
+            }}
+          >
+            <LogOut aria-hidden="true" />
+            Sign out
+          </Button>
+        }
+      />
 
       <section className="cloud-notebook-list-content" aria-label="Notebook list">
         {listState.kind === "loading" ? (

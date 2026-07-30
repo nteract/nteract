@@ -8,7 +8,17 @@ import {
   type ReactNode,
 } from "react";
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { AlertCircle, Check, Info, Loader2, LogIn, LogOut, PanelLeftOpen, X } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  Info,
+  Loader2,
+  LogIn,
+  LogOut,
+  PanelLeftOpen,
+  Settings,
+  X,
+} from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import {
   useHasIsolatedOutputs,
@@ -24,6 +34,8 @@ import {
 import {
   NotebookAccessGate,
   NotebookConnectionIdentity,
+  NotebookSettingsDrawer,
+  notebookToolbarActors,
   NotebookCommentsPanel,
   NotebookDocumentToolbar,
   navigateNotebookOutlineItem,
@@ -55,6 +67,7 @@ import {
   type NotebookCommentDraftTarget,
 } from "@/components/notebook";
 import { resolveCommentsUiSurface } from "@/components/notebook/comments-ui-gate";
+import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   openNotebookRailPanel,
@@ -67,6 +80,7 @@ import {
   useDemoteDetachedOutputCommentThreads,
 } from "@/components/notebook/output-comment-demotion";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
+import { useColorThemePreference } from "@/hooks/useColorThemePreference";
 import { useTheme } from "@/hooks/useTheme";
 import { EnvironmentSummary } from "@/components/environment";
 import {
@@ -152,7 +166,11 @@ import {
   cloudNotebookSyncScopeForCatalogAccess,
   createCloudNotebookCatalogAccessLoader,
 } from "./cloud-notebook-catalog-access";
-import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
+import {
+  applyDocumentTheme,
+  CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
+  CLOUD_VIEWER_THEME_STORAGE_KEY,
+} from "./theme";
 import { replaceCloudNotebookModeInCurrentUrl } from "./cloud-notebook-mode";
 import {
   CloudAccessFactsStore,
@@ -267,7 +285,11 @@ export function NotebookViewer({
   const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
   const [notebookTitleSaving, setNotebookTitleSaving] = useState(false);
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
-  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { colorTheme, setColorTheme } = useColorThemePreference(
+    CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const commentsUiEnabled = config.featureFlags?.enable_comments === true;
   const { store: widgetStore } = useWidgetStoreRequired();
   // Selected interaction mode and the user's edit-access request are owned by the
@@ -1741,10 +1763,16 @@ export function NotebookViewer({
             connectionStatus$={connectionStatus$}
             accountDetail={authState.oidcClaims?.email?.trim() ?? null}
             accountActions={
-              <DropdownMenuItem onSelect={signOutOfNotebook}>
-                <LogOut aria-hidden="true" />
-                Sign out
-              </DropdownMenuItem>
+              <>
+                <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                  <Settings aria-hidden="true" />
+                  Settings
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={signOutOfNotebook}>
+                  <LogOut aria-hidden="true" />
+                  Sign out
+                </DropdownMenuItem>
+              </>
             }
           />
         ) : null
@@ -1969,6 +1997,31 @@ export function NotebookViewer({
           onCancel={handleCancelSourceComment}
         />
       ) : null}
+      <NotebookSettingsDrawer
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        theme={theme}
+        onThemeChange={setTheme}
+        colorTheme={colorTheme}
+        onColorThemeChange={setColorTheme}
+        actor={notebookToolbarActors(shellCapabilities)[0] ?? null}
+        accountDetail={authState.oidcClaims?.email?.trim() ?? null}
+        accountActions={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="self-start"
+            onClick={() => {
+              setSettingsOpen(false);
+              signOutOfNotebook();
+            }}
+          >
+            <LogOut aria-hidden="true" />
+            Sign out
+          </Button>
+        }
+      />
     </NotebookHostProvider>
   );
 }
