@@ -1,4 +1,31 @@
-# @runtimed/node
+# `@runtimed/node`
+
+Run Python from Node in a kernel that stays alive between calls. Variables and
+imports persist, dependencies install mid-session via uv, plots come back
+inline.
+
+**Before** — new process every call, no memory:
+
+```ts
+execSync('python -c "import pandas as pd; df = pd.read_csv(\'data.csv\'); print(df.shape)"')
+// next call: pandas re-imported, df gone, ~2s cold start
+```
+
+**After** — one session, state sticks:
+
+```ts
+const { createNotebook } = require("@runtimed/node");
+
+const session = await createNotebook({ workingDir: "./project" });
+await session.runCell('import pandas as pd; df = pd.read_csv("data.csv")');
+await session.runCell('df.groupby("region").sum()'); // df still there
+await session.addDependencies(["seaborn"]); // no restart
+await session.syncEnvironment();
+await session.runCell("sns.heatmap(df.corr())"); // returns the image
+```
+
+Built for agent loops where one session spans many turns. Running a script
+once? Use a subprocess.
 
 Node.js bindings for the nteract `runtimed` daemon. This package lets Node,
 Bun, and other CommonJS-compatible runtimes create notebooks, run Python cells,
