@@ -159,7 +159,7 @@ export function NotebookNoticeAction({
       type="button"
       onClick={onClick}
       className={cn(
-        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-current/10 px-2 text-xs font-medium transition-colors hover:bg-current/20 [&_svg]:size-3",
+        "inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-current/10 px-2 text-xs font-medium transition-colors hover:bg-current/20 [&_svg]:size-3 [&_svg]:shrink-0",
         className,
       )}
       data-testid={dataTestId}
