@@ -26,6 +26,8 @@ hex = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
 chrono = { workspace = true, features = ["clock"] }
+# Connect errors name the command that starts a daemon, and which command that
+# is depends on dev-mode vs an installed build. This crate owns that answer.
+runt-workspace = { path = "../runt-workspace" }
 
 [dev-dependencies]
-runt-workspace = { path = "../runt-workspace" }

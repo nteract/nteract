@@ -198,17 +198,22 @@ macro_rules! connect_stream {
             Ok(stream) => stream,
             Err(e) => {
                 let path_display = path.display();
+                // Every consumer that is not the desktop app reaches this arm
+                // with no idea what to run next, and the answer differs between
+                // a source checkout and an installed build. `runt-workspace`
+                // already knows which, so carry its guidance into the message.
+                let guidance = runt_workspace::daemon_unavailable_guidance();
                 return Err(match e.kind() {
                     std::io::ErrorKind::NotFound => SyncError::DaemonUnavailable {
                         message: format!(
-                            "Daemon is not running. Endpoint not found at {path_display}."
+                            "Daemon is not running. Endpoint not found at {path_display}. {guidance}"
                         ),
                         source: e,
                     },
                     std::io::ErrorKind::ConnectionRefused => SyncError::DaemonUnavailable {
                         message: format!(
                             "Daemon connection refused at {path_display}. \
-                             The daemon may have crashed or is restarting."
+                             The daemon may have crashed or is restarting. {guidance}"
                         ),
                         source: e,
                     },
@@ -1078,6 +1083,36 @@ mod bootstrap_tests {
         assert_eq!(
             actual.capabilities.actor_label.as_deref(),
             Some("local:kyle/desktop:typed")
+        );
+    }
+    /// A caller that is not the desktop app hits this path with no idea what to
+    /// run next, so the message has to name the command itself.
+    #[tokio::test]
+    async fn missing_daemon_error_names_the_command_that_starts_one() {
+        let missing = std::path::PathBuf::from("/tmp/nteract-does-not-exist/runtimed.sock");
+        let result = connect_open(
+            missing.clone(),
+            std::path::PathBuf::from("/tmp/nteract-does-not-exist/notebook.ipynb"),
+            "test",
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("connecting to a nonexistent socket must fail");
+        };
+
+        let message = err.to_string();
+        assert!(
+            message.contains("Daemon is not running"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains(&missing.display().to_string()),
+            "error should name the endpoint it tried: {message}"
+        );
+        let guidance = runt_workspace::daemon_unavailable_guidance();
+        assert!(
+            message.contains(&guidance),
+            "error should carry the daemon guidance ({guidance}): {message}"
         );
     }
 }
