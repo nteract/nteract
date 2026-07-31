@@ -35,13 +35,6 @@ const iconClassName: Record<NotebookNoticeTone, string> = {
   debug: "text-violet-600 dark:text-violet-300",
 };
 
-/**
- * Tone → default icon (shape, not only color). Callers may override `icon`, or
- * pass `icon={null}` to hide it. Store Lucide components (not JSX elements):
- * module-scope JSX would run at import time, before node:test suites install
- * React globally. Shell sizes icons (`size-4` / action `size-3`); callers pass
- * shape only.
- */
 const toneDefaultIcon: Record<NotebookNoticeTone, LucideIcon> = {
   info: Info,
   warning: AlertTriangle,
