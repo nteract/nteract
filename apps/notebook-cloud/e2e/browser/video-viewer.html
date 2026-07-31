@@ -1,0 +1,92 @@
+<!doctype html>
+<!--
+  Template for the recording viewer. show-video.mjs copies this next to the
+  encoded .webm in e2e/recordings/ and substitutes the placeholder below with
+  the video's filename, so the page references it by *relative* path.
+
+  Why not a ?v= query param: macOS `open` treats a file:// URL as a path and
+  silently strips the query string, so the page would always load with no video.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>e2e video viewer</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        gap: 12px;
+        background: #111;
+        color: #ddd;
+        font:
+          13px/1.4 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        padding: 24px;
+        box-sizing: border-box;
+      }
+      /*
+       * Unlike apps/notebook's viewer, this app's recorder captures 1:1 CSS
+       * pixels (no 2x zoom trick — see helpers.ts), so there's no fixed
+       * physical-pixel size to reproduce. Scale responsively instead: grow to
+       * fill most of the viewport, shrink to fit if the window is smaller
+       * than the recording, always preserving aspect ratio via object-fit.
+       */
+      video {
+        display: block;
+        background: #000;
+        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+        image-rendering: -webkit-optimize-contrast;
+        width: 92vw;
+        height: 82vh;
+        object-fit: contain;
+      }
+      #meta {
+        max-width: 90vw;
+        word-break: break-all;
+        opacity: 0.7;
+        text-align: center;
+      }
+      #error {
+        color: #ff8a80;
+        max-width: 80vw;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <video id="video" controls autoplay loop playsinline></video>
+    <div id="meta"></div>
+    <div id="error"></div>
+
+    <script>
+      const VIDEO_FILE = "__VIDEO_FILE__";
+
+      const video = document.getElementById("video");
+      const meta = document.getElementById("meta");
+      const errorEl = document.getElementById("error");
+
+      video.src = encodeURIComponent(VIDEO_FILE);
+
+      video.addEventListener("loadedmetadata", () => {
+        // Sizing itself is handled by the responsive CSS (width/height caps +
+        // object-fit: contain) — this just reports the actual intrinsic size.
+        meta.innerHTML = `${video.videoWidth}×${video.videoHeight}<br>${VIDEO_FILE}`;
+      });
+
+      video.addEventListener("error", () => {
+        errorEl.textContent = "Failed to load the video: " + VIDEO_FILE;
+      });
+    </script>
+  </body>
+</html>

@@ -129,6 +129,7 @@ test-results/
 
 # Archived record-ui videos (show-video.mjs keeps every run for before/after)
 apps/notebook/e2e/recordings/
+apps/notebook-cloud/e2e/recordings/
 
 # E2E daemon PID file
 .e2e-daemon.pid
