@@ -414,6 +414,19 @@ export {
   type ProjectNotebookWorkstationSelectionOptions,
 } from "./notebook-workstation-selection";
 
+// Notebook workstation usage projection
+export {
+  clearNotebookWorkstationUsageProjectionCacheForTests,
+  projectNotebookWorkstationUsage,
+  type NotebookWorkstationUsagePointProjection,
+  type NotebookWorkstationUsageProjection,
+  type NotebookWorkstationUsageSample,
+  type NotebookWorkstationUsageSeriesId,
+  type NotebookWorkstationUsageSeriesProjection,
+  type NotebookWorkstationUsageTone,
+  type ProjectNotebookWorkstationUsageOptions,
+} from "./notebook-workstation-usage";
+
 // Notebook workstation attachment projections
 export {
   projectNotebookWorkstationAttachmentFromClaim,

@@ -39,6 +39,7 @@ import {
   useActiveOutlineItemId,
   useOutlineSelection,
   useOutlineStatusLabel,
+  useWorkstationActivitySamples,
   type NotebookCommandToolbarStatus,
   type NotebookEnvironmentManager,
   type NotebookInteractionMode,
@@ -847,6 +848,16 @@ export function NotebookViewer({
     panelIsOpen: activeRailPanel === "workstations" && !railCollapsed,
     workstationAttachment,
   });
+  // Kernel activity is the one usage signal a viewer already observes, so the
+  // rail charts it for the attached workstation. Hardware load would need agent
+  // telemetry that no host reports yet. Recording follows attachment rather than
+  // kernel launch: an attached machine is observable before any cell runs, and
+  // gating on a launched kernel would leave the rail blank almost always.
+  const workstationUsageSamples = useWorkstationActivitySamples({
+    workstationId: workstationSelection?.activeWorkstationId ?? null,
+    busy: cloudKernelLifecycle.lifecycle === "Running" && cloudKernelLifecycle.activity === "Busy",
+    running: workstationSelection?.activeWorkstationId != null,
+  });
   const canWriteCellSource = useCallback(
     (cellId: string) => {
       const cell = getCellById(cellId);
@@ -1603,6 +1614,7 @@ export function NotebookViewer({
             pairing={workstationPairing}
             onStartPairing={onStartPairing}
             onCancelPairing={onCancelPairing}
+            usageSamples={workstationUsageSamples}
           />
         ) : undefined
       }

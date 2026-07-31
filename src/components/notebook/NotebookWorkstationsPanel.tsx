@@ -1,14 +1,18 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Activity,
+  Boxes,
   Check,
   ChevronDown,
   CircleAlert,
   CircleCheck,
+  Clock,
   Cloud,
   Copy,
   Cpu,
   FolderOpen,
   Gauge,
+  GitBranch,
   MemoryStick,
   Monitor,
   PlugZap,
@@ -16,20 +20,25 @@ import {
   Server,
   ServerCog,
   ServerOff,
+  Tag,
   X,
+  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   projectNotebookWorkstationPanel,
+  projectNotebookWorkstationUsage,
   type NotebookShellCapabilities,
   type NotebookShellAccessSource,
   type NotebookRegisteredWorkstationFactProjection,
   type NotebookRegisteredWorkstationProjection,
   type NotebookWorkstationFactProjection,
   type NotebookWorkstationSelectionProjection,
+  type NotebookWorkstationUsageSample,
 } from "./capabilities";
+import { NotebookWorkstationUsageChart } from "./NotebookWorkstationUsageChart";
 import { cn } from "@/lib/utils";
 
 export interface NotebookWorkstationPairingView {
@@ -62,6 +71,12 @@ export interface NotebookWorkstationsPanelProps {
   onStartPairing?: () => void;
   onCancelPairing?: () => void;
   statusMessage?: string | null;
+  /**
+   * Reported usage samples keyed by workstation id. Hosts that collect this
+   * telemetry pass it in; the panel draws no chart without it and never
+   * synthesizes a series.
+   */
+  usageSamples?: Readonly<Record<string, readonly NotebookWorkstationUsageSample[]>> | null;
 }
 
 export function NotebookWorkstationsPanel({
@@ -75,9 +90,15 @@ export function NotebookWorkstationsPanel({
   onStartPairing,
   onCancelPairing,
   statusMessage = null,
+  usageSamples = null,
 }: NotebookWorkstationsPanelProps) {
-  const [selectedWorkstationId, setSelectedWorkstationId] = useState<string | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  // The projection owns which workstation is selected; local state only tracks
+  // clicks after mount, so a host that already knows costs no extra click.
+  const projectedSelectedId = selection?.selectedWorkstationId ?? null;
+  const [selectedWorkstationId, setSelectedWorkstationId] = useState<string | null>(
+    projectedSelectedId,
+  );
+  const [detailsOpen, setDetailsOpen] = useState(projectedSelectedId !== null);
   const projection = projectNotebookWorkstationPanel(capabilities);
   const showRegistrationPrompt = selection?.state === "needs_registration";
   const registeredWorkstations = selection?.registeredWorkstations ?? [];
@@ -138,43 +159,54 @@ export function NotebookWorkstationsPanel({
         aria-label="Workstation details"
         className={hasVisibleRegisteredWorkstations ? "mt-auto" : undefined}
       >
-        <PanelSection title="Workstation details" open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <PanelSection
+          title="Workstation details"
+          open={detailsOpen}
+          onOpenChange={setDetailsOpen}
+          bleed
+        >
           {selectedWorkstation ? (
-            <div className="space-y-2">
-              <div className="min-w-0">
-                <h4 className="truncate text-sm font-semibold text-foreground">
-                  {selectedWorkstation.displayName}
-                </h4>
+            <div>
+              <div className="min-w-0 border-b border-border/70 px-4 pb-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
+                    {selectedWorkstation.displayName}
+                  </h4>
+                  <WorkstationStatusBadge workstation={selectedWorkstation} />
+                </div>
                 <div className="truncate font-mono text-[10.5px] tracking-normal text-muted-foreground">
                   {selectedWorkstation.idLabel}
                 </div>
-                <p className="text-xs leading-5 text-muted-foreground">
-                  {selectedWorkstation.isAttached ? "Running" : selectedWorkstation.statusLabel}
-                </p>
               </div>
-              <div className="grid min-w-0 gap-1.5">
+              <FactRowList>
                 {registeredWorkstationDetailFacts(selectedWorkstation).map((fact) => (
                   <RegisteredWorkstationFact key={fact.kind} fact={fact} />
                 ))}
-              </div>
+              </FactRowList>
+              <WorkstationUsageSection
+                samples={usageSamples?.[selectedWorkstation.id] ?? null}
+                workstation={selectedWorkstation}
+              />
               {onSetDefaultWorkstation && !selectedWorkstation.isDefault ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={busyWorkstationId === selectedWorkstation.id}
-                  onClick={() => onSetDefaultWorkstation(selectedWorkstation.id)}
-                >
-                  Set default
-                </Button>
+                <div className="px-4 py-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busyWorkstationId === selectedWorkstation.id}
+                    onClick={() => onSetDefaultWorkstation(selectedWorkstation.id)}
+                  >
+                    Set default
+                  </Button>
+                </div>
               ) : null}
             </div>
           ) : hasVisibleRegisteredWorkstations ? (
-            <p className="text-xs leading-5 text-muted-foreground">
+            <p className="px-4 pb-2 text-xs leading-5 text-muted-foreground">
               Select a workstation above to see its details.
             </p>
           ) : (
-            <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5 text-xs">
+            <FactRowList>
               {projection.facts.map((fact) => (
                 <WorkstationFact
                   key={fact.kind}
@@ -182,7 +214,7 @@ export function NotebookWorkstationsPanel({
                   icon={workstationFactIcon(fact, projection.source)}
                 />
               ))}
-            </div>
+            </FactRowList>
           )}
         </PanelSection>
       </section>
@@ -691,40 +723,79 @@ function registeredWorkstationStartTitle(
   return "This workstation has no available environment yet";
 }
 
+function FactRowList({ children }: { children: ReactNode }) {
+  return <ul className="border-b border-border/70 text-xs">{children}</ul>;
+}
+
+function FactRow({
+  detail,
+  icon: Icon,
+  iconClassName,
+  label,
+  subtle = false,
+  tone,
+  value,
+  valueClassName,
+  wrapValue = false,
+}: {
+  detail: string | null;
+  icon: LucideIcon;
+  iconClassName: string;
+  label: string;
+  subtle?: boolean;
+  tone: NotebookWorkstationFactProjection["tone"];
+  value: string;
+  valueClassName?: string;
+  wrapValue?: boolean;
+}) {
+  return (
+    <li
+      className={cn(
+        "flex min-w-0 items-baseline gap-1.5 border-t border-border/70 px-4 py-1 first:border-t-0",
+        subtle && "opacity-75",
+      )}
+      data-tone={tone}
+    >
+      <Icon className={cn("size-3.5 shrink-0 translate-y-px", iconClassName)} aria-hidden="true" />
+      <span className="min-w-[4.5rem] shrink-0 leading-5 whitespace-nowrap text-muted-foreground">
+        {label}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn(
+            "block leading-5 font-medium text-foreground",
+            wrapValue ? "break-words" : "truncate",
+            valueClassName,
+          )}
+        >
+          {value}
+        </span>
+        {detail ? (
+          <span className="block text-[11px] leading-4 text-muted-foreground">{detail}</span>
+        ) : null}
+      </span>
+    </li>
+  );
+}
+
 function WorkstationFact({
   fact,
-  icon: Icon,
+  icon,
 }: {
   fact: NotebookWorkstationFactProjection;
   icon: LucideIcon;
 }) {
   return (
-    <span
-      className={cn(
-        "inline-grid min-w-0 grid-cols-[auto_auto_minmax(0,1fr)] gap-x-1.5",
-        fact.subtle && "opacity-75",
-      )}
-      data-tone={fact.tone}
-    >
-      <Icon
-        className={cn("mt-px size-3.5 shrink-0", workstationFactIconClassName(fact.tone))}
-        aria-hidden="true"
-      />
-      <span className="shrink-0 text-muted-foreground">{fact.label}</span>
-      <span
-        className={cn(
-          "min-w-0 font-medium text-foreground",
-          fact.kind === "accelerator" ? "break-words" : "truncate",
-        )}
-      >
-        {fact.value}
-      </span>
-      {fact.detail ? (
-        <span className="col-span-2 col-start-2 min-w-0 text-[11px] leading-4 text-muted-foreground">
-          {fact.detail}
-        </span>
-      ) : null}
-    </span>
+    <FactRow
+      detail={fact.detail ?? null}
+      icon={icon}
+      iconClassName={workstationFactIconClassName(fact.tone)}
+      label={fact.label}
+      subtle={fact.subtle}
+      tone={fact.tone}
+      value={fact.value}
+      wrapValue={fact.kind === "accelerator"}
+    />
   );
 }
 
@@ -786,31 +857,111 @@ function RegisteredWorkstationFact({
   fact: NotebookRegisteredWorkstationFactProjection;
 }) {
   return (
-    <span className="grid min-w-0" data-tone={fact.tone}>
-      <span className="text-[11px] leading-4 text-muted-foreground">{fact.label}</span>
-      <span
-        className={cn(
-          "min-w-0 text-xs leading-5 font-medium",
-          fact.kind === "accelerator" ? "break-words" : "truncate",
-          fact.tone === "attention" ? "text-[var(--sev-warn)]" : "text-foreground",
-        )}
-      >
-        {fact.value}
-      </span>
-      {fact.detail ? (
-        <span className="min-w-0 text-[11px] leading-4 text-muted-foreground">{fact.detail}</span>
-      ) : null}
+    <FactRow
+      detail={fact.detail}
+      icon={registeredWorkstationFactIcon(fact.kind)}
+      iconClassName={workstationFactIconClassName(fact.tone)}
+      label={fact.label}
+      tone={fact.tone}
+      value={fact.value}
+      valueClassName={fact.tone === "attention" ? "text-[var(--sev-warn)]" : undefined}
+      wrapValue={fact.kind === "accelerator"}
+    />
+  );
+}
+
+/**
+ * Usage charts for the selected workstation. Absent samples render nothing at
+ * all: an empty chart frame would read as "idle", which is a claim the panel
+ * cannot make about a host that never reported.
+ */
+function WorkstationUsageSection({
+  samples,
+  workstation,
+}: {
+  samples: readonly NotebookWorkstationUsageSample[] | null;
+  workstation: NotebookRegisteredWorkstationProjection;
+}) {
+  const usage = projectNotebookWorkstationUsage({
+    memoryBytes: workstation.memoryBytes,
+    samples,
+  });
+  if (!usage) return null;
+
+  return (
+    <section
+      aria-label="Workstation usage"
+      className="space-y-2 border-b border-border/70 px-4 py-2"
+      data-testid="workstation-usage"
+    >
+      <div className="flex min-w-0 items-baseline justify-between gap-2 text-[11px] leading-4">
+        <span className="flex min-w-0 items-center gap-1.5 font-medium text-foreground">
+          <Activity className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          Usage
+        </span>
+        <span className="shrink-0 text-muted-foreground">{usage.windowLabel}</span>
+      </div>
+      {usage.series.map((series) => (
+        <NotebookWorkstationUsageChart key={series.id} series={series} />
+      ))}
+    </section>
+  );
+}
+
+function registeredWorkstationFactIcon(kind: string): LucideIcon {
+  switch (kind) {
+    case "default_environment":
+      return Boxes;
+    case "cpu":
+      return Cpu;
+    case "memory":
+      return MemoryStick;
+    case "accelerator":
+      return Zap;
+    case "working_directory":
+      return FolderOpen;
+    case "provider":
+      return Server;
+    case "build":
+      return Tag;
+    case "channel":
+      return GitBranch;
+    case "last_seen":
+      return Clock;
+    default:
+      return Server;
+  }
+}
+
+function WorkstationStatusBadge({
+  workstation,
+}: {
+  workstation: NotebookRegisteredWorkstationProjection;
+}) {
+  const status = registeredWorkstationStatusTone(workstation);
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-md border px-1.5 py-0.5 text-[10.5px] leading-4 font-medium",
+        status.badgeClassName,
+      )}
+      data-testid="workstation-status-badge"
+      data-status={workstation.isAttached ? "running" : workstation.status}
+    >
+      {workstation.isAttached ? "Running" : workstation.statusLabel}
     </span>
   );
 }
 
 function registeredWorkstationStatusTone(workstation: NotebookRegisteredWorkstationProjection): {
+  badgeClassName: string;
   icon: LucideIcon;
   iconClassName: string;
   textClassName: string;
 } {
   if (workstation.isAttached) {
     return {
+      badgeClassName: "border-primary/30 bg-primary/10 text-primary",
       icon: CircleCheck,
       iconClassName: "text-primary",
       textClassName: "text-primary",
@@ -818,6 +969,8 @@ function registeredWorkstationStatusTone(workstation: NotebookRegisteredWorkstat
   }
   if (workstation.status === "online") {
     return {
+      badgeClassName:
+        "border-emerald-700/30 bg-emerald-700/10 text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-300/10 dark:text-emerald-300",
       icon: Server,
       iconClassName: "text-emerald-700 dark:text-emerald-300",
       textClassName: "text-emerald-700 dark:text-emerald-300",
@@ -825,6 +978,8 @@ function registeredWorkstationStatusTone(workstation: NotebookRegisteredWorkstat
   }
   if (workstation.status === "connecting") {
     return {
+      badgeClassName:
+        "border-sky-700/30 bg-sky-700/10 text-sky-700 dark:border-sky-300/30 dark:bg-sky-300/10 dark:text-sky-300",
       icon: PlugZap,
       iconClassName: "text-sky-700 dark:text-sky-300",
       textClassName: "text-sky-700 dark:text-sky-300",
@@ -832,12 +987,15 @@ function registeredWorkstationStatusTone(workstation: NotebookRegisteredWorkstat
   }
   if (workstation.status === "attention") {
     return {
+      badgeClassName:
+        "border-amber-700/30 bg-amber-700/10 text-amber-700 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-300",
       icon: CircleAlert,
       iconClassName: "text-amber-700 dark:text-amber-300",
       textClassName: "text-amber-700 dark:text-amber-300",
     };
   }
   return {
+    badgeClassName: "border-border bg-muted/40 text-muted-foreground",
     icon: ServerOff,
     iconClassName: "text-muted-foreground",
     textClassName: "text-muted-foreground",

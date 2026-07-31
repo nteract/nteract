@@ -357,6 +357,79 @@ describe("NotebookWorkstationsPanel", () => {
     expect(defaults).toEqual(["ws-offline"]);
   });
 
+  it("carries the selected workstation's status as a badge beside its name", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      registeredWorkstations: [
+        { id: "ws-online", displayName: "Online workstation", status: "online" },
+        { id: "ws-offline", displayName: "Offline workstation", status: "offline" },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+      />,
+    );
+
+    const details = () => within(screen.getByRole("region", { name: "Workstation details" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Offline workstation/ }));
+    const offlineBadge = details().getByTestId("workstation-status-badge");
+    expect(offlineBadge).toHaveTextContent("Offline");
+    expect(offlineBadge.dataset.status).toBe("offline");
+    // The status reads once, from the badge — never also as a standalone line.
+    expect(details().getAllByText("Offline")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Online workstation/ }));
+    const onlineBadge = details().getByTestId("workstation-status-badge");
+    expect(onlineBadge).toHaveTextContent("Online");
+    expect(onlineBadge.dataset.status).toBe("online");
+  });
+
+  it("charts reported usage samples for the selected workstation only", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      registeredWorkstations: [
+        {
+          id: "ws-reporting",
+          displayName: "Reporting workstation",
+          status: "online",
+          memoryBytes: 16 * 1024 ** 3,
+        },
+        { id: "ws-quiet", displayName: "Quiet workstation", status: "online" },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+        usageSamples={{
+          "ws-reporting": [
+            { at: "2026-07-30T12:00:00.000Z", cpuFraction: 0.2, memoryBytes: 4 * 1024 ** 3 },
+            { at: "2026-07-30T12:02:00.000Z", cpuFraction: 0.62, memoryBytes: 8 * 1024 ** 3 },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Reporting workstation/ }));
+    const usage = within(screen.getByTestId("workstation-usage"));
+    expect(screen.getByTestId("workstation-usage")).toHaveTextContent("last 2 min");
+    const [cpu, memory] = usage.getAllByTestId("workstation-usage-series");
+    expect(cpu!.dataset.series).toBe("cpu");
+    expect(within(cpu!).getByTestId("usage-latest")).toHaveTextContent("62%");
+    expect(memory!.dataset.series).toBe("memory");
+    expect(within(memory!).getByTestId("usage-latest")).toHaveTextContent("8 GiB");
+
+    // A workstation with no reported samples gets no chart frame at all, so an
+    // empty chart can never be read as idle hardware.
+    fireEvent.click(screen.getByRole("button", { name: /Quiet workstation/ }));
+    expect(screen.queryByTestId("workstation-usage")).toBeNull();
+  });
+
   it("shows provider, agent build, and heartbeat facts in the details section", () => {
     const selection = projectNotebookWorkstationSelection({
       canSelectWorkstation: true,
