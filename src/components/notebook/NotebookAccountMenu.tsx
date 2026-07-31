@@ -10,9 +10,6 @@ import {
 import { NotebookActorAvatar } from "./NotebookIdentity";
 import type { NotebookActorIdentity } from "./capabilities";
 
-// The hover surface stays rounded-md (never a pill), but the focus ring hugs
-// the circular avatar instead of this box — so it is drawn on the Avatar via
-// `group-focus-visible:` rather than on the trigger.
 export const NOTEBOOK_ACCOUNT_MENU_TRIGGER_CLASS =
   "group inline-flex h-8 shrink-0 items-center justify-center rounded-md px-0.5 text-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none";
 
@@ -55,7 +52,7 @@ export function NotebookAccountMenu({
         <span aria-hidden="true">
           <NotebookActorAvatar
             actor={actor}
-            className="border-0 ring-ring ring-offset-1 ring-offset-background group-focus-visible:ring-2"
+            className="border-0 ring-ring group-focus-visible:ring-1"
             size="default"
             showStatus={showStatus}
             statusClassName={statusClassName}

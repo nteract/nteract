@@ -191,6 +191,7 @@ export {
   NOTEBOOK_ACCOUNT_MENU_TRIGGER_CLASS,
   type NotebookAccountMenuProps,
 } from "./NotebookAccountMenu";
+export { NotebookSettingsDrawer, type NotebookSettingsDrawerProps } from "./NotebookSettingsDrawer";
 export {
   NotebookToolbarIdentity,
   notebookToolbarActors,

@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import {
+  CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
   CLOUD_VIEWER_THEME_STORAGE_KEY,
   resolveCloudViewerTheme,
   storedCloudViewerTheme,
@@ -62,6 +63,33 @@ describe("cloud viewer theme helpers", () => {
     assert.equal(result.colorScheme, "dark");
     assert.deepEqual(result.classes, ["dark"]);
   });
+
+  it("uses a palette storage key distinct from the mode key", () => {
+    assert.equal(CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY, "nteract.cloud.viewer.color-theme");
+    assert.notEqual(CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY, CLOUD_VIEWER_THEME_STORAGE_KEY);
+  });
+
+  it("seeds a saved cream palette before the bundle CSS loads", () => {
+    const result = runBootstrapTheme({
+      storedTheme: "dark",
+      systemPrefersDark: false,
+      storedPalette: "cream",
+    });
+
+    assert.equal(result.colorTheme, "cream");
+    assert.equal(result.datasetTheme, "dark");
+  });
+
+  it("leaves the palette attribute off for classic and unknown values", () => {
+    for (const storedPalette of ["classic", "sepia", null]) {
+      const result = runBootstrapTheme({
+        storedTheme: "light",
+        systemPrefersDark: false,
+        storedPalette,
+      });
+      assert.equal(result.colorTheme, undefined, `palette ${String(storedPalette)}`);
+    }
+  });
 });
 
 function storageLike(values: Map<string, string>): Pick<Storage, "getItem"> {
@@ -75,11 +103,19 @@ function storageLike(values: Map<string, string>): Pick<Storage, "getItem"> {
 function runBootstrapTheme({
   storedTheme,
   systemPrefersDark,
+  storedPalette = null,
 }: {
   storedTheme: string | null;
   systemPrefersDark: boolean;
-}): { classes: string[]; datasetTheme: string | undefined; colorScheme: string | undefined } {
+  storedPalette?: string | null;
+}): {
+  classes: string[];
+  datasetTheme: string | undefined;
+  colorScheme: string | undefined;
+  colorTheme: string | undefined;
+} {
   const classes = new Set<string>();
+  const attributes = new Map<string, string>();
   const root = {
     classList: {
       toggle(name: string, enabled: boolean): void {
@@ -90,6 +126,12 @@ function runBootstrapTheme({
         }
       },
     },
+    setAttribute(name: string, value: string): void {
+      attributes.set(name, value);
+    },
+    removeAttribute(name: string): void {
+      attributes.delete(name);
+    },
     dataset: {} as { theme?: string },
     style: {} as { colorScheme?: string },
   };
@@ -99,6 +141,9 @@ function runBootstrapTheme({
     window: {
       localStorage: {
         getItem(key: string): string | null {
+          if (key === CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY) {
+            return storedPalette;
+          }
           assert.equal(key, CLOUD_VIEWER_THEME_STORAGE_KEY);
           return storedTheme;
         },
@@ -114,5 +159,6 @@ function runBootstrapTheme({
     classes: Array.from(classes).sort(),
     datasetTheme: root.dataset.theme,
     colorScheme: root.style.colorScheme,
+    colorTheme: attributes.get("data-color-theme"),
   };
 }
