@@ -36,16 +36,11 @@ const iconClassName: Record<NotebookNoticeTone, string> = {
 };
 
 /**
- * Per-tone default icon so shape — not just color — distinguishes severity
- * (accessible for color-blind users and quicker to scan). A caller can still
- * pass a more specific `icon` (e.g. CloudOff for reconnecting); when it does
- * not, the tone picks the icon. Pass `icon={null}` to opt out entirely.
- *
- * Callers pass shape only — this shell sizes notice icons to `size-4` and
- * action icons to `size-3`. Do not put size classes on passed icons.
- *
- * Components, not elements: module-scope JSX would evaluate at import time,
- * before consumers that install React globally (the node:test suites) run.
+ * Tone → default icon (shape, not only color). Callers may override `icon`, or
+ * pass `icon={null}` to hide it. Store Lucide components (not JSX elements):
+ * module-scope JSX would run at import time, before node:test suites install
+ * React globally. Shell sizes icons (`size-4` / action `size-3`); callers pass
+ * shape only.
  */
 const toneDefaultIcon: Record<NotebookNoticeTone, LucideIcon> = {
   info: Info,
@@ -68,40 +63,23 @@ export function NotebookNotice({
   contentClassName,
   "data-testid": dataTestId,
 }: NotebookNoticeProps) {
-  // `undefined` means "no explicit icon" → fall back to the tone default so
-  // shape signals severity. `null` is an explicit opt-out and renders nothing.
+  // undefined → tone default; null → no icon
   const ToneIcon = toneDefaultIcon[tone];
   const resolvedIcon = icon === undefined ? <ToneIcon /> : icon;
   return (
     <div
-      className={cn(
-        // Column layout: the header row (icon + text + actions + dismiss) sits
-        // on top, and `details` drops to its own full-width row below it — so a
-        // traceback/code block spans the whole notice instead of a sliver
-        // indented beside the icon.
-        "flex min-w-0 flex-col border-b px-3 py-2",
-        toneClassName[tone],
-        className,
-      )}
+      className={cn("flex min-w-0 flex-col border-b px-3 py-2", toneClassName[tone], className)}
       data-slot="notebook-notice"
       data-tone={tone}
       data-testid={dataTestId}
     >
-      {/* Header row. `min-h-9` keeps a bare one-line bar a stable height whether
-          or not it has an action button, but is dropped when a detail row
-          follows: the slack would otherwise land as dead space between the
-          title and the disclosure. items-start pins the icon/actions/dismiss to
-          the top when the body wraps to multiple lines. `@container` scopes the
-          header query below to this notice's own width, so narrow notices wrap
-          their actions regardless of viewport. */}
+      {/* Skip min-h-9 when details follow — otherwise empty gap above the disclosure */}
       <div
         className={cn("@container flex min-w-0 items-start gap-3", details ? undefined : "min-h-9")}
       >
         {resolvedIcon ? (
           <span
             className={cn(
-              // Own icon size here so callers pass shape only (`<CloudOff />`,
-              // `<Loader2 className="animate-spin" />`) without restating size-*.
               "mt-0.5 flex size-4 shrink-0 items-center justify-center [&_svg]:size-4",
               iconClassName[tone],
             )}
@@ -111,14 +89,9 @@ export function NotebookNotice({
           </span>
         ) : null}
         <div className={cn("min-w-0 flex-1", contentClassName)}>
-          {/* Message text and (optional) actions. On a wide notice the actions
-              pin to the right of the text (`@xs:` row); on a narrow notice they
-              wrap onto their own line below the text (default column) so they
-              never squeeze the message. */}
           {title || children || actions ? (
             <div className="flex flex-col gap-1.5 @xs:flex-row @xs:items-start @xs:justify-between @xs:gap-3">
               {title || children ? (
-                // Title on its own line, larger; body smaller beneath it.
                 <div className="min-w-0 space-y-0.5 @xs:flex-1">
                   {title ? <div className="text-sm font-semibold leading-snug">{title}</div> : null}
                   {children ? (
@@ -132,9 +105,6 @@ export function NotebookNotice({
             </div>
           ) : null}
         </div>
-        {/* Dismiss stays pinned to the top-right of the header row (which is
-            `items-start`), so it never moves when actions wrap below the text
-            on a narrow notice. */}
         {onDismiss ? (
           <button
             type="button"
@@ -149,9 +119,6 @@ export function NotebookNotice({
           </button>
         ) : null}
       </div>
-      {/* Full-width detail row: spans the whole notice (not indented beside the
-          icon, not sharing the flex row with the icon/dismiss) so code blocks
-          and tracebacks read edge-to-edge. */}
       {details ? <div className="mt-1 min-w-0">{details}</div> : null}
     </div>
   );
@@ -199,10 +166,6 @@ export function NotebookNoticeAction({
       type="button"
       onClick={onClick}
       className={cn(
-        // Reads as a real button: a borderless chip with a fill drawn from the
-        // tone's currentColor, not a bare text link. h-6 + whitespace-nowrap
-        // keep it from growing the notice row or wrapping. Action icons are
-        // sized here (`[&_svg]:size-3`); callers pass shape only.
         "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-current/10 px-2 text-xs font-medium transition-colors hover:bg-current/20 [&_svg]:size-3",
         className,
       )}
@@ -223,17 +186,7 @@ export interface NotebookNoticeDetailsProps {
   "data-testid"?: string;
 }
 
-/**
- * Collapsible, full-width detail block for tracebacks and raw error strings.
- *
- * Collapsed by default (a `<details>`/`<summary>` disclosure) so a wall of
- * stderr never dominates the notice — the user opens it on demand. When open,
- * the block spans the notice edge-to-edge and wraps long lines, so a traceback
- * is readable in full without horizontal scrolling.
- *
- * Pass this as the `details` slot of a `NotebookNotice`, which drops it onto
- * its own full-width row below the header.
- */
+/** Collapsible traceback / raw error for the `details` slot. */
 export function NotebookNoticeDetails({
   children,
   label = "Show details",
