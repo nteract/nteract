@@ -357,6 +357,72 @@ describe("NotebookWorkstationsPanel", () => {
     expect(defaults).toEqual(["ws-offline"]);
   });
 
+  it("carries the selected workstation's status as a badge beside its name", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      registeredWorkstations: [
+        { id: "ws-online", displayName: "Online workstation", status: "online" },
+        { id: "ws-offline", displayName: "Offline workstation", status: "offline" },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+      />,
+    );
+
+    const details = () => within(screen.getByRole("region", { name: "Workstation details" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Offline workstation/ }));
+    const offlineBadge = details().getByTestId("workstation-status-badge");
+    expect(offlineBadge).toHaveTextContent("Offline");
+    expect(offlineBadge.dataset.status).toBe("offline");
+    // The status reads once, from the badge — never also as a standalone line.
+    expect(details().getAllByText("Offline")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Online workstation/ }));
+    const onlineBadge = details().getByTestId("workstation-status-badge");
+    expect(onlineBadge).toHaveTextContent("Online");
+    expect(onlineBadge.dataset.status).toBe("online");
+  });
+
+  it("follows the projection's selection when it resolves after mount", () => {
+    const selectionWith = (selectedId: string | null) =>
+      projectNotebookWorkstationSelection({
+        canSelectWorkstation: true,
+        selectedWorkstationId: selectedId,
+        registeredWorkstations: [
+          { id: "ws-a", displayName: "Workstation A", status: "online" },
+          { id: "ws-b", displayName: "Workstation B", status: "online" },
+        ],
+      });
+
+    // Cloud resolves the selection asynchronously, so the panel mounts with none.
+    const view = render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selectionWith(null)}
+      />,
+    );
+    const details = () => within(screen.getByRole("region", { name: "Workstation details" }));
+    expandWorkstationDetails();
+    expect(details().getByText("Select a workstation above to see its details.")).toBeVisible();
+
+    view.rerender(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selectionWith("ws-b")}
+      />,
+    );
+    expect(details().getByRole("heading", { name: "Workstation B" })).toBeVisible();
+
+    // An explicit click still wins over the projection.
+    fireEvent.click(screen.getByRole("button", { name: /Workstation A/ }));
+    expect(details().getByRole("heading", { name: "Workstation A" })).toBeVisible();
+  });
+
   it("shows provider, agent build, and heartbeat facts in the details section", () => {
     const selection = projectNotebookWorkstationSelection({
       canSelectWorkstation: true,

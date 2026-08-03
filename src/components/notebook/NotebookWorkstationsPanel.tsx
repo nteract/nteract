@@ -1,14 +1,17 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Boxes,
   Check,
   ChevronDown,
   CircleAlert,
   CircleCheck,
+  Clock,
   Cloud,
   Copy,
   Cpu,
   FolderOpen,
   Gauge,
+  GitBranch,
   MemoryStick,
   Monitor,
   PlugZap,
@@ -16,7 +19,9 @@ import {
   Server,
   ServerCog,
   ServerOff,
+  Tag,
   X,
+  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -76,14 +81,26 @@ export function NotebookWorkstationsPanel({
   onCancelPairing,
   statusMessage = null,
 }: NotebookWorkstationsPanelProps) {
-  const [selectedWorkstationId, setSelectedWorkstationId] = useState<string | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  // A click wins, otherwise the projection decides. Derived rather than copied
+  // into state: the projection resolves async, so seeding once would pin this to
+  // whatever was known at mount and ignore every later selection.
+  const [clickedWorkstationId, setClickedWorkstationId] = useState<string | null>(null);
+  const [detailsOpenOverride, setDetailsOpenOverride] = useState<boolean | null>(null);
   const projection = projectNotebookWorkstationPanel(capabilities);
   const showRegistrationPrompt = selection?.state === "needs_registration";
   const registeredWorkstations = selection?.registeredWorkstations ?? [];
   const hasVisibleRegisteredWorkstations = registeredWorkstations.length > 0;
+  const findWorkstation = (id: string | null) =>
+    id === null
+      ? null
+      : (registeredWorkstations.find((workstation) => workstation.id === id) ?? null);
+  // Falls back to the projection when the clicked workstation is unregistered,
+  // so removing a machine reveals the current selection instead of blank details.
   const selectedWorkstation =
-    registeredWorkstations.find((workstation) => workstation.id === selectedWorkstationId) ?? null;
+    findWorkstation(clickedWorkstationId) ??
+    findWorkstation(selection?.selectedWorkstationId ?? null);
+  const selectedWorkstationId = selectedWorkstation?.id ?? null;
+  const detailsOpen = detailsOpenOverride ?? selectedWorkstationId !== null;
   // Per-workstation messages belong to the details section, never above the list.
   const visibleStatusMessage =
     statusMessage &&
@@ -119,8 +136,8 @@ export function NotebookWorkstationsPanel({
                 workstation={workstation}
                 onAttachWorkstation={onAttachWorkstation}
                 onSelect={() => {
-                  setSelectedWorkstationId(workstation.id);
-                  setDetailsOpen(true);
+                  setClickedWorkstationId(workstation.id);
+                  setDetailsOpenOverride(true);
                 }}
               />
             ))}
@@ -138,51 +155,52 @@ export function NotebookWorkstationsPanel({
         aria-label="Workstation details"
         className={hasVisibleRegisteredWorkstations ? "mt-auto" : undefined}
       >
-        <PanelSection title="Workstation details" open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <PanelSection
+          title="Workstation details"
+          open={detailsOpen}
+          onOpenChange={setDetailsOpenOverride}
+          bleed
+        >
           {selectedWorkstation ? (
-            <div className="space-y-2">
-              <div className="min-w-0">
-                <h4 className="truncate text-sm font-semibold text-foreground">
-                  {selectedWorkstation.displayName}
-                </h4>
+            <div>
+              <div className="min-w-0 border-b border-border/70 px-4 pb-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
+                    {selectedWorkstation.displayName}
+                  </h4>
+                  <WorkstationStatusBadge workstation={selectedWorkstation} />
+                </div>
                 <div className="truncate font-mono text-[10.5px] tracking-normal text-muted-foreground">
                   {selectedWorkstation.idLabel}
                 </div>
-                <p className="text-xs leading-5 text-muted-foreground">
-                  {selectedWorkstation.isAttached ? "Running" : selectedWorkstation.statusLabel}
-                </p>
               </div>
-              <div className="grid min-w-0 gap-1.5">
-                {registeredWorkstationDetailFacts(selectedWorkstation).map((fact) => (
-                  <RegisteredWorkstationFact key={fact.kind} fact={fact} />
-                ))}
-              </div>
+              <FactRowList
+                facts={registeredWorkstationDetailFacts(selectedWorkstation)}
+                icon={(fact) => registeredWorkstationFactIcon(fact.kind)}
+              />
               {onSetDefaultWorkstation && !selectedWorkstation.isDefault ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={busyWorkstationId === selectedWorkstation.id}
-                  onClick={() => onSetDefaultWorkstation(selectedWorkstation.id)}
-                >
-                  Set default
-                </Button>
+                <div className="px-4 py-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={busyWorkstationId === selectedWorkstation.id}
+                    onClick={() => onSetDefaultWorkstation(selectedWorkstation.id)}
+                  >
+                    Set default
+                  </Button>
+                </div>
               ) : null}
             </div>
           ) : hasVisibleRegisteredWorkstations ? (
-            <p className="text-xs leading-5 text-muted-foreground">
+            <p className="px-4 pb-2 text-xs leading-5 text-muted-foreground">
               Select a workstation above to see its details.
             </p>
           ) : (
-            <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5 text-xs">
-              {projection.facts.map((fact) => (
-                <WorkstationFact
-                  key={fact.kind}
-                  fact={fact}
-                  icon={workstationFactIcon(fact, projection.source)}
-                />
-              ))}
-            </div>
+            <FactRowList
+              facts={projection.facts}
+              icon={(fact) => workstationFactIcon(fact, projection.source)}
+            />
           )}
         </PanelSection>
       </section>
@@ -691,64 +709,104 @@ function registeredWorkstationStartTitle(
   return "This workstation has no available environment yet";
 }
 
-function WorkstationFact({
-  fact,
-  icon: Icon,
+type WorkstationFact = NotebookWorkstationFactProjection | WorkstationDetailFact;
+
+/**
+ * A workstation that has reported nothing yet yields no facts at all; an empty
+ * bordered list would render as a stray rule, so say why it is blank instead.
+ */
+function FactRowList<Fact extends WorkstationFact>({
+  facts,
+  icon,
 }: {
-  fact: NotebookWorkstationFactProjection;
-  icon: LucideIcon;
+  facts: readonly Fact[];
+  icon: (fact: Fact) => LucideIcon;
 }) {
+  if (facts.length === 0) {
+    return (
+      <p className="border-b border-border/70 px-4 py-2 text-xs leading-5 text-muted-foreground">
+        This workstation has not reported any details yet.
+      </p>
+    );
+  }
+
   return (
-    <span
+    <ul className="border-b border-border/70 text-xs">
+      {facts.map((fact) => (
+        <FactRow key={fact.kind} fact={fact} icon={icon(fact)} />
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * One label/value row. Both fact projections share this shape, so capability
+ * facts and registered-workstation facts render through the same row.
+ */
+function FactRow({ fact, icon: Icon }: { fact: WorkstationFact; icon: LucideIcon }) {
+  const subtle = "subtle" in fact && fact.subtle;
+  return (
+    <li
       className={cn(
-        "inline-grid min-w-0 grid-cols-[auto_auto_minmax(0,1fr)] gap-x-1.5",
-        fact.subtle && "opacity-75",
+        "flex min-w-0 items-baseline gap-1.5 border-t border-border/70 px-4 py-1 first:border-t-0",
+        subtle && "opacity-75",
       )}
       data-tone={fact.tone}
     >
       <Icon
-        className={cn("mt-px size-3.5 shrink-0", workstationFactIconClassName(fact.tone))}
+        className={cn("size-3.5 shrink-0 translate-y-px", workstationFactIconClassName(fact.tone))}
         aria-hidden="true"
       />
-      <span className="shrink-0 text-muted-foreground">{fact.label}</span>
-      <span
-        className={cn(
-          "min-w-0 font-medium text-foreground",
-          fact.kind === "accelerator" ? "break-words" : "truncate",
-        )}
-      >
-        {fact.value}
+      <span className="min-w-[4.5rem] shrink-0 leading-5 whitespace-nowrap text-muted-foreground">
+        {fact.label}
       </span>
-      {fact.detail ? (
-        <span className="col-span-2 col-start-2 min-w-0 text-[11px] leading-4 text-muted-foreground">
-          {fact.detail}
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn(
+            "block leading-5 font-medium",
+            // Accelerator values name every device, so they wrap instead of hiding
+            // devices behind an ellipsis.
+            fact.kind === "accelerator" ? "break-words" : "truncate",
+            fact.tone === "attention" ? "text-[var(--sev-warn)]" : "text-foreground",
+          )}
+        >
+          {fact.value}
         </span>
-      ) : null}
-    </span>
+        {fact.detail ? (
+          <span className="block text-[11px] leading-4 text-muted-foreground">{fact.detail}</span>
+        ) : null}
+      </span>
+    </li>
   );
 }
 
-// The projection carries provider, agent build, and heartbeat facts the panel
-// can show alongside the resource facts without another data source.
+/**
+ * Panel-only fact rows. The projection's fact kinds cover reported resources;
+ * provider, build, channel, and last-seen are read off the workstation itself,
+ * so they widen `kind` rather than pretending to be projection facts.
+ */
+type WorkstationDetailFact = Omit<NotebookRegisteredWorkstationFactProjection, "kind"> & {
+  kind:
+    | NotebookRegisteredWorkstationFactProjection["kind"]
+    | "provider"
+    | "build"
+    | "channel"
+    | "last_seen";
+};
+
 function registeredWorkstationDetailFacts(
   workstation: NotebookRegisteredWorkstationProjection,
-): readonly NotebookRegisteredWorkstationFactProjection[] {
-  const extras: NotebookRegisteredWorkstationFactProjection[] = [];
+): readonly WorkstationDetailFact[] {
+  const extras: WorkstationDetailFact[] = [];
   const push = (
-    kind: string,
+    kind: WorkstationDetailFact["kind"],
     label: string,
     value: string | null,
     detail: string | null = null,
-    tone: NotebookRegisteredWorkstationFactProjection["tone"] = "neutral",
+    tone: WorkstationDetailFact["tone"] = "neutral",
   ) => {
     if (!value) return;
-    extras.push({
-      detail,
-      kind: kind as NotebookRegisteredWorkstationFactProjection["kind"],
-      label,
-      tone,
-      value,
-    });
+    extras.push({ detail, kind, label, tone, value });
   };
 
   push("provider", "Provider", workstation.providerLabel);
@@ -780,26 +838,49 @@ function workstationLastSeenLabel(
   );
 }
 
-function RegisteredWorkstationFact({
-  fact,
+function registeredWorkstationFactIcon(kind: WorkstationDetailFact["kind"]): LucideIcon {
+  switch (kind) {
+    case "default_environment":
+      return Boxes;
+    case "cpu":
+      return Cpu;
+    case "memory":
+      return MemoryStick;
+    case "accelerator":
+      return Zap;
+    case "working_directory":
+      return FolderOpen;
+    case "provider":
+      return Server;
+    case "build":
+      return Tag;
+    case "channel":
+      return GitBranch;
+    case "last_seen":
+      return Clock;
+    default:
+      return Server;
+  }
+}
+
+function WorkstationStatusBadge({
+  workstation,
 }: {
-  fact: NotebookRegisteredWorkstationFactProjection;
+  workstation: NotebookRegisteredWorkstationProjection;
 }) {
+  const status = registeredWorkstationStatusTone(workstation);
   return (
-    <span className="grid min-w-0" data-tone={fact.tone}>
-      <span className="text-[11px] leading-4 text-muted-foreground">{fact.label}</span>
-      <span
-        className={cn(
-          "min-w-0 text-xs leading-5 font-medium",
-          fact.kind === "accelerator" ? "break-words" : "truncate",
-          fact.tone === "attention" ? "text-[var(--sev-warn)]" : "text-foreground",
-        )}
-      >
-        {fact.value}
-      </span>
-      {fact.detail ? (
-        <span className="min-w-0 text-[11px] leading-4 text-muted-foreground">{fact.detail}</span>
-      ) : null}
+    <span
+      // Tonal text on a neutral chip, so the badge reuses the row's status color
+      // instead of maintaining a second per-status palette.
+      className={cn(
+        "shrink-0 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[10.5px] leading-4 font-medium",
+        status.textClassName,
+      )}
+      data-testid="workstation-status-badge"
+      data-status={workstation.isAttached ? "running" : workstation.status}
+    >
+      {workstation.isAttached ? "Running" : workstation.statusLabel}
     </span>
   );
 }
