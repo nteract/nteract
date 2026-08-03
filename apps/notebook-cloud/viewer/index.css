@@ -196,34 +196,23 @@ body {
   overflow: hidden;
 }
 
+/* Region chrome only — do not restyle [data-slot="notebook-notice"] /
+   notebook-notice-stack; shared NotebookNotice owns tone, border-b, padding,
+   and stack gap. Size to content so multi-notice stacks and disclosures are
+   not clipped; `--cloud-notice-height` is a one-line floor so a bare bar
+   keeps a stable height. Region border-bottom keeps a separator under the
+   notices block when it meets the stage. */
 .cloud-notebook-notices {
   display: grid;
-  flex: 0 0 var(--cloud-notice-height);
-  height: var(--cloud-notice-height);
+  flex: 0 0 auto;
   min-height: var(--cloud-notice-height);
   z-index: 18;
   gap: 0;
   border-bottom: 1px solid var(--border);
   background: var(--background);
   padding: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   box-shadow: 0 4px 10px color-mix(in srgb, #000 4%, transparent);
   animation: cloud-notice-enter 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.cloud-notebook-notices [data-slot="notebook-notice-stack"] {
-  min-height: 100%;
-  gap: 0;
-}
-
-.cloud-notebook-notices [data-slot="notebook-notice"] {
-  min-height: var(--cloud-notice-height);
-  align-items: center;
-  border: 0;
-  border-radius: 0;
-  padding: 0.5rem clamp(0.5rem, 2vw, 1rem) 0.5rem clamp(0.75rem, 4vw, 2rem);
-  background: color-mix(in srgb, currentColor 6%, var(--background));
 }
 
 @keyframes cloud-notice-enter {

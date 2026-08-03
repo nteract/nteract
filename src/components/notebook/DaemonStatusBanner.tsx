@@ -1,5 +1,9 @@
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
-import { NotebookNotice, NotebookNoticeAction } from "@/components/notebook/NotebookNotice";
+import { Loader2, RefreshCw } from "lucide-react";
+import {
+  NotebookNotice,
+  NotebookNoticeAction,
+  NotebookNoticeDetails,
+} from "@/components/notebook/NotebookNotice";
 
 /**
  * Status of the daemon during startup or operation.
@@ -40,19 +44,20 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
     return (
       <NotebookNotice
         tone="warning"
-        icon={<AlertTriangle className="size-3" />}
         title="Runtime unavailable"
         onDismiss={onDismiss}
         actions={
           onRetry ? (
-            <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw className="size-3" />}>
+            <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw />}>
               Retry
             </NotebookNoticeAction>
           ) : null
         }
-        details={status.guidance ? <div>{status.guidance}</div> : null}
+        details={
+          <NotebookNoticeDetails label="Show error details">{status.error}</NotebookNoticeDetails>
+        }
       >
-        <span>{status.error}</span>
+        {status.guidance ?? "Reconnect to try again."}
       </NotebookNotice>
     );
   }
@@ -61,7 +66,7 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
   const message = getProgressMessage(status);
 
   return (
-    <NotebookNotice tone="info" icon={<Loader2 className="size-3 animate-spin" />} className="py-1">
+    <NotebookNotice tone="info" icon={<Loader2 className="animate-spin" />} className="py-1">
       {message}
     </NotebookNotice>
   );

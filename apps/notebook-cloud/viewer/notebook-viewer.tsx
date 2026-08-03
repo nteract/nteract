@@ -2081,11 +2081,7 @@ function cloudAccessRequestNotice(
 
   if (projection.kind === "error") {
     return (
-      <NotebookNotice
-        tone={projection.tone}
-        icon={<AlertCircle className="h-4 w-4" />}
-        title={projection.title}
-      >
+      <NotebookNotice tone={projection.tone} icon={<AlertCircle />} title={projection.title}>
         {projection.message}
       </NotebookNotice>
     );
@@ -2095,7 +2091,7 @@ function cloudAccessRequestNotice(
     return (
       <NotebookNotice
         tone={projection.tone}
-        icon={<Loader2 className="h-4 w-4 animate-spin" />}
+        icon={<Loader2 className="animate-spin" />}
         title={projection.title}
       >
         {projection.message}
@@ -2105,11 +2101,7 @@ function cloudAccessRequestNotice(
 
   if (projection.kind === "approved") {
     return (
-      <NotebookNotice
-        tone={projection.tone}
-        icon={<Check className="h-4 w-4" />}
-        title={projection.title}
-      >
+      <NotebookNotice tone={projection.tone} icon={<Check />} title={projection.title}>
         {projection.message}
       </NotebookNotice>
     );
@@ -2117,11 +2109,7 @@ function cloudAccessRequestNotice(
 
   if (projection.kind === "denied") {
     return (
-      <NotebookNotice
-        tone={projection.tone}
-        icon={<X className="h-4 w-4" />}
-        title={projection.title}
-      >
+      <NotebookNotice tone={projection.tone} icon={<X />} title={projection.title}>
         {projection.message}
       </NotebookNotice>
     );
@@ -2129,22 +2117,14 @@ function cloudAccessRequestNotice(
 
   if (projection.kind === "dismissed") {
     return (
-      <NotebookNotice
-        tone={projection.tone}
-        icon={<Info className="h-4 w-4" />}
-        title={projection.title}
-      >
+      <NotebookNotice tone={projection.tone} icon={<Info />} title={projection.title}>
         {projection.message}
       </NotebookNotice>
     );
   }
 
   return (
-    <NotebookNotice
-      tone={projection.tone}
-      icon={<AlertCircle className="h-4 w-4" />}
-      title={projection.title}
-    >
+    <NotebookNotice tone={projection.tone} icon={<AlertCircle />} title={projection.title}>
       {projection.message}
     </NotebookNotice>
   );

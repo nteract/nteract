@@ -4,6 +4,7 @@ import { TelemetryDisclosureCard } from "@/components/TelemetryDisclosureCard";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PrivacySection } from "../settings/sections/Privacy";
+import { NotebookNoticesGallery } from "./NotebookNoticesGallery";
 
 /**
  * Standalone component gallery.
@@ -28,6 +29,17 @@ export default function App() {
             app.
           </p>
         </header>
+
+        <section className="space-y-4">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold tracking-tight">Notebook notices</h2>
+            <p className="text-sm text-foreground/80">
+              Every banner/gate that can prevent — or explain the inability to — run cells, using
+              the real shipped components. Review surface for the notice-consolidation work.
+            </p>
+          </div>
+          <NotebookNoticesGallery />
+        </section>
 
         <Section
           title="TelemetryDisclosureCard"

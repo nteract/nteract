@@ -264,7 +264,7 @@ export function CloudNotebookNotices({
       {shouldShowAnonymousViewerAuthNotice ? (
         <NotebookNotice
           tone="info"
-          icon={<LogIn className="h-4 w-4" />}
+          icon={<LogIn />}
           title="Viewing anonymously."
           actions={
             onSignInAgain ? (
@@ -280,7 +280,7 @@ export function CloudNotebookNotices({
       {shouldShowSignInRequiredNotice ? (
         <NotebookNotice
           tone="warning"
-          icon={<LogIn className="h-4 w-4" />}
+          icon={<LogIn />}
           title="Sign in required."
           actions={
             onSignInAgain ? (
@@ -295,7 +295,7 @@ export function CloudNotebookNotices({
       {shouldShowAuthNotice ? (
         <NotebookNotice
           tone="error"
-          icon={<AlertCircle className="h-4 w-4" />}
+          icon={<AlertCircle />}
           title="Auth needs attention."
           actions={<AuthNoticeAction onResetAuth={onResetAuth} onSignInAgain={onSignInAgain} />}
         >
@@ -307,11 +307,7 @@ export function CloudNotebookNotices({
         <NotebookNotice
           tone={authRenewal.kind === "failed" ? "error" : "info"}
           icon={
-            authRenewal.kind === "failed" ? (
-              <AlertCircle className="h-4 w-4" />
-            ) : (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )
+            authRenewal.kind === "failed" ? <AlertCircle /> : <Loader2 className="animate-spin" />
           }
           title={authRenewal.kind === "failed" ? "Sign-in refresh failed." : "Refreshing sign-in."}
           actions={
@@ -325,17 +321,13 @@ export function CloudNotebookNotices({
       ) : null}
 
       {sustainedReconnecting ? (
-        <NotebookNotice tone="info" icon={<CloudOff className="h-4 w-4" />} title="Reconnecting.">
+        <NotebookNotice tone="info" icon={<CloudOff />} title="Reconnecting.">
           Your edits are kept locally and will sync when the connection returns.
         </NotebookNotice>
       ) : null}
 
       {syncHealStalled && !sustainedReconnecting ? (
-        <NotebookNotice
-          tone="info"
-          icon={<CloudOff className="h-4 w-4" />}
-          title="Sync is stalled."
-        >
+        <NotebookNotice tone="info" icon={<CloudOff />} title="Sync is stalled.">
           Your edits are kept locally. This clears as soon as the room catches up.
         </NotebookNotice>
       ) : null}
@@ -343,7 +335,7 @@ export function CloudNotebookNotices({
       {offlineMergeNotice ? (
         <NotebookNotice
           tone="info"
-          icon={<Cloud className="h-4 w-4" />}
+          icon={<Cloud />}
           title={offlineMergeNoticeTitle(offlineMergeNotice)}
         >
           {offlineMergeRemovedCellsLine(offlineMergeNotice.removedEditedCellCount)}
@@ -353,7 +345,7 @@ export function CloudNotebookNotices({
       {connectionNotice ? (
         <NotebookNotice
           tone={connectionNotice.tone}
-          icon={<CloudOff className="h-4 w-4" />}
+          icon={<CloudOff />}
           title={connectionNotice.title}
           actions={
             <ConnectionNoticeAction
@@ -370,14 +362,11 @@ export function CloudNotebookNotices({
       {rendererAssetError ? (
         <NotebookNotice
           tone="warning"
-          icon={<ImageOff className="h-4 w-4" />}
+          icon={<ImageOff />}
           title="Output renderer unavailable."
           actions={
             onRetryRendererAssets ? (
-              <NotebookNoticeAction
-                onClick={onRetryRendererAssets}
-                icon={<RotateCcw className="h-3 w-3" />}
-              >
+              <NotebookNoticeAction onClick={onRetryRendererAssets} icon={<RotateCcw />}>
                 Retry
               </NotebookNoticeAction>
             ) : null
@@ -393,13 +382,7 @@ export function CloudNotebookNotices({
       {shouldShowStatusNotice ? (
         <NotebookNotice
           tone={status.kind === "error" ? "error" : "info"}
-          icon={
-            status.kind === "error" ? (
-              <AlertCircle className="h-4 w-4" />
-            ) : (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )
-          }
+          icon={status.kind === "error" ? <AlertCircle /> : <Loader2 className="animate-spin" />}
           title={status.kind === "error" ? "Unable to load notebook." : "Loading notebook."}
         >
           {status.message}
@@ -437,7 +420,7 @@ function AuthNoticeAction({
   }
 
   return (
-    <NotebookNoticeAction onClick={onResetAuth} icon={<RotateCcw className="h-3 w-3" />}>
+    <NotebookNoticeAction onClick={onResetAuth} icon={<RotateCcw />}>
       Clear stale sign-in
     </NotebookNoticeAction>
   );
@@ -455,7 +438,7 @@ function SignInNoticeAction({
       onClick={() => {
         void onSignInAgain();
       }}
-      icon={<LogIn className="h-3 w-3" />}
+      icon={<LogIn />}
     >
       {children}
     </NotebookNoticeAction>
@@ -476,7 +459,7 @@ function ConnectionNoticeAction({
     // a signed-in session without fixing anything. retryLiveConnection is
     // the documented re-entry and genuinely re-imports.
     return (
-      <NotebookNoticeAction onClick={onRetryConnection} icon={<RotateCcw className="h-3 w-3" />}>
+      <NotebookNoticeAction onClick={onRetryConnection} icon={<RotateCcw />}>
         Retry
       </NotebookNoticeAction>
     );
@@ -492,7 +475,7 @@ function ConnectionNoticeAction({
 
   if (onRetryConnection) {
     return (
-      <NotebookNoticeAction onClick={onRetryConnection} icon={<RotateCcw className="h-3 w-3" />}>
+      <NotebookNoticeAction onClick={onRetryConnection} icon={<RotateCcw />}>
         Retry
       </NotebookNoticeAction>
     );

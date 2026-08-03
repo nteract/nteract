@@ -115,8 +115,10 @@ export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./Note
 export {
   NotebookNotice,
   NotebookNoticeAction,
+  NotebookNoticeDetails,
   NotebookNoticeStack,
   type NotebookNoticeActionProps,
+  type NotebookNoticeDetailsProps,
   type NotebookNoticeProps,
   type NotebookNoticeStackProps,
   type NotebookNoticeTone,
