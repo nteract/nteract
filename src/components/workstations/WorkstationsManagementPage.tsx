@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowUpRight, CircleAlert, CircleCheck, Loader2, Plus } from "lucide-react";
+import { ArrowUpRight, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,8 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import {
-  PairingCommandList,
-  PairingCountdown,
+  WorkstationPairingDialog,
   type NotebookWorkstationPairingView,
 } from "@/components/notebook/NotebookWorkstationsPanel";
 import { LanguageMark } from "@/components/runtime/LanguageMark";
@@ -147,6 +146,7 @@ export function WorkstationsManagementPage({
         pairing={pairing}
         onCancel={onCancelPairing}
         onRestartPairing={onStartPairing}
+        contentTestId="workstations-page-pairing-dialog"
       />
 
       <Dialog
@@ -505,102 +505,5 @@ function WorkstationDetail({
         ) : null}
       </div>
     </div>
-  );
-}
-
-function WorkstationPairingDialog({
-  pairing,
-  onCancel,
-  onRestartPairing,
-}: {
-  pairing: NotebookWorkstationPairingView | null;
-  onCancel?: () => void;
-  onRestartPairing?: () => void;
-}) {
-  const commands =
-    pairing && pairing.commands && pairing.commands.length > 0
-      ? pairing.commands
-      : pairing
-        ? [{ id: "connect", label: "Pair this workstation", command: pairing.connectCommand }]
-        : [];
-
-  return (
-    <Dialog
-      open={pairing !== null}
-      onOpenChange={(open) => {
-        if (!open) onCancel?.();
-      }}
-    >
-      {pairing ? (
-        <DialogContent className="sm:max-w-[480px]" data-testid="workstations-page-pairing-dialog">
-          <DialogHeader>
-            <DialogTitle className="text-[17px]">Add a workstation</DialogTitle>
-            <DialogDescription className="text-[13px] leading-[1.55]">
-              Install the nteract agent on the machine you want to pair, then enter this code. We
-              never provision hardware &mdash; you bring your own compute.
-            </DialogDescription>
-          </DialogHeader>
-
-          {pairing.status === "registered" ? (
-            <div className="flex min-w-0 items-center gap-2 text-sm text-foreground">
-              <CircleCheck className="size-4 shrink-0 text-emerald-500" aria-hidden="true" />
-              <span aria-live="polite">
-                {pairing.workstationName ?? "Workstation"} is connected.
-              </span>
-            </div>
-          ) : pairing.status === "expired" ? (
-            <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
-              <CircleAlert className="size-4 shrink-0 text-amber-500" aria-hidden="true" />
-              <span aria-live="polite">
-                {pairing.error ?? "The pairing code expired before a machine connected."}
-              </span>
-            </div>
-          ) : (
-            <>
-              {pairing.code ? (
-                <div className="flex flex-col items-center gap-2.5 rounded-xl border border-border bg-muted px-5 py-5">
-                  <div className="text-[11px] uppercase tracking-[0.09em] text-muted-foreground">
-                    Pairing code
-                  </div>
-                  <div className="font-mono text-3xl font-bold tracking-[0.1em]">
-                    {pairing.code}
-                  </div>
-                </div>
-              ) : null}
-              <PairingCommandList commands={commands} />
-              <p className="text-xs leading-5 text-muted-foreground" aria-live="polite">
-                {pairing.status === "redeemed" ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                    Machine connected; registering&hellip;
-                  </span>
-                ) : (
-                  <span>
-                    Waiting for this machine to connect.
-                    <PairingCountdown expiresAt={pairing.expiresAt} />
-                  </span>
-                )}
-              </p>
-            </>
-          )}
-
-          <DialogFooter>
-            {pairing.status === "expired" && onRestartPairing ? (
-              <Button type="button" variant="outline" size="sm" onClick={onRestartPairing}>
-                Generate a new code
-              </Button>
-            ) : null}
-            <Button
-              type="button"
-              variant={pairing.status === "registered" ? "default" : "outline"}
-              size="sm"
-              onClick={onCancel}
-            >
-              {pairing.status === "registered" ? "Done" : "Cancel"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      ) : null}
-    </Dialog>
   );
 }
