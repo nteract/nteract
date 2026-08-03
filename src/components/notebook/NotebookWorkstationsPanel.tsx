@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  Activity,
   Boxes,
   Check,
   ChevronDown,
@@ -29,16 +28,13 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   projectNotebookWorkstationPanel,
-  projectNotebookWorkstationUsage,
   type NotebookShellCapabilities,
   type NotebookShellAccessSource,
   type NotebookRegisteredWorkstationFactProjection,
   type NotebookRegisteredWorkstationProjection,
   type NotebookWorkstationFactProjection,
   type NotebookWorkstationSelectionProjection,
-  type NotebookWorkstationUsageSample,
 } from "./capabilities";
-import { NotebookWorkstationUsageChart } from "./NotebookWorkstationUsageChart";
 import { cn } from "@/lib/utils";
 
 export interface NotebookWorkstationPairingView {
@@ -71,12 +67,6 @@ export interface NotebookWorkstationsPanelProps {
   onStartPairing?: () => void;
   onCancelPairing?: () => void;
   statusMessage?: string | null;
-  /**
-   * Reported usage samples keyed by workstation id. Hosts that collect this
-   * telemetry pass it in; the panel draws no chart without it and never
-   * synthesizes a series.
-   */
-  usageSamples?: Readonly<Record<string, readonly NotebookWorkstationUsageSample[]>> | null;
 }
 
 export function NotebookWorkstationsPanel({
@@ -90,21 +80,27 @@ export function NotebookWorkstationsPanel({
   onStartPairing,
   onCancelPairing,
   statusMessage = null,
-  usageSamples = null,
 }: NotebookWorkstationsPanelProps) {
-  // The projection owns which workstation is selected; local state only tracks
-  // clicks after mount, so a host that already knows costs no extra click.
-  const projectedSelectedId = selection?.selectedWorkstationId ?? null;
-  const [selectedWorkstationId, setSelectedWorkstationId] = useState<string | null>(
-    projectedSelectedId,
-  );
-  const [detailsOpen, setDetailsOpen] = useState(projectedSelectedId !== null);
+  // A click wins, otherwise the projection decides. Derived rather than copied
+  // into state: the projection resolves async, so seeding once would pin this to
+  // whatever was known at mount and ignore every later selection.
+  const [clickedWorkstationId, setClickedWorkstationId] = useState<string | null>(null);
+  const [detailsOpenOverride, setDetailsOpenOverride] = useState<boolean | null>(null);
   const projection = projectNotebookWorkstationPanel(capabilities);
   const showRegistrationPrompt = selection?.state === "needs_registration";
   const registeredWorkstations = selection?.registeredWorkstations ?? [];
   const hasVisibleRegisteredWorkstations = registeredWorkstations.length > 0;
+  const findWorkstation = (id: string | null) =>
+    id === null
+      ? null
+      : (registeredWorkstations.find((workstation) => workstation.id === id) ?? null);
+  // Falls back to the projection when the clicked workstation is unregistered,
+  // so removing a machine reveals the current selection instead of blank details.
   const selectedWorkstation =
-    registeredWorkstations.find((workstation) => workstation.id === selectedWorkstationId) ?? null;
+    findWorkstation(clickedWorkstationId) ??
+    findWorkstation(selection?.selectedWorkstationId ?? null);
+  const selectedWorkstationId = selectedWorkstation?.id ?? null;
+  const detailsOpen = detailsOpenOverride ?? selectedWorkstationId !== null;
   // Per-workstation messages belong to the details section, never above the list.
   const visibleStatusMessage =
     statusMessage &&
@@ -140,8 +136,8 @@ export function NotebookWorkstationsPanel({
                 workstation={workstation}
                 onAttachWorkstation={onAttachWorkstation}
                 onSelect={() => {
-                  setSelectedWorkstationId(workstation.id);
-                  setDetailsOpen(true);
+                  setClickedWorkstationId(workstation.id);
+                  setDetailsOpenOverride(true);
                 }}
               />
             ))}
@@ -162,7 +158,7 @@ export function NotebookWorkstationsPanel({
         <PanelSection
           title="Workstation details"
           open={detailsOpen}
-          onOpenChange={setDetailsOpen}
+          onOpenChange={setDetailsOpenOverride}
           bleed
         >
           {selectedWorkstation ? (
@@ -178,14 +174,9 @@ export function NotebookWorkstationsPanel({
                   {selectedWorkstation.idLabel}
                 </div>
               </div>
-              <FactRowList>
-                {registeredWorkstationDetailFacts(selectedWorkstation).map((fact) => (
-                  <RegisteredWorkstationFact key={fact.kind} fact={fact} />
-                ))}
-              </FactRowList>
-              <WorkstationUsageSection
-                samples={usageSamples?.[selectedWorkstation.id] ?? null}
-                workstation={selectedWorkstation}
+              <FactRowList
+                facts={registeredWorkstationDetailFacts(selectedWorkstation)}
+                icon={(fact) => registeredWorkstationFactIcon(fact.kind)}
               />
               {onSetDefaultWorkstation && !selectedWorkstation.isDefault ? (
                 <div className="px-4 py-2">
@@ -206,15 +197,10 @@ export function NotebookWorkstationsPanel({
               Select a workstation above to see its details.
             </p>
           ) : (
-            <FactRowList>
-              {projection.facts.map((fact) => (
-                <WorkstationFact
-                  key={fact.kind}
-                  fact={fact}
-                  icon={workstationFactIcon(fact, projection.source)}
-                />
-              ))}
-            </FactRowList>
+            <FactRowList
+              facts={projection.facts}
+              icon={(fact) => workstationFactIcon(fact, projection.source)}
+            />
           )}
         </PanelSection>
       </section>
@@ -723,103 +709,104 @@ function registeredWorkstationStartTitle(
   return "This workstation has no available environment yet";
 }
 
-function FactRowList({ children }: { children: ReactNode }) {
-  return <ul className="border-b border-border/70 text-xs">{children}</ul>;
+type WorkstationFact = NotebookWorkstationFactProjection | WorkstationDetailFact;
+
+/**
+ * A workstation that has reported nothing yet yields no facts at all; an empty
+ * bordered list would render as a stray rule, so say why it is blank instead.
+ */
+function FactRowList<Fact extends WorkstationFact>({
+  facts,
+  icon,
+}: {
+  facts: readonly Fact[];
+  icon: (fact: Fact) => LucideIcon;
+}) {
+  if (facts.length === 0) {
+    return (
+      <p className="border-b border-border/70 px-4 py-2 text-xs leading-5 text-muted-foreground">
+        This workstation has not reported any details yet.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="border-b border-border/70 text-xs">
+      {facts.map((fact) => (
+        <FactRow key={fact.kind} fact={fact} icon={icon(fact)} />
+      ))}
+    </ul>
+  );
 }
 
-function FactRow({
-  detail,
-  icon: Icon,
-  iconClassName,
-  label,
-  subtle = false,
-  tone,
-  value,
-  valueClassName,
-  wrapValue = false,
-}: {
-  detail: string | null;
-  icon: LucideIcon;
-  iconClassName: string;
-  label: string;
-  subtle?: boolean;
-  tone: NotebookWorkstationFactProjection["tone"];
-  value: string;
-  valueClassName?: string;
-  wrapValue?: boolean;
-}) {
+/**
+ * One label/value row. Both fact projections share this shape, so capability
+ * facts and registered-workstation facts render through the same row.
+ */
+function FactRow({ fact, icon: Icon }: { fact: WorkstationFact; icon: LucideIcon }) {
+  const subtle = "subtle" in fact && fact.subtle;
   return (
     <li
       className={cn(
         "flex min-w-0 items-baseline gap-1.5 border-t border-border/70 px-4 py-1 first:border-t-0",
         subtle && "opacity-75",
       )}
-      data-tone={tone}
+      data-tone={fact.tone}
     >
-      <Icon className={cn("size-3.5 shrink-0 translate-y-px", iconClassName)} aria-hidden="true" />
+      <Icon
+        className={cn("size-3.5 shrink-0 translate-y-px", workstationFactIconClassName(fact.tone))}
+        aria-hidden="true"
+      />
       <span className="min-w-[4.5rem] shrink-0 leading-5 whitespace-nowrap text-muted-foreground">
-        {label}
+        {fact.label}
       </span>
       <span className="min-w-0 flex-1">
         <span
           className={cn(
-            "block leading-5 font-medium text-foreground",
-            wrapValue ? "break-words" : "truncate",
-            valueClassName,
+            "block leading-5 font-medium",
+            // Accelerator values name every device, so they wrap instead of hiding
+            // devices behind an ellipsis.
+            fact.kind === "accelerator" ? "break-words" : "truncate",
+            fact.tone === "attention" ? "text-[var(--sev-warn)]" : "text-foreground",
           )}
         >
-          {value}
+          {fact.value}
         </span>
-        {detail ? (
-          <span className="block text-[11px] leading-4 text-muted-foreground">{detail}</span>
+        {fact.detail ? (
+          <span className="block text-[11px] leading-4 text-muted-foreground">{fact.detail}</span>
         ) : null}
       </span>
     </li>
   );
 }
 
-function WorkstationFact({
-  fact,
-  icon,
-}: {
-  fact: NotebookWorkstationFactProjection;
-  icon: LucideIcon;
-}) {
-  return (
-    <FactRow
-      detail={fact.detail ?? null}
-      icon={icon}
-      iconClassName={workstationFactIconClassName(fact.tone)}
-      label={fact.label}
-      subtle={fact.subtle}
-      tone={fact.tone}
-      value={fact.value}
-      wrapValue={fact.kind === "accelerator"}
-    />
-  );
-}
+/**
+ * Panel-only fact rows. The projection's fact kinds cover reported resources;
+ * provider, build, channel, and last-seen are read off the workstation itself,
+ * so they widen `kind` rather than pretending to be projection facts.
+ */
+type WorkstationDetailFact = Omit<NotebookRegisteredWorkstationFactProjection, "kind"> & {
+  kind:
+    | NotebookRegisteredWorkstationFactProjection["kind"]
+    | "provider"
+    | "build"
+    | "channel"
+    | "last_seen";
+};
 
-// The projection carries provider, agent build, and heartbeat facts the panel
-// can show alongside the resource facts without another data source.
 function registeredWorkstationDetailFacts(
   workstation: NotebookRegisteredWorkstationProjection,
-): readonly NotebookRegisteredWorkstationFactProjection[] {
-  const extras: NotebookRegisteredWorkstationFactProjection[] = [];
+): readonly WorkstationDetailFact[] {
+  const extras: WorkstationDetailFact[] = [];
   const push = (
-    kind: string,
+    kind: WorkstationDetailFact["kind"],
     label: string,
     value: string | null,
     detail: string | null = null,
-    tone: NotebookRegisteredWorkstationFactProjection["tone"] = "neutral",
+    tone: WorkstationDetailFact["tone"] = "neutral",
   ) => {
     if (!value) return;
-    extras.push({
-      detail,
-      kind: kind as NotebookRegisteredWorkstationFactProjection["kind"],
-      label,
-      tone,
-      value,
-    });
+    extras.push({ detail, kind, label, tone, value });
   };
 
   push("provider", "Provider", workstation.providerLabel);
@@ -851,64 +838,7 @@ function workstationLastSeenLabel(
   );
 }
 
-function RegisteredWorkstationFact({
-  fact,
-}: {
-  fact: NotebookRegisteredWorkstationFactProjection;
-}) {
-  return (
-    <FactRow
-      detail={fact.detail}
-      icon={registeredWorkstationFactIcon(fact.kind)}
-      iconClassName={workstationFactIconClassName(fact.tone)}
-      label={fact.label}
-      tone={fact.tone}
-      value={fact.value}
-      valueClassName={fact.tone === "attention" ? "text-[var(--sev-warn)]" : undefined}
-      wrapValue={fact.kind === "accelerator"}
-    />
-  );
-}
-
-/**
- * Usage charts for the selected workstation. Absent samples render nothing at
- * all: an empty chart frame would read as "idle", which is a claim the panel
- * cannot make about a host that never reported.
- */
-function WorkstationUsageSection({
-  samples,
-  workstation,
-}: {
-  samples: readonly NotebookWorkstationUsageSample[] | null;
-  workstation: NotebookRegisteredWorkstationProjection;
-}) {
-  const usage = projectNotebookWorkstationUsage({
-    memoryBytes: workstation.memoryBytes,
-    samples,
-  });
-  if (!usage) return null;
-
-  return (
-    <section
-      aria-label="Workstation usage"
-      className="space-y-2 border-b border-border/70 px-4 py-2"
-      data-testid="workstation-usage"
-    >
-      <div className="flex min-w-0 items-baseline justify-between gap-2 text-[11px] leading-4">
-        <span className="flex min-w-0 items-center gap-1.5 font-medium text-foreground">
-          <Activity className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-          Usage
-        </span>
-        <span className="shrink-0 text-muted-foreground">{usage.windowLabel}</span>
-      </div>
-      {usage.series.map((series) => (
-        <NotebookWorkstationUsageChart key={series.id} series={series} />
-      ))}
-    </section>
-  );
-}
-
-function registeredWorkstationFactIcon(kind: string): LucideIcon {
+function registeredWorkstationFactIcon(kind: WorkstationDetailFact["kind"]): LucideIcon {
   switch (kind) {
     case "default_environment":
       return Boxes;
@@ -941,9 +871,11 @@ function WorkstationStatusBadge({
   const status = registeredWorkstationStatusTone(workstation);
   return (
     <span
+      // Tonal text on a neutral chip, so the badge reuses the row's status color
+      // instead of maintaining a second per-status palette.
       className={cn(
-        "shrink-0 rounded-md border px-1.5 py-0.5 text-[10.5px] leading-4 font-medium",
-        status.badgeClassName,
+        "shrink-0 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[10.5px] leading-4 font-medium",
+        status.textClassName,
       )}
       data-testid="workstation-status-badge"
       data-status={workstation.isAttached ? "running" : workstation.status}
@@ -954,14 +886,12 @@ function WorkstationStatusBadge({
 }
 
 function registeredWorkstationStatusTone(workstation: NotebookRegisteredWorkstationProjection): {
-  badgeClassName: string;
   icon: LucideIcon;
   iconClassName: string;
   textClassName: string;
 } {
   if (workstation.isAttached) {
     return {
-      badgeClassName: "border-primary/30 bg-primary/10 text-primary",
       icon: CircleCheck,
       iconClassName: "text-primary",
       textClassName: "text-primary",
@@ -969,8 +899,6 @@ function registeredWorkstationStatusTone(workstation: NotebookRegisteredWorkstat
   }
   if (workstation.status === "online") {
     return {
-      badgeClassName:
-        "border-emerald-700/30 bg-emerald-700/10 text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-300/10 dark:text-emerald-300",
       icon: Server,
       iconClassName: "text-emerald-700 dark:text-emerald-300",
       textClassName: "text-emerald-700 dark:text-emerald-300",
@@ -978,8 +906,6 @@ function registeredWorkstationStatusTone(workstation: NotebookRegisteredWorkstat
   }
   if (workstation.status === "connecting") {
     return {
-      badgeClassName:
-        "border-sky-700/30 bg-sky-700/10 text-sky-700 dark:border-sky-300/30 dark:bg-sky-300/10 dark:text-sky-300",
       icon: PlugZap,
       iconClassName: "text-sky-700 dark:text-sky-300",
       textClassName: "text-sky-700 dark:text-sky-300",
@@ -987,15 +913,12 @@ function registeredWorkstationStatusTone(workstation: NotebookRegisteredWorkstat
   }
   if (workstation.status === "attention") {
     return {
-      badgeClassName:
-        "border-amber-700/30 bg-amber-700/10 text-amber-700 dark:border-amber-300/30 dark:bg-amber-300/10 dark:text-amber-300",
       icon: CircleAlert,
       iconClassName: "text-amber-700 dark:text-amber-300",
       textClassName: "text-amber-700 dark:text-amber-300",
     };
   }
   return {
-    badgeClassName: "border-border bg-muted/40 text-muted-foreground",
     icon: ServerOff,
     iconClassName: "text-muted-foreground",
     textClassName: "text-muted-foreground",

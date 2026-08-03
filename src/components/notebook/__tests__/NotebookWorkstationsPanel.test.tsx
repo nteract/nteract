@@ -388,17 +388,20 @@ describe("NotebookWorkstationsPanel", () => {
     expect(onlineBadge.dataset.status).toBe("online");
   });
 
-  it("charts reported usage samples for the selected workstation only", () => {
+  it("badges connecting, attention, and attached workstations in the details header", () => {
     const selection = projectNotebookWorkstationSelection({
       canSelectWorkstation: true,
+      activeAttachment: {
+        workstation_id: "ws-attached",
+        display_name: "Attached workstation",
+        provider: "runtime_peer",
+        status: "ready",
+        working_directory: "/home/ubuntu/project",
+      },
       registeredWorkstations: [
-        {
-          id: "ws-reporting",
-          displayName: "Reporting workstation",
-          status: "online",
-          memoryBytes: 16 * 1024 ** 3,
-        },
-        { id: "ws-quiet", displayName: "Quiet workstation", status: "online" },
+        { id: "ws-connecting", displayName: "Connecting workstation", status: "connecting" },
+        { id: "ws-attention", displayName: "Attention workstation", status: "attention" },
+        { id: "ws-attached", displayName: "Attached workstation", status: "online" },
       ],
     });
 
@@ -406,28 +409,81 @@ describe("NotebookWorkstationsPanel", () => {
       <NotebookWorkstationsPanel
         capabilities={readOnlyNotebookShellCapabilities}
         selection={selection}
-        usageSamples={{
-          "ws-reporting": [
-            { at: "2026-07-30T12:00:00.000Z", cpuFraction: 0.2, memoryBytes: 4 * 1024 ** 3 },
-            { at: "2026-07-30T12:02:00.000Z", cpuFraction: 0.62, memoryBytes: 8 * 1024 ** 3 },
-          ],
-        }}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Reporting workstation/ }));
-    const usage = within(screen.getByTestId("workstation-usage"));
-    expect(screen.getByTestId("workstation-usage")).toHaveTextContent("last 2 min");
-    const [cpu, memory] = usage.getAllByTestId("workstation-usage-series");
-    expect(cpu!.dataset.series).toBe("cpu");
-    expect(within(cpu!).getByTestId("usage-latest")).toHaveTextContent("62%");
-    expect(memory!.dataset.series).toBe("memory");
-    expect(within(memory!).getByTestId("usage-latest")).toHaveTextContent("8 GiB");
+    const badge = () =>
+      within(screen.getByRole("region", { name: "Workstation details" })).getByTestId(
+        "workstation-status-badge",
+      );
 
-    // A workstation with no reported samples gets no chart frame at all, so an
-    // empty chart can never be read as idle hardware.
-    fireEvent.click(screen.getByRole("button", { name: /Quiet workstation/ }));
-    expect(screen.queryByTestId("workstation-usage")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Connecting workstation/ }));
+    expect(badge().dataset.status).toBe("connecting");
+    expect(badge()).toHaveTextContent("Connecting");
+
+    fireEvent.click(screen.getByRole("button", { name: /Attention workstation/ }));
+    expect(badge().dataset.status).toBe("attention");
+    expect(badge()).toHaveTextContent("Needs attention");
+
+    fireEvent.click(screen.getByRole("button", { name: /Attached workstation/ }));
+    expect(badge().dataset.status).toBe("running");
+    expect(badge()).toHaveTextContent("Running");
+  });
+
+  it("says so when a workstation has reported no facts, instead of an empty list", () => {
+    const selection = projectNotebookWorkstationSelection({
+      canSelectWorkstation: true,
+      registeredWorkstations: [
+        { id: "ws-bare", displayName: "Bare workstation", status: "offline" },
+      ],
+    });
+
+    render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selection}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Bare workstation/ }));
+    const details = within(screen.getByRole("region", { name: "Workstation details" }));
+    expect(details.getByText("This workstation has not reported any details yet.")).toBeVisible();
+    expect(details.queryByRole("list")).toBeNull();
+  });
+
+  it("follows the projection's selection when it resolves after mount", () => {
+    const selectionWith = (selectedId: string | null) =>
+      projectNotebookWorkstationSelection({
+        canSelectWorkstation: true,
+        selectedWorkstationId: selectedId,
+        registeredWorkstations: [
+          { id: "ws-a", displayName: "Workstation A", status: "online" },
+          { id: "ws-b", displayName: "Workstation B", status: "online" },
+        ],
+      });
+
+    // Cloud resolves the selection asynchronously, so the panel mounts with none.
+    const view = render(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selectionWith(null)}
+      />,
+    );
+    const details = () => within(screen.getByRole("region", { name: "Workstation details" }));
+    expandWorkstationDetails();
+    expect(details().getByText("Select a workstation above to see its details.")).toBeVisible();
+
+    view.rerender(
+      <NotebookWorkstationsPanel
+        capabilities={readOnlyNotebookShellCapabilities}
+        selection={selectionWith("ws-b")}
+      />,
+    );
+    expect(details().getByRole("heading", { name: "Workstation B" })).toBeVisible();
+
+    // An explicit click still wins over the projection.
+    fireEvent.click(screen.getByRole("button", { name: /Workstation A/ }));
+    expect(details().getByRole("heading", { name: "Workstation A" })).toBeVisible();
   });
 
   it("shows provider, agent build, and heartbeat facts in the details section", () => {

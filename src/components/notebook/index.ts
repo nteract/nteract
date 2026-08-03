@@ -34,7 +34,6 @@ export {
   projectNotebookWorkstationLaunchReadiness,
   projectNotebookWorkstationSelection,
   projectNotebookWorkstationSurface,
-  projectNotebookWorkstationUsage,
   readOnlyNotebookShellCapabilities,
   resolveNotebookShellRuntimeTarget,
   stabilizeNotebookShellCapabilities,
@@ -87,19 +86,12 @@ export {
   type NotebookWorkstationSurfaceMutationProjection,
   type NotebookWorkstationSurfaceProjection,
   type NotebookWorkstationToolbarActionProjection,
-  type NotebookWorkstationUsagePointProjection,
-  type NotebookWorkstationUsageProjection,
-  type NotebookWorkstationUsageSample,
-  type NotebookWorkstationUsageSeriesId,
-  type NotebookWorkstationUsageSeriesProjection,
-  type NotebookWorkstationUsageTone,
   type ProjectNotebookCommandRuntimeActionsOptions,
   type ProjectNotebookCommandRuntimeStatusOptions,
   type ProjectNotebookLaunchEnvironmentOptions,
   type ProjectNotebookWorkstationLaunchReadinessOptions,
   type ProjectNotebookWorkstationSelectionOptions,
   type ProjectNotebookWorkstationSurfaceOptions,
-  type ProjectNotebookWorkstationUsageOptions,
 } from "./capabilities";
 export {
   applyExecutionViewChangeset,
@@ -273,16 +265,6 @@ export {
   NotebookPackageSummaryPanel,
   type NotebookPackageSummaryPanelProps,
 } from "./NotebookPackageSummaryPanel";
-export {
-  NotebookWorkstationUsageChart,
-  type NotebookWorkstationUsageChartProps,
-} from "./NotebookWorkstationUsageChart";
-export {
-  useWorkstationActivitySamples,
-  WORKSTATION_ACTIVITY_SAMPLE_INTERVAL_MS,
-  WORKSTATION_ACTIVITY_SAMPLE_LIMIT,
-  type UseWorkstationActivitySamplesOptions,
-} from "./use-workstation-activity-samples";
 export {
   NotebookWorkstationsPanel,
   NotebookWorkstationsPanelAction,

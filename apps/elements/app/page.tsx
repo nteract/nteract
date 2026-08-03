@@ -1,6 +1,5 @@
 import Link from "next/link";
 import {
-  Activity,
   ArrowRight,
   BookOpen,
   Boxes,
@@ -58,12 +57,6 @@ const catalogGroups = [
         description: "GPU capability and readiness facts in the notebook rail.",
         href: "/docs/workstation-accelerators",
         icon: Server,
-      },
-      {
-        title: "Workstation usage",
-        description: "Reported CPU and memory usage over time in the notebook rail.",
-        href: "/docs/workstation-usage",
-        icon: Activity,
       },
       {
         title: "Cloud notebook shell",
