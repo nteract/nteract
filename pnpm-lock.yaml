@@ -544,6 +544,9 @@ importers:
         specifier: ^3.4.0
         version: 3.5.0
     devDependencies:
+      '@nteract/e2e-record':
+        specifier: workspace:*
+        version: link:../../packages/e2e-record
       '@playwright/test':
         specifier: ^1.59.1
         version: 1.59.1
@@ -608,6 +611,9 @@ importers:
         specifier: ^7.8.2
         version: 7.8.2
     devDependencies:
+      '@nteract/e2e-record':
+        specifier: workspace:*
+        version: link:../../packages/e2e-record
       '@playwright/test':
         specifier: ^1.59.1
         version: 1.59.1
@@ -681,6 +687,12 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.1.16(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(@voidzero-dev/vite-plus-core@0.1.16(@types/node@24.12.2)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))(esbuild@0.28.0)(jiti@2.7.0)(jsdom@29.0.2)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+
+  packages/e2e-record:
+    dependencies:
+      '@playwright/test':
+        specifier: ^1.50.0
+        version: 1.59.1
 
   packages/local-oidc:
     dependencies:

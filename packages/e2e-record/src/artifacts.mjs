@@ -1,22 +1,19 @@
 /**
- * Locate artifacts in Playwright's test-results/ dir, shared by show-video.mjs
+ * Locate artifacts in a Playwright test-results/ dir, shared by show-video.mjs
  * and show-frames.mjs.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const resultsDir = path.join(appRoot, "test-results");
 
 /**
- * Newest test output dir (by artifact mtime) whose name matches `rawPattern` and
- * that contains at least one file passing `matches`. Returns { dir, files } with
- * `dir` absolute, or null. `rawPattern` is a case-insensitive substring of the
- * dir name; a `.spec.ts`/`.spec.js` suffix is stripped so a spec filename works.
+ * Newest test output dir (by artifact mtime) under `resultsDir` whose name
+ * matches `rawPattern` and that contains at least one file passing `matches`.
+ * Returns { dir, name, files, mtimeMs } with `dir` absolute, or null.
+ * `rawPattern` is a case-insensitive substring of the dir name; a
+ * `.spec.ts`/`.spec.js` suffix is stripped so a spec filename works.
  */
-export function newestResultDir(rawPattern, matches) {
+export function newestResultDir(resultsDir, rawPattern, matches) {
   if (!fs.existsSync(resultsDir)) return null;
   const pattern = rawPattern ? rawPattern.replace(/\.spec\.[jt]s$/, "").toLowerCase() : null;
 

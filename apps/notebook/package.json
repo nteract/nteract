@@ -57,6 +57,7 @@
     "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
+    "@nteract/e2e-record": "workspace:*",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.1.8",
     "@types/react": "^19.2.17",

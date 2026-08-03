@@ -54,6 +54,7 @@
     "runtimed": "workspace:*"
   },
   "devDependencies": {
+    "@nteract/e2e-record": "workspace:*",
     "@playwright/test": "^1.59.1",
     "@runtimed/node": "workspace:*",
     "@tailwindcss/vite": "^4.1.8",

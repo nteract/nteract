@@ -1,8 +1,9 @@
 <!doctype html>
 <!--
-  Template for the recording viewer. show-video.mjs copies this next to the
-  encoded .webm in e2e/recordings/ and substitutes the placeholder below with
-  the video's filename, so the page references it by *relative* path.
+  Template for the recording viewer, shared by every app's show-video.mjs.
+  show-video.mjs copies this next to the encoded .webm in e2e/recordings/ and
+  substitutes the placeholder below with the video's filename, so the page
+  references it by *relative* path.
 
   Why not a ?v= query param: macOS `open` treats a file:// URL as a path and
   silently strips the query string, so the page would always load with no video.
@@ -36,19 +37,21 @@
         box-sizing: border-box;
       }
       /*
-       * Unlike apps/notebook's viewer, this app's recorder captures 1:1 CSS
-       * pixels (no 2x zoom trick — see helpers.ts), so there's no fixed
-       * physical-pixel size to reproduce. Scale responsively instead: grow to
-       * fill most of the viewport, shrink to fit if the window is smaller
-       * than the recording, always preserving aspect ratio via object-fit.
+       * Recordings are captured at VIDEO_ZOOM x device pixels so they stay crisp
+       * on retina. Displaying at intrinsic CSS size would be that many times
+       * larger than the framing the spec designed for, so the script below sets
+       * the width to intrinsicWidth / dpr: on a 2x display that maps one video
+       * pixel to one physical pixel. The caps here shrink that box (ratio
+       * preserved via aspect-ratio) when the recording is larger than the
+       * window, which a full-viewport cloud clip on a small display can be.
        */
       video {
         display: block;
         background: #000;
         box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
         image-rendering: -webkit-optimize-contrast;
-        width: 92vw;
-        height: 82vh;
+        max-width: 92vw;
+        max-height: 82vh;
         object-fit: contain;
       }
       #meta {
@@ -78,10 +81,18 @@
 
       video.src = encodeURIComponent(VIDEO_FILE);
 
+      const dpr = window.devicePixelRatio || 1;
+
       video.addEventListener("loadedmetadata", () => {
-        // Sizing itself is handled by the responsive CSS (width/height caps +
-        // object-fit: contain) — this just reports the actual intrinsic size.
-        meta.innerHTML = `${video.videoWidth}×${video.videoHeight}<br>${VIDEO_FILE}`;
+        // Ask for the physical-pixel-accurate size; aspect-ratio lets the CSS
+        // caps above shrink it proportionally if it doesn't fit the window.
+        const cssWidth = video.videoWidth / dpr;
+        const cssHeight = video.videoHeight / dpr;
+        video.style.width = cssWidth + "px";
+        video.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+        meta.innerHTML =
+          `${video.videoWidth}×${video.videoHeight} intrinsic → ` +
+          `${Math.round(cssWidth)}×${Math.round(cssHeight)} CSS (dpr ${dpr})<br>${VIDEO_FILE}`;
       });
 
       video.addEventListener("error", () => {

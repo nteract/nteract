@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { videoRecordingUse } from "@nteract/e2e-record/config";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,14 +14,6 @@ function truthyEnv(name: string) {
   const value = String(process.env[name] ?? "").toLowerCase();
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
-
-// Recording is opt-in via NTERACT_E2E_RECORD=1 so normal/CI runs pay nothing.
-// Playwright's recorder captures the viewport at CSS-pixel size and ignores
-// deviceScaleFactor, so a compact 600x400 window would yield a blurry 600px
-// video. Record at 1200x800 instead; helpers.ts CSS-zooms the page 2x so the
-// framing reads as 600x400 at full retina density.
-const recordVideo = truthyEnv("NTERACT_E2E_RECORD");
-const videoSize = { width: 1200, height: 800 };
 
 const port = Number(
   process.env.RUNTIMED_VITE_PORT ?? process.env.CONDUCTOR_PORT ?? worktreeVitePort(),
@@ -42,9 +35,9 @@ export default defineConfig({
     headless: true,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    ...(recordVideo
-      ? { viewport: videoSize, video: { mode: "on" as const, size: videoSize } }
-      : {}),
+    // Compact framing: the desktop flows worth recording are a single notebook,
+    // so a small window keeps the clip readable at a glance.
+    ...videoRecordingUse({ width: 600, height: 400 }),
   },
   projects: [
     {
