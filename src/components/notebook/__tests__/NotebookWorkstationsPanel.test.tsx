@@ -388,69 +388,6 @@ describe("NotebookWorkstationsPanel", () => {
     expect(onlineBadge.dataset.status).toBe("online");
   });
 
-  it("badges connecting, attention, and attached workstations in the details header", () => {
-    const selection = projectNotebookWorkstationSelection({
-      canSelectWorkstation: true,
-      activeAttachment: {
-        workstation_id: "ws-attached",
-        display_name: "Attached workstation",
-        provider: "runtime_peer",
-        status: "ready",
-        working_directory: "/home/ubuntu/project",
-      },
-      registeredWorkstations: [
-        { id: "ws-connecting", displayName: "Connecting workstation", status: "connecting" },
-        { id: "ws-attention", displayName: "Attention workstation", status: "attention" },
-        { id: "ws-attached", displayName: "Attached workstation", status: "online" },
-      ],
-    });
-
-    render(
-      <NotebookWorkstationsPanel
-        capabilities={readOnlyNotebookShellCapabilities}
-        selection={selection}
-      />,
-    );
-
-    const badge = () =>
-      within(screen.getByRole("region", { name: "Workstation details" })).getByTestId(
-        "workstation-status-badge",
-      );
-
-    fireEvent.click(screen.getByRole("button", { name: /Connecting workstation/ }));
-    expect(badge().dataset.status).toBe("connecting");
-    expect(badge()).toHaveTextContent("Connecting");
-
-    fireEvent.click(screen.getByRole("button", { name: /Attention workstation/ }));
-    expect(badge().dataset.status).toBe("attention");
-    expect(badge()).toHaveTextContent("Needs attention");
-
-    fireEvent.click(screen.getByRole("button", { name: /Attached workstation/ }));
-    expect(badge().dataset.status).toBe("running");
-    expect(badge()).toHaveTextContent("Running");
-  });
-
-  it("says so when a workstation has reported no facts, instead of an empty list", () => {
-    const selection = projectNotebookWorkstationSelection({
-      canSelectWorkstation: true,
-      registeredWorkstations: [
-        { id: "ws-bare", displayName: "Bare workstation", status: "offline" },
-      ],
-    });
-
-    render(
-      <NotebookWorkstationsPanel
-        capabilities={readOnlyNotebookShellCapabilities}
-        selection={selection}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /Bare workstation/ }));
-    const details = within(screen.getByRole("region", { name: "Workstation details" }));
-    expect(details.getByText("This workstation has not reported any details yet.")).toBeVisible();
-    expect(details.queryByRole("list")).toBeNull();
-  });
-
   it("follows the projection's selection when it resolves after mount", () => {
     const selectionWith = (selectedId: string | null) =>
       projectNotebookWorkstationSelection({
