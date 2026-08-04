@@ -332,8 +332,15 @@ export function CloudSharingControls({
     }
   };
 
+  const handleOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (!nextOpen) {
+      setCopyState("idle");
+    }
+  };
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button variant="ghost" size="sm" className="gap-1.5" title="Share notebook">
           <Share2 className="size-3.5" aria-hidden="true" />
