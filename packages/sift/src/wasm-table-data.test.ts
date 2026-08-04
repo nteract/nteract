@@ -99,4 +99,41 @@ describe("createWasmTableData", () => {
     expect(tableData.getCellRaw(0, 0)).toEqual([imageBytes]);
     expect(predicateModule.get_cell_string).not.toHaveBeenCalled();
   });
+
+  it("refreshes a resolved image type without freeing the store during handoff", () => {
+    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    predicateModule.num_cols.mockReturnValueOnce(1);
+    predicateModule.col_names.mockReturnValueOnce(["image"]);
+    predicateModule.col_type.mockReturnValueOnce("categorical").mockReturnValueOnce("image");
+    predicateModule.is_null.mockReturnValueOnce(false);
+    predicateModule.get_cell_image_count.mockReturnValueOnce(1);
+    predicateModule.get_cell_image_bytes_at.mockReturnValueOnce(imageBytes);
+
+    const { tableData, refreshColumnTypes } = createWasmTableData(7);
+    const refreshed = refreshColumnTypes();
+
+    expect(refreshed).not.toBeNull();
+    expect(refreshed?.columns[0].columnType).toBe("image");
+    expect(refreshed?.getCellRaw(0, 0)).toEqual([imageBytes]);
+
+    tableData.dispose?.();
+    expect(predicateModule.free).not.toHaveBeenCalled();
+    refreshed?.dispose?.();
+    expect(predicateModule.free).toHaveBeenCalledTimes(1);
+    expect(predicateModule.free).toHaveBeenCalledWith(7);
+  });
+
+  it("keeps an explicit column type override when WASM refinement resolves", () => {
+    predicateModule.num_cols.mockReturnValueOnce(1);
+    predicateModule.col_names.mockReturnValueOnce(["image"]);
+    predicateModule.col_type.mockReturnValueOnce("categorical").mockReturnValueOnce("image");
+
+    const { tableData, refreshColumnTypes } = createWasmTableData(7);
+    const refreshed = refreshColumnTypes({ image: { columnType: "categorical" } });
+
+    expect(refreshed).toBeNull();
+    expect(tableData.columns[0].columnType).toBe("categorical");
+    tableData.dispose?.();
+    expect(predicateModule.free).toHaveBeenCalledTimes(1);
+  });
 });

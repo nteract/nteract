@@ -208,7 +208,7 @@ export function NotebookToolbar({
       {showDenoInstallNotice && kernelErrorMessage && (
         <NotebookNotice
           tone="warning"
-          icon={<Info className="size-3.5" />}
+          icon={<Info />}
           title="Deno not available."
           className="border-t border-b-0"
         >
@@ -417,7 +417,7 @@ function CondaEnvYmlMissingBanner({
   return (
     <NotebookNotice
       tone="warning"
-      icon={<Info className="size-3.5" />}
+      icon={<Info />}
       title="Conda environment not built."
       className="border-t border-b-0"
       data-testid="conda-env-yml-missing-banner"
@@ -425,7 +425,7 @@ function CondaEnvYmlMissingBanner({
         command ? (
           <NotebookNoticeAction
             onClick={onCopyCommand}
-            icon={<Copy className="size-3" />}
+            icon={<Copy />}
             data-testid="copy-conda-env-command"
           >
             {copied ? "Copied" : "Copy command"}
@@ -452,7 +452,7 @@ function RuntimeErrorBanner({
   return (
     <NotebookNotice
       tone="warning"
-      icon={<Info className="size-3.5" />}
+      icon={<Info />}
       title={headline}
       className="border-t border-b-0"
       details={

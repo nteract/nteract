@@ -1,6 +1,7 @@
 import { act, render } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
 import type { ConnectionStatus } from "runtimed";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { readOnlyNotebookShellCapabilities } from "../capabilities";
 import {
   NotebookConnectionIdentity,
@@ -322,6 +323,76 @@ describe("NotebookConnectionIdentity", () => {
     const slot = slotElement(container);
     expect(slot.dataset.actorKind).toBe("human");
     expect(slot.querySelector('[data-slot="notebook-actor-avatar"]')).not.toBeNull();
+  });
+
+  describe("account-menu mode", () => {
+    function renderWithActions(status: ConnectionStatus = "online") {
+      const source = new FakeStatusSource(status);
+      return {
+        source,
+        ...render(
+          <NotebookConnectionIdentity
+            capabilities={cloudCapabilities()}
+            connectionStatus$={source}
+            accountDetail="alice@anaconda.com"
+            accountActions={<DropdownMenuItem>Sign out</DropdownMenuItem>}
+          />,
+        ),
+      };
+    }
+
+    it("becomes the shared account-menu trigger when a host passes actions", () => {
+      // Cloud surfaces converge on one trigger; the slot keeps its identity
+      // so the existing data-slot/state contract still holds.
+      const { container } = renderWithActions();
+      const slot = slotElement(container);
+
+      expect(slot.tagName).toBe("BUTTON");
+      expect(slot.dataset.state).toBe("online");
+      expect(slot.dataset.actorKind).toBe("human");
+      // The host's data-slot wins, so existing selectors keep resolving.
+      expect(slot.getAttribute("data-slot")).toBe("notebook-connection-identity");
+      expect(slot.getAttribute("aria-haspopup")).toBe("menu");
+      expect(slot.querySelector('[data-slot="notebook-actor-avatar"]')).not.toBeNull();
+    });
+
+    it("keeps the connectivity dot and its tone in menu mode", () => {
+      // The dot is why this slot exists — wiring a menu must not drop it.
+      const { container, source } = renderWithActions("online");
+      expect(dotElement(container).classList.contains("bg-emerald-500")).toBe(true);
+
+      act(() => source.next("reconnecting"));
+      expect(slotElement(container).dataset.state).toBe("reconnecting");
+      expect(dotElement(container).classList.contains("animate-pulse")).toBe(true);
+      expect(slotElement(container).classList.contains("opacity-70")).toBe(true);
+    });
+
+    it("still announces status changes politely from the menu trigger", () => {
+      const { container, source } = renderWithActions("online");
+      expect(liveRegion(container).textContent).toBe("");
+
+      act(() => source.next("offline"));
+      expect(liveRegion(container).textContent).toBe("Offline");
+    });
+
+    it("renders no account chrome for a purely local desktop session", () => {
+      // Desktop passes no actions, but even if it did, local identity stays
+      // quiet — conditionality precedes the menu.
+      const source = new FakeStatusSource("online");
+      const { container } = render(
+        <NotebookConnectionIdentity
+          capabilities={localCapabilities()}
+          connectionStatus$={source}
+          accountActions={<DropdownMenuItem>Sign out</DropdownMenuItem>}
+        />,
+      );
+      expect(container.innerHTML).toBe("");
+    });
+
+    it("keeps the static badge when no actions are passed (desktop path)", () => {
+      const { container } = renderSlot(cloudCapabilities());
+      expect(slotElement(container).tagName).toBe("DIV");
+    });
   });
 });
 

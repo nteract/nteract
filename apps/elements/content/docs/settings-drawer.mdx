@@ -1,0 +1,56 @@
+---
+title: Settings drawer
+description: The cloud account and appearance drawer opened from the avatar menu.
+---
+
+import { SettingsDrawerExample } from "@/components/settings-drawer-example";
+
+Hosted surfaces have no second window to open, so app-level preferences slide in
+from the right over the current page. The drawer is reached from the account
+menu on the avatar — the same trigger on the notebook home and inside a
+notebook — so both cloud surfaces expose one settings entry point.
+
+<SettingsDrawerExample />
+
+## Scope
+
+Appearance and account identity are app facts, not notebook facts. The drawer
+reads and writes the browser-local theme preference every cloud view already
+consumes, and shows the signed-in identity read-only. It does not touch
+`NotebookDoc`, `RuntimeStateDoc`, execution state, or the catalog, so opening it
+over a live notebook changes nothing about the room.
+
+## Appearance: two orthogonal axes
+
+Mode (light/dark/system) and palette (classic/cream) are independent — each
+palette defines both a light and a dark surface, so neither control is a subset
+of the other. `system` stays a distinct mode rather than collapsing to its
+resolved value, because following the OS is itself the preference.
+
+Palette reaches non-React consumers through one write: the host sets
+`data-color-theme` on `<html>`, and markdown, static highlighting, Sift accents,
+and the isolated output iframes pick it up from there. That is why the swatches
+scope the attribute to themselves — a swatch without it would preview whichever
+palette is currently live instead of the one it offers.
+
+Both halves of the palette contract gate together. A host that passes a palette
+but no setter would render a control that discards clicks, so the row appears
+only when the host can actually write. Desktop owns palette through
+daemon-synced settings and passes neither, which is the `No palette writer`
+scenario above.
+
+## State ownership
+
+The drawer is fully controlled: the host passes `theme` and `onThemeChange`, so
+the single writer stays the host's `useTheme(...)` call and the drawer never
+becomes a second source of truth for a preference. The same rule covers the
+account section — sign-out is passed in as a host-owned action rather than
+implemented here, because clearing an app session, dev auth, and cached catalog
+data is host policy.
+
+## States
+
+Account chrome is conditional. With no resolvable identity the account section
+is absent rather than empty, which is what a public viewer sees; an identity
+without an email renders the label alone instead of reserving a blank secondary
+line. Appearance is always present because it applies signed in or out.

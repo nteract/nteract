@@ -32,6 +32,12 @@ export type WasmTableHandle = {
   columns: Column[];
   /** Prefetch visible rows into a JS-side cache. Call before render. */
   prefetchViewport: (dataRowIndices: number[]) => void;
+  /**
+   * Re-read resolved WASM column types. A changed type returns a replacement
+   * TableData lease that can be handed to the table engine without freeing
+   * the shared WASM store during the swap.
+   */
+  refreshColumnTypes: (columnOverrides?: Record<string, Partial<Column>>) => TableData | null;
 };
 
 /**
@@ -43,13 +49,12 @@ export function createWasmTableData(
   columnOverrides?: Record<string, Partial<Column>>,
 ): WasmTableHandle {
   const mod = getModuleSync();
-  let disposed = false;
 
   const numRows = mod.num_rows(handle);
   const numCols = mod.num_cols(handle);
   const names: string[] = mod.col_names(handle);
 
-  const columns: Column[] = [];
+  let columns: Column[] = [];
   for (let c = 0; c < numCols; c++) {
     const wasmType = mod.col_type(handle, c);
     const colType = mapColType(wasmType);
@@ -68,6 +73,23 @@ export function createWasmTableData(
 
   // Viewport cache: maps data row index → { strings[], raws[] }
   const cache = new Map<number, { strings: string[]; raws: unknown[] }>();
+  let leaseCount = 0;
+  let storeFreed = false;
+
+  function acquireDispose() {
+    leaseCount += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      leaseCount -= 1;
+      if (leaseCount === 0 && !storeFreed) {
+        storeFreed = true;
+        mod.free(handle);
+        cache.clear();
+      }
+    };
+  }
 
   function prefetchViewport(dataRowIndices: number[]) {
     if (dataRowIndices.length === 0) return;
@@ -106,7 +128,7 @@ export function createWasmTableData(
     }
   }
 
-  const tableData: TableData = {
+  let tableData: TableData = {
     columns,
     rowCount: numRows,
     getCell(row: number, col: number): string {
@@ -261,13 +283,37 @@ export function createWasmTableData(
       }
       return mod.store_filter_rows(handle, specs);
     },
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      mod.free(handle);
-      cache.clear();
-    },
+    dispose: acquireDispose(),
   };
 
-  return { handle, tableData, columns, prefetchViewport };
+  function refreshColumnTypes(
+    refreshOverrides?: Record<string, Partial<Column>>,
+  ): TableData | null {
+    let changed = false;
+    const nextColumns = columns.map((column, col) => {
+      const override = refreshOverrides?.[column.key];
+      const columnType = override?.columnType ?? mapColType(mod.col_type(handle, col));
+      const numeric = override?.numeric ?? columnType === "numeric";
+      if (columnType === column.columnType && numeric === column.numeric) return column;
+      changed = true;
+      return {
+        ...column,
+        columnType,
+        numeric,
+      };
+    });
+    if (!changed) return null;
+
+    columns = nextColumns;
+    cache.clear();
+    tableData = {
+      ...tableData,
+      columns,
+      columnSummaries: columns.map(() => null),
+      dispose: acquireDispose(),
+    };
+    return tableData;
+  }
+
+  return { handle, tableData, columns, prefetchViewport, refreshColumnTypes };
 }

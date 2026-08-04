@@ -22,7 +22,6 @@ describe("Rail", () => {
         activePanelId="packages"
         collapsed={false}
         items={items}
-        panelEyebrow="Notebook"
         panelTitle="Packages"
         panelClassName="w-64"
         dataTestId="example-rail"
@@ -36,7 +35,6 @@ describe("Rail", () => {
     );
 
     expect(screen.getByTestId("example-rail")).toHaveAttribute("data-collapsed", "false");
-    expect(screen.getByText("Notebook")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
     expect(screen.queryByText("uv · 2 packages")).not.toBeInTheDocument();
     expect(screen.getByTestId("panel-content")).toHaveTextContent("Dependencies");

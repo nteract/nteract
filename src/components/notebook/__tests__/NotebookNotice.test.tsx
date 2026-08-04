@@ -9,7 +9,7 @@ describe("NotebookNotice", () => {
     render(
       <NotebookNotice
         tone="warning"
-        icon={<AlertTriangle className="h-3 w-3" />}
+        icon={<AlertTriangle />}
         title="Runtime unavailable"
         details={<pre>socket timed out</pre>}
       >

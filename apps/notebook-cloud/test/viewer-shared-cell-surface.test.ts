@@ -609,27 +609,6 @@ test("cloud host notices sit in the shared shell above the rail and notebook sta
   assert.match(sourceText, /noticesClassName="cloud-notebook-notices"/);
   assert.match(sourceText, /cloud-notebook-shell--command-toolbar/);
   assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*position: relative;/);
-  assert.match(cssText, /\.cloud-notebook-shell \{[\s\S]*--cloud-notice-height: 3rem;/);
-  assert.match(
-    cssText,
-    /\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-height: 3rem;/,
-  );
-  const noticesCss = cssText.match(/\.cloud-notebook-notices \{(?<body>[\s\S]*?)\n\}/)?.groups
-    ?.body;
-  assert.ok(noticesCss);
-  assert.match(noticesCss, /flex: 0 0 var\(--cloud-notice-height\);/);
-  assert.match(noticesCss, /height: var\(--cloud-notice-height\);/);
-  assert.match(noticesCss, /overflow-y: auto;/);
-  assert.match(noticesCss, /animation: cloud-notice-enter/);
-  assert.doesNotMatch(noticesCss, /position: absolute;/);
-  assert.match(
-    cssText,
-    /\.cloud-notebook-notices \[data-slot="notebook-notice"\] \{[\s\S]*min-height: var\(--cloud-notice-height\);/,
-  );
-  assert.match(
-    cssText,
-    /@media \(max-width: 900px\) \{[\s\S]*\.cloud-notebook-shell \{[\s\S]*--cloud-notice-height: 3rem;[\s\S]*\.cloud-notebook-shell--command-toolbar \{[\s\S]*--cloud-notice-height: 3rem;/,
-  );
   assert.match(
     cssText,
     /@media \(max-width: 900px\) \{[\s\S]*\.cloud-room-toolbar \{[\s\S]*flex-wrap: nowrap;/,

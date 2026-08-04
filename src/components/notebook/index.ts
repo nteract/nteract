@@ -115,8 +115,10 @@ export { NotebookDocumentHeader, type NotebookDocumentHeaderProps } from "./Note
 export {
   NotebookNotice,
   NotebookNoticeAction,
+  NotebookNoticeDetails,
   NotebookNoticeStack,
   type NotebookNoticeActionProps,
+  type NotebookNoticeDetailsProps,
   type NotebookNoticeProps,
   type NotebookNoticeStackProps,
   type NotebookNoticeTone,
@@ -186,6 +188,12 @@ export {
   type NotebookConnectionIdentityProps,
   type NotebookConnectionStatusSource,
 } from "./NotebookConnectionIdentity";
+export {
+  NotebookAccountMenu,
+  NOTEBOOK_ACCOUNT_MENU_TRIGGER_CLASS,
+  type NotebookAccountMenuProps,
+} from "./NotebookAccountMenu";
+export { NotebookSettingsDrawer, type NotebookSettingsDrawerProps } from "./NotebookSettingsDrawer";
 export {
   NotebookToolbarIdentity,
   notebookToolbarActors,
@@ -262,10 +270,12 @@ export {
 } from "./NotebookPackageSummaryPanel";
 export {
   NotebookWorkstationsPanel,
+  NotebookWorkstationsPanelAction,
   PairingCommandList,
   PairingCountdown,
   type NotebookWorkstationPairingCommandView,
   type NotebookWorkstationPairingView,
+  type NotebookWorkstationsPanelActionProps,
   type NotebookWorkstationsPanelProps,
 } from "./NotebookWorkstationsPanel";
 export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";

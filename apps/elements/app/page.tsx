@@ -20,6 +20,7 @@ import {
   Rows3,
   Search,
   Server,
+  Settings,
   Share2,
   ShieldCheck,
   SlidersHorizontal,
@@ -82,6 +83,12 @@ const catalogGroups = [
         description: "Every reachable sharing popover state on shared shadcn primitives.",
         href: "/docs/sharing-sheet",
         icon: Share2,
+      },
+      {
+        title: "Settings drawer",
+        description: "Account and appearance preferences sliding in from the avatar menu.",
+        href: "/docs/settings-drawer",
+        icon: Settings,
       },
       {
         title: "Site chrome",

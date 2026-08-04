@@ -8,7 +8,17 @@ import {
   type ReactNode,
 } from "react";
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { AlertCircle, Check, Info, Loader2, LogIn, PanelLeftOpen, X } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  Info,
+  Loader2,
+  LogIn,
+  LogOut,
+  PanelLeftOpen,
+  Settings,
+  X,
+} from "lucide-react";
 import type { NteractEmbedHostContextPatch } from "@/components/isolated/host-context";
 import {
   useHasIsolatedOutputs,
@@ -24,6 +34,8 @@ import {
 import {
   NotebookAccessGate,
   NotebookConnectionIdentity,
+  NotebookSettingsDrawer,
+  notebookToolbarActors,
   NotebookCommentsPanel,
   NotebookDocumentToolbar,
   navigateNotebookOutlineItem,
@@ -31,6 +43,7 @@ import {
   NotebookDocumentShell,
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
+  NotebookWorkstationsPanelAction,
   KernelLaunchErrorBanner,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   shouldShowKernelLaunchErrorBanner,
@@ -54,6 +67,8 @@ import {
   type NotebookCommentDraftTarget,
 } from "@/components/notebook";
 import { resolveCommentsUiSurface } from "@/components/notebook/comments-ui-gate";
+import { Button } from "@/components/ui/button";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   openNotebookRailPanel,
   setActiveNotebookRailPanel,
@@ -65,6 +80,7 @@ import {
   useDemoteDetachedOutputCommentThreads,
 } from "@/components/notebook/output-comment-demotion";
 import { useWidgetStoreRequired } from "@/components/widgets/widget-store-context";
+import { useColorThemePreference } from "@/hooks/useColorThemePreference";
 import { useTheme } from "@/hooks/useTheme";
 import { EnvironmentSummary } from "@/components/environment";
 import {
@@ -143,13 +159,18 @@ import { cloudResponseError } from "./cloud-response";
 import { preloadSiftWasmForCells } from "./sift-preload";
 import { cloudSourceLanguage } from "./source-language";
 import { clearCloudAppSession, readCloudAppSessionStatus } from "./app-session";
+import { clearCachedCloudNotebookList } from "./notebook-list-cache";
 import type { CloudAccessRequestNoticeProjection } from "./cloud-access-request-state";
 import {
   cloudNotebookCatalogAccessFromCatalogResponse,
   cloudNotebookSyncScopeForCatalogAccess,
   createCloudNotebookCatalogAccessLoader,
 } from "./cloud-notebook-catalog-access";
-import { applyDocumentTheme, CLOUD_VIEWER_THEME_STORAGE_KEY } from "./theme";
+import {
+  applyDocumentTheme,
+  CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
+  CLOUD_VIEWER_THEME_STORAGE_KEY,
+} from "./theme";
 import { replaceCloudNotebookModeInCurrentUrl } from "./cloud-notebook-mode";
 import {
   CloudAccessFactsStore,
@@ -264,7 +285,11 @@ export function NotebookViewer({
   const routeTitle = useMemo(() => cloudNotebookRouteTitle(), []);
   const [notebookTitleSaving, setNotebookTitleSaving] = useState(false);
   const loadingPolicy = useMemo(() => cloudViewerLoadingPolicy(config), [config.headsHash]);
-  const { resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { theme, setTheme, resolvedTheme } = useTheme(CLOUD_VIEWER_THEME_STORAGE_KEY);
+  const { colorTheme, setColorTheme } = useColorThemePreference(
+    CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const commentsUiEnabled = config.featureFlags?.enable_comments === true;
   const { store: widgetStore } = useWidgetStoreRequired();
   // Selected interaction mode and the user's edit-access request are owned by the
@@ -1473,6 +1498,25 @@ export function NotebookViewer({
     accessRequest.reset();
     refreshAuthState();
   }, [accessRequest, refreshAuthState]);
+  // Clears the same state the notebook home clears — app session, dev auth,
+  // and the cached list — so signing out in one surface cannot leave the other
+  // showing a stale identity or notebook list.
+  const signOutOfNotebook = useCallback(() => {
+    auth.clearAppSessionStatus();
+    void clearCloudAppSession()
+      .catch((error: unknown) => {
+        console.warn("[notebook-cloud] app session clear failed", error);
+      })
+      .finally(() => auth.refreshAppSessionStatus());
+    try {
+      clearCachedCloudNotebookList(window.localStorage);
+    } catch {
+      // Private-mode storage denial is not a sign-out failure.
+    }
+    clearCloudPrototypeDevAuth(window.localStorage);
+    accessRequest.reset();
+    refreshAuthState();
+  }, [accessRequest, auth, refreshAuthState]);
   const beginNotebookAuth = useCallback(async () => {
     const method = cloudSignInMethodForConfig(authConfig);
     if (method === "oidc" && authConfig.oidc) {
@@ -1581,6 +1625,14 @@ export function NotebookViewer({
             pairing={workstationPairing}
             onStartPairing={onStartPairing}
             onCancelPairing={onCancelPairing}
+          />
+        ) : undefined
+      }
+      workstationsPanelAction={
+        shouldShowCloudWorkstationsPanel ? (
+          <NotebookWorkstationsPanelAction
+            pairing={workstationPairing}
+            onStartPairing={onStartPairing}
           />
         ) : undefined
       }
@@ -1709,6 +1761,19 @@ export function NotebookViewer({
           <NotebookConnectionIdentity
             capabilities={shellCapabilities}
             connectionStatus$={connectionStatus$}
+            accountDetail={authState.oidcClaims?.email?.trim() ?? null}
+            accountActions={
+              <>
+                <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                  <Settings aria-hidden="true" />
+                  Settings
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={signOutOfNotebook}>
+                  <LogOut aria-hidden="true" />
+                  Sign out
+                </DropdownMenuItem>
+              </>
+            }
           />
         ) : null
       }
@@ -1932,6 +1997,31 @@ export function NotebookViewer({
           onCancel={handleCancelSourceComment}
         />
       ) : null}
+      <NotebookSettingsDrawer
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        theme={theme}
+        onThemeChange={setTheme}
+        colorTheme={colorTheme}
+        onColorThemeChange={setColorTheme}
+        actor={notebookToolbarActors(shellCapabilities)[0] ?? null}
+        accountDetail={authState.oidcClaims?.email?.trim() ?? null}
+        accountActions={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="self-start"
+            onClick={() => {
+              setSettingsOpen(false);
+              signOutOfNotebook();
+            }}
+          >
+            <LogOut aria-hidden="true" />
+            Sign out
+          </Button>
+        }
+      />
     </NotebookHostProvider>
   );
 }
@@ -1991,11 +2081,7 @@ function cloudAccessRequestNotice(
 
   if (projection.kind === "error") {
     return (
-      <NotebookNotice
-        tone={projection.tone}
-        icon={<AlertCircle className="h-4 w-4" />}
-        title={projection.title}
-      >
+      <NotebookNotice tone={projection.tone} icon={<AlertCircle />} title={projection.title}>
         {projection.message}
       </NotebookNotice>
     );
@@ -2005,7 +2091,7 @@ function cloudAccessRequestNotice(
     return (
       <NotebookNotice
         tone={projection.tone}
-        icon={<Loader2 className="h-4 w-4 animate-spin" />}
+        icon={<Loader2 className="animate-spin" />}
         title={projection.title}
       >
         {projection.message}
@@ -2015,11 +2101,7 @@ function cloudAccessRequestNotice(
 
   if (projection.kind === "approved") {
     return (
-      <NotebookNotice
-        tone={projection.tone}
-        icon={<Check className="h-4 w-4" />}
-        title={projection.title}
-      >
+      <NotebookNotice tone={projection.tone} icon={<Check />} title={projection.title}>
         {projection.message}
       </NotebookNotice>
     );
@@ -2027,11 +2109,7 @@ function cloudAccessRequestNotice(
 
   if (projection.kind === "denied") {
     return (
-      <NotebookNotice
-        tone={projection.tone}
-        icon={<X className="h-4 w-4" />}
-        title={projection.title}
-      >
+      <NotebookNotice tone={projection.tone} icon={<X />} title={projection.title}>
         {projection.message}
       </NotebookNotice>
     );
@@ -2039,22 +2117,14 @@ function cloudAccessRequestNotice(
 
   if (projection.kind === "dismissed") {
     return (
-      <NotebookNotice
-        tone={projection.tone}
-        icon={<Info className="h-4 w-4" />}
-        title={projection.title}
-      >
+      <NotebookNotice tone={projection.tone} icon={<Info />} title={projection.title}>
         {projection.message}
       </NotebookNotice>
     );
   }
 
   return (
-    <NotebookNotice
-      tone={projection.tone}
-      icon={<AlertCircle className="h-4 w-4" />}
-      title={projection.title}
-    >
+    <NotebookNotice tone={projection.tone} icon={<AlertCircle />} title={projection.title}>
       {projection.message}
     </NotebookNotice>
   );

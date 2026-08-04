@@ -1,4 +1,9 @@
 {
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
   "enabledPlugins": {
     "async-rust-lsp@nteract-plugins": true
   },

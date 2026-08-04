@@ -135,6 +135,15 @@ export type ReplaceDataOptions = {
   resetSort?: boolean;
   /** Drop filters even when filtered columns survive in the new data. */
   resetFilters?: boolean;
+  /**
+   * Whether the replacement data is still arriving.
+   *
+   * The engine outlives the data it renders, and the streaming guard gates
+   * casts that would crash WASM on a schema mismatch. A caller swapping in an
+   * open stream must say so, or the guard stays open from whatever the previous
+   * data settled on. Omit to leave the current state alone.
+   */
+  streaming?: boolean;
 };
 
 export type TableEngine = {
@@ -2038,6 +2047,26 @@ export function createTable(
     scheduleRender();
   }
 
+  /// Move the streaming guard in either direction as data is swapped.
+  ///
+  /// Completion routes through `setStreamingDone` so its notify and progress-bar
+  /// teardown still run exactly once.
+  function setStreamingState(next: boolean) {
+    if (streaming === next) return;
+    if (!next) {
+      setStreamingDone();
+      return;
+    }
+    streaming = true;
+    statusIndicator.classList.remove("sift-status-ready");
+    statusIndicator.classList.add("sift-status-streaming");
+    statusIndicator.textContent = "●";
+    statusIndicator.title = "Loading data…";
+    updateRowCountDisplay();
+    // The progress bar is detached from the DOM when a stream completes, so a
+    // re-armed stream shows the indicator without it.
+  }
+
   function setStreamingDone() {
     if (!streaming) return;
     streaming = false;
@@ -2127,11 +2156,15 @@ export function createTable(
   }
 
   function replaceData(newData: TableData, replaceOptions?: ReplaceDataOptions) {
+    const replacementStreaming = replaceOptions?.streaming ?? streaming;
     const preserved = preserveStateFor(newData.columns, replaceOptions);
 
     if (!sameColumnShape(newData.columns)) {
       destroy();
       const replacement = createTable(container, newData, options);
+      if (!replacementStreaming) {
+        replacement.setStreamingDone();
+      }
       Object.assign(api, replacement);
       if (preserved.sort) {
         replacement.setSort(preserved.sort.column, preserved.sort.direction);
@@ -2143,6 +2176,10 @@ export function createTable(
         if (newIndex !== -1) replacement.setFilter(newIndex, preservedFilter.filter);
       }
       return;
+    }
+
+    if (replaceOptions?.streaming !== undefined) {
+      setStreamingState(replaceOptions.streaming);
     }
 
     const oldData = data;

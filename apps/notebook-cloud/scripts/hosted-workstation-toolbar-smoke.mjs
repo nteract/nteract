@@ -456,7 +456,7 @@ async function assertOwnerBlockedWorkstationStates({
   const offlineDefault = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
     expectedLabel: "Review compute",
-    expectedPanelText: "No heartbeat from this workstation recently.",
+    expectedPanelText: "Offline workstation",
     expectedTitleIncludes: ["Open workstations panel"],
     registry: {
       default_workstation_id: workstationId,

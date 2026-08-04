@@ -10,7 +10,7 @@ export function UntrustedBanner({ onReviewClick }: UntrustedBannerProps) {
   return (
     <NotebookNotice
       tone="warning"
-      icon={<ShieldAlert className="size-4" />}
+      icon={<ShieldAlert />}
       actions={
         <Button
           size="sm"

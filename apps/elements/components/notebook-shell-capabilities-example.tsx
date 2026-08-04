@@ -590,11 +590,11 @@ function NoticeIcon({ tone }: { tone: NotebookNoticeTone }) {
   switch (tone) {
     case "warning":
     case "error":
-      return <AlertTriangle className="size-3.5" />;
+      return <AlertTriangle />;
     case "success":
-      return <ShieldCheck className="size-3.5" />;
+      return <ShieldCheck />;
     default:
-      return <Info className="size-3.5" />;
+      return <Info />;
   }
 }
 

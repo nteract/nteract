@@ -1,4 +1,49 @@
-# @runtimed/node
+# `@runtimed/node`
+
+Run Python from Node in a kernel that stays alive between calls. Variables and
+imports persist, dependencies install mid-session via uv, and plots come back
+as image data in the cell result.
+
+**Before** — new process every call, no memory:
+
+```js
+execSync('python -c "import pandas as pd; df = pd.read_csv(\'data.csv\'); print(df.shape)"');
+// next call: pandas re-imported, df gone, startup cost paid again
+```
+
+**After** — one session, state sticks:
+
+```js
+const { createNotebook } = require("@runtimed/node");
+
+async function main() {
+  const session = await createNotebook({ workingDir: "./project" });
+
+  await session.runCell('import pandas as pd; df = pd.read_csv("data.csv")');
+  await session.runCell('df.groupby("region").sum()'); // df still there
+
+  await session.addDependencies(["seaborn"]); // no restart
+  await session.syncEnvironment(); // df survives this
+
+  const result = await session.runCell(
+    "import seaborn as sns; sns.heatmap(df.corr(numeric_only=True))",
+  );
+
+  // Plot arrives as a display_data output. `dataJson` carries base64 PNG under
+  // "image/png"; `blobUrlsJson` carries a daemon URL for the same bytes.
+  const plot = result.outputs.find((output) => output.outputType === "display_data");
+  console.log(Object.keys(JSON.parse(plot.dataJson))); // ["image/png", "text/plain", ...]
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+```
+
+Built for agent loops where one session spans many turns. Session startup costs
+a couple of seconds and then every later call is cheap, so the win grows with
+the number of turns. Running a script once? Use a subprocess.
 
 Node.js bindings for the nteract `runtimed` daemon. This package lets Node,
 Bun, and other CommonJS-compatible runtimes create notebooks, run Python cells,

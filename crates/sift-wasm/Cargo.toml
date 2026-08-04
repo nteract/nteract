@@ -11,6 +11,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+base64 = { workspace = true }
 nteract-predicate = { path = "../nteract-predicate" }
 wasm-bindgen = { workspace = true }
 js-sys = "0.3"

@@ -1,4 +1,5 @@
 export const CLOUD_VIEWER_THEME_STORAGE_KEY = "nteract.cloud.viewer.theme";
+export const CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY = "nteract.cloud.viewer.color-theme";
 
 export function viewerThemeFirstPaintStyle(): string {
   return `html {
@@ -47,5 +48,17 @@ export function viewerThemeBootstrapScript(): string {
   root.classList.toggle("light", resolved === "light");
   root.dataset.theme = resolved;
   root.style.colorScheme = resolved;
+
+  let storedPalette;
+  try {
+    storedPalette = window.localStorage?.getItem(${JSON.stringify(
+      CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
+    )});
+  } catch {}
+  if (storedPalette === "cream") {
+    root.setAttribute("data-color-theme", storedPalette);
+  } else {
+    root.removeAttribute("data-color-theme");
+  }
 })();`;
 }
