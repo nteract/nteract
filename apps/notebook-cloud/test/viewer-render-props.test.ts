@@ -248,8 +248,14 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /const requestCloudEditAccess = useCallback\(\(\) => \{[\s\S]*accessRequest\.requestEditAccess\(\);/,
   );
   assert.match(sourceText, /projection\.kind === "dismissed"/);
-  assert.match(sourceText, /icon=\{<Info className="h-4 w-4" \/>\}/);
-  assert.doesNotMatch(sourceText, /projection\.kind === "dismissed"[\s\S]{0,240}AlertCircle/);
+  // A dismissed request is informational, not an error, so its notice keeps the
+  // Info glyph rather than falling through to the AlertCircle default. Notice
+  // icons take their size from NotebookNotice, so the branch only picks a glyph.
+  const dismissedNotice =
+    /projection\.kind === "dismissed"\)? \{\s*return \([\s\S]*?<\/NotebookNotice>/.exec(sourceText);
+  assert.ok(dismissedNotice, "expected a dismissed-request notice branch");
+  assert.match(dismissedNotice[0], /icon=\{<Info \/>\}/);
+  assert.doesNotMatch(dismissedNotice[0], /AlertCircle/);
   // The connection/identity slot is filled by the shared quiet component:
   // avatar + connectivity dot, driven by the stable status bridge. It must
   // never regress into a text pill or a second status label surface. The
