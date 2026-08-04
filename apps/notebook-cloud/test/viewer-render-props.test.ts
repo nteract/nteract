@@ -399,15 +399,38 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sharingPanelSourceText, /aria-label=\{copyLinkLabel\}/);
   assert.match(sharingPanelSourceText, /compactCopyLinkLabel/);
+  // Every section renders rows through one CloudShareRow so trailing controls
+  // share a single reserved action column instead of each row positioning its
+  // own, which is what made buttons, badges, and text land on different insets.
   assert.match(
     sharingPanelSourceText,
-    /accessProjection\.notebookAccessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong className="block truncate text-sm font-medium">\{row\.label\}<\/strong>/,
+    /function CloudShareRow\(\{ row, children \}: \{ row: CloudShareAccessRow; children\?: ReactNode \}\)/,
   );
   assert.match(
     sharingPanelSourceText,
-    /accessProjection\.accessRequestRows\.map\(\(row\) =>[\s\S]*aria-label=\{`Approve \$\{row\.label\}`\}/,
+    /<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong className="block truncate text-sm font-medium">\{row\.label\}<\/strong>/,
   );
-  assert.match(sharingPanelSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
+  for (const rows of ["notebookAccessRows", "accessRequestRows", "runtimeAccessRows"]) {
+    assert.match(
+      sharingPanelSourceText,
+      new RegExp(
+        `accessProjection\\.${rows}\\.map\\(\\(row\\) => \\(\\s*<CloudShareRow key=\\{row\\.id\\} row=\\{row\\}`,
+      ),
+    );
+  }
+  assert.match(
+    sharingPanelSourceText,
+    /accessProjection\.accessRequestRows\.map\(\(row\) =>[\s\S]*label=\{`Approve \$\{row\.label\}`\}/,
+  );
+  assert.match(sharingPanelSourceText, /label=\{`Remove \$\{row\.label\}`\}/);
+  // Icon sizing and aria-hidden come from the Button variant and lucide's own
+  // defaults; per-icon overrides here drift from the design system.
+  assert.doesNotMatch(sharingPanelSourceText, /<[A-Z]\w*[^>]*\bsize-3\.5\b/);
+  assert.doesNotMatch(sharingPanelSourceText, /aria-hidden/);
+  assert.doesNotMatch(sharingPanelSourceText, /\bleading-5\b/);
+  // Enable/Disable and Copy link are real buttons, not ghost text that reads
+  // as a link.
+  assert.doesNotMatch(sharingPanelSourceText, /variant="ghost"\s+size="sm"/);
   assert.match(sharingPanelSourceText, /import \{ Button \} from "@\/components\/ui\/button";/);
   assert.match(sharingPanelSourceText, /import \{ Input \} from "@\/components\/ui\/input";/);
   assert.match(

@@ -77,22 +77,22 @@ export function CloudSharingPanel({
 }: CloudSharingPanelProps) {
   return (
     <>
-      <header className="flex items-start justify-between gap-3 border-b px-4 py-3.5">
+      <header className="flex items-start justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">Share notebook</h2>
-          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+          <p className="mt-0.5 text-xs text-muted-foreground">
             Invite people, review requests, and manage link access.
           </p>
         </div>
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
-          className="shrink-0 gap-1.5"
+          className="shrink-0"
           aria-label={copyLinkLabel}
           onClick={onCopyLink}
         >
-          <Link2 className="size-3.5" aria-hidden="true" />
+          <Link2 />
           <span className="hidden sm:inline">{copyLinkLabel}</span>
           <span className="sm:hidden">{compactCopyLinkLabel}</span>
         </Button>
@@ -102,14 +102,11 @@ export function CloudSharingPanel({
         className="flex items-start justify-between gap-3 border-b border-l-2 border-b-border border-l-emerald-500/70 bg-emerald-500/[0.06] px-4 py-3"
         aria-label="Public link access"
       >
-        <div className="flex min-w-0 items-start gap-2.5">
-          <Globe2
-            className="mt-0.5 size-4 shrink-0 text-emerald-700 dark:text-emerald-300"
-            aria-hidden="true"
-          />
+        <div className="flex min-w-0 items-start gap-2.5 [&>svg]:mt-0.5 [&>svg]:size-4 [&>svg]:shrink-0">
+          <Globe2 className="text-emerald-700 dark:text-emerald-300" />
           <div className="min-w-0">
             <strong className="block text-sm font-semibold">Anyone with the link</strong>
-            <span className="text-xs leading-5 text-muted-foreground">
+            <span className="block text-xs text-muted-foreground">
               {publicEnabled
                 ? "Can view this notebook without signing in"
                 : "Link access is off. Only listed people can open this notebook"}
@@ -118,9 +115,9 @@ export function CloudSharingPanel({
         </div>
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
-          className="shrink-0 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+          className="shrink-0"
           disabled={publicBusy}
           onClick={onTogglePublicAccess}
         >
@@ -129,7 +126,7 @@ export function CloudSharingPanel({
       </section>
 
       <form
-        className="grid gap-2 px-4 py-3.5 sm:grid-cols-[minmax(0,1fr)_9rem_auto]"
+        className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto]"
         onSubmit={onSubmitInvite}
       >
         <div className="grid gap-1.5">
@@ -165,15 +162,15 @@ export function CloudSharingPanel({
         </div>
         <Button
           type="submit"
-          className="self-end gap-1.5"
+          className="self-end"
           disabled={!inviteReady || busyAction === "invite"}
         >
-          <Mail className="size-3.5" aria-hidden="true" />
+          <Mail />
           Invite
         </Button>
         {formError ? (
           <div
-            className="col-span-full rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs leading-5 text-destructive"
+            className="col-span-full rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive"
             role="alert"
           >
             {formError}
@@ -185,13 +182,13 @@ export function CloudSharingPanel({
         <>
           <Separator />
           <section
-            className="border-l-2 border-amber-500/60 bg-amber-500/[0.05] px-4 py-3.5"
+            className="border-l-2 border-amber-500/60 bg-amber-500/[0.05] px-4 py-3"
             aria-label="Edit access requests"
           >
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold">Edit requests</h3>
-                <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                <p className="mt-0.5 text-xs text-muted-foreground">
                   Approve collaborators you recognize, or dismiss stale requests.
                 </p>
               </div>
@@ -203,61 +200,29 @@ export function CloudSharingPanel({
             </div>
             <ul className="divide-y divide-border/70">
               {accessProjection.accessRequestRows.map((row) => (
-                <li
-                  key={row.id}
-                  title={row.title}
-                  className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-2.5"
-                >
-                  <CloudShareRowIcon row={row} />
-                  <div className="min-w-0">
-                    <strong className="block truncate text-sm font-medium">{row.label}</strong>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {row.detail}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>
-                    <CloudShareStateLabel tone={row.stateTone}>
-                      {row.stateLabel}
-                    </CloudShareStateLabel>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 shrink-0"
-                      aria-label={`Approve ${row.label}`}
-                      title={`Approve ${row.label}`}
-                      disabled={busyAction === `${row.id}:approve`}
-                      onClick={() => onResolveAccessRequest(row, "approve")}
-                    >
-                      <Check className="size-3.5" aria-hidden="true" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 shrink-0"
-                      aria-label={`Deny ${row.label}`}
-                      title={`Deny ${row.label}`}
-                      disabled={busyAction === `${row.id}:deny`}
-                      onClick={() => onResolveAccessRequest(row, "deny")}
-                    >
-                      <X className="size-3.5" aria-hidden="true" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 shrink-0"
-                      aria-label={`Dismiss ${row.label}`}
-                      title={`Dismiss ${row.label}`}
-                      disabled={busyAction === `${row.id}:dismiss`}
-                      onClick={() => onResolveAccessRequest(row, "dismiss")}
-                    >
-                      <Trash2 className="size-3.5" aria-hidden="true" />
-                    </Button>
-                  </div>
-                </li>
+                <CloudShareRow key={row.id} row={row}>
+                  <CloudShareRowAction
+                    label={`Approve ${row.label}`}
+                    disabled={busyAction === `${row.id}:approve`}
+                    onClick={() => onResolveAccessRequest(row, "approve")}
+                  >
+                    <Check />
+                  </CloudShareRowAction>
+                  <CloudShareRowAction
+                    label={`Deny ${row.label}`}
+                    disabled={busyAction === `${row.id}:deny`}
+                    onClick={() => onResolveAccessRequest(row, "deny")}
+                  >
+                    <X />
+                  </CloudShareRowAction>
+                  <CloudShareRowAction
+                    label={`Dismiss ${row.label}`}
+                    disabled={busyAction === `${row.id}:dismiss`}
+                    onClick={() => onResolveAccessRequest(row, "dismiss")}
+                  >
+                    <Trash2 />
+                  </CloudShareRowAction>
+                </CloudShareRow>
               ))}
             </ul>
           </section>
@@ -265,7 +230,7 @@ export function CloudSharingPanel({
       ) : null}
 
       <Separator />
-      <section className="px-4 py-3.5" aria-label="Current notebook access">
+      <section className="px-4 py-3" aria-label="Current notebook access">
         <div className="mb-2 flex items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">Current access</h3>
           {accessProjection.notebookAccessSummary ? (
@@ -283,39 +248,17 @@ export function CloudSharingPanel({
         ) : (
           <ul className="divide-y divide-border/70">
             {accessProjection.notebookAccessRows.map((row) => (
-              <li
-                key={row.id}
-                title={row.title}
-                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-2.5"
-              >
-                <CloudShareRowIcon row={row} />
-                <div className="min-w-0">
-                  <strong className="block truncate text-sm font-medium">{row.label}</strong>
-                  <span className="block truncate text-xs text-muted-foreground">{row.detail}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>
-                  {row.stateLabel ? (
-                    <CloudShareStateLabel tone={row.stateTone}>
-                      {row.stateLabel}
-                    </CloudShareStateLabel>
-                  ) : null}
-                  {row.removable ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 shrink-0"
-                      aria-label={`Remove ${row.label}`}
-                      title={`Remove ${row.label}`}
-                      disabled={busyAction === row.id}
-                      onClick={() => onRemoveAccessRow(row)}
-                    >
-                      <Trash2 className="size-3.5" aria-hidden="true" />
-                    </Button>
-                  ) : null}
-                </div>
-              </li>
+              <CloudShareRow key={row.id} row={row}>
+                {row.removable ? (
+                  <CloudShareRowAction
+                    label={`Remove ${row.label}`}
+                    disabled={busyAction === row.id}
+                    onClick={() => onRemoveAccessRow(row)}
+                  >
+                    <Trash2 />
+                  </CloudShareRowAction>
+                ) : null}
+              </CloudShareRow>
             ))}
           </ul>
         )}
@@ -324,7 +267,7 @@ export function CloudSharingPanel({
       {accessProjection.runtimeAccessRows.length > 0 ? (
         <>
           <Separator />
-          <section className="px-4 py-3.5" aria-label="Compute access">
+          <section className="px-4 py-3" aria-label="Compute access">
             <div className="mb-2 flex items-center justify-between gap-2">
               <h3 className="text-sm font-semibold">Compute access</h3>
               {accessProjection.runtimeAccessSummary ? (
@@ -335,22 +278,7 @@ export function CloudSharingPanel({
             </div>
             <ul className="divide-y divide-border/70">
               {accessProjection.runtimeAccessRows.map((row) => (
-                <li
-                  key={row.id}
-                  title={row.title}
-                  className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 py-2.5"
-                >
-                  <CloudShareRowIcon row={row} />
-                  <div className="min-w-0">
-                    <strong className="block truncate text-sm font-medium">{row.label}</strong>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {row.detail}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>
-                  </div>
-                </li>
+                <CloudShareRow key={row.id} row={row} />
               ))}
             </ul>
           </section>
@@ -358,10 +286,10 @@ export function CloudSharingPanel({
       ) : null}
 
       {message ? (
-        <div className="px-4 pt-3.5 pb-4">
+        <div className="px-4 pt-3 pb-4">
           <div
             className={cn(
-              "rounded-md border px-2.5 py-2 text-xs leading-5",
+              "rounded-md border px-2.5 py-2 text-xs",
               messageKind === "error"
                 ? "border-destructive/40 bg-destructive/10 text-destructive"
                 : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
@@ -373,6 +301,61 @@ export function CloudSharingPanel({
         </div>
       ) : null}
     </>
+  );
+}
+
+/**
+ * Owns row geometry for every section so trailing controls line up. The action
+ * column is reserved even when a row has no buttons, and is pulled right by the
+ * icon button's 6px padding so glyphs — not button boxes — land on the content
+ * edge, matching where plain text ends in button-less rows.
+ */
+function CloudShareRow({ row, children }: { row: CloudShareAccessRow; children?: ReactNode }) {
+  return (
+    <li
+      title={row.title}
+      className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-3 py-2.5 [&>svg]:size-4 [&>svg]:shrink-0"
+    >
+      <CloudShareRowIcon row={row} />
+      <div className="min-w-0">
+        <strong className="block truncate text-sm font-medium">{row.label}</strong>
+        <span className="block truncate text-xs text-muted-foreground">{row.detail}</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs font-medium text-muted-foreground">{row.badge}</span>
+        {row.stateLabel ? (
+          <CloudShareStateLabel tone={row.stateTone}>{row.stateLabel}</CloudShareStateLabel>
+        ) : null}
+      </div>
+      <div className="-mr-1.5 flex min-w-7 items-center justify-end">{children}</div>
+    </li>
+  );
+}
+
+function CloudShareRowAction({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="size-7 shrink-0"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {children}
+    </Button>
   );
 }
 
@@ -400,16 +383,16 @@ function CloudShareStateLabel({
 
 function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
   if (row.kind === "invite") {
-    return <Mail className="size-4 text-muted-foreground" aria-hidden="true" />;
+    return <Mail className="text-muted-foreground" />;
   }
   if (row.kind === "access_request") {
-    return <UserRound className="size-4 text-muted-foreground" aria-hidden="true" />;
+    return <UserRound className="text-muted-foreground" />;
   }
   if (row.kind === "acl" && row.scope === "runtime_peer") {
-    return <ServerCog className="size-4 text-muted-foreground" aria-hidden="true" />;
+    return <ServerCog className="text-muted-foreground" />;
   }
   if (row.acl.subject_kind === "public") {
-    return <Globe2 className="size-4 text-emerald-700 dark:text-emerald-300" aria-hidden="true" />;
+    return <Globe2 className="text-emerald-700 dark:text-emerald-300" />;
   }
-  return <UserRound className="size-4 text-muted-foreground" aria-hidden="true" />;
+  return <UserRound className="text-muted-foreground" />;
 }
