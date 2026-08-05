@@ -102,8 +102,10 @@ fn collect_block(
         item_ordered: None,
         item_path: Vec::new(),
         image_alt: None,
+        image_height: None,
         image_src: None,
         image_title: None,
+        image_width: None,
         link_href: None,
         link_title: None,
         position_index,
@@ -141,7 +143,11 @@ fn collect_block(
         }
         NodeKind::Html => {
             let raw = block.fallback.copy_text.as_str();
-            if let Some(fragment) = safe_inline_html(raw) {
+            if let Some(image) = safe_html_image(raw) {
+                kind = "paragraph";
+                element = "p";
+                add_html_image_run(&mut context, block.span.start, block.span.end, image);
+            } else if let Some(fragment) = safe_inline_html(raw) {
                 kind = "paragraph";
                 element = "p";
                 let run = context.add_run(
@@ -416,7 +422,9 @@ fn collect_inline(
         NodeKind::InlineMath => collect_delimited_inline(source, context, node, "math-source"),
         NodeKind::Html => {
             let raw = node.fallback.copy_text.as_str();
-            if let Some(fragment) = safe_inline_html(raw) {
+            if let Some(image) = safe_html_image(raw) {
+                add_html_image_run(context, node.span.start, node.span.end, image);
+            } else if let Some(fragment) = safe_inline_html(raw) {
                 let run = context.add_run(
                     node.span.start + fragment.open_len,
                     node.span.start + fragment.close_start,
@@ -704,8 +712,10 @@ impl PositionIndex {
 struct RunContext<'a> {
     block_id: String,
     image_alt: Option<String>,
+    image_height: Option<String>,
     image_src: Option<String>,
     image_title: Option<String>,
+    image_width: Option<String>,
     inline_index: usize,
     item_checked: Option<bool>,
     item_depth: Option<usize>,
@@ -785,8 +795,10 @@ impl RunContext<'_> {
             island_inline,
             island_tag,
             image_alt: self.image_alt.clone(),
+            image_height: self.image_height.clone(),
             image_src: self.image_src.clone(),
             image_title: self.image_title.clone(),
+            image_width: self.image_width.clone(),
             inline_id,
             item_checked: self.item_checked,
             item_depth: self.item_depth,
@@ -840,8 +852,10 @@ struct JsonRun {
     island_inline: bool,
     island_tag: Option<String>,
     image_alt: Option<String>,
+    image_height: Option<String>,
     image_src: Option<String>,
     image_title: Option<String>,
+    image_width: Option<String>,
     inline_id: String,
     item_checked: Option<bool>,
     item_depth: Option<usize>,
@@ -875,8 +889,16 @@ impl JsonRun {
             push_json_key_string(output, "imageAlt", alt);
             output.push(',');
         }
+        if let Some(height) = &self.image_height {
+            push_json_key_string(output, "imageHeight", height);
+            output.push(',');
+        }
         if let Some(title) = &self.image_title {
             push_json_key_string(output, "imageTitle", title);
+            output.push(',');
+        }
+        if let Some(width) = &self.image_width {
+            push_json_key_string(output, "imageWidth", width);
             output.push(',');
         }
         push_json_key_string(output, "inlineId", &self.inline_id);
@@ -1160,6 +1182,165 @@ struct SafeInlineHtml<'a> {
     open_len: usize,
     close_start: usize,
     text: &'a str,
+}
+
+struct SafeHtmlImage {
+    alt: Option<String>,
+    height: Option<String>,
+    src: String,
+    title: Option<String>,
+    width: Option<String>,
+}
+
+fn add_html_image_run(
+    context: &mut RunContext<'_>,
+    source_start: usize,
+    source_end: usize,
+    image: SafeHtmlImage,
+) {
+    let previous_alt = context.image_alt.take();
+    let previous_height = context.image_height.take();
+    let previous_src = context.image_src.take();
+    let previous_title = context.image_title.take();
+    let previous_width = context.image_width.take();
+
+    context.image_alt = image.alt;
+    context.image_height = image.height;
+    context.image_src = Some(image.src);
+    context.image_title = image.title;
+    context.image_width = image.width;
+
+    let run = context.add_run(
+        source_start,
+        source_end,
+        context.image_alt.clone().unwrap_or_default(),
+        "image",
+        None,
+    );
+    context.syntax_spans.push(JsonSyntaxSpan::new(
+        context.position_index,
+        source_start,
+        source_end,
+        Some(run.inline_id.clone()),
+        run.rendered_text_utf16[1],
+        "nearest-visible",
+    ));
+
+    context.image_alt = previous_alt;
+    context.image_height = previous_height;
+    context.image_src = previous_src;
+    context.image_title = previous_title;
+    context.image_width = previous_width;
+}
+
+fn safe_html_image(raw: &str) -> Option<SafeHtmlImage> {
+    let raw = raw.trim();
+    let inner = raw.strip_prefix('<')?.strip_suffix('>')?.trim();
+    let inner = inner.strip_suffix('/').unwrap_or(inner).trim_end();
+    let tag_end = inner
+        .find(|character: char| character.is_ascii_whitespace())
+        .unwrap_or(inner.len());
+    if !inner[..tag_end].eq_ignore_ascii_case("img") {
+        return None;
+    }
+
+    let mut alt = None;
+    let mut height = None;
+    let mut src = None;
+    let mut title = None;
+    let mut width = None;
+    let attributes = inner[tag_end..].as_bytes();
+    let mut cursor = 0;
+
+    while cursor < attributes.len() {
+        while attributes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if cursor >= attributes.len() {
+            break;
+        }
+
+        let name_start = cursor;
+        while attributes
+            .get(cursor)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'=' && *byte != b'/')
+        {
+            cursor += 1;
+        }
+        if cursor == name_start {
+            return None;
+        }
+        let name = std::str::from_utf8(&attributes[name_start..cursor])
+            .ok()?
+            .to_ascii_lowercase();
+
+        while attributes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if attributes.get(cursor) != Some(&b'=') {
+            continue;
+        }
+        cursor += 1;
+        while attributes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+
+        let value = match attributes.get(cursor).copied() {
+            Some(quote @ (b'\'' | b'"')) => {
+                cursor += 1;
+                let value_start = cursor;
+                while attributes.get(cursor).is_some_and(|byte| *byte != quote) {
+                    cursor += 1;
+                }
+                if attributes.get(cursor) != Some(&quote) {
+                    return None;
+                }
+                let value = std::str::from_utf8(&attributes[value_start..cursor]).ok()?;
+                cursor += 1;
+                value
+            }
+            Some(_) => {
+                let value_start = cursor;
+                while attributes
+                    .get(cursor)
+                    .is_some_and(|byte| !byte.is_ascii_whitespace())
+                {
+                    cursor += 1;
+                }
+                std::str::from_utf8(&attributes[value_start..cursor]).ok()?
+            }
+            None => return None,
+        };
+        let value = decode_html_attribute(value);
+
+        match name.as_str() {
+            "alt" if alt.is_none() => alt = Some(value),
+            "height" if height.is_none() => height = Some(value),
+            "src" if src.is_none() => src = Some(value),
+            "title" if title.is_none() => title = Some(value),
+            "width" if width.is_none() => width = Some(value),
+            _ => {}
+        }
+    }
+
+    let src = src.filter(|src| !src.trim().is_empty())?;
+    Some(SafeHtmlImage {
+        alt,
+        height,
+        src,
+        title,
+        width,
+    })
+}
+
+fn decode_html_attribute(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 fn safe_inline_html(raw: &str) -> Option<SafeInlineHtml<'_>> {
@@ -1573,5 +1754,41 @@ mod tests {
         assert!(json.contains("\"imageAlt\":\"Plot alt\""));
         assert!(json.contains("\"imageTitle\":\"Daily plot\""));
         assert!(json.contains("\"renderedText\":\"Plot alt\""));
+    }
+
+    #[test]
+    fn projects_standalone_html_image_metadata_for_host_renderer() {
+        let json = project_to_json(
+            "<img src=\"https://example.com/plot.webp?1\" alt=\"Plot alt\" title=\"Daily plot\" width=\"500px\" height=\"320\" onerror=\"alert(1)\">\n",
+        );
+
+        assert!(json.contains("\"kind\":\"paragraph\""), "{json}");
+        assert!(json.contains("\"semantic\":\"image\""), "{json}");
+        assert!(
+            json.contains("\"imageSrc\":\"https://example.com/plot.webp?1\""),
+            "{json}"
+        );
+        assert!(json.contains("\"imageAlt\":\"Plot alt\""), "{json}");
+        assert!(json.contains("\"imageTitle\":\"Daily plot\""), "{json}");
+        assert!(json.contains("\"imageWidth\":\"500px\""), "{json}");
+        assert!(json.contains("\"imageHeight\":\"320\""), "{json}");
+        assert!(!json.contains("onerror"), "{json}");
+    }
+
+    #[test]
+    fn projects_inline_html_images_without_losing_surrounding_text() {
+        let json = project_to_json(
+            "before <IMG SRC='https://example.com/plot.webp?a=1&amp;b=2' ALT='A > B' WIDTH='50%' /> after",
+        );
+
+        assert!(json.contains("\"renderedText\":\"before \""), "{json}");
+        assert!(json.contains("\"semantic\":\"image\""), "{json}");
+        assert!(
+            json.contains("\"imageSrc\":\"https://example.com/plot.webp?a=1&b=2\""),
+            "{json}"
+        );
+        assert!(json.contains("\"imageAlt\":\"A > B\""), "{json}");
+        assert!(json.contains("\"imageWidth\":\"50%\""), "{json}");
+        assert!(json.contains("\"renderedText\":\" after\""), "{json}");
     }
 }
