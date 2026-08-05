@@ -278,6 +278,10 @@ export {
   type NotebookWorkstationsPanelActionProps,
   type NotebookWorkstationsPanelProps,
 } from "./NotebookWorkstationsPanel";
+export {
+  WorkstationComputeNotice,
+  shouldShowWorkstationComputeNotice,
+} from "./WorkstationComputeNotice";
 export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";
 export { NotebookReadOnlyView, type NotebookReadOnlyViewProps } from "./NotebookReadOnlyView";
 export {
