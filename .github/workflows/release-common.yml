@@ -1529,7 +1529,10 @@ jobs:
             echo "| Linux | x64 | \`${DAEMON_NAME}-linux-x64\` |"
             echo "| Linux | x64 | \`${MCP_NAME}-linux-x64\` |"
             echo "| macOS | ARM64 | \`${CLI_NAME}-darwin-arm64\` |"
+            echo "| macOS | ARM64 | \`${DAEMON_NAME}-darwin-arm64\` |"
             echo "| macOS | x64 (Intel) | \`${CLI_NAME}-darwin-x64\` |"
+            echo "| macOS | x64 (Intel) | \`${DAEMON_NAME}-darwin-x64\` |"
+            echo "| Windows | x64 | \`${DAEMON_NAME}-windows-x64.exe\` |"
             echo ''
             echo '## Release highlights'
             echo ''
