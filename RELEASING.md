@@ -34,11 +34,16 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | CLI (macOS x64) | `runt-darwin-x64` |
 | CLI (Linux x64) | `runt-linux-x64` |
 | Standalone daemon (Linux x64) | `runtimed-linux-x64` |
+| Standalone daemon (macOS ARM64) | `runtimed-darwin-arm64` |
+| Standalone daemon (macOS x64) | `runtimed-darwin-x64` |
+| Standalone daemon (Windows x64) | `runtimed-windows-x64.exe` |
 | Standalone MCP server (Linux x64) | `nteract-mcp-linux-x64` |
 | Updater manifest | `latest.json` |
 
 macOS builds are signed and notarized. Windows builds use Azure Trusted Signing
-via `trusted-signing-cli` and `signtool.exe`. Linux desktop releases publish
+via `trusted-signing-cli` and `signtool.exe`. The standalone `runtimed` assets are
+an exception: they are published outside the notarized `.app`, so they carry no
+notarization. A host embedding one must sign it under its own identity. Linux desktop releases publish
 AppImage only; DEB/RPM/APT installs are not currently supported because
 `runtimed` is a per-user daemon.
 
