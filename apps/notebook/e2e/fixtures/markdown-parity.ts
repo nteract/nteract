@@ -21,6 +21,8 @@ export const MARKDOWN_CELL_PARITY_SOURCE = [
   "",
   '<button id="markdown-parity-raw-html">raw html becomes text</button>',
   "",
+  '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="HTML image" width="24px">',
+  "",
   "```python",
   "print('highlighted code block')",
   "```",

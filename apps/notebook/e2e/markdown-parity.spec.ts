@@ -46,11 +46,14 @@ test.describe("markdown parity", () => {
     await expect(taskCheckboxes.nth(0)).toBeChecked();
     await expect(taskCheckboxes.nth(1)).not.toBeChecked();
 
-    // The parity contract is safety and fast host rendering: raw HTML from
-    // markdown must not become live DOM in the parent notebook surface. Simple
-    // inline wrappers may contribute escaped text, but never elements or attrs.
+    // The parity contract is safety and fast host rendering: arbitrary raw HTML
+    // must not become live DOM in the parent notebook surface. Approved image
+    // metadata is projected through the same safe path as Markdown images.
     await expect(markdownCell.locator("#markdown-parity-raw-html")).toHaveCount(0);
     await expect(renderedMarkdown.getByText("raw html becomes text")).toBeVisible();
+    const htmlImage = renderedMarkdown.getByRole("img", { name: "HTML image" });
+    await expect(htmlImage).toBeVisible();
+    await expect(htmlImage).toHaveCSS("width", "24px");
 
     await expect(renderedMarkdown.locator("pre")).toContainText("highlighted code block");
 

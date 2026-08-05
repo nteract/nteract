@@ -1041,7 +1041,30 @@ function ProjectedImage({ run }: { run: MarkdownProjectionRun }) {
     return alt ? <span>{alt}</span> : null;
   }
 
-  return <MarkdownImage src={src} alt={alt} title={run.imageTitle} loading="lazy" />;
+  return (
+    <MarkdownImage
+      src={src}
+      alt={alt}
+      title={run.imageTitle}
+      loading="lazy"
+      style={safeImageDimensions(run)}
+    />
+  );
+}
+
+function safeImageDimensions(run: MarkdownProjectionRun): CSSProperties | undefined {
+  const width = safeImageDimension(run.imageWidth);
+  const height = safeImageDimension(run.imageHeight);
+  return width || height ? { width, height } : undefined;
+}
+
+function safeImageDimension(value: string | undefined): string | undefined {
+  const match = value?.trim().match(/^(\d+(?:\.\d+)?)(px|%)?$/i);
+  if (!match) return undefined;
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount < 0) return undefined;
+  return `${amount}${match[2]?.toLowerCase() ?? "px"}`;
 }
 
 function safeImageSrc(src: string | undefined): string | null {

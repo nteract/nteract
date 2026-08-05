@@ -1769,8 +1769,10 @@ describe("ProjectedMarkdownView", () => {
             {
               blockId: "image",
               imageAlt: "Plot alt",
+              imageHeight: "320",
               imageSrc: "attachment:plot.png",
               imageTitle: "Daily plot",
+              imageWidth: "500px",
               inlineId: "img0",
               listItemIndex: null,
               renderedText: "Plot alt",
@@ -1787,6 +1789,7 @@ describe("ProjectedMarkdownView", () => {
     const image = screen.getByRole("img", { name: "Plot alt" });
     expect(image).toHaveAttribute("src", "attachment:plot.png");
     expect(image).toHaveAttribute("title", "Daily plot");
+    expect(image).toHaveStyle({ height: "320px", width: "500px" });
     expect(image).toHaveClass("border", "shadow-sm");
     expect(image.closest("figure")).toHaveClass("my-5");
     expect(screen.getByText("Daily plot")).toHaveClass("text-xs", "text-muted-foreground");
@@ -1868,6 +1871,46 @@ describe("ProjectedMarkdownView", () => {
 
     expect(screen.queryByRole("img")).toBeNull();
     expect(screen.getByText("Bad image")).toBeInTheDocument();
+  });
+
+  it("ignores unsafe projected image dimensions", () => {
+    render(
+      <ProjectedMarkdownView
+        plan={plan({
+          blocks: [
+            {
+              blockId: "image",
+              blockIndex: 0,
+              element: "p",
+              kind: "paragraph",
+              measurement: { estimatedHeight: 32, confidence: "high", width: 720 },
+              sourceSpanByte: [0, 32],
+              sourceSpanUtf16: [0, 32],
+              syntaxSpans: [],
+              text: "Safe image",
+            },
+          ],
+          runs: [
+            {
+              blockId: "image",
+              imageAlt: "Safe image",
+              imageHeight: "1px; position: fixed",
+              imageSrc: "https://example.com/plot.webp",
+              imageWidth: "calc(100vw)",
+              inlineId: "img0",
+              listItemIndex: null,
+              renderedText: "Safe image",
+              renderedTextUtf16: [0, 10],
+              semantic: "image",
+              sourceSpanByte: [0, 32],
+              sourceSpanUtf16: [0, 32],
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "Safe image" })).not.toHaveAttribute("style");
   });
 
   it("marks the projected block and run for an active source position", () => {
