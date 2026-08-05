@@ -1249,7 +1249,7 @@ fn safe_html_image(raw: &str) -> Option<SafeHtmlImage> {
     let mut src = None;
     let mut title = None;
     let mut width = None;
-    let attributes = inner[tag_end..].as_bytes();
+    let attributes = &inner.as_bytes()[tag_end..];
     let mut cursor = 0;
 
     while cursor < attributes.len() {
