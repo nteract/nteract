@@ -5,9 +5,11 @@
 //! [`NotebookBroadcast::Comm`], and dropped with a `warn!` log carrying
 //! the raw target name.
 //!
-//! v1 has no live handlers — the blob upload path rides IOPub `display_data`
-//! buffers instead (see [`output_store::preflight_ref_buffers`]). The
-//! namespace stays reserved for future bidirectional subsystems
+//! No target in this namespace has a handler. Kernels do not need one to reach
+//! the blob store: bytes ride IOPub `display_data` buffers, which
+//! [`output_store::preflight_ref_buffers`] hash-verifies and commits. That path
+//! is live and is the supported way to upload. The namespace stays reserved for
+//! future bidirectional subsystems
 //! (push-down predicates, streaming Arrow, `dx.attach`); when those
 //! ship, they grow named variants on [`DxTarget`] with dispatch handlers.
 
@@ -16,7 +18,8 @@ pub const DX_NAMESPACE_PREFIX: &str = "nteract.dx.";
 
 /// Reserved target name for kernel-initiated blob uploads.
 ///
-/// Not used in v1. Blob bytes ride IOPub `display_data` buffers.
+/// This comm target has no handler. Uploads go through IOPub `display_data`
+/// buffers, which is a live path and not a fallback.
 pub const DX_BLOB_TARGET: &str = "nteract.dx.blob";
 
 /// Returns true if `target_name` starts with `nteract.dx.` and has at least
