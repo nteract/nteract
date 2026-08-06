@@ -524,7 +524,11 @@ function CommentMessage({
     : null;
 
   return (
-    <article className="flex gap-2.5">
+    <article
+      className="flex gap-2.5"
+      data-testid="comment-message"
+      data-agent={author?.isAgent ? "true" : undefined}
+    >
       {author ? (
         <CommentAuthorAvatar author={author} />
       ) : (

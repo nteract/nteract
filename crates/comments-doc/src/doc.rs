@@ -338,6 +338,35 @@ impl CommentsDoc {
         })
     }
 
+    /// Add a reply authored by a distinct actor label (e.g. an AI agent).
+    ///
+    /// Comment authorship is recovered from the Automerge actor id that wrote
+    /// the message object (see `actor_label_of`), so an agent-authored reply
+    /// must be committed under an `agent:`-tagged actor rather than the local
+    /// user's. We temporarily swap the document actor for this one write and
+    /// restore it afterward. `AutoCommit::set_actor` closes the pending
+    /// transaction, so the reply's ops commit under `agent_actor_label` and any
+    /// later local edits resume under the original actor.
+    pub fn reply_as_agent(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        body: &str,
+        after_message_id: Option<&str>,
+        created_at: &str,
+        agent_actor_label: &str,
+    ) -> Result<CommentReplied, CommentsDocError> {
+        let previous_actor = self.doc.get_actor().clone();
+        self.doc
+            .set_actor(ActorId::from(agent_actor_label.as_bytes()));
+        let result = self.reply(thread_id, message_id, body, after_message_id, created_at);
+        // Restore the original actor. set_actor closes the transaction, so the
+        // reply above is now committed under the agent actor regardless of the
+        // reply result.
+        self.doc.set_actor(previous_actor);
+        result
+    }
+
     pub fn resolve_thread(
         &mut self,
         thread_id: &str,
@@ -1283,6 +1312,61 @@ mod tests {
             Some("client:alice")
         );
         assert_eq!(thread.messages[0].created_at, "2026-06-16T00:00:00Z");
+    }
+
+    #[test]
+    fn reply_as_agent_attributes_reply_to_agent_and_restores_actor() {
+        let mut doc = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), "client:alice");
+        doc.create_thread(
+            "thread-1",
+            "msg-1",
+            &cell_anchor("cell-a"),
+            "@ana what does this do?",
+            None,
+            "2026-06-16T00:00:00Z",
+        )
+        .unwrap();
+
+        doc.reply_as_agent(
+            "thread-1",
+            "msg-2",
+            "It sums the list.",
+            Some("msg-1"),
+            "2026-06-16T00:00:01Z",
+            "client:alice/agent:ana",
+        )
+        .unwrap();
+
+        let projection = doc.read_projection(None).unwrap();
+        let thread = &projection.threads[0];
+        assert_eq!(thread.messages.len(), 2);
+        // The user's original message keeps the local author.
+        assert_eq!(
+            thread.messages[0].created_by_actor_label.as_deref(),
+            Some("client:alice")
+        );
+        // The agent reply is attributed to the agent actor.
+        assert_eq!(thread.messages[1].body, "It sums the list.");
+        assert_eq!(
+            thread.messages[1].created_by_actor_label.as_deref(),
+            Some("client:alice/agent:ana")
+        );
+
+        // The document actor is restored, so a subsequent local reply is
+        // attributed to the local user again, not the agent.
+        doc.reply(
+            "thread-1",
+            "msg-3",
+            "thanks!",
+            Some("msg-2"),
+            "2026-06-16T00:00:02Z",
+        )
+        .unwrap();
+        let thread = &doc.read_projection(None).unwrap().threads[0];
+        assert_eq!(
+            thread.messages[2].created_by_actor_label.as_deref(),
+            Some("client:alice")
+        );
     }
 
     #[test]
