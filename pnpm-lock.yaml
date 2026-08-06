@@ -629,6 +629,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^6.0.1
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.16(@types/node@20.19.37)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.21.0)(typescript@5.8.3)(yaml@2.8.3))
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
       tailwindcss:
         specifier: ^4.1.8
         version: 4.2.2
