@@ -8,6 +8,7 @@ import {
 import {
   NotebookWorkstationsPanel,
   NotebookWorkstationsPanelAction,
+  WorkstationPairingDialog,
 } from "../NotebookWorkstationsPanel";
 
 // "Workstation details" is collapsed by default, so facts need an expand click.
@@ -902,16 +903,17 @@ describe("NotebookWorkstationsPanel", () => {
     expect(started).toHaveLength(1);
 
     // The panel body never renders its own copy of the control.
-    rerender(
-      <NotebookWorkstationsPanel
-        capabilities={localReadyCapabilities}
-        onStartPairing={() => started.push(1)}
-      />,
-    );
+    rerender(<NotebookWorkstationsPanel capabilities={localReadyCapabilities} />);
     expect(screen.queryByTestId("workstation-add-button")).not.toBeInTheDocument();
   });
 
-  it("puts the pairing section above the registered workstation list", () => {
+  it("keeps Add workstation available while the pairing dialog is open", () => {
+    render(<NotebookWorkstationsPanelAction onStartPairing={() => {}} />);
+
+    expect(screen.getByTestId("workstation-add-button")).toBeVisible();
+  });
+
+  it("does not own the pairing dialog; the host mounts it independently", () => {
     const selection = projectNotebookWorkstationSelection({
       canSelectWorkstation: true,
       registeredWorkstations: [
@@ -920,47 +922,41 @@ describe("NotebookWorkstationsPanel", () => {
     });
 
     render(
-      <NotebookWorkstationsPanel
-        capabilities={localReadyCapabilities}
-        selection={selection}
-        pairing={{
-          code: "ABCD-EFGH-JKMN",
-          connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
-          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
-          status: "pending",
-          workstationName: null,
-          error: null,
-        }}
-      />,
+      <>
+        <WorkstationPairingDialog
+          pairing={{
+            code: "ABCD-EFGH-JKMN",
+            connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+            expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+            status: "pending",
+            workstationName: null,
+            error: null,
+          }}
+        />
+        <NotebookWorkstationsPanel
+          capabilities={localReadyCapabilities}
+          selection={selection}
+          pairing={{
+            code: "ABCD-EFGH-JKMN",
+            connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+            expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+            status: "pending",
+            workstationName: null,
+            error: null,
+          }}
+        />
+      </>,
     );
 
-    const card = screen.getByTestId("workstation-pairing-card");
-    const list = screen.getByRole("region", { name: "Registered workstations" });
-    expect(card.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("workstation-pairing-dialog")).toBeVisible();
+    expect(screen.queryByTestId("workstation-pairing-card")).not.toBeInTheDocument();
+    // Dialog modality aria-hides the panel body; the list still mounts underneath.
+    expect(document.querySelector('[aria-label="Registered workstations"]')).not.toBeNull();
   });
 
-  it("hides the header Add workstation control while pairing is in flight", () => {
+  it("renders the pending pairing dialog with the connect command and countdown", () => {
     render(
-      <NotebookWorkstationsPanelAction
-        pairing={{
-          code: "ABCD-EFGH-JKMN",
-          connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
-          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
-          status: "pending",
-          workstationName: null,
-          error: null,
-        }}
-        onStartPairing={() => {}}
-      />,
-    );
-
-    expect(screen.queryByTestId("workstation-add-button")).not.toBeInTheDocument();
-  });
-
-  it("renders the pending pairing card with the connect command and countdown", () => {
-    render(
-      <NotebookWorkstationsPanel
-        capabilities={localReadyCapabilities}
+      <WorkstationPairingDialog
         pairing={{
           code: "ABCD-EFGH-JKMN",
           connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
@@ -973,6 +969,9 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
+    expect(screen.getByTestId("workstation-pairing-dialog")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Connect a machine" })).toBeVisible();
+    expect(screen.getByText("ABCD-EFGH-JKMN")).toBeVisible();
     expect(screen.getByTestId("workstation-pairing-command-list")).toBeVisible();
     expect(screen.getByText("Install nteract headless")).toBeVisible();
     expect(screen.getByText("Pair this workstation")).toBeVisible();
@@ -1013,7 +1012,7 @@ describe("NotebookWorkstationsPanel", () => {
     expect(additionalCommands.getByText(/a new terminal already has it on PATH/)).toBeVisible();
     expect(additionalCommands.getByText(/foreground fallback in tmux/)).toBeVisible();
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
-      /Waiting for the machine to connect/,
+      /Waiting for this machine to connect/,
     );
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
       /Code expires in 8:5\d/,
@@ -1039,8 +1038,7 @@ describe("NotebookWorkstationsPanel", () => {
 
   it("keeps the single-command pairing fallback generic", () => {
     render(
-      <NotebookWorkstationsPanel
-        capabilities={localReadyCapabilities}
+      <WorkstationPairingDialog
         pairing={{
           code: "ABCD-EFGH-JKMN",
           connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
@@ -1052,13 +1050,8 @@ describe("NotebookWorkstationsPanel", () => {
       />,
     );
 
-    expect(
-      screen.getByText("Run this in a terminal on the machine you want to attach:"),
-    ).toBeVisible();
-    expect(
-      screen.getByText("Keep the command running until the workstation appears in the panel."),
-    ).toBeVisible();
-    expect(screen.queryByText(/service command/i)).toBeNull();
+    expect(screen.getByTestId("workstation-pairing-dialog")).toBeVisible();
+    expect(screen.getByText("ABCD-EFGH-JKMN")).toBeVisible();
     expect(
       screen.getAllByTestId("workstation-pairing-command").map((node) => node.textContent),
     ).toEqual(["runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN"]);
@@ -1075,31 +1068,22 @@ describe("NotebookWorkstationsPanel", () => {
       error: null,
     };
     const { rerender } = render(
-      <NotebookWorkstationsPanel
-        capabilities={localReadyCapabilities}
+      <WorkstationPairingDialog
         pairing={{ ...pairingBase, status: "redeemed" }}
-        onCancelPairing={() => dismissed.push(1)}
+        onCancel={() => dismissed.push(1)}
       />,
     );
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(/Machine connected/);
 
     rerender(
-      <NotebookWorkstationsPanel
-        capabilities={localReadyCapabilities}
+      <WorkstationPairingDialog
         pairing={{ ...pairingBase, status: "registered", workstationName: "Hub devbox" }}
-        onCancelPairing={() => dismissed.push(1)}
+        onCancel={() => dismissed.push(1)}
       />,
     );
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
       "Hub devbox is connected.",
     );
-    expect(
-      screen.getByText("Finish setup with the keep-available command if you have not run it yet:"),
-    ).toBeVisible();
-    expect(screen.getByText("Linux user systemd service")).toBeVisible();
-    expect(screen.queryByText("macOS/non-systemd fallback")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show additional setup options" }));
-    expect(screen.getByText("macOS/non-systemd fallback")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(dismissed).toHaveLength(1);
   });
@@ -1107,8 +1091,7 @@ describe("NotebookWorkstationsPanel", () => {
   it("offers a fresh code when the pairing expires", () => {
     const restarted: number[] = [];
     render(
-      <NotebookWorkstationsPanel
-        capabilities={localReadyCapabilities}
+      <WorkstationPairingDialog
         pairing={{
           code: "ABCD-EFGH-JKMN",
           connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
@@ -1117,7 +1100,7 @@ describe("NotebookWorkstationsPanel", () => {
           workstationName: null,
           error: null,
         }}
-        onStartPairing={() => restarted.push(1)}
+        onRestartPairing={() => restarted.push(1)}
       />,
     );
 

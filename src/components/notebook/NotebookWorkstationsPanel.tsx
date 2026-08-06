@@ -12,6 +12,7 @@ import {
   FolderOpen,
   Gauge,
   GitBranch,
+  Loader2,
   MemoryStick,
   Monitor,
   PlugZap,
@@ -20,12 +21,19 @@ import {
   ServerCog,
   ServerOff,
   Tag,
-  X,
   Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   projectNotebookWorkstationPanel,
   type NotebookShellCapabilities,
@@ -63,9 +71,8 @@ export interface NotebookWorkstationsPanelProps {
   className?: string;
   onAttachWorkstation?: (workstationId: string) => void;
   onSetDefaultWorkstation?: (workstationId: string) => void;
+  /** Active pairing hides the empty-state prompt; the dialog lives with the host. */
   pairing?: NotebookWorkstationPairingView | null;
-  onStartPairing?: () => void;
-  onCancelPairing?: () => void;
   statusMessage?: string | null;
 }
 
@@ -77,8 +84,6 @@ export function NotebookWorkstationsPanel({
   onAttachWorkstation,
   onSetDefaultWorkstation,
   pairing = null,
-  onStartPairing,
-  onCancelPairing,
   statusMessage = null,
 }: NotebookWorkstationsPanelProps) {
   // A click wins, otherwise the projection decides. Derived rather than copied
@@ -113,20 +118,8 @@ export function NotebookWorkstationsPanel({
       className={cn("flex min-h-full flex-col gap-3 text-sm", className)}
       data-testid="notebook-workstations-panel"
     >
-      {/* Pairing opens directly under the rail header so the flow reads top-down. */}
-      {pairing ? (
-        <WorkstationPairingCard
-          pairing={pairing}
-          onCancel={onCancelPairing}
-          onRestart={onStartPairing}
-        />
-      ) : null}
-
       {hasVisibleRegisteredWorkstations ? (
-        <section
-          aria-label="Registered workstations"
-          className={cn("-mx-3 flex-1", pairing ? undefined : "-mt-3")}
-        >
+        <section aria-label="Registered workstations" className="-mx-3 -mt-3 flex-1">
           <ul className="divide-y divide-border/70 border-b border-border/70">
             {registeredWorkstations.map((workstation) => (
               <RegisteredWorkstationRow
@@ -225,17 +218,14 @@ export function NotebookWorkstationsPanel({
 }
 
 export interface NotebookWorkstationsPanelActionProps {
-  /** Hidden while pairing is in flight; the panel already shows that card. */
-  pairing?: NotebookWorkstationPairingView | null;
   onStartPairing?: () => void;
 }
 
 /** Add workstation control for the rail header, inline with the panel title. */
 export function NotebookWorkstationsPanelAction({
-  pairing = null,
   onStartPairing,
 }: NotebookWorkstationsPanelActionProps) {
-  if (!onStartPairing || pairing) return null;
+  if (!onStartPairing) return null;
 
   return (
     <Button
@@ -291,133 +281,114 @@ function PanelSection({
   );
 }
 
-function WorkstationPairingCard({
-  pairing,
-  onCancel,
-  onRestart,
-}: {
-  pairing: NotebookWorkstationPairingView;
+export interface WorkstationPairingDialogProps {
+  pairing: NotebookWorkstationPairingView | null;
   onCancel?: () => void;
-  onRestart?: () => void;
-}) {
-  const structuredCommands =
-    pairing.commands && pairing.commands.length > 0 ? pairing.commands : null;
-  const hasStructuredCommands = structuredCommands !== null;
-  const pairingCommands: readonly NotebookWorkstationPairingCommandView[] = structuredCommands ?? [
-    {
-      id: "connect",
-      label: "Connect workstation",
-      command: pairing.connectCommand,
-    },
-  ];
-  const hasServiceCommand = pairingCommands.some((command) =>
-    command.command.includes("workstation service"),
-  );
-  const hasForegroundFallback = pairingCommands.some((command) => command.id === "foreground-run");
-  const hasAdditionalCommands = pairingCommands.some((command) => command.optional === true);
-  const serviceHelpText = pairingCommandHelpText(hasServiceCommand, hasForegroundFallback);
-
-  return (
-    <section
-      className="space-y-2 rounded-md border border-border/70 px-2.5 py-2"
-      aria-label="Connect a machine"
-      data-testid="workstation-pairing-card"
-    >
-      <div className="flex items-center justify-between gap-2">
-        <h4 className="text-sm font-medium">Connect a machine</h4>
-        {onCancel ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-6"
-            aria-label="Dismiss pairing"
-            onClick={onCancel}
-          >
-            <X className="size-3.5" aria-hidden="true" />
-          </Button>
-        ) : null}
-      </div>
-
-      {pairing.status === "registered" ? (
-        <div className="space-y-2 text-xs">
-          <div className="flex min-w-0 items-center gap-2 text-foreground">
-            <CircleCheck className="size-4 shrink-0 text-emerald-500" aria-hidden="true" />
-            <span data-testid="workstation-pairing-status" aria-live="polite">
-              {pairing.workstationName ?? "Workstation"} is connected.
-            </span>
-          </div>
-          {hasStructuredCommands ? (
-            <div className="space-y-2">
-              <p className="leading-5 text-muted-foreground">
-                Finish setup with the keep-available command if you have not run it yet:
-              </p>
-              <PairingCommandList commands={pairingCommands} />
-              {hasAdditionalCommands ? null : (
-                <p className="leading-5 text-muted-foreground">{serviceHelpText}</p>
-              )}
-            </div>
-          ) : null}
-          {onCancel ? (
-            <Button type="button" variant="secondary" size="sm" onClick={onCancel}>
-              Done
-            </Button>
-          ) : null}
-        </div>
-      ) : pairing.status === "expired" ? (
-        <div className="space-y-2 text-xs" aria-live="polite">
-          <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
-            <CircleAlert className="size-4 shrink-0 text-amber-500" aria-hidden="true" />
-            <span data-testid="workstation-pairing-status">
-              {pairing.error ?? "The pairing code expired before a machine connected."}
-            </span>
-          </div>
-          {onRestart ? (
-            <Button type="button" variant="outline" size="sm" onClick={onRestart}>
-              Generate a new code
-            </Button>
-          ) : null}
-        </div>
-      ) : (
-        <div className="space-y-2 text-xs">
-          <p className="leading-5 text-muted-foreground">
-            {pairingCommands.length === 1
-              ? "Run this in a terminal on the machine you want to attach:"
-              : "Run these in a terminal on the machine you want to attach:"}
-          </p>
-          <PairingCommandList commands={pairingCommands} />
-          {hasAdditionalCommands ? null : (
-            <p className="leading-5 text-muted-foreground">{serviceHelpText}</p>
-          )}
-          <p className="leading-5 text-muted-foreground" aria-live="polite">
-            {pairing.status === "redeemed" ? (
-              <span data-testid="workstation-pairing-status">
-                Machine connected; registering...
-              </span>
-            ) : (
-              <span data-testid="workstation-pairing-status">
-                Waiting for the machine to connect.
-                <PairingCountdown expiresAt={pairing.expiresAt} />
-              </span>
-            )}
-          </p>
-        </div>
-      )}
-    </section>
-  );
+  onRestartPairing?: () => void;
+  /** Overrides the default data-testid for host-specific fixtures. */
+  contentTestId?: string;
 }
 
-function pairingCommandHelpText(
-  hasServiceCommand: boolean,
-  hasForegroundFallback: boolean,
-): string {
-  if (hasServiceCommand && hasForegroundFallback) {
-    return "The Linux service command keeps this workstation available. Use the foreground fallback in tmux for macOS, non-systemd hosts, or manual testing.";
-  }
-  if (hasServiceCommand) {
-    return "The Linux service command keeps this workstation available after pairing.";
-  }
-  return "Keep the command running until the workstation appears in the panel.";
+/**
+ * Shared pairing dialog for the notebook host and account workstations page.
+ * Host-owned so it can open without revealing the workstations rail.
+ */
+export function WorkstationPairingDialog({
+  pairing,
+  onCancel,
+  onRestartPairing,
+  contentTestId = "workstation-pairing-dialog",
+}: WorkstationPairingDialogProps) {
+  const commands =
+    pairing && pairing.commands && pairing.commands.length > 0
+      ? pairing.commands
+      : pairing
+        ? [{ id: "connect", label: "Pair this workstation", command: pairing.connectCommand }]
+        : [];
+
+  return (
+    <Dialog
+      open={pairing !== null}
+      onOpenChange={(open) => {
+        if (!open) onCancel?.();
+      }}
+    >
+      {pairing ? (
+        <DialogContent className="sm:max-w-[480px]" data-testid={contentTestId}>
+          <DialogHeader>
+            <DialogTitle className="text-[17px]">Connect a machine</DialogTitle>
+            <DialogDescription className="text-[13px] leading-[1.55]">
+              Install the nteract agent on the machine you want to pair, then enter this code. We
+              never provision hardware &mdash; you bring your own compute.
+            </DialogDescription>
+          </DialogHeader>
+
+          {pairing.status === "registered" ? (
+            <div className="flex min-w-0 items-center gap-2 text-sm text-foreground">
+              <CircleCheck className="size-4 shrink-0 text-emerald-500" aria-hidden="true" />
+              <span data-testid="workstation-pairing-status" aria-live="polite">
+                {pairing.workstationName ?? "Workstation"} is connected.
+              </span>
+            </div>
+          ) : pairing.status === "expired" ? (
+            <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+              <CircleAlert className="size-4 shrink-0 text-amber-500" aria-hidden="true" />
+              <span data-testid="workstation-pairing-status" aria-live="polite">
+                {pairing.error ?? "The pairing code expired before a machine connected."}
+              </span>
+            </div>
+          ) : (
+            <>
+              {pairing.code ? (
+                <div className="flex flex-col items-center gap-2.5 rounded-xl border border-border bg-muted px-5 py-5">
+                  <div className="text-[11px] uppercase tracking-[0.09em] text-muted-foreground">
+                    Pairing code
+                  </div>
+                  <div className="font-mono text-3xl font-bold tracking-[0.1em]">
+                    {pairing.code}
+                  </div>
+                </div>
+              ) : null}
+              <PairingCommandList commands={commands} />
+              <p
+                className="text-xs leading-5 text-muted-foreground"
+                data-testid="workstation-pairing-status"
+                aria-live="polite"
+              >
+                {pairing.status === "redeemed" ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                    Machine connected; registering&hellip;
+                  </span>
+                ) : (
+                  <span>
+                    Waiting for this machine to connect.
+                    <PairingCountdown expiresAt={pairing.expiresAt} />
+                  </span>
+                )}
+              </p>
+            </>
+          )}
+
+          <DialogFooter>
+            {pairing.status === "expired" && onRestartPairing ? (
+              <Button type="button" variant="outline" size="sm" onClick={onRestartPairing}>
+                Generate a new code
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant={pairing.status === "registered" ? "default" : "outline"}
+              size="sm"
+              onClick={onCancel}
+            >
+              {pairing.status === "registered" ? "Done" : "Cancel"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      ) : null}
+    </Dialog>
+  );
 }
 
 // Each optional step is hidden for a different reason; say why instead of a

@@ -44,6 +44,7 @@ import {
   NotebookPackageSummaryPanel,
   NotebookWorkstationsPanel,
   NotebookWorkstationsPanelAction,
+  WorkstationPairingDialog,
   KernelLaunchErrorBanner,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   shouldShowKernelLaunchErrorBanner,
@@ -1623,17 +1624,12 @@ export function NotebookViewer({
             onAttachWorkstation={onAttachWorkstation}
             onSetDefaultWorkstation={onSetDefaultWorkstation}
             pairing={workstationPairing}
-            onStartPairing={onStartPairing}
-            onCancelPairing={onCancelPairing}
           />
         ) : undefined
       }
       workstationsPanelAction={
         shouldShowCloudWorkstationsPanel ? (
-          <NotebookWorkstationsPanelAction
-            pairing={workstationPairing}
-            onStartPairing={onStartPairing}
-          />
+          <NotebookWorkstationsPanelAction onStartPairing={onStartPairing} />
         ) : undefined
       }
       packagesPanel={
@@ -1928,6 +1924,13 @@ export function NotebookViewer({
 
   return (
     <NotebookHostProvider host={cloudNotebookHost}>
+      {shouldShowCloudWorkstationsPanel ? (
+        <WorkstationPairingDialog
+          pairing={workstationPairing}
+          onCancel={onCancelPairing}
+          onRestartPairing={onStartPairing}
+        />
+      ) : null}
       <NotebookDocumentShell
         rootElement="main"
         className={

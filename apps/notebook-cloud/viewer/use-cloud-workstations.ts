@@ -137,24 +137,42 @@ export function useCloudWorkstationManager({
   const workstationAction = useMemo<NotebookCommandToolbarWorkstationAction | null>(() => {
     const action = workstationSurface.toolbarAction;
     if (!action) return null;
-    if (action.disabled || action.kind !== "attach_workstation" || !action.workstationId) {
+    if (action.kind === "attach_workstation" && action.workstationId && !action.disabled) {
+      const workstationId = action.workstationId;
       return {
         disabled: action.disabled,
         label: action.label,
         pending: action.pending,
         title: action.title,
-        onClick: onOpenWorkstationsRail,
+        onClick: () => handleAttachWorkstation(workstationId),
       };
     }
-    const workstationId = action.workstationId;
+    // Set up / Review compute mint a pairing session; the host-owned dialog
+    // opens from that state without revealing the workstations rail.
+    const openPairingOrRail = () => {
+      if (
+        canChooseHostedWorkstation &&
+        (action.kind === "setup_workstation" || action.kind === "open_workstations")
+      ) {
+        void handleStartPairing();
+        return;
+      }
+      onOpenWorkstationsRail();
+    };
     return {
       disabled: action.disabled,
       label: action.label,
       pending: action.pending,
       title: action.title,
-      onClick: () => handleAttachWorkstation(workstationId),
+      onClick: openPairingOrRail,
     };
-  }, [handleAttachWorkstation, onOpenWorkstationsRail, workstationSurface.toolbarAction]);
+  }, [
+    canChooseHostedWorkstation,
+    handleAttachWorkstation,
+    handleStartPairing,
+    onOpenWorkstationsRail,
+    workstationSurface.toolbarAction,
+  ]);
 
   const startSelectedWorkstation = useCallback(
     async (options: Omit<AttachWorkstationOptions, "revealPanel"> = {}) => {
