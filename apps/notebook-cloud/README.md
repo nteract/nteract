@@ -38,6 +38,26 @@ the gitignored `runtimed-wasm` bindings before TypeScript reads them. Use
 `pnpm --dir apps/notebook-cloud wasm` when you explicitly want a full
 `runtimed-wasm` rebuild.
 
+### celld packaging spike
+
+The celld manifest is deliberately separate from `wrangler.toml`. It declares
+the current Worker, static assets, and three active Durable Object classes, but
+omits D1 and R2 because celld does not implement those bindings yet. This is a
+bundle compatibility check, not a functional self-hosted deployment.
+
+Install celld, then run:
+
+```bash
+pnpm --dir apps/notebook-cloud celld:dry-run
+```
+
+Set `CELLD_BIN=/absolute/path/to/celld` to test a downloaded binary that is not
+on `PATH`. The command builds the current viewer and WASM artifacts, adds the
+required esbuild `.wasm` loader, and invokes `celld deploy --dry-run`; it does
+not write a deployment to object storage. A live proof still needs an
+S3-compatible fleet bucket, a celld node, and replacements for the D1 catalog
+and R2 artifact boundaries.
+
 With Wrangler running:
 
 ```bash
