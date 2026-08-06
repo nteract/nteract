@@ -185,6 +185,8 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   const presenceSourceText = readFileSync(presenceSourcePath, "utf8");
   const sharingSourcePath = new URL("../viewer/sharing-controls.tsx", import.meta.url);
   const sharingSourceText = readFileSync(sharingSourcePath, "utf8");
+  const sharingPanelSourcePath = new URL("../viewer/sharing-panel.tsx", import.meta.url);
+  const sharingPanelSourceText = readFileSync(sharingPanelSourcePath, "utf8");
   const titleSourcePath = new URL("../viewer/cloud-notebook-title.tsx", import.meta.url);
   const titleSourceText = readFileSync(titleSourcePath, "utf8");
   const cssPath = new URL("../viewer/index.css", import.meta.url);
@@ -246,8 +248,14 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     /const requestCloudEditAccess = useCallback\(\(\) => \{[\s\S]*accessRequest\.requestEditAccess\(\);/,
   );
   assert.match(sourceText, /projection\.kind === "dismissed"/);
-  assert.match(sourceText, /icon=\{<Info className="h-4 w-4" \/>\}/);
-  assert.doesNotMatch(sourceText, /projection\.kind === "dismissed"[\s\S]{0,240}AlertCircle/);
+  // A dismissed request is informational, not an error, so its notice keeps the
+  // Info glyph rather than falling through to the AlertCircle default. Notice
+  // icons take their size from NotebookNotice, so the branch only picks a glyph.
+  const dismissedNotice =
+    /projection\.kind === "dismissed"\)? \{\s*return \([\s\S]*?<\/NotebookNotice>/.exec(sourceText);
+  assert.ok(dismissedNotice, "expected a dismissed-request notice branch");
+  assert.match(dismissedNotice[0], /icon=\{<Info \/>\}/);
+  assert.doesNotMatch(dismissedNotice[0], /AlertCircle/);
   // The connection/identity slot is filled by the shared quiet component:
   // avatar + connectivity dot, driven by the stable status bridge. It must
   // never regress into a text pill or a second status label surface. The
@@ -343,7 +351,6 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.doesNotMatch(sourceText, /projectCloudAccessFacts\(/);
   assert.match(sharingSourceText, /export function CloudSharingControls/);
-  assert.match(sharingSourceText, /Invite people, review requests, and manage link access\./);
   assert.match(sharingSourceText, /CloudSharingFactsStore/);
   assert.match(
     sharingSourceText,
@@ -372,50 +379,90 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.ok(silentSetIndex < snapshotSubscribeIndex);
   assert.ok(snapshotSubscribeIndex < flushIndex);
   assert.doesNotMatch(cloudFactsReactSource, /useLayoutEffect\(\(\) => \{\s*store\.set\(source\)/);
-  assert.match(sharingSourceText, /<div className="cloud-share-current-heading">/);
-  assert.match(sharingSourceText, /aria-label="Edit access requests"/);
-  assert.match(sharingSourceText, /<h3>Edit requests<\/h3>/);
-  assert.match(sharingSourceText, /accessProjection\.accessRequestRows\.map/);
-  assert.match(sharingSourceText, /accessProjection\.accessRequestSummary/);
-  assert.match(sharingSourceText, /aria-label="Compute access"/);
-  assert.match(sharingSourceText, /accessProjection\.runtimeAccessRows\.map/);
-  assert.match(sharingSourceText, /<div className="cloud-share-row-actions">/);
+  // The popover body is CloudSharingPanel, a presentational component
+  // extracted so the Elements fixture can render it directly instead of
+  // hand-copying JSX that could drift from the real markup.
   assert.match(
     sharingSourceText,
-    /<span className="cloud-share-state" data-tone=\{row\.stateTone \?\? undefined\}>/,
+    /import \{[\s\S]*CloudSharingPanel,[\s\S]*\} from "\.\/sharing-panel";/,
   );
-  assert.match(sharingSourceText, /Can view this notebook without signing in/);
-  assert.match(sharingSourceText, /Link access is off\. Only listed people can open this notebook/);
-  assert.match(sharingSourceText, /aria-label=\{sharingFacts\.copyLinkLabel\}/);
-  assert.match(sharingSourceText, /sharingFacts\.compactCopyLinkLabel/);
+  assert.match(sharingSourceText, /<CloudSharingPanel/);
+  assert.doesNotMatch(sharingSourceText, /function CloudSharingPanel/);
+  assert.match(sharingPanelSourceText, /export function CloudSharingPanel/);
+  assert.match(sharingPanelSourceText, /Invite people, review requests, and manage link access\./);
+  assert.match(sharingPanelSourceText, /aria-label="Edit access requests"/);
+  assert.match(sharingPanelSourceText, /<h3 className="text-sm font-semibold">Edit requests<\/h3>/);
+  assert.match(sharingPanelSourceText, /accessProjection\.accessRequestRows\.map/);
+  assert.match(sharingPanelSourceText, /accessProjection\.accessRequestSummary/);
+  assert.match(sharingPanelSourceText, /aria-label="Compute access"/);
+  assert.match(sharingPanelSourceText, /accessProjection\.runtimeAccessRows\.map/);
+  assert.match(sharingPanelSourceText, /function CloudShareStateLabel/);
+  assert.match(sharingPanelSourceText, /<CloudShareStateLabel tone=\{row\.stateTone\}>/);
+  assert.match(sharingPanelSourceText, /Can view this notebook without signing in/);
   assert.match(
-    sharingSourceText,
-    /accessProjection\.notebookAccessRows\.map\(\(row\) =>[\s\S]*<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong>\{row\.label\}<\/strong>[\s\S]*<span>\{row\.detail\}<\/span>/,
+    sharingPanelSourceText,
+    /Link access is off\. Only listed people can open this notebook/,
+  );
+  assert.match(sharingPanelSourceText, /aria-label=\{copyLinkLabel\}/);
+  assert.match(sharingPanelSourceText, /compactCopyLinkLabel/);
+  // Every section renders rows through one CloudShareRow so trailing controls
+  // share a single reserved action column instead of each row positioning its
+  // own, which is what made buttons, badges, and text land on different insets.
+  assert.match(
+    sharingPanelSourceText,
+    /function CloudShareRow\(\{ row, children \}: \{ row: CloudShareAccessRow; children\?: ReactNode \}\)/,
   );
   assert.match(
-    sharingSourceText,
-    /accessProjection\.accessRequestRows\.map\(\(row\) =>[\s\S]*aria-label=\{`Approve \$\{row\.label\}`\}/,
+    sharingPanelSourceText,
+    /<CloudShareRowIcon row=\{row\} \/>[\s\S]*<strong className="block truncate text-sm font-medium">\{row\.label\}<\/strong>/,
   );
-  assert.match(sharingSourceText, /aria-label=\{`Remove \$\{row\.label\}`\}/);
-  const sharePanelCss = cssText.match(/\.cloud-share-panel \{(?<body>[\s\S]*?)\n\}/)?.groups?.body;
-  assert.ok(sharePanelCss);
-  assert.match(sharePanelCss, /width: min\(30rem, calc\(100vw - 1\.5rem\)\);/);
-  assert.doesNotMatch(sharePanelCss, /position: fixed;/);
+  for (const rows of ["notebookAccessRows", "accessRequestRows", "runtimeAccessRows"]) {
+    assert.match(
+      sharingPanelSourceText,
+      new RegExp(
+        `accessProjection\\.${rows}\\.map\\(\\(row\\) => \\(\\s*<CloudShareRow key=\\{row\\.id\\} row=\\{row\\}`,
+      ),
+    );
+  }
+  assert.match(
+    sharingPanelSourceText,
+    /accessProjection\.accessRequestRows\.map\(\(row\) =>[\s\S]*label=\{`Approve \$\{row\.label\}`\}/,
+  );
+  assert.match(sharingPanelSourceText, /label=\{`Remove \$\{row\.label\}`\}/);
+  // Icon sizing and aria-hidden come from the Button variant and lucide's own
+  // defaults; per-icon overrides here drift from the design system.
+  assert.doesNotMatch(sharingPanelSourceText, /<[A-Z]\w*[^>]*\bsize-3\.5\b/);
+  assert.doesNotMatch(sharingPanelSourceText, /aria-hidden/);
+  assert.doesNotMatch(sharingPanelSourceText, /\bleading-5\b/);
+  // Enable/Disable and Copy link are real buttons, not ghost text that reads
+  // as a link.
+  assert.doesNotMatch(sharingPanelSourceText, /variant="ghost"\s+size="sm"/);
+  assert.match(sharingPanelSourceText, /import \{ Button \} from "@\/components\/ui\/button";/);
+  assert.match(sharingPanelSourceText, /import \{ Input \} from "@\/components\/ui\/input";/);
+  assert.match(
+    sharingPanelSourceText,
+    /import \{\s*Select,\s*SelectContent,\s*SelectItem,\s*SelectTrigger,\s*SelectValue,\s*\} from "@\/components\/ui\/select";/,
+  );
+  assert.match(
+    sharingPanelSourceText,
+    /import \{ Separator \} from "@\/components\/ui\/separator";/,
+  );
+  assert.doesNotMatch(sharingPanelSourceText, /<details/);
+  assert.doesNotMatch(sharingPanelSourceText, /<summary/);
+  assert.doesNotMatch(sharingPanelSourceText, /className="cloud-share-/);
   assert.match(
     sharingSourceText,
     /import \{ Popover, PopoverContent, PopoverTrigger \} from "@\/components\/ui\/popover";/,
   );
   assert.match(sharingSourceText, /<Popover open=\{open\} onOpenChange=\{setOpen\}>/);
+  assert.match(sharingSourceText, /<PopoverTrigger asChild>/);
   assert.match(
     sharingSourceText,
-    /<PopoverTrigger className="cloud-share-trigger" title="Share notebook">/,
-  );
-  assert.match(
-    sharingSourceText,
-    /<PopoverContent className="cloud-share-panel" align="end" sideOffset=\{8\}>/,
+    /<PopoverContent[\s\S]*align="end"[\s\S]*sideOffset=\{8\}[\s\S]*>/,
   );
   assert.doesNotMatch(sharingSourceText, /<details/);
   assert.doesNotMatch(sharingSourceText, /<summary/);
+  assert.doesNotMatch(sharingSourceText, /className="cloud-share-/);
   assert.match(
     presenceSourceText,
     /function CloudPresenceStatus[\s\S]*const presence = useSyncExternalStore\(store\.subscribe, store\.getSnapshot, store\.getSnapshot\);[\s\S]*const presenceDisplay = cloudViewerPresenceDisplay\(presence\);/,
@@ -432,16 +479,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     cssText,
     /@media \(max-width: 900px\) \{[\s\S]*cloud-room-toolbar[\s\S]*flex-wrap: nowrap;[\s\S]*cloud-room-toolbar \[data-slot="notebook-document-header-controls"\] \{[\s\S]*min-width: 0;[\s\S]*justify-content: flex-end;/,
   );
-  assert.match(
-    cssText,
-    /@media \(max-width: 640px\) \{[\s\S]*cloud-share-current li[\s\S]*grid-template-columns: auto minmax\(0, 1fr\);[\s\S]*cloud-share-row-actions[\s\S]*grid-column: 2;/,
-  );
-  assert.match(
-    cssText,
-    /@media \(max-width: 640px\) \{[\s\S]*cloud-share-copy-label-full[\s\S]*display: none;[\s\S]*cloud-share-copy-label-compact[\s\S]*display: inline;/,
-  );
-  assert.match(cssText, /0 10px 24px color-mix\(in srgb, #000 9%, transparent\)/);
-  assert.doesNotMatch(cssText, /0 12px 36px/);
+  assert.doesNotMatch(cssText, /\.cloud-share-/);
   assert.doesNotMatch(sourceText, /runtimeStatus=\{cloudNotebookRuntimeStatus/);
   assert.doesNotMatch(sourceText, /label: "live"/);
   assert.doesNotMatch(sourceText, /label: "Room"/);

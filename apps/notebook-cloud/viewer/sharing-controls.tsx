@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Check, Globe2, Link2, Mail, ServerCog, Share2, Trash2, UserRound, X } from "lucide-react";
+import { Share2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
@@ -11,6 +12,11 @@ import {
   type CloudSharingSourceFacts,
 } from "./cloud-sharing-facts";
 import { useCloudFactsProjection } from "./cloud-facts-react";
+import {
+  CloudSharingPanel,
+  type CloudSharingAccessRequestAction,
+  type CloudSharingMessageKind,
+} from "./sharing-panel";
 import {
   normalizeShareInviteEmail,
   type CloudNotebookAccessRequest,
@@ -27,9 +33,6 @@ interface CloudSharingControlsProps {
   invitesEndpoint: string;
   publicLink: string;
 }
-
-type CloudSharingMessageKind = "info" | "error";
-type CloudSharingAccessRequestAction = "approve" | "deny" | "dismiss";
 
 function useCloudSharingFactsProjection(
   source: CloudSharingSourceFacts,
@@ -331,244 +334,45 @@ export function CloudSharingControls({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger className="cloud-share-trigger" title="Share notebook">
-        <Share2 aria-hidden="true" />
-        <span>Share</span>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="sm" className="gap-1.5" title="Share notebook">
+          <Share2 className="size-3.5" aria-hidden="true" />
+          <span>Share</span>
+        </Button>
       </PopoverTrigger>
-      <PopoverContent className="cloud-share-panel" align="end" sideOffset={8}>
-        <header>
-          <div>
-            <h2>Share notebook</h2>
-            <p>Invite people, review requests, and manage link access.</p>
-          </div>
-          <button
-            type="button"
-            aria-label={sharingFacts.copyLinkLabel}
-            onClick={() => void copyPublicLink()}
-          >
-            <Link2 aria-hidden="true" />
-            <span className="cloud-share-copy-label-full">{sharingFacts.copyLinkLabel}</span>
-            <span className="cloud-share-copy-label-compact">
-              {sharingFacts.compactCopyLinkLabel}
-            </span>
-          </button>
-        </header>
-
-        <section className="cloud-share-public" aria-label="Public link access">
-          <div>
-            <Globe2 aria-hidden="true" />
-            <div>
-              <strong>Anyone with the link</strong>
-              <span>
-                {publicEnabled
-                  ? "Can view this notebook without signing in"
-                  : "Link access is off. Only listed people can open this notebook"}
-              </span>
-            </div>
-          </div>
-          <button
-            type="button"
-            disabled={busyAction === "public" || loadState === "loading"}
-            onClick={() => void togglePublicAccess()}
-          >
-            {publicEnabled ? "Disable" : "Enable"}
-          </button>
-        </section>
-
-        <form className="cloud-share-invite" onSubmit={submitInvite}>
-          <label htmlFor="cloud-share-invite-email">
-            <span>Invite by email</span>
-            <input
-              id="cloud-share-invite-email"
-              name="invite-email"
-              type="email"
-              value={inviteEmail}
-              placeholder="name@example.com"
-              autoComplete="email"
-              onChange={(event) => {
-                setInviteEmail(event.target.value);
-                setFormError(null);
-              }}
-            />
-          </label>
-          <label htmlFor="cloud-share-invite-scope">
-            <span>Access</span>
-            <select
-              id="cloud-share-invite-scope"
-              name="invite-scope"
-              value={inviteScope}
-              onChange={(event) => setInviteScope(event.target.value as CloudShareInviteScope)}
-            >
-              <option value="viewer">Can view</option>
-              <option value="editor">Can edit</option>
-            </select>
-          </label>
-          <button type="submit" disabled={!inviteReady || busyAction === "invite"}>
-            <Mail aria-hidden="true" />
-            Invite
-          </button>
-          {formError ? (
-            <div className="cloud-auth-form-error" role="alert">
-              {formError}
-            </div>
-          ) : null}
-        </form>
-
-        {accessProjection.accessRequestRows.length > 0 ? (
-          <section
-            className="cloud-share-current cloud-share-requests"
-            aria-label="Edit access requests"
-          >
-            <div className="cloud-share-current-heading">
-              <div>
-                <h3>Edit requests</h3>
-                <p>Approve collaborators you recognize, or dismiss stale requests.</p>
-              </div>
-              {accessProjection.accessRequestSummary ? (
-                <span>{accessProjection.accessRequestSummary}</span>
-              ) : null}
-            </div>
-            <ul>
-              {accessProjection.accessRequestRows.map((row) => (
-                <li key={row.id} title={row.title}>
-                  <CloudShareRowIcon row={row} />
-                  <div>
-                    <strong>{row.label}</strong>
-                    <span>{row.detail}</span>
-                  </div>
-                  <div className="cloud-share-row-actions">
-                    <span className="cloud-share-badge">{row.badge}</span>
-                    <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
-                      {row.stateLabel}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Approve ${row.label}`}
-                      title={`Approve ${row.label}`}
-                      disabled={busyAction === `${row.id}:approve`}
-                      onClick={() => void resolveAccessRequest(row, "approve")}
-                    >
-                      <Check aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Deny ${row.label}`}
-                      title={`Deny ${row.label}`}
-                      disabled={busyAction === `${row.id}:deny`}
-                      onClick={() => void resolveAccessRequest(row, "deny")}
-                    >
-                      <X aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Dismiss ${row.label}`}
-                      title={`Dismiss ${row.label}`}
-                      disabled={busyAction === `${row.id}:dismiss`}
-                      onClick={() => void resolveAccessRequest(row, "dismiss")}
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-
-        <section className="cloud-share-current" aria-label="Current notebook access">
-          <div className="cloud-share-current-heading">
-            <h3>Current access</h3>
-            {accessProjection.notebookAccessSummary ? (
-              <span>{accessProjection.notebookAccessSummary}</span>
-            ) : null}
-          </div>
-          {sharingFacts.showInitialAccessLoading ? (
-            <div className="cloud-share-empty">Loading access...</div>
-          ) : accessProjection.notebookAccessRows.length === 0 ? (
-            <div className="cloud-share-empty">Only the owner can access this notebook.</div>
-          ) : (
-            <ul>
-              {accessProjection.notebookAccessRows.map((row) => (
-                <li key={row.id} title={row.title}>
-                  <CloudShareRowIcon row={row} />
-                  <div>
-                    <strong>{row.label}</strong>
-                    <span>{row.detail}</span>
-                  </div>
-                  <div className="cloud-share-row-actions">
-                    <span className="cloud-share-badge">{row.badge}</span>
-                    {row.stateLabel ? (
-                      <span className="cloud-share-state" data-tone={row.stateTone ?? undefined}>
-                        {row.stateLabel}
-                      </span>
-                    ) : null}
-                    {row.removable ? (
-                      <button
-                        type="button"
-                        aria-label={`Remove ${row.label}`}
-                        title={`Remove ${row.label}`}
-                        disabled={busyAction === row.id}
-                        onClick={() => void removeAccessRow(row)}
-                      >
-                        <Trash2 aria-hidden="true" />
-                      </button>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        {accessProjection.runtimeAccessRows.length > 0 ? (
-          <section className="cloud-share-current cloud-share-runtime" aria-label="Compute access">
-            <div className="cloud-share-current-heading">
-              <h3>Compute access</h3>
-              {accessProjection.runtimeAccessSummary ? (
-                <span>{accessProjection.runtimeAccessSummary}</span>
-              ) : null}
-            </div>
-            <ul>
-              {accessProjection.runtimeAccessRows.map((row) => (
-                <li key={row.id} title={row.title}>
-                  <CloudShareRowIcon row={row} />
-                  <div>
-                    <strong>{row.label}</strong>
-                    <span>{row.detail}</span>
-                  </div>
-                  <div className="cloud-share-row-actions">
-                    <span className="cloud-share-badge">{row.badge}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-
-        {message ? (
-          <div className="cloud-share-message" data-kind={messageKind}>
-            {message}
-          </div>
-        ) : null}
+      <PopoverContent
+        className="w-[min(30rem,calc(100vw-1.5rem))] max-h-[calc(100vh-5.5rem)] overflow-y-auto p-0"
+        align="end"
+        sideOffset={8}
+      >
+        <CloudSharingPanel
+          accessProjection={accessProjection}
+          busyAction={busyAction}
+          compactCopyLinkLabel={sharingFacts.compactCopyLinkLabel}
+          copyLinkLabel={sharingFacts.copyLinkLabel}
+          formError={formError}
+          inviteEmail={inviteEmail}
+          inviteReady={inviteReady}
+          inviteScope={inviteScope}
+          message={message}
+          messageKind={messageKind}
+          onCopyLink={() => void copyPublicLink()}
+          onInviteEmailChange={(value) => {
+            setInviteEmail(value);
+            setFormError(null);
+          }}
+          onInviteScopeChange={setInviteScope}
+          onRemoveAccessRow={(row) => void removeAccessRow(row)}
+          onResolveAccessRequest={(row, action) => void resolveAccessRequest(row, action)}
+          onSubmitInvite={submitInvite}
+          onTogglePublicAccess={() => void togglePublicAccess()}
+          publicBusy={busyAction === "public" || loadState === "loading"}
+          publicEnabled={publicEnabled}
+          showInitialAccessLoading={sharingFacts.showInitialAccessLoading}
+        />
       </PopoverContent>
     </Popover>
   );
-}
-
-function CloudShareRowIcon({ row }: { row: CloudShareAccessRow }) {
-  if (row.kind === "invite") {
-    return <Mail aria-hidden="true" />;
-  }
-  if (row.kind === "access_request") {
-    return <UserRound aria-hidden="true" />;
-  }
-  if (row.kind === "acl" && row.scope === "runtime_peer") {
-    return <ServerCog aria-hidden="true" />;
-  }
-  if (row.acl.subject_kind === "public") {
-    return <Globe2 aria-hidden="true" />;
-  }
-  return <UserRound aria-hidden="true" />;
 }
 
 function accessRequestActionMessage(
