@@ -10,6 +10,7 @@ evidence source.
 Related:
 
 - [Deployment Topology](../adr/deployment-topology.md)
+- [Self-hosted nteract with celld](./self-hosted-celld.md)
 - [Hosted Room Authorization](../adr/hosted-room-authorization.md)
 - [Hosted Credential Transport](../adr/hosted-credential-transport.md)
 - [Hosted Notebook Artifacts](../adr/hosted-notebook-artifacts.md)
