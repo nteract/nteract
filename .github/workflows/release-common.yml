@@ -221,10 +221,10 @@ jobs:
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
 
       - name: Build for macOS ARM64
-        run: cargo build --release --target aarch64-apple-darwin -p runt
+        run: cargo build --release --target aarch64-apple-darwin -p runt -p runtimed
 
       - name: Build for macOS x64
-        run: cargo build --release --target x86_64-apple-darwin -p runt
+        run: cargo build --release --target x86_64-apple-darwin -p runt -p runtimed
 
       - name: Rename binaries
         run: |
@@ -232,6 +232,10 @@ jobs:
           chmod +x runt-darwin-arm64
           cp target/x86_64-apple-darwin/release/runt runt-darwin-x64
           chmod +x runt-darwin-x64
+          cp target/aarch64-apple-darwin/release/runtimed runtimed-darwin-arm64
+          chmod +x runtimed-darwin-arm64
+          cp target/x86_64-apple-darwin/release/runtimed runtimed-darwin-x64
+          chmod +x runtimed-darwin-x64
 
       - name: Upload macOS executables
         uses: actions/upload-artifact@v7
@@ -240,6 +244,8 @@ jobs:
           path: |
             runt-darwin-arm64
             runt-darwin-x64
+            runtimed-darwin-arm64
+            runtimed-darwin-x64
 
   build-notebook-macos-arm64:
     name: Build macOS ARM64 Notebook
@@ -751,6 +757,19 @@ jobs:
           path: crates/notebook/binaries/nteract-mcp-x86_64-pc-windows-msvc.exe
           if-no-files-found: error
 
+      - name: Stage standalone runtimed binary
+        shell: bash
+        run: |
+          mkdir -p daemon
+          cp crates/notebook/binaries/runtimed-x86_64-pc-windows-msvc.exe daemon/runtimed-windows-x64.exe
+
+      - name: Upload standalone runtimed binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtimed-windows-executable
+          path: daemon/runtimed-windows-x64.exe
+          if-no-files-found: error
+
   build-notebook-linux-x64:
     name: Build Linux x64 Notebook
     runs-on: ubuntu-22.04
@@ -1214,6 +1233,12 @@ jobs:
           name: runt-macos-executables
           path: ./executables
 
+      - name: Download Windows runtimed executable
+        uses: actions/download-artifact@v8
+        with:
+          name: runtimed-windows-executable
+          path: ./executables
+
       - name: Download macOS ARM64 notebook
         uses: actions/download-artifact@v8
         with:
@@ -1275,6 +1300,11 @@ jobs:
           cp executables/nteract-mcp-linux-x64 "release-assets/${MCP_NAME}-linux-x64"
           cp executables/runt-darwin-arm64 "release-assets/${CLI_NAME}-darwin-arm64"
           cp executables/runt-darwin-x64 "release-assets/${CLI_NAME}-darwin-x64"
+          # Standalone daemons for embedding hosts. The macOS binaries are built
+          # outside the notarized .app, so consumers must sign them themselves.
+          cp executables/runtimed-darwin-arm64 "release-assets/${DAEMON_NAME}-darwin-arm64"
+          cp executables/runtimed-darwin-x64 "release-assets/${DAEMON_NAME}-darwin-x64"
+          cp executables/runtimed-windows-x64.exe "release-assets/${DAEMON_NAME}-windows-x64.exe"
           sed \
             -e "s/^DEFAULT_CHANNEL=\"stable\"$/DEFAULT_CHANNEL=\"${CHANNEL}\"/" \
             -e "s/^DEFAULT_TAG=\"\"$/DEFAULT_TAG=\"v${{ needs.compute-version.outputs.version }}\"/" \
@@ -1499,7 +1529,10 @@ jobs:
             echo "| Linux | x64 | \`${DAEMON_NAME}-linux-x64\` |"
             echo "| Linux | x64 | \`${MCP_NAME}-linux-x64\` |"
             echo "| macOS | ARM64 | \`${CLI_NAME}-darwin-arm64\` |"
+            echo "| macOS | ARM64 | \`${DAEMON_NAME}-darwin-arm64\` |"
             echo "| macOS | x64 (Intel) | \`${CLI_NAME}-darwin-x64\` |"
+            echo "| macOS | x64 (Intel) | \`${DAEMON_NAME}-darwin-x64\` |"
+            echo "| Windows | x64 | \`${DAEMON_NAME}-windows-x64.exe\` |"
             echo ''
             echo '## Release highlights'
             echo ''
@@ -1534,6 +1567,7 @@ jobs:
             ./release-assets/nteract-mcp*-linux-x64
             ./release-assets/runt*-darwin-arm64
             ./release-assets/runt*-darwin-x64
+            ./release-assets/runtimed*-windows-x64.exe
             ./release-assets/install-linux-release
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage.sig
