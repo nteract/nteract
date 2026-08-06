@@ -9,7 +9,9 @@
     "build": "tsc -b && vp build",
     "preview": "vp preview",
     "test:e2e:browser": "node e2e/run-browser-e2e.mjs",
-    "test:e2e:browser:portless": "node e2e/run-browser-e2e.mjs --portless"
+    "test:e2e:browser:portless": "node e2e/run-browser-e2e.mjs --portless",
+    "test:e2e:record": "NTERACT_E2E_RECORD=1 node e2e/run-browser-e2e.mjs",
+    "test:e2e:video": "node e2e/show-video.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",
@@ -55,6 +57,7 @@
     "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
+    "@nteract/e2e-record": "workspace:*",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.1.8",
     "@types/react": "^19.2.17",

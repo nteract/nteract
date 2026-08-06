@@ -19,6 +19,9 @@
     "test": "pnpm run wasm && node --import tsx --test test/*.test.ts test/*.test.mjs",
     "test:renderer-parity": "playwright test -c playwright.render-parity.config.ts",
     "test:renderer-parity:update": "playwright test -c playwright.render-parity.config.ts --update-snapshots",
+    "test:e2e:browser": "node e2e/browser/run-cloud-e2e.mjs",
+    "test:e2e:record": "NTERACT_E2E_RECORD=1 node e2e/browser/run-cloud-e2e.mjs",
+    "test:e2e:video": "node e2e/browser/show-video.mjs",
     "dev": "node scripts/dev.mjs",
     "profile:local": "node scripts/profile-local.mjs",
     "smoke": "node --import tsx scripts/smoke.mjs",
@@ -51,6 +54,7 @@
     "runtimed": "workspace:*"
   },
   "devDependencies": {
+    "@nteract/e2e-record": "workspace:*",
     "@playwright/test": "^1.59.1",
     "@runtimed/node": "workspace:*",
     "@tailwindcss/vite": "^4.1.8",

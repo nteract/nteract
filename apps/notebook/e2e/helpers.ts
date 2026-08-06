@@ -1,4 +1,35 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { beginRecordedNavigation, markClipStart as markClipStartShared } from "@nteract/e2e-record";
+
+// Recording is opt-in via NTERACT_E2E_RECORD=1, which also flips on the video
+// viewport/zoom in playwright.config.ts. Everything mechanical lives in
+// @nteract/e2e-record and is shared with apps/notebook-cloud; only the
+// app-specific readiness marks below are ours.
+export { pauseForVideo, screenshot } from "@nteract/e2e-record";
+
+const NAVIGATION_HELPERS = "openNotebookRoom/openNotebookPath/waitForNotebookReady";
+
+/**
+ * Low-level primitive: record "the trimmed clip starts *now*." A no-op when not
+ * recording.
+ *
+ * Prefer a named `mark*Ready` helper below: each waits for a specific readiness
+ * signal *before* stamping the clip start, so the mark's meaning is verified
+ * rather than implied by whatever happened to be awaited on the lines above it.
+ * Reach for this raw primitive only for a surface that has no named helper yet.
+ */
+export function markClipStart(): Promise<void> {
+  return markClipStartShared(NAVIGATION_HELPERS);
+}
+
+/**
+ * Clip starts once the kernel is idle (launched and ready to execute). Use for
+ * flows that run cells. Asserts `data-kernel-status="idle"`.
+ */
+export async function markKernelReady(page: Page, timeout = 120_000): Promise<void> {
+  await waitForKernelStatus(page, "idle", timeout);
+  await markClipStart();
+}
 
 export interface ExecutionPerformanceMark {
   name: string;
@@ -24,6 +55,7 @@ export interface ExecutionPerformanceSnapshot {
 }
 
 export async function waitForNotebookReady(page: Page, path = "/") {
+  await beginRecordedNavigation(page);
   await page.goto(path);
   await expect(page.getByTestId("notebook-toolbar")).toBeVisible({ timeout: 30_000 });
   // NotebookView marks sync complete once loading has finished without a load

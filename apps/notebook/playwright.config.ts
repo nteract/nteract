@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { videoRecordingUse } from "@nteract/e2e-record/config";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +35,9 @@ export default defineConfig({
     headless: true,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
+    // Compact framing: the desktop flows worth recording are a single notebook,
+    // so a small window keeps the clip readable at a glance.
+    ...videoRecordingUse({ width: 600, height: 400 }),
   },
   projects: [
     {
