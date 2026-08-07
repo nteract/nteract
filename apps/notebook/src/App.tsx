@@ -2002,48 +2002,6 @@ function AppContent() {
               onDismiss={() => setDismissedLaunchError(errorDetails)}
             />
           )}
-        <NotebookToolbar
-          kernelStatus={displayKernelStatus}
-          statusKey={displayStatusKey}
-          lifecycle={lifecycle}
-          errorReason={errorReason}
-          kernelErrorMessage={errorDetails}
-          envSource={envSource}
-          condaPython={condaDependencies?.python ?? null}
-          condaChannels={condaDependencies?.channels ?? null}
-          projectContext={runtimeState.project_context}
-          envTypeHint={envTypeHint}
-          envProgress={envProgress.isActive || envProgress.error ? envProgress : null}
-          runtime={runtime}
-          onStartKernel={handleStartKernel}
-          onInterruptKernel={interruptKernel}
-          onRestartKernel={handleRestartKernel}
-          onRunAllCells={handleRunAllCells}
-          onRestartAndRunAll={handleRestartAndRunAll}
-          focusedCellId={focusedCellId}
-          lastCellId={cellIds.length > 0 ? cellIds[cellIds.length - 1] : null}
-          onAddCell={handleAddCell}
-          onToggleDependencies={handleTogglePackagesRail}
-          isDepsOpen={packagesRailOpen}
-          capabilities={shellCapabilities}
-          depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
-          updateStatus={updateStatus}
-          updateVersion={updateVersion}
-          onRestartToUpdate={restartToUpdate}
-          trailingControls={
-            // Connection/identity slot: renders nothing for a purely local
-            // session (isRemoteNotebookContext) — conditionality is the
-            // point. The source derives from daemon lifecycle events (the
-            // IPC transport's status is constant in practice). Hosted rooms
-            // compose daemon and bridge health, so their copy names the whole
-            // notebook connection rather than only the first hop.
-            <NotebookConnectionIdentity
-              capabilities={shellCapabilities}
-              connectionStatus$={desktopConnectionStatus}
-              connectionLabel={hostedNotebookUrl ? "Notebook connection" : "Daemon connection"}
-            />
-          }
-        />
         {globalFind.isOpen && (
           <GlobalFindBar
             query={globalFind.query}
@@ -2092,12 +2050,55 @@ function AppContent() {
               </NotebookNotice>
             ) : null
           }
+          toolbarPlacement="stage"
+          toolbarClassName="shrink-0"
+          toolbarLabel="Notebook execution and runtime controls"
+          toolbar={
+            <NotebookToolbar
+              kernelStatus={displayKernelStatus}
+              statusKey={displayStatusKey}
+              lifecycle={lifecycle}
+              errorReason={errorReason}
+              kernelErrorMessage={errorDetails}
+              envSource={envSource}
+              condaPython={condaDependencies?.python ?? null}
+              condaChannels={condaDependencies?.channels ?? null}
+              projectContext={runtimeState.project_context}
+              envTypeHint={envTypeHint}
+              envProgress={envProgress.isActive || envProgress.error ? envProgress : null}
+              runtime={runtime}
+              onStartKernel={handleStartKernel}
+              onInterruptKernel={interruptKernel}
+              onRestartKernel={handleRestartKernel}
+              onRunAllCells={handleRunAllCells}
+              onRestartAndRunAll={handleRestartAndRunAll}
+              focusedCellId={focusedCellId}
+              lastCellId={cellIds.length > 0 ? cellIds[cellIds.length - 1] : null}
+              onAddCell={handleAddCell}
+              onToggleDependencies={handleTogglePackagesRail}
+              isDepsOpen={packagesRailOpen}
+              capabilities={shellCapabilities}
+              depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
+              updateStatus={updateStatus}
+              updateVersion={updateVersion}
+              onRestartToUpdate={restartToUpdate}
+            />
+          }
           stageClassName={cn(
-            "flex-row min-w-0 flex-1",
+            "min-w-0 flex-1",
             !railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
           )}
           rail={
             <NotebookDocumentRail
+              trailingSlot={
+                <NotebookConnectionIdentity
+                  capabilities={shellCapabilities}
+                  connectionStatus$={desktopConnectionStatus}
+                  connectionLabel={
+                    hostedNotebookUrl ? "Notebook connection" : "Daemon connection"
+                  }
+                />
+              }
               viewModel={notebookViewModel}
               activePanelId={renderedActiveRailPanel}
               collapsed={railCollapsed}
@@ -2238,7 +2239,7 @@ function AppContent() {
             />
           }
         >
-          <div className="flex min-w-0 flex-1">
+          <div className="flex min-h-0 min-w-0 flex-1">
             <CrdtBridgeProvider
               getHandle={getHandle}
               onSyncNeeded={triggerSync}
