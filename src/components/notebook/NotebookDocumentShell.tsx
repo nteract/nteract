@@ -10,7 +10,10 @@ export interface NotebookDocumentShellProps {
   rootElement?: "div" | "main";
   rail?: ReactNode;
   toolbar?: ReactNode;
+  toolbarPlacement?: "shell" | "stage";
+  stageToolbar?: ReactNode;
   notices?: ReactNode;
+  noticesPlacement?: "shell" | "stage";
   children: ReactNode;
   capabilities?: NotebookShellCapabilities;
   className?: string;
@@ -25,7 +28,10 @@ export function NotebookDocumentShell({
   rootElement = "div",
   rail,
   toolbar,
+  toolbarPlacement = "shell",
+  stageToolbar,
   notices,
+  noticesPlacement = "shell",
   children,
   capabilities,
   className,
@@ -36,6 +42,20 @@ export function NotebookDocumentShell({
   stageLabel = "Notebook",
 }: NotebookDocumentShellProps) {
   const Root = rootElement as ElementType;
+  const toolbarSlot = toolbar ? (
+    <div
+      className={toolbarClassName}
+      aria-label={toolbarLabel}
+      data-slot="notebook-document-toolbar"
+    >
+      {toolbar}
+    </div>
+  ) : null;
+  const noticesSlot = notices ? (
+    <div className={noticesClassName} data-slot="notebook-document-notices">
+      {notices}
+    </div>
+  ) : null;
 
   return (
     <Root
@@ -51,20 +71,8 @@ export function NotebookDocumentShell({
       data-runtime-connected={capabilities?.runtime.connected}
       data-slot="notebook-document-shell"
     >
-      {toolbar ? (
-        <div
-          className={toolbarClassName}
-          aria-label={toolbarLabel}
-          data-slot="notebook-document-toolbar"
-        >
-          {toolbar}
-        </div>
-      ) : null}
-      {notices ? (
-        <div className={noticesClassName} data-slot="notebook-document-notices">
-          {notices}
-        </div>
-      ) : null}
+      {toolbarPlacement === "shell" ? toolbarSlot : null}
+      {noticesPlacement === "shell" ? noticesSlot : null}
       <div className="flex min-h-0 flex-1 overflow-hidden" data-slot="notebook-document-body">
         {rail}
         <section
@@ -72,6 +80,11 @@ export function NotebookDocumentShell({
           aria-label={stageLabel}
           data-slot="notebook-document-stage"
         >
+          {toolbarPlacement === "stage" ? toolbarSlot : null}
+          {noticesPlacement === "stage" ? noticesSlot : null}
+          {stageToolbar ? (
+            <div data-slot="notebook-document-stage-toolbar">{stageToolbar}</div>
+          ) : null}
           {children}
         </section>
       </div>

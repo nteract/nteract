@@ -24,6 +24,8 @@ export interface RailProps<PanelId extends string = string> {
   onCollapsedChange: (collapsed: boolean) => void;
   /** Rendered inline with the panel title, right-aligned. */
   panelAction?: ReactNode;
+  leadingSlot?: ReactNode;
+  trailingSlot?: ReactNode;
   panelClassName?: string;
   className?: string;
   dataTestId?: string;
@@ -37,6 +39,8 @@ export function Rail<PanelId extends string = string>({
   items,
   panelTitle,
   panelAction,
+  leadingSlot,
+  trailingSlot,
   panelClassName,
   children,
   onActivePanelChange,
@@ -52,7 +56,8 @@ export function Rail<PanelId extends string = string>({
       data-testid={dataTestId}
       data-collapsed={collapsed ? "true" : "false"}
     >
-      <div className="flex w-12 shrink-0 flex-col items-center gap-2 border-r bg-muted/40 px-2 py-3">
+      <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-background px-2 py-3">
+        {leadingSlot ? <div className="mb-4 flex flex-col items-center">{leadingSlot}</div> : null}
         {items.map((item) => (
           <RailButton
             key={item.id}
@@ -71,6 +76,9 @@ export function Rail<PanelId extends string = string>({
             }}
           />
         ))}
+        {trailingSlot ? (
+          <div className="mt-auto flex flex-col items-center pt-4">{trailingSlot}</div>
+        ) : null}
       </div>
 
       {!collapsed && (
@@ -127,12 +135,12 @@ export function RailButton({
       onClick={onClick}
       data-slot={dataSlot}
       className={cn(
-        "flex size-8 items-center justify-center rounded-md border text-xs transition-colors",
+        "flex size-9 items-center justify-center rounded-xl text-xs transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
         active
-          ? "border-primary bg-primary text-primary-foreground"
-          : "border-transparent text-muted-foreground hover:border-border hover:bg-background hover:text-foreground",
-        disabled && "cursor-not-allowed opacity-40 hover:border-transparent hover:bg-transparent",
+          ? "bg-foreground text-background"
+          : "text-foreground/70 hover:bg-muted hover:text-foreground",
+        disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
       )}
     >
       <Icon className="size-4" aria-hidden="true" />

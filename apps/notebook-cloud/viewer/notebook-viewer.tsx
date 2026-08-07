@@ -24,7 +24,10 @@ import {
   useHasIsolatedOutputs,
   useIsolatedRenderer,
 } from "@/components/isolated/isolated-renderer-context";
-import type { NotebookRailPanelId } from "@/components/notebook-rail";
+import {
+  NotebookRailHomeButton,
+  type NotebookRailPanelId,
+} from "@/components/notebook-rail";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import {
   markdownProjectionMatchesSource,
@@ -37,7 +40,9 @@ import {
   NotebookSettingsDrawer,
   notebookToolbarActors,
   NotebookCommentsPanel,
+  NotebookCommandToolbar,
   NotebookDocumentToolbar,
+  NotebookToolbarFrame,
   navigateNotebookOutlineItem,
   NotebookDocumentRail,
   NotebookDocumentShell,
@@ -1604,8 +1609,29 @@ export function NotebookViewer({
     onCreateOutputComment: handleRequestOutputComment,
     onActivateCommentThread: handleActivateCommentThread,
   });
+  const identityControls = liveRoomDisabledStatus?.kind === "loading" ? null : (
+    <NotebookConnectionIdentity
+      capabilities={shellCapabilities}
+      connectionStatus$={connectionStatus$}
+      accountDetail={authState.oidcClaims?.email?.trim() ?? null}
+      accountActions={
+        <>
+          <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+            <Settings aria-hidden="true" />
+            Settings
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={signOutOfNotebook}>
+            <LogOut aria-hidden="true" />
+            Sign out
+          </DropdownMenuItem>
+        </>
+      }
+    />
+  );
   const rail = (
     <NotebookDocumentRail
+      leadingSlot={<NotebookRailHomeButton href="/n" />}
+      trailingSlot={identityControls}
       viewModel={notebookViewModel}
       activePanelId={renderedActiveRailPanel}
       collapsed={railCollapsed}
@@ -1749,33 +1775,13 @@ export function NotebookViewer({
           />
         ) : null
       }
-      identityControls={
-        // Connection/identity slot: self-identity avatar + connectivity dot
-        // (the stable bridge survives transport replacement; the dot keeps
-        // frozen runtime chrome interpretable while reconnecting).
-        notebookHeaderChrome.showConnectionIdentity ? (
-          <NotebookConnectionIdentity
-            capabilities={shellCapabilities}
-            connectionStatus$={connectionStatus$}
-            accountDetail={authState.oidcClaims?.email?.trim() ?? null}
-            accountActions={
-              <>
-                <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
-                  <Settings aria-hidden="true" />
-                  Settings
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={signOutOfNotebook}>
-                  <LogOut aria-hidden="true" />
-                  Sign out
-                </DropdownMenuItem>
-              </>
-            }
-          />
-        ) : null
-      }
-      reserveCommandToolbar={editAccessPending}
-      commandToolbar={{
-        leadingControls: (
+    />
+  );
+  const stageToolbar = showCloudCommandToolbar ? (
+    <NotebookToolbarFrame className="cloud-notebook-stage-toolbar">
+      <NotebookCommandToolbar
+        capabilities={shellCapabilities}
+        leadingControls={
           <button
             type="button"
             className="cloud-mobile-rail-toggle hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -1785,25 +1791,25 @@ export function NotebookViewer({
           >
             <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
           </button>
-        ),
-        runtime: toolbarRuntime,
-        runtimeTarget: shellCapabilities.runtime.target ?? null,
-        environmentManager: toolbarEnvironmentManager,
-        environmentPanelOpen: activeRailPanel === "packages" && !railCollapsed,
-        runtimeStatus: cloudRuntimeStatus,
-        addCellControlsDisabled: editAccessPending,
-        addAfterCellId: toolbarAddAfterCellId,
-        onAddCell: handleCloudAddCell,
-        onStartRuntime: handleCloudStartRuntime,
-        onInterruptRuntime: handleCloudInterruptRuntime,
-        onRestartRuntime: handleCloudRestartRuntime,
-        onRunAllCells: handleCloudRunAllCells,
-        onRestartAndRunAll: handleCloudRestartAndRunAll,
-        onTogglePackages: handleTogglePackagesRail,
-        workstationAction,
-      }}
-    />
-  );
+        }
+        runtime={toolbarRuntime}
+        runtimeTarget={shellCapabilities.runtime.target ?? null}
+        environmentManager={toolbarEnvironmentManager}
+        environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
+        runtimeStatus={cloudRuntimeStatus}
+        addCellControlsDisabled={editAccessPending}
+        addAfterCellId={toolbarAddAfterCellId}
+        onAddCell={handleCloudAddCell}
+        onStartRuntime={handleCloudStartRuntime}
+        onInterruptRuntime={handleCloudInterruptRuntime}
+        onRestartRuntime={handleCloudRestartRuntime}
+        onRunAllCells={handleCloudRunAllCells}
+        onRestartAndRunAll={handleCloudRestartAndRunAll}
+        onTogglePackages={handleTogglePackagesRail}
+        workstationAction={workstationAction}
+      />
+    </NotebookToolbarFrame>
+  ) : null;
   const notebookViewSurface = projectCloudNotebookViewSurface({
     // A signed-out gate owns the stage: suppress the empty NotebookView so it
     // does not paint a blank canvas behind the gate.
@@ -1940,8 +1946,11 @@ export function NotebookViewer({
         }
         stageClassName="cloud-notebook-stage"
         toolbar={toolbar}
+        toolbarPlacement="stage"
+        stageToolbar={stageToolbar}
         toolbarLabel="Notebook view status and controls"
         notices={notices}
+        noticesPlacement="stage"
         noticesClassName="cloud-notebook-notices"
         capabilities={shellCapabilities}
         rail={notebookStageGated ? undefined : rail}

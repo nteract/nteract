@@ -12,6 +12,10 @@ export {
   type NotebookRailPanelId,
   type NotebookRailProps,
 } from "./NotebookRail";
+export {
+  NotebookRailHomeButton,
+  type NotebookRailHomeButtonProps,
+} from "./NotebookRailHomeButton";
 export type {
   NotebookOutlineHrefTarget,
   NotebookOutlineItem,

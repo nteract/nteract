@@ -15,6 +15,8 @@ export interface NotebookDocumentRailProps {
   commentsPanel?: ReactNode;
   workstationsPanel?: ReactNode;
   workstationsPanelAction?: ReactNode;
+  leadingSlot?: ReactNode;
+  trailingSlot?: ReactNode;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   onSelectOutlineItem?: (item: NotebookOutlineItem) => void;
@@ -34,6 +36,8 @@ export function NotebookDocumentRail({
   commentsPanel,
   workstationsPanel,
   workstationsPanelAction,
+  leadingSlot,
+  trailingSlot,
   onActivePanelChange,
   onCollapsedChange,
   onSelectOutlineItem,
@@ -53,6 +57,8 @@ export function NotebookDocumentRail({
       commentsPanel={commentsPanel}
       workstationsPanel={workstationsPanel}
       workstationsPanelAction={workstationsPanelAction}
+      leadingSlot={leadingSlot}
+      trailingSlot={trailingSlot}
       onActivePanelChange={onActivePanelChange}
       onCollapsedChange={onCollapsedChange}
       onSelectOutlineItem={onSelectOutlineItem}
