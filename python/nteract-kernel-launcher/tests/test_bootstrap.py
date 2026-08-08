@@ -313,6 +313,74 @@ def test_install_registers_on_both_seats_once():
     assert len(ip.displayhook._hooks) == 1
 
 
+def test_worker_thread_display_attaches_arrow_buffers():
+    """A worker-thread display must publish every declared Arrow blob."""
+    import time
+
+    from jupyter_client import KernelManager
+    from jupyter_client.kernelspec import KernelSpec
+    from nteract_kernel_launcher._refs import BLOB_REF_MIME
+
+    kernel_manager = KernelManager(kernel_name="nteract-launcher-test")
+    kernel_manager._kernel_spec = KernelSpec(  # noqa: SLF001
+        argv=[
+            sys.executable,
+            "-m",
+            "nteract_kernel_launcher",
+            "-f",
+            "{connection_file}",
+        ],
+        display_name="nteract launcher test",
+        language="python",
+    )
+    kernel_manager.start_kernel()
+    client = kernel_manager.client()
+    client.start_channels()
+    try:
+        client.wait_for_ready(timeout=30)
+        message_id = client.execute(
+            """
+from concurrent.futures import ThreadPoolExecutor
+import polars as pl
+from IPython.display import display
+
+df = pl.DataFrame({"a": range(100_000), "b": [f"x{i}" for i in range(100_000)]})
+ThreadPoolExecutor(1).submit(display, df).result()
+"""
+        )
+
+        display_messages = []
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            message = client.get_iopub_msg(timeout=max(0.1, deadline - time.monotonic()))
+            if message.get("parent_header", {}).get("msg_id") != message_id:
+                continue
+            message_type = message.get("header", {}).get("msg_type")
+            if message_type == "display_data":
+                display_messages.append(message)
+            if (
+                message_type == "status"
+                and message.get("content", {}).get("execution_state") == "idle"
+            ):
+                break
+
+        assert len(display_messages) == 1
+        display_message = display_messages[0]
+        ref_bundle = display_message["content"]["data"][BLOB_REF_MIME]
+        refs = ref_bundle.get("refs", [ref_bundle])
+        buffers = display_message.get("buffers", [])
+
+        assert refs
+        assert len(buffers) == len(refs)
+        for ref in refs:
+            buffer = bytes(buffers[ref["buffer_index"]])
+            assert len(buffer) == ref["size"]
+            assert hashlib.sha256(buffer).hexdigest() == ref["hash"]
+    finally:
+        client.stop_channels()
+        kernel_manager.shutdown_kernel(now=True)
+
+
 # ─── LLM formatter contract ──────────────────────────────────────────────
 
 
