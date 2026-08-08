@@ -49,7 +49,9 @@ pytest.importorskip(
 sys.path.insert(0, str(Path(__file__).parent))
 
 from test_daemon_integration import (  # noqa: E402, F401, F811
+    _set_python_kernelspec,
     async_create_cell_and_wait_for_sync,
+    async_shutdown_and_start_kernel,
     async_start_kernel_with_retry,
     client,
     daemon_health_check,
@@ -266,6 +268,50 @@ df
     table = _read_arrow_table(bytes(arrow_bytes))
     assert table.num_rows == 3
     assert set(table.column_names) == {"a", "b"}
+
+
+@pytest.mark.integration
+async def test_polars_worker_thread_display_publishes_arrow_blob(session):  # noqa: F811
+    """Worker-thread ``display()`` must publish bytes for every Arrow ref."""
+    pytest.importorskip("polars")
+    await _set_python_kernelspec(session, uv_deps=["polars", "pyarrow"])
+    await async_shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:inline")
+
+    display_id = await async_create_cell_and_wait_for_sync(
+        session,
+        """
+from concurrent.futures import ThreadPoolExecutor
+import polars as pl
+from IPython.display import display
+
+df = pl.DataFrame({"a": range(100_000), "b": [f"x{i}" for i in range(100_000)]})
+ThreadPoolExecutor(1).submit(display, df).result()
+""",
+    )
+    result = await session.execute_cell(display_id)
+    assert result.success, f"worker-thread display failed: {result.error}"
+
+    rich_outputs = [output for output in result.outputs if output.output_type == "display_data"]
+    assert len(rich_outputs) == 1
+    output = rich_outputs[0]
+    assert BLOB_REF_MIME not in output.data
+
+    arrow_bytes = output.data.get(ARROW_STREAM_MIME)
+    assert isinstance(arrow_bytes, (bytes, bytearray)), (
+        f"Arrow stream blob did not resolve. keys: {list(output.data.keys())}"
+    )
+    table = _read_arrow_table(bytes(arrow_bytes))
+    assert table.num_rows == 50_000
+    assert set(table.column_names) == {"a", "b"}
+
+    manifest = _arrow_manifest(output.data)
+    assert manifest["summary"] == {
+        "total_rows": 100_000,
+        "included_rows": 50_000,
+        "sampled": True,
+        "sample_strategy": "head",
+    }
+    assert manifest["chunks"][0]["hash"] == hashlib.sha256(bytes(arrow_bytes)).hexdigest()
 
 
 @pytest.mark.integration

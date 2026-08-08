@@ -1,8 +1,10 @@
 """Buffer-attachment hook — shared between ``display_pub`` and ``displayhook``.
 
 When the DataFrame formatter emits an output bundle, it stashes the Arrow
-bytes in a thread-local dict keyed by the blob-ref hash. Later, when the
-Jupyter message is about to go on the wire, this hook:
+bytes in a thread-local dict keyed by the blob-ref hash. Accessing that stash
+also installs the hook for the current thread because IPython publisher hooks
+are thread-local. Later, when the Jupyter message is about to go on the wire,
+this hook:
 
 1. Looks at the message's ``content.data`` for our ref MIME.
 2. If present, pops the pending bytes by hash.
@@ -31,7 +33,17 @@ _pending = threading.local()
 
 
 def pending_buffers() -> dict[str, bytes]:
-    """Return the per-thread pending-buffers dict, creating it lazily."""
+    """Return the per-thread pending-buffers dict, creating it lazily.
+
+    Formatters can run on worker threads when user code calls ``display()``
+    from an executor. IPython keeps publisher hooks thread-local, so the
+    extension's main-thread installation is not visible there. Install on
+    stash access to ensure the later publish on this same thread can attach
+    the pending bytes.
+    """
+    ip = _get_ipython()
+    if ip is not None:
+        install(ip)
     if not hasattr(_pending, "buffers"):
         _pending.buffers = {}
     return _pending.buffers
