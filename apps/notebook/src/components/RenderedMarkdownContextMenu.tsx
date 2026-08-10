@@ -8,8 +8,6 @@ import {
 } from "@/components/notebook/NotebookContextMenu";
 import {
   resolveSourceRangeAnchor,
-  selectionRectFromDomSelection,
-  type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "../lib/comment-source-anchor";
 import {
@@ -23,11 +21,7 @@ interface RenderedMarkdownContextMenuProps {
   source: string;
   markdownProjection: MarkdownProjectionPlan | null;
   viewRef: RefObject<HTMLDivElement | null>;
-  onCreateSourceComment?: (
-    anchor: SourceRangeCommentAnchor,
-    rect: SourceCommentSelectionRect | null,
-    quote?: string | null,
-  ) => void;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   onChangeCellType?: (type: "code" | "markdown") => void;
   children: ReactNode;
 }
@@ -134,11 +128,7 @@ export function RenderedMarkdownContextMenu({
                 const quote = range
                   ? renderedTextForSourceRange(markdownProjection, range.from, range.to)
                   : null;
-                onCreateSourceComment(
-                  anchor,
-                  selectionRectFromDomSelection(currentDomSelection()),
-                  quote,
-                );
+                onCreateSourceComment(anchor, quote);
               }
             : undefined,
       }),

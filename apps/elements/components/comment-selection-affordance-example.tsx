@@ -18,11 +18,10 @@ export function CommentSelectionAffordanceExample() {
     <div className="not-prose my-6">
       <div className="mx-auto max-w-[760px] border border-border bg-background px-6 py-5 text-foreground shadow-sm max-sm:px-4">
         <p className="mb-5 text-sm text-muted-foreground">
-          A small, flat, author-colored dot that stays out of the way while you select. It opens
-          into a "Comment" pill only on hover or keyboard focus, a staged grow then spread then
-          reveal driven by the Web Animations API. No icon: the pill shape and label are the cue.
-          The editor and rendered-markdown planes share this one surface, tunable here via{" "}
-          <code>--comment-affordance-color</code>.
+          A floating toolbar beside the selection with one add-comment button. Clicking it opens the
+          Discussions panel with the selection staged as the draft target, so every comment is
+          composed in one place. The editor and rendered-markdown planes share this one surface,
+          tinted here via <code>--comment-affordance-color</code>.
         </p>
         <div className="flex flex-wrap items-center gap-x-8 gap-y-4 text-sm">
           {SAMPLES.map((sample) => (
@@ -33,7 +32,6 @@ export function CommentSelectionAffordanceExample() {
             >
               <span>{sample.text}</span>
               <CommentSelectionAffordance
-                label="Comment"
                 onActivate={() => undefined}
                 style={authorColor(sample.color)}
               />
@@ -41,7 +39,7 @@ export function CommentSelectionAffordanceExample() {
           ))}
         </div>
         <p className="mt-4 text-xs text-muted-foreground">
-          Hover a dot, or tab to it. Respects <code>prefers-reduced-motion</code>.
+          Hover a button, or tab to it, for the "Add comment" tooltip.
         </p>
       </div>
     </div>

@@ -1,99 +1,85 @@
-/* The "comment on selection" affordance, shared across the CodeMirror editor
-   plane and the rendered-markdown plane. One definition so both surfaces match
-   and the look is tunable in one place (cataloged in Elements).
-
-   Resting state is a small, flat, author-colored dot, sitting quietly out of the
-   way while a reader selects and copies text. It never opens on its own: most
-   selection is for editing code, not commenting. On hover or keyboard focus it
-   morphs into a labeled "Comment" pill, a staged grow -> spread -> reveal driven
-   by the Web Animations API (comment-affordance-motion.ts) so it reads as one
-   motion and reverses cleanly. CSS owns the resting look; the helper owns the
-   open. No icon: the pill shape and label are the cue. */
 .comment-affordance {
-  /* Tinted with the author's canonical color (the same color as their cursor and
-     edits), set on an ancestor as --comment-author-color. Falls back to the
-     theme accent only if no author color is in scope. --primary is a near-black
-     neutral in the default theme, so it is the fallback, not the default. */
   --comment-affordance-color: var(--comment-author-color, var(--primary, #2563eb));
-  /* Per-stage easing for the open, read by comment-affordance-motion.ts. One
-     decelerating curve, no overshoot: a spring here read as thrashy. */
-  --comment-affordance-ease: cubic-bezier(0.16, 1, 0.3, 1);
-  /* Sizes are tokens so CSS and the motion helper share one source of truth;
-     the helper reads these to build the open keyframes. */
-  --comment-affordance-dot-size: 8px;
-  --comment-affordance-pill-height: 20px;
-  box-sizing: border-box;
+  position: relative;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  /* Content-sized width with padding for the hit area. A fixed width would cap
-     the dot's growth: on WebKit/iOS Safari a flex child cannot exceed a
-     fixed-width flex parent, which clipped the open pill to one glyph on mobile.
-     Height is fixed to the open pill, though: it reserves the tooltip box so
-     CodeMirror measures and positions it once. Without it, growing the dot taller
-     re-anchors the tooltip above the line in an unanimated upward jump. The dot
-     is centered in the reserved height, so the open grows from the dot's center. */
-  padding: 6px;
-  height: calc(var(--comment-affordance-pill-height) + 12px);
-  margin: 0;
-  border: none;
-  background: transparent;
-  /* The open pill paints the label on the author color, so the label needs the
-     author's legible foreground (set with --comment-author-contrast), not a flat
-     white that fails contrast on light author colors. */
-  color: var(--comment-author-contrast, var(--primary-foreground, #ffffff));
-  cursor: pointer;
+  padding: 3px;
 }
 
-/* Resting dot and the box the open animates. The helper measures the label's
-   natural width and grows max-width to it, so the pill fits its content and the
-   word never clips (the overflow clip hides it until there is room). */
-.comment-affordance-dot {
+.comment-affordance-button {
+  box-sizing: border-box;
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
-  height: 8px;
-  max-width: 8px;
+  width: 28px;
+  height: 28px;
   padding: 0;
-  overflow: hidden;
-  border-radius: 999px; /* stadium: a circle at rest, a pill when open */
-  background-color: var(--comment-affordance-color);
-  color: inherit;
-  /* Flat at rest. No shadow, no breathe: a dot that pulses next to code is
-     noise, and the resting dot should read as barely there. */
+  border: 1px solid var(--border, #e5e5e5);
+  border-radius: 999px;
+  background-color: var(--popover, #ffffff);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 8%),
+    0 4px 12px rgb(0 0 0 / 8%);
+  color: var(--muted-foreground, #737373);
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
 }
 
-.comment-affordance-label {
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1;
-  opacity: 0; /* revealed in the back half of the open animation */
+.comment-affordance-button:hover,
+.comment-affordance-button:focus-visible {
+  background-color: var(--muted, #f5f5f5);
+  color: var(--comment-affordance-color);
 }
 
-/* Leftward selection (editor plane): the head is at the selection start, so
-   anchor the button's right edge at the head and let it grow leftward, keeping
-   the dot on the cursor's outer side and off the selected text. translateX is a
-   percentage of the button's own width, so it re-anchors as the pill grows. */
-.comment-affordance-flip {
-  transform: translateX(-100%);
-}
-
-.comment-affordance:focus-visible {
-  outline: none;
-}
-.comment-affordance:focus-visible .comment-affordance-dot {
+.comment-affordance-button:focus-visible {
   outline: 2px solid var(--ring, #a3a3a3);
   outline-offset: 2px;
 }
 
-/* CodeMirror merges its tooltip classes onto the affordance button itself (the
-   element is both .comment-affordance and .cm-tooltip), so the tooltip chrome
-   paints a box around the dot. Strip that chrome on the shared element. The
-   theme sets it with editor-scoped specificity, so !important wins the cascade.
-   The hit-area padding from .comment-affordance is intentionally left intact. */
+.comment-affordance-icon {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.comment-affordance-tip {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  z-index: 1;
+  margin-top: 4px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background-color: var(--foreground, #171717);
+  color: var(--background, #ffffff);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.comment-affordance-button:hover ~ .comment-affordance-tip,
+.comment-affordance-button:focus-visible ~ .comment-affordance-tip {
+  opacity: 1;
+}
+
+.comment-affordance-flip {
+  transform: translateX(-100%);
+}
+
+/* CodeMirror merges .cm-tooltip onto this element and themes it with
+   editor-scoped specificity, so !important is needed to strip that chrome. */
 .cm-tooltip.comment-affordance {
   border: none !important;
   background: transparent !important;
