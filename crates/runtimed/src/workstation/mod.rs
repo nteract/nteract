@@ -25,8 +25,7 @@ pub mod environments;
 pub mod launch_on_attach;
 
 pub use agent_loop::{
-    resolve_python_on_path, run_workstation_agent, WorkstationAgentOptions, DEFAULT_HEARTBEAT_MS,
-    DEFAULT_POLL_MS,
+    run_workstation_agent, WorkstationAgentOptions, DEFAULT_HEARTBEAT_MS, DEFAULT_POLL_MS,
 };
 pub use allocate::{
     allocate_current_python_runtime, current_python_launch_working_dir,
@@ -38,6 +37,7 @@ pub use environments::{
     environments_from_pool_state, list_environments, EnvKind, EnvironmentPolicy,
     WorkstationEnvironment,
 };
+pub use kernel_env::resolve_python_on_path;
 pub use launch_on_attach::{
     build_current_python_launch, CurrentPythonLaunch, CURRENT_PYTHON_ENV_SOURCE,
 };

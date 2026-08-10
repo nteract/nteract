@@ -357,11 +357,33 @@ async fn run(python_path: Option<PathBuf>, working_directory: Option<PathBuf>) -
         resolved.display_name,
         runtimed_bin.display()
     );
-    if let Some(path) = &python_path {
-        println!("Python interpreter: {}", path.display());
+    // Resolve the interpreter the agent will use so the preflight below probes
+    // the same one: `workstation_agent_args` omits `--python-path` when it
+    // wasn't passed, and the daemon then falls back to `resolve_python_on_path`.
+    let effective_python = python_path
+        .clone()
+        .or_else(|| kernel_env::resolve_python_on_path(std::env::var("PATH").ok().as_deref()));
+    match &effective_python {
+        Some(path) => println!("Python interpreter: {}", path.display()),
+        None => eprintln!(
+            "Warning: no python3 or python found on PATH; kernels cannot launch. \
+             Pass --python-path."
+        ),
     }
     if let Some(path) = &working_directory {
         println!("Working directory: {}", path.display());
+    }
+
+    // The `current_python` workstation policy launches kernels against this
+    // interpreter as-is and never installs packages, so a missing `ipykernel`
+    // becomes a raw `runpy.py` traceback in the browser. Warn here — where an
+    // operator is at a terminal — but keep serving: refusing to start would
+    // hide the workstation from the panel entirely, which reads as a mystery
+    // absence rather than a fixable error.
+    if let Some(path) = &effective_python {
+        if let Some(warning) = ipykernel_preflight_warning(&kernel_env::diagnose_ipykernel(path)) {
+            eprintln!("{warning}");
+        }
     }
 
     let mut command = std::process::Command::new(&runtimed_bin);
@@ -382,6 +404,56 @@ async fn run(python_path: Option<PathBuf>, working_directory: Option<PathBuf>) -
         .with_context(|| format!("failed to launch {}", runtimed_bin.display()))?;
 
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// A probe failure carries the interpreter's raw stderr, which for a non-Python
+/// executable echoes the whole probe script back. Keep the warning to one line.
+fn first_line_truncated(message: &str, max_chars: usize) -> String {
+    let line = message.lines().next().unwrap_or("").trim();
+    if line.chars().count() <= max_chars {
+        return line.to_string();
+    }
+    let head: String = line.chars().take(max_chars).collect();
+    format!("{head}…")
+}
+
+/// Render an operator-facing warning for a non-`Present` ipykernel diagnostic,
+/// or `None` when the interpreter can import it.
+fn ipykernel_preflight_warning(diagnostic: &kernel_env::IpykernelDiagnostic) -> Option<String> {
+    use kernel_env::IpykernelDiagnostic as D;
+    match diagnostic {
+        D::Present { .. } => None,
+        D::Missing { python_path, .. } => {
+            let python = python_path.display();
+            Some(format!(
+                "Warning: ipykernel is not installed in {python}; kernels cannot launch.\n         Install it with: {python} -m pip install ipykernel"
+            ))
+        }
+        D::SitePackagesMismatch {
+            python_path,
+            purelib,
+            candidates,
+            ..
+        } => {
+            let python = python_path.display();
+            let found = candidates
+                .iter()
+                .map(|path| format!("\n           - {}", path.display()))
+                .collect::<String>();
+            Some(format!(
+                "Warning: {python} cannot import ipykernel; kernels cannot launch.\n         Its site-packages is {purelib}, but ipykernel is installed under:{found}\n         Install it for this interpreter with: {python} -m pip install ipykernel",
+                purelib = purelib.display()
+            ))
+        }
+        D::InterpreterProbeFailed {
+            python_path,
+            message,
+        } => Some(format!(
+            "Warning: could not probe {python} for ipykernel: {message}\n         Kernels may fail to launch.",
+            python = python_path.display(),
+            message = first_line_truncated(message, 200)
+        )),
+    }
 }
 
 fn workstation_agent_args(
@@ -1164,6 +1236,62 @@ pub(crate) fn read_credential_file(path: &Path) -> Result<Option<WorkstationCred
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipykernel_preflight_warning_names_interpreter_and_pip_command() {
+        assert_eq!(
+            ipykernel_preflight_warning(&kernel_env::IpykernelDiagnostic::Present {
+                python_path: PathBuf::from("/usr/bin/python3"),
+                purelib: PathBuf::from("/usr/lib/python3/dist-packages"),
+            }),
+            None
+        );
+
+        let missing = ipykernel_preflight_warning(&kernel_env::IpykernelDiagnostic::Missing {
+            python_path: PathBuf::from("/usr/bin/python3"),
+            purelib: PathBuf::from("/usr/lib/python3/dist-packages"),
+            import_error: Some("ModuleNotFoundError: No module named 'ipykernel'".to_string()),
+        })
+        .expect("missing ipykernel must warn");
+        assert!(missing.contains("/usr/bin/python3 -m pip install ipykernel"));
+
+        let mismatch =
+            ipykernel_preflight_warning(&kernel_env::IpykernelDiagnostic::SitePackagesMismatch {
+                python_path: PathBuf::from("/usr/bin/python3"),
+                purelib: PathBuf::from("/usr/lib/python3.10/site-packages"),
+                import_error: None,
+                candidates: vec![PathBuf::from("/usr/lib/python3.11/site-packages")],
+            })
+            .expect("site-packages mismatch must warn");
+        assert!(mismatch.contains("/usr/lib/python3.11/site-packages"));
+
+        let probe_failed =
+            ipykernel_preflight_warning(&kernel_env::IpykernelDiagnostic::InterpreterProbeFailed {
+                python_path: PathBuf::from("/usr/bin/python3"),
+                message: "exited with status 127".to_string(),
+            })
+            .expect("probe failure must warn");
+        assert!(probe_failed.contains("exited with status 127"));
+    }
+
+    #[test]
+    fn probe_failure_warning_stays_on_one_line() {
+        // A non-Python executable echoes the whole probe script to stderr.
+        let warning =
+            ipykernel_preflight_warning(&kernel_env::IpykernelDiagnostic::InterpreterProbeFailed {
+                python_path: PathBuf::from("/bin/ls"),
+                message: format!("ls: import json, sysconfig\n{}\nmore", "x".repeat(400)),
+            })
+            .expect("probe failure must warn");
+
+        assert_eq!(
+            warning.lines().count(),
+            2,
+            "warning + remediation line only"
+        );
+        assert!(warning.contains("ls: import json, sysconfig"));
+        assert!(!warning.contains("xxxx"));
+    }
 
     fn sample_credentials() -> WorkstationCredentialFile {
         WorkstationCredentialFile {

@@ -214,43 +214,6 @@ fn parse_meminfo_total_bytes(meminfo: &str) -> Option<u64> {
     Some(kb * 1024)
 }
 
-/// Resolve the default Python interpreter: first `python3`, then `python`,
-/// searched across `path_var` (the `PATH` environment value).
-pub fn resolve_python_on_path(path_var: Option<&str>) -> Option<PathBuf> {
-    let path_var = path_var?;
-    let names: &[&str] = if cfg!(windows) {
-        &["python3.exe", "python.exe", "python3", "python"]
-    } else {
-        &["python3", "python"]
-    };
-    for name in names {
-        for dir in std::env::split_paths(path_var) {
-            if dir.as_os_str().is_empty() {
-                continue;
-            }
-            let candidate = dir.join(name);
-            if is_executable_file(&candidate) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(unix)]
-fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    match std::fs::metadata(path) {
-        Ok(meta) => meta.is_file() && meta.permissions().mode() & 0o111 != 0,
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(unix))]
-fn is_executable_file(path: &Path) -> bool {
-    path.is_file()
-}
-
 /// Build the spawn plan for one attach job. Mirrors `buildAttachJobSpawnPlan`
 /// in `hosted-workstation-agent-core.mjs`, with `--auth-kind workstation`
 /// because the agent holds a pairing-flow workstation credential.
@@ -2371,27 +2334,5 @@ mod tests {
     fn path_segment_encoding() {
         assert_eq!(encode_path_segment("ws-lab2"), "ws-lab2");
         assert_eq!(encode_path_segment("a b/c"), "a%20b%2Fc");
-    }
-
-    #[test]
-    fn resolve_python_prefers_python3() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path();
-        for name in ["python", "python3"] {
-            let path = bin.join(name);
-            std::fs::write(&path, "#!/bin/sh\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
-        let path_var = bin.to_string_lossy().into_owned();
-        let resolved = resolve_python_on_path(Some(&path_var)).unwrap();
-        assert!(resolved
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("python3")));
-        assert!(resolve_python_on_path(None).is_none());
     }
 }

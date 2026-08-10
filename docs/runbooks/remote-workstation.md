@@ -95,6 +95,15 @@ runt workstation service install --start
 runt workstation run
 ```
 
+   The workstation's `current_python` policy launches kernels against that
+   interpreter as-is and never installs packages into it, so the interpreter
+   must already have `ipykernel`. Startup probes it and warns without refusing
+   to serve; install it on the workstation and restart the agent:
+
+```bash
+/usr/bin/python3 -m pip install ipykernel
+```
+
 4. Check what the credential sees:
 
 ```bash
