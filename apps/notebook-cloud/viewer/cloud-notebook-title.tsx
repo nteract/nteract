@@ -1,4 +1,3 @@
-import { House } from "lucide-react";
 import { DocumentTitle } from "@/components/notebook/DocumentTitle";
 import {
   cloudNotebookRouteTitleFromPathname,
@@ -28,10 +27,6 @@ export function CloudNotebookTitle({
       renameSaving={renameSaving}
       renameError={renameError}
       onRename={onRename}
-      homeHref="/n"
-      homeAriaLabel="Open notebooks dashboard"
-      homeTitle="Notebooks"
-      homeIcon={<House aria-hidden="true" />}
       inputAriaLabel="Notebook title"
       inputName="notebook-title"
       placeholder="Untitled notebook"
@@ -43,7 +38,6 @@ export function CloudNotebookTitle({
 
 export const cloudNotebookTitleClassNames = {
   group: "cloud-notebook-title-group",
-  homeLink: "cloud-notebook-home-link",
   title: "cloud-notebook-title",
   staticTitle: "cloud-notebook-title-static",
   form: "cloud-notebook-title-form",

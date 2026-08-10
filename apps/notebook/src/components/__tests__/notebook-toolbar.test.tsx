@@ -690,11 +690,14 @@ describe("connection/identity slot wiring", () => {
   it("App.tsx mounts the slot on the daemon-lifecycle source with scoped copy", () => {
     // Source-text pin mirroring the cloud guardrail: deleting the desktop
     // mount, feeding it the IPC transport again, or dropping the scoped
-    // connection label must fail here.
+    // connection label must fail here. The slot lives on the rail's
+    // trailingSlot (not the toolbar) so both hosts mount identity chrome in
+    // the same place; the assertion follows the mount rather than pinning
+    // one owner's prop name.
     // vp test runs from the repo root.
     const appSource = readFileSync(resolve(process.cwd(), "apps/notebook/src/App.tsx"), "utf8");
     expect(appSource).toMatch(
-      /trailingControls=\{[\s\S]{0,600}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{desktopConnectionStatus\}[\s\S]{0,200}?connectionLabel=\{hostedNotebookUrl \? "Notebook connection" : "Daemon connection"\}/,
+      /trailingSlot=\{[\s\S]{0,600}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{desktopConnectionStatus\}[\s\S]{0,200}?connectionLabel=\{hostedNotebookUrl \? "Notebook connection" : "Daemon connection"\}/,
     );
     expect(appSource).toMatch(
       /createDesktopConnectionStatusSource\([\s\S]{0,160}?host\.daemonEvents,[\s\S]{0,80}?host\.daemon\.autoReconnect,[\s\S]{0,80}?hostedBridgeStatus\$/,

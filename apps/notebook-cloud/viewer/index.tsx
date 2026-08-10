@@ -149,37 +149,39 @@ function ViewerStartupError({ message }: { message: string }) {
 function ViewerStartupLoading({ title }: { title: string }) {
   return (
     <main className="cloud-startup-shell" aria-busy="true">
-      <header className="cloud-startup-toolbar">
-        <div className="cloud-notebook-title-group">
-          <a className="cloud-notebook-home-link" href="/n" aria-label="Open notebooks dashboard">
+      <div className="cloud-startup-workspace">
+        <aside className="cloud-startup-rail" aria-hidden="true">
+          <span className="cloud-startup-rail-home">
             <House aria-hidden="true" />
-          </a>
-          <div className="cloud-notebook-title">
-            <h1 className="cloud-startup-title">{title}</h1>
-            <p className="cloud-startup-status" role="status">
-              <Loader2 aria-hidden="true" />
-              Opening notebook
-            </p>
-          </div>
-        </div>
-        <div className="cloud-startup-toolbar-actions" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-      </header>
-      <div className="cloud-startup-workspace" aria-hidden="true">
-        <aside className="cloud-startup-rail">
+          </span>
           <BookOpen aria-hidden="true" />
           <span />
         </aside>
-        <section className="cloud-startup-stage">
-          <div className="cloud-startup-cell">
-            <span className="cloud-startup-line cloud-startup-line--wide" />
-            <span className="cloud-startup-line" />
-            <span className="cloud-startup-line cloud-startup-line--short" />
-          </div>
-        </section>
+        <div className="cloud-startup-main">
+          <header className="cloud-startup-toolbar">
+            <div className="cloud-notebook-title-group">
+              <div className="cloud-notebook-title">
+                <h1 className="cloud-startup-title">{title}</h1>
+                <p className="cloud-startup-status" role="status">
+                  <Loader2 aria-hidden="true" />
+                  Opening notebook
+                </p>
+              </div>
+            </div>
+            <div className="cloud-startup-toolbar-actions" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+          </header>
+          <section className="cloud-startup-stage" aria-hidden="true">
+            <div className="cloud-startup-cell">
+              <span className="cloud-startup-line cloud-startup-line--wide" />
+              <span className="cloud-startup-line" />
+              <span className="cloud-startup-line cloud-startup-line--short" />
+            </div>
+          </section>
+        </div>
       </div>
     </main>
   );

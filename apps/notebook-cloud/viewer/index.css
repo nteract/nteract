@@ -94,28 +94,62 @@ body {
   flex: 1;
 }
 
+.cloud-startup-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
 .cloud-startup-rail {
-  display: grid;
-  width: 3rem;
-  flex: 0 0 3rem;
-  place-items: start center;
-  gap: 1.25rem;
+  display: flex;
+  width: 3.5rem;
+  flex: 0 0 3.5rem;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
   border-right: 1px solid var(--border);
-  padding-top: 2rem;
+  padding: 0.75rem 0.5rem;
   color: color-mix(in srgb, var(--foreground) 48%, transparent);
-  background: color-mix(in srgb, var(--background) 96%, var(--foreground) 4%);
+  background: var(--background);
 }
 
-.cloud-startup-rail svg,
-.cloud-startup-rail span {
-  width: 1.125rem;
-  height: 1.125rem;
+.cloud-startup-rail > * {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 0.75rem;
 }
 
-.cloud-startup-rail span {
+.cloud-startup-rail > svg {
+  width: 1rem;
+  height: 1rem;
+  padding: 0.625rem;
+  box-sizing: content-box;
+}
+
+.cloud-startup-rail > span:not(.cloud-startup-rail-home)::after {
+  width: 1rem;
+  height: 1rem;
   border-radius: 4px;
   background: currentColor;
   opacity: 0.24;
+  content: "";
+}
+
+.cloud-startup-rail-home {
+  margin-bottom: 1rem;
+  color: var(--background);
+  background: var(--foreground);
+}
+
+.cloud-startup-rail-home svg {
+  width: 1rem;
+  height: 1rem;
+  stroke-width: 2.25;
 }
 
 .cloud-startup-stage {
@@ -196,6 +230,16 @@ body {
   overflow: hidden;
 }
 
+.cloud-notebook-stage > [data-slot="notebook-document-toolbar"],
+.cloud-notebook-stage > [data-slot="notebook-document-stage-toolbar"] {
+  flex: 0 0 auto;
+  z-index: 16;
+}
+
+.cloud-notebook-stage-toolbar {
+  position: static;
+}
+
 /* Region chrome only — do not restyle [data-slot="notebook-notice"] /
    notebook-notice-stack; shared NotebookNotice owns tone, border-b, padding,
    and stack gap. Size to content so multi-notice stacks and disclosures are
@@ -260,32 +304,6 @@ body {
   gap: 0.75rem;
   min-width: 0;
   max-width: 100%;
-}
-
-.cloud-notebook-home-link {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 6px;
-  color: color-mix(in srgb, var(--foreground) 74%, transparent);
-  text-decoration: none;
-}
-
-.cloud-notebook-home-link:hover {
-  background: color-mix(in srgb, var(--background) 88%, var(--foreground) 8%);
-}
-
-.cloud-notebook-home-link:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--ring) 70%, transparent);
-  outline-offset: 2px;
-}
-
-.cloud-notebook-home-link svg {
-  width: 1.125rem;
-  height: 1.125rem;
 }
 
 .cloud-notebook-title-form {
