@@ -113,7 +113,6 @@ import type { ConnectionScope } from "../src/auth-shared";
 
 import { useCloudViewerSession } from "./cloud-viewer-session";
 import { NotebookView } from "../../notebook/src/notebook-surface";
-import { InlineCommentComposer } from "../../notebook/src/components/InlineCommentComposer";
 import {
   setSourceCommentThreads,
   type SourceCommentThread,
@@ -121,7 +120,6 @@ import {
 import {
   resolveSourceRangeAnchor,
   type OutputCommentAnchor,
-  type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "../../notebook/src/lib/comment-source-anchor";
 import {
@@ -335,11 +333,6 @@ export function NotebookViewer({
   const [commentDraftTarget, setCommentDraftTarget] = useState<NotebookCommentDraftTarget | null>(
     null,
   );
-  const [sourceCommentRequest, setSourceCommentRequest] = useState<{
-    anchor: SourceRangeCommentAnchor;
-    rect: SourceCommentSelectionRect;
-    quote?: string | null;
-  } | null>(null);
   const [commentFocus, setCommentFocus] = useState<{ threadId: string; nonce: number } | null>(
     null,
   );
@@ -1182,7 +1175,6 @@ export function NotebookViewer({
   useEffect(() => {
     if (!canWriteComments) {
       setCommentDraftTarget(null);
-      setSourceCommentRequest(null);
     }
   }, [canWriteComments]);
 
@@ -1291,17 +1283,8 @@ export function NotebookViewer({
   );
 
   const handleRequestSourceComment = useCallback(
-    (
-      anchor: SourceRangeCommentAnchor,
-      rect: SourceCommentSelectionRect | null,
-      quote?: string | null,
-    ) => {
+    (anchor: SourceRangeCommentAnchor, quote?: string | null) => {
       setCommentsError(null);
-      if (rect) {
-        setSourceCommentRequest({ anchor, rect, quote });
-        return;
-      }
-      setSourceCommentRequest(null);
       setCommentDraftTarget({ anchor, quote: quote ?? anchor.exact_quote ?? null });
       openNotebookRailPanel("comments");
     },
@@ -1314,27 +1297,8 @@ export function NotebookViewer({
       setCommentsError(OUTPUT_COMMENT_STALE_MESSAGE);
       return;
     }
-    setSourceCommentRequest(null);
     setCommentDraftTarget({ anchor, quote: null });
     openNotebookRailPanel("comments");
-  }, []);
-
-  const handleSubmitSourceComment = useCallback(
-    async (body: string) => {
-      if (!sourceCommentRequest) return;
-      if (!sourceRangeAnchorMatchesCurrentCell(sourceCommentRequest.anchor)) {
-        setSourceCommentRequest(null);
-        setCommentsError("Selected source changed. Select the text again before commenting.");
-        return;
-      }
-      await handleCreateAnchoredCommentThread(sourceCommentRequest.anchor, body);
-      setSourceCommentRequest(null);
-    },
-    [handleCreateAnchoredCommentThread, sourceCommentRequest],
-  );
-
-  const handleCancelSourceComment = useCallback(() => {
-    setSourceCommentRequest(null);
   }, []);
 
   const handleClearCommentDraftTarget = useCallback(() => {
@@ -1583,6 +1547,10 @@ export function NotebookViewer({
     }
     return renderedTextForSourceRange(plan, range.from, range.to) ?? anchor.exact_quote ?? null;
   }, []);
+  const pendingSourceCommentAnchor =
+    commentsUiEnabled && commentDraftTarget?.anchor.kind === "source_range"
+      ? commentDraftTarget.anchor
+      : null;
   const commentsPanel = (
     <NotebookCommentsPanel
       projection={commentsProjection}
@@ -1996,7 +1964,7 @@ export function NotebookViewer({
                 onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
                 onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
                 commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
-                pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
+                pendingCommentAnchor={pendingSourceCommentAnchor}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
                 outputHostContext={outputHostContext}
                 deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
@@ -2007,15 +1975,6 @@ export function NotebookViewer({
           </CrdtBridgeProvider>
         </PresenceValueProvider>
       </NotebookDocumentShell>
-      {commentsUiEnabled && sourceCommentRequest ? (
-        <InlineCommentComposer
-          rect={sourceCommentRequest.rect}
-          quote={sourceCommentRequest.quote ?? sourceCommentRequest.anchor.exact_quote}
-          disabled={!canWriteComments}
-          onSubmit={handleSubmitSourceComment}
-          onCancel={handleCancelSourceComment}
-        />
-      ) : null}
       <NotebookSettingsDrawer
         open={settingsOpen}
         onOpenChange={setSettingsOpen}

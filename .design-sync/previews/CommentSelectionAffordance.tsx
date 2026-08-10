@@ -33,8 +33,7 @@ function AuthorScope({
   );
 }
 
-// At rest: a small author-colored dot. It never opens on its own — hover or
-// keyboard focus morphs it into the "Comment" pill.
+// At rest: a floating toolbar beside the selection with one add-comment button.
 export function Resting() {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
@@ -50,14 +49,12 @@ export function Resting() {
   );
 }
 
-// The open pill. The motion helper opens on pointerenter or focus; focusing the
-// button plays the staged grow → spread → reveal exactly as keyboard reach would.
+// Hovered/focused: the button tints to the author color and reveals its
+// "Add comment" tooltip.
 export function Open() {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const btn = ref.current?.querySelector("button");
-    btn?.focus();
-    btn?.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false }));
+    ref.current?.querySelector("button")?.focus();
   }, []);
   return (
     <div ref={ref}>
@@ -98,7 +95,7 @@ export function HighlightStates() {
       <div className="text-xs text-muted-foreground" style={{ display: "flex", gap: 16 }}>
         <span>open · underlined</span>
         <span>resolved · faint tint</span>
-        <span>pending · dashed, with affordance</span>
+        <span>pending · dashed, with toolbar</span>
       </div>
     </div>
   );

@@ -20,10 +20,7 @@ import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry
 import { presenceSenderExtension } from "../lib/presence-sender";
 import { commentHighlightExtension } from "../lib/comment-highlight-extension";
 import { refreshCellCommentHighlights } from "../lib/comment-highlights";
-import type {
-  SourceCommentSelectionRect,
-  SourceRangeCommentAnchor,
-} from "../lib/comment-source-anchor";
+import type { SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { RawCell as RawCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
@@ -45,11 +42,7 @@ interface RawCellProps {
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
-  onCreateSourceComment?: (
-    anchor: SourceRangeCommentAnchor,
-    rect: SourceCommentSelectionRect | null,
-    quote?: string | null,
-  ) => void;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   onActivateCommentThread?: (threadId: string) => void;
 }
 
