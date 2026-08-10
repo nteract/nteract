@@ -2094,9 +2094,7 @@ function AppContent() {
                 <NotebookConnectionIdentity
                   capabilities={shellCapabilities}
                   connectionStatus$={desktopConnectionStatus}
-                  connectionLabel={
-                    hostedNotebookUrl ? "Notebook connection" : "Daemon connection"
-                  }
+                  connectionLabel={hostedNotebookUrl ? "Notebook connection" : "Daemon connection"}
                 />
               }
               viewModel={notebookViewModel}

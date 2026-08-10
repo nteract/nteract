@@ -24,10 +24,7 @@ import {
   useHasIsolatedOutputs,
   useIsolatedRenderer,
 } from "@/components/isolated/isolated-renderer-context";
-import {
-  NotebookRailHomeButton,
-  type NotebookRailPanelId,
-} from "@/components/notebook-rail";
+import { NotebookRailHomeButton, type NotebookRailPanelId } from "@/components/notebook-rail";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import {
   markdownProjectionMatchesSource,
@@ -1609,25 +1606,26 @@ export function NotebookViewer({
     onCreateOutputComment: handleRequestOutputComment,
     onActivateCommentThread: handleActivateCommentThread,
   });
-  const identityControls = liveRoomDisabledStatus?.kind === "loading" ? null : (
-    <NotebookConnectionIdentity
-      capabilities={shellCapabilities}
-      connectionStatus$={connectionStatus$}
-      accountDetail={authState.oidcClaims?.email?.trim() ?? null}
-      accountActions={
-        <>
-          <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
-            <Settings aria-hidden="true" />
-            Settings
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={signOutOfNotebook}>
-            <LogOut aria-hidden="true" />
-            Sign out
-          </DropdownMenuItem>
-        </>
-      }
-    />
-  );
+  const identityControls =
+    liveRoomDisabledStatus?.kind === "loading" ? null : (
+      <NotebookConnectionIdentity
+        capabilities={shellCapabilities}
+        connectionStatus$={connectionStatus$}
+        accountDetail={authState.oidcClaims?.email?.trim() ?? null}
+        accountActions={
+          <>
+            <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+              <Settings aria-hidden="true" />
+              Settings
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={signOutOfNotebook}>
+              <LogOut aria-hidden="true" />
+              Sign out
+            </DropdownMenuItem>
+          </>
+        }
+      />
+    );
   const rail = (
     <NotebookDocumentRail
       leadingSlot={<NotebookRailHomeButton href="/n" />}

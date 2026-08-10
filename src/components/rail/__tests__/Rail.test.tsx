@@ -137,8 +137,8 @@ describe("RailButton", () => {
 
     expect(screen.getByRole("button", { name: "Outline" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Outline" })).toHaveClass(
-      "border-primary",
-      "bg-primary",
+      "bg-foreground",
+      "text-background",
     );
   });
 
