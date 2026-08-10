@@ -58,7 +58,7 @@ The pairing flow needs no externally issued credential
 
 1. In the hosted workstation panel, mint a pairing code. Codes look like
    `XXXX-XXXX-XXXX`, live 10 minutes, and are single use. The panel's
-   "Connect a machine" card shows these commands with the correct cloud host
+   "Connect a machine" dialog shows these commands with the correct cloud host
    filled in - prefer copying from there.
 2. On the workstation, using the cloud host you signed in to (currently
    `https://preview.runt.run`):

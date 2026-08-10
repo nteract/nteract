@@ -379,6 +379,26 @@ describe("markdown projection", () => {
     expect(canRenderMarkdownProjectionInHost(plan)).toBe(true);
   });
 
+  it("projects standalone HTML images through the safe host image path", () => {
+    const plan = projectMarkdownPlan(
+      '<img src="https://example.com/plot.webp?1" alt="Plot alt" width="500px">',
+    );
+
+    expect(plan?.blocks).toEqual([
+      expect.objectContaining({ element: "p", kind: "paragraph" }),
+    ]);
+    expect(plan?.runs).toEqual([
+      expect.objectContaining({
+        imageAlt: "Plot alt",
+        imageSrc: "https://example.com/plot.webp?1",
+        imageWidth: "500px",
+        renderedText: "Plot alt",
+        semantic: "image",
+      }),
+    ]);
+    expect(canRenderMarkdownProjectionInHost(plan)).toBe(true);
+  });
+
   it("maps source cursor positions back to projected rendered blocks and runs", () => {
     const source = "# Heading\n\nA paragraph with **focus**.\n\n- [ ] checkbox\n";
     const plan = projectMarkdownPlan(source);

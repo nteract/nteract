@@ -44,8 +44,10 @@ export interface MarkdownProjectionAnchor {
 export interface MarkdownProjectionRun {
   readonly blockId: string;
   readonly imageAlt?: string;
+  readonly imageHeight?: string;
   readonly imageSrc?: string;
   readonly imageTitle?: string;
+  readonly imageWidth?: string;
   readonly inlineId: string;
   readonly listItemIndex: number | null;
   readonly listItemChecked?: boolean;
