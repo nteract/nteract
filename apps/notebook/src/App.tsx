@@ -4,6 +4,7 @@ import {
   contrastColorForActorIdentity,
   deriveEnvManager,
   deriveRuntimeKind,
+  notebookCellAnchorId,
   NotebookClient,
   resolveActorDisplay,
   splitNotebookActorPrincipalOperator,
@@ -50,6 +51,7 @@ import {
 } from "@/components/notebook-rail";
 import {
   navigateNotebookOutlineItem,
+  scrollElementIntoView,
   useActiveOutlineItemId,
   useOutlineSelection,
   useOutlineStatusLabel,
@@ -1059,9 +1061,12 @@ function AppContent() {
 
   const handleFocusCommentThreadAnchor = useCallback((thread: CommentThreadSnapshot) => {
     const cellId = thread.badge_cell_ids[0];
-    if (cellId) {
-      setFocusedCellId(cellId);
-      flushCellUIState();
+    if (!cellId) return;
+    setFocusedCellId(cellId);
+    flushCellUIState();
+    const target = document.getElementById(notebookCellAnchorId(cellId));
+    if (target) {
+      scrollElementIntoView(target, { block: "center", behavior: "smooth" });
     }
   }, []);
 
@@ -1078,6 +1083,7 @@ function AppContent() {
       onResolveThread={canMutateComments ? handleResolveCommentThread : undefined}
       onReopenThread={canMutateComments ? handleReopenCommentThread : undefined}
       onFocusThreadAnchor={handleFocusCommentThreadAnchor}
+      cellIds={cellIds}
       resolveCommentAuthor={resolveCommentAuthor}
       focusedThreadId={commentFocus?.threadId ?? null}
       focusNonce={commentFocus?.nonce ?? 0}

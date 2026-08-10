@@ -10,7 +10,14 @@ import {
   X,
 } from "lucide-react";
 import { actorInitials, onBehalfOfText } from "runtimed";
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import type {
   CommentAnchor,
   CommentMessageSnapshot,
@@ -75,6 +82,11 @@ export interface NotebookCommentsPanelProps {
    * the live cell projection. Falls back to the anchor's exact quote.
    */
   resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined;
+  /**
+   * Ordered notebook cell IDs, used to sort threads by the position of the
+   * content they reference. Without it, threads keep their projection order.
+   */
+  cellIds?: readonly string[];
   /** Thread to scroll to and flash (e.g. after clicking its editor highlight). */
   focusedThreadId?: string | null;
   /** Bumped each focus request so repeat focuses of the same thread re-flash. */
@@ -96,11 +108,14 @@ export function NotebookCommentsPanel({
   resolveCommentAuthor,
   resolveSourceLanguage,
   resolveSourceQuote,
+  cellIds,
   focusedThreadId = null,
   focusNonce = 0,
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
-  const labeledThreads = labelCommentThreads(threads);
+  const labeledThreads = labelCommentThreads(
+    sortCommentThreadsByNotebookPosition(threads, cellIds),
+  );
   const openThreads = labeledThreads.filter(({ thread }) => thread.status !== "resolved");
   const resolvedThreads = labeledThreads.filter(({ thread }) => thread.status === "resolved");
   const [showResolved, setShowResolved] = useState(false);
@@ -165,14 +180,17 @@ export function NotebookCommentsPanel({
           ) : null}
 
           {projection && threads.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
-              <MessageSquare className="size-4" aria-hidden="true" />
-              <span>No comments yet.</span>
+            <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center">
+              <MessageSquare className="size-5 text-muted-foreground" aria-hidden="true" />
+              <span className="text-sm font-medium text-foreground">No discussions yet</span>
+              <span className="max-w-56 text-xs leading-5 text-muted-foreground">
+                Select code or an output to comment on it, or start a discussion below.
+              </span>
             </div>
           ) : (
             <div className="space-y-4">
               {openThreads.length > 0 ? (
-                <ol className="space-y-4">{openThreads.map(renderThread)}</ol>
+                <ol className="space-y-2.5">{openThreads.map(renderThread)}</ol>
               ) : resolvedThreads.length > 0 ? (
                 <p className="px-1 py-4 text-center text-sm text-muted-foreground">
                   No open comments.
@@ -180,12 +198,12 @@ export function NotebookCommentsPanel({
               ) : null}
 
               {resolvedThreads.length > 0 ? (
-                <div className="space-y-3">
+                <div className="space-y-2.5 border-t pt-3">
                   <button
                     type="button"
                     onClick={() => setShowResolved((value) => !value)}
                     aria-expanded={showResolved}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                    className="flex w-full items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
                   >
                     {showResolved ? (
                       <ChevronDown className="size-3.5" aria-hidden="true" />
@@ -195,7 +213,7 @@ export function NotebookCommentsPanel({
                     {showResolved ? "Hide" : "Show"} resolved ({resolvedThreads.length})
                   </button>
                   {showResolved ? (
-                    <ol className="space-y-4">{resolvedThreads.map(renderThread)}</ol>
+                    <ol className="space-y-2.5">{resolvedThreads.map(renderThread)}</ol>
                   ) : null}
                 </div>
               ) : null}
@@ -361,13 +379,26 @@ function CommentThreadItem({
   // read as a plain conversation; source/cell/output threads keep their label.
   const showAnchorHeader = Boolean(quote) || thread.anchor.kind !== "notebook";
 
+  // Clicking the card reveals the referenced cell, but clicks that land on the
+  // thread's own controls or on selected text must not also navigate.
+  const handleCardClick = (event: ReactMouseEvent<HTMLLIElement>) => {
+    if (!canShowCell) return;
+    if (event.target instanceof Element && event.target.closest("button, a, textarea, input")) {
+      return;
+    }
+    if (itemRef.current?.ownerDocument.getSelection()?.isCollapsed === false) return;
+    onFocusThreadAnchor?.(thread);
+  };
+
   return (
     <li
       ref={itemRef}
+      onClick={handleCardClick}
       className={cn(
-        "group relative rounded-lg px-2.5 py-2 transition-colors duration-700 hover:bg-muted/40",
-        thread.status === "resolved" && "opacity-70",
-        flashing && "bg-primary/5 hover:bg-primary/5",
+        "group relative rounded-lg border bg-card px-2.5 py-2.5 shadow-sm transition-colors duration-700 hover:border-border hover:bg-muted/40",
+        thread.status === "resolved" && "border-dashed bg-muted/20 opacity-80",
+        flashing && "border-primary/30 bg-primary/5 hover:bg-primary/5",
+        canShowCell && "cursor-pointer",
       )}
     >
       <button
@@ -418,10 +449,11 @@ function CommentThreadItem({
         ) : null}
 
         <div className="space-y-3">
-          {thread.messages.map((message) => (
+          {thread.messages.map((message, index) => (
             <CommentMessage
               key={message.id}
               message={message}
+              isReply={index > 0}
               resolveCommentAuthor={resolveCommentAuthor}
             />
           ))}
@@ -512,9 +544,12 @@ function CommentResolutionReceipt({
 
 function CommentMessage({
   message,
+  isReply = false,
   resolveCommentAuthor,
 }: {
   message: CommentMessageSnapshot;
+  /** Indent and rule-mark messages after a thread's opening comment. */
+  isReply?: boolean;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
 }) {
   const author: CommentAuthor | null = message.created_by_actor_label
@@ -524,7 +559,10 @@ function CommentMessage({
     : null;
 
   return (
-    <article className="flex gap-2.5">
+    <article
+      className={cn("flex gap-2.5", isReply && "ml-3 border-l border-border/70 pl-3")}
+      data-comment-reply={isReply ? "true" : undefined}
+    >
       {author ? (
         <CommentAuthorAvatar author={author} />
       ) : (
@@ -820,6 +858,54 @@ function commentThreadTargetCellId(thread: CommentThreadSnapshot): string | null
     default:
       return thread.badge_cell_ids[0] ?? null;
   }
+}
+
+/**
+ * Order threads by the notebook content they reference: by cell position, then
+ * by the source line/column within a cell, with a cell's own comments above its
+ * source selections and those above its output comments. Threads whose cell is
+ * unknown (or that target the whole document) sort last, and ties fall back to
+ * the projection's own stable ordering.
+ */
+export function sortCommentThreadsByNotebookPosition(
+  threads: readonly CommentThreadSnapshot[],
+  cellIds?: readonly string[],
+): CommentThreadSnapshot[] {
+  if (!cellIds || cellIds.length === 0) return [...threads];
+
+  const cellIndexById = new Map(cellIds.map((cellId, index) => [cellId, index]));
+  const keyed = threads.map((thread, index) => ({
+    thread,
+    index,
+    key: commentThreadOrderKey(thread, cellIndexById),
+  }));
+
+  keyed.sort((left, right) => {
+    for (let part = 0; part < left.key.length; part++) {
+      const delta = left.key[part]! - right.key[part]!;
+      if (delta !== 0) return delta;
+    }
+    return left.index - right.index;
+  });
+
+  return keyed.map(({ thread }) => thread);
+}
+
+function commentThreadOrderKey(
+  thread: CommentThreadSnapshot,
+  cellIndexById: ReadonlyMap<string, number>,
+): number[] {
+  const { anchor } = thread;
+  if (anchor.kind === "notebook") return [2, 0, 0, 0, 0];
+
+  const cellId = commentThreadTargetCellId(thread);
+  const cellIndex = cellId === null ? undefined : cellIndexById.get(cellId);
+  if (cellIndex === undefined) return [1, 0, 0, 0, 0];
+
+  const withinCell = anchor.kind === "output" ? 2 : anchor.kind === "source_range" ? 1 : 0;
+  const line = anchor.kind === "source_range" ? anchor.start_line : 0;
+  const column = anchor.kind === "source_range" ? anchor.start_column : 0;
+  return [0, cellIndex, withinCell, line, column];
 }
 
 function labelCommentThreads(

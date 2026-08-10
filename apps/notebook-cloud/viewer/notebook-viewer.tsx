@@ -49,6 +49,7 @@ import {
   WorkstationPairingDialog,
   KernelLaunchErrorBanner,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
+  scrollElementIntoView,
   shouldShowKernelLaunchErrorBanner,
   shouldShowNotebookDocumentCommandToolbar,
   useActiveOutlineItemId,
@@ -89,6 +90,7 @@ import { EnvironmentSummary } from "@/components/environment";
 import {
   colorForActorIdentity,
   contrastColorForActorIdentity,
+  notebookCellAnchorId,
   NotebookClient,
   workstationAttachmentCanExecute,
   workstationAttachmentIsConnected,
@@ -1487,8 +1489,11 @@ export function NotebookViewer({
   const handleFocusCommentAnchor = useCallback(
     (thread: CommentThreadSnapshot) => {
       const cellId = thread.badge_cell_ids[0];
-      if (cellId) {
-        focusCellInStore(cellId);
+      if (!cellId) return;
+      focusCellInStore(cellId);
+      const target = document.getElementById(notebookCellAnchorId(cellId));
+      if (target) {
+        scrollElementIntoView(target, { block: "center", behavior: "smooth" });
       }
     },
     [focusCellInStore],
@@ -1591,6 +1596,7 @@ export function NotebookViewer({
       onResolveThread={canWriteComments ? handleResolveCommentThread : undefined}
       onReopenThread={canWriteComments ? handleReopenCommentThread : undefined}
       onFocusThreadAnchor={handleFocusCommentAnchor}
+      cellIds={notebookCellIds}
       resolveCommentAuthor={resolveCloudCommentAuthor}
       focusedThreadId={commentFocus?.threadId ?? null}
       focusNonce={commentFocus?.nonce ?? 0}
