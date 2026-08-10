@@ -87,6 +87,14 @@ fn main() {
         }
         "build-dmg" => cmd_build_dmg(),
         "build-app" => cmd_build_app(),
+        "notebook-web" => {
+            let skip_build = args.iter().any(|arg| arg == "--skip-build");
+            let output = args
+                .windows(2)
+                .find(|window| window[0] == "--output")
+                .map(|window| window[1].as_str());
+            cmd_notebook_web(skip_build, output);
+        }
         "dev-daemon" => {
             let release = args.iter().any(|a| a == "--release");
             cmd_dev_daemon(release);
@@ -187,6 +195,9 @@ Development:
 Release:
   build-app                  Build .app bundle with icons
   build-dmg                  Build DMG with icons (for CI)
+  notebook-web [--skip-build]
+                             Build and package the host-neutral notebook web app
+                             with a revision manifest and checksums
 
 Daemon:
   dev-daemon [--release]     Build and run runtimed in per-worktree dev mode
@@ -1105,6 +1116,32 @@ fn ensure_maturin_develop() {
             eprintln!("Warning: failed to run maturin develop: {e}");
         }
     }
+}
+
+fn cmd_notebook_web(skip_build: bool, output: Option<&str>) {
+    ensure_workspace_root_cwd();
+    require_pnpm();
+    ensure_pnpm_install();
+    if skip_build {
+        if !Path::new("apps/notebook/dist/index.html").exists() {
+            eprintln!("apps/notebook/dist is missing; omit --skip-build to create it");
+            exit(1);
+        }
+    } else {
+        ensure_build_artifacts();
+        run_pnpm(&["--dir", "apps/notebook", "build"]);
+    }
+
+    let output = output.unwrap_or("target/notebook-web");
+    run_cmd(
+        "node",
+        &[
+            "--experimental-strip-types",
+            "scripts/package-notebook-web.ts",
+            "--output",
+            output,
+        ],
+    );
 }
 
 fn cmd_build(rust_only: bool, skip_tauri: bool) {

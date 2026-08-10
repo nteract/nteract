@@ -109,6 +109,53 @@ jobs:
             apps/notebook/src/renderer-plugins/
             target/xtask/*.fingerprint
 
+  build-notebook-web:
+    name: Build host-neutral Notebook Web artifact
+    runs-on: ubuntu-24.04
+    needs: [compute-version, build-wasm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "notebook-web-release"
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: wasm-artifacts
+
+      - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
+
+      - name: Package Notebook Web
+        env:
+          NTERACT_NOTEBOOK_WEB_VERSION: ${{ needs.compute-version.outputs.version }}
+        run: |
+          pnpm notebook-web:test
+          cargo xtask notebook-web
+          tar --sort=name --mtime="@${SOURCE_DATE_EPOCH:-0}" --owner=0 --group=0 --numeric-owner \
+            -czf "nteract-notebook-web-${NTERACT_NOTEBOOK_WEB_VERSION}.tar.gz" \
+            -C target/notebook-web .
+          sha256sum "nteract-notebook-web-${NTERACT_NOTEBOOK_WEB_VERSION}.tar.gz" \
+            > "nteract-notebook-web-${NTERACT_NOTEBOOK_WEB_VERSION}.tar.gz.sha256"
+
+      - name: Upload Notebook Web release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: notebook-web-release
+          retention-days: 1
+          path: |
+            nteract-notebook-web-*.tar.gz
+            nteract-notebook-web-*.tar.gz.sha256
+
   build-linux:
     name: Build Linux Executables
     runs-on: ubuntu-22.04
@@ -1185,6 +1232,7 @@ jobs:
         build-notebook-linux-x64,
         smoke-fedora-appimage,
         build-python-wheels,
+        build-notebook-web,
       ]
     steps:
       - name: Checkout
@@ -1263,6 +1311,12 @@ jobs:
           name: nteract-linux-x64
           path: ./notebook-linux-x64
 
+      - name: Download host-neutral Notebook Web artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: notebook-web-release
+          path: ./notebook-web
+
       - name: Report downloaded release artifact sizes
         run: |
           echo "Downloaded artifact directories:"
@@ -1317,6 +1371,8 @@ jobs:
           cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.dmg" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage" release-assets/
+          cp notebook-web/nteract-notebook-web-*.tar.gz release-assets/
+          cp notebook-web/nteract-notebook-web-*.tar.gz.sha256 release-assets/
           # Updater bundles + signatures
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz" release-assets/
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig" release-assets/
@@ -1580,6 +1636,8 @@ jobs:
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe.sig
             ./release-assets/latest.json
+            ./release-assets/nteract-notebook-web-*.tar.gz
+            ./release-assets/nteract-notebook-web-*.tar.gz.sha256
             ./wheels/*.whl
 
       - name: Update ${{ inputs.updater_channel_tag }} updater channel

@@ -446,12 +446,18 @@ jobs:
           pnpm --dir apps/notebook build
           pnpm --dir apps/elements build
 
+      - name: Verify host-neutral notebook web artifact
+        run: |
+          pnpm notebook-web:test
+          cargo xtask notebook-web --skip-build
+
       - name: Upload UI build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ui-build-dist
           path: |
             apps/notebook/dist/
+            target/notebook-web/
           retention-days: 1
 
       - name: Upload WASM artifacts
