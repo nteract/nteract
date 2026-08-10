@@ -10,6 +10,7 @@
 @import "../../../src/styles/dashboard-atoms.css";
 
 @source "../**/*.{ts,tsx,mdx}";
+@source "../../notebook-cloud/viewer/**/*.{ts,tsx}";
 @source "../../../src/components/cell/**/*.{ts,tsx}";
 @source "../../../src/components/editor/**/*.{ts,tsx}";
 @source "../../../src/components/isolated/**/*.{ts,tsx}";
