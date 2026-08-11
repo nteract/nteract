@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +13,7 @@ import {
   packWrapperReleaseAsset,
   releaseAssetName,
   releaseManifestName,
+  runRelaySmokeChild,
 } from "./release-assets.mjs";
 
 const releaseVersion = "2.6.3-nightly.202608110900";
@@ -137,6 +138,49 @@ test("archives extract through relative paths when directories contain spaces", 
     extractArchive(archive, destination);
 
     assert.equal(readFileSync(join(destination, "fixture.txt"), "utf8"), "release fixture\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function writeRelayFixture(root, revision) {
+  const packageDirectory = join(root, "node_modules", "@runtimed", "node");
+  mkdirSync(packageDirectory, { recursive: true });
+  writeFileSync(
+    join(packageDirectory, "package.json"),
+    `${JSON.stringify({
+      name: "@runtimed/node",
+      exports: { "./relay": "./relay.cjs" },
+    })}\n`,
+  );
+  writeFileSync(
+    join(packageDirectory, "relay.cjs"),
+    `module.exports.bindingSourceRevision = () => ${JSON.stringify(revision)};\n`,
+  );
+}
+
+test("relay smoke child exits before its extracted package is cleaned up", () => {
+  const root = mkdtempSync(join(tmpdir(), "runtimed node child smoke "));
+  writeRelayFixture(root, sourceRevision.slice(0, 7));
+
+  assert.equal(runRelaySmokeChild({ stagingDirectory: root, sourceRevision }), "0123456");
+  assert.equal(existsSync(join(root, "release-asset-smoke.cjs")), false);
+  assert.equal(existsSync(join(root, "release-asset-smoke-result.json")), false);
+  rmSync(root, { recursive: true, force: true });
+  assert.equal(existsSync(root), false);
+});
+
+test("relay smoke child propagates revision failures and removes its files", () => {
+  const root = mkdtempSync(join(tmpdir(), "runtimed node child failure "));
+  try {
+    writeRelayFixture(root, "deadbee");
+
+    assert.throws(
+      () => runRelaySmokeChild({ stagingDirectory: root, sourceRevision }),
+      /Extracted binding revision deadbee is not a prefix/,
+    );
+    assert.equal(existsSync(join(root, "release-asset-smoke.cjs")), false);
+    assert.equal(existsSync(join(root, "release-asset-smoke-result.json")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

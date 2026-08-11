@@ -13,13 +13,27 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(SCRIPT_DIRECTORY, "..");
 const WORKSPACE_ROOT = resolve(PACKAGE_ROOT, "../..");
 const NODE_CRATE_MANIFEST = join(WORKSPACE_ROOT, "crates/runtimed-node/Cargo.toml");
+const RELAY_SMOKE_SCRIPT = `"use strict";
+const { writeFileSync } = require("node:fs");
+const relay = require("@runtimed/node/relay");
+if (typeof relay.bindingSourceRevision !== "function") {
+  throw new Error("Extracted @runtimed/node/relay does not expose bindingSourceRevision()");
+}
+const actualRevision = relay.bindingSourceRevision();
+const sourceRevision = process.argv[2];
+if (!sourceRevision.startsWith(actualRevision)) {
+  throw new Error(
+    \`Extracted binding revision \${actualRevision} is not a prefix of \${sourceRevision}\`,
+  );
+}
+writeFileSync(process.argv[3], JSON.stringify({ actualRevision }));
+`;
 
 export const RELEASE_TARGETS = Object.freeze({
   wrapper: Object.freeze({
@@ -230,21 +244,39 @@ export function smokeReleasePair({ wrapperArchive, platformArchive, target, sour
     mkdirSync(platformDirectory, { recursive: true });
     extractArchive(wrapperArchive, wrapperDirectory);
     extractArchive(platformArchive, platformDirectory);
-    const require = createRequire(join(stagingDirectory, "release-asset-smoke.cjs"));
-    const relay = require("@runtimed/node/relay");
-    if (typeof relay.bindingSourceRevision !== "function") {
-      throw new Error("Extracted @runtimed/node/relay does not expose bindingSourceRevision()");
-    }
-    const actualRevision = relay.bindingSourceRevision();
-    if (!sourceRevision.startsWith(actualRevision)) {
-      throw new Error(
-        `Extracted binding revision ${actualRevision} is not a prefix of ${sourceRevision}`,
-      );
-    }
+    const actualRevision = runRelaySmokeChild({ stagingDirectory, sourceRevision });
     console.log(`${target}: loaded @runtimed/node/relay at ${actualRevision}`);
     return actualRevision;
   } finally {
     rmSync(stagingDirectory, { recursive: true, force: true });
+  }
+}
+
+export function runRelaySmokeChild({ stagingDirectory, sourceRevision }) {
+  const resolvedStagingDirectory = resolve(stagingDirectory);
+  const smokeScript = join(resolvedStagingDirectory, "release-asset-smoke.cjs");
+  const smokeResult = join(resolvedStagingDirectory, "release-asset-smoke-result.json");
+  writeFileSync(smokeScript, RELAY_SMOKE_SCRIPT);
+
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [basename(smokeScript), sourceRevision, basename(smokeResult)],
+      { cwd: resolvedStagingDirectory, encoding: "utf8" },
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        `Could not load extracted @runtimed/node/relay: ${result.stderr || result.stdout || result.error}`,
+      );
+    }
+    const payload = JSON.parse(readFileSync(smokeResult, "utf8"));
+    if (typeof payload.actualRevision !== "string" || payload.actualRevision.length === 0) {
+      throw new Error("Extracted relay smoke result did not contain a source revision");
+    }
+    return payload.actualRevision;
+  } finally {
+    rmSync(smokeScript, { force: true });
+    rmSync(smokeResult, { force: true });
   }
 }
 
