@@ -1389,6 +1389,24 @@ impl RoomHostHandle {
             .and_then(|v| v.as_str())
             .ok_or_else(|| JsError::new("ExecuteCell request missing cell_id"))?;
 
+        // A client may supply an execution_id for idempotent retries; validate it
+        // as a UUID so a malformed or oversized value can't become a document key.
+        // An existing ID is a retry only when it already belongs to this cell.
+        let requested_id = request.get("execution_id").and_then(|v| v.as_str());
+        if let Some(id) = requested_id {
+            if uuid::Uuid::parse_str(id).is_err() {
+                return Err(JsError::new(&format!(
+                    "execution_id is not a valid UUID: {id}"
+                )));
+            }
+            if let Some(existing) = self.state_doc.get_execution(id) {
+                if existing.cell_id.as_deref() == Some(cell_id) {
+                    return Ok(RoomHostFrameResult::empty());
+                }
+                return Err(JsError::new(&format!("execution_id already exists: {id}")));
+            }
+        }
+
         let cell = self
             .doc
             .get_cell(cell_id)
@@ -1411,6 +1429,11 @@ impl RoomHostHandle {
                 .get_execution(&active_id)
                 .is_some_and(|e| e.status == "queued" || e.status == "running");
             if still_active {
+                if requested_id.is_some() {
+                    return Err(JsError::new(&format!(
+                        "cell already has an active execution: {active_id}"
+                    )));
+                }
                 // No-op: nothing changed. The room logs the materialized frame
                 // (notebook-room.ts room.materialized_frame.applied) with
                 // changed=false, which is the observable signal here.
@@ -1418,17 +1441,7 @@ impl RoomHostHandle {
             }
         }
 
-        // A client may supply an execution_id for idempotent retries; validate it
-        // as a UUID so a malformed or oversized value can't become a document key.
-        // Absent one, the room mints it.
-        let requested_id = request.get("execution_id").and_then(|v| v.as_str());
-        if let Some(id) = requested_id {
-            if uuid::Uuid::parse_str(id).is_err() {
-                return Err(JsError::new(&format!(
-                    "execution_id is not a valid UUID: {id}"
-                )));
-            }
-        }
+        // Absent a caller-owned idempotency key, the room mints the execution ID.
         let execution_id = requested_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -1462,10 +1475,9 @@ impl RoomHostHandle {
             )
             .map_err(|e| JsError::new(&format!("create execution: {e}")))?;
         if !created {
-            // The id already exists (a client retried with the same id). Treat it
-            // as an idempotent no-op rather than erroring the peer, matching the
-            // daemon: the existing execution is already in the synced doc.
-            return Ok(RoomHostFrameResult::empty());
+            return Err(JsError::new(&format!(
+                "execution_id already exists: {execution_id}"
+            )));
         }
 
         // Point the cell at its execution, matching the daemon's ExecuteCell path.
