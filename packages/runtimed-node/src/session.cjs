@@ -1,6 +1,6 @@
 "use strict";
 
-const { Subject } = require("rxjs");
+const { ReplaySubject, Subject } = require("rxjs");
 const { parseJsonEvent } = require("./napi-observables.cjs");
 
 class Session {
@@ -13,7 +13,10 @@ class Session {
     this._executionViewChangesSubject = new Subject();
     this._cellChangesSubject = new Subject();
     this._broadcastsSubject = new Subject();
-    this._sessionStatusSubject = new Subject();
+    // Native status subscriptions synchronously emit their current value when
+    // registered. Replay it so a host that subscribes after Session
+    // construction cannot miss an already-disconnected handle.
+    this._sessionStatusSubject = new ReplaySubject(1);
     this.runtimeState$ = this._runtimeStateSubject.asObservable();
     this.executionTransitions$ = this._executionTransitionsSubject.asObservable();
     this.executionViewChanges$ = this._executionViewChangesSubject.asObservable();

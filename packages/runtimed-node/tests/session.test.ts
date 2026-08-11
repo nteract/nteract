@@ -28,6 +28,29 @@ const { Session } = require("../src/session.cjs") as {
 };
 
 describe("@runtimed/node Session wrapper", () => {
+  it("replays native status emitted during session construction", () => {
+    const disconnected = {
+      connection: "disconnected",
+      notebook_doc: "interactive",
+      runtime_state: "ready",
+      initial_load: { phase: "failed", reason: "daemon connection closed" },
+    };
+    const native = {
+      notebookId: "nb-1",
+      onSessionStatus: vi.fn((callback: (json: string) => void) => {
+        callback(JSON.stringify(disconnected));
+        return { dispose: vi.fn() };
+      }),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+    const received: unknown[] = [];
+
+    session.sessionStatus$.subscribe({ next: (value) => received.push(value) });
+
+    expect(received).toEqual([disconnected]);
+  });
+
   it("exposes native session disconnect status across current and legacy encodings", () => {
     let statusCallback: ((json: string) => void) | null = null;
     const native = {
