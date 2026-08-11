@@ -28,6 +28,92 @@ const { Session } = require("../src/session.cjs") as {
 };
 
 describe("@runtimed/node Session wrapper", () => {
+  it("seeds the execution view synchronously before live changes arrive", () => {
+    let viewCallback: ((json: string) => void) | null = null;
+    const native = {
+      notebookId: "nb-1",
+      getExecutionViewSnapshot: vi.fn(() =>
+        JSON.stringify({
+          cell_pointer_changes: [["cell-1", "exec-1"]],
+          execution_upserts: [
+            [
+              "exec-1",
+              {
+                execution_count: null,
+                status: "queued",
+                success: null,
+                output_ids: [],
+              },
+            ],
+          ],
+          queue: {
+            executing_execution_id: null,
+            queued_execution_ids: ["exec-1"],
+            notebook: {
+              executing_cell_id: null,
+              queued_cell_ids: ["cell-1"],
+            },
+          },
+        }),
+      ),
+      onExecutionViewChange: vi.fn((callback: (json: string) => void) => {
+        viewCallback = callback;
+        return { dispose: vi.fn() };
+      }),
+      close: vi.fn(async () => {}),
+    };
+
+    const session = new Session(native);
+
+    expect(session.getExecutionView()).toEqual({
+      cell_execution_ids: { "cell-1": "exec-1" },
+      executions: {
+        "exec-1": {
+          execution_count: null,
+          status: "queued",
+          success: null,
+          output_ids: [],
+        },
+      },
+      queue: {
+        executing_execution_id: null,
+        queued_execution_ids: ["exec-1"],
+        notebook: {
+          executing_cell_id: null,
+          queued_cell_ids: ["cell-1"],
+        },
+      },
+    });
+
+    viewCallback?.(
+      JSON.stringify({
+        execution_upserts: [
+          [
+            "exec-1",
+            {
+              execution_count: 1,
+              status: "running",
+              success: null,
+              output_ids: [],
+            },
+          ],
+        ],
+        queue: {
+          executing_execution_id: "exec-1",
+          queued_execution_ids: [],
+          notebook: {
+            executing_cell_id: "cell-1",
+            queued_cell_ids: [],
+          },
+        },
+      }),
+    );
+    expect(session.getExecutionView()).toMatchObject({
+      executions: { "exec-1": { status: "running" } },
+      queue: { executing_execution_id: "exec-1" },
+    });
+  });
+
   it("replays native status emitted during session construction", () => {
     const disconnected = {
       connection: "disconnected",

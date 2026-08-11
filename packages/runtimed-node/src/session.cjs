@@ -8,6 +8,12 @@ class Session {
     this._native = nativeSession;
     this._subscriptions = [];
     this._executionView = emptyExecutionView();
+    if (typeof nativeSession.getExecutionViewSnapshot === "function") {
+      applyExecutionViewChangeset(
+        this._executionView,
+        parseJsonEvent(nativeSession.getExecutionViewSnapshot()),
+      );
+    }
     this._runtimeStateSubject = new Subject();
     this._executionTransitionsSubject = new Subject();
     this._executionViewChangesSubject = new Subject();

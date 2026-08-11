@@ -45,6 +45,7 @@ type Session = {
     terminalStatus?: string;
   }>;
   getExecutionView(): {
+    cell_execution_ids: Record<string, string>;
     executions: Record<string, { status: string }>;
     queue: null | {
       executing_execution_id?: string | null;
@@ -269,7 +270,19 @@ describeNative("@runtimed/node native session outputs", () => {
     await first.close();
     sessions.splice(sessions.indexOf(first), 1);
 
-    const reopened = await openSession();
+    const reopened = await runtimeApi().openNotebookPath(notebookPath, {
+      socketPath,
+      peerLabel: "runtimed-node-native-test",
+    });
+    sessions.push(reopened);
+    expect(reopened.getExecutionView()).toMatchObject({
+      cell_execution_ids: { [executedCell]: executionId },
+      executions: { [executionId]: { status: "done" } },
+    });
+    await expect(reopened.queueExistingCell(executedCell, { executionId })).resolves.toEqual({
+      cellId: executedCell,
+      executionId,
+    });
     const outputs = await reopened.getCellOutputs(executedCell);
     expect(outputs).not.toBeNull();
     expect(outputs).toEqual(

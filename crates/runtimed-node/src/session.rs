@@ -618,6 +618,25 @@ impl Session {
         Ok(EventSubscription::new(task))
     }
 
+    /// Return a complete execution-view changeset for synchronous wrapper hydration.
+    #[napi]
+    pub fn get_execution_view_snapshot(&self) -> Result<String> {
+        let handle = {
+            let st = self
+                .state
+                .try_lock()
+                .map_err(|_| Error::from_reason("Session state busy"))?;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        let state = handle.get_runtime_state().map_err(to_napi_err)?;
+        let cell_pointers = handle.get_cell_execution_pointers().map_err(to_napi_err)?;
+        let changeset = ExecutionViewProjector::default().project_all(cell_pointers, &state);
+        serde_json::to_string(&changeset).map_err(to_napi_err)
+    }
+
     /// Subscribe to shared execution-view changes. Callback receives a JSON string.
     #[napi]
     pub fn on_execution_view_change(
