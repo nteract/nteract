@@ -42,6 +42,7 @@ jobs:
       wasm_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.wasm == 'true' }}
       python_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.python == 'true' }}
       node_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.node == 'true' }}
+      node_release_changed: ${{ steps.filter.outputs.node_release == 'true' }}
       windows_changed: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || steps.filter.outputs.windows == 'true' }}
     steps:
       - uses: actions/checkout@v6
@@ -168,6 +169,20 @@ jobs:
               - "pnpm-lock.yaml"
               - "Cargo.toml"
               - "Cargo.lock"
+            node_release:
+              - ".github/workflows/build.yml"
+              - ".github/workflows/release-common.yml"
+              - ".github/workflows/publish-npm.yml"
+              - "packages/runtimed-node/**"
+              - "crates/runtimed-node/**"
+              - "crates/build-metadata/**"
+              - "crates/runt-workspace/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
             windows:
               - ".github/workflows/build.yml"
               - "crates/notebook/nsis/**"
@@ -843,6 +858,12 @@ jobs:
       - name: Build runtimed-node N-API package
         run: pnpm --dir packages/runtimed-node build:debug
 
+      - name: Test runtimed-node release asset contract
+        run: pnpm --dir packages/runtimed-node test:release-assets
+
+      - name: Build runtimed daemon for native session integration
+        run: cargo build -p runtimed
+
       - name: Test runtimed-node Arrow IPC native integration
         run: vp test run packages/runtimed-node/tests/arrow-ipc.test.ts
         env:
@@ -859,6 +880,130 @@ jobs:
 
       - name: Check nteract pi package tarball
         run: pnpm --dir plugins/nteract/pi pack:dry-run
+
+  native-release-packages:
+    name: Native release package (${{ matrix.target }})
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.node_release_changed == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+            expected_arch: arm64
+            expected_rust_host: aarch64-apple-darwin
+          - target: darwin-x64
+            runner: macos-15-intel
+            expected_arch: x64
+            expected_rust_host: x86_64-apple-darwin
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+            expected_arch: x64
+            expected_rust_host: x86_64-unknown-linux-gnu
+          - target: win32-x64-msvc
+            runner: windows-2025
+            expected_arch: x64
+            expected_rust_host: x86_64-pc-windows-msvc
+    env:
+      NTERACT_BUILD_GIT_HASH: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "runtimed-node-package-${{ matrix.target }}"
+
+      - uses: ./.github/actions/repair-macos-rust-toolchain
+        if: runner.os == 'macOS'
+
+      - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - name: Set up Node with pnpm cache
+        if: runner.os != 'Windows'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Set up Node
+        if: runner.os == 'Windows'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Verify native runner architecture
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+          EXPECTED_RUST_HOST: ${{ matrix.expected_rust_host }}
+        run: |
+          NODE_ARCH=$(node -p "process.arch")
+          RUST_HOST=$(rustc --print host-tuple)
+          if [ "$NODE_ARCH" != "$EXPECTED_ARCH" ]; then
+            echo "::error::Node architecture $NODE_ARCH does not match expected $EXPECTED_ARCH for ${{ matrix.target }}"
+            exit 1
+          fi
+          if [ "$RUST_HOST" != "$EXPECTED_RUST_HOST" ]; then
+            echo "::error::Rust host $RUST_HOST does not match expected $EXPECTED_RUST_HOST for ${{ matrix.target }}"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build native binding
+        run: pnpm --dir packages/runtimed-node build
+
+      - name: Verify native binding source revision
+        shell: bash
+        run: |
+          ACTUAL_REVISION=$(node -e "process.stdout.write(require('./packages/runtimed-node/src/index.cjs').bindingSourceRevision())")
+          if [[ "$NTERACT_BUILD_GIT_HASH" != "$ACTUAL_REVISION"* ]]; then
+            echo "::error::Native binding source revision $ACTUAL_REVISION is not a prefix of $NTERACT_BUILD_GIT_HASH"
+            exit 1
+          fi
+
+      - name: Assemble, pack, and load release archives
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          RELEASE_VERSION="0.0.0-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          PLATFORM_PACK="$RUNNER_TEMP/platform-pack"
+          WRAPPER_PACK="$RUNNER_TEMP/wrapper-pack"
+          RELEASE_ASSETS="$RUNNER_TEMP/release-assets"
+          mkdir -p "$PLATFORM_PACK" "$WRAPPER_PACK" "$RELEASE_ASSETS"
+
+          pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "$TARGET"
+          pnpm --dir "packages/runtimed-node/npm/$TARGET" pack:dry-run
+          pnpm --dir "packages/runtimed-node/npm/$TARGET" pack --pack-destination "$PLATFORM_PACK"
+          node packages/runtimed-node/scripts/release-assets.mjs rename \
+            --release-version "$RELEASE_VERSION" \
+            --target "$TARGET" \
+            --input-dir "$PLATFORM_PACK" \
+            --output-dir "$RELEASE_ASSETS"
+
+          pnpm --dir packages/runtimed-node pack:release -- --output-dir "$WRAPPER_PACK"
+          node packages/runtimed-node/scripts/release-assets.mjs rename \
+            --release-version "$RELEASE_VERSION" \
+            --target wrapper \
+            --input-dir "$WRAPPER_PACK" \
+            --output-dir "$RELEASE_ASSETS"
+
+          node packages/runtimed-node/scripts/release-assets.mjs smoke \
+            --source-revision "$NTERACT_BUILD_GIT_HASH" \
+            --target "$TARGET" \
+            --wrapper "$RELEASE_ASSETS/runtimed-node-wrapper-${RELEASE_VERSION}.tgz" \
+            --platform "$RELEASE_ASSETS/runtimed-node-${TARGET}-${RELEASE_VERSION}.tgz"
 
   clippy-and-tests:
     name: Clippy & Tests (Linux)
