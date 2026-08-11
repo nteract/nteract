@@ -26,6 +26,17 @@ export interface OpenRelayOptions {
   description?: string;
 }
 
+export interface QueryDaemonOptions {
+  socketPath?: string;
+}
+
+export interface DaemonInfo {
+  version: string;
+  socketPath: string;
+  isDevMode: boolean;
+  blobPort?: number;
+}
+
 export interface RelayInfo {
   notebookId: string;
   cellCount?: number;
@@ -65,3 +76,7 @@ export class RelaySession {
 export function createRelay(options?: CreateRelayOptions): Promise<RelaySession>;
 export function openRelayPath(path: string, options?: OpenRelayOptions): Promise<RelaySession>;
 export function connectRelay(notebookId: string, options?: OpenRelayOptions): Promise<RelaySession>;
+/** Resolve the daemon endpoint selected by the runtimed environment. */
+export function defaultSocketPath(): string;
+/** Return null until the selected daemon is ready to answer pool requests. */
+export function queryDaemonInfo(options?: QueryDaemonOptions): Promise<DaemonInfo | null>;

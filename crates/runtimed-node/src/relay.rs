@@ -61,6 +61,22 @@ pub struct OpenRelayOptions {
     pub description: Option<String>,
 }
 
+#[napi(object)]
+#[derive(Default)]
+pub struct QueryDaemonOptions {
+    /// Override the daemon endpoint.
+    pub socket_path: Option<String>,
+}
+
+/// Daemon metadata needed by a Node host before it opens a notebook relay.
+#[napi(object)]
+pub struct DaemonInfo {
+    pub version: String,
+    pub socket_path: String,
+    pub is_dev_mode: bool,
+    pub blob_port: Option<u32>,
+}
+
 /// Bootstrap and daemon metadata needed by a browser host.
 #[napi(object)]
 #[derive(Clone)]
@@ -263,6 +279,27 @@ pub async fn connect_relay(
     let info =
         relay_info_from_capabilities(notebook_id, result.capabilities, None, socket_path, daemon);
     Ok(NativeRelaySession::new(result.handle, frame_rx, info))
+}
+
+/// Probe the selected daemon and return its host-facing metadata when ready.
+///
+/// `None` intentionally covers both an absent endpoint and a daemon that has
+/// bound its socket but is not ready to answer pool requests yet. Hosts can
+/// poll this function while supervising a cold start without cloning the wire
+/// protocol in JavaScript.
+#[napi]
+pub async fn query_daemon_info(options: Option<QueryDaemonOptions>) -> Result<Option<DaemonInfo>> {
+    let socket_path = resolve_socket_path(options.and_then(|options| options.socket_path));
+    Ok(
+        runtimed_client::singleton::query_daemon_info(socket_path.clone())
+            .await
+            .map(|info| DaemonInfo {
+                version: info.version,
+                socket_path: socket_path.to_string_lossy().into_owned(),
+                is_dev_mode: info.worktree_path.is_some(),
+                blob_port: info.blob_port.map(u32::from),
+            }),
+    )
 }
 
 impl NativeRelaySession {

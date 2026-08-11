@@ -4,7 +4,9 @@ export { RelaySession, connectRelay, createRelay, openRelayPath } from "./relay"
 export type {
   CommentsNotebookRef,
   CreateRelayOptions,
+  DaemonInfo,
   OpenRelayOptions,
+  QueryDaemonOptions,
   RelayFrame,
   RelayInfo,
 } from "./relay";

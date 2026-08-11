@@ -11,11 +11,14 @@
 
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const { createRelay } = require("../src/relay.cjs");
+const { createRelay, queryDaemonInfo } = require("../src/relay.cjs");
 
 async function main() {
   const socketPath = process.env.RUNTIMED_SOCKET_PATH;
   assert(socketPath, "RUNTIMED_SOCKET_PATH must point to a running compatible daemon");
+  const daemon = await queryDaemonInfo({ socketPath });
+  assert(daemon, "queryDaemonInfo finds the running daemon");
+  assert.equal(daemon.socketPath, socketPath);
 
   const relay = await createRelay({
     socketPath,
@@ -70,6 +73,7 @@ async function main() {
       JSON.stringify({
         ok: true,
         notebookId: relay.notebookId,
+        daemonVersion: daemon.version,
         protocolVersion: relay.info.protocolVersion,
         frameTypes: [...new Set(seenTypes)].sort(),
       }),
