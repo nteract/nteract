@@ -27,7 +27,11 @@ type Session = {
   };
   createCell(source: string, options?: { cellType?: "code" | "markdown" }): Promise<string>;
   approveTrust(): Promise<void>;
-  executeCell(cellId: string, options?: { timeoutMs?: number }): Promise<unknown>;
+  queueExistingCell(cellId: string): Promise<{ cellId: string; executionId: string }>;
+  waitForExecution(
+    executionId: string,
+    options?: { cellId?: string; timeoutMs?: number },
+  ): Promise<unknown>;
   getCellOutputs(cellId: string): Promise<Output[] | null>;
   close(): Promise<void>;
   shutdownNotebook(): Promise<boolean>;
@@ -96,7 +100,10 @@ async function executeWhenReady(session: Session, cellId: string): Promise<void>
   const deadline = Date.now() + 120_000;
   while (true) {
     try {
-      await session.executeCell(cellId, { timeoutMs: 180_000 });
+      const queued = await session.queueExistingCell(cellId);
+      expect(queued.cellId).toBe(cellId);
+      expect(queued.executionId).not.toBe("");
+      await session.waitForExecution(queued.executionId, { cellId, timeoutMs: 180_000 });
       return;
     } catch (error) {
       if (!String(error).includes("pool empty") || Date.now() >= deadline) throw error;

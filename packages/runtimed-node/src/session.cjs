@@ -74,6 +74,10 @@ class Session {
     return this._native.queueCell(source, options);
   }
 
+  queueExistingCell(cellId) {
+    return this._native.queueExistingCell(cellId);
+  }
+
   async waitForExecution(executionId, options = {}) {
     const { onUpdate, ...nativeOptions } = options ?? {};
     const cellId = nativeOptions.cellId;

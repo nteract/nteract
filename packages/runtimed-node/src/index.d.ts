@@ -245,6 +245,7 @@ export class Session {
   readonly sessionStatus$: Observable<SessionStatus>;
 
   queueCell(source: string, options?: QueueCellOptions): Promise<QueuedExecution>;
+  queueExistingCell(cellId: string): Promise<QueuedExecution>;
   waitForExecution(executionId: string, options?: WaitExecutionOptions): Promise<CellResult>;
   runCell(source: string, options?: RunCellOptions): Promise<CellResult>;
   saveNotebook(path?: string): Promise<void>;

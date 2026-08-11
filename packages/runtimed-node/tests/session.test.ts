@@ -358,6 +358,24 @@ describe("@runtimed/node Session wrapper", () => {
     });
   });
 
+  it("queues an existing synced cell without resending its source", async () => {
+    const native = {
+      notebookId: "nb-1",
+      queueExistingCell: vi.fn(async () => ({
+        cellId: "cell-1",
+        executionId: "exec-1",
+      })),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+
+    await expect(session.queueExistingCell("cell-1")).resolves.toEqual({
+      cellId: "cell-1",
+      executionId: "exec-1",
+    });
+    expect(native.queueExistingCell).toHaveBeenCalledWith("cell-1");
+  });
+
   it("passes snapshot pair export through to the native session", async () => {
     const snapshot = {
       notebookId: "nb-1",

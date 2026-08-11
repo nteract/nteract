@@ -1180,6 +1180,23 @@ impl Session {
         collect_outputs_with_timeout(&self.state, cell_id, execution_id, timeout).await
     }
 
+    /// Queue an existing synced code cell without waiting for execution.
+    /// Returns the daemon-assigned execution ID immediately so hosts can
+    /// correlate status and cancellation with the exact work they submitted.
+    #[napi]
+    pub async fn queue_existing_cell(&self, cell_id: String) -> Result<QueuedExecution> {
+        ensure_kernel_started(&self.state).await?;
+        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+        if let Ok((handle, peer_label)) = session_handle_and_label(&self.state).await {
+            notebook_sync::presence::emit_focus(&handle, &cell_id, Some(&peer_label)).await;
+        }
+
+        Ok(QueuedExecution {
+            cell_id,
+            execution_id,
+        })
+    }
+
     /// Execute a source string as a new cell. Starts the kernel on demand.
     /// Returns the cell's outputs once execution is terminal.
     #[napi]

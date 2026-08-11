@@ -207,6 +207,8 @@ sessions.
 - `Session.shutdownNotebook()` shuts down this notebook room and closes the session.
 - `Session.runCell(source, options)` appends, runs, and waits for a cell.
 - `Session.queueCell(source, options)` appends a cell, queues it, and returns IDs.
+- `Session.queueExistingCell(cellId)` queues an already-synced cell and returns
+  its execution ID immediately, without introducing a side-channel source.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
   Pass `onUpdate(progress)` to receive resolved output snapshots while the
   execution is still running.
