@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use automerge::ChangeHash;
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -335,50 +334,27 @@ pub(super) fn spawn_peer_request_worker(
     PeerRequestWorker { tx, handle }
 }
 
-async fn wait_for_required_heads(
+pub(super) async fn wait_for_required_heads(
     room: &NotebookRoom,
     required_heads: &[String],
+) -> Result<(), String> {
+    wait_for_required_heads_with_timeout(room, required_heads, REQUIRED_HEADS_TIMEOUT).await
+}
+
+pub(super) async fn wait_for_required_heads_with_timeout(
+    room: &NotebookRoom,
+    required_heads: &[String],
+    timeout: std::time::Duration,
 ) -> Result<(), String> {
     if required_heads.is_empty() {
         return Ok(());
     }
 
-    let heads = parse_required_heads(required_heads)?;
-    let mut changed_rx = room.broadcasts.changed_tx.subscribe();
-
-    tokio::time::timeout(REQUIRED_HEADS_TIMEOUT, async {
-        loop {
-            {
-                let mut doc = room.doc.write().await;
-                let has_all_heads = heads
-                    .iter()
-                    .all(|head| doc.doc_mut().get_change_by_hash(head).is_some());
-                if has_all_heads {
-                    return Ok(());
-                }
-            }
-
-            match changed_rx.recv().await {
-                Ok(()) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return Err("Required notebook heads could not be observed".to_string());
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|_| "Timed out waiting for required notebook heads".to_string())?
-}
-
-fn parse_required_heads(required_heads: &[String]) -> Result<Vec<ChangeHash>, String> {
-    required_heads
-        .iter()
-        .map(|head| {
-            head.parse::<ChangeHash>()
-                .map_err(|_| "Request contained an invalid required notebook head".to_string())
-        })
-        .collect()
+    room.durability
+        .await_durable(required_heads, timeout)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub(super) fn enqueue_notebook_request(
@@ -488,7 +464,8 @@ fn request_required_scope(
         NotebookRequest::SendComm { .. }
         | NotebookRequest::ApplyBokehSessionPatch { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
-        | NotebookRequest::GetDocBytes {} => RequestRequiredScope::NotebookWrite,
+        | NotebookRequest::GetDocBytes {}
+        | NotebookRequest::ConfirmNotebookHeads {} => RequestRequiredScope::NotebookWrite,
         NotebookRequest::CreateBlobUpload { .. }
         | NotebookRequest::CompleteBlobUpload { .. }
         | NotebookRequest::AbortBlobUpload { .. } => RequestRequiredScope::BlobUpload,
@@ -597,12 +574,29 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn notebook_head_confirmation_requires_write_scope() {
+        let request = NotebookRequest::ConfirmNotebookHeads {};
+
+        assert!(request_allowed_for_scope(&request, ConnectionScope::Owner));
+        assert!(request_allowed_for_scope(&request, ConnectionScope::Editor));
+        assert!(!request_allowed_for_scope(
+            &request,
+            ConnectionScope::Viewer
+        ));
+    }
+
     #[tokio::test]
     async fn required_heads_are_satisfied_by_present_change_history() {
         let room = test_room();
         let heads = {
             let mut doc = room.doc.write().await;
+            let before = doc.get_heads();
             doc.add_cell(0, "cell-1", "code").expect("add cell");
+            let changes = doc.doc_mut().get_changes(&before).into_iter().collect();
+            room.durability
+                .commit_peer_changes(changes)
+                .expect("test mutation becomes durable");
             doc.get_heads_hex()
         };
 
@@ -636,7 +630,12 @@ mod tests {
 
         {
             let mut doc = room.doc.write().await;
+            let before = doc.get_heads();
             doc.merge(&mut incoming).expect("merge incoming change");
+            let changes = doc.doc_mut().get_changes(&before).into_iter().collect();
+            room.durability
+                .commit_peer_changes(changes)
+                .expect("incoming mutation becomes durable");
         }
         let _ = room.broadcasts.changed_tx.send(());
 
@@ -699,7 +698,12 @@ mod tests {
 
         {
             let mut doc = room.doc.write().await;
+            let before = doc.get_heads();
             doc.merge(&mut incoming).expect("merge incoming change");
+            let changes = doc.doc_mut().get_changes(&before).into_iter().collect();
+            room.durability
+                .commit_peer_changes(changes)
+                .expect("incoming executable source becomes durable");
         }
         let _ = room.broadcasts.changed_tx.send(());
 

@@ -2757,17 +2757,14 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
         .unwrap()
         .expect("peer should produce a changes-bearing message")
         .encode();
+    let client_heads = client.get_heads_hex();
     assert!(
         !sync::Message::decode(&payload).unwrap().changes.is_empty(),
         "the injected frame must cross the peer durability path"
     );
 
-    let journal_path = room
-        .durability
-        .journal()
-        .expect("file-backed room journal")
-        .path()
-        .to_path_buf();
+    let journal = room.durability.journal().expect("file-backed room journal");
+    let journal_path = journal.path().to_path_buf();
     std::fs::create_dir_all(&journal_path).unwrap();
     let identity = RoomConnectionIdentity::local(Some("mcp:test-peer".to_string()))
         .await
@@ -2804,6 +2801,17 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
             .unwrap(),
         Some(runtime_doc::FileSourceIssue::Degraded { .. })
     ));
+    let barrier_error = super::peer_writer::wait_for_required_heads_with_timeout(
+        &room,
+        &client_heads,
+        std::time::Duration::from_millis(20),
+    )
+    .await
+    .expect_err("failed journal commit must not satisfy the required-head barrier");
+    assert!(
+        barrier_error.contains("durability is degraded"),
+        "barrier should surface the failed durability boundary: {barrier_error}"
+    );
 
     // The same encoded peer message succeeds after the injected I/O fault is
     // removed, proving the sync state was rolled back with the document.
@@ -2818,6 +2826,25 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
     .expect("retry should accept and durably acknowledge the same peer change");
     assert!(reply.is_some());
     assert_eq!(room.doc.read().await.cell_count(), 1);
+    super::peer_writer::wait_for_required_heads_with_timeout(
+        &room,
+        &client_heads,
+        std::time::Duration::from_secs(1),
+    )
+    .await
+    .expect("accepted peer heads satisfy the durable request barrier");
+
+    let recovered = match journal.latest_record().expect("scan recovery journal") {
+        super::recovery::RecoveryLatestOutcome::Recovered(recovered) => recovered,
+        other => panic!("expected a recoverable journal record, got {other:?}"),
+    };
+    let recovered_doc = notebook_doc::NotebookDoc::load(&recovered.record.automerge_snapshot)
+        .expect("load recovery snapshot");
+    assert_eq!(
+        recovered_doc.get_cell_source("peer-cell").as_deref(),
+        Some("peer_value = 1"),
+        "heads admitted by the barrier must survive journal recovery"
+    );
     tokio::time::timeout(std::time::Duration::from_secs(1), changed.recv())
         .await
         .expect("accepted peer change should broadcast")

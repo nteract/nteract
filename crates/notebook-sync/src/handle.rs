@@ -116,6 +116,17 @@ pub struct SnapshotPairBytes {
     pub comments_doc_heads: Vec<String>,
 }
 
+/// Result of atomically creating a caller-keyed notebook cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateCellOutcome {
+    /// This call created the cell.
+    Created,
+    /// A cell with the same ID, type, and source already existed.
+    Existing,
+    /// The ID was already bound to different cell content.
+    Conflict,
+}
+
 /// One cell's durable output manifests and the widget state needed to resolve
 /// them, captured from a single shared-document snapshot.
 #[derive(Clone, Debug)]
@@ -316,6 +327,34 @@ impl DocHandle {
             let position = nd.add_cell_after(cell_id, cell_type, after_cell_id)?;
             nd.update_source(cell_id, source)?;
             Ok(position)
+        })
+    }
+
+    /// Atomically create a cell or classify a caller-owned ID retry.
+    ///
+    /// The existence check and insertion share one document lock, so two
+    /// concurrent callers cannot both claim the same previously-missing ID.
+    pub fn create_cell_idempotent(
+        &self,
+        cell_id: &str,
+        cell_type: &str,
+        after_cell_id: Option<&str>,
+        source: &str,
+    ) -> Result<CreateCellOutcome, SyncError> {
+        self.with_notebook_doc(|nd| {
+            if let Some(existing) = nd.get_cell(cell_id) {
+                return Ok(
+                    if existing.cell_type == cell_type && existing.source == source {
+                        CreateCellOutcome::Existing
+                    } else {
+                        CreateCellOutcome::Conflict
+                    },
+                );
+            }
+
+            nd.add_cell_after(cell_id, cell_type, after_cell_id)?;
+            nd.update_source(cell_id, source)?;
+            Ok(CreateCellOutcome::Created)
         })
     }
 
@@ -834,20 +873,6 @@ impl DocHandle {
     /// this is a freshness hint rather than a strict durability barrier. Call
     /// it before daemon RPCs that read notebook source from the Automerge doc.
     pub async fn confirm_sync(&self) -> Result<(), SyncError> {
-        self.confirm_sync_mode(false).await
-    }
-
-    /// Require the daemon to acknowledge every current local NotebookDoc head.
-    ///
-    /// Unlike [`confirm_sync`](Self::confirm_sync), this returns
-    /// [`SyncError::Timeout`] when convergence cannot be proven. The daemon
-    /// journals peer changes before generating its Automerge acknowledgement,
-    /// so success is a strict durability receipt for the captured heads.
-    pub async fn confirm_sync_strict(&self) -> Result<(), SyncError> {
-        self.confirm_sync_mode(true).await
-    }
-
-    async fn confirm_sync_mode(&self, strict: bool) -> Result<(), SyncError> {
         let target_heads = {
             let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
             let heads = state.doc.get_heads();
@@ -865,12 +890,32 @@ impl DocHandle {
         self.cmd_tx
             .send(SyncCommand::ConfirmSync {
                 target_heads,
-                strict,
                 reply: reply_tx,
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
         crate::reply::recv(reply_rx).await
+    }
+
+    /// Require the daemon to acknowledge every current local NotebookDoc head.
+    ///
+    /// Unlike [`confirm_sync`](Self::confirm_sync), this sends a correlated
+    /// no-op request carrying the captured heads as causal preconditions. The
+    /// daemon only responds after its required-head gate observes them. Peer
+    /// changes are journaled before the daemon makes them visible to that gate,
+    /// so success is a strict durability receipt for the captured heads.
+    pub async fn confirm_sync_strict(&self) -> Result<(), SyncError> {
+        let target_heads = self.current_heads_hex()?;
+        match self
+            .send_request_after_heads(NotebookRequest::ConfirmNotebookHeads {}, target_heads)
+            .await?
+        {
+            NotebookResponse::NotebookHeadsConfirmed {} => Ok(()),
+            NotebookResponse::Error { error } => Err(SyncError::Protocol(error)),
+            response => Err(SyncError::Protocol(format!(
+                "Unexpected response to ConfirmNotebookHeads: {response:?}"
+            ))),
+        }
     }
 
     /// Flush pending RuntimeStateDoc sync frames from the daemon.

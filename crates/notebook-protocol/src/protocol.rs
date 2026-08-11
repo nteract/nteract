@@ -786,6 +786,11 @@ pub enum NotebookRequest {
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
 
+    /// A no-op request used with `NotebookRequestEnvelope.required_heads` as a
+    /// correlated causal barrier. The daemon only handles this request after
+    /// every required NotebookDoc head is present in its durable room state.
+    ConfirmNotebookHeads {},
+
     /// Begin a peer-scoped multipart blob upload.
     CreateBlobUpload {
         media_type: String,
@@ -956,6 +961,9 @@ pub enum NotebookResponse {
         /// Raw Automerge document bytes, encoded as a Vec for JSON transport.
         bytes: Vec<u8>,
     },
+
+    /// The daemon has passed the envelope's required-head causal barrier.
+    NotebookHeadsConfirmed {},
 
     /// Blob bytes were stored in the content-addressed blob store.
     BlobStored {
@@ -1350,6 +1358,37 @@ mod tests {
     }
 
     #[test]
+    fn notebook_head_barrier_wire_shapes_round_trip() {
+        let request = NotebookRequestEnvelope {
+            id: Some("barrier-1".into()),
+            required_heads: vec!["a".repeat(64)],
+            request: NotebookRequest::ConfirmNotebookHeads {},
+        };
+        let request_json = serde_json::to_value(&request).expect("serialize barrier request");
+        assert_eq!(request_json["action"], "confirm_notebook_heads");
+        assert_eq!(request_json["required_heads"][0], "a".repeat(64));
+        let parsed_request: NotebookRequestEnvelope =
+            serde_json::from_value(request_json).expect("deserialize barrier request");
+        assert!(matches!(
+            parsed_request.request,
+            NotebookRequest::ConfirmNotebookHeads {}
+        ));
+
+        let response = NotebookResponseEnvelope {
+            id: Some("barrier-1".into()),
+            response: NotebookResponse::NotebookHeadsConfirmed {},
+        };
+        let response_json = serde_json::to_value(&response).expect("serialize barrier response");
+        assert_eq!(response_json["result"], "notebook_heads_confirmed");
+        let parsed_response: NotebookResponseEnvelope =
+            serde_json::from_value(response_json).expect("deserialize barrier response");
+        assert!(matches!(
+            parsed_response.response,
+            NotebookResponse::NotebookHeadsConfirmed {}
+        ));
+    }
+
+    #[test]
     fn guarded_requests_round_trip() {
         let observed_heads = vec!["0123456789abcdef".to_string()];
         let cases = vec![
@@ -1663,6 +1702,10 @@ mod tests {
             (
                 "get_doc_bytes",
                 serde_json::json!({ "action": "get_doc_bytes" }),
+            ),
+            (
+                "confirm_notebook_heads",
+                serde_json::json!({ "action": "confirm_notebook_heads" }),
             ),
             (
                 "create_blob_upload",

@@ -199,11 +199,16 @@ sessions.
   direct notebook editing without MCP JSON round-trips. `createCell()` appends
   by default; pass `index: 0` to prepend or `afterCellId` to insert after
   another cell. Pass a stable `cellId` when a caller may retry creation.
-  Successful editing promises resolve only after the daemon has acknowledged
-  the captured document heads. A timeout or disconnect rejects the promise but
-  leaves the result indeterminate: the local mutation can still synchronize,
-  so re-read the cell before retrying. A repeated `createCell()` with the same
-  `cellId`, source, and type is idempotent; conflicting content is rejected.
+  Successful mutations resolve only after a correlated daemon response has
+  acknowledged the captured document heads. A timeout or disconnect rejects
+  the promise but leaves the result indeterminate: the local mutation can still
+  synchronize, so re-read the cell before retrying. A repeated `createCell()`
+  with the same `cellId`, source, and type is idempotent; conflicting content is
+  rejected, including concurrent attempts in the same session.
+  Durable mutation acknowledgement requires `@runtimed/node` and the runtimed
+  daemon to come from the same compatible release. Older daemons do not
+  recognize the confirmation barrier; explicit capability negotiation is
+  future work.
 - `Session.executeCell(cellId, options)` runs an existing code cell.
 - `Session.showNotebook()` opens the session in nteract Desktop when a display
   is available.

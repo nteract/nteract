@@ -211,6 +211,17 @@ describeNative("@runtimed/node native session outputs", () => {
       }),
     ).rejects.toThrow("already exists with different content");
 
+    const concurrentCellId = "cell-native-concurrent-create";
+    const concurrentResults = await Promise.allSettled([
+      first.createCell("first = 1", { cellId: concurrentCellId }),
+      first.createCell("second = 2", { cellId: concurrentCellId }),
+    ]);
+    expect(concurrentResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(concurrentResults.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(concurrentResults.find((result) => result.status === "rejected")?.reason).toEqual(
+      expect.objectContaining({ message: expect.stringContaining("different content") }),
+    );
+
     const emptyCell = await first.createCell("# no outputs", { cellType: "markdown" });
     await expect(first.getCellOutputs(emptyCell)).resolves.toEqual([]);
 

@@ -72,7 +72,7 @@ pub use execution_wait::{
     ExecutionTerminalError, ExecutionTerminalState, DEFAULT_OUTPUT_SYNC_GRACE,
 };
 pub use execution_watch::{ExecutionProgressState, ExecutionTerminalReason, ExecutionWatcher};
-pub use handle::{DocHandle, SnapshotPairBytes};
+pub use handle::{CreateCellOutcome, DocHandle, SnapshotPairBytes};
 pub use notebook_protocol::protocol::PutBlobResult;
 pub use relay::RelayHandle;
 pub use shared::SharedDocState;

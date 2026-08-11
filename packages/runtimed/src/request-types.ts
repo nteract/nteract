@@ -146,6 +146,7 @@ export type NotebookRequest =
   | { type: "approve_trust"; observed_heads?: string[] | null }
   | { type: "approve_project_environment"; project_file_path?: string | null }
   | { type: "get_doc_bytes" }
+  | { type: "confirm_notebook_heads" }
   | {
       type: "create_blob_upload";
       media_type: string;
@@ -244,6 +245,7 @@ export type NotebookResponse =
   | { result: "sync_environment_complete"; synced_packages: string[] }
   | { result: "sync_environment_failed"; error: string; needs_restart: boolean }
   | { result: "doc_bytes"; bytes: number[] }
+  | { result: "notebook_heads_confirmed" }
   | { result: "blob_stored"; hash: string; size: number; media_type: string }
   | { result: "blob_upload_created"; upload_id: string; part_size: number; expires_at: string }
   | { result: "blob_part_stored"; upload_id: string; part_number: number; sha256: string }

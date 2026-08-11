@@ -81,7 +81,6 @@ pub enum SyncCommand {
     /// callers keep the historical non-strict durability semantics.
     ConfirmSync {
         target_heads: Vec<ChangeHash>,
-        strict: bool,
         reply: oneshot::Sender<Result<(), SyncError>>,
     },
 
@@ -145,7 +144,6 @@ struct PendingRequest {
 struct ConfirmWaiter {
     target_heads: Vec<ChangeHash>,
     sent_generation: Option<u64>,
-    strict: bool,
     reply: oneshot::Sender<Result<(), SyncError>>,
     deadline: Instant,
 }
@@ -473,7 +471,6 @@ impl SyncReactor {
 
             SyncCommand::ConfirmSync {
                 target_heads,
-                strict,
                 reply,
             } => {
                 if self.target_heads_confirmed(&target_heads) {
@@ -489,7 +486,6 @@ impl SyncReactor {
                     self.state.confirm_waiters.push(ConfirmWaiter {
                         target_heads,
                         sent_generation,
-                        strict,
                         reply,
                         deadline: Instant::now() + CONFIRM_SYNC_TIMEOUT,
                     });
@@ -1114,19 +1110,11 @@ impl SyncReactor {
             {
                 let _ = waiter.reply.send(Ok(()));
             } else if now >= waiter.deadline {
-                if waiter.strict {
-                    warn!(
-                        "[notebook-sync] strict confirm_sync timed out before heads were acknowledged for {}",
-                        self.io.notebook_id
-                    );
-                    let _ = waiter.reply.send(Err(SyncError::Timeout));
-                } else {
-                    debug!(
-                        "[notebook-sync] confirm_sync timed out before heads fully confirmed for {}",
-                        self.io.notebook_id
-                    );
-                    let _ = waiter.reply.send(Ok(()));
-                }
+                debug!(
+                    "[notebook-sync] confirm_sync timed out before heads fully confirmed for {}",
+                    self.io.notebook_id
+                );
+                let _ = waiter.reply.send(Ok(()));
             } else {
                 pending.push(waiter);
             }
@@ -1548,7 +1536,6 @@ mod tests {
         reactor.state.confirm_waiters.push(ConfirmWaiter {
             target_heads: vec![ChangeHash([1; 32])],
             sent_generation: None,
-            strict: false,
             reply,
             deadline: Instant::now() - Duration::from_secs(1),
         });
@@ -1557,25 +1544,6 @@ mod tests {
 
         assert!(reactor.state.confirm_waiters.is_empty());
         assert!(matches!(rx.try_recv(), Ok(Ok(()))));
-    }
-
-    #[test]
-    fn strict_confirm_waiter_timeout_fails_closed() {
-        let mut reactor = test_reactor();
-        let (reply, mut rx) = oneshot::channel();
-
-        reactor.state.confirm_waiters.push(ConfirmWaiter {
-            target_heads: vec![ChangeHash([1; 32])],
-            sent_generation: None,
-            strict: true,
-            reply,
-            deadline: Instant::now() - Duration::from_secs(1),
-        });
-
-        reactor.resolve_confirm_waiters();
-
-        assert!(reactor.state.confirm_waiters.is_empty());
-        assert!(matches!(rx.try_recv(), Ok(Err(SyncError::Timeout))));
     }
 
     #[test]
@@ -1589,7 +1557,6 @@ mod tests {
             reactor.state.confirm_waiters.push(ConfirmWaiter {
                 target_heads: vec![ChangeHash([index + 1; 32])],
                 sent_generation: Some(7),
-                strict: true,
                 reply,
                 deadline: Instant::now() + Duration::from_secs(30),
             });
@@ -2143,6 +2110,198 @@ mod tests {
         assert!(matches!(first_response, NotebookResponse::DocBytes { .. }));
         assert!(matches!(second_response, NotebookResponse::NoKernel {}));
         assert!(matches!(progress, NotebookBroadcast::Comm { .. }));
+
+        daemon.await.expect("daemon task");
+        drop(handle);
+        sync_task.await.expect("sync task exits");
+    }
+
+    #[tokio::test]
+    async fn strict_confirm_ignores_unrelated_automerge_frames_until_correlated_response() {
+        let (handle, config) = test_handle_and_config();
+        handle
+            .add_cell_with_source("strict-cell", "code", None, "value = 42")
+            .expect("local mutation");
+
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (request_seen_tx, request_seen_rx) = oneshot::channel();
+        let (release_response_tx, release_response_rx) = oneshot::channel();
+
+        let sync_task = tokio::spawn(run(config, client_read, client_write));
+        let daemon = tokio::spawn(async move {
+            let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 64);
+            let mut writer = BufWriter::new(server_write);
+
+            loop {
+                let frame = timeout(Duration::from_secs(15), reader.recv())
+                    .await
+                    .expect("daemon received strict confirmation request")
+                    .expect("client stayed connected")
+                    .expect("request frame read");
+                if frame.frame_type != NotebookFrameType::Request {
+                    continue;
+                }
+
+                let envelope: NotebookRequestEnvelope =
+                    serde_json::from_slice(&frame.payload).expect("request envelope");
+                assert!(matches!(
+                    envelope.request,
+                    NotebookRequest::ConfirmNotebookHeads {}
+                ));
+                assert!(
+                    !envelope.required_heads.is_empty(),
+                    "strict confirmation must carry captured causal heads"
+                );
+                let request_id = envelope.id.expect("correlated request id");
+
+                let mut unrelated = SharedDocState::new(
+                    notebook_doc::NotebookDoc::new("unrelated-notebook").into_inner(),
+                    "unrelated-notebook".into(),
+                );
+                let message = unrelated
+                    .generate_sync_message()
+                    .expect("unrelated peer emits an initial sync frame");
+                connection::send_typed_frame(
+                    &mut writer,
+                    NotebookFrameType::AutomergeSync,
+                    &message.encode(),
+                )
+                .await
+                .expect("send unrelated Automerge frame");
+                request_seen_tx
+                    .send(())
+                    .expect("test receives request signal");
+
+                release_response_rx.await.expect("test releases response");
+                send_typed_json_frame(
+                    &mut writer,
+                    NotebookFrameType::Response,
+                    &NotebookResponseEnvelope {
+                        id: Some(request_id),
+                        response: NotebookResponse::NotebookHeadsConfirmed {},
+                    },
+                )
+                .await
+                .expect("send correlated confirmation");
+                return;
+            }
+        });
+
+        let confirm = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.confirm_sync_strict().await }
+        });
+        request_seen_rx.await.expect("daemon saw request");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !confirm.is_finished(),
+            "an unrelated Automerge frame must not satisfy strict confirmation"
+        );
+        release_response_tx.send(()).expect("release response");
+        confirm
+            .await
+            .expect("strict task joins")
+            .expect("correlated response confirms heads");
+
+        daemon.await.expect("daemon task");
+        drop(handle);
+        sync_task.await.expect("sync task exits");
+    }
+
+    #[tokio::test]
+    async fn strict_confirm_rejects_disconnect_before_correlated_response() {
+        let (handle, config) = test_handle_and_config();
+        handle
+            .add_cell_with_source("strict-cell", "code", None, "value = 42")
+            .expect("local mutation");
+
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let sync_task = tokio::spawn(run(config, client_read, client_write));
+        let daemon = tokio::spawn(async move {
+            let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 64);
+            let _writer = BufWriter::new(server_write);
+            loop {
+                let frame = reader
+                    .recv()
+                    .await
+                    .expect("client stayed connected")
+                    .expect("request frame read");
+                if frame.frame_type == NotebookFrameType::Request {
+                    let envelope: NotebookRequestEnvelope =
+                        serde_json::from_slice(&frame.payload).expect("request envelope");
+                    assert!(matches!(
+                        envelope.request,
+                        NotebookRequest::ConfirmNotebookHeads {}
+                    ));
+                    return;
+                }
+            }
+        });
+
+        let error = handle
+            .confirm_sync_strict()
+            .await
+            .expect_err("disconnect must reject strict confirmation");
+        assert!(matches!(error, SyncError::Disconnected));
+
+        daemon.await.expect("daemon task");
+        drop(handle);
+        sync_task.await.expect("sync task exits");
+    }
+
+    #[tokio::test]
+    async fn strict_confirm_surfaces_daemon_barrier_error() {
+        let (handle, config) = test_handle_and_config();
+        handle
+            .add_cell_with_source("strict-cell", "code", None, "value = 42")
+            .expect("local mutation");
+
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let sync_task = tokio::spawn(run(config, client_read, client_write));
+        let daemon = tokio::spawn(async move {
+            let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 64);
+            let mut writer = BufWriter::new(server_write);
+            loop {
+                let frame = reader
+                    .recv()
+                    .await
+                    .expect("client stayed connected")
+                    .expect("request frame read");
+                if frame.frame_type != NotebookFrameType::Request {
+                    continue;
+                }
+                let envelope: NotebookRequestEnvelope =
+                    serde_json::from_slice(&frame.payload).expect("request envelope");
+                send_typed_json_frame(
+                    &mut writer,
+                    NotebookFrameType::Response,
+                    &NotebookResponseEnvelope {
+                        id: envelope.id,
+                        response: NotebookResponse::Error {
+                            error: "durability barrier failed".into(),
+                        },
+                    },
+                )
+                .await
+                .expect("send barrier error");
+                return;
+            }
+        });
+
+        let error = handle
+            .confirm_sync_strict()
+            .await
+            .expect_err("daemon error must reject strict confirmation");
+        assert!(matches!(
+            error,
+            SyncError::Protocol(message) if message == "durability barrier failed"
+        ));
 
         daemon.await.expect("daemon task");
         drop(handle);

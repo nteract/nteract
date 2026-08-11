@@ -11,7 +11,7 @@ mod tests {
     use automerge::AutoCommit;
     use tokio::sync::{mpsc, watch};
 
-    use crate::handle::DocHandle;
+    use crate::handle::{CreateCellOutcome, DocHandle};
     use crate::shared::SharedDocState;
     use crate::snapshot::NotebookSnapshot;
     use crate::status::{
@@ -503,6 +503,66 @@ mod tests {
 
         let cell = handle.snapshot().get_cell("cell-1").unwrap().clone();
         assert_eq!(cell.source, "x = 42");
+    }
+
+    #[test]
+    fn idempotent_cell_create_accepts_sequential_same_content_retry() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        assert_eq!(
+            handle
+                .create_cell_idempotent("stable-cell", "markdown", None, "# Stable")
+                .unwrap(),
+            CreateCellOutcome::Created
+        );
+        assert_eq!(
+            handle
+                .create_cell_idempotent("stable-cell", "markdown", None, "# Stable")
+                .unwrap(),
+            CreateCellOutcome::Existing
+        );
+        assert_eq!(handle.get_cells().len(), 1);
+    }
+
+    #[test]
+    fn idempotent_cell_create_serializes_concurrent_conflicts() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+
+        let spawn = |source: &'static str| {
+            let handle = handle.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                handle
+                    .create_cell_idempotent("shared-cell", "code", None, source)
+                    .unwrap()
+            })
+        };
+        let first = spawn("value = 1");
+        let second = spawn("value = 2");
+        barrier.wait();
+
+        let outcomes = [first.join().unwrap(), second.join().unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == CreateCellOutcome::Created)
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == CreateCellOutcome::Conflict)
+                .count(),
+            1
+        );
+        assert_eq!(handle.get_cells().len(), 1);
+        assert!(matches!(
+            handle.get_cell_source("shared-cell").as_deref(),
+            Some("value = 1" | "value = 2")
+        ));
     }
 
     #[test]

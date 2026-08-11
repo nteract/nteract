@@ -1110,21 +1110,29 @@ impl Session {
             Some(cell_id) => cell_id,
             None => format!("cell-{}", uuid::Uuid::new_v4()),
         };
-        if let Some(existing) = handle.get_cell(&cell_id) {
-            if existing.cell_type != cell_type || existing.source != source {
+        match handle
+            .create_cell_idempotent(&cell_id, &cell_type, after_cell_id.as_deref(), &source)
+            .map_err(to_napi_err)?
+        {
+            notebook_sync::CreateCellOutcome::Conflict => {
                 return Err(Error::from_reason(format!(
                     "cellId already exists with different content: {cell_id}"
                 )));
             }
-            handle.confirm_sync_strict().await.map_err(to_napi_err)?;
-            return Ok(cell_id);
+            notebook_sync::CreateCellOutcome::Created => {
+                handle.confirm_sync_strict().await.map_err(to_napi_err)?;
+                notebook_sync::presence::emit_cursor_at_end(
+                    &handle,
+                    &cell_id,
+                    &source,
+                    Some(&peer_label),
+                )
+                .await;
+            }
+            notebook_sync::CreateCellOutcome::Existing => {
+                handle.confirm_sync_strict().await.map_err(to_napi_err)?;
+            }
         }
-        handle
-            .add_cell_with_source(&cell_id, &cell_type, after_cell_id.as_deref(), &source)
-            .map_err(to_napi_err)?;
-        handle.confirm_sync_strict().await.map_err(to_napi_err)?;
-        notebook_sync::presence::emit_cursor_at_end(&handle, &cell_id, &source, Some(&peer_label))
-            .await;
         Ok(cell_id)
     }
 
