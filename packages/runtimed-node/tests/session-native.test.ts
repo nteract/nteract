@@ -20,6 +20,11 @@ type Output = {
 };
 
 type Session = {
+  sessionStatus$: {
+    subscribe(observer: {
+      next?: (status: { connection: "connected" | "disconnected" }) => void;
+    }): { unsubscribe(): void };
+  };
   createCell(source: string, options?: { cellType?: "code" | "markdown" }): Promise<string>;
   approveTrust(): Promise<void>;
   executeCell(cellId: string, options?: { timeoutMs?: number }): Promise<unknown>;
@@ -55,7 +60,24 @@ async function openSession(): Promise<Session> {
     peerLabel: "runtimed-node-native-test",
   });
   sessions.push(session);
+  await waitForConnectedStatus(session);
   return session;
+}
+
+async function waitForConnectedStatus(session: Session): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("timed out waiting for native connected session status")),
+      10_000,
+    );
+    session.sessionStatus$.subscribe({
+      next: (status) => {
+        if (status.connection !== "connected") return;
+        clearTimeout(timeout);
+        resolve();
+      },
+    });
+  });
 }
 
 async function waitForSocket(timeoutMs = 60_000): Promise<void> {
