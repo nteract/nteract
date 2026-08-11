@@ -41,7 +41,7 @@ class Session {
     if (typeof nativeSession.onSessionStatus === "function") {
       this._subscriptions.push(
         nativeSession.onSessionStatus((json) =>
-          this._sessionStatusSubject.next(parseJsonEvent(json)),
+          this._sessionStatusSubject.next(parseSessionStatus(json)),
         ),
       );
     }
@@ -221,6 +221,59 @@ class Session {
     this._sessionStatusSubject.complete();
     return this._native.close();
   }
+}
+
+function parseSessionStatus(json) {
+  const status = parseJsonEvent(json);
+  return {
+    connection: enumPhase(status.connection, "connection", ["connected", "disconnected"]),
+    notebook_doc: enumPhase(status.notebook_doc, "notebook_doc", [
+      "pending",
+      "syncing",
+      "interactive",
+    ]),
+    runtime_state: enumPhase(status.runtime_state, "runtime_state", [
+      "pending",
+      "syncing",
+      "ready",
+    ]),
+    initial_load: initialLoadPhase(status.initial_load),
+  };
+}
+
+function enumPhase(value, field, allowed) {
+  if (typeof value !== "string") throw new TypeError(`Invalid session status ${field}`);
+  const normalized = value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  if (!allowed.includes(normalized)) {
+    throw new TypeError(`Invalid session status ${field}: ${value}`);
+  }
+  return normalized;
+}
+
+function initialLoadPhase(value) {
+  const allowed = ["not_needed", "streaming", "ready", "failed"];
+  if (typeof value === "string") {
+    const phase = enumPhase(value, "initial_load", allowed);
+    if (phase === "failed") throw new TypeError("Invalid failed session status initial_load");
+    return { phase };
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (typeof value.phase === "string") {
+      const phase = enumPhase(value.phase, "initial_load.phase", allowed);
+      if (phase === "failed") {
+        if (typeof value.reason !== "string") {
+          throw new TypeError("Invalid failed session status initial_load.reason");
+        }
+        return { phase, reason: value.reason };
+      }
+      return { phase };
+    }
+    const failed = value.Failed ?? value.failed;
+    if (failed && typeof failed === "object" && typeof failed.reason === "string") {
+      return { phase: "failed", reason: failed.reason };
+    }
+  }
+  throw new TypeError("Invalid session status initial_load");
 }
 
 function normalizePackages(packages) {

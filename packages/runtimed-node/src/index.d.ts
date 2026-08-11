@@ -13,6 +13,7 @@ export type {
 
 export type NotebookDocPhase = "pending" | "syncing" | "interactive";
 export type RuntimeStatePhase = "pending" | "syncing" | "ready";
+export type SessionConnectionState = "connected" | "disconnected";
 
 export type InitialLoadPhase =
   | { phase: "not_needed" }
@@ -21,6 +22,7 @@ export type InitialLoadPhase =
   | { phase: "failed"; reason: string };
 
 export interface SessionStatus {
+  connection: SessionConnectionState;
   notebook_doc: NotebookDocPhase;
   runtime_state: RuntimeStatePhase;
   initial_load: InitialLoadPhase;

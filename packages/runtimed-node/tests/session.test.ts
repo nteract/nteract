@@ -14,6 +14,11 @@ const { Session } = require("../src/session.cjs") as {
         unsubscribe: () => void;
       };
     };
+    sessionStatus$: {
+      subscribe: (observer: { next?: (value: unknown) => void }) => {
+        unsubscribe: () => void;
+      };
+    };
     getExecutionView: () => unknown;
     runCell: (source: string, options?: Record<string, unknown>) => Promise<unknown>;
     exportSnapshotPair: () => Promise<unknown>;
@@ -23,6 +28,39 @@ const { Session } = require("../src/session.cjs") as {
 };
 
 describe("@runtimed/node Session wrapper", () => {
+  it("exposes native session disconnect status across current and legacy encodings", () => {
+    let statusCallback: ((json: string) => void) | null = null;
+    const native = {
+      notebookId: "nb-1",
+      onSessionStatus: vi.fn((callback: (json: string) => void) => {
+        statusCallback = callback;
+        return { dispose: vi.fn() };
+      }),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+    const received: unknown[] = [];
+    session.sessionStatus$.subscribe({ next: (value) => received.push(value) });
+
+    const disconnected = {
+      connection: "disconnected",
+      notebook_doc: "interactive",
+      runtime_state: "ready",
+      initial_load: { phase: "failed", reason: "daemon connection closed" },
+    };
+    statusCallback?.(JSON.stringify(disconnected));
+    statusCallback?.(
+      JSON.stringify({
+        connection: "Disconnected",
+        notebook_doc: "Interactive",
+        runtime_state: "Ready",
+        initial_load: { Failed: { reason: "daemon connection closed" } },
+      }),
+    );
+
+    expect(received).toEqual([disconnected, disconnected]);
+  });
+
   it("emits execution transitions keyed only by execution id", () => {
     let transitionCallback: ((json: string) => void) | null = null;
     const native = {
