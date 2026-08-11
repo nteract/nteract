@@ -26,7 +26,10 @@ type Session = {
       next?: (status: { connection: "connected" | "disconnected" }) => void;
     }): { unsubscribe(): void };
   };
-  createCell(source: string, options?: { cellType?: "code" | "markdown" }): Promise<string>;
+  createCell(
+    source: string,
+    options?: { cellId?: string; cellType?: "code" | "markdown" },
+  ): Promise<string>;
   approveTrust(): Promise<void>;
   queueExistingCell(
     cellId: string,
@@ -187,6 +190,26 @@ describeNative("@runtimed/node native session outputs", () => {
   it("distinguishes missing and empty cells, then resolves durable outputs after reopen", async () => {
     const first = await openSession();
     await expect(first.getCellOutputs("missing-cell")).resolves.toBeNull();
+
+    const retriedCellId = "cell-native-idempotent-create";
+    await expect(
+      first.createCell("# stable retry", {
+        cellId: retriedCellId,
+        cellType: "markdown",
+      }),
+    ).resolves.toBe(retriedCellId);
+    await expect(
+      first.createCell("# stable retry", {
+        cellId: retriedCellId,
+        cellType: "markdown",
+      }),
+    ).resolves.toBe(retriedCellId);
+    await expect(
+      first.createCell("# conflicting retry", {
+        cellId: retriedCellId,
+        cellType: "markdown",
+      }),
+    ).rejects.toThrow("already exists with different content");
 
     const emptyCell = await first.createCell("# no outputs", { cellType: "markdown" });
     await expect(first.getCellOutputs(emptyCell)).resolves.toEqual([]);

@@ -198,7 +198,12 @@ sessions.
   `Session.deleteCell(cellId)`, and `Session.moveCell(cellId, options)` provide
   direct notebook editing without MCP JSON round-trips. `createCell()` appends
   by default; pass `index: 0` to prepend or `afterCellId` to insert after
-  another cell.
+  another cell. Pass a stable `cellId` when a caller may retry creation.
+  Successful editing promises resolve only after the daemon has acknowledged
+  the captured document heads. A timeout or disconnect rejects the promise but
+  leaves the result indeterminate: the local mutation can still synchronize,
+  so re-read the cell before retrying. A repeated `createCell()` with the same
+  `cellId`, source, and type is idempotent; conflicting content is rejected.
 - `Session.executeCell(cellId, options)` runs an existing code cell.
 - `Session.showNotebook()` opens the session in nteract Desktop when a display
   is available.

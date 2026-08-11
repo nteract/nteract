@@ -246,6 +246,8 @@ pub struct RunCellOptions {
 #[napi(object)]
 #[derive(Default)]
 pub struct CreateCellOptions {
+    /// Stable caller-owned cell ID for idempotent retries. Omit to generate one.
+    pub cell_id: Option<String>,
     /// Cell source type: `"code"` (default), `"markdown"`, or `"raw"`.
     pub cell_type: Option<String>,
     /// Insert after this cell, or omit to append at the end.
@@ -1101,10 +1103,26 @@ impl Session {
         let cell_type = normalize_cell_type(opts.cell_type)?;
         let (handle, peer_label) = session_handle_and_label(&self.state).await?;
         let after_cell_id = insertion_anchor(&handle, opts.after_cell_id.as_deref(), opts.index)?;
-        let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
+        let cell_id = match opts.cell_id {
+            Some(cell_id) if cell_id.trim().is_empty() => {
+                return Err(Error::from_reason("cellId must not be empty"));
+            }
+            Some(cell_id) => cell_id,
+            None => format!("cell-{}", uuid::Uuid::new_v4()),
+        };
+        if let Some(existing) = handle.get_cell(&cell_id) {
+            if existing.cell_type != cell_type || existing.source != source {
+                return Err(Error::from_reason(format!(
+                    "cellId already exists with different content: {cell_id}"
+                )));
+            }
+            handle.confirm_sync_strict().await.map_err(to_napi_err)?;
+            return Ok(cell_id);
+        }
         handle
             .add_cell_with_source(&cell_id, &cell_type, after_cell_id.as_deref(), &source)
             .map_err(to_napi_err)?;
+        handle.confirm_sync_strict().await.map_err(to_napi_err)?;
         notebook_sync::presence::emit_cursor_at_end(&handle, &cell_id, &source, Some(&peer_label))
             .await;
         Ok(cell_id)
@@ -1138,6 +1156,9 @@ impl Session {
                 .set_cell_type(&cell_id, &cell_type)
                 .map_err(to_napi_err)?;
         }
+        if found {
+            handle.confirm_sync_strict().await.map_err(to_napi_err)?;
+        }
         Ok(found)
     }
 
@@ -1147,6 +1168,7 @@ impl Session {
         let (handle, peer_label) = session_handle_and_label(&self.state).await?;
         let deleted = handle.delete_cell(&cell_id).map_err(to_napi_err)?;
         if deleted {
+            handle.confirm_sync_strict().await.map_err(to_napi_err)?;
             notebook_sync::presence::announce(&handle, Some(&peer_label)).await;
         }
         Ok(deleted)
@@ -1165,6 +1187,7 @@ impl Session {
         let position = handle
             .move_cell(&cell_id, after_cell_id.as_deref())
             .map_err(to_napi_err)?;
+        handle.confirm_sync_strict().await.map_err(to_napi_err)?;
         let peer_label = session_peer_label(&self.state).await;
         notebook_sync::presence::emit_focus(&handle, &cell_id, Some(&peer_label)).await;
         Ok(position)

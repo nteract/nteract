@@ -196,6 +196,8 @@ export interface CellSnapshot {
 }
 
 export interface CreateCellOptions {
+  /** Stable caller-owned ID for idempotent retries. Omit to generate one. */
+  cellId?: string;
   cellType?: "code" | "markdown" | "raw";
   /** Omit to append at the end. 0 prepends; out-of-range values append. */
   index?: number;

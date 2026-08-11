@@ -834,6 +834,20 @@ impl DocHandle {
     /// this is a freshness hint rather than a strict durability barrier. Call
     /// it before daemon RPCs that read notebook source from the Automerge doc.
     pub async fn confirm_sync(&self) -> Result<(), SyncError> {
+        self.confirm_sync_mode(false).await
+    }
+
+    /// Require the daemon to acknowledge every current local NotebookDoc head.
+    ///
+    /// Unlike [`confirm_sync`](Self::confirm_sync), this returns
+    /// [`SyncError::Timeout`] when convergence cannot be proven. The daemon
+    /// journals peer changes before generating its Automerge acknowledgement,
+    /// so success is a strict durability receipt for the captured heads.
+    pub async fn confirm_sync_strict(&self) -> Result<(), SyncError> {
+        self.confirm_sync_mode(true).await
+    }
+
+    async fn confirm_sync_mode(&self, strict: bool) -> Result<(), SyncError> {
         let target_heads = {
             let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
             let heads = state.doc.get_heads();
@@ -851,6 +865,7 @@ impl DocHandle {
         self.cmd_tx
             .send(SyncCommand::ConfirmSync {
                 target_heads,
+                strict,
                 reply: reply_tx,
             })
             .await

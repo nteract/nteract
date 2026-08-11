@@ -81,6 +81,7 @@ pub enum SyncCommand {
     /// callers keep the historical non-strict durability semantics.
     ConfirmSync {
         target_heads: Vec<ChangeHash>,
+        strict: bool,
         reply: oneshot::Sender<Result<(), SyncError>>,
     },
 
@@ -144,6 +145,7 @@ struct PendingRequest {
 struct ConfirmWaiter {
     target_heads: Vec<ChangeHash>,
     sent_generation: Option<u64>,
+    strict: bool,
     reply: oneshot::Sender<Result<(), SyncError>>,
     deadline: Instant,
 }
@@ -471,6 +473,7 @@ impl SyncReactor {
 
             SyncCommand::ConfirmSync {
                 target_heads,
+                strict,
                 reply,
             } => {
                 if self.target_heads_confirmed(&target_heads) {
@@ -486,6 +489,7 @@ impl SyncReactor {
                     self.state.confirm_waiters.push(ConfirmWaiter {
                         target_heads,
                         sent_generation,
+                        strict,
                         reply,
                         deadline: Instant::now() + CONFIRM_SYNC_TIMEOUT,
                     });
@@ -1110,11 +1114,19 @@ impl SyncReactor {
             {
                 let _ = waiter.reply.send(Ok(()));
             } else if now >= waiter.deadline {
-                debug!(
-                    "[notebook-sync] confirm_sync timed out before heads fully confirmed for {}",
-                    self.io.notebook_id
-                );
-                let _ = waiter.reply.send(Ok(()));
+                if waiter.strict {
+                    warn!(
+                        "[notebook-sync] strict confirm_sync timed out before heads were acknowledged for {}",
+                        self.io.notebook_id
+                    );
+                    let _ = waiter.reply.send(Err(SyncError::Timeout));
+                } else {
+                    debug!(
+                        "[notebook-sync] confirm_sync timed out before heads fully confirmed for {}",
+                        self.io.notebook_id
+                    );
+                    let _ = waiter.reply.send(Ok(()));
+                }
             } else {
                 pending.push(waiter);
             }
@@ -1536,6 +1548,7 @@ mod tests {
         reactor.state.confirm_waiters.push(ConfirmWaiter {
             target_heads: vec![ChangeHash([1; 32])],
             sent_generation: None,
+            strict: false,
             reply,
             deadline: Instant::now() - Duration::from_secs(1),
         });
@@ -1544,6 +1557,25 @@ mod tests {
 
         assert!(reactor.state.confirm_waiters.is_empty());
         assert!(matches!(rx.try_recv(), Ok(Ok(()))));
+    }
+
+    #[test]
+    fn strict_confirm_waiter_timeout_fails_closed() {
+        let mut reactor = test_reactor();
+        let (reply, mut rx) = oneshot::channel();
+
+        reactor.state.confirm_waiters.push(ConfirmWaiter {
+            target_heads: vec![ChangeHash([1; 32])],
+            sent_generation: None,
+            strict: true,
+            reply,
+            deadline: Instant::now() - Duration::from_secs(1),
+        });
+
+        reactor.resolve_confirm_waiters();
+
+        assert!(reactor.state.confirm_waiters.is_empty());
+        assert!(matches!(rx.try_recv(), Ok(Err(SyncError::Timeout))));
     }
 
     #[test]
@@ -1557,6 +1589,7 @@ mod tests {
             reactor.state.confirm_waiters.push(ConfirmWaiter {
                 target_heads: vec![ChangeHash([index + 1; 32])],
                 sent_generation: Some(7),
+                strict: true,
                 reply,
                 deadline: Instant::now() + Duration::from_secs(30),
             });
