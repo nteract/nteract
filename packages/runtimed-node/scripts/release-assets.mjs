@@ -225,8 +225,8 @@ export function smokeReleasePair({ wrapperArchive, platformArchive, target, sour
   try {
     mkdirSync(wrapperDirectory, { recursive: true });
     mkdirSync(platformDirectory, { recursive: true });
-    run("tar", ["-xzf", resolve(wrapperArchive), "-C", wrapperDirectory, "--strip-components=1"]);
-    run("tar", ["-xzf", resolve(platformArchive), "-C", platformDirectory, "--strip-components=1"]);
+    extractArchive(wrapperArchive, wrapperDirectory);
+    extractArchive(platformArchive, platformDirectory);
     const require = createRequire(join(stagingDirectory, "release-asset-smoke.cjs"));
     const relay = require("@runtimed/node/relay");
     if (typeof relay.bindingSourceRevision !== "function") {
@@ -245,8 +245,27 @@ export function smokeReleasePair({ wrapperArchive, platformArchive, target, sour
   }
 }
 
+function archiveCommand(archive, argsBeforeArchive, argsAfterArchive = []) {
+  const resolvedArchive = resolve(archive);
+  return spawnSync("tar", [...argsBeforeArchive, basename(resolvedArchive), ...argsAfterArchive], {
+    cwd: dirname(resolvedArchive),
+    encoding: "utf8",
+  });
+}
+
+function extractArchive(archive, destination) {
+  const result = archiveCommand(
+    archive,
+    ["-xzf"],
+    ["-C", resolve(destination), "--strip-components=1"],
+  );
+  if (result.status !== 0) {
+    throw new Error(`Could not extract ${archive}: ${result.stderr || result.stdout}`);
+  }
+}
+
 function tarOutput(archive, args) {
-  const result = spawnSync("tar", [...args, archive], { encoding: "utf8" });
+  const result = archiveCommand(archive, args);
   if (result.status !== 0) {
     throw new Error(`tar ${args.join(" ")} ${archive} failed: ${result.stderr || result.stdout}`);
   }
@@ -254,9 +273,7 @@ function tarOutput(archive, args) {
 }
 
 function readPackageManifest(archive) {
-  const result = spawnSync("tar", ["-xOf", archive, "package/package.json"], {
-    encoding: "utf8",
-  });
+  const result = archiveCommand(archive, ["-xOf"], ["package/package.json"]);
   if (result.status !== 0) {
     throw new Error(
       `Could not read package/package.json from ${archive}: ${result.stderr || result.stdout}`,
