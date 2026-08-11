@@ -195,15 +195,6 @@ jobs:
       - name: Build native binding
         run: pnpm --dir packages/runtimed-node build
 
-      - name: Verify native binding source revision
-        shell: bash
-        run: |
-          ACTUAL_REVISION=$(node -e "process.stdout.write(require('./packages/runtimed-node/src/index.cjs').bindingSourceRevision())")
-          if [[ "$GITHUB_SHA" != "$ACTUAL_REVISION"* ]]; then
-            echo "::error::Native binding source revision $ACTUAL_REVISION is not a prefix of release commit $GITHUB_SHA"
-            exit 1
-          fi
-
       - name: Assemble and verify platform package
         run: |
           pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
@@ -236,7 +227,6 @@ jobs:
             exit 1
           fi
           node packages/runtimed-node/scripts/release-assets.mjs smoke \
-            --source-revision "$GITHUB_SHA" \
             --target "${{ matrix.target }}" \
             --wrapper "$WRAPPER_ARCHIVE" \
             --platform "$RUNNER_TEMP/release-assets/runtimed-node-${{ matrix.target }}-${{ needs.compute-version.outputs.version }}.tgz"

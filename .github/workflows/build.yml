@@ -964,15 +964,6 @@ jobs:
       - name: Build native binding
         run: pnpm --dir packages/runtimed-node build
 
-      - name: Verify native binding source revision
-        shell: bash
-        run: |
-          ACTUAL_REVISION=$(node -e "process.stdout.write(require('./packages/runtimed-node/src/index.cjs').bindingSourceRevision())")
-          if [[ "$NTERACT_BUILD_GIT_HASH" != "$ACTUAL_REVISION"* ]]; then
-            echo "::error::Native binding source revision $ACTUAL_REVISION is not a prefix of $NTERACT_BUILD_GIT_HASH"
-            exit 1
-          fi
-
       - name: Assemble, pack, and load release archives
         shell: bash
         env:
@@ -1001,7 +992,6 @@ jobs:
             --output-dir "$RELEASE_ASSETS"
 
           node packages/runtimed-node/scripts/release-assets.mjs smoke \
-            --source-revision "$NTERACT_BUILD_GIT_HASH" \
             --target "$TARGET" \
             --wrapper "$RELEASE_ASSETS/runtimed-node-wrapper-${RELEASE_VERSION}.tgz" \
             --platform "$RELEASE_ASSETS/runtimed-node-${TARGET}-${RELEASE_VERSION}.tgz"

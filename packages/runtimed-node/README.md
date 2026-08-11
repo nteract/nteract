@@ -152,16 +152,14 @@ session API and requires its normal runtime dependencies, including `rxjs`.
 Install the archives through a package manager or supply those declared
 dependencies in the host when using the package root.
 
-The manifest's `source_revision` is the full nteract release commit and
-`binding_source_revision` is the short revision compiled into the native
-binding. Packaged hosts should require the latter to match
-`bindingSourceRevision()` and the commit suffix carried by the selected daemon,
-and require the full revision to match any notebook web manifest before opening
-the browser peer. The `node_api_version` field records the minimum Node-API
-level; a host must check `Number(process.versions.napi)` before loading the
-native package. The workflow also loads each native binding on its build runner
-and checks that `bindingSourceRevision()` identifies the release commit before
-it can be attached to a release.
+The manifest's `source_revision` records release provenance so a downloaded set
+can be audited and reproduced. It is not a runtime compatibility gate: hosts
+must not require it to match the daemon or notebook web bundle. Compatibility is
+established by the relay handshake's protocol number and versioned semantic
+capabilities. The `node_api_version` field records the native package's minimum
+Node-API level; a host must check `Number(process.versions.napi)` before loading
+it. The workflow loads each native binding on its build runner and verifies the
+public relay surface before attaching the archives to a release.
 
 ## Basic Usage
 

@@ -22,17 +22,24 @@ const NODE_CRATE_MANIFEST = join(WORKSPACE_ROOT, "crates/runtimed-node/Cargo.tom
 const RELAY_SMOKE_SCRIPT = `"use strict";
 const { writeFileSync } = require("node:fs");
 const relay = require("@runtimed/node/relay");
-if (typeof relay.bindingSourceRevision !== "function") {
-  throw new Error("Extracted @runtimed/node/relay does not expose bindingSourceRevision()");
+for (const name of [
+  "createRelay",
+  "openRelayPath",
+  "connectRelay",
+  "queryDaemonInfo",
+  "defaultSocketPath",
+  "socketPathForChannel",
+]) {
+  if (typeof relay[name] !== "function") {
+    throw new Error(\`Extracted @runtimed/node/relay does not expose \${name}()\`);
+  }
 }
-const actualRevision = relay.bindingSourceRevision();
-const sourceRevision = process.argv[2];
-if (!sourceRevision.startsWith(actualRevision)) {
-  throw new Error(
-    \`Extracted binding revision \${actualRevision} is not a prefix of \${sourceRevision}\`,
-  );
+const defaultPath = relay.defaultSocketPath();
+const stablePath = relay.socketPathForChannel("stable");
+if (typeof defaultPath !== "string" || !defaultPath || typeof stablePath !== "string" || !stablePath) {
+  throw new Error("Extracted relay socket discovery did not return usable paths");
 }
-writeFileSync(process.argv[3], JSON.stringify({ actualRevision }));
+writeFileSync(process.argv[2], JSON.stringify({ loaded: true }));
 `;
 
 export const RELEASE_TARGETS = Object.freeze({
@@ -128,7 +135,6 @@ export function buildReleaseManifest({ releaseVersion, sourceRevision, packageVe
     schema_version: 1,
     release_version: releaseVersion,
     source_revision: sourceRevision,
-    binding_source_revision: sourceRevision.slice(0, 7),
     npm_package_version: packageVersion,
     node_api_version: nodeApiVersionFromCargoManifest(),
     wrapper: {
@@ -231,7 +237,7 @@ export function packWrapperReleaseAsset({ packageRoot = PACKAGE_ROOT, outputDir 
   }
 }
 
-export function smokeReleasePair({ wrapperArchive, platformArchive, target, sourceRevision }) {
+export function smokeReleasePair({ wrapperArchive, platformArchive, target }) {
   const wrapper = assertPackage("wrapper", wrapperArchive);
   assertPackage(target, platformArchive, wrapper.version);
   const stagingDirectory = mkdtempSync(join(tmpdir(), "runtimed-node-release-smoke-"));
@@ -244,36 +250,33 @@ export function smokeReleasePair({ wrapperArchive, platformArchive, target, sour
     mkdirSync(platformDirectory, { recursive: true });
     extractArchive(wrapperArchive, wrapperDirectory);
     extractArchive(platformArchive, platformDirectory);
-    const actualRevision = runRelaySmokeChild({ stagingDirectory, sourceRevision });
-    console.log(`${target}: loaded @runtimed/node/relay at ${actualRevision}`);
-    return actualRevision;
+    runRelaySmokeChild({ stagingDirectory });
+    console.log(`${target}: loaded @runtimed/node/relay`);
   } finally {
     rmSync(stagingDirectory, { recursive: true, force: true });
   }
 }
 
-export function runRelaySmokeChild({ stagingDirectory, sourceRevision }) {
+export function runRelaySmokeChild({ stagingDirectory }) {
   const resolvedStagingDirectory = resolve(stagingDirectory);
   const smokeScript = join(resolvedStagingDirectory, "release-asset-smoke.cjs");
   const smokeResult = join(resolvedStagingDirectory, "release-asset-smoke-result.json");
   writeFileSync(smokeScript, RELAY_SMOKE_SCRIPT);
 
   try {
-    const result = spawnSync(
-      process.execPath,
-      [basename(smokeScript), sourceRevision, basename(smokeResult)],
-      { cwd: resolvedStagingDirectory, encoding: "utf8" },
-    );
+    const result = spawnSync(process.execPath, [basename(smokeScript), basename(smokeResult)], {
+      cwd: resolvedStagingDirectory,
+      encoding: "utf8",
+    });
     if (result.status !== 0) {
       throw new Error(
         `Could not load extracted @runtimed/node/relay: ${result.stderr || result.stdout || result.error}`,
       );
     }
     const payload = JSON.parse(readFileSync(smokeResult, "utf8"));
-    if (typeof payload.actualRevision !== "string" || payload.actualRevision.length === 0) {
-      throw new Error("Extracted relay smoke result did not contain a source revision");
+    if (payload.loaded !== true) {
+      throw new Error("Extracted relay smoke result did not confirm a successful load");
     }
-    return payload.actualRevision;
   } finally {
     rmSync(smokeScript, { force: true });
     rmSync(smokeResult, { force: true });
@@ -498,7 +501,6 @@ function main() {
       wrapperArchive: requireArg(values, "wrapper"),
       platformArchive: requireArg(values, "platform"),
       target: requireArg(values, "target"),
-      sourceRevision: requireArg(values, "source-revision"),
     });
     return;
   }

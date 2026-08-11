@@ -34,7 +34,7 @@ test("release asset names use the nteract release version", () => {
   );
 });
 
-test("release manifest carries source and npm package identities", () => {
+test("release manifest carries source provenance and npm package identity", () => {
   const manifest = buildReleaseManifest({
     releaseVersion,
     sourceRevision,
@@ -44,7 +44,6 @@ test("release manifest carries source and npm package identities", () => {
   assert.equal(manifest.schema_version, 1);
   assert.equal(manifest.release_version, releaseVersion);
   assert.equal(manifest.source_revision, sourceRevision);
-  assert.equal(manifest.binding_source_revision, sourceRevision.slice(0, 7));
   assert.equal(manifest.npm_package_version, "0.4.3");
   assert.equal(manifest.node_api_version, 9);
   assert.deepEqual(Object.keys(manifest.platforms), [
@@ -59,7 +58,7 @@ test("release manifest carries source and npm package identities", () => {
   );
 });
 
-test("a Node host can consume the manifest compatibility fields", () => {
+test("a Node host can consume the manifest Node-API compatibility field", () => {
   const manifest = JSON.parse(
     JSON.stringify(
       buildReleaseManifest({
@@ -73,7 +72,6 @@ test("a Node host can consume the manifest compatibility fields", () => {
 
   assert.ok(Number.isInteger(hostNodeApiVersion));
   assert.ok(hostNodeApiVersion >= manifest.node_api_version);
-  assert.equal(manifest.binding_source_revision, manifest.source_revision.slice(0, 7));
 });
 
 test("release version and source revision are validated", () => {
@@ -143,7 +141,7 @@ test("archives extract through relative paths when directories contain spaces", 
   }
 });
 
-function writeRelayFixture(root, revision) {
+function writeRelayFixture(root, { usablePaths = true } = {}) {
   const packageDirectory = join(root, "node_modules", "@runtimed", "node");
   mkdirSync(packageDirectory, { recursive: true });
   writeFileSync(
@@ -155,29 +153,36 @@ function writeRelayFixture(root, revision) {
   );
   writeFileSync(
     join(packageDirectory, "relay.cjs"),
-    `module.exports.bindingSourceRevision = () => ${JSON.stringify(revision)};\n`,
+    `module.exports = {
+      createRelay() {},
+      openRelayPath() {},
+      connectRelay() {},
+      queryDaemonInfo() {},
+      defaultSocketPath: () => ${usablePaths ? '"/tmp/runtimed.sock"' : '""'},
+      socketPathForChannel: () => ${usablePaths ? '"/tmp/runtimed.sock"' : '""'},
+    };\n`,
   );
 }
 
 test("relay smoke child exits before its extracted package is cleaned up", () => {
   const root = mkdtempSync(join(tmpdir(), "runtimed node child smoke "));
-  writeRelayFixture(root, sourceRevision.slice(0, 7));
+  writeRelayFixture(root);
 
-  assert.equal(runRelaySmokeChild({ stagingDirectory: root, sourceRevision }), "0123456");
+  runRelaySmokeChild({ stagingDirectory: root });
   assert.equal(existsSync(join(root, "release-asset-smoke.cjs")), false);
   assert.equal(existsSync(join(root, "release-asset-smoke-result.json")), false);
   rmSync(root, { recursive: true, force: true });
   assert.equal(existsSync(root), false);
 });
 
-test("relay smoke child propagates revision failures and removes its files", () => {
+test("relay smoke child propagates native API failures and removes its files", () => {
   const root = mkdtempSync(join(tmpdir(), "runtimed node child failure "));
   try {
-    writeRelayFixture(root, "deadbee");
+    writeRelayFixture(root, { usablePaths: false });
 
     assert.throws(
-      () => runRelaySmokeChild({ stagingDirectory: root, sourceRevision }),
-      /Extracted binding revision deadbee is not a prefix/,
+      () => runRelaySmokeChild({ stagingDirectory: root }),
+      /socket discovery did not return usable paths/,
     );
     assert.equal(existsSync(join(root, "release-asset-smoke.cjs")), false);
     assert.equal(existsSync(join(root, "release-asset-smoke-result.json")), false);
