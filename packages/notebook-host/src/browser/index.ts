@@ -504,6 +504,9 @@ export async function createBrowserHost(
 
   return {
     name: "browser",
+    get outputDocumentUrl() {
+      return blobPort === null ? null : `http://127.0.0.1:${blobPort}/output-frame`;
+    },
     transport,
     daemon: {
       async isConnected() {

@@ -137,6 +137,7 @@ import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { hostedNotebookWindowTitle } from "./lib/hosted-notebook-url";
+import { useOutputHostContext } from "./lib/output-host-context";
 import { fileSourceIssueNotice, notebookDocumentIsDirty } from "./lib/notebook-file-state";
 import {
   attachExecutionPerformanceId,
@@ -315,6 +316,7 @@ function resolveCommOutputs(
 
 function AppContent() {
   const host = useNotebookHost();
+  const outputHostContext = useOutputHostContext(host);
   const blobUploader = useMemo<BlobUploader>(
     () => (bytes, mediaType, durability) => putBlob(host.transport, bytes, mediaType, durability),
     [host],
@@ -2270,6 +2272,7 @@ function AppContent() {
                   commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
                   pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
                   markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
+                  outputHostContext={outputHostContext}
                 />
               </BokehSessionRuntimeProvider>
             </CrdtBridgeProvider>

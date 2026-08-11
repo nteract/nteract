@@ -42,9 +42,13 @@ package it as a separate release asset. The archive carries:
 - `SHA256SUMS`, covering the payload and manifest.
 
 The daemon continues to embed and serve the isolated-output renderer plugins it
-already owns. The manifest records that division explicitly. An embedding host
-serves the archive from its own isolated origin, supplies the browser relay, and
-refuses a daemon whose source revision differs.
+already owns. It also serves the canonical isolated output document from the
+blob server's `/output-frame` route with output-specific CSP headers. The
+manifest records that division explicitly. An embedding host serves the archive
+from its own isolated origin, supplies the browser relay, and refuses a daemon
+whose source revision differs. The browser host derives `outputDocumentUrl`
+from the relay's current blob port and passes it through `NotebookHost`; until a
+blob port is available, browser rendering keeps the existing `srcDoc` fallback.
 
 ## Proposed first-pass contract
 
@@ -57,10 +61,16 @@ versions, missing runtime WASM, unsafe file paths, and payload checksum drift.
 They may allow an unstamped local development daemon, but a stamped source
 revision mismatch fails closed before notebook traffic is relayed.
 
+Hosts remain responsible for making the daemon blob server reachable from the
+browser without proxying `/output-frame` through the notebook application
+origin, allowing the loopback frame URL in the application CSP, and preserving
+the iframe sandbox without `allow-same-origin`.
+
 ## Adoption sequence
 
 - Validate a locally built archive and matching daemon by exercising one synced
-  cell through a packaged host and observing its output.
+  rich-output cell through a packaged host, observing its output, and confirming
+  the isolated frame uses the daemon `/output-frame` URL rather than `srcDoc`.
 - Consume the versioned release asset and daemon from one tag, retain
   integrity/version checks, and document installer ownership. Release
   publication and signing remain separate operational gates.

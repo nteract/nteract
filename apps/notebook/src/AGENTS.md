@@ -31,6 +31,7 @@ Host-platform side effects (Tauri IPC, plugin calls, window chrome) flow through
 | `host.daemon` | `isConnected`, `reconnect`, `getInfo`, `getReadyInfo`, optional `autoReconnect` (backoff + terminal failed-load latch) |
 | `host.daemonEvents` | `onReady` / `onProgress` / `onDisconnected` / `onUnavailable` |
 | `host.relay` | `notifySyncReady()` outbound signal |
+| `host.outputDocumentUrl` | Optional host-supplied isolated output document URL |
 | `host.blobs` | `port()` — daemon blob-server HTTP port |
 | `host.trust` | `verify()` / `approve()` |
 | `host.deps` | Dependency validation (`checkTyposquats`) |

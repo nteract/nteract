@@ -438,6 +438,13 @@ export interface HostSettings {
  */
 export interface NotebookHost {
   readonly name: "tauri" | "electron" | "browser" | (string & {});
+  /**
+   * Optional host-supplied isolated output document. Browser hosts can expose
+   * the daemon blob server's CSP-scoped frame shell; other hosts keep their
+   * existing frame source. Browser values may change after a relay-ready event
+   * reports the current blob port.
+   */
+  readonly outputDocumentUrl?: string | null;
   readonly transport: NotebookTransport;
   readonly daemon: HostDaemon;
   readonly daemonEvents: HostDaemonEvents;

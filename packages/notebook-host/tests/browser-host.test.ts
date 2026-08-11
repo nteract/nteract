@@ -78,6 +78,7 @@ describe("createBrowserHost()", () => {
 
     const ws = FakeWebSocket.instances[0];
     expect(ws.url).toContain("token=dev-token");
+    expect(host.outputDocumentUrl).toBe("http://127.0.0.1:48123/output-frame");
 
     const ready = vi.fn();
     host.daemonEvents.onReady(ready);
@@ -110,6 +111,31 @@ describe("createBrowserHost()", () => {
       "http://127.0.0.1:48124/blob/abc123",
     );
     await expect(host.daemon.getReadyInfo()).resolves.toMatchObject({ notebook_id: "nb-1" });
+    expect(host.outputDocumentUrl).toBe("http://127.0.0.1:48124/output-frame");
+  });
+
+  it("keeps output documents optional until the relay reports a blob port", async () => {
+    FakeWebSocket.instances = [];
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ...config, blob_port: null }),
+    })) as unknown as typeof fetch;
+    const host = await createBrowserHost({
+      fetchImpl,
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    const ws = FakeWebSocket.instances[0];
+
+    expect(host.outputDocumentUrl).toBeNull();
+    ws.open();
+    ws.message(
+      JSON.stringify({
+        type: "ready",
+        payload: { notebook_id: "nb-1" },
+        blob_port: 49152,
+      }),
+    );
+    expect(host.outputDocumentUrl).toBe("http://127.0.0.1:49152/output-frame");
   });
 
   it("buffers daemon frames until the relay is marked ready", async () => {
