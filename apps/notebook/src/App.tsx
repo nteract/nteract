@@ -2051,7 +2051,7 @@ function AppContent() {
             ) : null
           }
           toolbarPlacement="stage"
-          toolbarClassName="shrink-0"
+          toolbarClassName="-ml-px shrink-0"
           toolbarLabel="Notebook execution and runtime controls"
           toolbar={
             <NotebookToolbar
