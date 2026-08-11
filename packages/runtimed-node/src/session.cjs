@@ -74,8 +74,8 @@ class Session {
     return this._native.queueCell(source, options);
   }
 
-  queueExistingCell(cellId) {
-    return this._native.queueExistingCell(cellId);
+  queueExistingCell(cellId, options) {
+    return this._native.queueExistingCell(cellId, options);
   }
 
   async waitForExecution(executionId, options = {}) {

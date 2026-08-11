@@ -4799,6 +4799,105 @@ async fn execute_cell_queues_in_runtime_doc_while_kernel_launch_is_resolving() {
 }
 
 #[tokio::test]
+async fn execute_cell_requested_id_retries_same_cell_when_active_or_terminal() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "idempotent.ipynb");
+    let room = Arc::new(room);
+    let execution_id = Uuid::new_v4().to_string();
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "print('once')").unwrap();
+    }
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+        .unwrap();
+
+    for expected_status in ["queued", "done"] {
+        let response = crate::requests::execute_cell::handle_with_submitter(
+            &room,
+            "cell-1".to_string(),
+            Some(execution_id.clone()),
+            false,
+            Some("local:test/retry"),
+        )
+        .await;
+        assert!(matches!(
+            response,
+            crate::protocol::NotebookResponse::CellQueued {
+                ref cell_id,
+                execution_id: ref returned_execution_id,
+            } if cell_id == "cell-1" && returned_execution_id == &execution_id
+        ));
+
+        let state = room.state.read(|sd| sd.read_state()).unwrap();
+        assert_eq!(state.executions.len(), 1);
+        assert_eq!(state.executions[&execution_id].status, expected_status);
+
+        if expected_status == "queued" {
+            room.state
+                .with_doc(|sd| sd.set_execution_done(&execution_id, true))
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn execute_cell_requested_id_rejects_reuse_for_another_cell() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "cross-cell-id.ipynb");
+    let room = Arc::new(room);
+    let execution_id = Uuid::new_v4().to_string();
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.add_cell(1, "cell-2", "code").unwrap();
+    }
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
+        .unwrap();
+
+    let first = crate::requests::execute_cell::handle_with_submitter(
+        &room,
+        "cell-1".to_string(),
+        Some(execution_id.clone()),
+        false,
+        None,
+    )
+    .await;
+    assert!(matches!(
+        first,
+        crate::protocol::NotebookResponse::CellQueued { .. }
+    ));
+
+    let second = crate::requests::execute_cell::handle_with_submitter(
+        &room,
+        "cell-2".to_string(),
+        Some(execution_id.clone()),
+        false,
+        None,
+    )
+    .await;
+    assert!(matches!(
+        second,
+        crate::protocol::NotebookResponse::ExecutionIdRejected {
+            execution_id: ref rejected_id,
+            reason: notebook_protocol::protocol::ExecutionIdRejectionReason::AlreadyExists,
+        } if rejected_id == &execution_id
+    ));
+    assert_eq!(
+        room.state
+            .read(|sd| sd.read_state())
+            .unwrap()
+            .executions
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn run_all_cells_queues_in_runtime_doc_while_kernel_launch_is_resolving() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "test.ipynb");

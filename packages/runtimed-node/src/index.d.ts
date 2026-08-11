@@ -116,6 +116,14 @@ export interface QueueCellOptions {
   cellType?: "code" | "markdown" | "raw";
 }
 
+export interface QueueExistingCellOptions {
+  /**
+   * Caller-owned UUID used to make retries for this cell idempotent. Retries
+   * return the existing active or terminal execution.
+   */
+  executionId?: string;
+}
+
 export interface DependencyEditOptions {
   packageManager?: PackageManager;
 }
@@ -245,7 +253,7 @@ export class Session {
   readonly sessionStatus$: Observable<SessionStatus>;
 
   queueCell(source: string, options?: QueueCellOptions): Promise<QueuedExecution>;
-  queueExistingCell(cellId: string): Promise<QueuedExecution>;
+  queueExistingCell(cellId: string, options?: QueueExistingCellOptions): Promise<QueuedExecution>;
   waitForExecution(executionId: string, options?: WaitExecutionOptions): Promise<CellResult>;
   runCell(source: string, options?: RunCellOptions): Promise<CellResult>;
   saveNotebook(path?: string): Promise<void>;

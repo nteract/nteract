@@ -129,7 +129,7 @@ async fn handle_inner(
                     }
                     (source, execution_id, format_heads)
                 }
-                QueueCellResult::AlreadyActive { execution_id } => {
+                QueueCellResult::Existing { execution_id } => {
                     if queue_for_starting_kernel {
                         publish_startup_queue_from_queued_executions(room);
                     }
@@ -203,7 +203,7 @@ enum QueueCellResult {
         execution_id: String,
         format_heads: Vec<ChangeHash>,
     },
-    AlreadyActive {
+    Existing {
         execution_id: String,
     },
     Response(Box<NotebookResponse>),
@@ -226,6 +226,26 @@ async fn queue_cell_if_current(
     }
 
     let mut doc = room.doc.write().await;
+    if let Some(requested_execution_id) = requested_execution_id {
+        let existing_cell_id = room
+            .state
+            .read(|sd| {
+                sd.get_execution(requested_execution_id)
+                    .map(|execution| execution.cell_id.clone())
+            })
+            .unwrap_or(None);
+        if let Some(existing_cell_id) = existing_cell_id {
+            if existing_cell_id.as_deref() == Some(cell_id) {
+                return QueueCellResult::Existing {
+                    execution_id: requested_execution_id.to_string(),
+                };
+            }
+            return QueueCellResult::Response(Box::new(execution_id_rejected(
+                requested_execution_id,
+                ExecutionIdRejectionReason::AlreadyExists,
+            )));
+        }
+    }
     if let Some(observed_heads) = observed_heads {
         if let Err(rejection) = guarded::validate_execute_cell(&mut doc, cell_id, observed_heads) {
             return QueueCellResult::Response(Box::new(rejection.into_response()));
@@ -274,7 +294,7 @@ async fn queue_cell_if_current(
                     error: format!("Cell already has an active execution: {}", eid),
                 }));
             }
-            return QueueCellResult::AlreadyActive {
+            return QueueCellResult::Existing {
                 execution_id: eid.clone(),
             };
         }

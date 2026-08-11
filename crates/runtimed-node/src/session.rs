@@ -289,6 +289,14 @@ pub struct QueueCellOptions {
     pub cell_type: Option<String>,
 }
 
+/// Options for `Session.queueExistingCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct QueueExistingCellOptions {
+    /// Caller-owned UUID used as an idempotency key for this cell execution.
+    pub execution_id: Option<String>,
+}
+
 /// Options for `Session.waitForExecution()`.
 #[napi(object)]
 #[derive(Default)]
@@ -1172,7 +1180,7 @@ impl Session {
         let opts = options.unwrap_or_default();
         let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(120_000) as u64);
         ensure_kernel_started(&self.state).await?;
-        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+        let execution_id = queue_existing_cell(&self.state, &cell_id, None).await?;
         if let Ok((handle, peer_label)) = session_handle_and_label(&self.state).await {
             notebook_sync::presence::emit_focus(&handle, &cell_id, Some(&peer_label)).await;
         }
@@ -1180,16 +1188,21 @@ impl Session {
         collect_outputs_with_timeout(&self.state, cell_id, execution_id, timeout).await
     }
 
-    /// Queue an existing synced code cell without waiting for execution.
-    /// Returns the daemon-assigned execution ID immediately so hosts can
-    /// correlate status and cancellation with the exact work they submitted.
+    /// Queue an existing synced code cell after the kernel is ready, without
+    /// waiting for execution to finish. A caller-provided execution ID is an
+    /// idempotency key: retrying it for the same cell returns the existing
+    /// active or terminal execution, while reusing it for another cell is
+    /// rejected.
     #[napi]
-    pub async fn queue_existing_cell(&self, cell_id: String) -> Result<QueuedExecution> {
+    pub async fn queue_existing_cell(
+        &self,
+        cell_id: String,
+        options: Option<QueueExistingCellOptions>,
+    ) -> Result<QueuedExecution> {
+        let requested_execution_id = options.and_then(|opts| opts.execution_id);
         ensure_kernel_started(&self.state).await?;
-        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
-        if let Ok((handle, peer_label)) = session_handle_and_label(&self.state).await {
-            notebook_sync::presence::emit_focus(&handle, &cell_id, Some(&peer_label)).await;
-        }
+        let execution_id =
+            queue_existing_cell(&self.state, &cell_id, requested_execution_id).await?;
 
         Ok(QueuedExecution {
             cell_id,
@@ -1217,7 +1230,7 @@ impl Session {
 
         // 3. Queue the cell. Do this before the timeout wrapper so timeout
         // results still carry an execution ID that can be recovered later.
-        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+        let execution_id = queue_existing_cell(&self.state, &cell_id, None).await?;
 
         collect_outputs_with_timeout(&self.state, cell_id, execution_id, timeout).await
     }
@@ -1234,7 +1247,7 @@ impl Session {
 
         ensure_kernel_started(&self.state).await?;
         let cell_id = add_source_cell(&self.state, &source, &cell_type).await?;
-        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+        let execution_id = queue_existing_cell(&self.state, &cell_id, None).await?;
 
         Ok(QueuedExecution {
             cell_id,
@@ -2062,7 +2075,11 @@ async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
     }
 }
 
-async fn queue_existing_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> Result<String> {
+async fn queue_existing_cell(
+    state: &Arc<Mutex<SessionState>>,
+    cell_id: &str,
+    requested_execution_id: Option<String>,
+) -> Result<String> {
     let handle = {
         let st = state.lock().await;
         st.handle
@@ -2075,7 +2092,7 @@ async fn queue_existing_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
         .send_request_after_heads(
             NotebookRequest::ExecuteCell {
                 cell_id: cell_id.to_string(),
-                execution_id: None,
+                execution_id: requested_execution_id,
             },
             required_heads,
         )
@@ -2083,6 +2100,12 @@ async fn queue_existing_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
         .map_err(to_napi_err)?;
     match response {
         NotebookResponse::CellQueued { execution_id, .. } => Ok(execution_id),
+        NotebookResponse::ExecutionIdRejected {
+            execution_id,
+            reason,
+        } => Err(Error::from_reason(format!(
+            "Execution ID {execution_id} rejected: {reason:?}"
+        ))),
         NotebookResponse::Error { error } => Err(Error::from_reason(error)),
         other => Err(Error::from_reason(format!(
             "Unexpected response: {other:?}"

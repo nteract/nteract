@@ -207,8 +207,12 @@ sessions.
 - `Session.shutdownNotebook()` shuts down this notebook room and closes the session.
 - `Session.runCell(source, options)` appends, runs, and waits for a cell.
 - `Session.queueCell(source, options)` appends a cell, queues it, and returns IDs.
-- `Session.queueExistingCell(cellId)` queues an already-synced cell and returns
-  its execution ID immediately, without introducing a side-channel source.
+- `Session.queueExistingCell(cellId, { executionId? })` queues an already-synced
+  cell without introducing a side-channel source, then returns once the kernel
+  is ready and the daemon has accepted the execution. Cold kernel startup can
+  therefore delay the call. Supply a UUID `executionId` when retries must refer
+  to the same execution attempt. A retry returns the existing active or terminal
+  execution for that cell; reusing the UUID for another cell is rejected.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
   Pass `onUpdate(progress)` to receive resolved output snapshots while the
   execution is still running.

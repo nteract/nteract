@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,7 +28,10 @@ type Session = {
   };
   createCell(source: string, options?: { cellType?: "code" | "markdown" }): Promise<string>;
   approveTrust(): Promise<void>;
-  queueExistingCell(cellId: string): Promise<{ cellId: string; executionId: string }>;
+  queueExistingCell(
+    cellId: string,
+    options?: { executionId?: string },
+  ): Promise<{ cellId: string; executionId: string }>;
   waitForExecution(
     executionId: string,
     options?: { cellId?: string; timeoutMs?: number },
@@ -96,15 +100,18 @@ async function waitForSocket(timeoutMs = 60_000): Promise<void> {
   throw new Error(`timed out waiting for runtimed socket at ${socketPath}`);
 }
 
-async function executeWhenReady(session: Session, cellId: string): Promise<void> {
+async function executeWhenReady(session: Session, cellId: string): Promise<string> {
   const deadline = Date.now() + 120_000;
+  const executionId = randomUUID();
   while (true) {
     try {
-      const queued = await session.queueExistingCell(cellId);
+      const queued = await session.queueExistingCell(cellId, { executionId });
       expect(queued.cellId).toBe(cellId);
-      expect(queued.executionId).not.toBe("");
+      expect(queued.executionId).toBe(executionId);
+      await expect(session.queueExistingCell(cellId, { executionId })).resolves.toEqual(queued);
       await session.waitForExecution(queued.executionId, { cellId, timeoutMs: 180_000 });
-      return;
+      await expect(session.queueExistingCell(cellId, { executionId })).resolves.toEqual(queued);
+      return executionId;
     } catch (error) {
       if (!String(error).includes("pool empty") || Date.now() >= deadline) throw error;
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -193,7 +200,11 @@ describeNative("@runtimed/node native session outputs", () => {
       { cellType: "code" },
     );
     await first.approveTrust();
-    await executeWhenReady(first, executedCell);
+    const executionId = await executeWhenReady(first, executedCell);
+    const anotherCell = await first.createCell("print('must not run')", { cellType: "code" });
+    await expect(first.queueExistingCell(anotherCell, { executionId })).rejects.toThrow(
+      /AlreadyExists/,
+    );
     await first.close();
     sessions.splice(sessions.indexOf(first), 1);
 
