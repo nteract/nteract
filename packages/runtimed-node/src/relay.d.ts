@@ -84,5 +84,3 @@ export function defaultSocketPath(): string;
 export function socketPathForChannel(channel: "stable" | "nightly"): string;
 /** Return null until the selected daemon is ready to answer pool requests. */
 export function queryDaemonInfo(options?: QueryDaemonOptions): Promise<DaemonInfo | null>;
-/** Return the nteract source revision compiled into the native binding. */
-export function bindingSourceRevision(): string;

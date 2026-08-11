@@ -7626,7 +7626,6 @@ version = "0.5.3"
 dependencies = [
  "arrow",
  "base64 0.22.1",
- "build-metadata",
  "bytes",
  "napi",
  "napi-build",

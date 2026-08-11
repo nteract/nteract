@@ -73,19 +73,19 @@ browserTransport.on("close", () => relay.close());
 
 Hosts that supervise the daemon can use `defaultSocketPath()`,
 `socketPathForChannel("stable" | "nightly")`, and
-`queryDaemonInfo({ socketPath })` from the same subpath. `bindingSourceRevision()`
-identifies the nteract commit compiled into the native package so a host can
-compare it with the daemon version and notebook web manifest. The explicit channel
+`queryDaemonInfo({ socketPath })` from the same subpath. The explicit channel
 resolver is useful when the host's release channel differs from the package's
 compile-time default. The query returns `null` until the daemon is ready, so
 the host does not need to duplicate the pool wire protocol just to probe
-readiness or enforce version compatibility.
+readiness.
 
 `RelaySession.info.daemonVersion` is the identity carried by that notebook's
 exact handshake. It is intentionally left undefined when an older daemon omits
 it rather than being filled from a later pool query, which could race a daemon
-restart. Packaged hosts should reject an unknown handshake identity; use
-`queryDaemonInfo()` only for readiness and diagnostics.
+restart. Treat that artifact version as diagnostic metadata. Compatibility is
+determined by the negotiated protocol number and, for optional semantics, the
+capabilities advertised by the connection. Use `queryDaemonInfo()` only for
+readiness and diagnostics.
 
 Frames include the one-byte notebook frame discriminator and omit the daemon
 socket's length prefix; an empty buffer is not a frame and is rejected. The
