@@ -132,6 +132,12 @@ fn placeholder_daemon_info(custom_lock_dir: Option<&PathBuf>) -> client_singleto
         execution_store_dir: None,
         worktree_path: None,
         workspace_description: None,
+        instance_id: runt_workspace::daemon_instance_id(),
+        daemon_base_dir: Some(
+            runt_workspace::daemon_base_dir()
+                .to_string_lossy()
+                .to_string(),
+        ),
     }
 }
 

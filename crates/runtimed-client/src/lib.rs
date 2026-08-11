@@ -201,10 +201,7 @@ pub fn connections_dir() -> PathBuf {
 
 /// Get the path to the settings JSON Schema file.
 pub fn settings_schema_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(runt_workspace::config_namespace())
-        .join("settings.schema.json")
+    runt_workspace::settings_json_path().with_file_name("settings.schema.json")
 }
 
 /// Get the default directory for persisted notebook Automerge documents.
@@ -236,6 +233,11 @@ fn ipc_socket_base_dir() -> PathBuf {
 #[cfg(unix)]
 pub fn ipc_socket_dir() -> PathBuf {
     let base = ipc_socket_base_dir();
+    if let Some(instance_id) = runt_workspace::daemon_instance_id() {
+        if let Ok(key) = runt_workspace::daemon_instance_key(&instance_id) {
+            return base.join(format!("instance-{key}"));
+        }
+    }
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
             return base.join(format!("wt-{}", worktree_hash(&worktree)));

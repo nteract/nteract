@@ -198,9 +198,17 @@ fn legacy_settings_doc_path(config: &DaemonConfig) -> PathBuf {
 
 #[cfg(unix)]
 fn channel_socket_parent() -> Option<PathBuf> {
-    runt_workspace::socket_path_for_channel(runt_workspace::build_channel())
-        .parent()
-        .map(Path::to_path_buf)
+    let channel = runt_workspace::build_channel();
+    let path = match runt_workspace::daemon_instance_id() {
+        Some(instance_id) => {
+            match runt_workspace::socket_path_for_instance(channel, &instance_id) {
+                Ok(path) => path,
+                Err(_) => runt_workspace::socket_path_for_channel(channel),
+            }
+        }
+        None => runt_workspace::socket_path_for_channel(channel),
+    };
+    path.parent().map(Path::to_path_buf)
 }
 
 #[cfg(unix)]
@@ -1952,6 +1960,12 @@ impl Daemon {
             ),
             worktree_path,
             workspace_description,
+            instance_id: runt_workspace::daemon_instance_id(),
+            daemon_base_dir: Some(
+                runt_workspace::daemon_base_dir()
+                    .to_string_lossy()
+                    .to_string(),
+            ),
         }
     }
 

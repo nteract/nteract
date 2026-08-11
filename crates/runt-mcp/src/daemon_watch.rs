@@ -702,6 +702,8 @@ mod tests {
             execution_store_dir: None,
             worktree_path: None,
             workspace_description: None,
+            instance_id: None,
+            daemon_base_dir: None,
         }
     }
 

@@ -151,6 +151,13 @@ pub enum Response {
         /// Human-readable workspace description (dev mode only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_description: Option<String>,
+        /// Host-owned daemon instance id. Normal nteract daemons return None.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance_id: Option<String>,
+        /// Default namespace directory selected by the daemon process environment.
+        /// Explicit path overrides may place individual resources elsewhere.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        daemon_base_dir: Option<String>,
     },
 
     /// Shutdown acknowledged.
@@ -725,6 +732,54 @@ mod tests {
                 assert_eq!(daemon_version, None);
             }
             _ => panic!("unexpected response type"),
+        }
+    }
+
+    #[test]
+    fn daemon_info_instance_fields_are_additive() {
+        let old_json = r#"{
+            "type":"daemon_info",
+            "protocol_version":4,
+            "daemon_version":"2.6.3+abc123",
+            "pid":42,
+            "started_at":"2026-08-11T00:00:00Z"
+        }"#;
+        match serde_json::from_str::<Response>(old_json).unwrap() {
+            Response::DaemonInfo {
+                instance_id,
+                daemon_base_dir,
+                ..
+            } => {
+                assert_eq!(instance_id, None);
+                assert_eq!(daemon_base_dir, None);
+            }
+            other => panic!("unexpected response type: {other:?}"),
+        }
+
+        let response = Response::DaemonInfo {
+            protocol_version: 4,
+            daemon_version: "2.6.3+abc123".into(),
+            pid: 42,
+            started_at: chrono::DateTime::parse_from_rfc3339("2026-08-11T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            blob_port: Some(54_000),
+            execution_store_dir: Some("/cache/instances/key/executions".into()),
+            worktree_path: None,
+            workspace_description: None,
+            instance_id: Some("desktop-host".into()),
+            daemon_base_dir: Some("/cache/instances/key".into()),
+        };
+        match roundtrip_response(&response) {
+            Response::DaemonInfo {
+                instance_id,
+                daemon_base_dir,
+                ..
+            } => {
+                assert_eq!(instance_id.as_deref(), Some("desktop-host"));
+                assert_eq!(daemon_base_dir.as_deref(), Some("/cache/instances/key"));
+            }
+            other => panic!("unexpected response type: {other:?}"),
         }
     }
 

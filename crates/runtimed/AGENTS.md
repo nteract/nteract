@@ -104,7 +104,7 @@ Rules:
 
 ## Blob store
 
-Content-addressed storage lives under `runt_workspace::daemon_base_dir()/blobs` (stable expands to `~/.cache/runt/blobs/`; source builds normally use the nightly namespace). Entries are sharded by first 2 hex chars. Each blob has a `.meta` sidecar with `{media_type, size, created_at}`. Blobs are ephemeral — regenerated from `.ipynb` on daemon restart.
+Content-addressed storage lives under `runt_workspace::daemon_base_dir()/blobs` (stable expands to `~/.cache/runt/blobs/`; source builds normally use the nightly namespace; host-owned instances add `instances/<hash>/`). Entries are sharded by first 2 hex chars. Each blob has a `.meta` sidecar with `{media_type, size, created_at}`. Blobs are ephemeral — regenerated from `.ipynb` on daemon restart.
 
 Manifests are inline Automerge Maps in RuntimeStateDoc. Each contains `ContentRef` entries per MIME type: `{"inline": "<data>"}` for ≤1KB text, `{"blob": "<hash>", "size": N}` for content >1KB or any binary. MIME types and sizes are readable directly from the CRDT — no blob fetch needed for metadata.
 
@@ -159,6 +159,8 @@ Source builds default to the nightly channel (affects cache/socket namespaces). 
 - Unix socket at `~/.cache/<namespace>/runtimed.sock`, mode `0600`
 - Socket directory kept owner-private (`0700`)
 - `RUNTIMED_SOCKET_PATH` is a capability-bearing pointer — only set it for processes that should control the daemon
+- `RUNTIMED_INSTANCE_ID` isolates one embedding host's whole daemon root; it is collision isolation within the same OS user, not authentication
+- `runt-shared/file-claims` stays shared across instances to prevent two daemons from saving the same file-backed notebook
 - Blob HTTP server binds `127.0.0.1`, read-only, content-addressed
 
 ## Python bindings (runtimed-py)

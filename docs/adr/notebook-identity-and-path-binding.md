@@ -85,12 +85,64 @@ A claim follows activity, not room residency. It is held while the room has conn
 
 Claims are leases, never locks: a dead pid or a lapsed refresh window makes a claim stale, and the next writer reaps it, so a crashed daemon cannot brick a path. The registry holds facts only; source-conflict reconciliation stays the last line of defense when a claim lied or a race slipped through.
 
+## Decision 7: Embedding hosts may own an isolated daemon instance
+
+The stable and nightly channel namespaces are product defaults, not a complete
+process identity. A desktop application embedding nteract may need to ship a
+daemon built from a different revision while the user's normal nteract daemon
+continues serving live notebooks. A different `--socket` is insufficient: the
+singleton lock and the rest of the daemon's mutable state still resolve through
+the channel's `daemon_base_dir()`.
+
+An embedding host may set `RUNTIMED_INSTANCE_ID` on the daemon child. The id is
+an opaque label; path and named-pipe derivation uses its 12-character SHA-256
+key. The ordinary stable/nightly layout is unchanged when the variable is
+absent. When present, daemon-owned cache/state moves below
+`<channel-cache-root>/instances/<key>/`, including:
+
+- the singleton lock and default socket or named pipe;
+- notebook documents and registry, execution records, blobs, and kernel
+  connection/manifests;
+- the trust database;
+- mutable UV, Conda, Pixi, inline, launcher, and tool directories.
+
+The settings document and its schema use the corresponding
+`<channel-config-root>/instances/<key>/` directory. They cannot remain on the
+normal profile: two independently versioned daemons would otherwise watch and
+rewrite the same configuration file.
+
+Materialized environments are intentionally not shared. Environment garbage
+collection protects only kernels known to its own daemon, so sharing that
+directory would let one process delete another process's active environment.
+Package-manager download caches may still be shared through their existing
+upstream cache mechanisms; those are not daemon-owned runtime state.
+
+The one deliberate exception is `runt-shared/file-claims`. Every instance must
+continue to use the same cross-daemon lease registry so two processes cannot
+open and save the same file-backed notebook concurrently. Instance isolation
+removes version and lifecycle coupling; it does not weaken the one-daemon-per-
+path invariant from Decision 6.
+
+Clients must derive and probe the same endpoint before spawning. Rust exposes
+`socket_path_for_instance(channel, id)` and `@runtimed/node` exposes
+`socketPathForInstance(channel, id)` for that purpose. The child receives the
+matching `RUNTIMED_INSTANCE_ID`; clients continue passing the resulting socket
+path explicitly. The live `GetDaemonInfo` response reports the normalized
+instance id for diagnostics and ownership checks.
+
 ## Rejected alternatives
 
 - **Path-encoded or path-derived ids.** Couples identity to location; every move mints a new id and you are back to needing a remap table. Rejected in Decision 1.
 - **Embed the local id in `.ipynb` metadata.** Breaks git collaboration: id churn or cross-machine collision. Rejected in Decision 3. Only a cloud id is embeddable.
 - **`old_id -> new_id` remap table.** A symptom of path-derived ids. With a stable id and a mutable path attribute it has nothing to track. Rejected in Decision 1.
 - **Treat the UUID as durable and reload by UUID across daemons.** The UUID is daemon-instance scoped; the live failure above is exactly this. Rejected in Decision 2.
+- **Socket-only isolation.** A custom socket leaves the channel-wide singleton
+  lock and mutable daemon state shared. The second process either exits without
+  binding or, if the lock is bypassed, risks cross-process state corruption.
+  Rejected in Decision 7.
+- **Share materialized environment directories to save disk.** Each daemon's GC
+  has only local kernel liveness, so it cannot safely decide whether another
+  daemon still needs an environment. Rejected in Decision 7.
 
 ## Open Follow-ups
 

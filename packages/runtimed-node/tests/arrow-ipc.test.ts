@@ -10,6 +10,8 @@ const runNativeIntegration = process.env.RUNTIMED_NODE_NATIVE_INTEGRATION === "1
 const describeNative = runNativeIntegration ? describe : describe.skip;
 
 type NativeBinding = {
+  socketPathForChannel: (channel: "stable" | "nightly") => string;
+  socketPathForInstance: (channel: "stable" | "nightly", instanceId: string) => string;
   readArrowFile: (
     filePath: string,
     offset: number,
@@ -42,6 +44,8 @@ function loadNativeBinding(): NativeBinding {
   try {
     const loaded = require("../src/index.cjs") as Partial<NativeBinding>;
     if (
+      typeof loaded.socketPathForChannel !== "function" ||
+      typeof loaded.socketPathForInstance !== "function" ||
       typeof loaded.readArrowFile !== "function" ||
       typeof loaded.readArrowChunks !== "function" ||
       typeof loaded.summarizeArrowFile !== "function" ||
@@ -72,7 +76,21 @@ function nativeBinding(): NativeBinding {
   return binding;
 }
 
-describeNative("@runtimed/node Arrow IPC native integration", () => {
+describeNative("@runtimed/node native integration", () => {
+  it("derives a deterministic isolated endpoint without changing the channel endpoint", () => {
+    const native = nativeBinding();
+    const channelPath = native.socketPathForChannel("stable");
+    const first = native.socketPathForInstance("stable", "desktop-host");
+    const second = native.socketPathForInstance("stable", " desktop-host ");
+
+    expect(first).toBe(second);
+    expect(first).not.toBe(channelPath);
+    expect(first).toContain("instance");
+    expect(() => native.socketPathForInstance("stable", "   ")).toThrow(
+      /instance id must not be empty/,
+    );
+  });
+
   it("reads and summarizes a real Utf8View Arrow stream fixture", () => {
     const native = nativeBinding();
     const page = native.readArrowFile(fixture, 0, 3);

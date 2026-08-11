@@ -136,6 +136,46 @@ pub fn cache_namespace() -> &'static str {
 /// Directory name of the cache root shared by every channel and worktree.
 pub const SHARED_CACHE_NAMESPACE: &str = "runt-shared";
 
+/// Optional host-owned daemon instance identifier.
+///
+/// When set to a non-empty value, daemon-owned state is nested below an
+/// instance-specific directory and the default socket/pipe is instance-specific.
+/// This lets an embedding host run its bundled daemon alongside nteract's normal
+/// stable or nightly daemon without sharing mutable runtime state.
+pub const DAEMON_INSTANCE_ID_ENV: &str = "RUNTIMED_INSTANCE_ID";
+
+/// Return the normalized host-owned daemon instance id, when configured.
+///
+/// The id is an opaque label, not a path segment. Filesystem and named-pipe
+/// paths use [`daemon_instance_key`] so separators and other host-provided
+/// characters can never escape the instance namespace.
+pub fn daemon_instance_id() -> Option<String> {
+    std::env::var(DAEMON_INSTANCE_ID_ENV)
+        .ok()
+        .and_then(|value| normalize_daemon_instance_id(&value).map(str::to_owned))
+}
+
+fn normalize_daemon_instance_id(instance_id: &str) -> Option<&str> {
+    let normalized = instance_id.trim();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+/// Stable, path-safe key for a host-owned daemon instance id.
+///
+/// Twelve hex characters matches the existing worktree namespace and keeps
+/// Unix socket paths short enough for macOS's `sun_path` limit.
+pub fn daemon_instance_key(instance_id: &str) -> Result<String, &'static str> {
+    let normalized =
+        normalize_daemon_instance_id(instance_id).ok_or("daemon instance id must not be empty")?;
+    Ok(daemon_instance_key_from_normalized(normalized))
+}
+
+fn daemon_instance_key_from_normalized(normalized: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(normalized.as_bytes());
+    hex::encode(&hasher.finalize()[..6])
+}
+
 /// Cache root shared by every daemon process regardless of channel or dev
 /// worktree: `~/.cache/runt-shared/`. Cross-process facts that stable,
 /// nightly, and per-worktree dev daemons must all see (e.g. file claims)
@@ -150,6 +190,48 @@ pub fn shared_cache_root() -> PathBuf {
 /// Channel-specific config root directory name.
 pub fn config_namespace() -> &'static str {
     config_namespace_for(build_channel())
+}
+
+/// Get the daemon-owned configuration directory for the current channel and
+/// optional host-owned instance.
+///
+/// The normal nteract profile keeps its historical path. An embedded daemon
+/// gets an isolated settings document so independently versioned processes do
+/// not watch and rewrite the same JSON file.
+pub fn daemon_config_dir() -> PathBuf {
+    let base = daemon_config_dir_without_instance(build_channel());
+    match daemon_instance_id() {
+        Some(instance_id) => base
+            .join("instances")
+            .join(daemon_instance_key_from_normalized(&instance_id)),
+        None => base,
+    }
+}
+
+/// Get the daemon-owned configuration directory for an explicit host-owned
+/// instance, ignoring `RUNTIMED_INSTANCE_ID`.
+pub fn daemon_config_dir_for_instance(
+    channel: BuildChannel,
+    instance_id: &str,
+) -> Result<PathBuf, &'static str> {
+    Ok(daemon_config_dir_without_instance(channel)
+        .join("instances")
+        .join(daemon_instance_key(instance_id)?))
+}
+
+/// Get the settings JSON path for an explicit host-owned daemon instance,
+/// ignoring `RUNTIMED_INSTANCE_ID`.
+pub fn settings_json_path_for_instance(
+    channel: BuildChannel,
+    instance_id: &str,
+) -> Result<PathBuf, &'static str> {
+    Ok(daemon_config_dir_for_instance(channel, instance_id)?.join("settings.json"))
+}
+
+fn daemon_config_dir_without_instance(channel: BuildChannel) -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(config_namespace_for(channel))
 }
 
 /// Channel-specific daemon executable base name (without extension).
@@ -1018,11 +1100,15 @@ pub fn vite_port_for_workspace(path: &Path) -> u16 {
 /// - Nightly channel: 47830 (bumps 47830..=47839)
 /// - Dev worktree:    48000 + hash(worktree) % 1000 (stable per-worktree,
 ///   no cross-worktree collisions)
+/// - Host instance:   one stable ten-port block in 49000..=58999
 ///
 /// Stable and nightly get disjoint 10-port ranges so they never bump into
 /// each other's preferred port when both are running on the same machine.
 /// See `PREFERRED_BLOB_PORT_RANGE` for the bump budget.
 pub fn preferred_blob_port() -> u16 {
+    if let Some(instance_id) = daemon_instance_id() {
+        return preferred_blob_port_for_normalized_instance(build_channel(), &instance_id);
+    }
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
             let hash = worktree_hash(&worktree);
@@ -1035,6 +1121,36 @@ pub fn preferred_blob_port() -> u16 {
         BuildChannel::Stable => 47820,
         BuildChannel::Nightly => 47830,
     }
+}
+
+/// Derive a stable preferred blob-server port block for a host-owned instance.
+///
+/// The channel participates in the hash so stable and nightly instances with
+/// the same host id do not prefer the same block. Binding still probes the ten
+/// consecutive ports and falls back to an OS-assigned port on collision.
+pub fn preferred_blob_port_for_instance(
+    channel: BuildChannel,
+    instance_id: &str,
+) -> Result<u16, &'static str> {
+    let normalized =
+        normalize_daemon_instance_id(instance_id).ok_or("daemon instance id must not be empty")?;
+    Ok(preferred_blob_port_for_normalized_instance(
+        channel, normalized,
+    ))
+}
+
+fn preferred_blob_port_for_normalized_instance(channel: BuildChannel, normalized: &str) -> u16 {
+    let mut hasher = Sha256::new();
+    hasher.update(cache_namespace_for(channel).as_bytes());
+    hasher.update([0]);
+    hasher.update(normalized.as_bytes());
+    let digest = hasher.finalize();
+    let block = u16::from_be_bytes([digest[0], digest[1]]) % 500;
+    let channel_base = match channel {
+        BuildChannel::Stable => 49000,
+        BuildChannel::Nightly => 54000,
+    };
+    channel_base + block * PREFERRED_BLOB_PORT_RANGE
 }
 
 /// How many consecutive ports past `preferred_blob_port()` the blob server
@@ -1054,9 +1170,38 @@ pub const PREFERRED_BLOB_PORT_RANGE: u16 = 10;
 /// In dev mode: `~/.cache/runt/worktrees/{hash}/`
 /// Otherwise: `~/.cache/runt/`
 pub fn daemon_base_dir() -> PathBuf {
-    let base = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(cache_namespace());
+    match daemon_instance_id() {
+        Some(instance_id) => channel_cache_root(build_channel())
+            .join("instances")
+            .join(daemon_instance_key_from_normalized(&instance_id)),
+        None => daemon_base_dir_for(build_channel()),
+    }
+}
+
+/// Get the base directory for a specific channel's daemon context.
+///
+/// Like `daemon_base_dir()`, but accepts an explicit channel instead of
+/// using the compile-time default. Useful for cross-channel discovery
+/// (e.g., a stable-compiled binary finding the nightly socket).
+pub fn daemon_base_dir_for(channel: BuildChannel) -> PathBuf {
+    daemon_base_dir_without_instance(channel)
+}
+
+/// Get the base directory for an explicit host-owned daemon instance.
+///
+/// Unlike [`daemon_base_dir_for`], this ignores `RUNTIMED_INSTANCE_ID` and uses
+/// the supplied id. Embedding clients use this to derive the socket they should
+/// probe before spawning a child with the matching environment variable.
+pub fn daemon_base_dir_for_instance(
+    channel: BuildChannel,
+    instance_id: &str,
+) -> Result<PathBuf, &'static str> {
+    let key = daemon_instance_key(instance_id)?;
+    Ok(channel_cache_root(channel).join("instances").join(key))
+}
+
+fn daemon_base_dir_without_instance(channel: BuildChannel) -> PathBuf {
+    let base = channel_cache_root(channel);
 
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
@@ -1067,23 +1212,10 @@ pub fn daemon_base_dir() -> PathBuf {
     base
 }
 
-/// Get the base directory for a specific channel's daemon context.
-///
-/// Like `daemon_base_dir()`, but accepts an explicit channel instead of
-/// using the compile-time default. Useful for cross-channel discovery
-/// (e.g., a stable-compiled binary finding the nightly socket).
-pub fn daemon_base_dir_for(channel: BuildChannel) -> PathBuf {
-    let base = dirs::cache_dir()
+fn channel_cache_root(channel: BuildChannel) -> PathBuf {
+    dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(cache_namespace_for(channel));
-
-    if is_dev_mode() {
-        if let Some(worktree) = get_workspace_path() {
-            let hash = worktree_hash(&worktree);
-            return base.join("worktrees").join(hash);
-        }
-    }
-    base
+        .join(cache_namespace_for(channel))
 }
 
 /// Get the default log path for the notebook app.
@@ -1172,7 +1304,13 @@ pub fn default_socket_path() -> PathBuf {
     if let Some(path) = socket_path_from_env() {
         return path;
     }
-    socket_path_for_channel(build_channel())
+    match daemon_instance_id() {
+        Some(instance_id) => match socket_path_for_instance(build_channel(), &instance_id) {
+            Ok(path) => path,
+            Err(_) => socket_path_for_channel(build_channel()),
+        },
+        None => socket_path_for_channel(build_channel()),
+    }
 }
 
 /// Get the endpoint path for a specific channel's daemon.
@@ -1187,17 +1325,52 @@ pub fn socket_path_for_channel(channel: BuildChannel) -> PathBuf {
     daemon_base_dir_for(channel).join("runtimed.sock")
 }
 
+/// Get the Unix socket path for an explicit host-owned daemon instance.
+#[cfg(unix)]
+pub fn socket_path_for_instance(
+    channel: BuildChannel,
+    instance_id: &str,
+) -> Result<PathBuf, &'static str> {
+    Ok(daemon_base_dir_for_instance(channel, instance_id)?.join("runtimed.sock"))
+}
+
 /// Get the endpoint path for a specific channel's daemon (Windows).
 #[cfg(windows)]
 pub fn socket_path_for_channel(channel: BuildChannel) -> PathBuf {
     let pipe_name = daemon_binary_basename_for(channel);
-    if is_dev_mode() {
+    PathBuf::from(windows_pipe_name(pipe_name, None, true))
+}
+
+/// Get the Windows named-pipe path for an explicit host-owned daemon instance.
+#[cfg(windows)]
+pub fn socket_path_for_instance(
+    channel: BuildChannel,
+    instance_id: &str,
+) -> Result<PathBuf, &'static str> {
+    let instance_key = daemon_instance_key(instance_id)?;
+    Ok(PathBuf::from(windows_pipe_name(
+        daemon_binary_basename_for(channel),
+        Some(&instance_key),
+        false,
+    )))
+}
+
+#[cfg(windows)]
+fn windows_pipe_name(pipe_name: &str, instance_key: Option<&str>, include_dev: bool) -> String {
+    let mut suffixes = Vec::new();
+    if include_dev && is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
-            let hash = worktree_hash(&worktree);
-            return PathBuf::from(format!(r"\\.\pipe\{}-{}", pipe_name, hash));
+            suffixes.push(worktree_hash(&worktree));
         }
     }
-    PathBuf::from(format!(r"\\.\pipe\{}", pipe_name))
+    if let Some(instance_key) = instance_key {
+        suffixes.push(format!("instance-{instance_key}"));
+    }
+    if suffixes.is_empty() {
+        format!(r"\\.\pipe\{}", pipe_name)
+    } else {
+        format!(r"\\.\pipe\{}-{}", pipe_name, suffixes.join("-"))
+    }
 }
 
 /// Check `RUNTIMED_SOCKET_PATH` env var and return the path if valid.
@@ -1222,10 +1395,7 @@ fn socket_path_from_env() -> Option<PathBuf> {
 
 /// Get the path to the JSON settings file (for migration and fallback).
 pub fn settings_json_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(config_namespace())
-        .join("settings.json")
+    daemon_config_dir().join("settings.json")
 }
 
 /// Get the path to the session state file.
@@ -1473,6 +1643,71 @@ mod tests {
     }
 
     #[test]
+    fn daemon_instance_key_is_stable_trimmed_and_path_safe() {
+        let key = daemon_instance_key("desktop-host").unwrap();
+        assert_eq!(key.len(), 12);
+        assert!(key.chars().all(|character| character.is_ascii_hexdigit()));
+        assert_eq!(daemon_instance_key(" desktop-host ").unwrap(), key);
+        assert_ne!(daemon_instance_key("other-host").unwrap(), key);
+        assert_eq!(daemon_instance_key("../../desktop-host").unwrap().len(), 12);
+        assert!(daemon_instance_key("   ").is_err());
+    }
+
+    #[test]
+    fn explicit_daemon_instance_paths_share_one_safe_key() {
+        let key = daemon_instance_key("desktop-host").unwrap();
+        let base = daemon_base_dir_for_instance(BuildChannel::Nightly, "desktop-host").unwrap();
+        let config = daemon_config_dir_for_instance(BuildChannel::Nightly, "desktop-host").unwrap();
+        let settings =
+            settings_json_path_for_instance(BuildChannel::Nightly, "desktop-host").unwrap();
+
+        assert!(base.ends_with(Path::new("instances").join(&key)));
+        assert!(config.ends_with(Path::new("instances").join(&key)));
+        assert_eq!(settings, config.join("settings.json"));
+        assert_ne!(base, daemon_base_dir_for(BuildChannel::Nightly));
+        assert_eq!(
+            config,
+            daemon_config_dir_without_instance(BuildChannel::Nightly)
+                .join("instances")
+                .join(key)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_daemon_instance_socket_is_below_its_base() {
+        let base = daemon_base_dir_for_instance(BuildChannel::Stable, "desktop-host").unwrap();
+        assert_eq!(
+            socket_path_for_instance(BuildChannel::Stable, "desktop-host").unwrap(),
+            base.join("runtimed.sock")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explicit_daemon_instance_pipe_is_path_safe() {
+        let key = daemon_instance_key("../../desktop-host").unwrap();
+        let pipe = socket_path_for_instance(BuildChannel::Stable, "../../desktop-host").unwrap();
+        assert_eq!(
+            pipe,
+            PathBuf::from(format!(r"\\.\pipe\runtimed-instance-{key}"))
+        );
+    }
+
+    #[test]
+    fn explicit_daemon_instance_blob_port_is_stable_and_channel_scoped() {
+        let stable =
+            preferred_blob_port_for_instance(BuildChannel::Stable, "desktop-host").unwrap();
+        let nightly =
+            preferred_blob_port_for_instance(BuildChannel::Nightly, "desktop-host").unwrap();
+        assert!((49000..=53990).contains(&stable));
+        assert!((54000..=58990).contains(&nightly));
+        assert_eq!(stable % PREFERRED_BLOB_PORT_RANGE, 0);
+        assert_eq!(nightly % PREFERRED_BLOB_PORT_RANGE, 0);
+        assert_ne!(stable, nightly);
+    }
+
+    #[test]
     fn test_target_dir_env_empty_is_ignored() {
         let workspace = Path::new("/workspace");
         assert_eq!(target_dir_from_env_value(workspace, None), None);
@@ -1570,7 +1805,10 @@ mod tests {
         // compile time and from process-wide env vars), so just sanity-check
         // that the returned port is in one of the expected ranges.
         let port = preferred_blob_port();
-        let ok = port == 47820 || port == 47830 || (48000..49000).contains(&port);
+        let ok = port == 47820
+            || port == 47830
+            || (48000..49000).contains(&port)
+            || (49000..=58990).contains(&port);
         assert!(ok, "unexpected preferred_blob_port: {port}");
     }
 

@@ -89,7 +89,7 @@ Every notebook's env is isolated per notebook via `env_id` — no cross-notebook
 | UV | `kernel_env::uv::compute_unified_env_hash` | `~/.cache/runt/envs/{hash}/` |
 | Conda | `kernel_env::conda::compute_unified_env_hash` | `~/.cache/runt/conda-envs/{hash}/` |
 
-Cache paths are channel-aware: stable → `runt/`, nightly → `runt-nightly/`, dev worktree → `runt/worktrees/{hash}/`.
+Cache paths are daemon-context-aware: stable → `runt/`, nightly → `runt-nightly/`, dev worktree → `runt/worktrees/{hash}/`, and a host-owned daemon instance → `<channel>/instances/{hash}/`. Materialized environments must not be shared across daemon instances because each daemon's GC only knows its own live kernels.
 
 Cache hit check: verify `{hash}/bin/python` (Unix) or `{hash}/Scripts/python.exe` (Windows).
 

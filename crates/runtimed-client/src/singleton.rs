@@ -31,6 +31,13 @@ pub struct DaemonInfo {
     /// Human-readable workspace description (dev mode only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_description: Option<String>,
+    /// Host-owned daemon instance id. `None` for the normal channel daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    /// Default namespace directory selected by the daemon process environment.
+    /// Explicit path overrides may place individual resources elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_base_dir: Option<String>,
 }
 
 /// Get the path to the daemon lock file.
@@ -56,6 +63,8 @@ pub async fn query_daemon_info(socket_path: std::path::PathBuf) -> Option<Daemon
             execution_store_dir: info.execution_store_dir,
             worktree_path: info.worktree_path,
             workspace_description: info.workspace_description,
+            instance_id: info.instance_id,
+            daemon_base_dir: info.daemon_base_dir,
         });
     }
     None

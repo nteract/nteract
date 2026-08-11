@@ -5,7 +5,8 @@
 //! `runtimed` daemon, creating and executing cells, and reading outputs.
 //!
 //! Phase 1 surface (intentionally small):
-//!   - `defaultSocketPath()` / `socketPathForChannel(channel)`
+//!   - `defaultSocketPath()` / `socketPathForChannel(channel)` /
+//!     `socketPathForInstance(channel, instanceId)`
 //!   - `createNotebook({ runtime, workingDir?, socketPath?, dependencies?, packageManager?, environmentMode? }) -> Session`
 //!   - `openNotebook(notebookId, { socketPath? }) -> Session`
 //!   - `getExecutionResult(executionId, { socketPath? }) -> CellResult`
@@ -59,18 +60,30 @@ pub fn default_socket_path() -> String {
 /// "nightly"). Ignores `RUNTIMED_SOCKET_PATH`.
 #[napi]
 pub fn socket_path_for_channel(channel: String) -> napi::Result<String> {
-    let ch = match channel.as_str() {
-        "stable" => runt_workspace::BuildChannel::Stable,
-        "nightly" => runt_workspace::BuildChannel::Nightly,
-        other => {
-            return Err(napi::Error::from_reason(format!(
-                "channel must be \"stable\" or \"nightly\", got {other:?}"
-            )));
-        }
-    };
+    let ch = parse_channel(&channel)?;
     Ok(runt_workspace::socket_path_for_channel(ch)
         .to_string_lossy()
         .to_string())
+}
+
+/// Return the daemon socket path for a host-owned instance in a specific
+/// channel. Ignores both `RUNTIMED_SOCKET_PATH` and `RUNTIMED_INSTANCE_ID`.
+#[napi]
+pub fn socket_path_for_instance(channel: String, instance_id: String) -> napi::Result<String> {
+    let ch = parse_channel(&channel)?;
+    runt_workspace::socket_path_for_instance(ch, &instance_id)
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(napi::Error::from_reason)
+}
+
+fn parse_channel(channel: &str) -> napi::Result<runt_workspace::BuildChannel> {
+    match channel {
+        "stable" => Ok(runt_workspace::BuildChannel::Stable),
+        "nightly" => Ok(runt_workspace::BuildChannel::Nightly),
+        other => Err(napi::Error::from_reason(format!(
+            "channel must be \"stable\" or \"nightly\", got {other:?}"
+        ))),
+    }
 }
 
 // Session + openNotebook/createNotebook are registered from session.rs

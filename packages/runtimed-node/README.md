@@ -121,6 +121,11 @@ sessions.
   or the `RUNTIMED_SOCKET_PATH` override.
 - `socketPathForChannel("stable" | "nightly")` returns a channel-specific
   daemon socket path.
+- `socketPathForInstance("stable" | "nightly", instanceId)` returns the
+  isolated socket or named-pipe path for a host-owned daemon instance. Spawn
+  the matching daemon with `RUNTIMED_INSTANCE_ID=instanceId`; its lock, socket,
+  notebook documents, blobs, execution records, trust database, and mutable
+  environment pools will live under that instance namespace.
 - `listActiveNotebooks(options)` lists active daemon notebook rooms.
 - `createNotebook(options)` creates a notebook and records optional first-call dependencies.
 - `openNotebook(notebookId, options)` connects to an existing daemon notebook.
@@ -146,6 +151,7 @@ sessions.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
   Pass `onUpdate(progress)` to receive resolved output snapshots while the
   execution is still running.
+
 - `Session.runtimeState$`, `Session.executionTransitions$`,
   `Session.executionViewChanges$`, `Session.cellChanges$`, `Session.broadcasts$`,
   and `Session.sessionStatus$` expose the same projected event families used by
@@ -168,6 +174,39 @@ sessions.
 - `Session.syncEnvironment()` installs recorded notebook dependencies.
 - `Session.saveNotebook(path?)` saves the notebook.
 - `Session.close()` releases the daemon connection.
+
+## Host-owned daemon instances
+
+An embedding host can run its bundled daemon beside the user's normal nteract
+daemon without attaching to or stopping it:
+
+```js
+const { spawn } = require("node:child_process");
+const { socketPathForInstance } = require("@runtimed/node");
+
+const instanceId = "my-desktop-app-production";
+const socketPath = socketPathForInstance("stable", instanceId);
+const daemonEnv = { ...process.env, RUNTIMED_INSTANCE_ID: instanceId };
+
+// Production hosts should not inherit endpoint or source-worktree overrides.
+delete daemonEnv.RUNTIMED_SOCKET_PATH;
+delete daemonEnv.RUNTIMED_DEV;
+delete daemonEnv.RUNTIMED_WORKSPACE_PATH;
+
+const child = spawn(runtimedBinary, [], { env: daemonEnv });
+```
+
+Probe `socketPath` and query its live daemon metadata before considering the
+child ready; a successful spawn alone is not readiness. Pass `socketPath`
+explicitly to every `@runtimed/node` session or relay. Use a stable instance id
+per host and release channel (for example production, staging, and development),
+and set the variable on the child only so unrelated nteract clients keep their
+normal channel paths.
+
+The instance id is collision isolation inside the current OS user account, not
+an authentication boundary. Cross-daemon file claims intentionally remain
+shared, so two instances still refuse to serve the same file-backed notebook at
+the same time.
 
 ## Daemon Requirements
 

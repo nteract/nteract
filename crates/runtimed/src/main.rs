@@ -273,15 +273,11 @@ enum Commands {
 /// Get a log path that works even when HOME is not set.
 /// Falls back to /tmp if the normal cache directory is unavailable.
 fn early_log_path() -> PathBuf {
-    // Try the standard location first
-    if let Some(cache) = dirs::cache_dir() {
-        let path = cache
-            .join(runt_workspace::cache_namespace())
-            .join("runtimed.log");
-        if let Some(parent) = path.parent() {
-            if std::fs::create_dir_all(parent).is_ok() {
-                return path;
-            }
+    // Try the instance-aware standard location first.
+    let path = runtimed::default_log_path();
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_ok() {
+            return path;
         }
     }
     // Fallback to /tmp which should always be writable

@@ -93,6 +93,11 @@ pub struct DaemonInfo {
     pub worktree_path: Option<String>,
     /// Human-readable workspace description (dev mode only).
     pub workspace_description: Option<String>,
+    /// Host-owned daemon instance id. `None` for the normal channel daemon.
+    pub instance_id: Option<String>,
+    /// Default namespace directory selected by the daemon process environment.
+    /// Explicit path overrides may place individual resources elsewhere.
+    pub daemon_base_dir: Option<String>,
 }
 
 impl PongInfo {
@@ -225,6 +230,8 @@ impl PoolClient {
                 execution_store_dir,
                 worktree_path,
                 workspace_description,
+                instance_id,
+                daemon_base_dir,
             } => Ok(DaemonInfo {
                 protocol_version,
                 daemon_version,
@@ -234,6 +241,8 @@ impl PoolClient {
                 execution_store_dir,
                 worktree_path,
                 workspace_description,
+                instance_id,
+                daemon_base_dir,
             }),
             Response::Error { message } => Err(ClientError::DaemonError(message)),
             _ => Err(ClientError::ProtocolError(

@@ -265,6 +265,7 @@ export const NativeSession: unknown;
 
 export function defaultSocketPath(): string;
 export function socketPathForChannel(channel: "stable" | "nightly"): string;
+export function socketPathForInstance(channel: "stable" | "nightly", instanceId: string): string;
 export function createNotebook(options?: CreateNotebookOptions): Promise<Session>;
 export function openNotebook(notebookId: string, options?: OpenNotebookOptions): Promise<Session>;
 export function getExecutionResult(
