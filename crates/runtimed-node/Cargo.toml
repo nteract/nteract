@@ -33,3 +33,4 @@ bytes = { workspace = true }
 
 [build-dependencies]
 napi-build = "2"
+build-metadata = { path = "../build-metadata" }

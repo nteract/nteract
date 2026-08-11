@@ -78,5 +78,24 @@ pub fn socket_path_for_channel(channel: String) -> napi::Result<String> {
         .to_string())
 }
 
+/// Return the nteract source revision compiled into this native binding.
+///
+/// Embedding hosts compare this with the daemon and notebook web manifest so
+/// protocol-compatible but source-skewed release components fail closed.
+#[napi]
+pub fn binding_source_revision() -> String {
+    include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt")).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::binding_source_revision;
+
+    #[test]
+    fn binding_revision_is_stamped() {
+        assert!(!binding_source_revision().trim().is_empty());
+    }
+}
+
 // Session + openNotebook/createNotebook are registered from session.rs
 // via #[napi] so they show up on the generated `index.d.ts`.

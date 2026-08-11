@@ -73,7 +73,9 @@ browserTransport.on("close", () => relay.close());
 
 Hosts that supervise the daemon can use `defaultSocketPath()`,
 `socketPathForChannel("stable" | "nightly")`, and
-`queryDaemonInfo({ socketPath })` from the same subpath. The explicit channel
+`queryDaemonInfo({ socketPath })` from the same subpath. `bindingSourceRevision()`
+identifies the nteract commit compiled into the native package so a host can
+compare it with the daemon version and notebook web manifest. The explicit channel
 resolver is useful when the host's release channel differs from the package's
 compile-time default. The query returns `null` until the daemon is ready, so
 the host does not need to duplicate the pool wire protocol just to probe

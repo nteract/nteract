@@ -25,6 +25,7 @@ module.exports = {
   openRelayPath,
   connectRelay,
   queryDaemonInfo,
+  bindingSourceRevision: binding.bindingSourceRevision,
   defaultSocketPath: binding.defaultSocketPath,
   socketPathForChannel: binding.socketPathForChannel,
 };
