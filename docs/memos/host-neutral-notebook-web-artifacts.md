@@ -38,8 +38,11 @@ package it as a separate release asset. The archive carries:
 - `index.html` and all content-hashed frontend assets;
 - generated runtime WASM;
 - the repository `LICENSE`, deterministic `THIRD_PARTY_NOTICES.txt`, and an
-  SPDX 2.3 inventory of shipped JavaScript/WASM, npm and Cargo dependencies,
-  and opaque renderer build inputs;
+  SPDX 2.3 inventory of every regular payload file, the notebook UI's npm
+  runtime dependencies, WASM Cargo dependencies, CSS/font provenance, and
+  opaque renderer build inputs;
+- build provenance that binds each opaque renderer source hash to its emitted,
+  content-hashed output chunk;
 - `notebook-web-manifest.json`, naming the nteract source revision and runtime
   compatibility contract;
 - `SHA256SUMS`, covering the payload and manifest.
@@ -56,7 +59,8 @@ creates a versioned `nteract-notebook-web-<version>.tar.gz` and adjacent archive
 checksum from the same commit as the standalone daemon binaries.
 
 The manifest schema starts at version 1. Consumers must reject unknown schema
-versions, missing runtime WASM, unsafe file paths, and payload checksum drift.
+versions, missing runtime WASM, unsafe file paths, non-regular filesystem
+entries, stale renderer provenance, and payload checksum drift.
 They may allow an unstamped local development daemon, but a stamped source
 revision mismatch fails closed before notebook traffic is relayed.
 

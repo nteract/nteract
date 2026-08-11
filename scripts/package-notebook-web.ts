@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import {
   assertNotebookWebCompliance,
   generateNotebookWebCompliance,
+  NOTEBOOK_WEB_BUILD_PROVENANCE,
   NOTEBOOK_WEB_LICENSE,
   NOTEBOOK_WEB_NOTICES,
   NOTEBOOK_WEB_SBOM,
@@ -49,6 +50,7 @@ async function filesBelow(root: string, current = root): Promise<string[]> {
     const absolute = path.join(current, entry.name);
     if (entry.isDirectory()) files.push(...(await filesBelow(root, absolute)));
     else if (entry.isFile()) files.push(path.relative(root, absolute).split(path.sep).join("/"));
+    else throw new Error(`Notebook web build contains non-regular entry ${path.relative(root, absolute)}`);
   }
   return files;
 }
@@ -100,7 +102,12 @@ export async function packageNotebookWeb(
   await assertNotebookWebCompliance(options.outputDir);
 
   const packagedFiles = await filesBelow(options.outputDir);
-  for (const required of [NOTEBOOK_WEB_LICENSE, NOTEBOOK_WEB_NOTICES, NOTEBOOK_WEB_SBOM]) {
+  for (const required of [
+    NOTEBOOK_WEB_BUILD_PROVENANCE,
+    NOTEBOOK_WEB_LICENSE,
+    NOTEBOOK_WEB_NOTICES,
+    NOTEBOOK_WEB_SBOM,
+  ]) {
     if (!packagedFiles.includes(required)) {
       throw new Error(`Notebook web artifact is missing required compliance file ${required}`);
     }

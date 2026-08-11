@@ -6,6 +6,13 @@ import path from "node:path";
 export const NOTEBOOK_WEB_LICENSE = "LICENSE";
 export const NOTEBOOK_WEB_NOTICES = "THIRD_PARTY_NOTICES.txt";
 export const NOTEBOOK_WEB_SBOM = "notebook-web.spdx.json";
+export const NOTEBOOK_WEB_BUILD_PROVENANCE = "notebook-web-build-provenance.json";
+
+const SPDX_EXCLUDED_METADATA = [
+  NOTEBOOK_WEB_SBOM,
+  "notebook-web-manifest.json",
+  "SHA256SUMS",
+] as const;
 
 const APPROVED_LICENSE_IDS = new Set([
   "0BSD",
@@ -14,6 +21,7 @@ const APPROVED_LICENSE_IDS = new Set([
   "BSD-3-Clause",
   "ISC",
   "MIT",
+  "OFL-1.1",
   "Unicode-3.0",
   "Unlicense",
   "Zlib",
@@ -52,10 +60,26 @@ const LICENSE_FILE_OVERRIDES: Record<string, string> = {
   "remark-math": "remark-math-MIT.txt",
 };
 
+const NOTEBOOK_BUILD_INPUTS = new Set(["@tailwindcss/vite", "tailwindcss", "tw-animate-css"]);
+
+const REQUIRED_NOTEBOOK_RUNTIME_COMPONENTS = [
+  "@dnd-kit/core",
+  "@dnd-kit/sortable",
+  "@dnd-kit/utilities",
+  "@tauri-apps/api",
+  "@tauri-apps/plugin-dialog",
+  "@tauri-apps/plugin-log",
+  "@tauri-apps/plugin-process",
+  "@tauri-apps/plugin-shell",
+  "@tauri-apps/plugin-updater",
+  "rxjs",
+] as const;
+
 type LicenseText = { name: string; text: string };
 
 export type ComplianceComponent = {
-  ecosystem: "cargo" | "npm";
+  ecosystem: "asset" | "cargo" | "npm";
+  scope: "asset" | "build" | "runtime";
   name: string;
   version: string;
   licenseDeclared: string;
@@ -68,6 +92,7 @@ export type OpaqueRendererAsset = {
   bytes: number;
   sha256: string;
   components: readonly string[];
+  outputs: Array<{ path: string; sha256: string }>;
 };
 
 export type ShippedWebFile = {
@@ -83,6 +108,15 @@ type PnpmLicenseRecord = {
   paths: string[];
   license?: string;
   homepage?: string;
+};
+
+type BuildProvenance = {
+  schemaVersion: 1;
+  inputs: Array<{
+    path: string;
+    sha256: string;
+    outputs: Array<{ path: string; sha256: string }>;
+  }>;
 };
 
 type CargoMetadata = {
@@ -109,7 +143,10 @@ type SpdxPackage = {
   versionInfo: string;
   downloadLocation: "NOASSERTION";
   filesAnalyzed: boolean;
-  packageVerificationCode?: { packageVerificationCodeValue: string };
+  packageVerificationCode?: {
+    packageVerificationCodeValue: string;
+    packageVerificationCodeExcludedFiles: string[];
+  };
   licenseConcluded: string;
   licenseDeclared: string;
   copyrightText: string;
@@ -146,7 +183,7 @@ export type NotebookWebSpdxDocument = {
   files: SpdxFile[];
   relationships: Array<{
     spdxElementId: string;
-    relationshipType: "CONTAINS" | "DEPENDS_ON";
+    relationshipType: "BUILD_DEPENDENCY_OF" | "CONTAINS" | "DEPENDS_ON";
     relatedSpdxElement: string;
   }>;
   annotations: Array<{
@@ -236,10 +273,26 @@ async function npmLicenseTexts(
   throw new Error(`No license text or reviewed override for npm package ${component.name}`);
 }
 
-async function collectNpmComponents(repoRoot: string): Promise<ComplianceComponent[]> {
+type NpmPackageRecord = {
+  name: string;
+  version: string;
+  license: string;
+  homepage?: string;
+  packageRoot: string;
+};
+
+async function pnpmLicenseRecords(repoRoot: string, prod: boolean): Promise<NpmPackageRecord[]> {
   const output = execFileSync(
     "pnpm",
-    ["--filter", ".", "licenses", "list", "--prod", "--json", "--long"],
+    [
+      "--filter",
+      "notebook-ui",
+      "licenses",
+      "list",
+      ...(prod ? ["--prod"] : []),
+      "--json",
+      "--long",
+    ],
     { cwd: repoRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   const grouped = JSON.parse(output) as Record<string, PnpmLicenseRecord[]>;
@@ -247,11 +300,7 @@ async function collectNpmComponents(repoRoot: string): Promise<ComplianceCompone
     packages.flatMap((entry) => entry.paths.map((packageRoot) => ({ ...entry, packageRoot, license }))),
   );
 
-  const packageRoots = new Map<string, string>();
-  const packageRecords = new Map<
-    string,
-    { name: string; version: string; license: string; homepage?: string; packageRoot: string }
-  >();
+  const packageRecords = new Map<string, NpmPackageRecord>();
   for (const record of records) {
     const packageJson = JSON.parse(
       await readFile(path.join(record.packageRoot, "package.json"), "utf8"),
@@ -260,8 +309,6 @@ async function collectNpmComponents(repoRoot: string): Promise<ComplianceCompone
       throw new Error(`Invalid package metadata under ${record.packageRoot}`);
     }
     const license = packageJson.license ?? record.license;
-    validateLicenseExpression(license);
-    packageRoots.set(packageJson.name, record.packageRoot);
     packageRecords.set(`${packageJson.name}@${packageJson.version}`, {
       name: packageJson.name,
       version: packageJson.version,
@@ -270,14 +317,43 @@ async function collectNpmComponents(repoRoot: string): Promise<ComplianceCompone
       packageRoot: record.packageRoot,
     });
   }
+  return [...packageRecords.values()];
+}
+
+async function collectNpmComponents(repoRoot: string): Promise<ComplianceComponent[]> {
+  const [runtimeRecords, allRecords] = await Promise.all([
+    pnpmLicenseRecords(repoRoot, true),
+    pnpmLicenseRecords(repoRoot, false),
+  ]);
+  const runtimeNames = new Set(runtimeRecords.map((record) => record.name));
+  const missing = REQUIRED_NOTEBOOK_RUNTIME_COMPONENTS.filter((name) => !runtimeNames.has(name));
+  if (missing.length > 0) {
+    throw new Error(`Notebook runtime license closure is incomplete: ${missing.join(", ")}`);
+  }
+
+  const packageRoots = new Map(allRecords.map((record) => [record.name, record.packageRoot]));
+  const selected = new Map<string, NpmPackageRecord>();
+  for (const record of runtimeRecords) selected.set(`${record.name}@${record.version}`, record);
+  for (const record of allRecords) {
+    if (NOTEBOOK_BUILD_INPUTS.has(record.name)) {
+      selected.set(`${record.name}@${record.version}`, record);
+    }
+  }
+  const missingBuildInputs = [...NOTEBOOK_BUILD_INPUTS].filter(
+    (name) => ![...selected.values()].some((record) => record.name === name),
+  );
+  if (missingBuildInputs.length > 0) {
+    throw new Error(`Notebook CSS build provenance is incomplete: ${missingBuildInputs.join(", ")}`);
+  }
 
   return Promise.all(
-    [...packageRecords.values()]
+    [...selected.values()]
       .sort((left, right) =>
         left.name.localeCompare(right.name) || left.version.localeCompare(right.version),
       )
       .map(async (record) => ({
         ecosystem: "npm" as const,
+        scope: runtimeNames.has(record.name) ? ("runtime" as const) : ("build" as const),
         name: record.name,
         version: record.version,
         licenseDeclared: validateLicenseExpression(record.license),
@@ -347,6 +423,7 @@ async function collectCargoComponents(repoRoot: string): Promise<ComplianceCompo
         if (!pkg.license) throw new Error(`Cargo package ${pkg.name}@${pkg.version} has no license metadata`);
         return {
           ecosystem: "cargo" as const,
+          scope: "runtime" as const,
           name: pkg.name,
           version: pkg.version,
           licenseDeclared: validateLicenseExpression(pkg.license),
@@ -357,8 +434,28 @@ async function collectCargoComponents(repoRoot: string): Promise<ComplianceCompo
   );
 }
 
-export async function collectOpaqueRendererAssets(repoRoot: string): Promise<OpaqueRendererAsset[]> {
+function assertSafeRelativePath(filename: string): void {
+  if (
+    filename.length === 0 ||
+    path.isAbsolute(filename) ||
+    filename.split(/[\\/]/).some((segment) => segment === "" || segment === "." || segment === "..")
+  ) {
+    throw new Error(`Unsafe release provenance path ${JSON.stringify(filename)}`);
+  }
+}
+
+export async function collectOpaqueRendererAssets(
+  repoRoot: string,
+  outputDir: string,
+): Promise<OpaqueRendererAsset[]> {
   const rendererRoot = path.join(repoRoot, "apps/notebook/src/renderer-plugins");
+  const provenance = JSON.parse(
+    await readFile(path.join(outputDir, NOTEBOOK_WEB_BUILD_PROVENANCE), "utf8"),
+  ) as BuildProvenance;
+  if (provenance.schemaVersion !== 1 || !Array.isArray(provenance.inputs)) {
+    throw new Error("Notebook web build provenance is invalid");
+  }
+  const provenanceByPath = new Map(provenance.inputs.map((input) => [input.path, input]));
   return Promise.all(
     Object.entries(OPAQUE_RENDERER_COMPONENTS)
       .sort(([left], [right]) => left.localeCompare(right))
@@ -373,11 +470,31 @@ export async function collectOpaqueRendererAssets(repoRoot: string): Promise<Opa
         if (bytes.byteLength === 0 || new TextDecoder().decode(bytes.subarray(0, 80)).startsWith("version https://git-lfs.github.com/spec/")) {
           throw new Error(`Opaque renderer asset ${filename} has no release payload`);
         }
+        const sourcePath = `apps/notebook/src/renderer-plugins/${filename}`;
+        const sourceSha256 = sha256(bytes);
+        const buildInput = provenanceByPath.get(sourcePath);
+        if (!buildInput || buildInput.sha256 !== sourceSha256 || buildInput.outputs.length === 0) {
+          throw new Error(`Opaque renderer build provenance is stale or missing for ${filename}`);
+        }
+        const outputs = await Promise.all(
+          buildInput.outputs.map(async (output) => {
+            assertSafeRelativePath(output.path);
+            const outputBytes = await readFile(
+              path.join(outputDir, ...output.path.split(/[\\/]/)),
+            );
+            const outputSha256 = sha256(outputBytes);
+            if (output.sha256 !== outputSha256) {
+              throw new Error(`Opaque renderer output provenance is stale for ${output.path}`);
+            }
+            return { path: output.path, sha256: outputSha256 };
+          }),
+        );
         return {
-          path: `apps/notebook/src/renderer-plugins/${filename}`,
+          path: sourcePath,
           bytes: bytes.byteLength,
-          sha256: sha256(bytes),
+          sha256: sourceSha256,
           components,
+          outputs,
         };
       }),
   );
@@ -390,12 +507,15 @@ async function filesBelow(root: string, current = root): Promise<string[]> {
     const absolute = path.join(current, entry.name);
     if (entry.isDirectory()) files.push(...(await filesBelow(root, absolute)));
     else if (entry.isFile()) files.push(path.relative(root, absolute).split(path.sep).join("/"));
+    else throw new Error(`Release artifact contains non-regular entry ${path.relative(root, absolute)}`);
   }
   return files;
 }
 
 export async function collectShippedWebFiles(outputDir: string): Promise<ShippedWebFile[]> {
-  const paths = (await filesBelow(outputDir)).filter((filename) => /\.(?:js|wasm)$/.test(filename));
+  const paths = (await filesBelow(outputDir)).filter(
+    (filename) => !SPDX_EXCLUDED_METADATA.includes(filename as (typeof SPDX_EXCLUDED_METADATA)[number]),
+  );
   return Promise.all(
     paths.map(async (filename) => {
       const absolute = path.join(outputDir, ...filename.split("/"));
@@ -417,6 +537,9 @@ function fileId(file: ShippedWebFile): string {
 function packageUrl(component: ComplianceComponent): string {
   if (component.ecosystem === "cargo") {
     return `pkg:cargo/${encodeURIComponent(component.name)}@${encodeURIComponent(component.version)}`;
+  }
+  if (component.ecosystem === "asset") {
+    return `pkg:generic/${encodeURIComponent(component.name)}@${encodeURIComponent(component.version)}`;
   }
   const npmName = component.name.startsWith("@")
     ? `%40${component.name.slice(1).split("/").map(encodeURIComponent).join("/")}`
@@ -460,6 +583,7 @@ export function buildSpdxDocument(options: {
             .sort()
             .join(""),
         ),
+        packageVerificationCodeExcludedFiles: [...SPDX_EXCLUDED_METADATA],
       },
       licenseConcluded: "BSD-3-Clause",
       licenseDeclared: "BSD-3-Clause",
@@ -508,11 +632,19 @@ export function buildSpdxDocument(options: {
     packages,
     files,
     relationships: [
-      ...options.components.map((component) => ({
-        spdxElementId: "SPDXRef-Package-notebook-web",
-        relationshipType: "DEPENDS_ON" as const,
-        relatedSpdxElement: componentId(component),
-      })),
+      ...options.components.map((component) =>
+        component.scope === "build"
+          ? {
+              spdxElementId: componentId(component),
+              relationshipType: "BUILD_DEPENDENCY_OF" as const,
+              relatedSpdxElement: "SPDXRef-Package-notebook-web",
+            }
+          : {
+              spdxElementId: "SPDXRef-Package-notebook-web",
+              relationshipType: "DEPENDS_ON" as const,
+              relatedSpdxElement: componentId(component),
+            },
+      ),
       ...options.shippedWebFiles.map((file) => ({
         spdxElementId: "SPDXRef-Package-notebook-web",
         relationshipType: "CONTAINS" as const,
@@ -537,12 +669,12 @@ export function buildThirdPartyNotices(
   const sections = [
     "NTERACT NOTEBOOK WEB THIRD-PARTY NOTICES",
     "",
-    "This conservative inventory covers the production npm dependency closure, the non-dev runtimed-wasm Cargo dependency closure, and the opaque renderer build inputs listed below.",
+    "This conservative inventory covers the notebook-ui production npm dependency closure, explicit CSS build inputs, the non-dev runtimed-wasm Cargo dependency closure, shipped asset license families, and the opaque renderer build inputs listed below.",
     "",
     "OPAQUE RENDERER BUILD INPUTS",
     ...opaqueRendererAssets.map(
       (asset) =>
-        `${asset.path}  ${asset.sha256}  ${asset.bytes} bytes  components=${asset.components.join(",")}`,
+        `${asset.path}  ${asset.sha256}  ${asset.bytes} bytes  components=${asset.components.join(",")}  outputs=${asset.outputs.map((output) => `${output.path}:${output.sha256}`).join(",")}`,
     ),
     "",
   ];
@@ -550,6 +682,7 @@ export function buildThirdPartyNotices(
     sections.push(
       `================================================================================`,
       `${component.ecosystem}:${component.name}@${component.version}`,
+      `Scope: ${component.scope}`,
       `Declared license: ${component.licenseDeclared}`,
     );
     if (component.homepage) sections.push(`Homepage: ${component.homepage}`);
@@ -561,26 +694,62 @@ export function buildThirdPartyNotices(
   return `${sections.join("\n").trimEnd()}\n`;
 }
 
+async function collectAssetComponents(
+  repoRoot: string,
+  outputDir: string,
+  npmComponents: ComplianceComponent[],
+): Promise<ComplianceComponent[]> {
+  const shippedPaths = await filesBelow(outputDir);
+  if (!shippedPaths.some((filename) => /\/KaTeX_.+\.(?:ttf|woff2?)$/.test(filename))) {
+    throw new Error("Notebook Web build is missing its KaTeX font assets");
+  }
+  const katex = npmComponents.find((component) => component.name === "katex");
+  if (!katex) throw new Error("Notebook runtime license closure is missing KaTeX");
+  const ofl = await readFile(
+    path.join(repoRoot, "scripts/license-overrides/katex-fonts-OFL-1.1.txt"),
+    "utf8",
+  );
+  return [
+    {
+      ecosystem: "asset",
+      scope: "asset",
+      name: "KaTeX-fonts",
+      version: katex.version,
+      licenseDeclared: "OFL-1.1",
+      licenseTexts: [{ name: "OFL-1.1 (KaTeX font assets)", text: ofl.trim() }],
+      homepage: `https://github.com/KaTeX/KaTeX/tree/v${katex.version}/src/fonts`,
+    },
+  ];
+}
+
 export async function generateNotebookWebCompliance(options: {
   outputDir: string;
   repoRoot: string;
   sourceRevision: string;
   version: string;
 }): Promise<void> {
-  const [npmComponents, cargoComponents, opaqueRendererAssets, shippedWebFiles, rootLicense] =
-    await Promise.all([
-      collectNpmComponents(options.repoRoot),
-      collectCargoComponents(options.repoRoot),
-      collectOpaqueRendererAssets(options.repoRoot),
-      collectShippedWebFiles(options.outputDir),
-      readFile(path.join(options.repoRoot, "LICENSE"), "utf8"),
-    ]);
-  const components = [...npmComponents, ...cargoComponents].sort((left, right) =>
+  const [npmComponents, cargoComponents, opaqueRendererAssets, rootLicense] = await Promise.all([
+    collectNpmComponents(options.repoRoot),
+    collectCargoComponents(options.repoRoot),
+    collectOpaqueRendererAssets(options.repoRoot, options.outputDir),
+    readFile(path.join(options.repoRoot, "LICENSE"), "utf8"),
+  ]);
+  const assetComponents = await collectAssetComponents(
+    options.repoRoot,
+    options.outputDir,
+    npmComponents,
+  );
+  const components = [...assetComponents, ...npmComponents, ...cargoComponents].sort((left, right) =>
     left.ecosystem.localeCompare(right.ecosystem) ||
     left.name.localeCompare(right.name) ||
     left.version.localeCompare(right.version),
   );
   const notices = buildThirdPartyNotices(components, opaqueRendererAssets);
+  await Promise.all([
+    writeFile(path.join(options.outputDir, NOTEBOOK_WEB_LICENSE), rootLicense),
+    writeFile(path.join(options.outputDir, NOTEBOOK_WEB_NOTICES), notices),
+  ]);
+  const shippedWebFiles = await collectShippedWebFiles(options.outputDir);
   const spdx = buildSpdxDocument({
     components,
     opaqueRendererAssets,
@@ -589,11 +758,10 @@ export async function generateNotebookWebCompliance(options: {
     version: options.version,
   });
 
-  await Promise.all([
-    writeFile(path.join(options.outputDir, NOTEBOOK_WEB_LICENSE), rootLicense),
-    writeFile(path.join(options.outputDir, NOTEBOOK_WEB_NOTICES), notices),
-    writeFile(path.join(options.outputDir, NOTEBOOK_WEB_SBOM), `${JSON.stringify(spdx, null, 2)}\n`),
-  ]);
+  await writeFile(
+    path.join(options.outputDir, NOTEBOOK_WEB_SBOM),
+    `${JSON.stringify(spdx, null, 2)}\n`,
+  );
 }
 
 export async function assertNotebookWebCompliance(outputDir: string): Promise<void> {
@@ -622,6 +790,31 @@ export async function assertNotebookWebCompliance(outputDir: string): Promise<vo
   if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
     throw new Error("Notebook Web SPDX file provenance is incomplete");
   }
+  const containedFiles = spdx.relationships
+    .filter(
+      (relationship) =>
+        relationship.spdxElementId === "SPDXRef-Package-notebook-web" &&
+        relationship.relationshipType === "CONTAINS",
+    )
+    .map((relationship) => relationship.relatedSpdxElement)
+    .sort();
+  const expectedContainedFiles = spdx.files.map((file) => file.SPDXID).sort();
+  if (JSON.stringify(containedFiles) !== JSON.stringify(expectedContainedFiles)) {
+    throw new Error("Notebook Web SPDX file relationships are incomplete");
+  }
+  const rootPackage = spdx.packages.find(
+    (pkg) => pkg.SPDXID === "SPDXRef-Package-notebook-web",
+  );
+  const expectedVerificationCode = sha1(shippedWebFiles.map((file) => file.sha1).sort().join(""));
+  if (
+    !rootPackage?.filesAnalyzed ||
+    rootPackage.packageVerificationCode?.packageVerificationCodeValue !==
+      expectedVerificationCode ||
+    JSON.stringify(rootPackage.packageVerificationCode.packageVerificationCodeExcludedFiles) !==
+      JSON.stringify(SPDX_EXCLUDED_METADATA)
+  ) {
+    throw new Error("Notebook Web SPDX package verification code is invalid");
+  }
   const rendererAnnotation = spdx.annotations.find((annotation) =>
     annotation.comment.startsWith("Opaque renderer build inputs: "),
   );
@@ -631,5 +824,21 @@ export async function assertNotebookWebCompliance(outputDir: string): Promise<vo
   const actual = assets.map((asset) => path.basename(asset.path)).sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error("Notebook Web SPDX renderer provenance is incomplete");
+  }
+  const spdxFileHashes = new Map(
+    spdx.files.map((file) => [
+      file.fileName,
+      file.checksums.find((checksum) => checksum.algorithm === "SHA256")?.checksumValue,
+    ]),
+  );
+  for (const asset of assets) {
+    if (asset.outputs.length === 0) {
+      throw new Error(`Notebook Web SPDX renderer output provenance is empty for ${asset.path}`);
+    }
+    for (const output of asset.outputs) {
+      if (spdxFileHashes.get(output.path) !== output.sha256) {
+        throw new Error(`Notebook Web SPDX renderer output provenance is stale for ${output.path}`);
+      }
+    }
   }
 }

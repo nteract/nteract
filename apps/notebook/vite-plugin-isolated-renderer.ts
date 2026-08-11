@@ -17,6 +17,7 @@
  */
 
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { build, type Plugin } from "vite-plus";
@@ -32,6 +33,7 @@ const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 // Without this, importing the core IIFE would also pull in all plugin strings.
 const VIRTUAL_PLUGIN_PREFIX = "virtual:renderer-plugin/";
 const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
+const BUILD_PROVENANCE_FILE = "notebook-web-build-provenance.json";
 
 /** Directory containing pre-built renderer plugin artifacts. */
 const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
@@ -280,6 +282,51 @@ export const css = ${JSON.stringify(css)};
 `;
         }
       }
+    },
+
+    generateBundle(_outputOptions, bundle) {
+      const sourceModules = [
+        ["isolated-renderer.js", RESOLVED_VIRTUAL_MODULE_ID],
+        ["isolated-renderer.css", RESOLVED_VIRTUAL_MODULE_ID],
+        ...prebuiltPluginNames.flatMap((name) => {
+          const moduleId = `${RESOLVED_PLUGIN_PREFIX}${name}`;
+          return PLUGIN_CSS_NAMES.has(name)
+            ? [
+                [`${name}.js`, moduleId],
+                [`${name}.css`, moduleId],
+              ]
+            : [[`${name}.js`, moduleId]];
+        }),
+      ] as const;
+      const inputs = sourceModules.map(([filename, moduleId]) => {
+        const sourcePath = path.join(PREBUILT_DIR, filename);
+        const source = fs.readFileSync(sourcePath);
+        const outputs = Object.values(bundle)
+          .flatMap((output) =>
+            output.type === "chunk" && Object.hasOwn(output.modules, moduleId)
+              ? [
+                  {
+                    path: output.fileName,
+                    sha256: createHash("sha256").update(output.code).digest("hex"),
+                  },
+                ]
+              : [],
+          )
+          .sort((left, right) => left.path.localeCompare(right.path));
+        if (outputs.length === 0) {
+          throw new Error(`Opaque renderer input ${filename} has no generated output chunk`);
+        }
+        return {
+          path: `apps/notebook/src/renderer-plugins/${filename}`,
+          sha256: createHash("sha256").update(source).digest("hex"),
+          outputs,
+        };
+      });
+      this.emitFile({
+        type: "asset",
+        fileName: BUILD_PROVENANCE_FILE,
+        source: `${JSON.stringify({ schemaVersion: 1, inputs }, null, 2)}\n`,
+      });
     },
 
     // Dev server: build from source for live development

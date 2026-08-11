@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import {
   buildSpdxDocument,
   buildThirdPartyNotices,
   collectShippedWebFiles,
+  NOTEBOOK_WEB_BUILD_PROVENANCE,
   NOTEBOOK_WEB_LICENSE,
   NOTEBOOK_WEB_NOTICES,
   NOTEBOOK_WEB_SBOM,
@@ -24,6 +25,7 @@ import {
 
 const TEST_COMPONENT: ComplianceComponent = {
   ecosystem: "npm",
+  scope: "runtime",
   name: "fixture-package",
   version: "1.0.0",
   licenseDeclared: "MIT",
@@ -35,30 +37,32 @@ const TEST_COMPONENT: ComplianceComponent = {
   ],
 };
 
-const TEST_RENDERER_ASSETS: OpaqueRendererAsset[] = opaqueRendererAssetNames().map((name) => ({
-  path: `apps/notebook/src/renderer-plugins/${name}`,
-  bytes: 1,
-  sha256: "0".repeat(64),
-  components: ["nteract"],
-}));
-
 async function writeFixtureCompliance(outputDir: string): Promise<void> {
+  await writeFile(path.join(outputDir, NOTEBOOK_WEB_LICENSE), "BSD 3-Clause License\n");
+  const rendererOutput = (await collectShippedWebFiles(outputDir)).find(
+    (file) => file.path === "assets/main-AbCd1234.js",
+  );
+  assert.ok(rendererOutput);
+  const rendererAssets: OpaqueRendererAsset[] = opaqueRendererAssetNames().map((name) => ({
+    path: `apps/notebook/src/renderer-plugins/${name}`,
+    bytes: 1,
+    sha256: "0".repeat(64),
+    components: ["nteract"],
+    outputs: [{ path: rendererOutput.path, sha256: rendererOutput.sha256 }],
+  }));
+  await writeFile(
+    path.join(outputDir, NOTEBOOK_WEB_NOTICES),
+    buildThirdPartyNotices([TEST_COMPONENT], rendererAssets),
+  );
   const shippedWebFiles = await collectShippedWebFiles(outputDir);
   const spdx = buildSpdxDocument({
     components: [TEST_COMPONENT],
-    opaqueRendererAssets: TEST_RENDERER_ASSETS,
+    opaqueRendererAssets: rendererAssets,
     shippedWebFiles,
     sourceRevision: "abc1234",
     version: "0.4.3",
   });
-  await Promise.all([
-    writeFile(path.join(outputDir, NOTEBOOK_WEB_LICENSE), "BSD 3-Clause License\n"),
-    writeFile(
-      path.join(outputDir, NOTEBOOK_WEB_NOTICES),
-      buildThirdPartyNotices([TEST_COMPONENT], TEST_RENDERER_ASSETS),
-    ),
-    writeFile(path.join(outputDir, NOTEBOOK_WEB_SBOM), `${JSON.stringify(spdx, null, 2)}\n`),
-  ]);
+  await writeFile(path.join(outputDir, NOTEBOOK_WEB_SBOM), `${JSON.stringify(spdx, null, 2)}\n`);
 }
 
 async function fixture(includeWasm = true) {
@@ -68,6 +72,12 @@ async function fixture(includeWasm = true) {
   await mkdir(path.join(distDir, "assets"), { recursive: true });
   await writeFile(path.join(distDir, "index.html"), "<main>notebook</main>");
   await writeFile(path.join(distDir, "assets", "main-AbCd1234.js"), "export {};");
+  await writeFile(path.join(distDir, "assets", "main-AbCd1234.css"), "body {}");
+  await writeFile(path.join(distDir, "assets", "KaTeX_Main-Regular-AbCd1234.woff2"), "font");
+  await writeFile(
+    path.join(distDir, NOTEBOOK_WEB_BUILD_PROVENANCE),
+    '{"schemaVersion":1,"inputs":[]}',
+  );
   await writeFile(path.join(distDir, "stats.html"), "/private/build/path");
   if (includeWasm) await writeFile(path.join(distDir, "assets", "runtime-ZyXw9876.wasm"), "wasm");
   return { distDir, outputDir };
@@ -89,10 +99,13 @@ test("packages a revision-pinned host artifact with deterministic checksums", as
   assert.deepEqual(
     manifest.files.map((file) => file.path),
     [
+      "assets/KaTeX_Main-Regular-AbCd1234.woff2",
+      "assets/main-AbCd1234.css",
       "assets/main-AbCd1234.js",
       "assets/runtime-ZyXw9876.wasm",
       "index.html",
       "LICENSE",
+      "notebook-web-build-provenance.json",
       "notebook-web.spdx.json",
       "THIRD_PARTY_NOTICES.txt",
     ],
@@ -101,6 +114,18 @@ test("packages a revision-pinned host artifact with deterministic checksums", as
     JSON.parse(await readFile(path.join(outputDir, NOTEBOOK_WEB_MANIFEST), "utf8")).kind,
     "nteract-notebook-web",
   );
+  const sbom = JSON.parse(await readFile(path.join(outputDir, NOTEBOOK_WEB_SBOM), "utf8")) as {
+    files: Array<{ fileName: string }>;
+  };
+  assert.deepEqual(
+    sbom.files.map((file) => file.fileName),
+    manifest.files
+      .map((file) => file.path)
+      .filter((filename) => filename !== NOTEBOOK_WEB_SBOM),
+  );
+  assert.ok(sbom.files.some((file) => file.fileName.endsWith(".html")));
+  assert.ok(sbom.files.some((file) => file.fileName.endsWith(".css")));
+  assert.ok(sbom.files.some((file) => file.fileName.endsWith(".woff2")));
   const checksums = await readFile(path.join(outputDir, NOTEBOOK_WEB_CHECKSUMS), "utf8");
   assert.match(checksums, /notebook-web-manifest\.json/);
   assert.match(checksums, /runtime-ZyXw9876\.wasm/);
@@ -142,4 +167,24 @@ test("rejects an SPDX document that omits a shipped web file", async () => {
     assertNotebookWebCompliance(outputDir),
     /SPDX file provenance is incomplete/,
   );
+});
+
+test("rejects symlinked build entries before copying the release payload", async () => {
+  const { distDir, outputDir } = await fixture();
+  const outside = path.join(path.dirname(distDir), "outside.js");
+  await writeFile(outside, "sensitive build input");
+  await symlink(outside, path.join(distDir, "assets", "escape-AbCd1234.js"));
+
+  await assert.rejects(
+    packageNotebookWeb({
+      distDir,
+      outputDir,
+      sourceRevision: "abc1234",
+      version: "0.4.3",
+      channel: "nightly",
+      writeCompliance: writeFixtureCompliance,
+    }),
+    /non-regular entry assets\/escape-AbCd1234\.js/,
+  );
+  await assert.rejects(readFile(path.join(outputDir, "index.html"), "utf8"));
 });
