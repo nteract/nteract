@@ -122,6 +122,38 @@ npm install @runtimed/node
 The native binding is installed through an optional platform package such as
 `@runtimed/node-darwin-arm64` or `@runtimed/node-linux-x64-gnu`.
 
+Embedding hosts that acquire binaries without npm can use the matching nteract
+GitHub release instead. Every release publishes a wrapper archive, one native
+archive per supported desktop target, and a JSON asset manifest. Archive names
+use the nteract release version so the wrapper, native binding, daemon, and web
+assets can be selected from one immutable release even though the npm package
+inside each archive has its own version:
+
+| Target | Release archive |
+|---|---|
+| Wrapper | `runtimed-node-wrapper-${releaseVersion}.tgz` |
+| macOS arm64 | `runtimed-node-darwin-arm64-${releaseVersion}.tgz` |
+| macOS x64 | `runtimed-node-darwin-x64-${releaseVersion}.tgz` |
+| Linux x64 (glibc) | `runtimed-node-linux-x64-gnu-${releaseVersion}.tgz` |
+| Windows x64 | `runtimed-node-win32-x64-msvc-${releaseVersion}.tgz` |
+| Asset manifest | `runtimed-node-assets-${releaseVersion}.json` |
+
+Download the wrapper and exactly one native archive. Install them as the
+package names recorded in the manifest (`@runtimed/node` and its matching
+optional platform package). Before unpacking, require the GitHub Releases API
+asset record to contain a `sha256:` `digest` and verify that digest against the
+downloaded bytes. The manifest intentionally does not duplicate checksums;
+GitHub's asset digest is authoritative.
+
+The manifest's `source_revision` is the full nteract release commit and
+`binding_source_revision` is the short revision compiled into the native
+binding. Packaged hosts should require the latter to match
+`bindingSourceRevision()` and the commit suffix carried by the selected daemon,
+and require the full revision to match any notebook web manifest before opening
+the browser peer. The workflow also loads each native binding on its build
+runner and checks that `bindingSourceRevision()` identifies the release commit
+before it can be attached to a release.
+
 ## Basic Usage
 
 ```js
@@ -265,6 +297,8 @@ The platform packages are implementation details and should normally be
 installed through `@runtimed/node`:
 
 - `@runtimed/node-darwin-arm64`
+- `@runtimed/node-darwin-x64`
 - `@runtimed/node-linux-x64-gnu`
+- `@runtimed/node-win32-x64-msvc`
 
 They contain only the compiled native `.node` binary for their target platform.

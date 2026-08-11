@@ -109,6 +109,111 @@ jobs:
             apps/notebook/src/renderer-plugins/
             target/xtask/*.fingerprint
 
+  build-runtimed-node:
+    name: Build runtimed-node release asset (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    needs: [compute-version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-14
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+          - target: win32-x64-msvc
+            runner: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "runtimed-node-release-${{ matrix.target }}"
+
+      - uses: ./.github/actions/repair-macos-rust-toolchain
+        if: runner.os == 'macOS'
+
+      - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - name: Set up Node with pnpm cache
+        if: runner.os != 'Windows'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Set up Node
+        if: runner.os == 'Windows'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test release asset contract
+        if: matrix.target == 'linux-x64-gnu'
+        run: pnpm --dir packages/runtimed-node test:release-assets
+
+      - name: Build native binding
+        run: pnpm --dir packages/runtimed-node build
+
+      - name: Verify native binding source revision
+        shell: bash
+        run: |
+          ACTUAL_REVISION=$(node -e "process.stdout.write(require('./packages/runtimed-node/src/index.cjs').bindingSourceRevision())")
+          if [[ "$GITHUB_SHA" != "$ACTUAL_REVISION"* ]]; then
+            echo "::error::Native binding source revision $ACTUAL_REVISION is not a prefix of release commit $GITHUB_SHA"
+            exit 1
+          fi
+
+      - name: Assemble and verify platform package
+        run: |
+          pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
+          pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
+
+      - name: Pack deterministic platform release asset
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/platform-pack" "$RUNNER_TEMP/release-assets"
+          pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack --pack-destination "$RUNNER_TEMP/platform-pack"
+          node packages/runtimed-node/scripts/release-assets.mjs rename \
+            --release-version "${{ needs.compute-version.outputs.version }}" \
+            --target "${{ matrix.target }}" \
+            --input-dir "$RUNNER_TEMP/platform-pack" \
+            --output-dir "$RUNNER_TEMP/release-assets"
+
+      - name: Pack deterministic wrapper release asset
+        if: matrix.target == 'linux-x64-gnu'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/wrapper-pack"
+          pnpm --dir packages/runtimed-node pack:dry-run
+          pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP/wrapper-pack"
+          node packages/runtimed-node/scripts/release-assets.mjs rename \
+            --release-version "${{ needs.compute-version.outputs.version }}" \
+            --target wrapper \
+            --input-dir "$RUNNER_TEMP/wrapper-pack" \
+            --output-dir "$RUNNER_TEMP/release-assets"
+
+      - name: Upload runtimed-node release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtimed-node-release-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-assets/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
   build-linux:
     name: Build Linux Executables
     runs-on: ubuntu-22.04
@@ -1185,6 +1290,7 @@ jobs:
         build-notebook-linux-x64,
         smoke-fedora-appimage,
         build-python-wheels,
+        build-runtimed-node,
       ]
     steps:
       - name: Checkout
@@ -1263,6 +1369,24 @@ jobs:
           name: nteract-linux-x64
           path: ./notebook-linux-x64
 
+      - name: Download runtimed-node release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: runtimed-node-release-*
+          path: ./runtimed-node-assets
+          merge-multiple: true
+
+      - name: Verify runtimed-node assets and generate manifest
+        env:
+          VERSION: ${{ needs.compute-version.outputs.version }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          node packages/runtimed-node/scripts/release-assets.mjs manifest \
+            --release-version "$VERSION" \
+            --source-revision "$SOURCE_REVISION" \
+            --assets-dir runtimed-node-assets \
+            --output "runtimed-node-assets/runtimed-node-assets-${VERSION}.json"
+
       - name: Report downloaded release artifact sizes
         run: |
           echo "Downloaded artifact directories:"
@@ -1271,7 +1395,8 @@ jobs:
             notebook-macos-arm64 \
             notebook-macos-x64 \
             notebook-windows-x64 \
-            notebook-linux-x64
+            notebook-linux-x64 \
+            runtimed-node-assets
           echo ""
           echo "Downloaded artifact files:"
           find \
@@ -1280,6 +1405,7 @@ jobs:
             notebook-macos-x64 \
             notebook-windows-x64 \
             notebook-linux-x64 \
+            runtimed-node-assets \
             -type f -printf "%12s  %p\n" | sort -nr
 
       - name: Prepare release assets
@@ -1324,6 +1450,10 @@ jobs:
           cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe.sig" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage.sig" release-assets/ 2>/dev/null || true
+          # Node wrapper + native packages for embedding hosts. Their filenames
+          # use the nteract release version while package.json retains the npm
+          # package version validated by the release manifest.
+          cp runtimed-node-assets/* release-assets/
 
       - name: Generate updater manifest (latest.json)
         env:
@@ -1534,6 +1664,19 @@ jobs:
             echo "| macOS | x64 (Intel) | \`${DAEMON_NAME}-darwin-x64\` |"
             echo "| Windows | x64 | \`${DAEMON_NAME}-windows-x64.exe\` |"
             echo ''
+            echo '### `@runtimed/node` (embedding)'
+            echo ''
+            echo 'Install the wrapper archive together with exactly one native platform archive. The asset manifest records the npm package version and source revision for the set.'
+            echo ''
+            echo '| Platform | Architecture | Native archive |'
+            echo '|----------|--------------|----------------|'
+            echo "| macOS | ARM64 (Apple Silicon) | \`runtimed-node-darwin-arm64-${TAG_NAME#v}.tgz\` |"
+            echo "| macOS | x64 (Intel) | \`runtimed-node-darwin-x64-${TAG_NAME#v}.tgz\` |"
+            echo "| Linux (glibc) | x64 | \`runtimed-node-linux-x64-gnu-${TAG_NAME#v}.tgz\` |"
+            echo "| Windows | x64 | \`runtimed-node-win32-x64-msvc-${TAG_NAME#v}.tgz\` |"
+            echo ''
+            echo "Wrapper: \`runtimed-node-wrapper-${TAG_NAME#v}.tgz\`. Manifest: \`runtimed-node-assets-${TAG_NAME#v}.json\`. Verify each downloaded archive against the SHA-256 \`digest\` returned for that asset by the GitHub Releases API before unpacking it."
+            echo ''
             echo '## Release highlights'
             echo ''
             cat release-highlights.md
@@ -1579,6 +1722,8 @@ jobs:
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-x64.app.tar.gz.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe.sig
+            ./release-assets/runtimed-node-*.tgz
+            ./release-assets/runtimed-node-assets-*.json
             ./release-assets/latest.json
             ./wheels/*.whl
 

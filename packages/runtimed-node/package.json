@@ -52,6 +52,7 @@
     "binaryName": "runtimed-node",
     "targets": [
       "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
       "x86_64-unknown-linux-gnu",
       "x86_64-pc-windows-msvc"
     ]
@@ -63,6 +64,7 @@
     "pack:platform:dry-run": "node scripts/assemble-platform-package.mjs --pack-dry-run",
     "prepack": "node -e \"const fs = require('node:fs'); const files = fs.readdirSync('src'); if (!files.includes('binding.cjs') || !files.includes('binding.d.ts')) { console.error('Run pnpm --dir packages/runtimed-node build before packing @runtimed/node.'); process.exit(1); }\"",
     "pack:dry-run": "pnpm pack --dry-run",
+    "test:release-assets": "node --test scripts/release-assets.test.mjs",
     "smoke": "node -e \"const m = require('./src/index.cjs'); console.log('defaultSocketPath:', m.defaultSocketPath());\"",
     "smoke:relay": "node scripts/smoke-relay.cjs",
     "smoke:api": "node scripts/smoke-api.cjs"
@@ -72,6 +74,7 @@
   },
   "optionalDependencies": {
     "@runtimed/node-darwin-arm64": "workspace:*",
+    "@runtimed/node-darwin-x64": "workspace:*",
     "@runtimed/node-linux-x64-gnu": "workspace:*",
     "@runtimed/node-win32-x64-msvc": "workspace:*"
   },

@@ -1,0 +1,43 @@
+{
+  "name": "@runtimed/node-darwin-x64",
+  "version": "0.4.3",
+  "description": "macOS x64 native N-API binding for @runtimed/node.",
+  "type": "commonjs",
+  "main": "./runtimed-node.darwin-x64.node",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/nteract.git",
+    "directory": "packages/runtimed-node/npm/darwin-x64"
+  },
+  "homepage": "https://github.com/nteract/nteract/tree/main/packages/runtimed-node#readme",
+  "bugs": {
+    "url": "https://github.com/nteract/nteract/issues"
+  },
+  "keywords": [
+    "nteract",
+    "runtimed",
+    "notebook",
+    "native",
+    "napi-rs",
+    "darwin",
+    "x64"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "README.md",
+    "runtimed-node.darwin-x64.node"
+  ],
+  "scripts": {
+    "prepack": "node -e \"const fs = require('node:fs'); if (!fs.existsSync('runtimed-node.darwin-x64.node')) { console.error('Run pnpm --dir packages/runtimed-node assemble:platform before packing @runtimed/node-darwin-x64.'); process.exit(1); }\"",
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

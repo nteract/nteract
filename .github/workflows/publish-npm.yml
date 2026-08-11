@@ -11,6 +11,7 @@ name: Publish npm packages
 # Before using this workflow, configure npm trusted publishing for:
 # - @runtimed/node
 # - @runtimed/node-darwin-arm64
+# - @runtimed/node-darwin-x64
 # - @runtimed/node-linux-x64-gnu
 # - @runtimed/node-win32-x64-msvc
 # - @nteract/pi
@@ -49,6 +50,8 @@ jobs:
         include:
           - target: darwin-arm64
             runner: macos-latest
+          - target: darwin-x64
+            runner: macos-14
           - target: linux-x64-gnu
             runner: ubuntu-latest
           - target: win32-x64-msvc
@@ -105,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [darwin-arm64, linux-x64-gnu, win32-x64-msvc]
+        target: [darwin-arm64, darwin-x64, linux-x64-gnu, win32-x64-msvc]
     steps:
       - uses: actions/setup-node@v6
         with:
