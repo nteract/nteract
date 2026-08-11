@@ -145,6 +145,13 @@ asset record to contain a `sha256:` `digest` and verify that digest against the
 downloaded bytes. The manifest intentionally does not duplicate checksums;
 GitHub's asset digest is authoritative.
 
+For hosts that extract the two archives directly, `@runtimed/node/relay` is the
+self-contained embedding surface: it needs only the wrapper and matching native
+package. The package root (`@runtimed/node`) also exposes the higher-level
+session API and requires its normal runtime dependencies, including `rxjs`.
+Install the archives through a package manager or supply those declared
+dependencies in the host when using the package root.
+
 The manifest's `source_revision` is the full nteract release commit and
 `binding_source_revision` is the short revision compiled into the native
 binding. Packaged hosts should require the latter to match

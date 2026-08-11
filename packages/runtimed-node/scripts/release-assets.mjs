@@ -1,9 +1,25 @@
 #!/usr/bin/env node
 
-import { copyFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import {
+  copyFileSync,
+  cpSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = resolve(SCRIPT_DIRECTORY, "..");
+const WORKSPACE_ROOT = resolve(PACKAGE_ROOT, "../..");
+const NODE_CRATE_MANIFEST = join(WORKSPACE_ROOT, "crates/runtimed-node/Cargo.toml");
 
 export const RELEASE_TARGETS = Object.freeze({
   wrapper: Object.freeze({
@@ -68,6 +84,21 @@ export function releaseManifestName(releaseVersion) {
   return `runtimed-node-assets-${releaseVersion}.json`;
 }
 
+export function nodeApiVersionFromCargoManifest(manifestPath = NODE_CRATE_MANIFEST) {
+  const manifest = readFileSync(manifestPath, "utf8");
+  const napiDependency = /^napi\s*=\s*\{([^}]*)\}\s*$/m.exec(manifest)?.[1];
+  const features = /features\s*=\s*\[([^\]]*)\]/.exec(napiDependency ?? "")?.[1];
+  const versions = [...(features ?? "").matchAll(/"napi([0-9]+)"/g)].map((match) =>
+    Number(match[1]),
+  );
+  if (versions.length !== 1 || !Number.isInteger(versions[0])) {
+    throw new Error(
+      `${manifestPath} must configure exactly one napiN feature; found ${versions.join(", ") || "none"}`,
+    );
+  }
+  return versions[0];
+}
+
 export function buildReleaseManifest({ releaseVersion, sourceRevision, packageVersion }) {
   assertToken("release version", releaseVersion);
   if (!/^[0-9a-f]{40}$/.test(sourceRevision)) {
@@ -85,7 +116,7 @@ export function buildReleaseManifest({ releaseVersion, sourceRevision, packageVe
     source_revision: sourceRevision,
     binding_source_revision: sourceRevision.slice(0, 7),
     npm_package_version: packageVersion,
-    node_api_version: 9,
+    node_api_version: nodeApiVersionFromCargoManifest(),
     wrapper: {
       package: RELEASE_TARGETS.wrapper.packageName,
       asset: releaseAssetName("wrapper", releaseVersion),
@@ -106,6 +137,112 @@ export function buildReleaseManifest({ releaseVersion, sourceRevision, packageVe
       }),
     ),
   };
+}
+
+function commandName(name) {
+  return process.platform === "win32" ? `${name}.cmd` : name;
+}
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    ...options,
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `${command} ${args.join(" ")} failed: ${result.stderr || result.stdout || result.error}`,
+    );
+  }
+  return result.stdout;
+}
+
+export function packWrapperReleaseAsset({ packageRoot = PACKAGE_ROOT, outputDir }) {
+  const resolvedPackageRoot = resolve(packageRoot);
+  const resolvedOutputDir = resolve(outputDir);
+  const manifest = JSON.parse(readFileSync(join(resolvedPackageRoot, "package.json"), "utf8"));
+  const optionalDependencies = Object.fromEntries(
+    Object.entries(manifest.optionalDependencies ?? {})
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([name, version]) => {
+        if (version !== "workspace:*") {
+          throw new Error(
+            `Expected optionalDependencies.${name} to use workspace:*; received ${version}`,
+          );
+        }
+        return [name, manifest.version];
+      }),
+  );
+  const stagedManifest = { ...manifest, optionalDependencies };
+  const stagingDirectory = mkdtempSync(join(tmpdir(), "runtimed-node-wrapper-pack-"));
+
+  try {
+    for (const relativePath of manifest.files ?? []) {
+      const source = join(resolvedPackageRoot, relativePath);
+      const destination = join(stagingDirectory, relativePath);
+      mkdirSync(dirname(destination), { recursive: true });
+      cpSync(source, destination, { recursive: true });
+    }
+    copyFileSync(join(WORKSPACE_ROOT, "LICENSE"), join(stagingDirectory, "LICENSE"));
+    writeFileSync(
+      join(stagingDirectory, "package.json"),
+      `${JSON.stringify(stagedManifest, null, 2)}\n`,
+    );
+    mkdirSync(resolvedOutputDir, { recursive: true });
+    const existingArchives = readdirSync(resolvedOutputDir).filter((file) => file.endsWith(".tgz"));
+    if (existingArchives.length !== 0) {
+      throw new Error(
+        `Wrapper output directory ${resolvedOutputDir} must contain no .tgz files; found ${existingArchives.join(", ")}`,
+      );
+    }
+    run(
+      commandName("npm"),
+      ["pack", "--ignore-scripts", "--pack-destination", resolvedOutputDir, stagingDirectory],
+      { cwd: resolvedPackageRoot },
+    );
+    const archives = readdirSync(resolvedOutputDir).filter((file) => file.endsWith(".tgz"));
+    if (archives.length !== 1) {
+      throw new Error(
+        `Expected exactly one wrapper .tgz in ${resolvedOutputDir}; found ${archives.join(", ")}`,
+      );
+    }
+    const archive = join(resolvedOutputDir, archives[0]);
+    assertPackage("wrapper", archive, manifest.version);
+    console.log(archive);
+    return archive;
+  } finally {
+    rmSync(stagingDirectory, { recursive: true, force: true });
+  }
+}
+
+export function smokeReleasePair({ wrapperArchive, platformArchive, target, sourceRevision }) {
+  const wrapper = assertPackage("wrapper", wrapperArchive);
+  assertPackage(target, platformArchive, wrapper.version);
+  const stagingDirectory = mkdtempSync(join(tmpdir(), "runtimed-node-release-smoke-"));
+  const nodeModulesRoot = join(stagingDirectory, "node_modules");
+  const wrapperDirectory = join(nodeModulesRoot, "@runtimed/node");
+  const platformDirectory = join(nodeModulesRoot, targetConfig(target).packageName);
+
+  try {
+    mkdirSync(wrapperDirectory, { recursive: true });
+    mkdirSync(platformDirectory, { recursive: true });
+    run("tar", ["-xzf", resolve(wrapperArchive), "-C", wrapperDirectory, "--strip-components=1"]);
+    run("tar", ["-xzf", resolve(platformArchive), "-C", platformDirectory, "--strip-components=1"]);
+    const require = createRequire(join(stagingDirectory, "release-asset-smoke.cjs"));
+    const relay = require("@runtimed/node/relay");
+    if (typeof relay.bindingSourceRevision !== "function") {
+      throw new Error("Extracted @runtimed/node/relay does not expose bindingSourceRevision()");
+    }
+    const actualRevision = relay.bindingSourceRevision();
+    if (!sourceRevision.startsWith(actualRevision)) {
+      throw new Error(
+        `Extracted binding revision ${actualRevision} is not a prefix of ${sourceRevision}`,
+      );
+    }
+    console.log(`${target}: loaded @runtimed/node/relay at ${actualRevision}`);
+    return actualRevision;
+  } finally {
+    rmSync(stagingDirectory, { recursive: true, force: true });
+  }
 }
 
 function tarOutput(archive, args) {
@@ -196,7 +333,8 @@ function assertPackage(target, archive, expectedVersion) {
 }
 
 function parseArgs(argv) {
-  const [command, ...rest] = argv;
+  const [command, ...rawArgs] = argv;
+  const rest = rawArgs.filter((argument) => argument !== "--");
   const values = {};
   for (let index = 0; index < rest.length; index += 2) {
     const key = rest[index];
@@ -279,6 +417,10 @@ function writeManifest(values) {
 
 function main() {
   const { command, values } = parseArgs(process.argv.slice(2));
+  if (command === "pack-wrapper") {
+    packWrapperReleaseAsset({ outputDir: requireArg(values, "output-dir") });
+    return;
+  }
   if (command === "rename") {
     renameAsset(values);
     return;
@@ -287,7 +429,18 @@ function main() {
     writeManifest(values);
     return;
   }
-  throw new Error(`Usage: ${basename(process.argv[1])} <rename|manifest> --key value ...`);
+  if (command === "smoke") {
+    smokeReleasePair({
+      wrapperArchive: requireArg(values, "wrapper"),
+      platformArchive: requireArg(values, "platform"),
+      target: requireArg(values, "target"),
+      sourceRevision: requireArg(values, "source-revision"),
+    });
+    return;
+  }
+  throw new Error(
+    `Usage: ${basename(process.argv[1])} <pack-wrapper|rename|manifest|smoke> --key value ...`,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

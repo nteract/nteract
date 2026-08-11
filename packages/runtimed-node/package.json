@@ -64,6 +64,7 @@
     "pack:platform:dry-run": "node scripts/assemble-platform-package.mjs --pack-dry-run",
     "prepack": "node -e \"const fs = require('node:fs'); const files = fs.readdirSync('src'); if (!files.includes('binding.cjs') || !files.includes('binding.d.ts')) { console.error('Run pnpm --dir packages/runtimed-node build before packing @runtimed/node.'); process.exit(1); }\"",
     "pack:dry-run": "pnpm pack --dry-run",
+    "pack:release": "node scripts/release-assets.mjs pack-wrapper",
     "test:release-assets": "node --test scripts/release-assets.test.mjs",
     "smoke": "node -e \"const m = require('./src/index.cjs'); console.log('defaultSocketPath:', m.defaultSocketPath());\"",
     "smoke:relay": "node scripts/smoke-relay.cjs",

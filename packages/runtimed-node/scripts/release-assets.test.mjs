@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { buildReleaseManifest, releaseAssetName, releaseManifestName } from "./release-assets.mjs";
+import {
+  buildReleaseManifest,
+  nodeApiVersionFromCargoManifest,
+  packWrapperReleaseAsset,
+  releaseAssetName,
+  releaseManifestName,
+} from "./release-assets.mjs";
 
 const releaseVersion = "2.6.3-nightly.202608110900";
 const sourceRevision = "0123456789abcdef0123456789abcdef01234567";
@@ -74,4 +84,36 @@ test("release version and source revision are validated", () => {
       }),
     /full lowercase Git commit SHA/,
   );
+});
+
+test("manifest Node-API minimum follows the native crate feature", () => {
+  const root = mkdtempSync(join(tmpdir(), "runtimed-node-api-version-"));
+  try {
+    const manifest = join(root, "Cargo.toml");
+    writeFileSync(
+      manifest,
+      'napi = { version = "3", default-features = false, features = ["napi9", "async"] }\n',
+    );
+    assert.equal(nodeApiVersionFromCargoManifest(manifest), 9);
+    writeFileSync(manifest, 'napi = { version = "3", features = ["async"] }\n');
+    assert.throws(() => nodeApiVersionFromCargoManifest(manifest), /exactly one napiN feature/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("wrapper release archives are byte reproducible", () => {
+  const root = mkdtempSync(join(tmpdir(), "runtimed-node-wrapper-reproducibility-"));
+  try {
+    const firstDirectory = join(root, "first");
+    const secondDirectory = join(root, "second");
+    mkdirSync(firstDirectory);
+    mkdirSync(secondDirectory);
+    const first = packWrapperReleaseAsset({ outputDir: firstDirectory });
+    const second = packWrapperReleaseAsset({ outputDir: secondDirectory });
+    const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+    assert.equal(digest(first), digest(second));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
