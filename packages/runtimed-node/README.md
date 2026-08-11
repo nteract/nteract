@@ -76,6 +76,10 @@ socket's length prefix. The relay is intentionally Electron-free: custom
 protocols, CSP, renderer authentication, window lifecycle, and daemon
 installation remain responsibilities of the embedding host.
 
+`close()` is terminal cancellation. Natural daemon closure drains frames already
+queued for JavaScript before notifying `onClose`; explicitly closing before a
+renderer subscribes discards the buffered bootstrap frames.
+
 For a daemon-backed transport check during development:
 
 ```bash

@@ -356,6 +356,8 @@ fn relay_info_from_capabilities(
         comments_notebook_ref_json,
         protocol: capabilities.protocol,
         protocol_version: capabilities.protocol_version,
+        // Older compatible handshakes may omit the daemon version; the pool
+        // metadata query fills that diagnostic field when available.
         daemon_version: capabilities
             .daemon_version
             .or_else(|| daemon.as_ref().map(|info| info.version.clone())),

@@ -2,6 +2,11 @@ export type RuntimeKind = "python" | "deno" | (string & {});
 export type PackageManager = "uv" | "conda" | "pixi";
 export type CreateNotebookEnvironmentMode = "auto" | "project" | "notebook";
 
+export type CommentsNotebookRef =
+  | { kind: "hosted_room"; room_locator: string }
+  | { kind: "local_path"; canonical_path: string }
+  | { kind: "local_room"; room_id: string };
+
 export interface CreateRelayOptions {
   runtime?: RuntimeKind;
   workingDir?: string;
@@ -31,7 +36,7 @@ export interface RelayInfo {
   actorLabel?: string;
   connectionScope?: string;
   commentsDocId?: string;
-  commentsNotebookRef: unknown | null;
+  commentsNotebookRef: CommentsNotebookRef | null;
   protocol: string;
   protocolVersion?: number;
   daemonVersion?: string;
@@ -53,6 +58,7 @@ export class RelaySession {
   send(frame: RelayFrame): Promise<void>;
   onFrame(listener: (frame: Buffer) => void): () => void;
   onClose(listener: () => void): () => void;
+  /** Terminal cancellation. Buffered frames not yet observed by a listener are discarded. */
   close(): Promise<void>;
 }
 
