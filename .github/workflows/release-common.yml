@@ -1689,7 +1689,7 @@ jobs:
             echo "| macOS | x64 (Intel) | \`${DAEMON_NAME}-darwin-x64\` |"
             echo "| Windows | x64 | \`${DAEMON_NAME}-windows-x64.exe\` |"
             echo ''
-            echo '### `@runtimed/node` (embedding)'
+            echo "### \`@runtimed/node\` (embedding)"
             echo ''
             echo 'Install the wrapper archive together with exactly one native platform archive. The asset manifest records the npm package version and source revision for the set.'
             echo ''
