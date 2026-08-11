@@ -18,7 +18,9 @@ describe("@runtimed/node root wrapper", () => {
   it("wraps path-opened native sessions in the high-level Session API", async () => {
     const fixture = fs.mkdtempSync(path.join(packageRoot, ".index-test-"));
     temporaryDirectories.push(fixture);
-    for (const file of ["index.cjs", "session.cjs", "napi-observables.cjs"]) {
+    for (const file of fs
+      .readdirSync(path.join(packageRoot, "src"))
+      .filter((name) => name.endsWith(".cjs") && name !== "binding.cjs")) {
       fs.copyFileSync(path.join(packageRoot, "src", file), path.join(fixture, file));
     }
     fs.writeFileSync(
