@@ -997,27 +997,29 @@ impl Session {
     /// does not exist and an empty array when it exists without outputs.
     #[napi]
     pub async fn get_cell_outputs(&self, cell_id: String) -> Result<Option<Vec<JsOutput>>> {
-        let (handle, blob_base_url, blob_store_path) = {
+        let (snapshot, blob_base_url, blob_store_path) = {
             let st = self.state.lock().await;
+            let handle = st
+                .handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?;
+            let snapshot = handle
+                .get_cell_outputs_snapshot(&cell_id)
+                .map_err(to_napi_err)?;
             (
-                st.handle
-                    .as_ref()
-                    .ok_or_else(|| Error::from_reason("Not connected"))?
-                    .clone(),
+                snapshot,
                 st.blob_base_url.clone(),
                 st.blob_store_path.clone(),
             )
         };
-        if handle.get_cell(&cell_id).is_none() {
+        let Some(snapshot) = snapshot else {
             return Ok(None);
-        }
-        let output_manifests = handle.get_cell_outputs(&cell_id).unwrap_or_default();
-        let comms = handle.get_runtime_state().ok().map(|state| state.comms);
+        };
         let resolved = shared_resolver::resolve_cell_outputs(
-            &output_manifests,
+            &snapshot.outputs,
             &blob_base_url,
             &blob_store_path,
-            comms.as_ref(),
+            Some(&snapshot.runtime_state.comms),
         )
         .await;
         let outputs = resolved
