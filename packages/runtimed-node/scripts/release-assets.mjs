@@ -85,6 +85,7 @@ export function buildReleaseManifest({ releaseVersion, sourceRevision, packageVe
     source_revision: sourceRevision,
     binding_source_revision: sourceRevision.slice(0, 7),
     npm_package_version: packageVersion,
+    node_api_version: 9,
     wrapper: {
       package: RELEASE_TARGETS.wrapper.packageName,
       asset: releaseAssetName("wrapper", releaseVersion),

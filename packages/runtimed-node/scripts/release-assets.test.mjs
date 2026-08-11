@@ -33,6 +33,7 @@ test("release manifest carries source and npm package identities", () => {
   assert.equal(manifest.source_revision, sourceRevision);
   assert.equal(manifest.binding_source_revision, sourceRevision.slice(0, 7));
   assert.equal(manifest.npm_package_version, "0.4.3");
+  assert.equal(manifest.node_api_version, 9);
   assert.deepEqual(Object.keys(manifest.platforms), [
     "darwin-arm64",
     "darwin-x64",

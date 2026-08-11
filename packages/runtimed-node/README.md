@@ -150,9 +150,11 @@ The manifest's `source_revision` is the full nteract release commit and
 binding. Packaged hosts should require the latter to match
 `bindingSourceRevision()` and the commit suffix carried by the selected daemon,
 and require the full revision to match any notebook web manifest before opening
-the browser peer. The workflow also loads each native binding on its build
-runner and checks that `bindingSourceRevision()` identifies the release commit
-before it can be attached to a release.
+the browser peer. The `node_api_version` field records the minimum Node-API
+level; a host must check `Number(process.versions.napi)` before loading the
+native package. The workflow also loads each native binding on its build runner
+and checks that `bindingSourceRevision()` identifies the release commit before
+it can be attached to a release.
 
 ## Basic Usage
 
