@@ -55,7 +55,7 @@ through the same local daemon used by nteract desktop.
 `@runtimed/node/relay` exposes the native byte pipe used by desktop notebook
 hosts. The browser/WASM frontend remains the Automerge peer; Node owns the
 daemon socket, handshake, framing, and liveness heartbeat and forwards opaque
-typed frames to the renderer transport.
+typed frames to the browser transport.
 
 ```js
 const { createRelay } = require("@runtimed/node/relay");
@@ -66,9 +66,9 @@ const relay = await createRelay({
   description: "embedded notebook",
 });
 
-relay.onFrame((frame) => rendererSocket.send(frame));
-rendererSocket.on("message", (frame) => relay.send(frame));
-rendererSocket.on("close", () => relay.close());
+relay.onFrame((frame) => browserTransport.send(frame));
+browserTransport.on("message", (frame) => relay.send(frame));
+browserTransport.on("close", () => relay.close());
 ```
 
 Hosts that supervise the daemon can use `defaultSocketPath()`,
@@ -81,12 +81,12 @@ readiness or enforce version compatibility.
 
 Frames include the one-byte notebook frame discriminator and omit the daemon
 socket's length prefix. The relay is intentionally Electron-free: custom
-protocols, CSP, renderer authentication, window lifecycle, and daemon
+protocols, CSP, browser-peer authentication, window lifecycle, and daemon
 installation remain responsibilities of the embedding host.
 
 `close()` is terminal cancellation. Natural daemon closure drains frames already
 queued for JavaScript before notifying `onClose`; explicitly closing before a
-renderer subscribes discards the buffered bootstrap frames.
+browser peer subscribes discards the buffered bootstrap frames.
 
 For a daemon-backed transport check during development:
 

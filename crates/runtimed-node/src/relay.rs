@@ -3,7 +3,7 @@
 //! The browser/WASM frontend remains the Automerge peer. This module only
 //! exposes `notebook_sync::RelayHandle` to Node: the native relay owns the
 //! daemon socket, handshake, framing, and liveness heartbeat while JavaScript
-//! forwards opaque typed frames to and from its renderer transport.
+//! forwards opaque typed frames to and from its browser transport.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -157,7 +157,7 @@ impl NativeRelaySession {
 
     /// Subscribe once to lossless inbound typed frames and relay closure.
     ///
-    /// The receiver is single-consumer by design: one renderer transport owns a
+    /// The receiver is single-consumer by design: one browser transport owns a
     /// daemon connection. The returned subscription must stay alive for the
     /// lifetime of the bridge.
     #[napi]
@@ -177,7 +177,7 @@ impl NativeRelaySession {
         let task = spawn_event_task(async move {
             while let Some(frame) = rx.recv().await {
                 // Await the JavaScript callback before dequeuing the next frame.
-                // This preserves ordering and prevents a busy renderer from
+                // This preserves ordering and prevents a busy browser peer from
                 // creating a second unbounded queue inside N-API.
                 if frame_callback.call_async(frame).await.is_err() {
                     break;
@@ -259,6 +259,10 @@ pub async fn open_relay_path(
 }
 
 /// Join an active notebook room by ID and return its native typed-frame relay.
+///
+/// The daemon treats this API as an operator connection. Embedding hosts must
+/// authorize the requested notebook ID before calling it and must not expose
+/// room discovery or this relay directly to an untrusted browser context.
 #[napi]
 pub async fn connect_relay(
     notebook_id: String,

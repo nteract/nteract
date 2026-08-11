@@ -12,11 +12,12 @@ class RelaySession {
     this._native = nativeSession;
     this._frameListeners = new Set();
     this._pendingFrames = [];
+    this._drainingPending = false;
     this._closeListeners = new Set();
     this._closeEmitted = false;
     this._subscription = nativeSession.subscribeFrames(
       (frame) => {
-        if (this._frameListeners.size === 0) {
+        if (this._frameListeners.size === 0 || this._drainingPending) {
           this._pendingFrames.push(frame);
           return;
         }
@@ -46,9 +47,16 @@ class RelaySession {
     if (typeof listener !== "function") throw new TypeError("frame listener must be a function");
     if (this.closed) throw new Error("Relay is closed");
     this._frameListeners.add(listener);
-    const pending = this._pendingFrames;
-    this._pendingFrames = [];
-    for (const frame of pending) listener(frame);
+    this._drainingPending = true;
+    try {
+      while (this._pendingFrames.length > 0) {
+        const pending = this._pendingFrames;
+        this._pendingFrames = [];
+        for (const frame of pending) listener(frame);
+      }
+    } finally {
+      this._drainingPending = false;
+    }
     return () => this._frameListeners.delete(listener);
   }
 
@@ -68,6 +76,7 @@ class RelaySession {
       return;
     }
     this._native.close();
+    this._emitClose();
   }
 
   _emitClose() {
@@ -75,6 +84,7 @@ class RelaySession {
     this._closeEmitted = true;
     this._frameListeners.clear();
     this._pendingFrames = [];
+    this._drainingPending = false;
     for (const listener of Array.from(this._closeListeners)) listener();
     this._closeListeners.clear();
     this._subscription?.dispose?.();

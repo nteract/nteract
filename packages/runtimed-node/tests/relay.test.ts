@@ -65,7 +65,7 @@ describe("@runtimed/node relay wrapper", () => {
     expect(received).toEqual([Buffer.from([0x00, 0x01]), Buffer.from([0x05, 0x02])]);
   });
 
-  it("holds bootstrap frames until the renderer subscribes", () => {
+  it("holds bootstrap frames until the browser peer subscribes", () => {
     const fake = fakeNative();
     const relay = new RelaySession(fake.native);
     fake.emitFrame(Buffer.from([0x00, 0x01]));
@@ -75,6 +75,25 @@ describe("@runtimed/node relay wrapper", () => {
     relay.onFrame((frame) => received.push(frame));
 
     expect(received).toEqual([Buffer.from([0x00, 0x01]), Buffer.from([0x05, 0x02])]);
+  });
+
+  it("preserves bootstrap ordering under reentrant frame delivery", () => {
+    const fake = fakeNative();
+    const relay = new RelaySession(fake.native);
+    fake.emitFrame(Buffer.from([0x00, 0x01]));
+    fake.emitFrame(Buffer.from([0x05, 0x02]));
+    const received: Buffer[] = [];
+
+    relay.onFrame((frame) => {
+      received.push(frame);
+      if (frame[0] === 0x00) fake.emitFrame(Buffer.from([0x04, 0x03]));
+    });
+
+    expect(received).toEqual([
+      Buffer.from([0x00, 0x01]),
+      Buffer.from([0x05, 0x02]),
+      Buffer.from([0x04, 0x03]),
+    ]);
   });
 
   it("normalizes typed-array slices without widening the frame", async () => {
@@ -110,6 +129,19 @@ describe("@runtimed/node relay wrapper", () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(fake.subscription.dispose).toHaveBeenCalledOnce();
     expect(relay.closed).toBe(true);
+  });
+
+  it("closes and disposes even when no listeners were registered", async () => {
+    const fake = fakeNative();
+    const relay = new RelaySession(fake.native);
+
+    await relay.close();
+    await relay.close();
+
+    expect(fake.native.close).toHaveBeenCalledOnce();
+    expect(fake.subscription.dispose).toHaveBeenCalledOnce();
+    expect(relay.closed).toBe(true);
+    expect(() => relay.onFrame(() => {})).toThrow("Relay is closed");
   });
 
   it("projects optional JSON connection metadata", () => {
