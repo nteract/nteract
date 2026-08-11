@@ -7,13 +7,13 @@ const { RelaySession, normalizeRelayInfo, toBuffer } = require("../src/relay-ses
     notebookId: string;
     info: Record<string, unknown>;
     closed: boolean;
-    send(frame: Buffer | Uint8Array | ArrayBuffer): Promise<void>;
+    send(frame: Buffer | Uint8Array | DataView | ArrayBuffer): Promise<void>;
     onFrame(listener: (frame: Buffer) => void): () => void;
     onClose(listener: () => void): () => void;
     close(): Promise<void>;
   };
   normalizeRelayInfo(info: Record<string, unknown>): Record<string, unknown>;
-  toBuffer(frame: Buffer | Uint8Array | ArrayBuffer): Buffer;
+  toBuffer(frame: Buffer | Uint8Array | DataView | ArrayBuffer): Buffer;
 };
 
 function fakeNative() {
@@ -88,6 +88,16 @@ describe("@runtimed/node relay wrapper", () => {
     expect(fake.native.send.mock.calls[0]?.[0]).toEqual(Buffer.from([0x01, 0x02]));
   });
 
+  it("normalizes DataView frames", async () => {
+    const fake = fakeNative();
+    const relay = new RelaySession(fake.native);
+    const backing = Uint8Array.from([99, 0x01, 0x02, 88]);
+
+    await relay.send(new DataView(backing.buffer, 1, 2));
+
+    expect(fake.native.send.mock.calls[0]?.[0]).toEqual(Buffer.from([0x01, 0x02]));
+  });
+
   it("notifies close listeners once and disposes the native subscription", () => {
     const fake = fakeNative();
     const relay = new RelaySession(fake.native);
@@ -115,6 +125,8 @@ describe("@runtimed/node relay wrapper", () => {
   });
 
   it("rejects values that are not binary frames", () => {
-    expect(() => toBuffer("not-a-frame" as never)).toThrow(/Buffer, Uint8Array, or ArrayBuffer/);
+    expect(() => toBuffer("not-a-frame" as never)).toThrow(
+      /Buffer, ArrayBuffer view, or ArrayBuffer/,
+    );
   });
 });

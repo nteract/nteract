@@ -88,7 +88,7 @@ function toBuffer(frame) {
   if (ArrayBuffer.isView(frame)) {
     return Buffer.from(frame.buffer, frame.byteOffset, frame.byteLength);
   }
-  throw new TypeError("relay frame must be a Buffer, Uint8Array, or ArrayBuffer");
+  throw new TypeError("relay frame must be a Buffer, ArrayBuffer view, or ArrayBuffer");
 }
 
 function normalizeRelayInfo(info) {

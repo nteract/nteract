@@ -45,7 +45,7 @@ export interface RelayInfo {
   isDevMode: boolean;
 }
 
-export type RelayFrame = Buffer | Uint8Array | ArrayBuffer;
+export type RelayFrame = Buffer | Uint8Array | DataView | ArrayBuffer;
 
 /**
  * Native, host-neutral byte pipe for one browser/WASM notebook peer.
