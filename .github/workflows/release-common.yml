@@ -113,6 +113,8 @@ jobs:
     name: Build runtimed-node release asset (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     needs: [compute-version]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:

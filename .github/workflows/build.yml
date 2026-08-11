@@ -174,9 +174,10 @@ jobs:
               - ".github/workflows/release-common.yml"
               - ".github/workflows/publish-npm.yml"
               - "packages/runtimed-node/**"
-              - "crates/runtimed-node/**"
-              - "crates/build-metadata/**"
-              - "crates/runt-workspace/**"
+              # runtimed-node compiles a broad local Rust dependency graph into
+              # each native addon. Keep this conservative so a crate change
+              # cannot bypass the four-platform package/load matrix.
+              - "crates/**"
               - "package.json"
               - "pnpm-lock.yaml"
               - "pnpm-workspace.yaml"
