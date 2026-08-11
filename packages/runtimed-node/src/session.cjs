@@ -119,6 +119,10 @@ class Session {
     return this._native.getCell(cellId);
   }
 
+  getCellOutputs(cellId) {
+    return this._native.getCellOutputs(cellId);
+  }
+
   createCell(source, options) {
     return this._native.createCell(source, options);
   }

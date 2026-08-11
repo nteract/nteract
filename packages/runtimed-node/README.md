@@ -192,6 +192,8 @@ sessions.
 - `shutdownNotebook(notebookId, options)` shuts down a notebook room by ID.
 - `getExecutionResult(executionId, options)` reads a result by execution ID.
 - `Session.listCells()` and `Session.getCell(cellId)` inspect notebook cells.
+  `Session.getCellOutputs(cellId)` reads that cell's durable outputs with blob
+  and widget references resolved, returning `null` when the cell is absent.
 - `Session.createCell(source, options)`, `Session.setCell(cellId, options)`,
   `Session.deleteCell(cellId)`, and `Session.moveCell(cellId, options)` provide
   direct notebook editing without MCP JSON round-trips. `createCell()` appends

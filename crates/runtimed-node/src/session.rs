@@ -992,6 +992,41 @@ impl Session {
         Ok(handle.get_cell(&cell_id).map(js_cell_from_snapshot))
     }
 
+    /// Return one cell's durable outputs, resolved through the same blob and
+    /// widget-aware path used by execution results. Returns null when the cell
+    /// does not exist and an empty array when it exists without outputs.
+    #[napi]
+    pub async fn get_cell_outputs(&self, cell_id: String) -> Result<Option<Vec<JsOutput>>> {
+        let (handle, blob_base_url, blob_store_path) = {
+            let st = self.state.lock().await;
+            (
+                st.handle
+                    .as_ref()
+                    .ok_or_else(|| Error::from_reason("Not connected"))?
+                    .clone(),
+                st.blob_base_url.clone(),
+                st.blob_store_path.clone(),
+            )
+        };
+        if handle.get_cell(&cell_id).is_none() {
+            return Ok(None);
+        }
+        let output_manifests = handle.get_cell_outputs(&cell_id).unwrap_or_default();
+        let comms = handle.get_runtime_state().ok().map(|state| state.comms);
+        let resolved = shared_resolver::resolve_cell_outputs(
+            &output_manifests,
+            &blob_base_url,
+            &blob_store_path,
+            comms.as_ref(),
+        )
+        .await;
+        let outputs = resolved
+            .into_iter()
+            .map(to_js_output)
+            .collect::<napi::Result<Vec<_>>>()?;
+        Ok(Some(outputs))
+    }
+
     /// Create a cell without executing it. Returns the new cell ID.
     #[napi]
     pub async fn create_cell(
