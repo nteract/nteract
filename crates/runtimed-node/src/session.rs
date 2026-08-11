@@ -299,6 +299,17 @@ pub struct QueueExistingCellOptions {
     pub execution_id: Option<String>,
 }
 
+/// Result of cancelling one exact execution id.
+#[napi(object)]
+pub struct CancelExecutionResult {
+    pub execution_id: String,
+    /// `"interrupted"`, `"cancelled_queued"`, `"already_terminal"`, or
+    /// `"not_found"`.
+    pub outcome: String,
+    /// Terminal status when the execution had already completed.
+    pub terminal_status: Option<String>,
+}
+
 /// Options for `Session.waitForExecution()`.
 #[napi(object)]
 #[derive(Default)]
@@ -1300,6 +1311,48 @@ impl Session {
             NotebookResponse::Error { error } => Err(Error::from_reason(error)),
             other => Err(Error::from_reason(format!(
                 "Unexpected response to interruptKernel: {other:?}"
+            ))),
+        }
+    }
+
+    /// Cancel one exact execution id. Running targets are interrupted;
+    /// queued targets are removed without affecting other work.
+    #[napi]
+    pub async fn cancel_execution(&self, execution_id: String) -> Result<CancelExecutionResult> {
+        let handle = session_handle(&self.state).await?;
+        let response = handle
+            .send_request(NotebookRequest::CancelExecution {
+                execution_id: execution_id.clone(),
+            })
+            .await
+            .map_err(to_napi_err)?;
+        match response {
+            NotebookResponse::ExecutionCancellation {
+                execution_id,
+                outcome,
+                terminal_status,
+            } => Ok(CancelExecutionResult {
+                execution_id,
+                outcome: match outcome {
+                    notebook_protocol::protocol::ExecutionCancellationOutcome::Interrupted => {
+                        "interrupted"
+                    }
+                    notebook_protocol::protocol::ExecutionCancellationOutcome::CancelledQueued => {
+                        "cancelled_queued"
+                    }
+                    notebook_protocol::protocol::ExecutionCancellationOutcome::AlreadyTerminal => {
+                        "already_terminal"
+                    }
+                    notebook_protocol::protocol::ExecutionCancellationOutcome::NotFound => {
+                        "not_found"
+                    }
+                }
+                .to_string(),
+                terminal_status,
+            }),
+            NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+            other => Err(Error::from_reason(format!(
+                "Unexpected response to cancelExecution: {other:?}"
             ))),
         }
     }

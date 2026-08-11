@@ -17,6 +17,7 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "execute_cell",
     "execute_cell_guarded",
     "interrupt_execution",
+    "cancel_execution",
     "shutdown_kernel",
     "run_all_cells",
     "run_all_cells_guarded",
@@ -43,6 +44,7 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "cell_queued",
     "execution_id_rejected",
     "interrupt_sent",
+    "execution_cancellation",
     "kernel_shutting_down",
     "no_kernel",
     "guard_rejected",
@@ -283,6 +285,7 @@ export type NotebookRequest =
       observed_heads: string[];
     }}
   | {{ type: "interrupt_execution" }}
+  | {{ type: "cancel_execution"; execution_id: string }}
   | {{ type: "shutdown_kernel" }}
   | {{ type: "run_all_cells"; cell_execution_ids?: Record<string, string> | null }}
   | {{
@@ -344,6 +347,12 @@ export interface CompletionItem {{
 
 export type ExecutionIdRejectionReason = "malformed" | "already_exists" | "duplicate_in_request";
 
+export type ExecutionCancellationOutcome =
+  | "interrupted"
+  | "cancelled_queued"
+  | "already_terminal"
+  | "not_found";
+
 export type NotebookResponse =
   | {{
       result: "kernel_launched";
@@ -364,6 +373,12 @@ export type NotebookResponse =
       reason: ExecutionIdRejectionReason;
     }}
   | {{ result: "interrupt_sent" }}
+  | {{
+      result: "execution_cancellation";
+      execution_id: string;
+      outcome: ExecutionCancellationOutcome;
+      terminal_status?: string | null;
+    }}
   | {{ result: "kernel_shutting_down" }}
   | {{ result: "no_kernel" }}
   | {{ result: "guard_rejected"; reason: string }}

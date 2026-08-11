@@ -377,6 +377,20 @@ describe("@runtimed/node Session wrapper", () => {
     expect(native.queueExistingCell).toHaveBeenCalledWith("cell-1", { executionId });
   });
 
+  it("passes exact execution cancellation through to the native session", async () => {
+    const executionId = "01234567-89ab-4def-8123-456789abcdef";
+    const result = { executionId, outcome: "cancelled_queued" };
+    const native = {
+      notebookId: "nb-1",
+      cancelExecution: vi.fn(async () => result),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+
+    await expect(session.cancelExecution(executionId)).resolves.toEqual(result);
+    expect(native.cancelExecution).toHaveBeenCalledWith(executionId);
+  });
+
   it("passes snapshot pair export through to the native session", async () => {
     const snapshot = {
       notebookId: "nb-1",

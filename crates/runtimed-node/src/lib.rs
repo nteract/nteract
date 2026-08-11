@@ -40,13 +40,13 @@ pub use relay::{
 pub use session::{
     blob_store_path, create_notebook, get_execution_result, list_active_notebooks, open_notebook,
     open_notebook_path, resolve_blob_path, show_notebook, shutdown_notebook, ActiveNotebook,
-    CellResult, CondaDependencyStatus, CreateCellOptions, CreateNotebookEnvironmentMode,
-    CreateNotebookOptions, DependencyEditOptions, DependencyStatus, DependencyTrustStatus,
-    EventSubscription, ExecuteCellOptions, GetExecutionResultOptions, JsCellSnapshot, JsOutput,
-    ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions, PackageManager,
-    PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions, RuntimeStatus,
-    Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions,
-    SnapshotPair, UvDependencyStatus, WaitExecutionOptions,
+    CancelExecutionResult, CellResult, CondaDependencyStatus, CreateCellOptions,
+    CreateNotebookEnvironmentMode, CreateNotebookOptions, DependencyEditOptions, DependencyStatus,
+    DependencyTrustStatus, EventSubscription, ExecuteCellOptions, GetExecutionResultOptions,
+    JsCellSnapshot, JsOutput, ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions,
+    PackageManager, PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions,
+    RuntimeStatus, Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult,
+    ShutdownNotebookOptions, SnapshotPair, UvDependencyStatus, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.

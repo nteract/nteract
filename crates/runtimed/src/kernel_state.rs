@@ -33,6 +33,14 @@ fn to_doc_entries(entries: &[QueueEntry]) -> Vec<DocQueueEntry> {
     entries.iter().map(to_doc_entry).collect()
 }
 
+/// Active-state result of cancelling one exact execution id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScopedCancellation {
+    Running,
+    Queued,
+    NotActive,
+}
+
 // ── KernelState ────────────────────────────────────────────────────────────
 
 /// Execution state machine for the runtime agent.
@@ -234,6 +242,65 @@ impl KernelState {
         (interrupted, cleared)
     }
 
+    /// Cancel one exact execution without disturbing unrelated work.
+    ///
+    /// A running target is terminalized as an error and holds the interrupt
+    /// gate until that exact execution reports idle. A queued target is
+    /// removed and terminalized as cancelled. Successors remain queued in
+    /// both cases.
+    pub(crate) fn cancel_execution(&mut self, execution_id: &str) -> ScopedCancellation {
+        if self.executing.as_deref() == Some(execution_id) {
+            self.executing = None;
+            self.interrupt_pending = Some(execution_id.to_string());
+            self.execution_had_error = false;
+            self.status = KernelStatus::Busy;
+
+            let doc_queued = to_doc_entries(&self.queued_entries());
+            if let Err(e) = self.state.with_doc(|sd| {
+                sd.set_execution_done(execution_id, false)?;
+                sd.set_queue(None, &doc_queued)?;
+                Ok(())
+            }) {
+                warn!("[runtime-state] {}", e);
+            }
+            return ScopedCancellation::Running;
+        }
+
+        let Some(index) = self
+            .queue
+            .iter()
+            .position(|entry| entry.execution_id == execution_id)
+        else {
+            return ScopedCancellation::NotActive;
+        };
+        self.queue.remove(index);
+
+        let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
+        let doc_queued = to_doc_entries(&self.queued_entries());
+        if let Err(e) = self.state.with_doc(|sd| {
+            sd.set_execution_cancelled(execution_id)?;
+            sd.set_queue(doc_exec.as_ref(), &doc_queued)?;
+            Ok(())
+        }) {
+            warn!("[runtime-state] {}", e);
+        }
+        ScopedCancellation::Queued
+    }
+
+    /// Record cancellation for queued intent that reached RuntimeStateDoc
+    /// before it reached this agent's local queue.
+    pub(crate) fn cancel_unseen_execution(&self, execution_id: &str) {
+        let doc_exec = self.executing_entry().as_ref().map(to_doc_entry);
+        let doc_queued = to_doc_entries(&self.queued_entries());
+        if let Err(e) = self.state.with_doc(|sd| {
+            sd.set_execution_cancelled(execution_id)?;
+            sd.set_queue(doc_exec.as_ref(), &doc_queued)?;
+            Ok(())
+        }) {
+            warn!("[runtime-state] {}", e);
+        }
+    }
+
     /// Release the interrupt gate when the interrupted execution reports idle.
     pub async fn kernel_idle(
         &mut self,
@@ -426,12 +493,14 @@ mod tests {
     /// Minimal mock that records execute calls and succeeds.
     struct MockKernel {
         executes: Vec<String>,
+        interrupts: usize,
     }
 
     impl MockKernel {
         fn new() -> Self {
             Self {
                 executes: Vec::new(),
+                interrupts: 0,
             }
         }
     }
@@ -455,6 +524,7 @@ mod tests {
         }
 
         async fn interrupt(&mut self) -> Result<()> {
+            self.interrupts += 1;
             Ok(())
         }
         async fn shutdown(&mut self) -> Result<()> {
@@ -607,5 +677,124 @@ mod tests {
 
         assert!(state.executing_cell().is_none());
         assert!(state.queued_entries().is_empty());
+    }
+
+    #[tokio::test]
+    async fn scoped_cancel_running_preserves_successor_until_exact_idle() {
+        let (mut state, handle) = test_state();
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        state
+            .queue_cell("e1".into(), None, "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("e2".into(), None, "x=2".into(), &mut mock)
+            .await
+            .unwrap();
+
+        assert_eq!(state.cancel_execution("e1"), ScopedCancellation::Running);
+        assert!(state.executing_cell().is_none());
+        assert_eq!(state.queued_entries()[0].execution_id, "e2");
+        assert_eq!(
+            handle
+                .read(|sd| sd.get_execution("e1"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "error"
+        );
+
+        state.kernel_idle(Some("other"), &mut mock).await.unwrap();
+        assert!(state.executing_cell().is_none());
+        state.kernel_idle(Some("e1"), &mut mock).await.unwrap();
+        assert_eq!(state.executing_cell().map(String::as_str), Some("e2"));
+        assert_eq!(mock.executes, vec!["e1", "e2"]);
+    }
+
+    #[tokio::test]
+    async fn scoped_cancel_queued_removes_only_target() {
+        let (mut state, handle) = test_state();
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        for id in ["e1", "e2", "e3"] {
+            state
+                .queue_cell(id.into(), None, id.into(), &mut mock)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(state.cancel_execution("e2"), ScopedCancellation::Queued);
+        assert_eq!(
+            state
+                .queued_entries()
+                .into_iter()
+                .map(|entry| entry.execution_id)
+                .collect::<Vec<_>>(),
+            vec!["e3"]
+        );
+        assert_eq!(
+            handle
+                .read(|sd| sd.get_execution("e2"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_cancel_completed_predecessor_never_touches_successor() {
+        let (mut state, _handle) = test_state();
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        state
+            .queue_cell("e1".into(), None, "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("e2".into(), None, "x=2".into(), &mut mock)
+            .await
+            .unwrap();
+        state.execution_done("e1", &mut mock).await.unwrap();
+
+        assert_eq!(state.executing_cell().map(String::as_str), Some("e2"));
+        assert_eq!(state.cancel_execution("e1"), ScopedCancellation::NotActive);
+        assert_eq!(state.executing_cell().map(String::as_str), Some("e2"));
+        assert_eq!(mock.interrupts, 0);
+    }
+
+    #[tokio::test]
+    async fn scoped_cancel_target_racing_from_queue_to_current_preserves_successor() {
+        let (mut state, _handle) = test_state();
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        for id in ["predecessor", "target", "successor"] {
+            state
+                .queue_cell(id.into(), None, id.into(), &mut mock)
+                .await
+                .unwrap();
+        }
+        state
+            .execution_done("predecessor", &mut mock)
+            .await
+            .unwrap();
+        assert_eq!(state.executing_cell().map(String::as_str), Some("target"));
+
+        assert_eq!(
+            state.cancel_execution("target"),
+            ScopedCancellation::Running
+        );
+        assert_eq!(state.queued_entries()[0].execution_id, "successor");
+        state.kernel_idle(Some("target"), &mut mock).await.unwrap();
+        assert_eq!(
+            state.executing_cell().map(String::as_str),
+            Some("successor")
+        );
+        assert_eq!(mock.executes, vec!["predecessor", "target", "successor"]);
     }
 }

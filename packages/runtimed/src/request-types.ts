@@ -114,6 +114,7 @@ export type NotebookRequest =
       observed_heads: string[];
     }
   | { type: "interrupt_execution" }
+  | { type: "cancel_execution"; execution_id: string }
   | { type: "shutdown_kernel" }
   | { type: "run_all_cells"; cell_execution_ids?: Record<string, string> | null }
   | {
@@ -175,6 +176,12 @@ export interface CompletionItem {
 
 export type ExecutionIdRejectionReason = "malformed" | "already_exists" | "duplicate_in_request";
 
+export type ExecutionCancellationOutcome =
+  | "interrupted"
+  | "cancelled_queued"
+  | "already_terminal"
+  | "not_found";
+
 export type NotebookResponse =
   | {
       result: "kernel_launched";
@@ -195,6 +202,12 @@ export type NotebookResponse =
       reason: ExecutionIdRejectionReason;
     }
   | { result: "interrupt_sent" }
+  | {
+      result: "execution_cancellation";
+      execution_id: string;
+      outcome: ExecutionCancellationOutcome;
+      terminal_status?: string | null;
+    }
   | { result: "kernel_shutting_down" }
   | { result: "no_kernel" }
   | { result: "guard_rejected"; reason: string }

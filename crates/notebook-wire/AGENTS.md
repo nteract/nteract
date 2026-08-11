@@ -176,6 +176,7 @@ One-shot JSON messages from client to daemon, one response each.
 | `ExecuteCell { cell_id }` | Queue a cell (daemon reads source from synced doc) |
 | `ExecuteCellGuarded { cell_id, observed_heads }` | Queue only if approved notebook heads still match |
 | `InterruptExecution` | SIGINT the running kernel |
+| `CancelExecution { execution_id }` | Cancel one exact running or queued execution without affecting unrelated work |
 | `ShutdownKernel` | Stop the kernel process |
 | `RunAllCells` / `RunAllCellsGuarded { observed_heads }` | Execute all code cells in order; guarded variant checks heads |
 | `SaveNotebook { format_cells, path? }` | Persist Automerge doc to `.ipynb`; optional save-as |
@@ -197,6 +198,7 @@ One-shot JSON messages from client to daemon, one response each.
 | `KernelLaunched { env_source, … }` | Kernel started; resolved concrete env origin |
 | `KernelAlreadyRunning { env_source, … }` | Existing kernel reused |
 | `CellQueued` / `AllCellsQueued { queued }` | Queued (single / all runnable code cells) |
+| `ExecutionCancellation` | Exact cancellation outcome: interrupted, removed from queue, already terminal, or missing |
 | `NotebookSaved { path }` / `SaveError { error }` | File written / structured save error |
 | `GuardRejected { reason }` | Guarded action rejected — observed state changed |
 | `NotebookCloned { notebook_id, working_dir }` | Ephemeral fork created |
@@ -318,7 +320,7 @@ Runtime agents are same-socket peers that connect with `Handshake::RuntimeAgent`
 | `0x05` | RuntimeStateDoc Automerge sync |
 | `0x09` | CommsDoc Automerge sync |
 
-Coordinator-to-agent RPC covers kernel lifecycle and query-style operations: launch, restart, shutdown, completion, history, comm sends, interrupts, and hot environment sync. Cell execution is CRDT-driven: the coordinator writes execution entries into `RuntimeStateDoc`, and the runtime agent discovers and executes queued entries via `RuntimeStateDoc` sync.
+Coordinator-to-agent RPC covers kernel lifecycle and query-style operations: launch, restart, shutdown, completion, history, comm sends, interrupts, exact execution cancellation, and hot environment sync. Cell execution is CRDT-driven: the coordinator writes execution entries into `RuntimeStateDoc`, and the runtime agent discovers and executes queued entries via `RuntimeStateDoc` sync.
 
 Because the daemon socket is same-UID trusted, treat the runtime-agent handshake as a powerful attach operation. Design authority explicitly — don't rely on "only the desktop app can reach the socket."
 

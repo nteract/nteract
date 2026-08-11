@@ -39,6 +39,18 @@ type Session = {
     executionId: string,
     options?: { cellId?: string; timeoutMs?: number },
   ): Promise<unknown>;
+  cancelExecution(executionId: string): Promise<{
+    executionId: string;
+    outcome: "interrupted" | "cancelled_queued" | "already_terminal" | "not_found";
+    terminalStatus?: string;
+  }>;
+  getExecutionView(): {
+    executions: Record<string, { status: string }>;
+    queue: null | {
+      executing_execution_id?: string | null;
+      queued_execution_ids: string[];
+    };
+  };
   getCellOutputs(cellId: string): Promise<Output[] | null>;
   close(): Promise<void>;
   shutdownNotebook(): Promise<boolean>;
@@ -120,6 +132,21 @@ async function executeWhenReady(session: Session, cellId: string): Promise<strin
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
+}
+
+async function waitForExecutionState(
+  session: Session,
+  executionId: string,
+  predicate: (status: string | undefined, executingId: string | null | undefined) => boolean,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const view = session.getExecutionView();
+    if (predicate(view.executions[executionId]?.status, view.queue?.executing_execution_id)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for execution state ${executionId}`);
 }
 
 describeNative("@runtimed/node native session outputs", () => {
@@ -255,4 +282,60 @@ describeNative("@runtimed/node native session outputs", () => {
     expect(rich?.dataJson).toContain("application/octet-stream");
     expect(rich?.blobPathsJson).toBeDefined();
   }, 240_000);
+
+  it("cancels only the named running or queued execution", async () => {
+    const session = await openSession();
+    await session.approveTrust();
+    const runningCell = await session.createCell("import time; time.sleep(30)");
+    const queuedCell = await session.createCell("print('must stay cancelled')");
+    const successorCell = await session.createCell(
+      "import time; time.sleep(1); print('successor survived')",
+    );
+    const runningId = randomUUID();
+    const queuedId = randomUUID();
+    const successorId = randomUUID();
+
+    await session.queueExistingCell(runningCell, { executionId: runningId });
+    await session.queueExistingCell(queuedCell, { executionId: queuedId });
+    await session.queueExistingCell(successorCell, { executionId: successorId });
+    await waitForExecutionState(
+      session,
+      runningId,
+      (status, executingId) => status === "running" && executingId === runningId,
+    );
+
+    await expect(session.cancelExecution(queuedId)).resolves.toEqual({
+      executionId: queuedId,
+      outcome: "cancelled_queued",
+    });
+    await expect(session.cancelExecution(randomUUID())).resolves.toMatchObject({
+      outcome: "not_found",
+    });
+    await expect(session.cancelExecution(runningId)).resolves.toEqual({
+      executionId: runningId,
+      outcome: "interrupted",
+    });
+
+    await waitForExecutionState(
+      session,
+      successorId,
+      (status, executingId) => status === "running" && executingId === successorId,
+    );
+    await expect(session.cancelExecution(runningId)).resolves.toEqual({
+      executionId: runningId,
+      outcome: "already_terminal",
+      terminalStatus: "error",
+    });
+    await session.waitForExecution(successorId, { cellId: successorCell, timeoutMs: 30_000 });
+    await expect(session.getCellOutputs(successorCell)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outputType: "stream", text: "successor survived\n" }),
+      ]),
+    );
+    await expect(session.cancelExecution(queuedId)).resolves.toEqual({
+      executionId: queuedId,
+      outcome: "already_terminal",
+      terminalStatus: "cancelled",
+    });
+  }, 180_000);
 });

@@ -63,6 +63,7 @@ pub(crate) fn publish_startup_queue_from_queued_executions(room: &NotebookRoom) 
 pub(crate) mod apply_bokeh_session_patch;
 pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
+pub(crate) mod cancel_execution;
 pub(crate) mod clone_notebook;
 pub(crate) mod complete;
 pub(crate) mod execute_cell;
@@ -138,6 +139,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::ExecuteCell { .. } => "ExecuteCell",
         NotebookRequest::ExecuteCellGuarded { .. } => "ExecuteCellGuarded",
         NotebookRequest::InterruptExecution { .. } => "InterruptExecution",
+        NotebookRequest::CancelExecution { .. } => "CancelExecution",
         NotebookRequest::ShutdownKernel { .. } => "ShutdownKernel",
         NotebookRequest::RunAllCells { .. } => "RunAllCells",
         NotebookRequest::RunAllCellsGuarded { .. } => "RunAllCellsGuarded",
@@ -442,6 +444,13 @@ pub(crate) async fn handle_notebook_request(
             NotebookRequest::InterruptExecution {} => {
                 return handle_hosted_interrupt_execution(&bridge);
             }
+            NotebookRequest::CancelExecution { .. } => {
+                return NotebookResponse::Error {
+                    error:
+                        "CancelExecution is not supported on a daemon-bridged hosted notebook yet"
+                            .to_string(),
+                };
+            }
             NotebookRequest::SendComm { message } => {
                 return handle_hosted_send_comm(&bridge, message);
             }
@@ -513,6 +522,10 @@ pub(crate) async fn handle_notebook_request(
         }
 
         NotebookRequest::InterruptExecution {} => interrupt_execution::handle(room).await,
+
+        NotebookRequest::CancelExecution { execution_id } => {
+            cancel_execution::handle(room, execution_id).await
+        }
 
         NotebookRequest::ShutdownKernel {} => shutdown_kernel::handle(room).await,
 

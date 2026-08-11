@@ -320,6 +320,20 @@ pub enum ExecutionIdRejectionReason {
     DuplicateInRequest,
 }
 
+/// Result of cancelling one exact execution id.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionCancellationOutcome {
+    /// The execution was running and an interrupt was sent for that execution.
+    Interrupted,
+    /// The execution was removed from the queue without interrupting the kernel.
+    CancelledQueued,
+    /// The execution had already reached a terminal state.
+    AlreadyTerminal,
+    /// No execution with this id exists in the notebook runtime state.
+    NotFound,
+}
+
 /// Structured blob-upload error reasons.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -664,6 +678,10 @@ pub enum NotebookRequest {
     /// Interrupt the currently executing cell.
     InterruptExecution {},
 
+    /// Cancel one exact execution without affecting unrelated queued or
+    /// running work.
+    CancelExecution { execution_id: String },
+
     /// Shutdown the kernel for this room.
     ShutdownKernel {},
 
@@ -847,6 +865,15 @@ pub enum NotebookResponse {
 
     /// Interrupt sent to kernel.
     InterruptSent {},
+
+    /// Result of cancelling one exact execution id.
+    ExecutionCancellation {
+        execution_id: String,
+        outcome: ExecutionCancellationOutcome,
+        /// Present when `outcome` is `already_terminal`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_status: Option<String>,
+    },
 
     /// Kernel shutdown initiated.
     KernelShuttingDown {},
@@ -1066,6 +1093,9 @@ pub enum RuntimeAgentRequest {
     /// Interrupt the currently executing cell.
     InterruptExecution,
 
+    /// Cancel one exact execution id without affecting unrelated work.
+    CancelExecution { execution_id: String },
+
     /// Shutdown the kernel. The runtime agent process stays alive for potential restart.
     ShutdownKernel,
 
@@ -1141,6 +1171,14 @@ pub enum RuntimeAgentResponse {
     /// Interrupt acknowledged. Contains the list of cleared queue entries.
     InterruptAcknowledged { cleared: Vec<QueueEntry> },
 
+    /// Result of cancelling one exact execution id.
+    ExecutionCancellation {
+        execution_id: String,
+        outcome: ExecutionCancellationOutcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_status: Option<String>,
+    },
+
     /// Generic success.
     Ok,
 
@@ -1178,7 +1216,8 @@ pub struct RuntimeAgentRequestEnvelope {
 
 /// Envelope around a `RuntimeAgentResponse` echoing the correlation ID.
 ///
-/// Only used for query RPCs (Complete, GetHistory) that need sync responses.
+/// Only used for query RPCs (including exact cancellation) that need sync
+/// responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeAgentResponseEnvelope {
     pub id: String,
@@ -1190,7 +1229,9 @@ impl RuntimeAgentRequest {
     /// Returns true if this request is a command (fire-and-forget).
     /// Commands don't get a response — state flows back via CRDT.
     ///
-    /// Currently: Interrupt, SendComm. Shutdown is a sync query because
+    /// Currently: Interrupt, SendComm. Exact cancellation is a sync query so
+    /// the coordinator can report whether the target was running, queued, or
+    /// already terminal. Shutdown is a sync query because
     /// the daemon must confirm the kernel is dead before LaunchKernel
     /// sends RestartKernel — otherwise CRDT-queued cells can race onto
     /// the dying kernel.
@@ -1616,6 +1657,13 @@ mod tests {
                 serde_json::json!({ "action": "interrupt_execution" }),
             ),
             (
+                "cancel_execution",
+                serde_json::json!({
+                    "action": "cancel_execution",
+                    "execution_id": "01234567-89ab-4def-8123-456789abcdef",
+                }),
+            ),
+            (
                 "shutdown_kernel",
                 serde_json::json!({ "action": "shutdown_kernel" }),
             ),
@@ -1834,6 +1882,42 @@ mod tests {
 
         let parsed: RuntimeAgentResponseEnvelope = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.id, "req-42");
+    }
+
+    #[test]
+    fn scoped_execution_cancellation_wire_shapes_round_trip() {
+        let execution_id = "01234567-89ab-4def-8123-456789abcdef".to_string();
+        let request = NotebookRequest::CancelExecution {
+            execution_id: execution_id.clone(),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["action"], "cancel_execution");
+        assert_eq!(json["execution_id"], execution_id);
+        assert!(matches!(
+            serde_json::from_value::<NotebookRequest>(json).unwrap(),
+            NotebookRequest::CancelExecution { execution_id: parsed } if parsed == execution_id
+        ));
+
+        let response = NotebookResponse::ExecutionCancellation {
+            execution_id: execution_id.clone(),
+            outcome: ExecutionCancellationOutcome::AlreadyTerminal,
+            terminal_status: Some("done".to_string()),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["result"], "execution_cancellation");
+        assert_eq!(json["outcome"], "already_terminal");
+        assert_eq!(json["terminal_status"], "done");
+
+        let agent_request = RuntimeAgentRequest::CancelExecution {
+            execution_id: execution_id.clone(),
+        };
+        assert!(!agent_request.is_command());
+        let json = serde_json::to_value(&agent_request).unwrap();
+        assert_eq!(json["action"], "cancel_execution");
+        assert!(matches!(
+            serde_json::from_value::<RuntimeAgentRequest>(json).unwrap(),
+            RuntimeAgentRequest::CancelExecution { execution_id: parsed } if parsed == execution_id
+        ));
     }
 
     #[test]

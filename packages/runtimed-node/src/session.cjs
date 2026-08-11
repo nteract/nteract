@@ -158,6 +158,10 @@ class Session {
     return this._native.interruptKernel();
   }
 
+  cancelExecution(executionId) {
+    return this._native.cancelExecution(executionId);
+  }
+
   shutdownKernel() {
     return this._native.shutdownKernel();
   }

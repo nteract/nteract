@@ -26,7 +26,7 @@ pub(crate) async fn send_runtime_agent_command(
 
 /// Send a query to the runtime agent and wait for a sync response.
 ///
-/// Only used for Complete and GetHistory which need return values.
+/// Used by query-style operations that need correlated return values.
 pub(crate) async fn send_runtime_agent_query(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::RuntimeAgentRequest,

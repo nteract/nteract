@@ -214,6 +214,12 @@ sessions.
   is available.
 - `Session.interruptKernel()`, `Session.shutdownKernel()`, and
   `Session.restartKernel()` manage the running kernel.
+- `Session.cancelExecution(executionId)` cancels only the named execution. It
+  interrupts that execution if it is currently running, removes it if queued,
+  and never interrupts a successor or unrelated execution. The returned
+  outcome is `interrupted`, `cancelled_queued`, `already_terminal`, or
+  `not_found`; `terminalStatus` is present for an already-terminal execution.
+  Daemon-bridged hosted notebooks do not support exact cancellation yet.
 - `Session.shutdownNotebook()` shuts down this notebook room and closes the session.
 - `Session.runCell(source, options)` appends, runs, and waits for a cell.
 - `Session.queueCell(source, options)` appends a cell, queues it, and returns IDs.

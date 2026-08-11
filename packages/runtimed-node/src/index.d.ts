@@ -139,6 +139,12 @@ export interface QueuedExecution {
   executionId: string;
 }
 
+export interface CancelExecutionResult {
+  executionId: string;
+  outcome: "interrupted" | "cancelled_queued" | "already_terminal" | "not_found";
+  terminalStatus?: string;
+}
+
 export interface JsOutput {
   outputType: string;
   name?: string;
@@ -274,6 +280,8 @@ export class Session {
   executeCell(cellId: string, options?: { timeoutMs?: number }): Promise<CellResult>;
   showNotebook(): Promise<unknown>;
   interruptKernel(): Promise<void>;
+  /** Cancel exactly one execution without affecting unrelated work. */
+  cancelExecution(executionId: string): Promise<CancelExecutionResult>;
   shutdownKernel(): Promise<void>;
   restartKernel(): Promise<void>;
   shutdownNotebook(): Promise<boolean>;

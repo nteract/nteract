@@ -38,7 +38,9 @@ use notebook_doc::presence::PresenceState;
 use notebook_protocol::connection::{
     FrameSink, FrameSource, FrameTransport, NotebookFrameType, PackageManager, UdsFrameTransport,
 };
-use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentRequest, RuntimeAgentResponse};
+use notebook_protocol::protocol::{
+    ExecutionCancellationOutcome, NotebookBroadcast, RuntimeAgentRequest, RuntimeAgentResponse,
+};
 use runtime_doc::{CommsDoc, CommsDocHandle, ExecutionState, RuntimeLifecycle, RuntimeStateDoc};
 use runtime_doc::{KernelActivity, RuntimeStateHandle};
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -48,7 +50,7 @@ use tracing::{debug, error, info, warn};
 use crate::blob_store::BlobStore;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::kernel_dispatch::Kernel;
-use crate::kernel_state::KernelState;
+use crate::kernel_state::{KernelState, ScopedCancellation};
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::{
     LifecycleSignal, QueueCommandReceivers, VisualizationStateCommand, WorkCommand,
@@ -478,6 +480,9 @@ struct KernelSession {
     /// Execution IDs already handed to `KernelState::queue_cell`, so repeated
     /// RuntimeStateDoc syncs do not re-queue the same entry.
     seen_execution_ids: HashSet<String>,
+    /// Cancellation intents received before their queued RuntimeStateDoc
+    /// entries reached this peer.
+    cancelled_execution_ids: HashSet<String>,
     lifecycle_rx: Option<mpsc::UnboundedReceiver<LifecycleSignal>>,
     visualization_rx: Option<mpsc::Receiver<VisualizationStateCommand>>,
     visualization_tasks: HashMap<String, tokio::task::JoinHandle<()>>,
@@ -491,6 +496,7 @@ impl KernelSession {
             kernel: None,
             kernel_state,
             seen_execution_ids: HashSet::new(),
+            cancelled_execution_ids: HashSet::new(),
             lifecycle_rx: None,
             visualization_rx: None,
             visualization_tasks: HashMap::new(),
@@ -870,6 +876,7 @@ where
                                         &mut session.kernel,
                                         &mut session.kernel_state,
                                         &mut session.seen_execution_ids,
+                                        &mut session.cancelled_execution_ids,
                                     ).await;
 
                                     session.install_kernel_channels(new_cmd_rx);
@@ -923,6 +930,7 @@ where
                                             accepted_queued_count = queue_synced_executions(
                                                 queued,
                                                 &mut session.seen_execution_ids,
+                                                &mut session.cancelled_execution_ids,
                                                 &mut session.kernel_state,
                                                 session.kernel.as_mut(),
                                             )
@@ -1813,6 +1821,7 @@ async fn reconnect_after_writer_error<T: FrameTransport>(
 async fn queue_synced_executions<K: KernelConnection>(
     queued: Vec<(String, ExecutionState)>,
     seen_execution_ids: &mut HashSet<String>,
+    cancelled_execution_ids: &mut HashSet<String>,
     kernel_state: &mut KernelState,
     kernel: Option<&mut K>,
 ) -> usize {
@@ -1822,6 +1831,11 @@ async fn queue_synced_executions<K: KernelConnection>(
 
     let mut queued_count = 0;
     for (eid, exec) in queued {
+        if cancelled_execution_ids.remove(&eid) {
+            seen_execution_ids.insert(eid.clone());
+            kernel_state.cancel_unseen_execution(&eid);
+            continue;
+        }
         if seen_execution_ids.contains(&eid) {
             continue;
         }
@@ -1887,6 +1901,7 @@ async fn apply_initial_launch(
         &mut session.kernel,
         &mut session.kernel_state,
         &mut session.seen_execution_ids,
+        &mut session.cancelled_execution_ids,
     )
     .await;
     session.install_kernel_channels(new_cmd_rx);
@@ -1916,6 +1931,7 @@ async fn handle_runtime_agent_request(
     kernel: &mut Option<Kernel>,
     state: &mut KernelState,
     seen_execution_ids: &mut HashSet<String>,
+    cancelled_execution_ids: &mut HashSet<String>,
 ) -> (RuntimeAgentResponse, Option<QueueCommandReceivers>) {
     match request {
         RuntimeAgentRequest::LaunchKernel {
@@ -2003,8 +2019,14 @@ async fn handle_runtime_agent_request(
                         .state
                         .read(|sd| sd.get_queued_executions())
                         .unwrap_or_default();
-                    queue_synced_executions(queued, seen_execution_ids, state, kernel.as_mut())
-                        .await;
+                    queue_synced_executions(
+                        queued,
+                        seen_execution_ids,
+                        cancelled_execution_ids,
+                        state,
+                        kernel.as_mut(),
+                    )
+                    .await;
                     (
                         RuntimeAgentResponse::KernelLaunched {
                             env_source: notebook_protocol::connection::EnvSource::parse(&es),
@@ -2073,6 +2095,7 @@ async fn handle_runtime_agent_request(
 
             // Clear seen execution IDs so new RunAllCells entries are picked up
             seen_execution_ids.clear();
+            cancelled_execution_ids.clear();
 
             let pooled_env = launched_config.venv_path.as_ref().and_then(|venv| {
                 launched_config
@@ -2240,6 +2263,93 @@ async fn handle_runtime_agent_request(
                     None,
                 )
             }
+        }
+
+        RuntimeAgentRequest::CancelExecution { execution_id } => {
+            let cancellation = if state.executing_cell().map(String::as_str)
+                == Some(execution_id.as_str())
+            {
+                let Some(ref mut kernel) = kernel else {
+                    return (
+                        RuntimeAgentResponse::Error {
+                            error: format!(
+                                "Execution {execution_id} is running but no kernel is available"
+                            ),
+                        },
+                        None,
+                    );
+                };
+                if let Err(error) = kernel.interrupt().await {
+                    return (
+                        RuntimeAgentResponse::Error {
+                            error: format!("Failed to interrupt execution {execution_id}: {error}"),
+                        },
+                        None,
+                    );
+                }
+                state.cancel_execution(&execution_id)
+            } else {
+                state.cancel_execution(&execution_id)
+            };
+
+            let (outcome, terminal_status) = match cancellation {
+                ScopedCancellation::Running => (ExecutionCancellationOutcome::Interrupted, None),
+                ScopedCancellation::Queued => {
+                    seen_execution_ids.insert(execution_id.clone());
+                    (ExecutionCancellationOutcome::CancelledQueued, None)
+                }
+                ScopedCancellation::NotActive => {
+                    let status = ctx
+                        .state
+                        .read(|sd| sd.get_execution(&execution_id).map(|entry| entry.status))
+                        .ok()
+                        .flatten();
+                    match status.as_deref() {
+                        Some("done" | "error" | "cancelled") => {
+                            (ExecutionCancellationOutcome::AlreadyTerminal, status)
+                        }
+                        Some("queued") | None => {
+                            // The coordinator only forwards active executions.
+                            // Missing here means its RuntimeStateDoc queue entry
+                            // has not reached this peer yet. Keep a cancellation
+                            // intent so a later sync cannot execute it.
+                            cancelled_execution_ids.insert(execution_id.clone());
+                            seen_execution_ids.insert(execution_id.clone());
+                            state.cancel_unseen_execution(&execution_id);
+                            (ExecutionCancellationOutcome::CancelledQueued, None)
+                        }
+                        Some("running") => {
+                            return (
+                                RuntimeAgentResponse::Error {
+                                    error: format!(
+                                        "Execution {execution_id} is marked running but is not owned by this runtime agent"
+                                    ),
+                                },
+                                None,
+                            );
+                        }
+                        Some(other) => {
+                            return (
+                                RuntimeAgentResponse::Error {
+                                    error: format!(
+                                        "Execution {execution_id} has unknown status {other:?}"
+                                    ),
+                                },
+                                None,
+                            );
+                        }
+                    }
+                }
+            };
+
+            (
+                RuntimeAgentResponse::ExecutionCancellation {
+                    execution_id,
+                    outcome,
+                    terminal_status,
+                },
+                None,
+            )
         }
 
         RuntimeAgentRequest::ShutdownKernel => {
@@ -3874,6 +3984,7 @@ mod tests {
             &mut kernel,
             &mut state,
             &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .await;
 
@@ -4087,6 +4198,7 @@ mod tests {
     async fn queued_execution_seen_before_kernel_launch_is_not_dropped() {
         let (_ctx, mut state, handle) = test_fixtures();
         let mut seen_execution_ids = HashSet::new();
+        let mut cancelled_execution_ids = HashSet::new();
 
         handle
             .with_doc(|sd| sd.create_execution_with_source("e-prelaunch", "print('ready')", 0))
@@ -4096,6 +4208,7 @@ mod tests {
         let queued_count = queue_synced_executions(
             queued,
             &mut seen_execution_ids,
+            &mut cancelled_execution_ids,
             &mut state,
             None::<&mut MockKernel>,
         )
@@ -4111,9 +4224,14 @@ mod tests {
         state.set_idle();
         let mut mock = MockKernel;
         let queued = handle.read(|sd| sd.get_queued_executions()).unwrap();
-        let queued_count =
-            queue_synced_executions(queued, &mut seen_execution_ids, &mut state, Some(&mut mock))
-                .await;
+        let queued_count = queue_synced_executions(
+            queued,
+            &mut seen_execution_ids,
+            &mut cancelled_execution_ids,
+            &mut state,
+            Some(&mut mock),
+        )
+        .await;
 
         assert_eq!(queued_count, 1);
         assert!(seen_execution_ids.contains("e-prelaunch"));
@@ -4125,6 +4243,54 @@ mod tests {
             .read(|sd| sd.get_execution("e-prelaunch").unwrap())
             .unwrap();
         assert_eq!(running.status, "running");
+    }
+
+    #[tokio::test]
+    async fn cancellation_intent_prevents_unseen_execution_admission_only() {
+        let (_ctx, mut state, handle) = test_fixtures();
+        let mut seen_execution_ids = HashSet::new();
+        let mut cancelled_execution_ids = HashSet::from(["e-cancel".to_string()]);
+
+        handle
+            .with_doc(|sd| {
+                sd.create_execution_with_source("e-cancel", "print('no')", 0)?;
+                sd.create_execution_with_source("e-other", "print('yes')", 1)?;
+                Ok(())
+            })
+            .unwrap();
+
+        state.set_idle();
+        let mut mock = MockKernel;
+        let queued = handle.read(|sd| sd.get_queued_executions()).unwrap();
+        let queued_count = queue_synced_executions(
+            queued,
+            &mut seen_execution_ids,
+            &mut cancelled_execution_ids,
+            &mut state,
+            Some(&mut mock),
+        )
+        .await;
+
+        assert_eq!(queued_count, 1);
+        assert!(seen_execution_ids.contains("e-cancel"));
+        assert!(cancelled_execution_ids.is_empty());
+        assert_eq!(state.executing_cell().map(String::as_str), Some("e-other"));
+        assert_eq!(
+            handle
+                .read(|sd| sd.get_execution("e-cancel"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+        assert_eq!(
+            handle
+                .read(|sd| sd.get_execution("e-other"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "running"
+        );
     }
 
     #[tokio::test]
