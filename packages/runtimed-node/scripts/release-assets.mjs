@@ -146,6 +146,9 @@ function commandName(name) {
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
+    // Windows cannot execute npm.cmd directly through CreateProcess. The
+    // command and every argument here are locally generated release paths.
+    shell: process.platform === "win32",
     ...options,
   });
   if (result.status !== 0) {
