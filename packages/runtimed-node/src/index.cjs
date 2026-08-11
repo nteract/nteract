@@ -19,10 +19,15 @@ async function openNotebook(notebookId, options) {
   return new Session(await binding.openNotebook(notebookId, options));
 }
 
+async function openNotebookPath(path, options) {
+  return new Session(await binding.openNotebookPath(path, options));
+}
+
 module.exports = {
   ...binding,
   createNotebook,
   openNotebook,
+  openNotebookPath,
   NativeSession: binding.Session,
   Session,
   ...relay,

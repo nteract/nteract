@@ -278,6 +278,7 @@ export function defaultSocketPath(): string;
 export function socketPathForChannel(channel: "stable" | "nightly"): string;
 export function createNotebook(options?: CreateNotebookOptions): Promise<Session>;
 export function openNotebook(notebookId: string, options?: OpenNotebookOptions): Promise<Session>;
+export function openNotebookPath(path: string, options?: OpenNotebookOptions): Promise<Session>;
 export function getExecutionResult(
   executionId: string,
   options?: { socketPath?: string },
