@@ -256,14 +256,26 @@ function archiveCommand(archive, argsBeforeArchive, argsAfterArchive = []) {
   });
 }
 
-function extractArchive(archive, destination) {
-  const result = archiveCommand(
-    archive,
-    ["-xzf"],
-    ["-C", resolve(destination), "--strip-components=1"],
+export function extractArchive(archive, destination) {
+  const resolvedDestination = resolve(destination);
+  mkdirSync(resolvedDestination, { recursive: true });
+  const archiveStagingDirectory = mkdtempSync(
+    join(resolvedDestination, ".runtimed-node-release-archive-"),
   );
-  if (result.status !== 0) {
-    throw new Error(`Could not extract ${archive}: ${result.stderr || result.stdout}`);
+  const stagedArchive = join(archiveStagingDirectory, "package.tgz");
+
+  try {
+    copyFileSync(resolve(archive), stagedArchive);
+    const result = spawnSync(
+      "tar",
+      ["-xzf", basename(stagedArchive), "-C", "..", "--strip-components=1"],
+      { cwd: archiveStagingDirectory, encoding: "utf8" },
+    );
+    if (result.status !== 0) {
+      throw new Error(`Could not extract ${archive}: ${result.stderr || result.stdout}`);
+    }
+  } finally {
+    rmSync(archiveStagingDirectory, { recursive: true, force: true });
   }
 }
 

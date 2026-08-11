@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import test from "node:test";
 
 import {
   buildReleaseManifest,
+  extractArchive,
   nodeApiVersionFromCargoManifest,
   packWrapperReleaseAsset,
   releaseAssetName,
@@ -113,6 +115,28 @@ test("wrapper release archives are byte reproducible", () => {
     const second = packWrapperReleaseAsset({ outputDir: secondDirectory });
     const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
     assert.equal(digest(first), digest(second));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("archives extract through relative paths when directories contain spaces", () => {
+  const root = mkdtempSync(join(tmpdir(), "runtimed node archive paths "));
+  try {
+    const packageDirectory = join(root, "source", "package");
+    const archive = join(root, "release archive.tgz");
+    const destination = join(root, "destination with spaces");
+    mkdirSync(packageDirectory, { recursive: true });
+    writeFileSync(join(packageDirectory, "fixture.txt"), "release fixture\n");
+    const packed = spawnSync("tar", ["-czf", "release archive.tgz", "-C", "source", "package"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(packed.status, 0, packed.stderr || packed.stdout);
+
+    extractArchive(archive, destination);
+
+    assert.equal(readFileSync(join(destination, "fixture.txt"), "utf8"), "release fixture\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
