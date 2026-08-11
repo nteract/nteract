@@ -243,7 +243,8 @@ sessions.
   `Session.executionViewChanges$`, `Session.cellChanges$`, `Session.broadcasts$`,
   and `Session.sessionStatus$` expose the same projected event families used by
   the browser sync engine. `sessionStatus$` includes the native connection state,
-  so long-lived hosts can discard a session after it reports `disconnected`
+  replays the current status to late subscribers, and lets long-lived hosts
+  discard a session after it reports `disconnected`
   instead of mutating a detached local document.
 - `Session.getExecutionView()` returns the current materialized execution view:
   non-null notebook cell pointers, execution snapshots keyed by `execution_id`,
