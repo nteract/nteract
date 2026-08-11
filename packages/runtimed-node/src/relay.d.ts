@@ -78,5 +78,7 @@ export function openRelayPath(path: string, options?: OpenRelayOptions): Promise
 export function connectRelay(notebookId: string, options?: OpenRelayOptions): Promise<RelaySession>;
 /** Resolve the daemon endpoint selected by the runtimed environment. */
 export function defaultSocketPath(): string;
+/** Resolve a stable or nightly daemon endpoint independently of this package's build channel. */
+export function socketPathForChannel(channel: "stable" | "nightly"): string;
 /** Return null until the selected daemon is ready to answer pool requests. */
 export function queryDaemonInfo(options?: QueryDaemonOptions): Promise<DaemonInfo | null>;

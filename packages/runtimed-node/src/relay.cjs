@@ -26,4 +26,5 @@ module.exports = {
   connectRelay,
   queryDaemonInfo,
   defaultSocketPath: binding.defaultSocketPath,
+  socketPathForChannel: binding.socketPathForChannel,
 };

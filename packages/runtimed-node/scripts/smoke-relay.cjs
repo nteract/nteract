@@ -11,11 +11,13 @@
 
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
-const { createRelay, queryDaemonInfo } = require("../src/relay.cjs");
+const { createRelay, queryDaemonInfo, socketPathForChannel } = require("../src/relay.cjs");
 
 async function main() {
   const socketPath = process.env.RUNTIMED_SOCKET_PATH;
   assert(socketPath, "RUNTIMED_SOCKET_PATH must point to a running compatible daemon");
+  assert.equal(typeof socketPathForChannel("stable"), "string");
+  assert.equal(typeof socketPathForChannel("nightly"), "string");
   const daemon = await queryDaemonInfo({ socketPath });
   assert(daemon, "queryDaemonInfo finds the running daemon");
   assert.equal(daemon.socketPath, socketPath);

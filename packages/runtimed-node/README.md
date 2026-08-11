@@ -71,10 +71,13 @@ rendererSocket.on("message", (frame) => relay.send(frame));
 rendererSocket.on("close", () => relay.close());
 ```
 
-Hosts that supervise the daemon can use `defaultSocketPath()` and
-`queryDaemonInfo({ socketPath })` from the same subpath. The query returns
-`null` until the daemon is ready, so the host does not need to duplicate the
-pool wire protocol just to probe readiness or enforce version compatibility.
+Hosts that supervise the daemon can use `defaultSocketPath()`,
+`socketPathForChannel("stable" | "nightly")`, and
+`queryDaemonInfo({ socketPath })` from the same subpath. The explicit channel
+resolver is useful when the host's release channel differs from the package's
+compile-time default. The query returns `null` until the daemon is ready, so
+the host does not need to duplicate the pool wire protocol just to probe
+readiness or enforce version compatibility.
 
 Frames include the one-byte notebook frame discriminator and omit the daemon
 socket's length prefix. The relay is intentionally Electron-free: custom
