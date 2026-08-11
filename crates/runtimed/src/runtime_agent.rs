@@ -1866,6 +1866,16 @@ async fn queue_synced_executions<K: KernelConnection>(
     queued_count
 }
 
+fn normalized_terminal_execution_status(execution: &ExecutionState) -> Option<String> {
+    if let Some(success) = execution.success {
+        return Some(if success { "done" } else { "error" }.to_string());
+    }
+    match execution.status.as_str() {
+        "done" | "error" | "cancelled" => Some(execution.status.clone()),
+        _ => None,
+    }
+}
+
 fn should_apply_initial_launch(
     trigger: LaunchTrigger,
     runtime_state_doc_seen: bool,
@@ -2299,27 +2309,33 @@ async fn handle_runtime_agent_request(
                     (ExecutionCancellationOutcome::CancelledQueued, None)
                 }
                 ScopedCancellation::NotActive => {
-                    let status = ctx
+                    let execution = ctx
                         .state
-                        .read(|sd| sd.get_execution(&execution_id).map(|entry| entry.status))
+                        .read(|sd| sd.get_execution(&execution_id))
                         .ok()
                         .flatten();
-                    match status.as_deref() {
-                        Some("done" | "error" | "cancelled") => {
-                            (ExecutionCancellationOutcome::AlreadyTerminal, status)
-                        }
-                        Some("queued") | None => {
-                            // The coordinator only forwards active executions.
-                            // Missing here means its RuntimeStateDoc queue entry
-                            // has not reached this peer yet. Keep a cancellation
-                            // intent so a later sync cannot execute it.
-                            cancelled_execution_ids.insert(execution_id.clone());
-                            seen_execution_ids.insert(execution_id.clone());
-                            state.cancel_unseen_execution(&execution_id);
-                            (ExecutionCancellationOutcome::CancelledQueued, None)
-                        }
-                        Some("running") => {
-                            return (
+                    let terminal_status = execution
+                        .as_ref()
+                        .and_then(normalized_terminal_execution_status);
+                    if let Some(status) = terminal_status {
+                        (ExecutionCancellationOutcome::AlreadyTerminal, Some(status))
+                    } else {
+                        match execution.as_ref().map(|entry| entry.status.as_str()) {
+                            Some("done" | "error" | "cancelled") => {
+                                unreachable!("terminal statuses are normalized above")
+                            }
+                            Some("queued") | None => {
+                                // The coordinator only forwards active executions.
+                                // Missing here means its RuntimeStateDoc queue entry
+                                // has not reached this peer yet. Keep a cancellation
+                                // intent so a later sync cannot execute it.
+                                cancelled_execution_ids.insert(execution_id.clone());
+                                seen_execution_ids.insert(execution_id.clone());
+                                state.cancel_unseen_execution(&execution_id);
+                                (ExecutionCancellationOutcome::CancelledQueued, None)
+                            }
+                            Some("running") => {
+                                return (
                                 RuntimeAgentResponse::Error {
                                     error: format!(
                                         "Execution {execution_id} is marked running but is not owned by this runtime agent"
@@ -2327,16 +2343,17 @@ async fn handle_runtime_agent_request(
                                 },
                                 None,
                             );
-                        }
-                        Some(other) => {
-                            return (
-                                RuntimeAgentResponse::Error {
-                                    error: format!(
-                                        "Execution {execution_id} has unknown status {other:?}"
-                                    ),
-                                },
-                                None,
-                            );
+                            }
+                            Some(other) => {
+                                return (
+                                    RuntimeAgentResponse::Error {
+                                        error: format!(
+                                            "Execution {execution_id} has unknown status {other:?}"
+                                        ),
+                                    },
+                                    None,
+                                );
+                            }
                         }
                     }
                 }
@@ -4290,6 +4307,26 @@ mod tests {
                 .unwrap()
                 .status,
             "running"
+        );
+    }
+
+    #[test]
+    fn concurrent_cancel_conflict_preserves_completed_outcome() {
+        let mut base = RuntimeStateDoc::new();
+        base.create_execution_with_source("raced", "print('yes')", 0)
+            .unwrap();
+        let mut completed = base.fork_with_actor("runtime-agent:completed");
+        let mut cancelled = base.fork_with_actor("coordinator:cancelled");
+        completed.set_execution_done("raced", true).unwrap();
+        cancelled.set_execution_cancelled("raced").unwrap();
+
+        completed.merge(&mut cancelled).unwrap();
+
+        let execution = completed.get_execution("raced").unwrap();
+        assert_eq!(execution.success, Some(true));
+        assert_eq!(
+            normalized_terminal_execution_status(&execution).as_deref(),
+            Some("done")
         );
     }
 
