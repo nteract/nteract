@@ -6,11 +6,14 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  assertRequiredNotebookNpmComponents,
   buildSpdxDocument,
   buildThirdPartyNotices,
   collectOpaqueRendererAssets,
   NOTEBOOK_WEB_BUILD_PROVENANCE,
   opaqueRendererAssetNames,
+  pnpmExecutable,
+  requiredNotebookNpmComponents,
   validateLicenseExpression,
   type ComplianceComponent,
 } from "./notebook-web-compliance.ts";
@@ -111,6 +114,9 @@ test("builds deterministic SPDX and notice documents with renderer provenance", 
 
 test("rejects unknown licenses and incomplete opaque renderer provenance", async () => {
   assert.throws(() => validateLicenseExpression("GPL-3.0-only"), /unknown license expression/);
+  for (const malformed of ["MIT OR", "MIT AND", "MIT OR OR Apache-2.0", "(MIT OR Apache-2.0"]) {
+    assert.throws(() => validateLicenseExpression(malformed), /Invalid SPDX license expression/);
+  }
 
   const repoRoot = await mkdtemp(path.join(os.tmpdir(), "nteract-compliance-missing-"));
   const outputDir = path.join(repoRoot, "dist");
@@ -124,4 +130,20 @@ test("rejects unknown licenses and incomplete opaque renderer provenance", async
     collectOpaqueRendererAssets(repoRoot, outputDir),
     /Missing opaque renderer asset/,
   );
+});
+
+test("fails closed when any required notebook or renderer component is omitted", () => {
+  const required = [...requiredNotebookNpmComponents()];
+  assert.doesNotThrow(() => assertRequiredNotebookNpmComponents(required));
+  for (const omitted of required) {
+    assert.throws(
+      () => assertRequiredNotebookNpmComponents(required.filter((name) => name !== omitted)),
+      (error: unknown) => error instanceof Error && error.message.includes(omitted),
+    );
+  }
+});
+
+test("uses the Windows pnpm command shim when required", () => {
+  assert.equal(pnpmExecutable("win32"), "pnpm.cmd");
+  assert.equal(pnpmExecutable("darwin"), "pnpm");
 });

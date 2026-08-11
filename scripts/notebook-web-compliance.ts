@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+type SpdxExpressionNode =
+  | { license: string; exception?: string; plus?: boolean }
+  | { left: SpdxExpressionNode; conjunction: "and" | "or"; right: SpdxExpressionNode };
+
+const parseSpdxExpression = createRequire(import.meta.url)("spdx-expression-parse") as (
+  expression: string,
+) => SpdxExpressionNode;
 
 export const NOTEBOOK_WEB_LICENSE = "LICENSE";
 export const NOTEBOOK_WEB_NOTICES = "THIRD_PARTY_NOTICES.txt";
@@ -62,18 +71,47 @@ const LICENSE_FILE_OVERRIDES: Record<string, string> = {
 
 const NOTEBOOK_BUILD_INPUTS = new Set(["@tailwindcss/vite", "tailwindcss", "tw-animate-css"]);
 
-const REQUIRED_NOTEBOOK_RUNTIME_COMPONENTS = [
+const REQUIRED_NPM_COMPONENTS = [
+  "@chenglou/pretext",
+  "@codemirror/lang-yaml",
   "@dnd-kit/core",
   "@dnd-kit/sortable",
   "@dnd-kit/utilities",
+  "@lezer/yaml",
+  "@nteract/notebook-host",
+  "@nteract/odometer",
+  "@nteract/sift",
   "@tauri-apps/api",
   "@tauri-apps/plugin-dialog",
   "@tauri-apps/plugin-log",
   "@tauri-apps/plugin-process",
   "@tauri-apps/plugin-shell",
   "@tauri-apps/plugin-updater",
+  "leaflet",
+  "lezer-toml",
+  "plotly.js-dist-min",
   "rxjs",
+  "runtimed",
+  "vega",
+  "vega-embed",
+  "vega-lite",
 ] as const;
+
+export function requiredNotebookNpmComponents(): readonly string[] {
+  return REQUIRED_NPM_COMPONENTS;
+}
+
+export function assertRequiredNotebookNpmComponents(componentNames: Iterable<string>): void {
+  const names = new Set(componentNames);
+  const missing = REQUIRED_NPM_COMPONENTS.filter((name) => !names.has(name));
+  if (missing.length > 0) {
+    throw new Error(`Notebook npm and renderer license closure is incomplete: ${missing.join(", ")}`);
+  }
+}
+
+export function pnpmExecutable(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? "pnpm.cmd" : "pnpm";
+}
 
 type LicenseText = { name: string; text: string };
 
@@ -211,15 +249,29 @@ function normalizedLicenseExpression(expression: string): string {
 
 export function validateLicenseExpression(expression: string): string {
   const normalized = normalizedLicenseExpression(expression);
-  const identifiers = normalized.match(/[A-Za-z0-9.-]+/g) ?? [];
-  const unknown = identifiers.filter(
-    (identifier) => identifier !== "AND" && identifier !== "OR" && !APPROVED_LICENSE_IDS.has(identifier),
-  );
-  if (identifiers.length === 0 || unknown.length > 0) {
+  let parsed: SpdxExpressionNode;
+  try {
+    parsed = parseSpdxExpression(normalized);
+  } catch (error) {
+    throw new Error(`Invalid SPDX license expression ${JSON.stringify(expression)}`, {
+      cause: error,
+    });
+  }
+  const licenses: string[] = [];
+  const visit = (node: SpdxExpressionNode): void => {
+    if ("license" in node) {
+      licenses.push(node.license);
+      if (node.exception || node.plus) licenses.push(node.exception ?? `${node.license}+`);
+      return;
+    }
+    visit(node.left);
+    visit(node.right);
+  };
+  visit(parsed);
+  const unknown = licenses.filter((identifier) => !APPROVED_LICENSE_IDS.has(identifier));
+  if (unknown.length > 0) {
     throw new Error(
-      `Unapproved or unknown license expression ${JSON.stringify(expression)}${
-        unknown.length > 0 ? ` (${unknown.join(", ")})` : ""
-      }`,
+      `Unapproved or unknown license expression ${JSON.stringify(expression)} (${unknown.join(", ")})`,
     );
   }
   return normalized;
@@ -281,12 +333,16 @@ type NpmPackageRecord = {
   packageRoot: string;
 };
 
-async function pnpmLicenseRecords(repoRoot: string, prod: boolean): Promise<NpmPackageRecord[]> {
+async function pnpmLicenseRecords(
+  repoRoot: string,
+  workspaceFilter: string,
+  prod: boolean,
+): Promise<NpmPackageRecord[]> {
   const output = execFileSync(
-    "pnpm",
+    pnpmExecutable(),
     [
       "--filter",
-      "notebook-ui",
+      workspaceFilter,
       "licenses",
       "list",
       ...(prod ? ["--prod"] : []),
@@ -320,16 +376,92 @@ async function pnpmLicenseRecords(repoRoot: string, prod: boolean): Promise<NpmP
   return [...packageRecords.values()];
 }
 
-async function collectNpmComponents(repoRoot: string): Promise<ComplianceComponent[]> {
-  const [runtimeRecords, allRecords] = await Promise.all([
-    pnpmLicenseRecords(repoRoot, true),
-    pnpmLicenseRecords(repoRoot, false),
-  ]);
-  const runtimeNames = new Set(runtimeRecords.map((record) => record.name));
-  const missing = REQUIRED_NOTEBOOK_RUNTIME_COMPONENTS.filter((name) => !runtimeNames.has(name));
-  if (missing.length > 0) {
-    throw new Error(`Notebook runtime license closure is incomplete: ${missing.join(", ")}`);
+type PnpmWorkspaceRecord = { name?: string; version?: string; path: string };
+
+async function collectWorkspaceNpmComponents(repoRoot: string): Promise<ComplianceComponent[]> {
+  const output = execFileSync(
+    pnpmExecutable(),
+    ["list", "--recursive", "--depth", "-1", "--json"],
+    { cwd: repoRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  const workspaces = JSON.parse(output) as PnpmWorkspaceRecord[];
+  const workspaceByName = new Map(
+    workspaces
+      .filter((workspace): workspace is Required<PnpmWorkspaceRecord> =>
+        Boolean(workspace.name && workspace.version),
+      )
+      .map((workspace) => [workspace.name, workspace]),
+  );
+  const entryManifests = [
+    path.join(repoRoot, "package.json"),
+    path.join(repoRoot, "apps/notebook/package.json"),
+  ];
+  const pending: string[] = [];
+  for (const manifestPath of entryManifests) {
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      if (workspaceByName.has(name)) pending.push(name);
+    }
   }
+
+  const seen = new Set<string>();
+  const manifests = new Map<string, Required<PnpmWorkspaceRecord> & { license?: string }>();
+  while (pending.length > 0) {
+    const name = pending.pop() as string;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const workspace = workspaceByName.get(name);
+    if (!workspace) throw new Error(`Workspace package ${name} is unavailable`);
+    const resolvedRoot = path.resolve(workspace.path);
+    if (resolvedRoot !== repoRoot && !resolvedRoot.startsWith(`${repoRoot}${path.sep}`)) {
+      throw new Error(`Workspace package ${name} resolves outside the repository`);
+    }
+    const manifest = JSON.parse(await readFile(path.join(resolvedRoot, "package.json"), "utf8")) as {
+      name?: string;
+      version?: string;
+      license?: string;
+      dependencies?: Record<string, string>;
+    };
+    if (manifest.name !== name || !manifest.version) {
+      throw new Error(`Invalid workspace package metadata for ${name}`);
+    }
+    manifests.set(name, { ...workspace, version: manifest.version, license: manifest.license });
+    for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+      if (workspaceByName.has(dependency)) pending.push(dependency);
+    }
+  }
+
+  const rootLicense = (await readFile(path.join(repoRoot, "LICENSE"), "utf8")).trim();
+  return [...manifests.values()]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((workspace) => ({
+      ecosystem: "npm" as const,
+      scope: "runtime" as const,
+      name: workspace.name,
+      version: workspace.version,
+      licenseDeclared: validateLicenseExpression(workspace.license ?? "BSD-3-Clause"),
+      licenseTexts: [{ name: "LICENSE (workspace root)", text: rootLicense }],
+      homepage: "https://github.com/nteract/nteract",
+    }));
+}
+
+async function collectNpmComponents(repoRoot: string): Promise<ComplianceComponent[]> {
+  const [notebookRecords, sharedSourceRecords, rendererRecords, allNotebookRecords, workspaceComponents] =
+    await Promise.all([
+      pnpmLicenseRecords(repoRoot, "notebook-ui", true),
+      pnpmLicenseRecords(repoRoot, ".", true),
+      pnpmLicenseRecords(repoRoot, "@nteract/sift", true),
+      pnpmLicenseRecords(repoRoot, "notebook-ui", false),
+      collectWorkspaceNpmComponents(repoRoot),
+    ]);
+  const runtimeRecords = [...notebookRecords, ...sharedSourceRecords, ...rendererRecords];
+  const allRecords = [...runtimeRecords, ...allNotebookRecords];
+  const runtimeNames = new Set([
+    ...runtimeRecords.map((record) => record.name),
+    ...workspaceComponents.map((component) => component.name),
+  ]);
 
   const packageRoots = new Map(allRecords.map((record) => [record.name, record.packageRoot]));
   const selected = new Map<string, NpmPackageRecord>();
@@ -346,7 +478,7 @@ async function collectNpmComponents(repoRoot: string): Promise<ComplianceCompone
     throw new Error(`Notebook CSS build provenance is incomplete: ${missingBuildInputs.join(", ")}`);
   }
 
-  return Promise.all(
+  const registryComponents = await Promise.all(
     [...selected.values()]
       .sort((left, right) =>
         left.name.localeCompare(right.name) || left.version.localeCompare(right.version),
@@ -361,6 +493,9 @@ async function collectNpmComponents(repoRoot: string): Promise<ComplianceCompone
         homepage: record.homepage,
       })),
   );
+  const components = [...registryComponents, ...workspaceComponents];
+  assertRequiredNotebookNpmComponents(components.map((component) => component.name));
+  return components;
 }
 
 async function cargoLicenseTexts(

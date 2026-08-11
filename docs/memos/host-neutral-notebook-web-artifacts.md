@@ -38,9 +38,10 @@ package it as a separate release asset. The archive carries:
 - `index.html` and all content-hashed frontend assets;
 - generated runtime WASM;
 - the repository `LICENSE`, deterministic `THIRD_PARTY_NOTICES.txt`, and an
-  SPDX 2.3 inventory of every regular payload file, the notebook UI's npm
-  runtime dependencies, WASM Cargo dependencies, CSS/font provenance, and
-  opaque renderer build inputs;
+  SPDX 2.3 inventory of every regular payload file; the deterministic union of
+  notebook UI, shared-source, embedded-renderer, and workspace npm runtime
+  dependencies; WASM Cargo dependencies; CSS/font provenance; and opaque
+  renderer build inputs;
 - build provenance that binds each opaque renderer source hash to its emitted,
   content-hashed output chunk;
 - `notebook-web-manifest.json`, naming the nteract source revision and runtime
