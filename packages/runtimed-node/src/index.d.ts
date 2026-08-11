@@ -249,6 +249,11 @@ export class Session {
   exportSnapshotPair(): Promise<SnapshotPair>;
   listCells(): Promise<CellSnapshot[]>;
   getCell(cellId: string): Promise<CellSnapshot | null>;
+  /**
+   * Return durable outputs for a cell, resolved through the session's blob and
+   * widget state. Returns null when the cell does not exist.
+   */
+  getCellOutputs(cellId: string): Promise<JsOutput[] | null>;
   createCell(source: string, options?: CreateCellOptions): Promise<string>;
   setCell(cellId: string, options: SetCellOptions): Promise<boolean>;
   deleteCell(cellId: string): Promise<boolean>;

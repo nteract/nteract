@@ -17,6 +17,7 @@ const { Session } = require("../src/session.cjs") as {
     getExecutionView: () => unknown;
     runCell: (source: string, options?: Record<string, unknown>) => Promise<unknown>;
     exportSnapshotPair: () => Promise<unknown>;
+    getCellOutputs: (cellId: string) => Promise<unknown>;
     close: () => Promise<void>;
   };
 };
@@ -317,5 +318,18 @@ describe("@runtimed/node Session wrapper", () => {
 
     await expect(session.exportSnapshotPair()).resolves.toBe(snapshot);
     expect(native.exportSnapshotPair).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes durable cell output reads through to the native session", async () => {
+    const outputs = [{ outputType: "stream", name: "stdout", text: "42\n" }];
+    const native = {
+      notebookId: "nb-1",
+      getCellOutputs: vi.fn(async () => outputs),
+      close: vi.fn(async () => {}),
+    };
+    const session = new Session(native);
+
+    await expect(session.getCellOutputs("cell-1")).resolves.toBe(outputs);
+    expect(native.getCellOutputs).toHaveBeenCalledWith("cell-1");
   });
 });
