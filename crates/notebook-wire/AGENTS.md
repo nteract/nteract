@@ -16,6 +16,7 @@ Scope: `crates/notebook-wire/`, `crates/notebook-doc/`, `crates/notebook-protoco
 Two independent integers, separate from the artifact version:
 
 - **`PROTOCOL_VERSION`** (`connection/handshake.rs`, currently `4`) governs wire compatibility. Bump for framing, handshake, or serialization changes. Every connection starts with a 5-byte preamble (`0xC0DE01AC` + version byte). `Pool` stays version-tolerant so older stable apps can probe during upgrade; other channels require `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`. Protocol v4 dropped legacy environment-sync request/response variants.
+- **Semantic features** (`ProtocolCapabilities.features`) version additive operations inside a wire-compatible protocol. Missing keys are unsupported; unknown keys are ignored. Gate a feature before sending its request or applying local mutations. Do not use artifact versions or source revisions as the compatibility boundary.
 - **`SCHEMA_VERSION`** (`notebook-doc/src/lib.rs`, currently `5`) governs Automerge doc compatibility. Stored at the doc root as `schema_version`. Cells live in a fractional-indexed `Map`; `NotebookDoc` also carries `runtime_state_doc_id` so outputs and runtime lifecycle can live in the paired `RuntimeStateDoc`. Any future bump ships `migrate_vN_to_v(N+1)` that preserves user data.
 
 Artifact versions follow standard semver. Protocol or schema bumps don't automatically force a major version bump.

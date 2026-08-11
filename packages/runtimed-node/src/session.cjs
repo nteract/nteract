@@ -70,6 +70,20 @@ class Session {
     return this._native.notebookId;
   }
 
+  get protocolFeatures() {
+    try {
+      const parsed = JSON.parse(this._native.protocolFeaturesJson ?? "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return Object.fromEntries(
+        Object.entries(parsed).filter(
+          ([name, version]) => name.length > 0 && Number.isInteger(version) && version >= 0,
+        ),
+      );
+    } catch {
+      return {};
+    }
+  }
+
   queueCell(source, options) {
     return this._native.queueCell(source, options);
   }

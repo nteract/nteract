@@ -102,7 +102,7 @@ function toBuffer(frame) {
 }
 
 function normalizeRelayInfo(info) {
-  const { commentsNotebookRefJson, ...rest } = info;
+  const { commentsNotebookRefJson, featuresJson, ...rest } = info;
   let commentsNotebookRef = null;
   if (commentsNotebookRefJson) {
     try {
@@ -112,7 +112,22 @@ function normalizeRelayInfo(info) {
       // notebook synchronization do not depend on this presentation hint.
     }
   }
-  return { ...rest, commentsNotebookRef };
+  let features = {};
+  if (featuresJson) {
+    try {
+      const parsed = JSON.parse(featuresJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        features = Object.fromEntries(
+          Object.entries(parsed).filter(
+            ([name, version]) => name.length > 0 && Number.isInteger(version) && version >= 0,
+          ),
+        );
+      }
+    } catch {
+      // Missing/malformed optional capabilities are treated as unsupported.
+    }
+  }
+  return { ...rest, commentsNotebookRef, features };
 }
 
 module.exports = { RelaySession, normalizeRelayInfo, toBuffer };

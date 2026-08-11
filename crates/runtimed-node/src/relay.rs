@@ -94,6 +94,8 @@ pub struct RelayInfo {
     pub comments_notebook_ref_json: Option<String>,
     pub protocol: String,
     pub protocol_version: Option<u32>,
+    /// JSON object mapping additive semantic feature names to their versions.
+    pub features_json: String,
     pub daemon_version: Option<String>,
     pub socket_path: String,
     pub blob_port: Option<u32>,
@@ -385,6 +387,8 @@ fn relay_info_from_capabilities(
         .comments_notebook_ref
         .as_ref()
         .and_then(|value| serde_json::to_string(value).ok());
+    let features_json =
+        serde_json::to_string(&capabilities.features).unwrap_or_else(|_| "{}".to_string());
     RelayInfo {
         notebook_id,
         cell_count,
@@ -398,11 +402,11 @@ fn relay_info_from_capabilities(
         comments_notebook_ref_json,
         protocol: capabilities.protocol,
         protocol_version: capabilities.protocol_version,
-        // This is deliberately handshake-only. A later pool query can race a
-        // daemon restart and therefore cannot identify the process that owns
-        // this relay. Hosts that enforce admission or reconnect compatibility
-        // must be able to distinguish an omitted handshake identity from pool
-        // metadata returned by another process.
+        features_json,
+        // This is deliberately handshake-only diagnostic metadata. A later
+        // pool query can race a daemon restart and therefore cannot identify
+        // the process that owns this relay. Compatibility is negotiated from
+        // protocol_version and features above.
         daemon_version: capabilities.daemon_version,
         socket_path: socket_path.to_string_lossy().into_owned(),
         blob_port: daemon

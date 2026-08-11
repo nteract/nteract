@@ -169,7 +169,7 @@ async fn send_error_response<W: AsyncWrite + Unpin>(
         ProtocolCapabilities,
     };
     let response = NotebookConnectionInfo {
-        capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
+        capabilities: ProtocolCapabilities::runtimed_v4(Some(crate::daemon_version().to_string())),
         notebook_id: String::new(),
         cell_count: 0,
         needs_trust_approval: false,
@@ -3549,12 +3549,14 @@ impl Daemon {
 
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
-            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
-                .with_identity(
-                    connection_identity.actor_label().as_str(),
-                    connection_identity.scope().as_str(),
-                )
-                .with_comments_doc_id(comments_doc_id),
+            capabilities: ProtocolCapabilities::runtimed_v4(Some(
+                crate::daemon_version().to_string(),
+            ))
+            .with_identity(
+                connection_identity.actor_label().as_str(),
+                connection_identity.scope().as_str(),
+            )
+            .with_comments_doc_id(comments_doc_id),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval: false,
@@ -4233,12 +4235,14 @@ impl Daemon {
         // used for logging and file-watcher wiring below.
         let (reader, mut writer) = tokio::io::split(stream);
         let response = NotebookConnectionInfo {
-            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
-                .with_identity(
-                    connection_identity.actor_label().as_str(),
-                    connection_identity.scope().as_str(),
-                )
-                .with_comments_doc_identity(comments_doc_id, comments_notebook_ref),
+            capabilities: ProtocolCapabilities::runtimed_v4(Some(
+                crate::daemon_version().to_string(),
+            ))
+            .with_identity(
+                connection_identity.actor_label().as_str(),
+                connection_identity.scope().as_str(),
+            )
+            .with_comments_doc_identity(comments_doc_id, comments_notebook_ref),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,
@@ -4422,7 +4426,9 @@ impl Daemon {
             );
             let (mut reader, mut writer) = tokio::io::split(stream);
             let response = NotebookConnectionInfo {
-                capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string())),
+                capabilities: ProtocolCapabilities::runtimed_v4(Some(
+                    crate::daemon_version().to_string(),
+                )),
                 notebook_id: String::new(),
                 cell_count: 0,
                 needs_trust_approval: false,
@@ -4505,12 +4511,14 @@ impl Daemon {
             .transpose()
             .context("serialize comments notebook ref for create notebook response")?;
         let response = NotebookConnectionInfo {
-            capabilities: ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
-                .with_identity(
-                    connection_identity.actor_label().as_str(),
-                    connection_identity.scope().as_str(),
-                )
-                .with_comments_doc_identity(comments_doc_id, comments_notebook_ref),
+            capabilities: ProtocolCapabilities::runtimed_v4(Some(
+                crate::daemon_version().to_string(),
+            ))
+            .with_identity(
+                connection_identity.actor_label().as_str(),
+                connection_identity.scope().as_str(),
+            )
+            .with_comments_doc_identity(comments_doc_id, comments_notebook_ref),
             notebook_id: room.id.to_string(),
             cell_count,
             needs_trust_approval,

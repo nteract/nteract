@@ -50,6 +50,9 @@ pub struct ConnectResult {
 
     /// Initial metadata string (legacy format, for handshake compat).
     pub initial_metadata: Option<String>,
+
+    /// Negotiated protocol metadata for gating additive operations.
+    pub capabilities: ProtocolCapabilities,
 }
 
 /// Result of connecting to an existing notebook file.
@@ -306,6 +309,7 @@ pub async fn connect_with_options(
             handle,
             broadcast_rx,
             initial_metadata,
+            capabilities: caps,
         })
 }
 
@@ -503,6 +507,10 @@ where
             handle,
             broadcast_rx,
             initial_metadata: None,
+            // This path receives already-authenticated typed frames after a
+            // transport-specific handshake. Until that handshake forwards a
+            // feature map, optional local-daemon semantics remain unsupported.
+            capabilities: ProtocolCapabilities::v4(None),
         })
 }
 

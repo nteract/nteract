@@ -149,11 +149,31 @@ describe("@runtimed/node relay wrapper", () => {
       normalizeRelayInfo({
         notebookId: "notebook-1",
         commentsNotebookRefJson: '{"kind":"local_path","canonical_path":"/tmp/a.ipynb"}',
+        featuresJson:
+          '{"caller_owned_execution_ids":1,"exact_execution_cancellation":1,"unknown_future_feature":7}',
       }),
     ).toEqual({
       notebookId: "notebook-1",
       commentsNotebookRef: { kind: "local_path", canonical_path: "/tmp/a.ipynb" },
+      features: {
+        caller_owned_execution_ids: 1,
+        exact_execution_cancellation: 1,
+        unknown_future_feature: 7,
+      },
     });
+  });
+
+  it("treats missing or malformed feature metadata as unsupported", () => {
+    expect(normalizeRelayInfo({ notebookId: "notebook-1" })).toMatchObject({ features: {} });
+    expect(
+      normalizeRelayInfo({ notebookId: "notebook-1", featuresJson: "not-json" }),
+    ).toMatchObject({ features: {} });
+    expect(
+      normalizeRelayInfo({
+        notebookId: "notebook-1",
+        featuresJson: '{"valid":2,"string":"1","negative":-1,"fractional":1.5}',
+      }),
+    ).toMatchObject({ features: { valid: 2 } });
   });
 
   it("rejects values that are not binary frames", () => {

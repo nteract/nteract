@@ -344,12 +344,14 @@ where
             .map(serde_json::to_value)
             .transpose()
             .context("serialize comments notebook ref for notebook sync capabilities")?;
-        let caps = connection::ProtocolCapabilities::v4(Some(crate::daemon_version().to_string()))
-            .with_identity(
-                ctx.connection_identity.actor_label().as_str(),
-                ctx.connection_identity.scope().as_str(),
-            )
-            .with_comments_doc_identity(comments_doc_id, comments_notebook_ref);
+        let caps = connection::ProtocolCapabilities::runtimed_v4(Some(
+            crate::daemon_version().to_string(),
+        ))
+        .with_identity(
+            ctx.connection_identity.actor_label().as_str(),
+            ctx.connection_identity.scope().as_str(),
+        )
+        .with_comments_doc_identity(comments_doc_id, comments_notebook_ref);
         if typed_capabilities {
             connection::send_typed_bootstrap_frame(
                 &mut writer,

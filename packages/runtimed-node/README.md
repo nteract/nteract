@@ -83,9 +83,9 @@ readiness.
 exact handshake. It is intentionally left undefined when an older daemon omits
 it rather than being filled from a later pool query, which could race a daemon
 restart. Treat that artifact version as diagnostic metadata. Compatibility is
-determined by the negotiated protocol number and, for optional semantics, the
-capabilities advertised by the connection. Use `queryDaemonInfo()` only for
-readiness and diagnostics.
+determined by `relay.info.protocolVersion` and the integer versions in
+`relay.info.features`; a missing feature is unsupported and unknown features
+are ignored. Use `queryDaemonInfo()` only for readiness and diagnostics.
 
 Frames include the one-byte notebook frame discriminator and omit the daemon
 socket's length prefix; an empty buffer is not a frame and is rejected. The
@@ -205,10 +205,9 @@ sessions.
   synchronize, so re-read the cell before retrying. A repeated `createCell()`
   with the same `cellId`, source, and type is idempotent; conflicting content is
   rejected, including concurrent attempts in the same session.
-  Durable mutation acknowledgement requires `@runtimed/node` and the runtimed
-  daemon to come from the same compatible release. Older daemons do not
-  recognize the confirmation barrier; explicit capability negotiation is
-  future work.
+  Durable mutation acknowledgement requires the `confirm_notebook_heads`
+  feature at version 1. The wrapper rejects before mutation when the daemon
+  does not advertise it.
 - `Session.executeCell(cellId, options)` runs an existing code cell.
 - `Session.showNotebook()` opens the session in nteract Desktop when a display
   is available.
@@ -219,7 +218,8 @@ sessions.
   and never interrupts a successor or unrelated execution. The returned
   outcome is `interrupted`, `cancelled_queued`, `already_terminal`, or
   `not_found`; `terminalStatus` is present for an already-terminal execution.
-  Daemon-bridged hosted notebooks do not support exact cancellation yet.
+  This requires `exact_execution_cancellation` at version 1; daemon-bridged
+  hosted notebooks do not support exact cancellation yet.
 - `Session.shutdownNotebook()` shuts down this notebook room and closes the session.
 - `Session.runCell(source, options)` appends, runs, and waits for a cell.
 - `Session.queueCell(source, options)` appends a cell, queues it, and returns IDs.
@@ -228,7 +228,8 @@ sessions.
   is ready and the daemon has accepted the execution. Cold kernel startup can
   therefore delay the call. Supply a UUID `executionId` when retries must refer
   to the same execution attempt. A retry returns the existing active or terminal
-  execution for that cell; reusing the UUID for another cell is rejected.
+  execution for that cell; reusing the UUID for another cell is rejected. A
+  caller-supplied ID requires `caller_owned_execution_ids` at version 1.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
   Pass `onUpdate(progress)` to receive resolved output snapshots while the
   execution is still running.

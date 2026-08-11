@@ -253,6 +253,8 @@ export interface DependencyStatus {
 
 export class Session {
   readonly notebookId: string;
+  /** Additive semantic feature versions; missing keys are unsupported. */
+  readonly protocolFeatures: Readonly<Record<string, number>>;
   readonly runtimeState$: Observable<RuntimeState>;
   readonly executionTransitions$: Observable<ExecutionTransition>;
   readonly executionViewChanges$: Observable<ExecutionViewChangeset>;

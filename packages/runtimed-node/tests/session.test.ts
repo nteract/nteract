@@ -20,6 +20,7 @@ const { Session } = require("../src/session.cjs") as {
       };
     };
     getExecutionView: () => unknown;
+    protocolFeatures: Readonly<Record<string, number>>;
     runCell: (source: string, options?: Record<string, unknown>) => Promise<unknown>;
     exportSnapshotPair: () => Promise<unknown>;
     getCellOutputs: (cellId: string) => Promise<unknown>;
@@ -28,6 +29,21 @@ const { Session } = require("../src/session.cjs") as {
 };
 
 describe("@runtimed/node Session wrapper", () => {
+  it("projects negotiated protocol feature versions and defaults missing metadata safely", () => {
+    const session = new Session({
+      notebookId: "nb-1",
+      protocolFeaturesJson: '{"caller_owned_execution_ids":1,"exact_execution_cancellation":1}',
+      close: vi.fn(async () => {}),
+    });
+    const legacy = new Session({ notebookId: "nb-legacy", close: vi.fn(async () => {}) });
+
+    expect(session.protocolFeatures).toEqual({
+      caller_owned_execution_ids: 1,
+      exact_execution_cancellation: 1,
+    });
+    expect(legacy.protocolFeatures).toEqual({});
+  });
+
   it("replays native status emitted during session construction", () => {
     const disconnected = {
       connection: "disconnected",

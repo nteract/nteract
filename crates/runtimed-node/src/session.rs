@@ -4,6 +4,7 @@
 //! Phase 2 will extract the shared logic into a `runtimed-session` crate
 //! and collapse both `-py` and `-node` onto it.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +15,10 @@ use napi_derive::napi;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
+use notebook_protocol::connection::{
+    FEATURE_CALLER_OWNED_EXECUTION_IDS, FEATURE_CONFIRM_NOTEBOOK_HEADS,
+    FEATURE_EXACT_EXECUTION_CANCELLATION, FEATURE_VERSION_1,
+};
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use notebook_sync::{
     BroadcastReceiver, ConnectionState, DocHandle, InitialLoadPhase, NotebookDocPhase,
@@ -465,6 +470,7 @@ struct SessionState {
     socket_path: PathBuf,
     working_dir: Option<String>,
     peer_label: String,
+    protocol_features: BTreeMap<String, u32>,
 }
 
 struct OutputResolutionContext<'a> {
@@ -558,6 +564,17 @@ impl Session {
     #[napi(getter)]
     pub fn notebook_id(&self) -> String {
         self.notebook_id.clone()
+    }
+
+    /// Additive semantic feature versions negotiated with the daemon.
+    #[napi(getter)]
+    pub fn protocol_features_json(&self) -> Result<String> {
+        let state = self
+            .state
+            .try_lock()
+            .map_err(|_| Error::from_reason("Session state busy"))?;
+        serde_json::to_string(&state.protocol_features)
+            .map_err(|error| Error::from_reason(format!("Serialize protocol features: {error}")))
     }
 
     /// Subscribe to RuntimeStateDoc snapshots. Callback receives a JSON string.
@@ -1110,6 +1127,12 @@ impl Session {
         source: String,
         options: Option<CreateCellOptions>,
     ) -> Result<String> {
+        require_protocol_feature(
+            &self.state,
+            FEATURE_CONFIRM_NOTEBOOK_HEADS,
+            FEATURE_VERSION_1,
+        )
+        .await?;
         let opts = options.unwrap_or_default();
         let cell_type = normalize_cell_type(opts.cell_type)?;
         let (handle, peer_label) = session_handle_and_label(&self.state).await?;
@@ -1150,6 +1173,12 @@ impl Session {
     /// Replace a cell's source and/or type. Returns true if the cell existed.
     #[napi]
     pub async fn set_cell(&self, cell_id: String, options: SetCellOptions) -> Result<bool> {
+        require_protocol_feature(
+            &self.state,
+            FEATURE_CONFIRM_NOTEBOOK_HEADS,
+            FEATURE_VERSION_1,
+        )
+        .await?;
         let cell_type = options
             .cell_type
             .map(|cell_type| normalize_cell_type(Some(cell_type)))
@@ -1184,6 +1213,12 @@ impl Session {
     /// Delete a cell. Returns true if the cell existed.
     #[napi]
     pub async fn delete_cell(&self, cell_id: String) -> Result<bool> {
+        require_protocol_feature(
+            &self.state,
+            FEATURE_CONFIRM_NOTEBOOK_HEADS,
+            FEATURE_VERSION_1,
+        )
+        .await?;
         let (handle, peer_label) = session_handle_and_label(&self.state).await?;
         let deleted = handle.delete_cell(&cell_id).map_err(to_napi_err)?;
         if deleted {
@@ -1201,6 +1236,12 @@ impl Session {
         cell_id: String,
         options: Option<MoveCellOptions>,
     ) -> Result<String> {
+        require_protocol_feature(
+            &self.state,
+            FEATURE_CONFIRM_NOTEBOOK_HEADS,
+            FEATURE_VERSION_1,
+        )
+        .await?;
         let handle = session_handle(&self.state).await?;
         let after_cell_id = options.and_then(|opts| opts.after_cell_id);
         let position = handle
@@ -1242,6 +1283,14 @@ impl Session {
         options: Option<QueueExistingCellOptions>,
     ) -> Result<QueuedExecution> {
         let requested_execution_id = options.and_then(|opts| opts.execution_id);
+        if requested_execution_id.is_some() {
+            require_protocol_feature(
+                &self.state,
+                FEATURE_CALLER_OWNED_EXECUTION_IDS,
+                FEATURE_VERSION_1,
+            )
+            .await?;
+        }
         ensure_kernel_started(&self.state).await?;
         let execution_id =
             queue_existing_cell(&self.state, &cell_id, requested_execution_id).await?;
@@ -1319,6 +1368,12 @@ impl Session {
     /// queued targets are removed without affecting other work.
     #[napi]
     pub async fn cancel_execution(&self, execution_id: String) -> Result<CancelExecutionResult> {
+        require_protocol_feature(
+            &self.state,
+            FEATURE_EXACT_EXECUTION_CANCELLATION,
+            FEATURE_VERSION_1,
+        )
+        .await?;
         let handle = session_handle(&self.state).await?;
         let response = handle
             .send_request(NotebookRequest::CancelExecution {
@@ -1480,6 +1535,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         .map_err(to_napi_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
+    let protocol_features = result.info.capabilities.features.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
 
     let state = SessionState {
@@ -1492,6 +1548,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         socket_path,
         working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
         peer_label: actor_label.clone(),
+        protocol_features,
     };
 
     notebook_sync::presence::announce(
@@ -1567,6 +1624,7 @@ pub async fn open_notebook_path(
         .map_err(to_napi_err)?;
 
     let notebook_id = result.info.notebook_id.clone();
+    let protocol_features = result.info.capabilities.features.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
     let (kernel_started, runtime) = kernel_state_from_handle(&result.handle);
 
@@ -1580,6 +1638,7 @@ pub async fn open_notebook_path(
         socket_path,
         working_dir: None,
         peer_label: actor_label.clone(),
+        protocol_features,
     };
 
     notebook_sync::presence::announce(
@@ -1616,6 +1675,7 @@ pub async fn open_notebook(
         .map_err(to_napi_err)?;
 
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
+    let protocol_features = result.capabilities.features.clone();
 
     // Try to hydrate kernel state from the RuntimeStateDoc.
     let (kernel_started, runtime) = kernel_state_from_handle(&result.handle);
@@ -1630,6 +1690,7 @@ pub async fn open_notebook(
         socket_path,
         working_dir: None,
         peer_label: actor_label.clone(),
+        protocol_features,
     };
 
     notebook_sync::presence::announce(
@@ -1708,6 +1769,23 @@ async fn session_handle(state: &Arc<Mutex<SessionState>>) -> Result<DocHandle> {
         .as_ref()
         .ok_or_else(|| Error::from_reason("Not connected"))
         .cloned()
+}
+
+async fn require_protocol_feature(
+    state: &Arc<Mutex<SessionState>>,
+    name: &str,
+    minimum_version: u32,
+) -> Result<()> {
+    let st = state.lock().await;
+    match st.protocol_features.get(name) {
+        Some(version) if *version >= minimum_version => Ok(()),
+        Some(version) => Err(Error::from_reason(format!(
+            "Protocol feature {name}@{minimum_version} is required; daemon advertises {name}@{version}"
+        ))),
+        None => Err(Error::from_reason(format!(
+            "Protocol feature {name}@{minimum_version} is required but was not advertised by the daemon"
+        ))),
+    }
 }
 
 async fn session_handle_and_label(state: &Arc<Mutex<SessionState>>) -> Result<(DocHandle, String)> {

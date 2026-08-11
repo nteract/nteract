@@ -50,6 +50,8 @@ export interface RelayInfo {
   commentsNotebookRef: CommentsNotebookRef | null;
   protocol: string;
   protocolVersion?: number;
+  /** Additive semantic feature versions; missing keys are unsupported. */
+  features: Readonly<Record<string, number>>;
   /** Exact notebook-handshake identity; never filled from a later pool query. */
   daemonVersion?: string;
   socketPath: string;

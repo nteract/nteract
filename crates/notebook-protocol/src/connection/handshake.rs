@@ -1,5 +1,7 @@
 //! Connection handshake data structures.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -182,6 +184,16 @@ pub const PROTOCOL_V4: &str = "v4";
 /// is not wire-compatible with v3 clients.
 pub const PROTOCOL_VERSION: u8 = 4;
 
+/// Semantic feature names advertised inside a wire-compatible protocol.
+///
+/// A missing feature is unsupported. Unknown features must be ignored. Values
+/// are independent feature schema versions, allowing an additive operation to
+/// evolve without conflating it with the framing-level protocol number.
+pub const FEATURE_CALLER_OWNED_EXECUTION_IDS: &str = "caller_owned_execution_ids";
+pub const FEATURE_CONFIRM_NOTEBOOK_HEADS: &str = "confirm_notebook_heads";
+pub const FEATURE_EXACT_EXECUTION_CANCELLATION: &str = "exact_execution_cancellation";
+pub const FEATURE_VERSION_1: u32 = 1;
+
 /// Server response indicating protocol capabilities.
 ///
 /// Sent immediately after handshake, before starting sync.
@@ -198,6 +210,14 @@ pub struct ProtocolCapabilities {
     /// Useful for debugging version mismatches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon_version: Option<String>,
+    /// Versioned additive semantics supported by this endpoint.
+    ///
+    /// This is distinct from `protocol_version`: the protocol number governs
+    /// framing and serialization compatibility, while this map lets callers
+    /// gate optional operations before sending them. Missing means
+    /// unsupported; clients ignore keys they do not recognize.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub features: BTreeMap<String, u32>,
     /// Blob upload support advertised by the daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub put_blob: Option<PutBlobCapability>,
@@ -226,6 +246,7 @@ impl ProtocolCapabilities {
             protocol: PROTOCOL_V4.to_string(),
             protocol_version: Some(PROTOCOL_VERSION.into()),
             daemon_version,
+            features: BTreeMap::new(),
             put_blob: Some(PutBlobCapability {
                 version: 1,
                 single_frame_max: put_blob_limits.cap as u64,
@@ -237,6 +258,34 @@ impl ProtocolCapabilities {
             comments_doc_id: None,
             comments_notebook_ref: None,
         }
+    }
+
+    /// Protocol-v4 capabilities implemented by the local runtimed endpoint.
+    pub fn runtimed_v4(daemon_version: Option<String>) -> Self {
+        let mut capabilities = Self::v4(daemon_version);
+        capabilities.features = BTreeMap::from([
+            (
+                FEATURE_CALLER_OWNED_EXECUTION_IDS.to_string(),
+                FEATURE_VERSION_1,
+            ),
+            (
+                FEATURE_CONFIRM_NOTEBOOK_HEADS.to_string(),
+                FEATURE_VERSION_1,
+            ),
+            (
+                FEATURE_EXACT_EXECUTION_CANCELLATION.to_string(),
+                FEATURE_VERSION_1,
+            ),
+        ]);
+        capabilities
+    }
+
+    /// Whether this endpoint implements at least `minimum_version` of an
+    /// additive semantic feature.
+    pub fn supports_feature(&self, name: &str, minimum_version: u32) -> bool {
+        self.features
+            .get(name)
+            .is_some_and(|version| *version >= minimum_version)
     }
 
     /// Attach authenticated identity metadata to this capability response.

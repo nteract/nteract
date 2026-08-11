@@ -20,7 +20,8 @@ pub use framing::{
 pub use handshake::{
     recv_typed_bootstrap_frame, send_typed_bootstrap_frame, ConnectionBootstrap,
     CreateNotebookRequest, Handshake, NotebookConnectionInfo, ProtocolCapabilities,
-    PutBlobCapability, PROTOCOL_V4, PROTOCOL_VERSION,
+    PutBlobCapability, FEATURE_CALLER_OWNED_EXECUTION_IDS, FEATURE_CONFIRM_NOTEBOOK_HEADS,
+    FEATURE_EXACT_EXECUTION_CANCELLATION, FEATURE_VERSION_1, PROTOCOL_V4, PROTOCOL_VERSION,
 };
 
 #[cfg(windows)]
@@ -314,6 +315,7 @@ mod tests {
                 protocol: PROTOCOL_V4.into(),
                 protocol_version,
                 daemon_version,
+                features: Default::default(),
                 put_blob: None,
                 actor_label: None,
                 connection_scope: None,
@@ -447,6 +449,29 @@ mod tests {
         );
         assert!(put_blob.multipart);
         assert!(put_blob.ephemeral_supported);
+    }
+
+    #[test]
+    fn semantic_features_are_versioned_independently_of_protocol_v4() {
+        let baseline = ProtocolCapabilities::v4(None);
+        assert_eq!(baseline.protocol_version, Some(4));
+        assert!(!baseline.supports_feature(FEATURE_CONFIRM_NOTEBOOK_HEADS, 1));
+
+        let capabilities = ProtocolCapabilities::runtimed_v4(None);
+        assert!(capabilities.supports_feature(FEATURE_CALLER_OWNED_EXECUTION_IDS, 1));
+        assert!(capabilities.supports_feature(FEATURE_CONFIRM_NOTEBOOK_HEADS, 1));
+        assert!(capabilities.supports_feature(FEATURE_EXACT_EXECUTION_CANCELLATION, 1));
+        assert!(!capabilities.supports_feature(FEATURE_EXACT_EXECUTION_CANCELLATION, 2));
+
+        let json = serde_json::to_value(&capabilities).unwrap();
+        assert_eq!(
+            json["features"][FEATURE_EXACT_EXECUTION_CANCELLATION],
+            FEATURE_VERSION_1
+        );
+
+        let legacy: ProtocolCapabilities =
+            serde_json::from_str(r#"{"protocol":"v4","protocol_version":4}"#).unwrap();
+        assert!(legacy.features.is_empty());
     }
 
     #[tokio::test]
