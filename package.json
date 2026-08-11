@@ -7,7 +7,7 @@
     "build": "pnpm --dir apps/notebook build",
     "notebook:build": "pnpm --dir apps/notebook build",
     "notebook-web:package": "cargo xtask notebook-web",
-    "notebook-web:test": "node --experimental-strip-types --test scripts/package-notebook-web.test.ts",
+    "notebook-web:test": "node --experimental-strip-types --test scripts/package-notebook-web.test.ts scripts/notebook-web-compliance.test.ts",
     "notebook:dev": "pnpm --dir apps/notebook dev",
     "test": "vp test",
     "test:run": "vp test run",

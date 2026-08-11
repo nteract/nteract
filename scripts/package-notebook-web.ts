@@ -4,6 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
+import {
+  assertNotebookWebCompliance,
+  generateNotebookWebCompliance,
+  NOTEBOOK_WEB_LICENSE,
+  NOTEBOOK_WEB_NOTICES,
+  NOTEBOOK_WEB_SBOM,
+} from "./notebook-web-compliance.ts";
+
 export const NOTEBOOK_WEB_MANIFEST = "notebook-web-manifest.json";
 export const NOTEBOOK_WEB_CHECKSUMS = "SHA256SUMS";
 
@@ -30,6 +38,8 @@ export type PackageNotebookWebOptions = {
   sourceRevision: string;
   version: string;
   channel: string;
+  repoRoot?: string;
+  writeCompliance?: (outputDir: string) => Promise<void>;
 };
 
 async function filesBelow(root: string, current = root): Promise<string[]> {
@@ -73,7 +83,32 @@ export async function packageNotebookWeb(
   await mkdir(path.dirname(options.outputDir), { recursive: true });
   await cp(options.distDir, options.outputDir, { recursive: true });
 
-  const files = await Promise.all(sourceFiles.map((file) => record(options.outputDir, file)));
+  // Bundle visualizer output is a CI diagnostic, not a release payload. It
+  // contains absolute module paths and has no runtime role.
+  await rm(path.join(options.outputDir, "stats.html"), { force: true });
+
+  if (options.writeCompliance) {
+    await options.writeCompliance(options.outputDir);
+  } else {
+    await generateNotebookWebCompliance({
+      outputDir: options.outputDir,
+      repoRoot: options.repoRoot ?? process.cwd(),
+      sourceRevision: options.sourceRevision,
+      version: options.version,
+    });
+  }
+  await assertNotebookWebCompliance(options.outputDir);
+
+  const packagedFiles = await filesBelow(options.outputDir);
+  for (const required of [NOTEBOOK_WEB_LICENSE, NOTEBOOK_WEB_NOTICES, NOTEBOOK_WEB_SBOM]) {
+    if (!packagedFiles.includes(required)) {
+      throw new Error(`Notebook web artifact is missing required compliance file ${required}`);
+    }
+  }
+  if (packagedFiles.includes("stats.html")) {
+    throw new Error("Notebook web release artifact must not include stats.html");
+  }
+  const files = await Promise.all(packagedFiles.map((file) => record(options.outputDir, file)));
   const manifest: NotebookWebManifest = {
     schemaVersion: 1,
     kind: "nteract-notebook-web",
@@ -93,7 +128,7 @@ export async function packageNotebookWeb(
     `${JSON.stringify(manifest, null, 2)}\n`,
   );
 
-  const checksummedFiles = [...sourceFiles, NOTEBOOK_WEB_MANIFEST];
+  const checksummedFiles = [...packagedFiles, NOTEBOOK_WEB_MANIFEST];
   const checksums = await Promise.all(
     checksummedFiles.map(async (file) => {
       const { sha256 } = await record(options.outputDir, file);

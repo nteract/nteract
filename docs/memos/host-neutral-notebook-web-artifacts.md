@@ -37,6 +37,9 @@ package it as a separate release asset. The archive carries:
 
 - `index.html` and all content-hashed frontend assets;
 - generated runtime WASM;
+- the repository `LICENSE`, deterministic `THIRD_PARTY_NOTICES.txt`, and an
+  SPDX 2.3 inventory of shipped JavaScript/WASM, npm and Cargo dependencies,
+  and opaque renderer build inputs;
 - `notebook-web-manifest.json`, naming the nteract source revision and runtime
   compatibility contract;
 - `SHA256SUMS`, covering the payload and manifest.
@@ -74,6 +77,3 @@ revision mismatch fails closed before notebook traffic is relayed.
 - Whether a smaller notebook-only Vite entry should exclude settings, gallery,
   and other desktop sub-apps; the first archive deliberately packages the
   already-tested production output.
-- Whether the archive should carry a machine-readable third-party notice or
-  SBOM alongside the integrity manifest so embedding hosts can feed their own
-  release-compliance pipelines without reconstructing the Vite dependency graph.
