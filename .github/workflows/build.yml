@@ -843,8 +843,16 @@ jobs:
       - name: Build runtimed-node N-API package
         run: pnpm --dir packages/runtimed-node build:debug
 
+      - name: Build runtimed daemon for native session integration
+        run: cargo build -p runtimed
+
       - name: Test runtimed-node Arrow IPC native integration
         run: vp test run packages/runtimed-node/tests/arrow-ipc.test.ts
+        env:
+          RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
+
+      - name: Test runtimed-node native session integration
+        run: vp test run packages/runtimed-node/tests/session-native.test.ts
         env:
           RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
 

@@ -116,6 +116,14 @@ pub struct SnapshotPairBytes {
     pub comments_doc_heads: Vec<String>,
 }
 
+/// One cell's durable output manifests and the widget state needed to resolve
+/// them, captured from a single shared-document snapshot.
+#[derive(Clone, Debug)]
+pub struct CellOutputsSnapshot {
+    pub outputs: Vec<serde_json::Value>,
+    pub runtime_state: RuntimeState,
+}
+
 impl std::fmt::Debug for DocHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DocHandle")
@@ -182,14 +190,7 @@ impl DocHandle {
     /// owns mutable widget state; this returns the client-facing projection.
     pub fn get_runtime_state(&self) -> Result<RuntimeState, SyncError> {
         let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
-        let mut runtime_state = state.state_doc.read_state();
-        let comm_states = state.comms_doc.get_comms();
-        for (comm_id, comm_state) in comm_states {
-            if let Some(entry) = runtime_state.comms.get_mut(&comm_id) {
-                entry.state = comm_state;
-            }
-        }
-        Ok(runtime_state)
+        Ok(project_runtime_state(&state))
     }
 
     // =====================================================================
@@ -556,6 +557,42 @@ impl DocHandle {
         } else {
             Some(outputs)
         }
+    }
+
+    /// Capture a cell's output manifests and projected widget state atomically.
+    ///
+    /// Unlike [`Self::get_cell_outputs`], this distinguishes a missing cell
+    /// (`None`) from an existing cell without outputs (`Some` with an empty
+    /// output list). Cell existence, its execution pointer, RuntimeStateDoc,
+    /// and CommsDoc are read while holding the same shared-state lock so output
+    /// resolution cannot combine unrelated document snapshots.
+    pub fn get_cell_outputs_snapshot(
+        &self,
+        cell_id: &str,
+    ) -> Result<Option<CellOutputsSnapshot>, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        let Some((_, cells_id)) = state
+            .doc
+            .get(&automerge::ROOT, "cells")
+            .map_err(SyncError::Automerge)?
+        else {
+            return Ok(None);
+        };
+        if state
+            .doc
+            .get(&cells_id, cell_id)
+            .map_err(SyncError::Automerge)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let outputs = read_execution_id(&state.doc, cell_id)
+            .map(|execution_id| state.state_doc.get_outputs(&execution_id))
+            .unwrap_or_default();
+        Ok(Some(CellOutputsSnapshot {
+            outputs,
+            runtime_state: project_runtime_state(&state),
+        }))
     }
 
     /// Get a single cell's current execution pointer.
@@ -1205,6 +1242,16 @@ fn document_contains_heads(
     Ok(true)
 }
 
+fn project_runtime_state(state: &SharedDocState) -> RuntimeState {
+    let mut runtime_state = state.state_doc.read_state();
+    for (comm_id, comm_state) in state.comms_doc.get_comms() {
+        if let Some(entry) = runtime_state.comms.get_mut(&comm_id) {
+            entry.state = comm_state;
+        }
+    }
+    runtime_state
+}
+
 /// Read the execution_id for a cell directly from a raw AutoCommit document.
 fn read_execution_id(doc: &AutoCommit, cell_id: &str) -> Option<String> {
     let (_, cells_id) = doc.get(&automerge::ROOT, "cells").ok().flatten()?;
@@ -1312,6 +1359,50 @@ mod tests {
 
         let replacement = test_handle();
         assert!(!replacement.contains_notebook_heads(&required).unwrap());
+    }
+
+    #[test]
+    fn cell_output_snapshot_distinguishes_missing_empty_and_durable_outputs() {
+        let handle = test_handle();
+        assert!(handle
+            .get_cell_outputs_snapshot("missing")
+            .unwrap()
+            .is_none());
+
+        handle
+            .with_doc(|doc| {
+                let mut notebook = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+                notebook.add_cell_after("cell-1", "code", None)?;
+                *doc = notebook.into_inner();
+                Ok::<_, automerge::AutomergeError>(())
+            })
+            .unwrap()
+            .unwrap();
+        let empty = handle
+            .get_cell_outputs_snapshot("cell-1")
+            .unwrap()
+            .expect("existing cell");
+        assert!(empty.outputs.is_empty());
+
+        let manifest = serde_json::json!({
+            "output_id": "out-1",
+            "output_type": "stream",
+            "name": "stdout",
+            "text": "42\n"
+        });
+        {
+            let mut state = handle.doc.lock().unwrap();
+            let mut notebook = notebook_doc::NotebookDoc::wrap(std::mem::take(&mut state.doc));
+            notebook.set_execution_id("cell-1", Some("exec-1")).unwrap();
+            state.doc = notebook.into_inner();
+            state.state_doc.create_execution("exec-1").unwrap();
+            state.state_doc.append_output("exec-1", &manifest).unwrap();
+        }
+        let durable = handle
+            .get_cell_outputs_snapshot("cell-1")
+            .unwrap()
+            .expect("existing cell");
+        assert_eq!(durable.outputs, vec![manifest]);
     }
 
     #[tokio::test]
