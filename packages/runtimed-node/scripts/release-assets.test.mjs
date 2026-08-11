@@ -46,6 +46,23 @@ test("release manifest carries source and npm package identities", () => {
   );
 });
 
+test("a Node host can consume the manifest compatibility fields", () => {
+  const manifest = JSON.parse(
+    JSON.stringify(
+      buildReleaseManifest({
+        releaseVersion,
+        sourceRevision,
+        packageVersion: "0.4.3",
+      }),
+    ),
+  );
+  const hostNodeApiVersion = Number(process.versions.napi);
+
+  assert.ok(Number.isInteger(hostNodeApiVersion));
+  assert.ok(hostNodeApiVersion >= manifest.node_api_version);
+  assert.equal(manifest.binding_source_revision, manifest.source_revision.slice(0, 7));
+});
+
 test("release version and source revision are validated", () => {
   assert.throws(() => releaseAssetName("wrapper", "../unsafe"), /release-safe token/);
   assert.throws(
