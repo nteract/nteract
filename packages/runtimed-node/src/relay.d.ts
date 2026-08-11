@@ -50,6 +50,7 @@ export interface RelayInfo {
   commentsNotebookRef: CommentsNotebookRef | null;
   protocol: string;
   protocolVersion?: number;
+  /** Exact notebook-handshake identity; never filled from a later pool query. */
   daemonVersion?: string;
   socketPath: string;
   blobPort?: number;

@@ -398,11 +398,12 @@ fn relay_info_from_capabilities(
         comments_notebook_ref_json,
         protocol: capabilities.protocol,
         protocol_version: capabilities.protocol_version,
-        // Older compatible handshakes may omit the daemon version; the pool
-        // metadata query fills that diagnostic field when available.
-        daemon_version: capabilities
-            .daemon_version
-            .or_else(|| daemon.as_ref().map(|info| info.version.clone())),
+        // This is deliberately handshake-only. A later pool query can race a
+        // daemon restart and therefore cannot identify the process that owns
+        // this relay. Hosts that enforce admission or reconnect compatibility
+        // must be able to distinguish an omitted handshake identity from pool
+        // metadata returned by another process.
+        daemon_version: capabilities.daemon_version,
         socket_path: socket_path.to_string_lossy().into_owned(),
         blob_port: daemon
             .as_ref()
@@ -469,5 +470,27 @@ mod tests {
             Some("embedded notebook".into())
         );
         assert_eq!(operator(None, None), None);
+    }
+
+    #[test]
+    fn relay_identity_never_falls_back_to_pool_metadata() {
+        let daemon = serde_json::from_value(serde_json::json!({
+            "endpoint": "/tmp/runtimed.sock",
+            "pid": 42,
+            "version": "2.6.3+pool-process",
+            "started_at": "2026-08-11T00:00:00Z",
+            "blob_port": 48637
+        }))
+        .expect("daemon fixture should deserialize");
+        let info = relay_info_from_capabilities(
+            "notebook-1".into(),
+            ProtocolCapabilities::v4(None),
+            None,
+            PathBuf::from("/tmp/runtimed.sock"),
+            Some(daemon),
+        );
+
+        assert_eq!(info.daemon_version, None);
+        assert_eq!(info.blob_port, Some(48637));
     }
 }

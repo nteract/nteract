@@ -81,6 +81,12 @@ compile-time default. The query returns `null` until the daemon is ready, so
 the host does not need to duplicate the pool wire protocol just to probe
 readiness or enforce version compatibility.
 
+`RelaySession.info.daemonVersion` is the identity carried by that notebook's
+exact handshake. It is intentionally left undefined when an older daemon omits
+it rather than being filled from a later pool query, which could race a daemon
+restart. Packaged hosts should reject an unknown handshake identity; use
+`queryDaemonInfo()` only for readiness and diagnostics.
+
 Frames include the one-byte notebook frame discriminator and omit the daemon
 socket's length prefix; an empty buffer is not a frame and is rejected. The
 relay subscribes to native delivery eagerly so bootstrap frames are retained.
