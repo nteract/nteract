@@ -74,3 +74,6 @@ revision mismatch fails closed before notebook traffic is relayed.
 - Whether a smaller notebook-only Vite entry should exclude settings, gallery,
   and other desktop sub-apps; the first archive deliberately packages the
   already-tested production output.
+- Whether the archive should carry a machine-readable third-party notice or
+  SBOM alongside the integrity manifest so embedding hosts can feed their own
+  release-compliance pipelines without reconstructing the Vite dependency graph.
