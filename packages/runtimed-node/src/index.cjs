@@ -9,6 +9,7 @@
 
 const binding = require("./binding.cjs");
 const { Session } = require("./session.cjs");
+const relay = require("./relay.cjs");
 
 async function createNotebook(options) {
   return new Session(await binding.createNotebook(options));
@@ -24,4 +25,5 @@ module.exports = {
   openNotebook,
   NativeSession: binding.Session,
   Session,
+  ...relay,
 };

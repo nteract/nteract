@@ -50,6 +50,39 @@ Bun, and other CommonJS-compatible runtimes create notebooks, run Python cells,
 queue executions, read outputs, save notebooks, and manage notebook dependencies
 through the same local daemon used by nteract desktop.
 
+## Embedding a notebook frontend
+
+`@runtimed/node/relay` exposes the native byte pipe used by desktop notebook
+hosts. The browser/WASM frontend remains the Automerge peer; Node owns the
+daemon socket, handshake, framing, and liveness heartbeat and forwards opaque
+typed frames to the renderer transport.
+
+```js
+const { createRelay } = require("@runtimed/node/relay");
+
+const relay = await createRelay({
+  workingDir: process.cwd(),
+  ephemeral: true,
+  description: "embedded notebook",
+});
+
+relay.onFrame((frame) => rendererSocket.send(frame));
+rendererSocket.on("message", (frame) => relay.send(frame));
+rendererSocket.on("close", () => relay.close());
+```
+
+Frames include the one-byte notebook frame discriminator and omit the daemon
+socket's length prefix. The relay is intentionally Electron-free: custom
+protocols, CSP, renderer authentication, window lifecycle, and daemon
+installation remain responsibilities of the embedding host.
+
+For a daemon-backed transport check during development:
+
+```bash
+RUNTIMED_SOCKET_PATH=/path/to/runtimed.sock \
+  pnpm --dir packages/runtimed-node smoke:relay
+```
+
 ## Install
 
 ```bash
