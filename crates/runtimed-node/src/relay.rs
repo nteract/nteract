@@ -191,6 +191,7 @@ impl NativeRelaySession {
     /// Close the native relay. Idempotent.
     #[napi]
     pub fn close(&self) -> Result<()> {
+        // Take under the mutex, then run RelayHandle's destructor outside it.
         let handle = {
             let mut state = self
                 .state

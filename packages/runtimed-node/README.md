@@ -80,9 +80,18 @@ the host does not need to duplicate the pool wire protocol just to probe
 readiness or enforce version compatibility.
 
 Frames include the one-byte notebook frame discriminator and omit the daemon
-socket's length prefix. The relay is intentionally Electron-free: custom
-protocols, CSP, browser-peer authentication, window lifecycle, and daemon
-installation remain responsibilities of the embedding host.
+socket's length prefix; an empty buffer is not a frame and is rejected. The
+relay subscribes to native delivery eagerly so bootstrap frames are retained.
+It invokes JavaScript frame handlers serially to preserve ordering, so handlers
+should forward or copy a frame promptly rather than perform expensive work
+inline.
+
+The relay is intentionally Electron-free: custom protocols, CSP, browser-peer
+authentication, window lifecycle, and daemon installation remain
+responsibilities of the embedding host. `connectRelay(notebookId)` is an
+operator connection, not an authorization check. A host must authorize the
+notebook ID itself and must not expose room discovery or relay creation directly
+to an untrusted browser context.
 
 `close()` is terminal cancellation. Natural daemon closure drains frames already
 queued for JavaScript before notifying `onClose`; explicitly closing before a

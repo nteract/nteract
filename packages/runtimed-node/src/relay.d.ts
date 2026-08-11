@@ -75,6 +75,7 @@ export class RelaySession {
 
 export function createRelay(options?: CreateRelayOptions): Promise<RelaySession>;
 export function openRelayPath(path: string, options?: OpenRelayOptions): Promise<RelaySession>;
+/** Operator connection: the embedding host must authorize notebookId before calling. */
 export function connectRelay(notebookId: string, options?: OpenRelayOptions): Promise<RelaySession>;
 /** Resolve the daemon endpoint selected by the runtimed environment. */
 export function defaultSocketPath(): string;
