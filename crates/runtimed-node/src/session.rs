@@ -30,7 +30,8 @@ use runtime_doc::{diff_executions, ExecutionViewProjector, ProjectContext, Proje
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
 
 type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
-type JsonCallback = ThreadsafeFunction<String, (), (String,), napi::Status, false, false, 0>;
+type JsonCallback =
+    ThreadsafeFunction<String, (), FnArgs<(String,)>, napi::Status, false, false, 0>;
 
 /// Stable JSON contract for `Session.sessionStatus$`.
 ///
@@ -521,7 +522,7 @@ fn json_callback(callback: Function<'_, (String,), ()>) -> Result<JsonCallback> 
     callback
         .build_threadsafe_function::<String>()
         .callee_handled::<false>()
-        .build_callback(|ctx| Ok((ctx.value,)))
+        .build_callback(|ctx| Ok(FnArgs::from((ctx.value,))))
 }
 
 fn emit_json<T: Serialize>(callback: &JsonCallback, value: &T) {
