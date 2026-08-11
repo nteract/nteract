@@ -1,5 +1,16 @@
 import type { Observable } from "rxjs";
 
+export { RelaySession, connectRelay, createRelay, openRelayPath } from "./relay";
+export type {
+  CommentsNotebookRef,
+  CreateRelayOptions,
+  DaemonInfo,
+  OpenRelayOptions,
+  QueryDaemonOptions,
+  RelayFrame,
+  RelayInfo,
+} from "./relay";
+
 export type NotebookDocPhase = "pending" | "syncing" | "interactive";
 export type RuntimeStatePhase = "pending" | "syncing" | "ready";
 

@@ -25,6 +25,7 @@ use napi_derive::napi;
 mod arrow_ipc;
 mod error;
 mod parquet;
+mod relay;
 mod session;
 
 pub use arrow_ipc::{
@@ -32,6 +33,10 @@ pub use arrow_ipc::{
 };
 pub use error::NodeError;
 pub use parquet::{read_parquet_file, summarize_parquet_file};
+pub use relay::{
+    connect_relay, create_relay, open_relay_path, query_daemon_info, CreateRelayOptions,
+    DaemonInfo, NativeRelaySession, OpenRelayOptions, QueryDaemonOptions, RelayInfo,
+};
 pub use session::{
     blob_store_path, create_notebook, get_execution_result, list_active_notebooks, open_notebook,
     open_notebook_path, resolve_blob_path, show_notebook, shutdown_notebook, ActiveNotebook,

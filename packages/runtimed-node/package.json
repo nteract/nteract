@@ -29,12 +29,20 @@
       "types": "./src/index.d.ts",
       "require": "./src/index.cjs",
       "default": "./src/index.cjs"
+    },
+    "./relay": {
+      "types": "./src/relay.d.ts",
+      "require": "./src/relay.cjs",
+      "default": "./src/relay.cjs"
     }
   },
   "files": [
     "README.md",
     "src/index.cjs",
     "src/index.d.ts",
+    "src/relay.cjs",
+    "src/relay.d.ts",
+    "src/relay-session.cjs",
     "src/session.cjs",
     "src/napi-observables.cjs",
     "src/binding.cjs",
@@ -56,6 +64,7 @@
     "prepack": "node -e \"const fs = require('node:fs'); const files = fs.readdirSync('src'); if (!files.includes('binding.cjs') || !files.includes('binding.d.ts')) { console.error('Run pnpm --dir packages/runtimed-node build before packing @runtimed/node.'); process.exit(1); }\"",
     "pack:dry-run": "pnpm pack --dry-run",
     "smoke": "node -e \"const m = require('./src/index.cjs'); console.log('defaultSocketPath:', m.defaultSocketPath());\"",
+    "smoke:relay": "node scripts/smoke-relay.cjs",
     "smoke:api": "node scripts/smoke-api.cjs"
   },
   "dependencies": {

@@ -50,6 +50,68 @@ Bun, and other CommonJS-compatible runtimes create notebooks, run Python cells,
 queue executions, read outputs, save notebooks, and manage notebook dependencies
 through the same local daemon used by nteract desktop.
 
+## Embedding a notebook frontend
+
+`@runtimed/node/relay` exposes the native byte pipe used by desktop notebook
+hosts. The browser/WASM frontend remains the Automerge peer; Node owns the
+daemon socket, handshake, framing, and liveness heartbeat and forwards opaque
+typed frames to the browser transport.
+
+```js
+const { createRelay } = require("@runtimed/node/relay");
+
+const relay = await createRelay({
+  workingDir: process.cwd(),
+  ephemeral: true,
+  description: "embedded notebook",
+});
+
+relay.onFrame((frame) => browserTransport.send(frame));
+browserTransport.on("message", (frame) => relay.send(frame));
+browserTransport.on("close", () => relay.close());
+```
+
+Hosts that supervise the daemon can use `defaultSocketPath()`,
+`socketPathForChannel("stable" | "nightly")`, and
+`queryDaemonInfo({ socketPath })` from the same subpath. The explicit channel
+resolver is useful when the host's release channel differs from the package's
+compile-time default. The query returns `null` until the daemon is ready, so
+the host does not need to duplicate the pool wire protocol just to probe
+readiness.
+
+`RelaySession.info.daemonVersion` is the identity carried by that notebook's
+exact handshake. It is intentionally left undefined when an older daemon omits
+it rather than being filled from a later pool query, which could race a daemon
+restart. Treat that artifact version as diagnostic metadata. Compatibility is
+determined by the negotiated protocol number and, for optional semantics, the
+capabilities advertised by the connection. Use `queryDaemonInfo()` only for
+readiness and diagnostics.
+
+Frames include the one-byte notebook frame discriminator and omit the daemon
+socket's length prefix; an empty buffer is not a frame and is rejected. The
+relay subscribes to native delivery eagerly so bootstrap frames are retained.
+It invokes JavaScript frame handlers serially to preserve ordering, so handlers
+should forward or copy a frame promptly rather than perform expensive work
+inline.
+
+The relay is intentionally Electron-free: custom protocols, CSP, browser-peer
+authentication, window lifecycle, and daemon installation remain
+responsibilities of the embedding host. `connectRelay(notebookId)` is an
+operator connection, not an authorization check. A host must authorize the
+notebook ID itself and must not expose room discovery or relay creation directly
+to an untrusted browser context.
+
+`close()` is terminal cancellation. Natural daemon closure drains frames already
+queued for JavaScript before notifying `onClose`; explicitly closing before a
+browser peer subscribes discards the buffered bootstrap frames.
+
+For a daemon-backed transport check during development:
+
+```bash
+RUNTIMED_SOCKET_PATH=/path/to/runtimed.sock \
+  pnpm --dir packages/runtimed-node smoke:relay
+```
+
 ## Install
 
 ```bash
