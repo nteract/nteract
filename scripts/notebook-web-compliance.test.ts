@@ -12,7 +12,7 @@ import {
   collectOpaqueRendererAssets,
   NOTEBOOK_WEB_BUILD_PROVENANCE,
   opaqueRendererAssetNames,
-  pnpmExecutable,
+  pnpmInvocation,
   requiredNotebookNpmComponents,
   validateLicenseExpression,
   type ComplianceComponent,
@@ -143,7 +143,20 @@ test("fails closed when any required notebook or renderer component is omitted",
   }
 });
 
-test("uses the Windows pnpm command shim when required", () => {
-  assert.equal(pnpmExecutable("win32"), "pnpm.cmd");
-  assert.equal(pnpmExecutable("darwin"), "pnpm");
+test("constructs a safe platform-specific pnpm launch", () => {
+  const args = ["--filter", "notebook-ui", "licenses", "list", "--prod", "--json", "--long"];
+  assert.deepEqual(pnpmInvocation(args, "darwin"), { file: "pnpm", args });
+  assert.deepEqual(pnpmInvocation(args, "win32"), {
+    file: "cmd.exe",
+    args: [
+      "/d",
+      "/s",
+      "/c",
+      '""pnpm.cmd" "--filter" "notebook-ui" "licenses" "list" "--prod" "--json" "--long""',
+    ],
+  });
+  assert.throws(
+    () => pnpmInvocation(["--filter", "notebook-ui & whoami"], "win32"),
+    /Unsafe pnpm argument/,
+  );
 });

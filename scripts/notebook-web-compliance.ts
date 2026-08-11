@@ -109,8 +109,32 @@ export function assertRequiredNotebookNpmComponents(componentNames: Iterable<str
   }
 }
 
-export function pnpmExecutable(platform: NodeJS.Platform = process.platform): string {
-  return platform === "win32" ? "pnpm.cmd" : "pnpm";
+export type PnpmInvocation = { file: string; args: string[] };
+
+export function pnpmInvocation(
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): PnpmInvocation {
+  if (platform !== "win32") return { file: "pnpm", args: [...args] };
+  for (const argument of args) {
+    if (!/^[A-Za-z0-9@._/:=+-]+$/.test(argument)) {
+      throw new Error(`Unsafe pnpm argument for Windows command shell: ${JSON.stringify(argument)}`);
+    }
+  }
+  const commandLine = [`"pnpm.cmd"`, ...args.map((argument) => `"${argument}"`)].join(" ");
+  return {
+    file: "cmd.exe",
+    args: ["/d", "/s", "/c", `"${commandLine}"`],
+  };
+}
+
+function execPnpm(repoRoot: string, args: readonly string[]): string {
+  const invocation = pnpmInvocation(args);
+  return execFileSync(invocation.file, invocation.args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
 }
 
 type LicenseText = { name: string; text: string };
@@ -338,19 +362,15 @@ async function pnpmLicenseRecords(
   workspaceFilter: string,
   prod: boolean,
 ): Promise<NpmPackageRecord[]> {
-  const output = execFileSync(
-    pnpmExecutable(),
-    [
-      "--filter",
-      workspaceFilter,
-      "licenses",
-      "list",
-      ...(prod ? ["--prod"] : []),
-      "--json",
-      "--long",
-    ],
-    { cwd: repoRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-  );
+  const output = execPnpm(repoRoot, [
+    "--filter",
+    workspaceFilter,
+    "licenses",
+    "list",
+    ...(prod ? ["--prod"] : []),
+    "--json",
+    "--long",
+  ]);
   const grouped = JSON.parse(output) as Record<string, PnpmLicenseRecord[]>;
   const records = Object.entries(grouped).flatMap(([license, packages]) =>
     packages.flatMap((entry) => entry.paths.map((packageRoot) => ({ ...entry, packageRoot, license }))),
@@ -379,11 +399,7 @@ async function pnpmLicenseRecords(
 type PnpmWorkspaceRecord = { name?: string; version?: string; path: string };
 
 async function collectWorkspaceNpmComponents(repoRoot: string): Promise<ComplianceComponent[]> {
-  const output = execFileSync(
-    pnpmExecutable(),
-    ["list", "--recursive", "--depth", "-1", "--json"],
-    { cwd: repoRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-  );
+  const output = execPnpm(repoRoot, ["list", "--recursive", "--depth", "-1", "--json"]);
   const workspaces = JSON.parse(output) as PnpmWorkspaceRecord[];
   const workspaceByName = new Map(
     workspaces
