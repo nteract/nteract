@@ -32,8 +32,11 @@ function requestTimeoutMs(request: NotebookRequest): number {
   }
 }
 
-function normalizeFrame(frame: ArrayBuffer | Uint8Array | number[]): number[] {
+function normalizeFrame(frame: ArrayBuffer | Uint8Array | ArrayBufferView | number[]): number[] {
   if (frame instanceof ArrayBuffer) return Array.from(new Uint8Array(frame));
+  if (ArrayBuffer.isView(frame)) {
+    return Array.from(new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength));
+  }
   return Array.from(frame);
 }
 
@@ -43,7 +46,7 @@ export class ElectronTransport implements NotebookTransport {
   private readonly subscribers = new Set<FrameListener>();
   private readonly pending = new Map<string, PendingEntry>();
   private readonly disposers: Array<() => void>;
-  private queuedFrames: Array<ArrayBuffer | Uint8Array | number[]> = [];
+  private queuedFrames: Array<ArrayBuffer | Uint8Array | ArrayBufferView | number[]> = [];
   private framesReleased = false;
   private _connected = true;
   private readonly _status$ = new BehaviorSubject<ConnectionStatus>("online");
@@ -136,7 +139,9 @@ export class ElectronTransport implements NotebookTransport {
     }
   }
 
-  private dispatchInboundFrame(framePayload: ArrayBuffer | Uint8Array | number[]): void {
+  private dispatchInboundFrame(
+    framePayload: ArrayBuffer | Uint8Array | ArrayBufferView | number[],
+  ): void {
     if (!this.framesReleased) {
       this.queuedFrames.push(framePayload);
       return;

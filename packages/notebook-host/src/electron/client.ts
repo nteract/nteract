@@ -44,6 +44,7 @@ function isInboundMessage(value: unknown): value is ElectronHostInboundMessage {
     return (
       value.frame instanceof ArrayBuffer ||
       value.frame instanceof Uint8Array ||
+      ArrayBuffer.isView(value.frame) ||
       (Array.isArray(value.frame) && value.frame.every((byte) => Number.isInteger(byte)))
     );
   }
@@ -128,11 +129,12 @@ export class ElectronHostClient {
 
   postFrame(frame: Uint8Array): void {
     if (this.closed) throw new Error("Electron host connection is closed.");
-    const copy = frame.slice();
-    // Transfer the copied buffer instead of cloning frame bytes across the
-    // renderer/main boundary. Detaching `copy` is intentional; the caller's
-    // original frame remains untouched.
-    this.port.postMessage({ type: "nteract:frame", frame: copy.buffer }, [copy.buffer]);
+    // Electron's renderer-to-MessagePortMain bridge does not consistently
+    // deliver a transferred ArrayBuffer when the renderer-side port has itself
+    // been transferred into a child frame. Structured-cloning an owned view is
+    // reliable across that double-transfer boundary and keeps the caller's
+    // original frame untouched.
+    this.port.postMessage({ type: "nteract:frame", frame: frame.slice() });
   }
 
   subscribe(listener: PortListener): () => void {

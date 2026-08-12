@@ -11,8 +11,10 @@ import { ELECTRON_HOST_PROTOCOL_VERSION } from "../src/electron/protocol";
 
 class LinkedRendererPort extends EventTarget {
   peer: LinkedMainPort | null = null;
+  readonly transferLists: Transferable[][] = [];
 
-  postMessage(message: unknown): void {
+  postMessage(message: unknown, transfer?: Transferable[]): void {
+    if (transfer) this.transferLists.push(transfer);
     queueMicrotask(() => this.peer?.deliver(message));
   }
 
@@ -65,12 +67,16 @@ class LinkedMainPort implements ElectronMainPort {
   close(): void {}
 }
 
-function linkedPorts(): { renderer: MessagePort; main: ElectronMainPort } {
+function linkedPorts(): {
+  renderer: MessagePort;
+  rendererPort: LinkedRendererPort;
+  main: ElectronMainPort;
+} {
   const renderer = new LinkedRendererPort();
   const main = new LinkedMainPort();
   renderer.peer = main;
   main.peer = renderer;
-  return { renderer: renderer as unknown as MessagePort, main };
+  return { renderer: renderer as unknown as MessagePort, rendererPort: renderer, main };
 }
 
 function fakeRelay() {
@@ -156,7 +162,14 @@ describe("Electron notebook host", () => {
 
     await host.transport.sendFrame(0x03, new Uint8Array([4, 5]));
     await flushMessages();
-    expect(nativeRelay.sent).toEqual([new Uint8Array([0x03, 4, 5])]);
+    const crossRealmLikeFrame = new DataView(new Uint8Array([0x05, 6, 7]).buffer);
+    (ports.main as LinkedMainPort).deliver({
+      type: "nteract:frame",
+      frame: crossRealmLikeFrame,
+    });
+    await flushMessages();
+    expect(nativeRelay.sent).toEqual([new Uint8Array([0x03, 4, 5]), new Uint8Array([0x05, 6, 7])]);
+    expect(ports.rendererPort.transferLists).toEqual([]);
     await server.close();
   });
 
@@ -317,6 +330,40 @@ describe("Electron notebook host", () => {
     (ports.main as LinkedMainPort).deliverClose();
     await flushMessages();
 
+    expect(nativeRelay.close).toHaveBeenCalledOnce();
+  });
+
+  it("reports the transport offline and closes when a relay send fails", async () => {
+    const ports = linkedPorts();
+    const nativeRelay = fakeRelay();
+    nativeRelay.relay.send = vi.fn(async () => {
+      throw new Error("daemon write failed");
+    });
+    createElectronHost({
+      port: ports.renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+      },
+    });
+    serveElectronNotebookHost({
+      port: ports.main,
+      relay: nativeRelay.relay,
+      handler: { invoke: vi.fn(async () => undefined) } as unknown as ElectronNotebookHostHandler,
+    });
+    const received: unknown[] = [];
+    ports.renderer.addEventListener("message", (event) => received.push(event.data));
+    ports.renderer.start();
+
+    ports.renderer.postMessage({ type: "nteract:frame", frame: new Uint8Array([0x00, 1]) });
+    await flushMessages();
+    await flushMessages();
+
+    expect(received).toContainEqual({
+      type: "nteract:host-event",
+      event: "transport.status",
+      payload: "offline",
+    });
     expect(nativeRelay.close).toHaveBeenCalledOnce();
   });
 

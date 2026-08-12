@@ -40,6 +40,9 @@ function isRecord(value) {
 function normalizeFrame(value) {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
   if (Array.isArray(value) && value.every((part) => Number.isInteger(part))) {
     return new Uint8Array(value);
   }
@@ -89,7 +92,12 @@ function serveElectronNotebookHost(options) {
 
     if (message.type === "nteract:frame") {
       const frame = normalizeFrame(message.frame);
-      if (frame) void options.relay.send(frame).catch(() => server.close());
+      if (frame) {
+        void options.relay.send(frame).catch(() => {
+          emitEvent("transport.status", "offline");
+          return server.close();
+        });
+      }
       return;
     }
 

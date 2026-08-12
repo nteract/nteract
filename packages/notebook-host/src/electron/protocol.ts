@@ -93,7 +93,7 @@ export interface ElectronHostBootstrap {
 
 export interface ElectronHostFrameMessage {
   type: "nteract:frame";
-  frame: ArrayBuffer | Uint8Array | number[];
+  frame: ArrayBuffer | ArrayBufferView | number[];
 }
 
 export interface ElectronHostRequestMessage<M extends ElectronHostMethod = ElectronHostMethod> {
