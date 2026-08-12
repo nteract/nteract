@@ -34,6 +34,11 @@
       "types": "./src/relay.d.ts",
       "require": "./src/relay.cjs",
       "default": "./src/relay.cjs"
+    },
+    "./electron": {
+      "types": "./src/electron.d.ts",
+      "require": "./src/electron.cjs",
+      "default": "./src/electron.cjs"
     }
   },
   "files": [
@@ -42,6 +47,8 @@
     "src/index.d.ts",
     "src/relay.cjs",
     "src/relay.d.ts",
+    "src/electron.cjs",
+    "src/electron.d.ts",
     "src/relay-session.cjs",
     "src/session.cjs",
     "src/napi-observables.cjs",

@@ -13,6 +13,7 @@
     "./tauri": "./src/tauri/index.ts"
   },
   "dependencies": {
+    "@runtimed/node": "workspace:*",
     "runtimed": "workspace:*",
     "rxjs": "^7.8.2"
   },

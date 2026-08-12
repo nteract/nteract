@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vite-plus/test";
+import { ELECTRON_HOST_PROTOCOL_VERSION as NODE_ELECTRON_HOST_PROTOCOL_VERSION } from "@runtimed/node/electron";
 import {
   ELECTRON_HOST_PROTOCOL_VERSION,
   onElectronNotebookFrameReady,
@@ -7,6 +8,10 @@ import {
 } from "../src/electron/protocol";
 
 describe("Electron host connection bootstrap", () => {
+  it("uses the protocol version shipped by the native Node host", () => {
+    expect(ELECTRON_HOST_PROTOCOL_VERSION).toBe(NODE_ELECTRON_HOST_PROTOCOL_VERSION);
+  });
+
   it("binds only an exact parent window and origin", async () => {
     const port = { start() {}, postMessage() {}, close() {} } as unknown as MessagePort;
     const connection = waitForElectronHostConnection({

@@ -6,7 +6,7 @@ supplies the file dialog and window bookkeeping.
 
 The Electron adapter is split across two trust zones:
 
-- `@nteract/notebook-host/electron/main` attaches an authorized
+- `@runtimed/node/electron` attaches an authorized
   `@runtimed/node/relay` session and allowlisted platform handlers to one
   `MessagePortMain`.
 - `@nteract/notebook-host/electron` runs inside the notebook renderer and
@@ -26,7 +26,7 @@ That renderer transfers the received DOM port into the notebook iframe with
 // Electron main
 import { MessageChannelMain } from "electron";
 import { openRelayPath } from "@runtimed/node/relay";
-import { serveElectronNotebookHost } from "@nteract/notebook-host/electron/main";
+import { serveElectronNotebookHost } from "@runtimed/node/electron";
 
 const relay = await openRelayPath(authorizedNotebookPath);
 const { port1, port2 } = new MessageChannelMain();

@@ -23,23 +23,40 @@ class LinkedRendererPort extends EventTarget {
 class LinkedMainPort implements ElectronMainPort {
   peer: LinkedRendererPort | null = null;
   private listeners = new Set<(event: { data: unknown }) => void>();
+  private closeListeners = new Set<() => void>();
 
   postMessage(message: unknown): void {
     queueMicrotask(() => this.peer?.dispatchEvent(new MessageEvent("message", { data: message })));
   }
 
-  on(_event: "message", listener: (event: { data: unknown }) => void): this {
-    this.listeners.add(listener);
+  on(_event: "message", _listener: (event: { data: unknown }) => void): this;
+  on(_event: "close", _listener: () => void): this;
+  on(
+    _event: "message" | "close",
+    listener: ((event: { data: unknown }) => void) | (() => void),
+  ): this {
+    if (_event === "message") this.listeners.add(listener as (event: { data: unknown }) => void);
+    else this.closeListeners.add(listener as () => void);
     return this;
   }
 
-  off(_event: "message", listener: (event: { data: unknown }) => void): this {
-    this.listeners.delete(listener);
+  off(_event: "message", listener: (event: { data: unknown }) => void): this;
+  off(_event: "close", _listener: () => void): this;
+  off(
+    _event: "message" | "close",
+    listener: ((event: { data: unknown }) => void) | (() => void),
+  ): this {
+    if (_event === "message") this.listeners.delete(listener as (event: { data: unknown }) => void);
+    else this.closeListeners.delete(listener as () => void);
     return this;
   }
 
   deliver(message: unknown): void {
     for (const listener of this.listeners) listener({ data: message });
+  }
+
+  deliverClose(): void {
+    for (const listener of this.closeListeners) listener();
   }
 
   start(): void {}
@@ -59,6 +76,7 @@ function fakeRelay() {
   let closeListener: (() => void) | null = null;
   const sent: Uint8Array[] = [];
   let sendHook: ((frame: Uint8Array) => void) | null = null;
+  const close = vi.fn(async () => {});
   const relay: ElectronRelaySession = {
     async send(frame) {
       const copy = frame instanceof Uint8Array ? Uint8Array.from(frame) : new Uint8Array(frame);
@@ -77,10 +95,11 @@ function fakeRelay() {
         closeListener = null;
       };
     },
-    async close() {},
+    close,
   };
   return {
     relay,
+    close,
     sent,
     emitFrame(frame: Uint8Array) {
       frameListener?.(frame);
@@ -282,5 +301,20 @@ describe("Electron notebook host", () => {
       "path is outside the authorized workspace",
     );
     await server.close();
+  });
+
+  it("closes the relay when Electron reports that the renderer port closed", async () => {
+    const ports = linkedPorts();
+    const nativeRelay = fakeRelay();
+    serveElectronNotebookHost({
+      port: ports.main,
+      relay: nativeRelay.relay,
+      handler: { invoke: vi.fn(async () => undefined) } as unknown as ElectronNotebookHostHandler,
+    });
+
+    (ports.main as LinkedMainPort).deliverClose();
+    await flushMessages();
+
+    expect(nativeRelay.close).toHaveBeenCalledOnce();
   });
 });

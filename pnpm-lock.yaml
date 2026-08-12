@@ -690,6 +690,9 @@ importers:
 
   packages/notebook-host:
     dependencies:
+      '@runtimed/node':
+        specifier: workspace:*
+        version: link:../runtimed-node
       '@tauri-apps/api':
         specifier: ^2.10.0
         version: 2.10.1
