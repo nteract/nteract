@@ -181,6 +181,39 @@ impl TrustedPackageStore {
         Ok(())
     }
 
+    /// Seed public Conda channel sources that are part of the product's
+    /// default policy. Channels have their own exact-match identity and must
+    /// not pass through package-name normalization.
+    pub(crate) fn seed_default_channels(&self, channels: &[&str]) -> Result<()> {
+        let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
+            return Ok(());
+        };
+
+        let approved_at = chrono::Utc::now().to_rfc3339();
+        let mut conn = conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("trusted package store mutex poisoned"))?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                r#"
+                INSERT INTO trusted_packages (ecosystem, normalized_name, approved_at, source)
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(ecosystem, normalized_name) DO NOTHING
+                "#,
+            )?;
+            for ecosystem in [ECOSYSTEM_CONDA_CHANNEL, ECOSYSTEM_PIXI_CHANNEL] {
+                for channel in channels {
+                    if let Some(source) = normalize_channel_source(channel) {
+                        stmt.execute(params![ecosystem, source, approved_at, "daemon-default"])?;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     fn approved_raw_specs(&self, ecosystem: &'static str, specs: &[String]) -> Result<Vec<String>> {
         let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
             return Ok(vec![]);
@@ -643,6 +676,44 @@ mod tests {
             approved_pixi_channels: vec![],
         };
         assert!(!store.all_dependencies_approved(&pypi_only).unwrap());
+    }
+
+    #[test]
+    fn seed_default_channels_covers_conda_and_pixi_without_trusting_other_sources() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();
+
+        store
+            .seed_default_channels(&[
+                "conda-forge",
+                "defaults",
+                "https://repo.anaconda.com/pkgs/main",
+            ])
+            .unwrap();
+
+        let info = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec![],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![
+                "defaults".into(),
+                "https://repo.anaconda.com/pkgs/main".into(),
+            ],
+            approved_conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec!["conda-forge".into()],
+            approved_pixi_channels: vec![],
+        };
+        assert!(store.all_dependencies_approved(&info).unwrap());
+
+        let mut untrusted = info;
+        untrusted.conda_channels = vec!["https://packages.example.test/conda".into()];
+        assert!(!store.all_dependencies_approved(&untrusted).unwrap());
     }
 
     #[test]

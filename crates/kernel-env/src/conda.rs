@@ -62,6 +62,18 @@ pub const CONDA_BASE_PACKAGES: &[&str] = &[
     "pyarrow>=14",
 ];
 
+/// The channels represented by Conda's special `defaults` multichannel.
+///
+/// `rattler_conda_types::Channel` resolves ordinary names against
+/// `conda.anaconda.org`; it does not expand Conda's `defaults` alias. Keep the
+/// expansion explicit so an `environment.yml` written by Conda reaches the
+/// official Anaconda repositories rather than a nonexistent community channel.
+pub const ANACONDA_DEFAULT_CHANNELS: &[&str] = &[
+    "https://repo.anaconda.com/pkgs/main",
+    "https://repo.anaconda.com/pkgs/r",
+    "https://repo.anaconda.com/pkgs/msys2",
+];
+
 /// Return [`CONDA_BASE_PACKAGES`] as owned package spec strings for install paths.
 pub fn conda_base_packages() -> Vec<String> {
     CONDA_BASE_PACKAGES
@@ -96,6 +108,33 @@ fn should_enforce_gil_python(deps: &CondaDependencies) -> bool {
         .python
         .as_deref()
         .is_some_and(conda_python_requests_free_threading)
+}
+
+fn parse_channels(
+    declared_channels: &[String],
+    channel_config: &ChannelConfig,
+    platform: Platform,
+) -> Result<Vec<Channel>> {
+    if declared_channels.is_empty() {
+        return Ok(vec![Channel::from_str("conda-forge", channel_config)?]);
+    }
+
+    let mut channels = Vec::new();
+    for declared in declared_channels {
+        if declared == "defaults" {
+            for default_channel in ANACONDA_DEFAULT_CHANNELS {
+                // The msys2 repository is part of Anaconda's Windows defaults;
+                // querying it for Unix platforms only produces missing repodata.
+                if default_channel.ends_with("/msys2") && !platform.is_windows() {
+                    continue;
+                }
+                channels.push(Channel::from_str(default_channel, channel_config)?);
+            }
+        } else {
+            channels.push(Channel::from_str(declared, channel_config)?);
+        }
+    }
+    Ok(channels)
 }
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
@@ -493,15 +532,9 @@ async fn install_conda_env(
         .to_path_buf();
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
-    // Parse channels
-    let channels: Vec<Channel> = if deps.channels.is_empty() {
-        vec![Channel::from_str("conda-forge", &channel_config)?]
-    } else {
-        deps.channels
-            .iter()
-            .map(|c| Channel::from_str(c, &channel_config))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+    // Parse channels, including Conda's special `defaults` multichannel.
+    let install_platform = Platform::current();
+    let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
     let channel_names: Vec<String> = channels.iter().map(|c| c.name().to_string()).collect();
 
@@ -553,7 +586,6 @@ async fn install_conda_env(
     let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
 
     // Query repodata with offline-first strategy
-    let install_platform = Platform::current();
     let platforms = vec![install_platform, Platform::NoArch];
 
     let repo_data = crate::repodata::query_repodata_offline_first(
@@ -936,14 +968,8 @@ pub async fn sync_dependencies(
         .to_path_buf();
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
-    let channels: Vec<Channel> = if deps.channels.is_empty() {
-        vec![Channel::from_str("conda-forge", &channel_config)?]
-    } else {
-        deps.channels
-            .iter()
-            .map(|c| Channel::from_str(c, &channel_config))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+    let install_platform = Platform::current();
+    let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
     let match_spec_options = ParseMatchSpecOptions::strict();
 
@@ -1001,7 +1027,6 @@ pub async fn sync_dependencies(
     let download_client = reqwest::Client::builder().build()?;
     let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
 
-    let install_platform = Platform::current();
     let platforms = vec![install_platform, Platform::NoArch];
 
     let repo_data = crate::repodata::query_repodata_offline_first(
@@ -1393,6 +1418,41 @@ fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn defaults_expands_to_anaconda_channels_instead_of_community_alias() {
+        let config = ChannelConfig::default_with_root_dir(PathBuf::from("/tmp"));
+        let declared = vec!["defaults".to_string()];
+
+        let unix_channels = parse_channels(&declared, &config, Platform::Linux64).unwrap();
+        let unix_urls = unix_channels
+            .iter()
+            .map(|channel| channel.base_url.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            unix_urls,
+            vec![
+                "https://repo.anaconda.com/pkgs/main/",
+                "https://repo.anaconda.com/pkgs/r/",
+            ]
+        );
+        assert!(unix_urls
+            .iter()
+            .all(|url| !url.contains("conda.anaconda.org/defaults")));
+
+        let windows_channels = parse_channels(&declared, &config, Platform::Win64).unwrap();
+        assert_eq!(
+            windows_channels
+                .iter()
+                .map(|channel| channel.base_url.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "https://repo.anaconda.com/pkgs/main/",
+                "https://repo.anaconda.com/pkgs/r/",
+                "https://repo.anaconda.com/pkgs/msys2/",
+            ]
+        );
+    }
 
     #[test]
     fn test_compute_env_hash_stable() {

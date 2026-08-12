@@ -499,6 +499,18 @@ const DEFAULT_DATA_PACKAGES: &[&str] = &["pandas", "polars", "matplotlib", "plot
 /// They still land in the env when a notebook declares them as inline
 /// deps; this constant just controls trust seeding.
 const DEFAULT_TRUSTED_EXTRA_PACKAGES: &[&str] = &["numpy", "scipy"];
+/// Public Conda sources that do not require a per-machine approval prompt.
+/// Keep arbitrary organization and URL channels behind the normal trust gate.
+const DEFAULT_TRUSTED_CONDA_CHANNELS: &[&str] = &[
+    "conda-forge",
+    "defaults",
+    "https://repo.anaconda.com/pkgs/main",
+    "https://repo.anaconda.com/pkgs/main/",
+    "https://repo.anaconda.com/pkgs/r",
+    "https://repo.anaconda.com/pkgs/r/",
+    "https://repo.anaconda.com/pkgs/msys2",
+    "https://repo.anaconda.com/pkgs/msys2/",
+];
 const BASE_RUNTIME_PACKAGES: &[&str] = &[
     "ipykernel",
     "ipywidgets",
@@ -507,6 +519,23 @@ const BASE_RUNTIME_PACKAGES: &[&str] = &[
     "nbformat",
     "pyarrow",
 ];
+
+fn seed_trusted_defaults(store: &TrustedPackageStore) {
+    for ecosystem in ["pypi", "conda"] {
+        if let Err(e) = store.seed_defaults(ecosystem, BASE_RUNTIME_PACKAGES) {
+            warn!("[trusted-packages] Failed to seed base runtime packages ({ecosystem}): {e}");
+        }
+        if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_DATA_PACKAGES) {
+            warn!("[trusted-packages] Failed to seed default data packages ({ecosystem}): {e}");
+        }
+        if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_TRUSTED_EXTRA_PACKAGES) {
+            warn!("[trusted-packages] Failed to seed extra trusted packages ({ecosystem}): {e}");
+        }
+    }
+    if let Err(e) = store.seed_default_channels(DEFAULT_TRUSTED_CONDA_CHANNELS) {
+        warn!("[trusted-packages] Failed to seed default Conda channels: {e}");
+    }
+}
 
 fn has_package_named(packages: &[String], name: &str) -> bool {
     packages
@@ -1581,25 +1610,14 @@ impl Daemon {
         let execution_store = runtimed_client::execution_store::ExecutionStore::new(
             config.execution_store_dir.clone(),
         );
-        let trusted_packages = match TrustedPackageStore::open(
-            config.trusted_packages_db_path.clone(),
-        ) {
-            Ok(store) => {
-                for ecosystem in ["pypi", "conda"] {
-                    if let Err(e) = store.seed_defaults(ecosystem, BASE_RUNTIME_PACKAGES) {
-                        warn!("[trusted-packages] Failed to seed base runtime packages ({ecosystem}): {e}");
-                    }
-                    if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_DATA_PACKAGES) {
-                        warn!("[trusted-packages] Failed to seed default data packages ({ecosystem}): {e}");
-                    }
-                    if let Err(e) = store.seed_defaults(ecosystem, DEFAULT_TRUSTED_EXTRA_PACKAGES) {
-                        warn!("[trusted-packages] Failed to seed extra trusted packages ({ecosystem}): {e}");
-                    }
+        let trusted_packages =
+            match TrustedPackageStore::open(config.trusted_packages_db_path.clone()) {
+                Ok(store) => {
+                    seed_trusted_defaults(&store);
+                    store
                 }
-                store
-            }
-            Err(error) => TrustedPackageStore::unavailable(error.to_string()),
-        };
+                Err(error) => TrustedPackageStore::unavailable(error.to_string()),
+            };
         log_store_unavailable(&trusted_packages);
 
         let notebook_registry = NotebookRegistry::open(config.notebook_registry_db_path.clone())
@@ -7657,6 +7675,37 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn daemon_defaults_preapprove_official_conda_sources() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();
+        seed_trusted_defaults(&store);
+
+        let channels = DEFAULT_TRUSTED_CONDA_CHANNELS
+            .iter()
+            .map(|channel| (*channel).to_string())
+            .collect::<Vec<_>>();
+        let mut info = runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec![],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
+            conda_channels: channels.clone(),
+            approved_conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: channels.clone(),
+            approved_pixi_channels: vec![],
+        };
+
+        store.enrich_info(&mut info).unwrap();
+        assert_eq!(info.approved_conda_channels, channels);
+        assert_eq!(info.approved_pixi_channels, info.pixi_channels);
+    }
 
     #[test]
     fn test_prewarmed_packages_derive_from_kernel_env_base_constants() {

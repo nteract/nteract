@@ -168,10 +168,8 @@ Not every approval entry point runs all four steps. The four sources in the stor
 |---|---|---|---|
 | `ApproveTrust` (dialog) | yes | yes | `ON CONFLICT DO UPDATE` |
 | `seed_trust_from_doc_metadata` (MCP) | yes | yes (via subsequent notebook-doc frame) | `ON CONFLICT DO UPDATE` |
-| `seed_defaults` (startup) | yes, scoped to `pypi` and `conda` only (not channels) | no (no room exists at startup) | `ON CONFLICT DO NOTHING` so user approvals are preserved (`trusted_packages.rs:171`) |
-| `ApproveProjectEnvironment` (`environment.yml`) | yes | **no broadcast, no recheck** (`approve_project_environment.rs:38`) | `ON CONFLICT DO UPDATE` |
-
-`ApproveProjectEnvironment` not triggering a recheck means the user has to send a subsequent sync-driving action (cell edit, refresh) before the verdict updates. Worth flagging.
+| `seed_defaults` / `seed_default_channels` (startup) | yes, scoped to default package names and built-in public Conda sources | no (no room exists at startup) | `ON CONFLICT DO NOTHING` so user approvals are preserved (`trusted_packages.rs`) |
+| `ApproveProjectEnvironment` (`environment.yml`) | yes | yes | `ON CONFLICT DO UPDATE` |
 
 The notebook doc is not mutated. The allowlist is the source of truth; the doc only declares what is wanted. Two implications:
 
@@ -182,6 +180,7 @@ Three other approval entry points exist alongside the dialog:
 
 - `seed_trust_from_doc_metadata(room, source)` - the daemon seeds the allowlist when the caller is asserting that the deps already in the doc came from a consent-bearing channel. The MCP `create_notebook` tool uses this when the user has explicitly passed `dependencies` to the tool call: the act of typing those deps into the prompt is the consent. The same path is used by other paths that synthesize a notebook with known-good deps.
 - `seed_defaults(ecosystem, specs)` - the daemon pre-approves a user-configured default set on startup (`pandas`, `matplotlib`, etc., from synced settings). Source column reads `daemon-default`. This is what makes "open a fresh notebook, run a cell" silent for the user's curated default set.
+- `seed_default_channels(channels)` - the daemon pre-approves the built-in public channel policy for both Conda and Pixi: `conda-forge`, Conda's `defaults` alias, and the canonical `repo.anaconda.com/pkgs/{main,r,msys2}` URLs (with or without a trailing slash). Other named channels and URLs still require explicit approval.
 - `ApproveProjectEnvironment` - separate request for project-file consent (`crates/runtimed/src/requests/approve_project_environment.rs`). Records the *project file's* declared deps (today: only `environment.yml`) into the allowlist with source `project_env_dialog`. This is its own dialog because the deps in a project file are not in NotebookDoc; the regular trust dialog can't see them.
 
 ## Decision 6: Kernel launch consults the trust gate; sync_environment also gates
