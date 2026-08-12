@@ -152,10 +152,10 @@ export interface ElectronHostConnection {
 }
 
 export function isElectronHostMethod(value: unknown): value is ElectronHostMethod {
-  return typeof value === "string" && ELECTRON_HOST_METHODS.has(value as ElectronHostMethod);
+  return typeof value === "string" && ELECTRON_HOST_METHOD_SET.has(value as ElectronHostMethod);
 }
 
-const ELECTRON_HOST_METHODS = new Set<ElectronHostMethod>([
+export const ELECTRON_HOST_METHODS = [
   "daemon.isConnected",
   "daemon.reconnect",
   "daemon.getInfo",
@@ -184,7 +184,9 @@ const ELECTRON_HOST_METHODS = new Set<ElectronHostMethod>([
   "settings.getSynced",
   "settings.setSynced",
   "settings.rotateInstallId",
-]);
+] as const satisfies readonly ElectronHostMethod[];
+
+const ELECTRON_HOST_METHOD_SET = new Set<ElectronHostMethod>(ELECTRON_HOST_METHODS);
 
 export function isElectronHostConnectMessage(value: unknown): value is ElectronHostConnectMessage {
   if (typeof value !== "object" || value === null) return false;

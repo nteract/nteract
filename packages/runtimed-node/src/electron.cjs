@@ -2,7 +2,7 @@
 
 const ELECTRON_HOST_PROTOCOL_VERSION = 1;
 
-const HOST_METHODS = new Set([
+const ELECTRON_HOST_METHODS = Object.freeze([
   "daemon.isConnected",
   "daemon.reconnect",
   "daemon.getInfo",
@@ -32,6 +32,7 @@ const HOST_METHODS = new Set([
   "settings.setSynced",
   "settings.rotateInstallId",
 ]);
+const HOST_METHODS = new Set(ELECTRON_HOST_METHODS);
 
 function isRecord(value) {
   return typeof value === "object" && value !== null;
@@ -86,6 +87,10 @@ function serveElectronNotebookHost(options) {
     },
   };
 
+  const closeBestEffort = () => {
+    void server.close().catch(() => {});
+  };
+
   const onPortMessage = (event) => {
     if (closed || !isRecord(event.data)) return;
     const message = event.data;
@@ -95,7 +100,7 @@ function serveElectronNotebookHost(options) {
       if (frame) {
         void options.relay.send(frame).catch(() => {
           emitEvent("transport.status", "offline");
-          return server.close();
+          closeBestEffort();
         });
       }
       return;
@@ -125,7 +130,7 @@ function serveElectronNotebookHost(options) {
   };
 
   const onPortClose = () => {
-    void server.close();
+    closeBestEffort();
   };
 
   const unlistenFrame = options.relay.onFrame((frame) => {
@@ -134,6 +139,7 @@ function serveElectronNotebookHost(options) {
   const unlistenClose = options.relay.onClose(() => {
     relayClosed = true;
     emitEvent("transport.status", "offline");
+    closeBestEffort();
   });
 
   options.port.on("message", onPortMessage);
@@ -143,4 +149,8 @@ function serveElectronNotebookHost(options) {
   return server;
 }
 
-module.exports = { ELECTRON_HOST_PROTOCOL_VERSION, serveElectronNotebookHost };
+module.exports = {
+  ELECTRON_HOST_METHODS,
+  ELECTRON_HOST_PROTOCOL_VERSION,
+  serveElectronNotebookHost,
+};

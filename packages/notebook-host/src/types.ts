@@ -7,8 +7,8 @@
  * window events, etc. In the Tauri desktop app the implementation
  * routes through `@tauri-apps/api` + plugins; in an Electron embedding it
  * routes through one capability-scoped MessagePort transferred by the trusted
- * host; in the future a WASM-only / browser-served host could implement a
- * subset of this API and no-op the rest.
+ * host. Browser-served hosts implement the subset appropriate to their
+ * capability boundary and no-op the rest.
  *
  * The notebook frontend itself should never import `@tauri-apps/*`
  * directly. Every call site goes through `useNotebookHost()` or a

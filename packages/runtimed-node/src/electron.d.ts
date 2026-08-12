@@ -50,6 +50,7 @@ export interface ElectronHostMethodMap {
 }
 
 export type ElectronHostMethod = keyof ElectronHostMethodMap;
+export const ELECTRON_HOST_METHODS: readonly ElectronHostMethod[];
 export type ElectronHostMethodParams<M extends ElectronHostMethod> =
   ElectronHostMethodMap[M]["params"];
 export type ElectronHostMethodResult<M extends ElectronHostMethod> =

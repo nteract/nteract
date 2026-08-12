@@ -2,12 +2,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createElectronHost } from "../src/electron";
 import {
+  ELECTRON_HOST_METHODS as ELECTRON_MAIN_HOST_METHODS,
   serveElectronNotebookHost,
   type ElectronMainPort,
   type ElectronNotebookHostHandler,
   type ElectronRelaySession,
 } from "@runtimed/node/electron";
-import { ELECTRON_HOST_PROTOCOL_VERSION } from "../src/electron/protocol";
+import {
+  ELECTRON_HOST_METHODS as ELECTRON_RENDERER_HOST_METHODS,
+  ELECTRON_HOST_PROTOCOL_VERSION,
+} from "../src/electron/protocol";
 
 class LinkedRendererPort extends EventTarget {
   peer: LinkedMainPort | null = null;
@@ -132,6 +136,12 @@ afterEach(() => {
 });
 
 describe("Electron notebook host", () => {
+  it("keeps the renderer and main-process method allowlists in sync", () => {
+    expect([...ELECTRON_MAIN_HOST_METHODS].sort()).toEqual(
+      [...ELECTRON_RENDERER_HOST_METHODS].sort(),
+    );
+  });
+
   it("keeps relay frames buffered until the notebook sync listener is ready", async () => {
     const ports = linkedPorts();
     const nativeRelay = fakeRelay();
@@ -357,6 +367,36 @@ describe("Electron notebook host", () => {
 
     ports.renderer.postMessage({ type: "nteract:frame", frame: new Uint8Array([0x00, 1]) });
     await flushMessages();
+    await flushMessages();
+
+    expect(received).toContainEqual({
+      type: "nteract:host-event",
+      event: "transport.status",
+      payload: "offline",
+    });
+    expect(nativeRelay.close).toHaveBeenCalledOnce();
+  });
+
+  it("reports the transport offline and closes when the native relay dies", async () => {
+    const ports = linkedPorts();
+    const nativeRelay = fakeRelay();
+    createElectronHost({
+      port: ports.renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+      },
+    });
+    serveElectronNotebookHost({
+      port: ports.main,
+      relay: nativeRelay.relay,
+      handler: { invoke: vi.fn(async () => undefined) } as unknown as ElectronNotebookHostHandler,
+    });
+    const received: unknown[] = [];
+    ports.renderer.addEventListener("message", (event) => received.push(event.data));
+    ports.renderer.start();
+
+    nativeRelay.emitClose();
     await flushMessages();
 
     expect(received).toContainEqual({
