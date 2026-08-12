@@ -129,6 +129,9 @@ export class ElectronHostClient {
   postFrame(frame: Uint8Array): void {
     if (this.closed) throw new Error("Electron host connection is closed.");
     const copy = frame.slice();
+    // Transfer the copied buffer instead of cloning frame bytes across the
+    // renderer/main boundary. Detaching `copy` is intentional; the caller's
+    // original frame remains untouched.
     this.port.postMessage({ type: "nteract:frame", frame: copy.buffer }, [copy.buffer]);
   }
 

@@ -301,6 +301,7 @@ export function onElectronNotebookFrameReady(
     ) {
       return;
     }
+    window.removeEventListener("message", onMessage);
     options.onReady();
   };
   window.addEventListener("message", onMessage);

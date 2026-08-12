@@ -95,6 +95,18 @@ describe("Electron host connection bootstrap", () => {
       }),
     );
     expect(onReady).toHaveBeenCalledOnce();
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: window,
+        origin: "app://notebook-frame",
+        data: {
+          type: "nteract:electron-host-ready",
+          protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        },
+      }),
+    );
+    expect(onReady).toHaveBeenCalledOnce();
     unlisten();
   });
 });

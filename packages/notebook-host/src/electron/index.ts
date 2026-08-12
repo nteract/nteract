@@ -101,7 +101,7 @@ export function createElectronHost(options: CreateElectronHostOptions): Notebook
   let blobResolver: HostBlobResolver | null = null;
   const blobs: HostBlobs = {
     async port() {
-      return (await blobs.resolver()).port ?? invoke("blobs.getPort", undefined);
+      return invoke("blobs.getPort", undefined);
     },
     async resolver() {
       const port = await invoke("blobs.getPort", undefined);

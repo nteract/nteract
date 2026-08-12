@@ -690,9 +690,6 @@ importers:
 
   packages/notebook-host:
     dependencies:
-      '@runtimed/node':
-        specifier: workspace:*
-        version: link:../runtimed-node
       '@tauri-apps/api':
         specifier: ^2.10.0
         version: 2.10.1
@@ -717,6 +714,10 @@ importers:
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2
+    devDependencies:
+      '@runtimed/node':
+        specifier: workspace:*
+        version: link:../runtimed-node
 
   packages/odometer:
     devDependencies:

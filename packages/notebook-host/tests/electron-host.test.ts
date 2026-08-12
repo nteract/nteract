@@ -6,7 +6,7 @@ import {
   type ElectronMainPort,
   type ElectronNotebookHostHandler,
   type ElectronRelaySession,
-} from "../src/electron/main";
+} from "@runtimed/node/electron";
 import { ELECTRON_HOST_PROTOCOL_VERSION } from "../src/electron/protocol";
 
 class LinkedRendererPort extends EventTarget {
