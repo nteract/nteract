@@ -405,6 +405,7 @@ export function SiftTable({
     if (!hasFooterControl) return undefined;
     if (!footerControlRef.current) {
       footerControlRef.current = document.createElement("div");
+      footerControlRef.current.className = "sift-footer-control";
       footerControlRootRef.current = createRoot(footerControlRef.current);
     }
     return footerControlRef.current;
@@ -437,6 +438,7 @@ export function SiftTable({
         {previewNotice && (
           <span
             className="sift-preview-hint"
+            role="note"
             title={previewNotice.title}
             aria-label={`${previewNotice.label}. ${previewNotice.title}`}
           >

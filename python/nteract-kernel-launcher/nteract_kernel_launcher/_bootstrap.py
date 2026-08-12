@@ -81,6 +81,9 @@ _ARROW_REPR_MAX_ROWS = int(os.environ.get("NTERACT_ARROW_REPR_MAX_ROWS", "50000"
 # Deliberately small: enough rows to estimate variable-width data without
 # making the safety probe itself a meaningful materialization cost.
 _DATASET_ARROW_PROBE_ROWS = 8
+# Re-measure at each prefix instead of jumping from the probe straight to the
+# estimated head. Eight keeps the cumulative work close to the final prefix.
+_DATASET_ARROW_PROBE_GROWTH = 8
 _PLOTLY_RENDERER_ENTRYPOINTS = frozenset(
     {"plotly.express", "plotly.graph_objects", "plotly.graph_objs"}
 )
@@ -238,6 +241,34 @@ def _dataset_head_rows_from_probe(table: Any, *, total_rows: int) -> int:
     return min(selected_rows, max(1, hard_rows))
 
 
+def _dataset_logical_arrow_head(arrow_view: Any, *, total_rows: int) -> Any:
+    """Materialize an estimated Dataset head through geometric prefix growth."""
+    max_rows = max(0, min(total_rows, _ARROW_REPR_MAX_ROWS))
+    requested_rows = min(max_rows, _DATASET_ARROW_PROBE_ROWS)
+    table = arrow_view[:requested_rows]
+
+    while table.num_rows < max_rows:
+        selected_rows = _dataset_head_rows_from_probe(table, total_rows=total_rows)
+        if selected_rows <= table.num_rows:
+            break
+
+        next_rows = min(
+            selected_rows,
+            max_rows,
+            max(table.num_rows + 1, table.num_rows * _DATASET_ARROW_PROBE_GROWTH),
+        )
+        if next_rows <= requested_rows:
+            break
+
+        widened = arrow_view[:next_rows]
+        requested_rows = next_rows
+        if widened.num_rows <= table.num_rows:
+            break
+        table = widened
+
+    return table
+
+
 def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
     """Emit Arrow IPC bytes + HF features summary for a ``datasets.Dataset``.
 
@@ -265,16 +296,10 @@ def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
 
     try:
         arrow_view = ds.with_format("arrow")
-        probe_stop = min(
-            total_rows if total_rows is not None else _ARROW_REPR_MAX_ROWS,
-            _ARROW_REPR_MAX_ROWS,
-            _DATASET_ARROW_PROBE_ROWS,
+        table = _dataset_logical_arrow_head(
+            arrow_view,
+            total_rows=total_rows if total_rows is not None else _ARROW_REPR_MAX_ROWS,
         )
-        table = arrow_view[:probe_stop]
-        measured_total_rows = total_rows if total_rows is not None else table.num_rows
-        selected_rows = _dataset_head_rows_from_probe(table, total_rows=measured_total_rows)
-        if selected_rows > table.num_rows:
-            table = arrow_view[:selected_rows]
     except Exception as exc:  # noqa: BLE001
         log.debug("dataset logical Arrow materialization failed: %s", exc)
         try:
