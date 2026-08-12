@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./browser": "./src/browser/index.ts",
+    "./electron": "./src/electron/index.ts",
     "./tauri": "./src/tauri/index.ts"
   },
   "dependencies": {
@@ -28,5 +29,8 @@
     "@tauri-apps/plugin-log": { "optional": true },
     "@tauri-apps/plugin-shell": { "optional": true },
     "@tauri-apps/plugin-updater": { "optional": true }
+  },
+  "devDependencies": {
+    "@runtimed/node": "workspace:*"
   }
 }

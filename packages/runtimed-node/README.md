@@ -94,6 +94,35 @@ It invokes JavaScript frame handlers serially to preserve ordering, so handlers
 should forward or copy a frame promptly rather than perform expensive work
 inline.
 
+Electron hosts can attach that relay directly to one transferred
+`MessagePortMain` without opening a loopback listener:
+
+```js
+const { MessageChannelMain } = require("electron");
+const { createRelay } = require("@runtimed/node/relay");
+const { serveElectronNotebookHost } = require("@runtimed/node/electron");
+
+const relay = await createRelay({ notebookId: authorizedNotebookId });
+const { port1, port2 } = new MessageChannelMain();
+
+serveElectronNotebookHost({
+  port: port1,
+  relay,
+  handler: {
+    invoke(method, params) {
+      return invokeAuthorizedHostMethod(method, params);
+    },
+  },
+});
+
+browserWindow.webContents.postMessage("notebook:port", null, [port2]);
+```
+
+`@runtimed/node/electron` validates the host-method allowlist and multiplexes
+opaque protocol-numbered notebook frames, host requests, notifications, and
+events over the port. The embedding host still owns notebook authorization,
+path validation, dialogs, window lifecycle, and output CSP.
+
 The relay is intentionally Electron-free: custom protocols, CSP, browser-peer
 authentication, window lifecycle, and daemon installation remain
 responsibilities of the embedding host. `connectRelay(notebookId)` is an

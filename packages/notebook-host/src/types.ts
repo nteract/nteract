@@ -5,10 +5,10 @@
  * side-effecting call that depends on where it's running — reading the
  * daemon connection, opening files, showing dialogs, listening for
  * window events, etc. In the Tauri desktop app the implementation
- * routes through `@tauri-apps/api` + plugins; in the (coming) Electron
- * host it routes through `window.electronHost` exposed by the preload
- * contextBridge; in the future a WASM-only / browser-served host could
- * implement a subset of this API and no-op the rest.
+ * routes through `@tauri-apps/api` + plugins; in an Electron embedding it
+ * routes through one capability-scoped MessagePort transferred by the trusted
+ * host. Browser-served hosts implement the subset appropriate to their
+ * capability boundary and no-op the rest.
  *
  * The notebook frontend itself should never import `@tauri-apps/*`
  * directly. Every call site goes through `useNotebookHost()` or a
@@ -438,6 +438,12 @@ export interface HostSettings {
  */
 export interface NotebookHost {
   readonly name: "tauri" | "electron" | "browser" | (string & {});
+  /**
+   * Standalone isolated-output document supplied by the host. Embedded hosts
+   * should set this so output iframes do not fall back to `srcdoc`, whose CSP
+   * is intersected with the parent document's policy.
+   */
+  readonly outputDocumentUrl?: string;
   readonly transport: NotebookTransport;
   readonly daemon: HostDaemon;
   readonly daemonEvents: HostDaemonEvents;
