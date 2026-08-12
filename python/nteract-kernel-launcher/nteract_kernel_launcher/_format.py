@@ -71,13 +71,15 @@ def build_arrow_stream_summary(
     total_rows: int | None,
     included_rows: int,
     complete: bool,
+    sampled: bool | None = None,
 ) -> dict[str, Any]:
-    """Build the shared row-summary fields for an Arrow stream manifest."""
-    sampled = total_rows is not None and included_rows != total_rows
+    """Build row-summary fields, with an explicit sampling override when known."""
+    if sampled is None:
+        sampled = (total_rows is not None and included_rows != total_rows) or not complete
     return {
         "total_rows": total_rows if total_rows is not None else included_rows,
         "included_rows": included_rows,
-        "sampled": sampled or not complete,
+        "sampled": sampled,
         "sample_strategy": "none" if complete and not sampled else "head",
     }
 

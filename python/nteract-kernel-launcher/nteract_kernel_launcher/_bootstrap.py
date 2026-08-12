@@ -228,7 +228,7 @@ def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
             return None
 
     try:
-        table = ds.with_format("arrow")[:]
+        table = ds.with_format("arrow")[:_ARROW_REPR_MAX_ROWS]
     except Exception as exc:  # noqa: BLE001
         log.debug("dataset logical Arrow materialization failed: %s", exc)
         try:
@@ -306,7 +306,9 @@ def _emit_arrow_stream(
     included_rows = sum(chunk.row_count for chunk in chunks)
     if total_rows is None:
         total_rows = included_rows
-    complete = stream_complete and included_rows == total_rows
+    sampled = not stream_complete or included_rows != total_rows
+    # Automatic reprs publish exactly one manifest. The chunk list is therefore
+    # final even when it intentionally represents only a bounded head.
 
     def _summary(included: int, sampled: bool) -> str:
         if summary_fn is not None:
@@ -330,14 +332,16 @@ def _emit_arrow_stream(
             included_rows=included_rows,
             record_batch_count=chunk.record_batch_count,
             summary_fn=_summary,
-            complete=complete,
+            complete=True,
+            sampled=sampled,
         )
 
     return _emit_arrow_stream_chunks(
         chunks,
         total_rows=total_rows,
         summary_fn=_summary,
-        complete=complete,
+        complete=True,
+        sampled=sampled,
     )
 
 
@@ -347,6 +351,7 @@ def _emit_arrow_stream_chunks(
     total_rows: int,
     summary_fn: Callable[[int, bool], str],
     complete: bool,
+    sampled: bool | None = None,
 ) -> dict:
     """Emit a multi-chunk Arrow stream manifest."""
     if not chunks:
@@ -356,6 +361,7 @@ def _emit_arrow_stream_chunks(
         total_rows=total_rows,
         included_rows=included_rows,
         complete=complete,
+        sampled=sampled,
     )
     sampled = summary_hints["sampled"]
     llm_text: str | None = None
@@ -469,6 +475,7 @@ def _emit_table_bytes(
     record_batch_count: int | None = None,
     summary_fn: Callable[[int, bool], str],
     complete: bool | None = None,
+    sampled: bool | None = None,
 ) -> dict:
     """Stash bytes, build the ref bundle, attach a summary.
 
@@ -481,6 +488,7 @@ def _emit_table_bytes(
         total_rows=total_rows,
         included_rows=included_rows,
         complete=complete,
+        sampled=sampled,
     )
     sampled = summary_hints["sampled"]
     llm_text: str | None = None

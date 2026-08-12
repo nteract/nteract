@@ -881,7 +881,7 @@ def test_large_arrow_table_emits_bounded_head_with_honest_manifest(monkeypatch):
 
     assert bundle is not None
     manifest = bundle[ARROW_STREAM_MANIFEST_MIME]
-    assert manifest["complete"] is False
+    assert manifest["complete"] is True
     assert manifest["summary"] == {
         "total_rows": 20,
         "included_rows": 2,
@@ -980,6 +980,35 @@ def test_unmeasurable_table_degrades_instead_of_raising(monkeypatch):
 
     bundle = _bootstrap._arrow_stream_mimebundle(table)
     assert bundle is not None
+    manifest = bundle[_format.ARROW_STREAM_MANIFEST_MIME]
+    assert manifest["complete"] is True
+    assert manifest["summary"]["sampled"] is False
+
+
+def test_bounded_unknown_length_stream_is_final_but_sampled(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    table = pa.table({"value": list(range(20))})
+    monkeypatch.setattr(_bootstrap, "arrow_stream_row_count", lambda source: None)
+    monkeypatch.setattr(_bootstrap, "_bounded_arrow_table", lambda source, **limits: None)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MIN_ROWS", 2)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 1_000_000)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 5)
+
+    bundle = _bootstrap._arrow_stream_mimebundle(table)
+
+    assert bundle is not None
+    manifest = bundle[ARROW_STREAM_MANIFEST_MIME]
+    assert manifest["complete"] is True
+    assert manifest["summary"] == {
+        "total_rows": 5,
+        "included_rows": 5,
+        "sampled": True,
+        "sample_strategy": "head",
+    }
 
 
 def test_skinny_arrow_rows_clamp_down_to_max_rows(monkeypatch):
@@ -1180,6 +1209,42 @@ def test_dataset_mimebundle_applies_logical_indices_mapping():
         "included_rows": 3,
         "sampled": False,
         "sample_strategy": "none",
+    }
+
+
+def test_dataset_mimebundle_caps_rows_before_logical_arrow_materialization(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    requested = []
+
+    class FakeDataset:
+        num_rows = 1_000_000
+        data = SimpleNamespace(table=object())
+
+        def with_format(self, format_name):
+            assert format_name == "arrow"
+            return self
+
+        def __getitem__(self, key):
+            requested.append(key)
+            return pa.table({"value": list(range(key.stop))})
+
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 5)
+    monkeypatch.setattr(_bootstrap, "summarize_dataset", lambda dataset: "dataset summary")
+
+    bundle = _bootstrap._dataset_mimebundle(FakeDataset())
+
+    assert bundle is not None
+    assert requested == [slice(None, 5, None)]
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["complete"] is True
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["summary"] == {
+        "total_rows": 1_000_000,
+        "included_rows": 5,
+        "sampled": True,
+        "sample_strategy": "head",
     }
 
 

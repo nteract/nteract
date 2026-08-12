@@ -1223,7 +1223,7 @@ export function OutputRenderersExample() {
               </div>
               <div className="mt-1 text-xs leading-5 text-fd-muted-foreground">
                 The manifest points at a docs-served Arrow IPC chunk and exercises SiftTable's
-                appendable WASM store without daemon blob resolution.
+                terminal head-sample state without daemon blob resolution.
               </div>
             </div>
           </div>

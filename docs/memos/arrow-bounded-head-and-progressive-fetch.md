@@ -110,17 +110,17 @@ to the explicit `display_arrow_stream` helper.
 `_emit_arrow_stream` takes a total byte budget alongside the existing per-chunk
 size and stops draining the iterator when the budget is spent.
 
-The manifest states what it did. `_summary_hints` already computed the right
-shape, so the producer sets `complete: false`, `sampled: true`,
+The manifest states what it did. The producer sets `complete: true` because the
+one-shot manifest is final, alongside `sampled: true`,
 `sample_strategy: "head"`, and a truthful `total_rows` against a smaller
-`included_rows`. Consumers that already read `summary` needed no change.
+`included_rows`. Consumers use the summary to explain the cap separately from
+their manifest-loading state.
 
-`total_rows` is exact only when `complete` is true. A source that cannot report
-its length, such as an unbounded `RecordBatchReader`, produces a manifest whose
-`total_rows` equals `included_rows` while more rows exist. Learning the true
-total would mean draining the stream, which is the cost this work exists to
-avoid, so `total_rows` is defined as a lower bound whenever `complete` is
-false. Consumers read `complete` before presenting it as a total. Recorded in
+`complete` belongs to manifest lifecycle, while `sampled` describes dataset
+coverage. A source that cannot report its length, such as an unbounded
+`RecordBatchReader`, produces a terminal sampled manifest whose `total_rows`
+equals `included_rows` as a lower bound. Learning the true total would mean
+draining the stream, which is the cost this work exists to avoid. Recorded in
 `adr/arrow-c-stream-output-protocol.md`.
 
 The size rule is a clamp, not a plain budget. Measured row sizes span roughly
@@ -143,6 +143,10 @@ rows = clamp(byte_budget / bytes_per_row, MIN_ROWS, MAX_ROWS)
 With `MIN_ROWS = 100`, `byte_budget = 16 MiB`, and `MAX_ROWS = 50_000`, images
 clamp up to 100 rows and both text and skinny clamp down to 50,000.
 
+The Hugging Face `Dataset` adapter applies `MAX_ROWS` to the logical dataset
+slice before Arrow materialization. This preserves selected/shuffled row order
+without first asking `datasets` to materialize the entire logical dataset.
+
 `MIN_ROWS` makes the byte budget soft, so it needs a hard ceiling above it or a
 5 MB/row video dataset would send 500 MB to honor the floor. `_MAX_PAYLOAD_BYTES`
 is already declared at 90 MiB and currently unreachable; this is the job it was
@@ -152,9 +156,10 @@ written for. When the floor exceeds it, the slice shrinks below `MIN_ROWS`.
 element-height limits on million-row tables (`arrow-native-outputs.md`), so the
 renderer should not receive unbounded rows even when they are cheap.
 
-The renderer still needs to distinguish "still arriving" from "capped here" in
-the footer. `complete: false` flows to `setStreamingDone` either way, so that
-distinction is not yet surfaced to the reader. See open question 1.
+The renderer distinguishes "still arriving" from "capped here" using
+`complete`, and surfaces the independent sampling state from `summary` in the
+footer. A terminal capped head removes the streaming runner and says how many
+rows are shown.
 
 This trades a stability win for a capability regression: previously you
 eventually got all 3000 rows, and now you get the head with no path to more.
@@ -237,15 +242,11 @@ now" is the question to settle before the shape is fixed.
 
 ## Open Questions
 
-1. Whether `complete: false` alone is enough for the renderer to distinguish a
-   capped table from one still receiving chunks, or whether the summary needs an
-   explicit reason. This also governs how the footer should present an open
-   manifest, given that `total_rows` is only a lower bound there.
-2. The `nteract.dx.*` comm namespace predates the launcher owning this path.
+1. The `nteract.dx.*` comm namespace predates the launcher owning this path.
    New launcher config uses `NTERACT_ARROW_REPR_*`; whether the reserved comm
    namespace should follow is open, and renaming it carries a compatibility
    cost the new env vars did not.
-3. Step 3 retention, per above.
-4. Whether `MIN_ROWS`, `byte_budget`, and `MAX_ROWS` should be configurable per
+2. Step 3 retention, per above.
+3. Whether `MIN_ROWS`, `byte_budget`, and `MAX_ROWS` should be configurable per
    host. Hosted viewers pay real network cost for a budget that is nearly free
    on a desktop loopback blob server.

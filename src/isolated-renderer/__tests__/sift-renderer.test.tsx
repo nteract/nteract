@@ -15,7 +15,9 @@ const siftMocks = vi.hoisted(() => ({
 vi.mock("@nteract/sift", () => ({
   setWasmUrl: siftMocks.setWasmUrl,
   SiftFocusStatus: () => null,
-  SiftTable: () => <div data-testid="sift-table" />,
+  SiftTable: ({ source }: { source: unknown }) => (
+    <div data-testid="sift-table" data-source={JSON.stringify(source)} />
+  ),
 }));
 
 describe("Sift renderer plugin", () => {
@@ -167,5 +169,47 @@ describe("Sift renderer plugin", () => {
     } finally {
       HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
     }
+  });
+
+  it("passes capped-sample summary metadata through to Sift", () => {
+    let Renderer: ComponentType<RendererProps> | undefined;
+    install({
+      register: (_mimeTypes, component) => {
+        Renderer = component;
+      },
+      registerPattern: vi.fn(),
+      getHostContext: () => undefined,
+      subscribeHostContext: () => () => undefined,
+    });
+
+    expect(Renderer).toBeDefined();
+    render(
+      <Renderer
+        data={{
+          chunks: [{ url: "https://notebooks.example/blobs/capped-head", row_count: 50_000 }],
+          complete: true,
+          summary: {
+            total_rows: 100_000,
+            included_rows: 50_000,
+            sampled: true,
+            sample_strategy: "head",
+          },
+        }}
+        mimeType="application/vnd.nteract.arrow-stream-manifest+json"
+      />,
+    );
+
+    expect(JSON.parse(screen.getByTestId("sift-table").dataset.source ?? "null")).toMatchObject({
+      kind: "arrow-stream-manifest",
+      manifest: {
+        complete: true,
+        summary: {
+          total_rows: 100_000,
+          included_rows: 50_000,
+          sampled: true,
+          sample_strategy: "head",
+        },
+      },
+    });
   });
 });

@@ -117,22 +117,24 @@ Summary hints in manifests should be cheap and explicit:
 }
 ```
 
-The automatic repr path emits a bounded head rather than the whole table, so
-the manifest says so rather than pretending the table is complete:
-`complete: false`, `sampled: true`, `sample_strategy: "head"`, and a smaller
-`included_rows`. See `memos/arrow-bounded-head-and-progressive-fetch.md` for
-the size rule that picks the head.
+`complete` describes the manifest lifecycle: `false` means more chunk-manifest
+updates may arrive for the same display, and `true` means the current chunk list
+is final. Dataset coverage is separate. The automatic repr path emits a bounded
+head with `complete: true`, `sampled: true`, `sample_strategy: "head"`, and a
+smaller `included_rows`; it is a terminal sample, not an open stream. See
+`memos/arrow-bounded-head-and-progressive-fetch.md` for the size rule that picks
+the head.
 
-`total_rows` is exact only when `complete` is true. When `complete` is false it
-is a lower bound: a source that cannot report its length, such as an unbounded
-`RecordBatchReader`, yields a manifest whose `total_rows` equals
-`included_rows` even though more rows exist. Counting the true total would mean
+When the producer knows the source length, `total_rows` is exact even for a
+sample. A source that cannot report its length, such as an unbounded
+`RecordBatchReader`, yields a terminal sampled manifest whose `total_rows`
+equals `included_rows` as a lower bound. Counting the true total would mean
 draining the stream, which is the cost the bounded head exists to avoid.
 
-Consumers must therefore read `complete` before presenting `total_rows` as a
-total. Rendering "`included_rows` of `total_rows`" is correct for a complete
-manifest and misleading for an open one, where "`included_rows` loaded, more
-available" is the honest phrasing.
+Consumers use `complete` for loading state and `sampled` for dataset coverage.
+They should render "`included_rows` of `total_rows` shown" only when the known
+total exceeds the included count; a sampled manifest with equal counts should
+say that the shown row count is a head sample without claiming an exact total.
 
 ## Decision 6: Vendor MIME is the incubation boundary
 
