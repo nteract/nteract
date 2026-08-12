@@ -1,16 +1,18 @@
 import type {
   ElectronHostEvent,
+  ElectronHostEventMessage,
   ElectronHostEventMap,
   ElectronHostFailureMessage,
+  ElectronHostFrameMessage,
   ElectronHostMethod,
   ElectronHostMethodParams,
   ElectronHostMethodResult,
   ElectronHostNotification,
-  ElectronHostPortMessage,
   ElectronHostSuccessMessage,
 } from "./protocol";
 
-type PortListener = (message: ElectronHostPortMessage) => void;
+type ElectronHostInboundMessage = ElectronHostFrameMessage | ElectronHostEventMessage;
+type PortListener = (message: ElectronHostInboundMessage) => void;
 
 interface PendingRequest {
   resolve(value: unknown): void;
@@ -34,6 +36,20 @@ function isResponseMessage(
     return false;
   }
   return value.ok || typeof value.error === "string";
+}
+
+function isInboundMessage(value: unknown): value is ElectronHostInboundMessage {
+  if (!isRecord(value)) return false;
+  if (value.type === "nteract:frame") {
+    return (
+      value.frame instanceof ArrayBuffer ||
+      value.frame instanceof Uint8Array ||
+      (Array.isArray(value.frame) && value.frame.every((byte) => Number.isInteger(byte)))
+    );
+  }
+  return (
+    value.type === "nteract:host-event" && typeof value.event === "string" && "payload" in value
+  );
 }
 
 /**
@@ -154,10 +170,10 @@ export class ElectronHostClient {
       return;
     }
 
-    if (!isRecord(message) || typeof message.type !== "string") return;
+    if (!isInboundMessage(message)) return;
     for (const listener of Array.from(this.listeners)) {
       try {
-        listener(message as ElectronHostPortMessage);
+        listener(message);
       } catch (error) {
         console.error("[electron-host] port listener failed:", error);
       }

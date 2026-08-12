@@ -1,4 +1,9 @@
-import { createHttpBlobResolver, NotebookClient, type NotebookResponse } from "runtimed";
+import {
+  createHttpBlobResolver,
+  NotebookClient,
+  type NotebookResponse,
+  type SaveBlockedReason,
+} from "runtimed";
 import { createCommandRegistry } from "../commands";
 import type {
   HostBlobResolver,
@@ -22,6 +27,21 @@ import {
 import { ElectronTransport } from "./transport";
 
 export interface CreateElectronHostOptions extends ElectronHostConnection {}
+
+function describeSaveBlockedReason(reason: SaveBlockedReason): string {
+  switch (reason.type) {
+    case "path_already_open":
+      return `Another notebook session already has ${reason.path} open.`;
+    case "sequence_exhausted":
+      return "The notebook save sequence was exhausted.";
+    case "superseded":
+      return `The notebook save was superseded by sequence ${reason.latest_sequence}.`;
+    case "source_conflict":
+    case "source_degraded":
+    case "io":
+      return reason.message;
+  }
+}
 
 /**
  * Construct the notebook host used inside an Electron-owned iframe.
@@ -167,7 +187,8 @@ export function createElectronHost(options: CreateElectronHostOptions): Notebook
       getDefaultSaveDirectory: () => invoke("notebook.getDefaultSaveDirectory", undefined),
       async saveAs(path) {
         const outcome = await notebookClient.saveNotebook({ formatCells: true, path });
-        if (outcome.outcome === "blocked") throw new Error(outcome.reason);
+        if (outcome.outcome === "blocked")
+          throw new Error(describeSaveBlockedReason(outcome.reason));
       },
       openInNewWindow: (path) => invoke("notebook.openInNewWindow", { path }),
       openHostedInNewWindow: (url) => invoke("notebook.openHostedInNewWindow", { url }),

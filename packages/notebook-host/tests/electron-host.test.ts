@@ -210,6 +210,53 @@ describe("Electron notebook host", () => {
     await server.close();
   });
 
+  it("surfaces structured save blockers as useful errors", async () => {
+    const ports = linkedPorts();
+    const nativeRelay = fakeRelay();
+    const handler = {
+      invoke: vi.fn(async () => undefined),
+    } as unknown as ElectronNotebookHostHandler;
+    const server = serveElectronNotebookHost({
+      port: ports.main,
+      relay: nativeRelay.relay,
+      handler,
+    });
+    const host = createElectronHost({
+      port: ports.renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+      },
+    });
+
+    nativeRelay.onSend((frame) => {
+      if (frame[0] !== 0x01) return;
+      const request = JSON.parse(new TextDecoder().decode(frame.slice(1))) as { id: string };
+      const response = new TextEncoder().encode(
+        JSON.stringify({
+          id: request.id,
+          result: "notebook_save_blocked",
+          save_sequence: 1,
+          reason: {
+            type: "path_already_open",
+            uuid: "other-session",
+            path: "/tmp/shared.ipynb",
+          },
+        }),
+      );
+      const responseFrame = new Uint8Array(1 + response.length);
+      responseFrame[0] = 0x02;
+      responseFrame.set(response, 1);
+      nativeRelay.emitFrame(responseFrame);
+    });
+    await host.relay.notifySyncReady();
+
+    await expect(host.notebook.saveAs("/tmp/shared.ipynb")).rejects.toThrow(
+      "Another notebook session already has /tmp/shared.ipynb open.",
+    );
+    await server.close();
+  });
+
   it("rejects renderer calls when the host handler fails", async () => {
     const ports = linkedPorts();
     const nativeRelay = fakeRelay();
