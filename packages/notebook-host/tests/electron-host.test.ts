@@ -377,10 +377,11 @@ describe("Electron notebook host", () => {
     expect(nativeRelay.close).toHaveBeenCalledOnce();
   });
 
-  it("reports the transport offline and closes when the native relay dies", async () => {
+  it("reports native relay death without closing the port needed to reconnect", async () => {
     const ports = linkedPorts();
     const nativeRelay = fakeRelay();
-    createElectronHost({
+    const invoke = vi.fn(async () => undefined);
+    const host = createElectronHost({
       port: ports.renderer,
       bootstrap: {
         protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
@@ -390,7 +391,7 @@ describe("Electron notebook host", () => {
     serveElectronNotebookHost({
       port: ports.main,
       relay: nativeRelay.relay,
-      handler: { invoke: vi.fn(async () => undefined) } as unknown as ElectronNotebookHostHandler,
+      handler: { invoke } as unknown as ElectronNotebookHostHandler,
     });
     const received: unknown[] = [];
     ports.renderer.addEventListener("message", (event) => received.push(event.data));
@@ -404,7 +405,10 @@ describe("Electron notebook host", () => {
       event: "transport.status",
       payload: "offline",
     });
-    expect(nativeRelay.close).toHaveBeenCalledOnce();
+    expect(nativeRelay.close).not.toHaveBeenCalled();
+
+    await host.daemon.reconnect({ force: true });
+    expect(invoke).toHaveBeenCalledWith("daemon.reconnect", { force: true });
   });
 
   it("closes the relay when the notebook transport disconnects", async () => {

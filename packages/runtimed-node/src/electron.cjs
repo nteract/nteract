@@ -139,7 +139,8 @@ function serveElectronNotebookHost(options) {
   const unlistenClose = options.relay.onClose(() => {
     relayClosed = true;
     emitEvent("transport.status", "offline");
-    closeBestEffort();
+    // Keep the capability port alive: Electron hosts may replace the native
+    // relay when the renderer invokes daemon.reconnect over this same port.
   });
 
   options.port.on("message", onPortMessage);
