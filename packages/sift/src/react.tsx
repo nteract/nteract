@@ -16,7 +16,7 @@
  * cleaning up on unmount.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   applyColumnOverrides,
@@ -126,15 +126,36 @@ function arrowStreamIdentityKey(manifest: ArrowStreamManifest): string | null {
   return first ? `${first.url}\u0001${first.row_count ?? ""}` : null;
 }
 
-function arrowStreamSampleLabel(manifest: ArrowStreamManifest | undefined): string | null {
+type ArrowStreamPreviewNotice = {
+  label: string;
+  title: string;
+};
+
+function arrowStreamPreviewNotice(
+  manifest: ArrowStreamManifest | undefined,
+): ArrowStreamPreviewNotice | null {
   if (manifest?.complete === false || manifest?.summary?.sampled !== true) return null;
   const included = manifest.summary.included_rows;
   const total = manifest.summary.total_rows;
-  if (typeof included !== "number" || !Number.isFinite(included)) return "Head sample";
-  if (typeof total === "number" && Number.isFinite(total) && total > included) {
-    return `${included.toLocaleString()} of ${total.toLocaleString()} rows shown · head sample`;
+  const isHead = manifest.summary.sample_strategy === "head";
+  let label = "Showing a bounded preview";
+  if (typeof included === "number" && Number.isFinite(included)) {
+    const shown = included.toLocaleString();
+    if (typeof total === "number" && Number.isFinite(total) && total > included) {
+      label = isHead
+        ? `Showing first ${shown} of ${total.toLocaleString()} rows`
+        : `Showing ${shown} of ${total.toLocaleString()} rows`;
+    } else {
+      label = isHead
+        ? `Showing first ${shown} rows · total unknown`
+        : `Showing ${shown} rows · total unknown`;
+    }
   }
-  return `${included.toLocaleString()} rows shown · head sample`;
+
+  return {
+    label,
+    title: "Sorting, filtering, and column summaries use only the rows shown in this preview.",
+  };
 }
 
 /**
@@ -347,7 +368,8 @@ export function SiftTable({
   const dataSource = source?.kind === "table-data" ? source.data : data;
   const urlSource = source?.kind === "url" ? source.url : url;
   const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
-  const sampleLabel = arrowStreamSampleLabel(manifestSource);
+  const previewNotice = useMemo(() => arrowStreamPreviewNotice(manifestSource), [manifestSource]);
+  const isBoundedPreview = previewNotice !== null;
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TableEngine | null>(null);
   const engineDivRef = useRef<HTMLDivElement | null>(null);
@@ -400,24 +422,34 @@ export function SiftTable({
     return engineDivRef.current;
   }, []);
 
+  const markPreviewLoaded = useCallback(() => {
+    if (!isBoundedPreview) return;
+    const indicator = engineDivRef.current?.querySelector<HTMLElement>(".sift-status-indicator");
+    if (indicator) indicator.title = "Preview loaded";
+  }, [isBoundedPreview]);
+
   useEffect(() => {
     if (hasFooterControl) {
       getFooterControlElement();
     }
     footerControlRootRef.current?.render(
       <>
-        {sampleLabel && (
+        {previewNotice && (
           <span
-            className="sift-sample-hint"
-            title="The automatic table display is capped for safety."
+            className="sift-preview-hint"
+            title={previewNotice.title}
+            aria-label={`${previewNotice.label}. ${previewNotice.title}`}
           >
-            {sampleLabel}
+            <span>{previewNotice.label}</span>
+            <span className="sift-preview-scope" aria-hidden="true">
+              {" · Table tools use shown rows"}
+            </span>
           </span>
         )}
         {footerControl}
       </>,
     );
-  }, [footerControl, getFooterControlElement, hasFooterControl, sampleLabel]);
+  }, [footerControl, getFooterControlElement, hasFooterControl, previewNotice]);
 
   useEffect(() => {
     return () => {
@@ -603,6 +635,7 @@ export function SiftTable({
         } else {
           engineRef.current?.setStreamingDone();
         }
+        markPreviewLoaded();
         emitLoadMilestone(startedAt, {
           source: "arrow-stream-manifest",
           phase: "streaming-complete",
@@ -762,6 +795,7 @@ export function SiftTable({
     getFooterControlElement,
     getEngineElement,
     emitLoadMilestone,
+    markPreviewLoaded,
   ]);
 
   // Load from URL when `url` prop is provided.

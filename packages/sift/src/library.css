@@ -1130,10 +1130,20 @@
   margin-right: 6px;
 }
 
-.sift-sample-hint {
+.sift-preview-hint {
+  min-width: 0;
+  max-width: min(620px, 62vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--sift-muted);
   font: 500 11px/1.2 var(--sift-font);
   white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .sift-preview-scope {
+    display: none;
+  }
 }
 
 .sift-focus-hint {
