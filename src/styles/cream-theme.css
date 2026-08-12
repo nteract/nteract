@@ -18,7 +18,7 @@
 [data-color-theme="cream"] {
   --background: #f5f2ec;
   --foreground: #1e1a18;
-  --card: #fffdf9;
+  --card: #f5f2ec;
   --card-foreground: #1e1a18;
   --popover: #fffdf9;
   --popover-foreground: #1e1a18;
@@ -32,6 +32,8 @@
   --accent-foreground: #1e1a18;
   --destructive: #c4513a;
   --destructive-foreground: #fffdf9;
+  --info: #ebe6df;
+  --info-foreground: #1e1a18;
   --border: #d8cec3;
   --input: #d8cec3;
   --ring: #955f3b;
@@ -171,6 +173,8 @@
   --accent-foreground: #e8e2dc;
   --destructive: #e07a64;
   --destructive-foreground: #1a1816;
+  --info: #3a3533;
+  --info-foreground: #e8e2dc;
   --border: rgba(255, 255, 255, 0.1);
   --input: rgba(255, 255, 255, 0.15);
   --ring: #d4896a;
@@ -310,6 +314,8 @@
     --accent-foreground: #e8e2dc;
     --destructive: #e07a64;
     --destructive-foreground: #1a1816;
+    --info: #1e2e42;
+    --info-foreground: #96adc8;
     --border: rgba(255, 255, 255, 0.1);
     --input: rgba(255, 255, 255, 0.15);
     --ring: #d4896a;
