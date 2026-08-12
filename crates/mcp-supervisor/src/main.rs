@@ -36,7 +36,7 @@ use rmcp::model::{
 use rmcp::schemars;
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
-use runt_mcp_proxy::{McpProxy, ProxyConfig};
+use runt_mcp_proxy::{mcp_apps_extension_capabilities, McpProxy, ProxyConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, Notify, RwLock};
@@ -1861,6 +1861,7 @@ impl ServerHandler for Supervisor {
                 .enable_tool_list_changed()
                 .enable_resources()
                 .enable_resources_list_changed()
+                .enable_extensions_with(mcp_apps_extension_capabilities())
                 .build(),
         )
         .with_server_info(Implementation::new(
@@ -3275,6 +3276,18 @@ mod tests {
 
     fn root() -> PathBuf {
         PathBuf::from("/repo")
+    }
+
+    #[test]
+    fn supervisor_server_info_advertises_mcp_apps_extension() {
+        let (tool_list_changed_tx, _tool_list_changed_rx) = mpsc::channel(1);
+        let supervisor =
+            Supervisor::new_empty(root(), DevMode::Attach, root(), None, tool_list_changed_tx);
+        let info = supervisor.get_info();
+
+        assert!(info.capabilities.extensions.as_ref().is_some_and(
+            |extensions| extensions.contains_key(runt_mcp_proxy::MCP_APPS_EXTENSION_ID)
+        ));
     }
 
     // Path-classification: maps a touched file under the project root to

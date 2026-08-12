@@ -669,6 +669,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_output_resource_serializes_standard_mcp_apps_csp() {
+        let server = NteractMcp::new(
+            PathBuf::from("/tmp/missing.sock"),
+            Some("http://localhost:47820".into()),
+            None,
+        );
+
+        let result = read_resource(
+            &server,
+            &ReadResourceRequestParams::new(OUTPUT_RESOURCE_URI),
+        )
+        .await
+        .expect("read output resource");
+        let wire = serde_json::to_value(result).expect("serialize resource result");
+        let content = wire
+            .pointer("/contents/0")
+            .expect("serialized output resource content");
+
+        assert_eq!(
+            content.get("uri"),
+            Some(&serde_json::json!(OUTPUT_RESOURCE_URI))
+        );
+        assert_eq!(
+            content.get("mimeType"),
+            Some(&serde_json::json!(OUTPUT_MIME_TYPE))
+        );
+        assert_eq!(
+            content.pointer("/_meta/ui/csp"),
+            Some(&serde_json::json!({
+                "connectDomains": ["http://localhost:47820"],
+                "resourceDomains": ["http://localhost:47820"],
+                "frameDomains": ["http://localhost:47820"]
+            }))
+        );
+        assert!(content
+            .get("_meta")
+            .and_then(|meta| meta.get("openai/widgetCSP"))
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn list_resources_includes_notebook_collection_resource() {
         let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
 
