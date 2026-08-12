@@ -18,3 +18,17 @@ pub mod tools;
 pub mod version;
 
 pub use proxy::{McpProxy, ProxyConfig};
+
+/// MCP Apps extension identifier negotiated during the MCP initialize handshake.
+pub const MCP_APPS_EXTENSION_ID: &str = "io.modelcontextprotocol/ui";
+
+/// Capabilities shared by every client-facing nteract MCP proxy.
+///
+/// The proxy handles MCP App resources itself, so it must advertise this
+/// capability rather than relying on the lazily-started child server's
+/// initialize response, which is not visible to the upstream client.
+pub fn mcp_apps_extension_capabilities() -> rmcp::model::ExtensionCapabilities {
+    let mut extensions = rmcp::model::ExtensionCapabilities::new();
+    extensions.insert(MCP_APPS_EXTENSION_ID.to_string(), serde_json::Map::new());
+    extensions
+}

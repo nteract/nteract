@@ -938,6 +938,7 @@ impl ServerHandler for McpProxy {
                 .enable_tool_list_changed()
                 .enable_resources()
                 .enable_resources_list_changed()
+                .enable_extensions_with(crate::mcp_apps_extension_capabilities())
                 .build(),
         )
         .with_server_info(Implementation::new(
@@ -1146,6 +1147,24 @@ mod tests {
     }
 
     // ── Proxy creation ────────────────────────────────────────────────
+
+    #[test]
+    fn proxy_server_info_advertises_mcp_apps_extension() {
+        let proxy = McpProxy::new(test_config(), None);
+        let info = proxy.get_info();
+
+        assert!(info
+            .capabilities
+            .extensions
+            .as_ref()
+            .is_some_and(|extensions| extensions.contains_key(crate::MCP_APPS_EXTENSION_ID)));
+
+        let wire = serde_json::to_value(info).expect("serialize server info");
+        assert_eq!(
+            wire.pointer("/capabilities/extensions/io.modelcontextprotocol~1ui"),
+            Some(&serde_json::json!({}))
+        );
+    }
 
     #[tokio::test]
     async fn proxy_starts_with_no_child() {
