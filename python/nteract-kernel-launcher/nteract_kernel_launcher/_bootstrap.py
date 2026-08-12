@@ -78,6 +78,8 @@ _ARROW_REPR_BYTE_BUDGET = int(
     os.environ.get("NTERACT_ARROW_REPR_BYTE_BUDGET", str(16 * 1024 * 1024))
 )
 _ARROW_REPR_MAX_ROWS = int(os.environ.get("NTERACT_ARROW_REPR_MAX_ROWS", "50000"))
+# Deliberately small: enough rows to estimate variable-width data without
+# making the safety probe itself a meaningful materialization cost.
 _DATASET_ARROW_PROBE_ROWS = 8
 _PLOTLY_RENDERER_ENTRYPOINTS = frozenset(
     {"plotly.express", "plotly.graph_objects", "plotly.graph_objs"}
@@ -222,7 +224,9 @@ def _dataset_head_rows_from_probe(table: Any, *, total_rows: int) -> int:
     if not isinstance(probe_bytes, int) or probe_bytes < 0:
         return min(probe_rows, max_rows)
     if probe_bytes == 0:
-        return max_rows
+        # A zero-byte report cannot justify a larger request. Keep the probe;
+        # the final serializer will still determine whether it can be emitted.
+        return min(probe_rows, max_rows)
 
     bytes_per_row = max(1, (probe_bytes + probe_rows - 1) // probe_rows)
     budget_rows = _ARROW_REPR_BYTE_BUDGET // bytes_per_row

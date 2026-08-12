@@ -1286,6 +1286,26 @@ def test_dataset_mimebundle_probes_row_weight_before_materializing_logical_head(
     }
 
 
+@pytest.mark.parametrize("probe_bytes", [0, "invalid", RuntimeError("measurement failed")])
+def test_dataset_head_probe_keeps_bounded_rows_when_measurement_is_unusable(
+    monkeypatch, probe_bytes
+):
+    from nteract_kernel_launcher import _bootstrap
+
+    class Probe:
+        num_rows = 8
+
+        @property
+        def nbytes(self):
+            if isinstance(probe_bytes, Exception):
+                raise probe_bytes
+            return probe_bytes
+
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 50_000)
+
+    assert _bootstrap._dataset_head_rows_from_probe(Probe(), total_rows=3_000) == 8
+
+
 def test_dataset_mimebundle_falls_back_to_summary_when_no_table():
     """Streaming / iterable datasets have no ``.data.table``; the formatter
     must keep the legacy text-only behavior so it stays best-effort."""
