@@ -78,6 +78,7 @@ _ARROW_REPR_BYTE_BUDGET = int(
     os.environ.get("NTERACT_ARROW_REPR_BYTE_BUDGET", str(16 * 1024 * 1024))
 )
 _ARROW_REPR_MAX_ROWS = int(os.environ.get("NTERACT_ARROW_REPR_MAX_ROWS", "50000"))
+_DATASET_ARROW_PROBE_ROWS = 8
 _PLOTLY_RENDERER_ENTRYPOINTS = frozenset(
     {"plotly.express", "plotly.graph_objects", "plotly.graph_objs"}
 )
@@ -206,6 +207,33 @@ def _arrow_stream_mimebundle(source: Any, include=None, exclude=None) -> dict | 
     return _emit_arrow_stream(source)
 
 
+def _dataset_head_rows_from_probe(table: Any, *, total_rows: int) -> int:
+    """Choose a logical Dataset head before materializing a large Arrow batch."""
+    max_rows = max(0, min(total_rows, _ARROW_REPR_MAX_ROWS))
+    probe_rows = table.num_rows
+    if max_rows == 0 or probe_rows == 0:
+        return 0
+
+    try:
+        probe_bytes = table.nbytes
+    except Exception as exc:  # noqa: BLE001
+        log.debug("dataset Arrow probe measurement failed: %s", exc)
+        return min(probe_rows, max_rows)
+    if not isinstance(probe_bytes, int) or probe_bytes < 0:
+        return min(probe_rows, max_rows)
+    if probe_bytes == 0:
+        return max_rows
+
+    bytes_per_row = max(1, (probe_bytes + probe_rows - 1) // probe_rows)
+    budget_rows = _ARROW_REPR_BYTE_BUDGET // bytes_per_row
+    hard_rows = _MAX_PAYLOAD_BYTES // bytes_per_row
+    clamped_min_rows = min(_ARROW_REPR_MIN_ROWS, max_rows)
+    selected_rows = min(max_rows, max(clamped_min_rows, budget_rows))
+    # One row is the smallest useful request and is already represented in the
+    # probe. The downstream serializer can still reject a single oversized row.
+    return min(selected_rows, max(1, hard_rows))
+
+
 def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
     """Emit Arrow IPC bytes + HF features summary for a ``datasets.Dataset``.
 
@@ -227,8 +255,22 @@ def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
             log.debug("dataset mimebundle failed: %s", exc)
             return None
 
+    total_rows = getattr(ds, "num_rows", None)
+    if not isinstance(total_rows, int):
+        total_rows = None
+
     try:
-        table = ds.with_format("arrow")[:_ARROW_REPR_MAX_ROWS]
+        arrow_view = ds.with_format("arrow")
+        probe_stop = min(
+            total_rows if total_rows is not None else _ARROW_REPR_MAX_ROWS,
+            _ARROW_REPR_MAX_ROWS,
+            _DATASET_ARROW_PROBE_ROWS,
+        )
+        table = arrow_view[:probe_stop]
+        measured_total_rows = total_rows if total_rows is not None else table.num_rows
+        selected_rows = _dataset_head_rows_from_probe(table, total_rows=measured_total_rows)
+        if selected_rows > table.num_rows:
+            table = arrow_view[:selected_rows]
     except Exception as exc:  # noqa: BLE001
         log.debug("dataset logical Arrow materialization failed: %s", exc)
         try:
@@ -236,8 +278,7 @@ def _dataset_mimebundle(ds: Any, include=None, exclude=None) -> dict | None:
         except Exception:  # noqa: BLE001
             return None
 
-    total_rows = getattr(ds, "num_rows", table.num_rows)
-    if not isinstance(total_rows, int):
+    if total_rows is None:
         total_rows = table.num_rows
     return _emit_arrow_table(table, total_rows=total_rows, summary_fn=summary)
 

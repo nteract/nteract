@@ -1248,6 +1248,44 @@ def test_dataset_mimebundle_caps_rows_before_logical_arrow_materialization(monke
     }
 
 
+def test_dataset_mimebundle_probes_row_weight_before_materializing_logical_head(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    requested = []
+
+    class FakeDataset:
+        num_rows = 3_000
+        data = SimpleNamespace(table=object())
+
+        def with_format(self, format_name):
+            assert format_name == "arrow"
+            return self
+
+        def __getitem__(self, key):
+            requested.append(key)
+            return pa.table({"payload": [b"x" * 16] * key.stop})
+
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MIN_ROWS", 4)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 64)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 50_000)
+    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 2_048)
+    monkeypatch.setattr(_bootstrap, "summarize_dataset", lambda dataset: "dataset summary")
+
+    bundle = _bootstrap._dataset_mimebundle(FakeDataset())
+
+    assert bundle is not None
+    assert requested == [slice(None, 8, None)]
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["summary"] == {
+        "total_rows": 3_000,
+        "included_rows": 4,
+        "sampled": True,
+        "sample_strategy": "head",
+    }
+
+
 def test_dataset_mimebundle_falls_back_to_summary_when_no_table():
     """Streaming / iterable datasets have no ``.data.table``; the formatter
     must keep the legacy text-only behavior so it stays best-effort."""
