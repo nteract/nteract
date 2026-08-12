@@ -123,6 +123,7 @@ export class ElectronTransport implements NotebookTransport {
     if (!this._connected && this.disposers.length === 0) return;
     this.setStatus("offline");
     for (const dispose of this.disposers.splice(0)) dispose();
+    this.client.close();
     this.subscribers.clear();
     this.rejectPendingRequests(new Error("Electron transport disconnected."));
   }

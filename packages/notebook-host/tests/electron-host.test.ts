@@ -17,7 +17,9 @@ class LinkedRendererPort extends EventTarget {
   }
 
   start(): void {}
-  close(): void {}
+  close(): void {
+    this.peer?.deliverClose();
+  }
 }
 
 class LinkedMainPort implements ElectronMainPort {
@@ -313,6 +315,28 @@ describe("Electron notebook host", () => {
     });
 
     (ports.main as LinkedMainPort).deliverClose();
+    await flushMessages();
+
+    expect(nativeRelay.close).toHaveBeenCalledOnce();
+  });
+
+  it("closes the relay when the notebook transport disconnects", async () => {
+    const ports = linkedPorts();
+    const nativeRelay = fakeRelay();
+    serveElectronNotebookHost({
+      port: ports.main,
+      relay: nativeRelay.relay,
+      handler: { invoke: vi.fn(async () => undefined) } as unknown as ElectronNotebookHostHandler,
+    });
+    const host = createElectronHost({
+      port: ports.renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+      },
+    });
+
+    host.transport.disconnect();
     await flushMessages();
 
     expect(nativeRelay.close).toHaveBeenCalledOnce();
