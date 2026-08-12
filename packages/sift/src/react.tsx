@@ -44,9 +44,17 @@ export type ArrowStreamManifestChunk = {
   row_count?: number;
 };
 
+export type ArrowStreamSummary = {
+  total_rows?: number;
+  included_rows?: number;
+  sampled?: boolean;
+  sample_strategy?: string;
+};
+
 export type ArrowStreamManifest = {
   chunks: ArrowStreamManifestChunk[];
   complete?: boolean;
+  summary?: ArrowStreamSummary;
 };
 
 export type SiftSource =
@@ -116,6 +124,17 @@ function arrowStreamManifestKey(manifest: ArrowStreamManifest | undefined): stri
 function arrowStreamIdentityKey(manifest: ArrowStreamManifest): string | null {
   const first = manifest.chunks[0];
   return first ? `${first.url}\u0001${first.row_count ?? ""}` : null;
+}
+
+function arrowStreamSampleLabel(manifest: ArrowStreamManifest | undefined): string | null {
+  if (manifest?.complete === false || manifest?.summary?.sampled !== true) return null;
+  const included = manifest.summary.included_rows;
+  const total = manifest.summary.total_rows;
+  if (typeof included !== "number" || !Number.isFinite(included)) return "Head sample";
+  if (typeof total === "number" && Number.isFinite(total) && total > included) {
+    return `${included.toLocaleString()} of ${total.toLocaleString()} rows shown · head sample`;
+  }
+  return `${included.toLocaleString()} rows shown · head sample`;
 }
 
 /**
@@ -325,6 +344,10 @@ export function SiftTable({
   className,
   style,
 }: SiftTableProps) {
+  const dataSource = source?.kind === "table-data" ? source.data : data;
+  const urlSource = source?.kind === "url" ? source.url : url;
+  const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
+  const sampleLabel = arrowStreamSampleLabel(manifestSource);
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<TableEngine | null>(null);
   const engineDivRef = useRef<HTMLDivElement | null>(null);
@@ -334,7 +357,7 @@ export function SiftTable({
   const footerControlRootRef = useRef<Root | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
-  const hasFooterControl = footerControl != null;
+  const hasFooterControl = footerControl != null || manifestSource != null;
 
   // Stable callback ref to avoid re-mounting engine when onChange identity changes
   const onChangeRef = useRef(onChange);
@@ -381,8 +404,20 @@ export function SiftTable({
     if (hasFooterControl) {
       getFooterControlElement();
     }
-    footerControlRootRef.current?.render(footerControl);
-  }, [footerControl, getFooterControlElement, hasFooterControl]);
+    footerControlRootRef.current?.render(
+      <>
+        {sampleLabel && (
+          <span
+            className="sift-sample-hint"
+            title="The automatic table display is capped for safety."
+          >
+            {sampleLabel}
+          </span>
+        )}
+        {footerControl}
+      </>,
+    );
+  }, [footerControl, getFooterControlElement, hasFooterControl, sampleLabel]);
 
   useEffect(() => {
     return () => {
@@ -400,9 +435,6 @@ export function SiftTable({
     };
   }, []);
 
-  const dataSource = source?.kind === "table-data" ? source.data : data;
-  const urlSource = source?.kind === "url" ? source.url : url;
-  const manifestSource = source?.kind === "arrow-stream-manifest" ? source.manifest : undefined;
   const manifestKey = arrowStreamManifestKey(manifestSource);
 
   // Mount engine when `data` prop is provided directly

@@ -48,7 +48,15 @@ export {
 } from "./filter-schema";
 export type { SiftFocusStatusProps, SiftScrollHandoffCueProps } from "./handoff";
 export { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
-export type { SiftTableHandle, SiftTableProps } from "./react";
+export type {
+  ArrowStreamManifest,
+  ArrowStreamManifestChunk,
+  ArrowStreamSummary,
+  SiftLoadMilestone,
+  SiftSource,
+  SiftTableHandle,
+  SiftTableProps,
+} from "./react";
 // React component
 export { SiftTable, useSiftEngine } from "./react";
 export type {

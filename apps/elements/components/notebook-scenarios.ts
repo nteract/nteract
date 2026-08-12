@@ -107,8 +107,14 @@ export interface ElementsNotebookOutputState {
   siftParquetRows: number;
   siftArrowStreamChunkUrl: string;
   siftArrowStreamManifest: {
-    chunks: { url: string }[];
+    chunks: { url: string; row_count: number }[];
     complete: boolean;
+    summary: {
+      total_rows: number;
+      included_rows: number;
+      sampled: boolean;
+      sample_strategy: string;
+    };
   };
 }
 
@@ -716,8 +722,14 @@ const siftParquetUrl =
 const siftParquetRows = 8;
 const siftArrowStreamChunkUrl = "/fixtures/sift-polars-utf8view.arrow";
 const siftArrowStreamManifest = {
-  chunks: [{ url: siftArrowStreamChunkUrl }],
+  chunks: [{ url: siftArrowStreamChunkUrl, row_count: 100 }],
   complete: true,
+  summary: {
+    total_rows: 100_000,
+    included_rows: 100,
+    sampled: true,
+    sample_strategy: "head",
+  },
 };
 
 const outputState: ElementsNotebookOutputState = {

@@ -282,6 +282,47 @@ describe("SiftTable", () => {
     vi.useFakeTimers();
   });
 
+  it("settles a terminal head sample and explains the display cap", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+      }),
+    );
+
+    const { container } = render(
+      <SiftTable
+        source={{
+          kind: "arrow-stream-manifest",
+          manifest: {
+            chunks: [{ url: "http://127.0.0.1:9000/blob/capped-head", row_count: 50_000 }],
+            complete: true,
+            summary: {
+              total_rows: 100_000,
+              included_rows: 50_000,
+              sampled: true,
+              sample_strategy: "head",
+            },
+          },
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(predicateModule.finish_arrow_stream_store).toHaveBeenCalledWith(9);
+      expect(container.querySelector(".sift-status-indicator")?.className).toContain(
+        "sift-status-ready",
+      );
+    });
+    expect(container.querySelector(".sift-progress-bar")?.className).toContain(
+      "sift-progress-bar-done",
+    );
+    expect(container.querySelector(".sift-sample-hint")?.textContent).toBe(
+      "50,000 of 100,000 rows shown · head sample",
+    );
+  });
+
   it("fetches trailing Arrow stream chunks sequentially after each append", async () => {
     vi.useRealTimers();
     const fetchResolvers: ((response: {
