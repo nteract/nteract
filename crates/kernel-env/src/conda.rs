@@ -8,8 +8,8 @@ use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
 use rattler::{default_cache_dir, install::Installer};
 use rattler_conda_types::{
-    Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions,
-    ParseStrictness, Platform, PrefixRecord, Version, VersionSpec,
+    ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, ParseStrictness,
+    Platform, PrefixRecord, Version, VersionSpec,
 };
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::progress::{EnvProgressPhase, ProgressHandler, RattlerReporter};
+use crate::{
+    channels::parse_channels,
+    progress::{EnvProgressPhase, ProgressHandler, RattlerReporter},
+};
 
 /// Conda dependency specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -493,15 +496,9 @@ async fn install_conda_env(
         .to_path_buf();
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
-    // Parse channels
-    let channels: Vec<Channel> = if deps.channels.is_empty() {
-        vec![Channel::from_str("conda-forge", &channel_config)?]
-    } else {
-        deps.channels
-            .iter()
-            .map(|c| Channel::from_str(c, &channel_config))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+    // Parse channels, including Conda's special `defaults` multichannel.
+    let install_platform = Platform::current();
+    let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
     let channel_names: Vec<String> = channels.iter().map(|c| c.name().to_string()).collect();
 
@@ -553,7 +550,6 @@ async fn install_conda_env(
     let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
 
     // Query repodata with offline-first strategy
-    let install_platform = Platform::current();
     let platforms = vec![install_platform, Platform::NoArch];
 
     let repo_data = crate::repodata::query_repodata_offline_first(
@@ -936,14 +932,8 @@ pub async fn sync_dependencies(
         .to_path_buf();
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
-    let channels: Vec<Channel> = if deps.channels.is_empty() {
-        vec![Channel::from_str("conda-forge", &channel_config)?]
-    } else {
-        deps.channels
-            .iter()
-            .map(|c| Channel::from_str(c, &channel_config))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+    let install_platform = Platform::current();
+    let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
     let match_spec_options = ParseMatchSpecOptions::strict();
 
@@ -1001,7 +991,6 @@ pub async fn sync_dependencies(
     let download_client = reqwest::Client::builder().build()?;
     let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
 
-    let install_platform = Platform::current();
     let platforms = vec![install_platform, Platform::NoArch];
 
     let repo_data = crate::repodata::query_repodata_offline_first(

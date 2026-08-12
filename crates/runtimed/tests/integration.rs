@@ -1323,7 +1323,7 @@ async fn test_launch_kernel_environment_mode_controls_project_priority() {
     std::fs::create_dir_all(&project_dir).unwrap();
     std::fs::write(
         project_dir.join("environment.yml"),
-        "name: runtimed-env-mode-missing\nchannels:\n  - defaults\ndependencies:\n  - python=3.11\n",
+        "name: runtimed-env-mode-missing\nchannels:\n  - https://packages.example.invalid/conda\ndependencies:\n  - python=3.11\n",
     )
     .unwrap();
     let notebook_path = project_dir.join("notebook.ipynb");

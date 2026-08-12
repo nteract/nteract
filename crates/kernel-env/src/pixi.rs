@@ -17,14 +17,17 @@ use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
 use rattler::{default_cache_dir, install::Installer};
 use rattler_conda_types::{
-    Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, Platform,
+    ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, Platform,
 };
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::progress::{EnvProgressPhase, ProgressHandler, RattlerReporter};
+use crate::{
+    channels::parse_channels,
+    progress::{EnvProgressPhase, ProgressHandler, RattlerReporter},
+};
 
 /// A resolved pixi environment on disk.
 ///
@@ -206,11 +209,9 @@ async fn install_pixi_env(
         .to_path_buf();
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
-    // Parse channels
-    let channels: Vec<Channel> = channels
-        .iter()
-        .map(|c| Channel::from_str(c, &channel_config))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    // Parse channels, including Conda's special `defaults` multichannel.
+    let install_platform = Platform::current();
+    let channels = parse_channels(channels, &channel_config, install_platform)?;
 
     // Build specs -- always include python
     let match_spec_options = ParseMatchSpecOptions::strict();
@@ -232,7 +233,6 @@ async fn install_pixi_env(
     let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
 
     // Query repodata with offline-first strategy
-    let install_platform = Platform::current();
     let platforms = vec![install_platform, Platform::NoArch];
 
     let repo_data = crate::repodata::query_repodata_offline_first(
@@ -411,6 +411,24 @@ fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pixi_defaults_use_shared_anaconda_channel_expansion() {
+        let config = ChannelConfig::default_with_root_dir(PathBuf::from("/tmp"));
+        let channels =
+            parse_channels(&["defaults".to_string()], &config, Platform::Linux64).unwrap();
+
+        assert_eq!(
+            channels
+                .iter()
+                .map(|channel| channel.base_url.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "https://repo.anaconda.com/pkgs/main/",
+                "https://repo.anaconda.com/pkgs/r/",
+            ]
+        );
+    }
 
     #[test]
     fn test_generate_pixi_manifest_basic() {

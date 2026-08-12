@@ -28,6 +28,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 #[cfg(feature = "runtime")]
+mod channels;
+#[cfg(feature = "runtime")]
 pub mod conda;
 #[cfg(feature = "runtime")]
 pub mod gc;
