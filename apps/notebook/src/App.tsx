@@ -315,6 +315,13 @@ function resolveCommOutputs(
 
 function AppContent() {
   const host = useNotebookHost();
+  const outputHostContext = useMemo(
+    () =>
+      host.outputDocumentUrl
+        ? { nteract: { outputDocumentUrl: host.outputDocumentUrl } }
+        : undefined,
+    [host.outputDocumentUrl],
+  );
   const blobUploader = useMemo<BlobUploader>(
     () => (bytes, mediaType, durability) => putBlob(host.transport, bytes, mediaType, durability),
     [host],
@@ -2246,6 +2253,7 @@ function AppContent() {
               <BokehSessionRuntimeProvider value={bokehSessionRuntime}>
                 <NotebookView
                   cellIds={cellIds}
+                  outputHostContext={outputHostContext}
                   isLoading={isLoading}
                   capabilities={shellCapabilities}
                   canAcceptCellMutations={canAcceptCellMutations}

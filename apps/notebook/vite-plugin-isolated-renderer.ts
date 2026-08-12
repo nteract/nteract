@@ -33,6 +33,13 @@ const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 const VIRTUAL_PLUGIN_PREFIX = "virtual:renderer-plugin/";
 const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
 
+/** Standalone document used by sandboxed output iframes in embedded hosts. */
+export const ISOLATED_OUTPUT_DOCUMENT_FILE = "output-frame.html";
+const ISOLATED_OUTPUT_DOCUMENT_PATH = path.resolve(
+  __dirname,
+  "../../src/components/isolated/frame.html",
+);
+
 /** Directory containing pre-built renderer plugin artifacts. */
 const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
 
@@ -209,6 +216,12 @@ export function isolatedRendererPlugin(options: IsolatedRendererPluginOptions = 
     name: "isolated-renderer",
 
     async buildStart() {
+      this.emitFile({
+        type: "asset",
+        fileName: ISOLATED_OUTPUT_DOCUMENT_FILE,
+        source: fs.readFileSync(ISOLATED_OUTPUT_DOCUMENT_PATH, "utf-8"),
+      });
+
       // Production builds: verify all pre-built artifacts exist
       if (!isDevMode) {
         const required = [
@@ -294,6 +307,15 @@ export const css = ${JSON.stringify(css)};
       devServer.watcher.add(siftPackageSrcDir);
       devServer.watcher.add(siftWasmPkgDir);
       devServer.watcher.add(PREBUILT_DIR);
+      devServer.middlewares.use((req, res, next) => {
+        if ((req.url ?? "").split(/[?#]/, 1)[0] !== `/${ISOLATED_OUTPUT_DOCUMENT_FILE}`) {
+          next();
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.end(fs.readFileSync(ISOLATED_OUTPUT_DOCUMENT_PATH, "utf-8"));
+      });
       devServer.middlewares.use(async (_req, _res, next) => {
         if (!devBuildPromise) {
           devBuildPromise = buildRendererFromSource();

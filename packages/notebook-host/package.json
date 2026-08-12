@@ -8,6 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./browser": "./src/browser/index.ts",
+    "./electron": "./src/electron/index.ts",
+    "./electron/main": "./src/electron/main.ts",
     "./tauri": "./src/tauri/index.ts"
   },
   "dependencies": {
