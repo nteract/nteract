@@ -15,6 +15,7 @@ tokio = { workspace = true, features = ["full"] }
 log = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+tempfile = { workspace = true }
 
 # Channel-aware tools cache (nightly vs stable, dev worktree isolation).
 runt-workspace = { path = "../runt-workspace" }
@@ -27,6 +28,3 @@ serde_json = { workspace = true }
 
 # GitHub release downloads
 reqwest = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

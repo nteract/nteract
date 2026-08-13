@@ -6,9 +6,14 @@
 use anyhow::{anyhow, Result};
 use log::info;
 use sha2::{Digest, Sha256};
+use std::fs::{File, OpenOptions};
+use std::future::Future;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::OnceCell;
 use zip::ZipArchive;
 
@@ -87,6 +92,159 @@ pub struct BootstrappedTool {
     pub binary_path: PathBuf,
     /// Path to the environment containing the tool
     pub env_path: PathBuf,
+}
+
+struct ToolCachePaths {
+    env_path: PathBuf,
+    binary_path: PathBuf,
+    lock_path: PathBuf,
+    staging_prefix: String,
+}
+
+struct ToolInstallLease {
+    lock_file: File,
+    staging_env: PathBuf,
+    published: AtomicBool,
+}
+
+impl Drop for ToolInstallLease {
+    fn drop(&mut self) {
+        if !self.published.load(Ordering::Acquire) {
+            let _ = std::fs::remove_dir_all(&self.staging_env);
+        }
+        let _ = self.lock_file.unlock();
+    }
+}
+
+fn tool_cache_paths(cache_dir: &Path, tool_name: &str, version: &str) -> ToolCachePaths {
+    let hash = compute_tool_hash(tool_name, Some(version));
+    let env_name = format!("{tool_name}-{hash}");
+    let env_path = cache_dir.join(&env_name);
+    ToolCachePaths {
+        binary_path: binary_path_for_env(&env_path, tool_name),
+        lock_path: cache_dir.join(".locks").join(format!("{env_name}.lock")),
+        staging_prefix: format!(".{env_name}.stage-"),
+        env_path,
+    }
+}
+
+async fn acquire_tool_install_lock(lock_path: PathBuf) -> Result<File> {
+    tokio::task::spawn_blocking(move || -> Result<File> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        match lock_file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                info!("Waiting for tool install lock at {:?}", lock_path);
+                lock_file.lock()?;
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+        Ok(lock_file)
+    })
+    .await
+    .map_err(|error| anyhow!("tool install lock task panicked: {error}"))?
+}
+
+async fn remove_stale_tool_staging(cache_dir: &Path, prefix: &str) -> Result<()> {
+    let mut entries = match tokio::fs::read_dir(cache_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        if entry.file_name().to_string_lossy().starts_with(prefix) {
+            let path = entry.path();
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                tokio::fs::remove_dir_all(path).await?;
+            } else {
+                tokio::fs::remove_file(path).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Install one pinned tool release exactly once across daemon processes.
+///
+/// The persistent sibling lock makes the download single-flight across the
+/// daemon and runtime-agent processes. The installer only writes into a unique
+/// same-filesystem staging directory; the final cache path appears in one
+/// atomic rename after extraction and validation succeed.
+async fn install_tool_atomically<F, Fut>(
+    cache_dir: &Path,
+    tool_name: &str,
+    version: &str,
+    installer: F,
+) -> Result<BootstrappedTool>
+where
+    F: FnOnce(PathBuf, PathBuf, Arc<ToolInstallLease>) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let paths = tool_cache_paths(cache_dir, tool_name, version);
+    if is_executable_file(&paths.binary_path) {
+        info!("Using cached {tool_name} at {:?}", paths.binary_path);
+        return Ok(BootstrappedTool {
+            binary_path: paths.binary_path,
+            env_path: paths.env_path,
+        });
+    }
+
+    tokio::fs::create_dir_all(cache_dir).await?;
+    let lock_file = acquire_tool_install_lock(paths.lock_path.clone()).await?;
+
+    // A different process may have completed the install while we waited.
+    if is_executable_file(&paths.binary_path) {
+        info!("Using cached {tool_name} at {:?}", paths.binary_path);
+        return Ok(BootstrappedTool {
+            binary_path: paths.binary_path,
+            env_path: paths.env_path,
+        });
+    }
+
+    if paths.env_path.exists() {
+        tokio::fs::remove_dir_all(&paths.env_path).await?;
+    }
+    remove_stale_tool_staging(cache_dir, &paths.staging_prefix).await?;
+
+    let staging = tempfile::Builder::new()
+        .prefix(&paths.staging_prefix)
+        .tempdir_in(cache_dir)?;
+    let staging_env = staging.keep();
+    let staging_binary = binary_path_for_env(&staging_env, tool_name);
+    let lease = Arc::new(ToolInstallLease {
+        lock_file,
+        staging_env: staging_env.clone(),
+        published: AtomicBool::new(false),
+    });
+    installer(
+        staging_env.clone(),
+        staging_binary.clone(),
+        Arc::clone(&lease),
+    )
+    .await?;
+    if !is_executable_file(&staging_binary) {
+        return Err(anyhow!(
+            "{tool_name} binary missing or not executable after extraction at {:?}",
+            staging_binary
+        ));
+    }
+
+    tokio::fs::rename(&staging_env, &paths.env_path).await?;
+    lease.published.store(true, Ordering::Release);
+
+    Ok(BootstrappedTool {
+        binary_path: paths.binary_path,
+        env_path: paths.env_path,
+    })
 }
 
 // ── GitHub platform helpers ──────────────────────────────────────────
@@ -187,6 +345,37 @@ fn extract_tool_tarball(tarball_bytes: &[u8], dest_dir: &Path, tool_name: &str) 
     Err(anyhow!("{} binary not found in tarball", tool_name))
 }
 
+#[cfg(windows)]
+fn extract_tool_zip(zip_bytes: &[u8], dest_dir: &Path, tool_name: &str) -> Result<PathBuf> {
+    let bin_dir = dest_dir.join("Scripts");
+    std::fs::create_dir_all(&bin_dir)?;
+    let binary_name = format!("{tool_name}.exe");
+    let dest_path = bin_dir.join(&binary_name);
+    let mut archive = ZipArchive::new(Cursor::new(zip_bytes))?;
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index)?;
+        if file.name().ends_with(&binary_name) {
+            let mut dest_file = std::fs::File::create(&dest_path)?;
+            std::io::copy(&mut file, &mut dest_file)?;
+            return Ok(dest_path);
+        }
+    }
+    Err(anyhow!("{binary_name} not found in zip archive"))
+}
+
+fn verify_checksum(bytes: &[u8], expected_hash: &str, tool_name: &str) -> Result<()> {
+    info!("Verifying checksum...");
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let actual_hash = hex::encode(hasher.finalize());
+    if actual_hash != expected_hash {
+        return Err(anyhow!(
+            "Checksum mismatch for {tool_name}: expected {expected_hash}, got {actual_hash}"
+        ));
+    }
+    Ok(())
+}
+
 /// Download and verify the ruff binary from GitHub releases.
 ///
 /// Ruff tags have NO `v` prefix: `https://github.com/astral-sh/ruff/releases/download/{version}/...`
@@ -213,131 +402,73 @@ async fn download_ruff_from_github(version: &str) -> Result<BootstrappedTool> {
     );
     let checksum_url = format!("{}.sha256", download_url);
 
-    info!("Downloading ruff {} from GitHub...", version);
-
-    // Setup cache directory
     let cache_dir = tools_cache_dir();
-    let hash = compute_tool_hash("ruff", Some(version));
-    let env_path = cache_dir.join(format!("ruff-{}", hash));
-    let binary_path = binary_path_for_env(&env_path, "ruff");
-
-    // Check if already cached
-    if binary_path.exists() {
-        info!("Using cached ruff at {:?}", binary_path);
-        return Ok(BootstrappedTool {
-            binary_path,
-            env_path,
-        });
-    }
-
-    // Ensure cache directory exists
-    tokio::fs::create_dir_all(&cache_dir).await?;
-
-    // Remove partial environment if it exists
-    if env_path.exists() {
-        tokio::fs::remove_dir_all(&env_path).await?;
-    }
-
-    // Create HTTP client
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()?;
-
-    // Download checksum first
-    info!("Fetching checksum from {}...", checksum_url);
-    let checksum_response = client.get(&checksum_url).send().await?;
-    if !checksum_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download checksum: {}",
-            checksum_response.status()
-        ));
-    }
-    let checksum_text = checksum_response.text().await?;
-    let expected_hash = checksum_text
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow!("Invalid checksum format"))?
-        .to_lowercase();
-
-    // Download archive
-    info!("Downloading {}...", asset_name);
-    let archive_response = client.get(&download_url).send().await?;
-    if !archive_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download ruff: {}",
-            archive_response.status()
-        ));
-    }
-    let archive_bytes = archive_response.bytes().await?;
-
-    // Verify checksum
-    info!("Verifying checksum...");
-    let mut hasher = Sha256::new();
-    hasher.update(&archive_bytes);
-    let actual_hash = hex::encode(hasher.finalize());
-
-    if actual_hash != expected_hash {
-        return Err(anyhow!(
-            "Checksum mismatch: expected {}, got {}",
-            expected_hash,
-            actual_hash
-        ));
-    }
-
-    // Extract archive (blocking IO, run on blocking thread pool)
-    info!("Extracting ruff to {:?}...", env_path);
-    let env_path_clone = env_path.clone();
-    let binary_path_clone = binary_path.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        if is_zip {
-            #[cfg(target_os = "windows")]
-            {
-                let bin_dir = env_path_clone.join("Scripts");
-                std::fs::create_dir_all(&bin_dir)?;
-                let cursor = Cursor::new(&*archive_bytes);
-                let mut zip_archive = ZipArchive::new(cursor)?;
-                let binary_name = "ruff.exe";
-                let dest_path = bin_dir.join(binary_name);
-                let mut found = false;
-                for i in 0..zip_archive.len() {
-                    let mut file = zip_archive.by_index(i)?;
-                    if file.name().ends_with(binary_name) {
-                        let mut dest_file = std::fs::File::create(&dest_path)?;
-                        std::io::copy(&mut file, &mut dest_file)?;
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    return Err(anyhow!("ruff.exe not found in zip archive"));
-                }
+    let tool = install_tool_atomically(
+        &cache_dir,
+        "ruff",
+        version,
+        move |staging_env, staging_binary, lease| async move {
+            info!("Downloading ruff {} from GitHub...", version);
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()?;
+            info!("Fetching checksum from {}...", checksum_url);
+            let checksum_response = client.get(&checksum_url).send().await?;
+            if !checksum_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download checksum: {}",
+                    checksum_response.status()
+                ));
             }
-            #[cfg(not(target_os = "windows"))]
-            return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
-        } else {
-            extract_tool_tarball(&archive_bytes, &env_path_clone, "ruff")?;
-        }
+            let checksum_text = checksum_response.text().await?;
+            let expected_hash = checksum_text
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| anyhow!("Invalid checksum format"))?
+                .to_lowercase();
 
-        // Verify binary exists at expected location
-        if !binary_path_clone.exists() {
-            return Err(anyhow!(
-                "ruff binary not found after extraction at {:?}",
-                binary_path_clone
-            ));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
+            info!("Downloading {}...", asset_name);
+            let archive_response = client.get(&download_url).send().await?;
+            if !archive_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download ruff: {}",
+                    archive_response.status()
+                ));
+            }
+            let archive_bytes = archive_response.bytes().await?;
+            verify_checksum(&archive_bytes, &expected_hash, "ruff")?;
+
+            info!("Extracting ruff to {:?}...", staging_env);
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let _lease = lease;
+                if is_zip {
+                    #[cfg(target_os = "windows")]
+                    extract_tool_zip(&archive_bytes, &staging_env, "ruff")?;
+                    #[cfg(not(target_os = "windows"))]
+                    return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
+                } else {
+                    extract_tool_tarball(&archive_bytes, &staging_env, "ruff")?;
+                }
+                if !staging_binary.exists() {
+                    return Err(anyhow!(
+                        "ruff binary not found after extraction at {:?}",
+                        staging_binary
+                    ));
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|error| anyhow!("Extraction task panicked: {error}"))??;
+            Ok(())
+        },
+    )
+    .await?;
 
     info!(
         "Successfully installed ruff {} at {:?}",
-        version, binary_path
+        version, tool.binary_path
     );
-    Ok(BootstrappedTool {
-        binary_path,
-        env_path,
-    })
+    Ok(tool)
 }
 
 /// Get the path to ruff, downloading from GitHub if necessary.
@@ -365,7 +496,7 @@ pub async fn get_ruff_path() -> Result<PathBuf> {
 
             // Not on PATH, download from GitHub
             info!(
-                "ruff not found on PATH, downloading {} from GitHub...",
+                "ruff not found on PATH, resolving pinned version {}",
                 RUFF_TARGET_VERSION
             );
             match download_ruff_from_github(RUFF_TARGET_VERSION).await {
@@ -506,115 +637,86 @@ async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
     );
     let checksum_url = format!("{}.sha256sum", zip_url);
 
-    info!("Downloading deno {} from GitHub...", version);
-
-    // Setup cache directory
     let cache_dir = tools_cache_dir();
-    let hash = compute_tool_hash("deno", Some(version));
-    let env_path = cache_dir.join(format!("deno-{}", hash));
-    let binary_path = binary_path_for_env(&env_path, "deno");
+    let tool = install_tool_atomically(
+        &cache_dir,
+        "deno",
+        version,
+        move |staging_env, staging_binary, lease| async move {
+            info!("Downloading deno {} from GitHub...", version);
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()?;
 
-    // Check if already cached
-    if binary_path.exists() {
-        info!("Using cached deno at {:?}", binary_path);
-        return Ok(BootstrappedTool {
-            binary_path,
-            env_path,
-        });
-    }
+            info!("Fetching checksum from {}...", checksum_url);
+            let checksum_response = client.get(&checksum_url).send().await?;
+            if !checksum_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download checksum: {}",
+                    checksum_response.status()
+                ));
+            }
+            let checksum_text = checksum_response.text().await?;
+            let expected_hash = checksum_text
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| anyhow!("Invalid checksum format"))?
+                .to_lowercase();
 
-    // Ensure cache directory exists
-    tokio::fs::create_dir_all(&cache_dir).await?;
+            info!("Downloading {}...", asset_name);
+            let zip_response = client.get(&zip_url).send().await?;
+            if !zip_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download deno: {}",
+                    zip_response.status()
+                ));
+            }
+            let zip_bytes = zip_response.bytes().await?;
 
-    // Remove partial environment if it exists
-    if env_path.exists() {
-        tokio::fs::remove_dir_all(&env_path).await?;
-    }
+            info!("Verifying checksum...");
+            let mut hasher = Sha256::new();
+            hasher.update(&zip_bytes);
+            let actual_hash = hex::encode(hasher.finalize());
+            if actual_hash != expected_hash {
+                return Err(anyhow!(
+                    "Checksum mismatch: expected {}, got {}",
+                    expected_hash,
+                    actual_hash
+                ));
+            }
 
-    // Create HTTP client (follows redirects automatically)
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()?;
+            info!("Extracting deno to {:?}...", staging_env);
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let _lease = lease;
+                let extracted_binary = extract_deno_zip(&zip_bytes, &staging_env)?;
 
-    // Download checksum first
-    info!("Fetching checksum from {}...", checksum_url);
-    let checksum_response = client.get(&checksum_url).send().await?;
-    if !checksum_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download checksum: {}",
-            checksum_response.status()
-        ));
-    }
-    let checksum_text = checksum_response.text().await?;
-    let expected_hash = checksum_text
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow!("Invalid checksum format"))?
-        .to_lowercase();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o755);
+                    std::fs::set_permissions(&extracted_binary, perms)?;
+                }
 
-    // Download zip file
-    info!("Downloading {}...", asset_name);
-    let zip_response = client.get(&zip_url).send().await?;
-    if !zip_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download deno: {}",
-            zip_response.status()
-        ));
-    }
-    let zip_bytes = zip_response.bytes().await?;
-
-    // Verify checksum
-    info!("Verifying checksum...");
-    let mut hasher = Sha256::new();
-    hasher.update(&zip_bytes);
-    let actual_hash = hex::encode(hasher.finalize());
-
-    if actual_hash != expected_hash {
-        return Err(anyhow!(
-            "Checksum mismatch: expected {}, got {}",
-            expected_hash,
-            actual_hash
-        ));
-    }
-
-    // Extract zip (blocking IO, run on blocking thread pool)
-    info!("Extracting deno to {:?}...", env_path);
-    let env_path_clone = env_path.clone();
-    let binary_path_clone = binary_path.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let extracted_binary = extract_deno_zip(&zip_bytes, &env_path_clone)?;
-
-        // Set executable permission on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o755);
-            std::fs::set_permissions(&extracted_binary, perms)?;
-        }
-
-        // Silence unused warning on Windows where we don't set permissions
-        let _ = &extracted_binary;
-
-        // Verify binary exists at expected location
-        if !binary_path_clone.exists() {
-            return Err(anyhow!(
-                "Deno binary not found after extraction at {:?}",
-                binary_path_clone
-            ));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
+                if !staging_binary.exists() {
+                    return Err(anyhow!(
+                        "Deno binary not found after extraction at {:?}",
+                        staging_binary
+                    ));
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|error| anyhow!("Extraction task panicked: {error}"))??;
+            Ok(())
+        },
+    )
+    .await?;
 
     info!(
         "Successfully installed deno {} at {:?}",
-        version, binary_path
+        version, tool.binary_path
     );
-    Ok(BootstrappedTool {
-        binary_path,
-        env_path,
-    })
+    Ok(tool)
 }
 
 /// Get the path to deno, with the following priority:
@@ -632,10 +734,7 @@ pub async fn get_deno_path() -> Result<PathBuf> {
             }
 
             // 2. Download from GitHub releases
-            info!(
-                "Downloading deno {} from GitHub releases...",
-                DENO_TARGET_VERSION
-            );
+            info!("Resolving pinned deno version {}", DENO_TARGET_VERSION);
             match download_deno_from_github(DENO_TARGET_VERSION).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
@@ -699,32 +798,6 @@ fn extract_uv_tarball(tarball_bytes: &[u8], dest_dir: &Path) -> Result<PathBuf> 
     Err(anyhow!("uv binary not found in tarball"))
 }
 
-/// Extract the uv binary from a zip archive (Windows).
-#[cfg(target_os = "windows")]
-fn extract_uv_zip(zip_bytes: &[u8], dest_dir: &Path) -> Result<PathBuf> {
-    let bin_dir = dest_dir.join("Scripts");
-    std::fs::create_dir_all(&bin_dir)?;
-
-    let cursor = Cursor::new(zip_bytes);
-    let mut archive = ZipArchive::new(cursor)?;
-
-    let binary_name = "uv.exe";
-    let dest_path = bin_dir.join(binary_name);
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
-
-        if name.ends_with(binary_name) {
-            let mut dest_file = std::fs::File::create(&dest_path)?;
-            std::io::copy(&mut file, &mut dest_file)?;
-            return Ok(dest_path);
-        }
-    }
-
-    Err(anyhow!("uv.exe not found in zip archive"))
-}
-
 /// Download and verify the uv binary from GitHub releases.
 async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
     let platform = get_github_platform()?;
@@ -749,108 +822,73 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
     );
     let checksum_url = format!("{}.sha256", download_url);
 
-    info!("Downloading uv {} from GitHub...", version);
-
-    // Setup cache directory
     let cache_dir = tools_cache_dir();
-    let hash = compute_tool_hash("uv", Some(version));
-    let env_path = cache_dir.join(format!("uv-{}", hash));
-    let binary_path = binary_path_for_env(&env_path, "uv");
+    let tool = install_tool_atomically(
+        &cache_dir,
+        "uv",
+        version,
+        move |staging_env, staging_binary, lease| async move {
+            info!("Downloading uv {} from GitHub...", version);
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()?;
+            info!("Fetching checksum from {}...", checksum_url);
+            let checksum_response = client.get(&checksum_url).send().await?;
+            if !checksum_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download checksum: {}",
+                    checksum_response.status()
+                ));
+            }
+            let checksum_text = checksum_response.text().await?;
+            let expected_hash = checksum_text
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| anyhow!("Invalid checksum format"))?
+                .to_lowercase();
 
-    // Check if already cached
-    if binary_path.exists() {
-        info!("Using cached uv at {:?}", binary_path);
-        return Ok(BootstrappedTool {
-            binary_path,
-            env_path,
-        });
-    }
+            info!("Downloading {}...", asset_name);
+            let archive_response = client.get(&download_url).send().await?;
+            if !archive_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download uv: {}",
+                    archive_response.status()
+                ));
+            }
+            let archive_bytes = archive_response.bytes().await?;
+            verify_checksum(&archive_bytes, &expected_hash, "uv")?;
 
-    // Ensure cache directory exists
-    tokio::fs::create_dir_all(&cache_dir).await?;
+            info!("Extracting uv to {:?}...", staging_env);
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let _lease = lease;
+                if is_zip {
+                    #[cfg(target_os = "windows")]
+                    extract_tool_zip(&archive_bytes, &staging_env, "uv")?;
+                    #[cfg(not(target_os = "windows"))]
+                    return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
+                } else {
+                    extract_uv_tarball(&archive_bytes, &staging_env)?;
+                }
+                if !staging_binary.exists() {
+                    return Err(anyhow!(
+                        "uv binary not found after extraction at {:?}",
+                        staging_binary
+                    ));
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|error| anyhow!("Extraction task panicked: {error}"))??;
+            Ok(())
+        },
+    )
+    .await?;
 
-    // Remove partial environment if it exists
-    if env_path.exists() {
-        tokio::fs::remove_dir_all(&env_path).await?;
-    }
-
-    // Create HTTP client
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()?;
-
-    // Download checksum first
-    info!("Fetching checksum from {}...", checksum_url);
-    let checksum_response = client.get(&checksum_url).send().await?;
-    if !checksum_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download checksum: {}",
-            checksum_response.status()
-        ));
-    }
-    let checksum_text = checksum_response.text().await?;
-    let expected_hash = checksum_text
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow!("Invalid checksum format"))?
-        .to_lowercase();
-
-    // Download archive
-    info!("Downloading {}...", asset_name);
-    let archive_response = client.get(&download_url).send().await?;
-    if !archive_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download uv: {}",
-            archive_response.status()
-        ));
-    }
-    let archive_bytes = archive_response.bytes().await?;
-
-    // Verify checksum
-    info!("Verifying checksum...");
-    let mut hasher = Sha256::new();
-    hasher.update(&archive_bytes);
-    let actual_hash = hex::encode(hasher.finalize());
-
-    if actual_hash != expected_hash {
-        return Err(anyhow!(
-            "Checksum mismatch: expected {}, got {}",
-            expected_hash,
-            actual_hash
-        ));
-    }
-
-    // Extract archive (blocking IO, run on blocking thread pool)
-    info!("Extracting uv to {:?}...", env_path);
-    let env_path_clone = env_path.clone();
-    let binary_path_clone = binary_path.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        if is_zip {
-            #[cfg(target_os = "windows")]
-            extract_uv_zip(&archive_bytes, &env_path_clone)?;
-            #[cfg(not(target_os = "windows"))]
-            return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
-        } else {
-            extract_uv_tarball(&archive_bytes, &env_path_clone)?;
-        }
-
-        // Verify binary exists at expected location
-        if !binary_path_clone.exists() {
-            return Err(anyhow!(
-                "uv binary not found after extraction at {:?}",
-                binary_path_clone
-            ));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
-
-    info!("Successfully installed uv {} at {:?}", version, binary_path);
-    Ok(BootstrappedTool {
-        binary_path,
-        env_path,
-    })
+    info!(
+        "Successfully installed uv {} at {:?}",
+        version, tool.binary_path
+    );
+    Ok(tool)
 }
 
 /// Global cache for the uv binary path.
@@ -926,10 +964,7 @@ pub async fn get_uv_path() -> Result<PathBuf> {
             }
 
             // 2. Download from GitHub releases
-            info!(
-                "Downloading uv {} from GitHub releases...",
-                UV_TARGET_VERSION
-            );
+            info!("Resolving pinned uv version {}", UV_TARGET_VERSION);
             match download_uv_from_github(UV_TARGET_VERSION).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
@@ -975,132 +1010,73 @@ async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
     );
     let checksum_url = format!("{}.sha256", download_url);
 
-    info!("Downloading pixi {} from GitHub...", version);
-
-    // Setup cache directory
     let cache_dir = tools_cache_dir();
-    let hash = compute_tool_hash("pixi", Some(version));
-    let env_path = cache_dir.join(format!("pixi-{}", hash));
-    let binary_path = binary_path_for_env(&env_path, "pixi");
-
-    // Check if already cached
-    if binary_path.exists() {
-        info!("Using cached pixi at {:?}", binary_path);
-        return Ok(BootstrappedTool {
-            binary_path,
-            env_path,
-        });
-    }
-
-    // Ensure cache directory exists
-    tokio::fs::create_dir_all(&cache_dir).await?;
-
-    // Remove partial environment if it exists
-    if env_path.exists() {
-        tokio::fs::remove_dir_all(&env_path).await?;
-    }
-
-    // Create HTTP client
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()?;
-
-    // Download checksum first
-    info!("Fetching checksum from {}...", checksum_url);
-    let checksum_response = client.get(&checksum_url).send().await?;
-    if !checksum_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download checksum: {}",
-            checksum_response.status()
-        ));
-    }
-    let checksum_text = checksum_response.text().await?;
-    let expected_hash = checksum_text
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow!("Invalid checksum format"))?
-        .to_lowercase();
-
-    // Download archive
-    info!("Downloading {}...", asset_name);
-    let archive_response = client.get(&download_url).send().await?;
-    if !archive_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download pixi: {}",
-            archive_response.status()
-        ));
-    }
-    let archive_bytes = archive_response.bytes().await?;
-
-    // Verify checksum
-    info!("Verifying checksum...");
-    let mut hasher = Sha256::new();
-    hasher.update(&archive_bytes);
-    let actual_hash = hex::encode(hasher.finalize());
-
-    if actual_hash != expected_hash {
-        return Err(anyhow!(
-            "Checksum mismatch: expected {}, got {}",
-            expected_hash,
-            actual_hash
-        ));
-    }
-
-    // Extract archive (blocking IO, run on blocking thread pool)
-    info!("Extracting pixi to {:?}...", env_path);
-    let env_path_clone = env_path.clone();
-    let binary_path_clone = binary_path.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        if is_zip {
-            #[cfg(target_os = "windows")]
-            {
-                let bin_dir = env_path_clone.join("Scripts");
-                std::fs::create_dir_all(&bin_dir)?;
-                let cursor = Cursor::new(&*archive_bytes);
-                let mut zip_archive = ZipArchive::new(cursor)?;
-                let binary_name = "pixi.exe";
-                let dest_path = bin_dir.join(binary_name);
-                let mut found = false;
-                for i in 0..zip_archive.len() {
-                    let mut file = zip_archive.by_index(i)?;
-                    if file.name().ends_with(binary_name) {
-                        let mut dest_file = std::fs::File::create(&dest_path)?;
-                        std::io::copy(&mut file, &mut dest_file)?;
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    return Err(anyhow!("pixi.exe not found in zip archive"));
-                }
+    let tool = install_tool_atomically(
+        &cache_dir,
+        "pixi",
+        version,
+        move |staging_env, staging_binary, lease| async move {
+            info!("Downloading pixi {} from GitHub...", version);
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()?;
+            info!("Fetching checksum from {}...", checksum_url);
+            let checksum_response = client.get(&checksum_url).send().await?;
+            if !checksum_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download checksum: {}",
+                    checksum_response.status()
+                ));
             }
-            #[cfg(not(target_os = "windows"))]
-            return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
-        } else {
-            // Pixi tarball has the binary at the root (not in a subdirectory)
-            extract_tool_tarball(&archive_bytes, &env_path_clone, "pixi")?;
-        }
+            let checksum_text = checksum_response.text().await?;
+            let expected_hash = checksum_text
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| anyhow!("Invalid checksum format"))?
+                .to_lowercase();
 
-        // Verify binary exists at expected location
-        if !binary_path_clone.exists() {
-            return Err(anyhow!(
-                "pixi binary not found after extraction at {:?}",
-                binary_path_clone
-            ));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
+            info!("Downloading {}...", asset_name);
+            let archive_response = client.get(&download_url).send().await?;
+            if !archive_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download pixi: {}",
+                    archive_response.status()
+                ));
+            }
+            let archive_bytes = archive_response.bytes().await?;
+            verify_checksum(&archive_bytes, &expected_hash, "pixi")?;
+
+            info!("Extracting pixi to {:?}...", staging_env);
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let _lease = lease;
+                if is_zip {
+                    #[cfg(target_os = "windows")]
+                    extract_tool_zip(&archive_bytes, &staging_env, "pixi")?;
+                    #[cfg(not(target_os = "windows"))]
+                    return Err(anyhow!("Unexpected zip archive on non-Windows platform"));
+                } else {
+                    extract_tool_tarball(&archive_bytes, &staging_env, "pixi")?;
+                }
+                if !staging_binary.exists() {
+                    return Err(anyhow!(
+                        "pixi binary not found after extraction at {:?}",
+                        staging_binary
+                    ));
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|error| anyhow!("Extraction task panicked: {error}"))??;
+            Ok(())
+        },
+    )
+    .await?;
 
     info!(
         "Successfully installed pixi {} at {:?}",
-        version, binary_path
+        version, tool.binary_path
     );
-    Ok(BootstrappedTool {
-        binary_path,
-        env_path,
-    })
+    Ok(tool)
 }
 
 /// Get the path to the pixi binary, checking system PATH first then downloading from GitHub.
@@ -1128,10 +1104,7 @@ pub async fn get_pixi_path() -> Result<PathBuf> {
             }
 
             // 2. Download from GitHub releases (pinned version)
-            info!(
-                "Downloading pixi {} from GitHub releases...",
-                PIXI_TARGET_VERSION
-            );
+            info!("Resolving pinned pixi version {}", PIXI_TARGET_VERSION);
             match download_pixi_from_github(PIXI_TARGET_VERSION).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
@@ -1186,104 +1159,77 @@ async fn download_nono_from_github(version: &str) -> Result<BootstrappedTool> {
         version
     );
 
-    info!("Downloading nono {} from GitHub...", version);
-
     let cache_dir = tools_cache_dir();
-    let hash = compute_tool_hash("nono", Some(version));
-    let env_path = cache_dir.join(format!("nono-{}", hash));
-    let binary_path = env_path.join("bin").join("nono");
+    let tool = install_tool_atomically(
+        &cache_dir,
+        "nono",
+        version,
+        move |staging_env, staging_binary, lease| async move {
+            info!("Downloading nono {} from GitHub...", version);
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()?;
 
-    if binary_path.exists() {
-        info!("Using cached nono at {:?}", binary_path);
-        return Ok(BootstrappedTool {
-            binary_path,
-            env_path,
-        });
-    }
-
-    tokio::fs::create_dir_all(&cache_dir).await?;
-
-    if env_path.exists() {
-        tokio::fs::remove_dir_all(&env_path).await?;
-    }
-
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()?;
-
-    // Download SHA256SUMS.txt and extract the digest for our asset.
-    // Format: "<hash>  <filename>" (two-space BSD style).
-    info!("Fetching checksums from {}...", checksum_url);
-    let checksum_response = client.get(&checksum_url).send().await?;
-    if !checksum_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download SHA256SUMS.txt: {}",
-            checksum_response.status()
-        ));
-    }
-    let checksum_text = checksum_response.text().await?;
-    let expected_hash = checksum_text
-        .lines()
-        .find_map(|line| {
-            let mut parts = line.splitn(2, "  ");
-            let hash = parts.next()?.trim();
-            let name = parts.next()?.trim();
-            if name == asset_name {
-                Some(hash.to_lowercase())
-            } else {
-                None
+            info!("Fetching checksums from {}...", checksum_url);
+            let checksum_response = client.get(&checksum_url).send().await?;
+            if !checksum_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download SHA256SUMS.txt: {}",
+                    checksum_response.status()
+                ));
             }
-        })
-        .ok_or_else(|| anyhow!("Checksum for {} not found in SHA256SUMS.txt", asset_name))?;
+            let checksum_text = checksum_response.text().await?;
+            let expected_hash = checksum_text
+                .lines()
+                .find_map(|line| {
+                    let mut parts = line.splitn(2, "  ");
+                    let hash = parts.next()?.trim();
+                    let name = parts.next()?.trim();
+                    if name == asset_name {
+                        Some(hash.to_lowercase())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    anyhow!("Checksum for {} not found in SHA256SUMS.txt", asset_name)
+                })?;
 
-    // Download archive and verify checksum.
-    info!("Downloading {}...", asset_name);
-    let archive_response = client.get(&download_url).send().await?;
-    if !archive_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download nono: {}",
-            archive_response.status()
-        ));
-    }
-    let archive_bytes = archive_response.bytes().await?;
+            info!("Downloading {}...", asset_name);
+            let archive_response = client.get(&download_url).send().await?;
+            if !archive_response.status().is_success() {
+                return Err(anyhow!(
+                    "Failed to download nono: {}",
+                    archive_response.status()
+                ));
+            }
+            let archive_bytes = archive_response.bytes().await?;
+            verify_checksum(&archive_bytes, &expected_hash, "nono")?;
 
-    info!("Verifying checksum...");
-    let mut hasher = Sha256::new();
-    hasher.update(&archive_bytes);
-    let actual_hash = hex::encode(hasher.finalize());
-
-    if actual_hash != expected_hash {
-        return Err(anyhow!(
-            "Checksum mismatch for nono: expected {}, got {}",
-            expected_hash,
-            actual_hash
-        ));
-    }
-
-    info!("Extracting nono to {:?}...", env_path);
-    let env_path_clone = env_path.clone();
-    let binary_path_clone = binary_path.clone();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        extract_tool_tarball(&archive_bytes, &env_path_clone, "nono")?;
-        if !binary_path_clone.exists() {
-            return Err(anyhow!(
-                "nono binary not found after extraction at {:?}",
-                binary_path_clone
-            ));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| anyhow!("Extraction task panicked: {}", e))??;
+            info!("Extracting nono to {:?}...", staging_env);
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let _lease = lease;
+                extract_tool_tarball(&archive_bytes, &staging_env, "nono")?;
+                if !staging_binary.exists() {
+                    return Err(anyhow!(
+                        "nono binary not found after extraction at {:?}",
+                        staging_binary
+                    ));
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|error| anyhow!("Extraction task panicked: {error}"))??;
+            Ok(())
+        },
+    )
+    .await?;
 
     info!(
         "Successfully installed nono {} at {:?}",
-        version, binary_path
+        version, tool.binary_path
     );
-    Ok(BootstrappedTool {
-        binary_path,
-        env_path,
-    })
+    Ok(tool)
 }
 
 /// Get the path to the nono binary (Unix only), checking system PATH first
@@ -1309,10 +1255,7 @@ pub async fn get_nono_path() -> Result<PathBuf> {
                 }
             }
 
-            info!(
-                "Downloading nono {} from GitHub releases...",
-                NONO_TARGET_VERSION
-            );
+            info!("Resolving pinned nono version {}", NONO_TARGET_VERSION);
             match download_nono_from_github(NONO_TARGET_VERSION).await {
                 Ok(tool) => Arc::new(Ok(tool.binary_path)),
                 Err(e) => Arc::new(Err(e.to_string())),
@@ -1464,6 +1407,277 @@ pub async fn pixi_shell_hook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    async fn write_test_executable(path: &Path, contents: &[u8]) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(path, contents).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+        }
+        Ok(())
+    }
+
+    fn staging_paths(cache_dir: &Path, prefix: &str) -> Vec<PathBuf> {
+        std::fs::read_dir(cache_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn concurrent_install_is_single_flight_and_atomically_published() {
+        let cache = tempfile::tempdir().unwrap();
+        let cache_dir = cache.path().to_path_buf();
+        let paths = tool_cache_paths(&cache_dir, "test-tool", "1.0.0");
+        let installs = Arc::new(AtomicUsize::new(0));
+        let (staged_tx, staged_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+        let first_cache = cache_dir.clone();
+        let first_installs = Arc::clone(&installs);
+        let first = tokio::spawn(async move {
+            install_tool_atomically(
+                &first_cache,
+                "test-tool",
+                "1.0.0",
+                move |_staging_env, staging_binary, _lease| async move {
+                    first_installs.fetch_add(1, Ordering::SeqCst);
+                    write_test_executable(&staging_binary, b"complete").await?;
+                    let _ = staged_tx.send(());
+                    let _ = release_rx.await;
+                    Ok(())
+                },
+            )
+            .await
+        });
+
+        staged_rx.await.unwrap();
+        assert!(
+            !paths.env_path.exists(),
+            "the final directory must remain invisible while staging"
+        );
+
+        let second_cache = cache_dir.clone();
+        let second_installs = Arc::clone(&installs);
+        let second = tokio::spawn(async move {
+            install_tool_atomically(
+                &second_cache,
+                "test-tool",
+                "1.0.0",
+                move |_staging_env, staging_binary, _lease| async move {
+                    second_installs.fetch_add(1, Ordering::SeqCst);
+                    write_test_executable(&staging_binary, b"duplicate").await?;
+                    Ok(())
+                },
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(installs.load(Ordering::SeqCst), 1);
+        assert!(!paths.env_path.exists());
+        let _ = release_tx.send(());
+
+        let first_tool = first.await.unwrap().unwrap();
+        let second_tool = second.await.unwrap().unwrap();
+        assert_eq!(first_tool.binary_path, second_tool.binary_path);
+        assert_eq!(
+            tokio::fs::read(&paths.binary_path).await.unwrap(),
+            b"complete"
+        );
+        assert_eq!(installs.load(Ordering::SeqCst), 1);
+        assert!(staging_paths(&cache_dir, &paths.staging_prefix).is_empty());
+    }
+
+    #[test]
+    fn tool_install_process_helper() {
+        let Ok(cache_dir) = std::env::var("NTERACT_TOOL_INSTALL_TEST_CACHE") else {
+            return;
+        };
+        let ready_path =
+            PathBuf::from(std::env::var("NTERACT_TOOL_INSTALL_TEST_READY").expect("ready path"));
+        let release_path = PathBuf::from(
+            std::env::var("NTERACT_TOOL_INSTALL_TEST_RELEASE").expect("release path"),
+        );
+        let count_path =
+            PathBuf::from(std::env::var("NTERACT_TOOL_INSTALL_TEST_COUNT").expect("count path"));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(install_tool_atomically(
+                Path::new(&cache_dir),
+                "process-tool",
+                "1.0.0",
+                move |_staging_env, staging_binary, _lease| async move {
+                    use std::io::Write;
+                    let mut count = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&count_path)?;
+                    writeln!(count, "{}", std::process::id())?;
+                    write_test_executable(&staging_binary, b"complete").await?;
+                    tokio::fs::write(&ready_path, b"ready").await?;
+                    while !release_path.exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Ok(())
+                },
+            ))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cross_process_install_downloads_once_and_publishes_atomically() {
+        let cache = tempfile::tempdir().unwrap();
+        let cache_dir = cache.path().join("tools");
+        let ready_path = cache.path().join("ready");
+        let release_path = cache.path().join("release");
+        let count_path = cache.path().join("count");
+        let paths = tool_cache_paths(&cache_dir, "process-tool", "1.0.0");
+        let test_binary = std::env::current_exe().unwrap();
+
+        let spawn_helper = || {
+            std::process::Command::new(&test_binary)
+                .args([
+                    "--exact",
+                    "tools::tests::tool_install_process_helper",
+                    "--nocapture",
+                ])
+                .env("NTERACT_TOOL_INSTALL_TEST_CACHE", &cache_dir)
+                .env("NTERACT_TOOL_INSTALL_TEST_READY", &ready_path)
+                .env("NTERACT_TOOL_INSTALL_TEST_RELEASE", &release_path)
+                .env("NTERACT_TOOL_INSTALL_TEST_COUNT", &count_path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        };
+
+        let first = spawn_helper();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready_path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("first installer did not reach the staging gate");
+        assert!(!paths.env_path.exists());
+
+        let second = spawn_helper();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!paths.env_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(&count_path)
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+
+        tokio::fs::write(&release_path, b"release").await.unwrap();
+        let first_output = first.wait_with_output().unwrap();
+        let second_output = second.wait_with_output().unwrap();
+        assert!(
+            first_output.status.success(),
+            "first helper failed:\n{}\n{}",
+            String::from_utf8_lossy(&first_output.stdout),
+            String::from_utf8_lossy(&first_output.stderr)
+        );
+        assert!(
+            second_output.status.success(),
+            "second helper failed:\n{}\n{}",
+            String::from_utf8_lossy(&second_output.stdout),
+            String::from_utf8_lossy(&second_output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&count_path)
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert_eq!(std::fs::read(&paths.binary_path).unwrap(), b"complete");
+        assert!(staging_paths(&cache_dir, &paths.staging_prefix).is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_install_is_not_published_and_retry_replaces_legacy_partial() {
+        let cache = tempfile::tempdir().unwrap();
+        let cache_dir = cache.path().to_path_buf();
+        let paths = tool_cache_paths(&cache_dir, "test-tool", "2.0.0");
+        tokio::fs::create_dir_all(&paths.env_path).await.unwrap();
+        tokio::fs::write(paths.env_path.join("partial"), b"legacy")
+            .await
+            .unwrap();
+
+        let result = install_tool_atomically(
+            &cache_dir,
+            "test-tool",
+            "2.0.0",
+            |_staging_env, staging_binary, _lease| async move {
+                write_test_executable(&staging_binary, b"partial").await?;
+                Err(anyhow!("synthetic extraction failure"))
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!paths.env_path.exists());
+        assert!(staging_paths(&cache_dir, &paths.staging_prefix).is_empty());
+
+        let tool = install_tool_atomically(
+            &cache_dir,
+            "test-tool",
+            "2.0.0",
+            |_staging_env, staging_binary, _lease| async move {
+                write_test_executable(&staging_binary, b"complete").await
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read(tool.binary_path).await.unwrap(),
+            b"complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_install_skips_installer() {
+        let cache = tempfile::tempdir().unwrap();
+        let cache_dir = cache.path().to_path_buf();
+        let paths = tool_cache_paths(&cache_dir, "test-tool", "3.0.0");
+        write_test_executable(&paths.binary_path, b"cached")
+            .await
+            .unwrap();
+
+        let tool = install_tool_atomically(
+            &cache_dir,
+            "test-tool",
+            "3.0.0",
+            |_staging_env, _staging_binary, _lease| async move {
+                Err(anyhow!("cached install unexpectedly invoked installer"))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(tokio::fs::read(tool.binary_path).await.unwrap(), b"cached");
+    }
+
+    #[test]
+    fn checksum_mismatch_is_rejected() {
+        let expected = hex::encode(Sha256::digest(b"expected"));
+        let error = verify_checksum(b"actual", &expected, "test-tool").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Checksum mismatch for test-tool"));
+    }
 
     #[test]
     fn test_compute_tool_hash() {
