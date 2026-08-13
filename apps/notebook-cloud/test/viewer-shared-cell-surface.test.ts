@@ -770,14 +770,17 @@ test("cloud notebook list refresh stays on the GET-first session path", () => {
   );
 });
 
-test("readable cloud notebooks leave disconnected compute to the existing runtime controls", () => {
+test("readable cloud notebooks keep runtime controls and narrowly surface missing registration", () => {
   const sourcePath = new URL("../viewer/notebook-viewer.tsx", import.meta.url);
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.doesNotMatch(sourceText, /ComputeDisconnectedNotice/);
   assert.doesNotMatch(sourceText, /shouldRenderComputeDisconnectedNotice/);
-  assert.match(sourceText, /onStartRuntime: handleCloudStartRuntime/);
+  assert.match(sourceText, /onStartRuntime=\{handleCloudStartRuntime\}/);
   assert.match(sourceText, /workstationAction/);
+  assert.match(sourceText, /shouldShowWorkstationComputeNotice\(\{\s*canRegisterWorkstation,/);
+  assert.match(sourceText, /launchReadinessState: workstationLaunchReadiness\.state/);
+  assert.match(sourceText, /WorkstationComputeNotice onConnect=\{handleOpenWorkstationsRail\}/);
 });
 
 test("cloud notebook list bounds app-session waits before catalog fetches", () => {
