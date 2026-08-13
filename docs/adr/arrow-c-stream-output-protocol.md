@@ -134,7 +134,10 @@ draining the stream, which is the cost the bounded head exists to avoid.
 Consumers use `complete` for loading state and `sampled` for dataset coverage.
 They should render "`included_rows` of `total_rows` shown" only when the known
 total exceeds the included count; a sampled manifest with equal counts should
-say that the shown row count is a head sample without claiming an exact total.
+say that it is showing the first `included_rows` with an unknown total. Product
+copy says "first rows" rather than "sample" because a deterministic head is not
+statistically representative. Sorts, filters, and summaries computed by the
+renderer must be scoped to the shown rows in the same surface.
 
 ## Decision 6: Vendor MIME is the incubation boundary
 
