@@ -82,7 +82,8 @@ _ARROW_REPR_MAX_ROWS = int(os.environ.get("NTERACT_ARROW_REPR_MAX_ROWS", "50000"
 # making the safety probe itself a meaningful materialization cost.
 _DATASET_ARROW_PROBE_ROWS = 8
 # Re-measure at each prefix instead of jumping from the probe straight to the
-# estimated head. Eight keeps the cumulative work close to the final prefix.
+# estimated head. Eight limits each unmeasured row-count increase; accumulated
+# prefix rows remain below about 2.15x the final requested prefix.
 _DATASET_ARROW_PROBE_GROWTH = 8
 _PLOTLY_RENDERER_ENTRYPOINTS = frozenset(
     {"plotly.express", "plotly.graph_objects", "plotly.graph_objs"}
@@ -260,7 +261,15 @@ def _dataset_logical_arrow_head(arrow_view: Any, *, total_rows: int) -> Any:
         if next_rows <= requested_rows:
             break
 
-        widened = arrow_view[:next_rows]
+        try:
+            widened = arrow_view[:next_rows]
+        except Exception as exc:  # noqa: BLE001
+            log.debug(
+                "dataset logical Arrow widening stopped at %s rows: %s",
+                table.num_rows,
+                exc,
+            )
+            break
         requested_rows = next_rows
         if widened.num_rows <= table.num_rows:
             break

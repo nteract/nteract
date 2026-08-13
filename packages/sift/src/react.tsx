@@ -405,7 +405,7 @@ export function SiftTable({
     if (!hasFooterControl) return undefined;
     if (!footerControlRef.current) {
       footerControlRef.current = document.createElement("div");
-      footerControlRef.current.className = "sift-footer-control";
+      footerControlRef.current.className = "sift-footer-slot";
       footerControlRootRef.current = createRoot(footerControlRef.current);
     }
     return footerControlRef.current;

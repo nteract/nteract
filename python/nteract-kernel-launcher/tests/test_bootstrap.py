@@ -1361,6 +1361,45 @@ def test_dataset_mimebundle_geometrically_reaches_a_small_uniform_dataset(monkey
     }
 
 
+def test_dataset_mimebundle_keeps_last_good_prefix_when_widening_fails(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+
+    from nteract_kernel_launcher import _bootstrap
+    from nteract_kernel_launcher._format import ARROW_STREAM_MANIFEST_MIME
+
+    requested = []
+
+    class FakeDataset:
+        num_rows = 1_000
+        data = SimpleNamespace(table=object())
+
+        def with_format(self, format_name):
+            assert format_name == "arrow"
+            return self
+
+        def __getitem__(self, key):
+            requested.append(key)
+            if key.stop > _bootstrap._DATASET_ARROW_PROBE_ROWS:
+                raise RuntimeError("widening failed")
+            return pa.table({"value": list(range(key.stop))})
+
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_BYTE_BUDGET", 64 * 1_024)
+    monkeypatch.setattr(_bootstrap, "_ARROW_REPR_MAX_ROWS", 50_000)
+    monkeypatch.setattr(_bootstrap, "_MAX_PAYLOAD_BYTES", 128 * 1_024)
+    monkeypatch.setattr(_bootstrap, "summarize_dataset", lambda dataset: "dataset summary")
+
+    bundle = _bootstrap._dataset_mimebundle(FakeDataset())
+
+    assert bundle is not None
+    assert requested == [slice(None, 8, None), slice(None, 64, None)]
+    assert bundle[ARROW_STREAM_MANIFEST_MIME]["summary"] == {
+        "total_rows": 1_000,
+        "included_rows": 8,
+        "sampled": True,
+        "sample_strategy": "head",
+    }
+
+
 @pytest.mark.parametrize("probe_bytes", [0, "invalid", RuntimeError("measurement failed")])
 def test_dataset_head_probe_keeps_bounded_rows_when_measurement_is_unusable(
     monkeypatch, probe_bytes

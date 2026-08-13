@@ -148,7 +148,10 @@ the head, then widens the logical prefix geometrically and remeasures before
 each next step. This preserves selected/shuffled row order without leaping from
 eight rows straight to `MAX_ROWS` on one optimistic estimate. The final Arrow
 serializer remeasures the result, so iterative probing reduces intermediate
-materialization risk rather than replacing the existing payload ceilings.
+materialization risk rather than replacing the existing payload ceilings. The
+growth limit is row-based: sharply non-stationary row weights can still
+overshoot the byte budget within one step, and repeated prefixes can request up
+to about 2.15 times the rows in the final prefix.
 
 `MIN_ROWS` makes the byte budget soft, so it needs a hard ceiling above it or a
 5 MB/row video dataset would send 500 MB to honor the floor. `_MAX_PAYLOAD_BYTES`

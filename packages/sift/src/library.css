@@ -1123,7 +1123,7 @@
   display: inline;
 }
 
-.sift-footer-control {
+.sift-footer-slot {
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
@@ -1131,6 +1131,12 @@
   min-width: 0;
   max-width: 100%;
   margin-right: 6px;
+}
+
+.sift-footer-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .sift-preview-hint {

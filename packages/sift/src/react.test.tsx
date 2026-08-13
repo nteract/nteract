@@ -318,7 +318,7 @@ describe("SiftTable", () => {
     expect(container.querySelector(".sift-progress-bar")?.className).toContain(
       "sift-progress-bar-done",
     );
-    expect(container.querySelector(".sift-footer-control")).not.toBeNull();
+    expect(container.querySelector(".sift-footer-slot")).not.toBeNull();
     expect(container.querySelector(".sift-status-indicator")?.getAttribute("title")).toBe(
       "Preview loaded",
     );
