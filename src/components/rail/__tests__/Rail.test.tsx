@@ -46,10 +46,9 @@ describe("Rail", () => {
     expect(container.querySelector('[data-slot="example-rail-title-row"]')).toHaveClass(
       "flex-wrap",
     );
-    expect(container.querySelector('[data-slot="rail-toolbar-corner"]')).toHaveClass(
-      "h-[var(--nb-rail-header-height)]",
-      "border-b",
-    );
+    const toolbarCorner = container.querySelector('[data-slot="rail-toolbar-corner"]');
+    expect(toolbarCorner).toHaveClass("h-[var(--nb-rail-header-height)]");
+    expect(toolbarCorner).not.toHaveClass("border-b", "border-r");
     expect(container.querySelector('[data-slot="rail-navigation"]')).toHaveClass("row-start-2");
     expect(container.querySelector('[data-slot="rail-panel-header"]')).toHaveClass(
       "h-[var(--nb-rail-header-height)]",

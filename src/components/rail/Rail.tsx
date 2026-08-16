@@ -63,8 +63,7 @@ export function Rail<PanelId extends string = string>({
     >
       <div
         className={cn(
-          "col-start-1 row-start-1 flex w-14 items-start justify-center border-b bg-background pt-2",
-          !collapsed && "border-r",
+          "col-start-1 row-start-1 flex w-14 items-start justify-center bg-background pt-2",
           RAIL_HEADER_HEIGHT_CLASS_NAME,
         )}
         data-slot="rail-toolbar-corner"
