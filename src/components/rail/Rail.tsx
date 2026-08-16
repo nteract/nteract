@@ -113,11 +113,7 @@ export function Rail<PanelId extends string = string>({
           data-slot={panelSlot}
         >
           <div
-            className={cn(
-              "flex items-end px-4",
-              showPanelHeader && "border-b",
-              RAIL_HEADER_HEIGHT_CLASS_NAME,
-            )}
+            className={cn("flex items-end border-b px-4", RAIL_HEADER_HEIGHT_CLASS_NAME)}
             data-slot="rail-panel-header"
           >
             {showPanelHeader ? (

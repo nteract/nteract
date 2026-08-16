@@ -27,6 +27,7 @@ and the comments panel against deterministic fixture state.
 - The document title/header is shell chrome and spans the full notebook width,
   including the rail. The command toolbar remains stage chrome in the row
   below it.
-- The borderless rail corner and contextual panel headers share the command
-  toolbar's explicit grid track. Outline relies on its active rail icon and
-  navigation label instead of repeating an `Outline` heading in that row.
+- The borderless fixed rail corner and contextual panel headers share the
+  command toolbar's explicit grid track. The panel header keeps the command-row
+  hairline even when it has no label. Outline relies on its active rail icon
+  and navigation label instead of repeating an `Outline` heading in that row.

@@ -87,7 +87,7 @@ describe("NotebookRail", () => {
     );
     expect(screen.getByRole("link", { name: "Clean columns" })).toHaveClass("font-medium");
     expect(screen.queryByRole("heading", { name: "Outline" })).not.toBeInTheDocument();
-    expect(container.querySelector('[data-slot="rail-panel-header"]')).not.toHaveClass("border-b");
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toHaveClass("border-b");
     expect(container.querySelector('[data-slot="notebook-outline-selected-marker"]')).toHaveStyle({
       left: "-29px",
     });

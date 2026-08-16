@@ -78,7 +78,7 @@ describe("Rail", () => {
     );
   });
 
-  it("keeps a label-free panel header track borderless", () => {
+  it("keeps a label-free panel header track on the command-row baseline", () => {
     const { container } = render(
       <Rail
         activePanelId="outline"
@@ -93,7 +93,7 @@ describe("Rail", () => {
     );
 
     expect(screen.queryByRole("heading", { name: "Outline" })).not.toBeInTheDocument();
-    expect(container.querySelector('[data-slot="rail-panel-header"]')).not.toHaveClass("border-b");
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toHaveClass("border-b");
   });
 
   it("collapses the expanded active panel button", () => {
