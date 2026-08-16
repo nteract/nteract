@@ -139,7 +139,10 @@ export function NotebookCommandToolbar({
     <div
       data-testid="notebook-toolbar"
       data-slot="notebook-command-toolbar"
-      className={cn("@container flex h-10 min-w-0 items-center gap-2 px-3 select-none", className)}
+      className={cn(
+        "@container flex h-[var(--nb-toolbar-height)] min-w-0 items-center gap-2 px-3 select-none",
+        className,
+      )}
     >
       {presenceControls ?? leadingControls}
 

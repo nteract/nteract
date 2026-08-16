@@ -358,7 +358,7 @@ describe("NotebookRail", () => {
     expect(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY).toBe("(max-width: 599.98px)");
     expect(NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME).toBe("max-[599.98px]:hidden");
     expect(NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES).toContain(
-      "max-[599.98px]:w-[calc(100vw-3rem)]",
+      "max-[599.98px]:w-[calc(100vw-3.5rem)]",
     );
   });
 

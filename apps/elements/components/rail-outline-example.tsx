@@ -128,6 +128,7 @@ export function RailOutlineExample() {
         stageClassName="min-w-[320px] bg-fd-muted/20"
         toolbarClassName="border-b border-fd-border"
         toolbarLabel="Notebook fixture toolbar"
+        toolbarPlacement="stage"
         stageLabel="Elements notebook scenario"
         capabilities={scenario.capabilities}
         toolbar={

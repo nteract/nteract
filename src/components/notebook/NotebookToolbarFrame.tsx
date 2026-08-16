@@ -11,10 +11,7 @@ export interface NotebookToolbarFrameProps {
 export function NotebookToolbarFrame({ children, className, notices }: NotebookToolbarFrameProps) {
   return (
     <header
-      className={cn(
-        "@container sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/60 select-none",
-        className,
-      )}
+      className={cn("@container sticky top-0 z-10 border-b bg-background select-none", className)}
       data-slot="notebook-toolbar-frame"
     >
       {children}

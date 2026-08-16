@@ -353,7 +353,7 @@ function CloudNotebookShellExampleContent() {
         <BrowserFrame />
         <NotebookDocumentShell
           rootElement="div"
-          className="h-[720px] bg-background text-foreground"
+          className="h-[720px] bg-background text-foreground [--nb-rail-header-height:calc(6rem_+_1px)]"
           stageClassName="bg-background"
           toolbar={
             <CloudNotebookChrome
@@ -364,8 +364,9 @@ function CloudNotebookShellExampleContent() {
               scenario={scenario}
             />
           }
-          toolbarClassName="bg-background/95 backdrop-blur"
+          toolbarClassName="border-b border-border bg-background"
           toolbarLabel="Cloud notebook session"
+          toolbarPlacement="stage"
           rail={rail}
           capabilities={shellCapabilities}
         >
@@ -469,7 +470,7 @@ function CloudNotebookChrome({
   scenario: ElementsNotebookScenario;
 }) {
   return (
-    <NotebookToolbarFrame className="static top-auto z-auto border-b-0 bg-background/95 supports-backdrop-filter:bg-background/80">
+    <NotebookToolbarFrame className="static top-auto z-auto border-b-0 bg-background">
       <CloudAppToolbar
         connection={connection}
         mode={mode}

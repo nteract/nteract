@@ -35,6 +35,7 @@ describe("Rail", () => {
     );
 
     expect(screen.getByTestId("example-rail")).toHaveAttribute("data-collapsed", "false");
+    expect(screen.getByTestId("example-rail")).toHaveClass("max-[599.98px]:border-r-0");
     expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
     expect(screen.queryByText("uv · 2 packages")).not.toBeInTheDocument();
     expect(screen.getByTestId("panel-content")).toHaveTextContent("Dependencies");
@@ -44,6 +45,37 @@ describe("Rail", () => {
     );
     expect(container.querySelector('[data-slot="example-rail-title-row"]')).toHaveClass(
       "flex-wrap",
+    );
+    expect(container.querySelector('[data-slot="rail-toolbar-corner"]')).toHaveClass(
+      "h-[var(--nb-rail-header-height)]",
+      "border-b",
+    );
+    expect(container.querySelector('[data-slot="rail-navigation"]')).toHaveClass("row-start-2");
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toHaveClass(
+      "h-[var(--nb-rail-header-height)]",
+      "border-b",
+    );
+  });
+
+  it("reserves the top-left corner and moves a leading host action into it", () => {
+    const { container } = render(
+      <Rail
+        activePanelId="outline"
+        collapsed={false}
+        items={items}
+        panelTitle="Outline"
+        leadingSlot={<button type="button">Notebook home</button>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        Outline
+      </Rail>,
+    );
+
+    const corner = container.querySelector('[data-slot="rail-toolbar-corner"]');
+    expect(corner).toContainElement(screen.getByRole("button", { name: "Notebook home" }));
+    expect(container.querySelector('[data-slot="rail-navigation"]')).not.toContainElement(
+      screen.getByRole("button", { name: "Notebook home" }),
     );
   });
 
@@ -139,6 +171,12 @@ describe("RailButton", () => {
     expect(screen.getByRole("button", { name: "Outline" })).toHaveClass(
       "bg-foreground",
       "text-background",
+      "rounded-md",
+      "focus-visible:ring-1",
+    );
+    expect(screen.getByRole("button", { name: "Outline" })).not.toHaveClass(
+      "rounded-xl",
+      "focus-visible:ring-2",
     );
   });
 

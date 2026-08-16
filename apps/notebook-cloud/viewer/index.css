@@ -202,6 +202,7 @@ body {
 
 .cloud-notebook-shell {
   --cloud-notice-height: 3rem;
+  --nb-rail-header-height: calc(3.75rem + 1px);
 
   display: flex;
   position: relative;
@@ -214,6 +215,7 @@ body {
 
 .cloud-notebook-shell--command-toolbar {
   --cloud-notice-height: 3rem;
+  --nb-rail-header-height: calc(6.25rem + 2px);
 }
 
 .cloud-notebook-rail {
@@ -602,6 +604,10 @@ body {
 }
 
 @media (max-width: 599.98px) {
+  .cloud-notebook-shell--command-toolbar {
+    --nb-rail-header-height: calc(3.75rem + 1px);
+  }
+
   .cloud-mobile-rail-toggle {
     display: inline-flex;
   }

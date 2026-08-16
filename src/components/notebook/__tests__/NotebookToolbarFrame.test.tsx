@@ -13,6 +13,8 @@ describe("NotebookToolbarFrame", () => {
     const frame = container.querySelector("[data-slot='notebook-toolbar-frame']");
     expect(frame).toHaveClass("sticky");
     expect(frame).toHaveClass("top-0");
+    expect(frame).toHaveClass("bg-background");
+    expect(frame).not.toHaveClass("backdrop-blur");
     expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
     expect(screen.getByText("Syncing")).toBeVisible();
     expect(screen.getByText("Syncing").parentElement).toHaveAttribute(

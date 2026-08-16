@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils";
 export const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
 export const RAIL_TAKEOVER_STAGE_CLASS_NAME = "max-[599.98px]:hidden";
 export const RAIL_TAKEOVER_PANEL_CLASS_NAMES =
-  "max-[599.98px]:w-[calc(100vw-3rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none";
+  "max-[599.98px]:w-[calc(100vw-3.5rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none";
+const RAIL_HEADER_HEIGHT_CLASS_NAME = "h-[var(--nb-rail-header-height)]";
 
 export interface RailItem<PanelId extends string = string> {
   id: PanelId;
@@ -52,12 +53,32 @@ export function Rail<PanelId extends string = string>({
 }: RailProps<PanelId>) {
   return (
     <aside
-      className={cn("flex min-h-0 shrink-0 border-r bg-background", className)}
+      className={cn(
+        "grid min-h-0 shrink-0 grid-cols-[3.5rem_auto] grid-rows-[auto_minmax(0,1fr)] border-r bg-background",
+        !collapsed && "max-[599.98px]:border-r-0",
+        className,
+      )}
       data-testid={dataTestId}
       data-collapsed={collapsed ? "true" : "false"}
     >
-      <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-background px-2 py-3">
-        {leadingSlot ? <div className="mb-4 flex flex-col items-center">{leadingSlot}</div> : null}
+      <div
+        className={cn(
+          "col-start-1 row-start-1 flex w-14 items-start justify-center border-b bg-background pt-2",
+          !collapsed && "border-r",
+          RAIL_HEADER_HEIGHT_CLASS_NAME,
+        )}
+        data-slot="rail-toolbar-corner"
+      >
+        {leadingSlot}
+      </div>
+
+      <div
+        className={cn(
+          "col-start-1 row-start-2 flex min-h-0 w-14 flex-col items-center gap-1 bg-background px-2 py-3",
+          !collapsed && "border-r",
+        )}
+        data-slot="rail-navigation"
+      >
         {items.map((item) => (
           <RailButton
             key={item.id}
@@ -84,14 +105,17 @@ export function Rail<PanelId extends string = string>({
       {!collapsed && (
         <div
           className={cn(
-            "flex min-h-0 max-w-[calc(100vw-3rem)] flex-col bg-background",
+            "col-start-2 row-span-2 row-start-1 grid min-h-0 max-w-[calc(100vw-3.5rem)] grid-rows-[auto_minmax(0,1fr)] bg-background",
             panelClassName,
             RAIL_TAKEOVER_PANEL_CLASS_NAMES,
           )}
           data-slot={panelSlot}
         >
-          <div className="border-b px-4 py-3">
-            <div className="flex flex-col gap-1.5">
+          <div
+            className={cn("flex items-end border-b px-4", RAIL_HEADER_HEIGHT_CLASS_NAME)}
+            data-slot="rail-panel-header"
+          >
+            <div className="flex h-10 w-full flex-col justify-center gap-1.5">
               <div
                 className="flex min-w-0 flex-wrap items-center justify-between gap-2"
                 data-slot={panelTitleRowSlot}
@@ -135,8 +159,8 @@ export function RailButton({
       onClick={onClick}
       data-slot={dataSlot}
       className={cn(
-        "flex size-9 items-center justify-center rounded-xl text-xs transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+        "flex size-9 items-center justify-center rounded-md text-xs transition-colors",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         active
           ? "bg-foreground text-background"
           : "text-foreground/70 hover:bg-muted hover:text-foreground",

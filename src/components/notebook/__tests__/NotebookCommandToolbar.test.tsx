@@ -49,6 +49,7 @@ describe("NotebookCommandToolbar", () => {
 
     expect(onAddCell).toHaveBeenCalledWith("code", "cell-1");
     expect(onRunAllCells).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("notebook-toolbar")).toHaveClass("h-[var(--nb-toolbar-height)]");
     expect(screen.getByTestId("deps-toggle")).toHaveAttribute("data-env-manager", "uv");
     expect(screen.getByRole("button", { name: "Kyle" })).toBeVisible();
   });

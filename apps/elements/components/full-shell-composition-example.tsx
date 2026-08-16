@@ -279,15 +279,18 @@ export function FullShellCompositionExample() {
       <NotebookDocumentShell
         rootElement="main"
         className={cn(
-          "h-dvh bg-background text-foreground",
+          "h-dvh bg-background text-foreground [--nb-rail-header-height:calc(6rem_+_1px)]",
+          "max-[920px]:[--nb-rail-header-height:calc(7.25rem_+_1px)]",
+          "max-[760px]:[--nb-rail-header-height:calc(2.5rem_+_1px)]",
           "max-[760px]:[&_[data-slot=notebook-document-stage]]:hidden",
           "max-[760px]:[&_[data-testid=notebook-rail]]:w-full",
           "max-[760px]:[&_[data-slot=notebook-rail-panel]]:min-w-0",
           "max-[760px]:[&_[data-slot=notebook-rail-panel]]:max-w-none",
           "max-[760px]:[&_[data-slot=notebook-rail-panel]]:flex-1",
         )}
-        toolbarClassName="border-b border-border bg-background/95"
+        toolbarClassName="border-b border-border bg-background"
         toolbarLabel="Full shell composition toolbar"
+        toolbarPlacement="stage"
         stageClassName="bg-muted/20"
         stageLabel="Full notebook composition"
         capabilities={capabilities}
@@ -423,7 +426,7 @@ function FullShellToolbar({
   };
 
   return (
-    <NotebookToolbarFrame className="static top-auto z-auto border-b-0 bg-background/95">
+    <NotebookToolbarFrame className="static top-auto z-auto border-b-0 bg-background">
       <NotebookDocumentHeader
         capabilities={capabilities}
         className={cn(
