@@ -24,6 +24,9 @@ and the comments panel against deterministic fixture state.
   and inert host callbacks.
 - Desktop and cloud should continue to pass host facts into the same shared
   surfaces instead of forking shell layout logic.
-- The rail corner, rail panel header, and host toolbar share one explicit grid
-  track. The fixture keeps the header-height contract visible so panel and
-  document separators meet on the same pixel.
+- The document title/header is shell chrome and spans the full notebook width,
+  including the rail. The command toolbar remains stage chrome in the row
+  below it.
+- The borderless rail corner and contextual panel headers share the command
+  toolbar's explicit grid track. Outline relies on its active rail icon and
+  navigation label instead of repeating an `Outline` heading in that row.

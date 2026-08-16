@@ -78,6 +78,24 @@ describe("Rail", () => {
     );
   });
 
+  it("keeps a label-free panel header track borderless", () => {
+    const { container } = render(
+      <Rail
+        activePanelId="outline"
+        collapsed={false}
+        items={items}
+        panelTitle={null}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        Outline
+      </Rail>,
+    );
+
+    expect(screen.queryByRole("heading", { name: "Outline" })).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).not.toHaveClass("border-b");
+  });
+
   it("collapses the expanded active panel button", () => {
     const onActivePanelChange = vi.fn();
     const onCollapsedChange = vi.fn();

@@ -40,9 +40,12 @@ outline rail.
   Docs own active panel, collapsed state, outline selection, and inert
   navigation callbacks.
 - The rail reserves a real toolbar-corner grid cell and starts navigation in
-  the body row. The panel header and notebook toolbar use the same 40px command
-  row plus its hairline separator, so the join is structural rather than
-  visually offset into place.
+  the body row. Contextual panel headers and the notebook command toolbar use
+  the same 40px command row plus its hairline separator, so the join is
+  structural rather than visually offset into place.
+- Outline omits a duplicate panel heading: its active icon and the
+  `Notebook outline` navigation label already identify the surface. The empty
+  header track stays borderless so the upper-left region remains seamless.
 - Package management controls belong on the package-manager surface. This
   outline fixture only checks package panel composition inside the shared rail,
   without adding a package summary chip or environment card stack to the rail.

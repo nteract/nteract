@@ -279,28 +279,31 @@ export function FullShellCompositionExample() {
       <NotebookDocumentShell
         rootElement="main"
         className={cn(
-          "h-dvh bg-background text-foreground [--nb-rail-header-height:calc(6rem_+_1px)]",
-          "max-[920px]:[--nb-rail-header-height:calc(7.25rem_+_1px)]",
-          "max-[760px]:[--nb-rail-header-height:calc(2.5rem_+_1px)]",
+          "h-dvh bg-background text-foreground",
           "max-[760px]:[&_[data-slot=notebook-document-stage]]:hidden",
           "max-[760px]:[&_[data-testid=notebook-rail]]:w-full",
           "max-[760px]:[&_[data-slot=notebook-rail-panel]]:min-w-0",
           "max-[760px]:[&_[data-slot=notebook-rail-panel]]:max-w-none",
           "max-[760px]:[&_[data-slot=notebook-rail-panel]]:flex-1",
         )}
-        toolbarClassName="border-b border-border bg-background"
+        toolbarClassName="shrink-0 border-b border-border bg-background"
         toolbarLabel="Full shell composition toolbar"
-        toolbarPlacement="stage"
+        toolbarPlacement="shell"
         stageClassName="bg-muted/20"
         stageLabel="Full notebook composition"
         capabilities={capabilities}
         toolbar={
-          <FullShellToolbar
+          <FullShellHeader
             capabilities={capabilities}
             interaction={interaction}
             mode={mode}
-            activePanel={activePanel}
             onModeChange={setMode}
+          />
+        }
+        stageToolbar={
+          <FullShellCommandToolbar
+            capabilities={capabilities}
+            activePanel={activePanel}
             onTogglePackages={() => setActivePanel("packages")}
             onToggleWorkstations={() => setActivePanel("workstations")}
           />
@@ -401,20 +404,69 @@ export function FullShellCompositionExample() {
   );
 }
 
-function FullShellToolbar({
-  activePanel,
+function FullShellHeader({
   capabilities,
   interaction,
   mode,
   onModeChange,
+}: {
+  capabilities: NotebookShellCapabilities;
+  interaction: NotebookInteractionModeProjection;
+  mode: NotebookInteractionMode;
+  onModeChange: (mode: NotebookInteractionMode) => void;
+}) {
+  return (
+    <NotebookDocumentHeader
+      capabilities={capabilities}
+      className={cn(
+        "min-h-14 px-3 py-2 sm:px-4",
+        "[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_min(28rem,48vw)]",
+        "[&_[data-slot=notebook-document-header-controls]]:flex-none",
+        "max-[920px]:min-h-[4.75rem] max-[920px]:flex-wrap max-[920px]:items-center max-[920px]:justify-start",
+        "max-[920px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%]",
+        "max-[920px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%]",
+        "max-[920px]:[&_[data-slot=notebook-document-header-controls]]:justify-start",
+      )}
+      presence={<FullShellTitle />}
+      utilityControls={
+        <>
+          <NotebookIdentityGroup
+            actors={hostedPeople}
+            maxVisible={2}
+            label="Hosted participants"
+            className="hidden sm:inline-flex"
+          />
+          <NotebookEditModeButton
+            mode={mode}
+            state={interaction.state}
+            onModeChange={onModeChange}
+            variant="segmented"
+            className="bg-muted/35"
+          />
+        </>
+      }
+      sharingControls={
+        <button
+          type="button"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+          title="Share notebook"
+        >
+          <Share2 className="size-3.5" aria-hidden="true" />
+          <span className="hidden sm:inline">Share</span>
+        </button>
+      }
+    />
+  );
+}
+
+function FullShellCommandToolbar({
+  activePanel,
+  capabilities,
   onTogglePackages,
   onToggleWorkstations,
 }: {
   activePanel: NotebookRailPanelId;
   capabilities: NotebookShellCapabilities;
-  interaction: NotebookInteractionModeProjection;
-  mode: NotebookInteractionMode;
-  onModeChange: (mode: NotebookInteractionMode) => void;
   onTogglePackages: () => void;
   onToggleWorkstations: () => void;
 }) {
@@ -426,47 +478,7 @@ function FullShellToolbar({
   };
 
   return (
-    <NotebookToolbarFrame className="static top-auto z-auto border-b-0 bg-background">
-      <NotebookDocumentHeader
-        capabilities={capabilities}
-        className={cn(
-          "min-h-14 border-b border-border/70 px-3 py-2 sm:px-4",
-          "[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_min(28rem,48vw)]",
-          "[&_[data-slot=notebook-document-header-controls]]:flex-none",
-          "max-[920px]:min-h-[4.75rem] max-[920px]:flex-wrap max-[920px]:items-center max-[920px]:justify-start",
-          "max-[920px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%]",
-          "max-[920px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%]",
-          "max-[920px]:[&_[data-slot=notebook-document-header-controls]]:justify-start",
-        )}
-        presence={<FullShellTitle />}
-        utilityControls={
-          <>
-            <NotebookIdentityGroup
-              actors={hostedPeople}
-              maxVisible={2}
-              label="Hosted participants"
-              className="hidden sm:inline-flex"
-            />
-            <NotebookEditModeButton
-              mode={mode}
-              state={interaction.state}
-              onModeChange={onModeChange}
-              variant="segmented"
-              className="bg-muted/35"
-            />
-          </>
-        }
-        sharingControls={
-          <button
-            type="button"
-            className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-            title="Share notebook"
-          >
-            <Share2 className="size-3.5" aria-hidden="true" />
-            <span className="hidden sm:inline">Share</span>
-          </button>
-        }
-      />
+    <NotebookToolbarFrame className="static top-auto z-auto bg-background">
       <div className="min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <NotebookCommandToolbar
           capabilities={capabilities}

@@ -19,7 +19,7 @@ export interface RailProps<PanelId extends string = string> {
   activePanelId: PanelId;
   collapsed: boolean;
   items: readonly RailItem<PanelId>[];
-  panelTitle: string;
+  panelTitle: ReactNode;
   children: ReactNode;
   onActivePanelChange: (panelId: PanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
@@ -51,6 +51,8 @@ export function Rail<PanelId extends string = string>({
   panelSlot = "rail-panel",
   panelTitleRowSlot = "rail-panel-title-row",
 }: RailProps<PanelId>) {
+  const showPanelHeader = panelTitle != null || panelAction != null;
+
   return (
     <aside
       className={cn(
@@ -111,18 +113,26 @@ export function Rail<PanelId extends string = string>({
           data-slot={panelSlot}
         >
           <div
-            className={cn("flex items-end border-b px-4", RAIL_HEADER_HEIGHT_CLASS_NAME)}
+            className={cn(
+              "flex items-end px-4",
+              showPanelHeader && "border-b",
+              RAIL_HEADER_HEIGHT_CLASS_NAME,
+            )}
             data-slot="rail-panel-header"
           >
-            <div className="flex h-10 w-full flex-col justify-center gap-1.5">
-              <div
-                className="flex min-w-0 flex-wrap items-center justify-between gap-2"
-                data-slot={panelTitleRowSlot}
-              >
-                <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
-                {panelAction}
+            {showPanelHeader ? (
+              <div className="flex h-10 w-full flex-col justify-center gap-1.5">
+                <div
+                  className="flex min-w-0 flex-wrap items-center justify-between gap-2"
+                  data-slot={panelTitleRowSlot}
+                >
+                  {panelTitle != null ? (
+                    <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
+                  ) : null}
+                  {panelAction}
+                </div>
               </div>
-            </div>
+            ) : null}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-3">{children}</div>
         </div>

@@ -9,6 +9,7 @@ describe("NotebookDocumentShell", () => {
       <NotebookDocumentShell
         rail={<nav aria-label="Rail">rail</nav>}
         toolbar={<button type="button">Run</button>}
+        stageToolbar={<button type="button">Format</button>}
         notices={<p>Syncing</p>}
         toolbarLabel="Notebook fixture toolbar"
         stageLabel="Hosted notebook"
@@ -23,6 +24,13 @@ describe("NotebookDocumentShell", () => {
     expect(screen.getByLabelText("Notebook fixture toolbar")).toHaveAttribute(
       "data-slot",
       "notebook-document-toolbar",
+    );
+    expect(
+      screen.getByLabelText("Notebook fixture toolbar").parentElement?.lastElementChild,
+    ).toHaveAttribute("data-slot", "notebook-document-body");
+    expect(screen.getByRole("button", { name: "Format" }).parentElement).toHaveAttribute(
+      "data-slot",
+      "notebook-document-stage-toolbar",
     );
     expect(screen.getByText("Syncing").parentElement).toHaveAttribute(
       "data-slot",
