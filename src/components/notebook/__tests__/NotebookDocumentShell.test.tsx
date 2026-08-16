@@ -47,8 +47,9 @@ describe("NotebookDocumentShell", () => {
     expect(screen.getByLabelText("Rail").parentElement).toHaveClass(
       "grid",
       "grid-cols-[auto_minmax(0,1fr)]",
+      "grid-rows-[minmax(0,1fr)]",
     );
-    expect(screen.getByLabelText("Hosted notebook")).toHaveClass("col-start-2");
+    expect(screen.getByLabelText("Hosted notebook")).toHaveClass("col-start-2", "min-h-0");
     expect(screen.getByLabelText("Notebook cells")).toBeVisible();
   });
 

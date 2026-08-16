@@ -74,12 +74,12 @@ export function NotebookDocumentShell({
       {toolbarPlacement === "shell" ? toolbarSlot : null}
       {noticesPlacement === "shell" ? noticesSlot : null}
       <div
-        className="grid min-h-0 flex-1 grid-cols-[auto_minmax(0,1fr)] overflow-hidden"
+        className="grid min-h-0 flex-1 grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden"
         data-slot="notebook-document-body"
       >
         {rail}
         <section
-          className={cn("col-start-2 row-start-1 flex min-w-0 flex-col", stageClassName)}
+          className={cn("col-start-2 row-start-1 flex min-h-0 min-w-0 flex-col", stageClassName)}
           aria-label={stageLabel}
           data-slot="notebook-document-stage"
         >
