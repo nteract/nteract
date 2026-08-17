@@ -282,7 +282,7 @@ describe("SiftTable", () => {
     vi.useFakeTimers();
   });
 
-  it("settles a terminal head sample and explains the display cap", async () => {
+  it("settles a bounded first-row preview and explains its table-tool scope", async () => {
     vi.useRealTimers();
     vi.stubGlobal("fetch", () =>
       Promise.resolve({
@@ -318,8 +318,54 @@ describe("SiftTable", () => {
     expect(container.querySelector(".sift-progress-bar")?.className).toContain(
       "sift-progress-bar-done",
     );
-    expect(container.querySelector(".sift-sample-hint")?.textContent).toBe(
-      "50,000 of 100,000 rows shown · head sample",
+    expect(container.querySelector(".sift-footer-slot")).not.toBeNull();
+    expect(container.querySelector(".sift-status-indicator")?.getAttribute("title")).toBe(
+      "Preview loaded",
+    );
+    const previewHint = container.querySelector(".sift-preview-hint");
+    expect(previewHint?.getAttribute("role")).toBe("note");
+    expect(previewHint?.textContent).toBe(
+      "Showing first 50,000 of 100,000 rows · Table tools use shown rows",
+    );
+    expect(previewHint?.getAttribute("title")).toBe(
+      "Sorting, filtering, and column summaries use only the rows shown in this preview.",
+    );
+  });
+
+  it("does not invent a total for a bounded preview whose source length is unknown", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: true,
+        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+      }),
+    );
+
+    const { container } = render(
+      <SiftTable
+        source={{
+          kind: "arrow-stream-manifest",
+          manifest: {
+            chunks: [{ url: "http://127.0.0.1:9000/blob/unknown-total", row_count: 50_000 }],
+            complete: true,
+            summary: {
+              total_rows: 50_000,
+              included_rows: 50_000,
+              sampled: true,
+              sample_strategy: "head",
+            },
+          },
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector(".sift-status-indicator")?.className).toContain(
+        "sift-status-ready",
+      );
+    });
+    expect(container.querySelector(".sift-preview-hint")?.textContent).toBe(
+      "Showing first 50,000 rows · total unknown · Table tools use shown rows",
     );
   });
 

@@ -497,17 +497,18 @@ IOPub message stream and can be reused by other large-output producers.
 ### First Paint Strategy
 
 Small tables should serialize once to Arrow IPC and emit a complete one-chunk
-manifest. Large eager dataframes should emit `df.head(n)` as the first Arrow IPC
-chunk, where `n` is chosen by byte budget, then continue producing chunks after
-the first display is visible. Arrow-native and streaming sources should publish
-the first available record batch or head chunk, then append later chunks as they
-arrive.
+manifest. Automatic display of a large eager dataframe should emit a terminal,
+byte-bounded `df.head(n)` preview, where `n` is chosen by byte budget. It must not
+continue materializing or transporting the rest of the source in the background.
+Arrow-native and streaming sources should likewise publish a bounded first
+record batch or head preview without implying that those rows are statistically
+representative.
 
 The sub-200 ms first-render target applies after the dataframe/source object is
-available and only to the head-sample path. pandas/polars cannot render before
-an already-blocking dataframe conversion completes. The complete progressive
-manifest and any coalesced artifact are follow-on work and must not block the
-initial display.
+available and only when a bounded head can be produced without forcing full
+conversion. pandas/polars cannot render before an already-blocking dataframe
+conversion completes. Explicit helpers may progressively publish a source when
+the user requests that work; automatic repr remains terminal and bounded.
 
 ### Display Update Flow
 
@@ -786,48 +787,62 @@ Acceptance:
 - A table can show the first chunk and grow as subsequent chunks arrive.
 - Existing row-group parquet loading is unaffected.
 
-### Phase 4: Python Progressive Producer
+### Phase 4: Explicit Python Progressive Producer
 
-Goal: Python can publish first page quickly, then append chunks.
+Goal: an explicit Python helper can publish a first page quickly, then append
+chunks, without changing the bounded behavior of automatic repr.
 
 Changes:
 
 - Add a chunk writer abstraction in `nteract_kernel_launcher`.
 - Use `display_id` and `update_display_data` for progressive manifest updates.
-- For pandas/polars eager dataframes, emit `df.head(n)` first, then chunk rows
-  after conversion for the remaining data.
+- Keep automatic pandas/polars reprs terminal and byte-bounded. An explicit
+  progressive helper may emit `df.head(n)` first, then chunk remaining rows.
 - For Arrow-native and PyCapsule-compatible sources, import a
   `RecordBatchReader`, then write the first record batch or bounded mini-stream
   chunk directly.
-- For large or lazy sources, publish completed mini-stream chunks as batches are
-  produced. Do not require a replayable source.
+- For large or lazy sources, the explicit helper may publish completed
+  mini-stream chunks as batches are produced. Do not require a replayable
+  source.
 
 Acceptance:
 
 - A large Arrow table displays first rows before the whole table is serialized.
-- For a table where full serialization takes more than 1 second, the head chunk
-  renders within 200 ms after the dataframe/source object is available when the
-  head-sample path can produce `df.head(n)` without forcing full conversion.
+- For a table where full serialization takes more than 1 second, the first rows
+  render within 200 ms after the dataframe/source object is available when a
+  bounded head can be produced without forcing full conversion.
 - Final manifest is complete and durable.
 - Vanilla notebook fallback remains simple and stable.
 
-### Phase 5: Viewport-Driven Fetch
+### Phase 5: Source-Backed Continuation
 
-Goal: Sift renders the first chunk immediately and fetches more data only as the
-user or operation needs it.
+Goal: let a user explicitly continue from a bounded preview or apply a
+source-side predicate while keeping the scope and cost of every operation
+honest.
 
 Changes:
 
-- Load chunk 0 immediately when the manifest arrives.
-- Fetch additional chunks as the viewport nears unloaded rows.
-- For full-table sort/filter/search/export, request all missing chunks unless a
-  coalesced artifact is already available.
+- Retain a session-scoped source handle with explicit close, expiry, and
+  cancellation behavior. The durable notebook output remains the bounded
+  preview and must not depend on that handle after the session ends.
+- Fetch byte-bounded ranges only after an explicit user action such as “load
+  more.” A range continuation is not predicate pushdown: table tools remain
+  scoped to the rows currently shown.
+- Define a typed filter/sort/projection vocabulary and adapter contract for
+  predicate-aware requests. Do not send arbitrary JavaScript predicates into
+  Python.
+- Never silently request all missing rows for a full-table operation. Run it at
+  the source when supported, ask for confirmation before materializing more, or
+  keep the operation explicitly preview-scoped.
 - Preserve loaded table state while new chunks append.
 
 Acceptance:
 
-- Scrolling beyond loaded rows fetches the next chunk without reloading chunk 0.
-- Full-table operations either load all chunks or use the coalesced artifact.
+- Reopened notebooks render the durable bounded preview without a broken
+  continuation control.
+- An explicit bounded continuation appends rows without reloading the preview.
+- Predicate-aware results identify whether counts are exact, approximate, or
+  unknown and can be cancelled.
 - A missing later chunk surfaces a recoverable table error and keeps loaded rows.
 
 ### Phase 6: Direct Daemon Blob Upload
