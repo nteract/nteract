@@ -124,10 +124,7 @@ describe("Rail", () => {
       "row-start-1",
       "border-r",
     );
-    expect(screen.getByRole("button", { name: "Outline" })).toHaveClass(
-      "hidden",
-      "max-[599.98px]:flex",
-    );
+    expect(screen.queryByRole("button", { name: "Outline" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Packages" })).toBeVisible();
     expect(container.querySelector('[data-slot="rail-panel-header"]')).not.toBeInTheDocument();
     expect(container.querySelector('[data-slot="rail-panel"]')).toHaveClass(

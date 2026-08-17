@@ -60,7 +60,9 @@ export function Rail<PanelId extends string = string>({
   const showPanelHeader = panelTitle != null || panelAction != null;
   const hasIntegratedToolbar = toolbarPlacement === "integrated";
   const cornerItem = hasIntegratedToolbar && !leadingSlot ? (items[0] ?? null) : null;
-  const navigationItems = cornerItem ? items.slice(1) : items;
+  const navigationItems = cornerItem
+    ? items.slice(1)
+    : items.filter((item) => item.id !== externalToolbarItemId);
   const handleItemClick = (item: RailItem<PanelId>) => {
     if (item.disabled) return;
     if (!collapsed && activePanelId === item.id) {
@@ -120,11 +122,6 @@ export function Rail<PanelId extends string = string>({
             icon={item.icon}
             active={!collapsed && activePanelId === item.id}
             disabled={item.disabled}
-            className={
-              !hasIntegratedToolbar && item.id === externalToolbarItemId
-                ? "hidden max-[599.98px]:flex"
-                : undefined
-            }
             onClick={() => handleItemClick(item)}
           />
         ))}

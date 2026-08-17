@@ -1791,7 +1791,6 @@ export function NotebookViewer({
               collapsed={railCollapsed}
               onActivePanelChange={handleRailPanelChange}
               onCollapsedChange={setNotebookRailCollapsed}
-              className="max-[599.98px]:hidden"
             />
             <button
               type="button"
