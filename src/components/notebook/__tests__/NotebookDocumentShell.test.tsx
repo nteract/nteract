@@ -38,19 +38,52 @@ describe("NotebookDocumentShell", () => {
     );
     expect(screen.getByLabelText("Rail").parentElement).toHaveAttribute(
       "data-slot",
+      "notebook-document-rail-region",
+    );
+    expect(screen.getByLabelText("Rail").parentElement?.parentElement).toHaveAttribute(
+      "data-slot",
       "notebook-document-body",
     );
     expect(screen.getByLabelText("Hosted notebook")).toHaveAttribute(
       "data-slot",
       "notebook-document-stage",
     );
-    expect(screen.getByLabelText("Rail").parentElement).toHaveClass(
+    expect(screen.getByLabelText("Rail").parentElement?.parentElement).toHaveClass(
       "grid",
       "grid-cols-[auto_minmax(0,1fr)]",
       "grid-rows-[minmax(0,1fr)]",
     );
     expect(screen.getByLabelText("Hosted notebook")).toHaveClass("col-start-2", "min-h-0");
     expect(screen.getByLabelText("Notebook cells")).toBeVisible();
+  });
+
+  it("anchors a shell-wide command row to the live rail column", () => {
+    const { container } = render(
+      <NotebookDocumentShell
+        rail={<nav aria-label="Rail">rail</nav>}
+        stageToolbar={<button type="button">Code</button>}
+        stageToolbarPlacement="shell"
+        stageLabel="Hosted notebook"
+      >
+        <section aria-label="Notebook cells">cells</section>
+      </NotebookDocumentShell>,
+    );
+
+    const body = container.querySelector('[data-slot="notebook-document-body"]');
+    const shellToolbar = container.querySelector('[data-slot="notebook-document-shell-toolbar"]');
+    const baseline = container.querySelector(
+      '[data-slot="notebook-document-shell-toolbar-baseline"]',
+    );
+    const railRegion = container.querySelector('[data-slot="notebook-document-rail-region"]');
+
+    expect(body).toHaveClass("grid-rows-[auto_minmax(0,1fr)]");
+    expect(shellToolbar).toHaveClass("col-span-2", "row-start-1");
+    expect(baseline).toHaveClass("col-start-2", "row-start-1", "border-b");
+    expect(railRegion).toHaveClass("col-start-1", "row-start-2");
+    expect(screen.getByLabelText("Hosted notebook")).toHaveClass("col-start-2", "row-start-2");
+    expect(
+      container.querySelector('[data-slot="notebook-document-stage-toolbar"]'),
+    ).not.toBeInTheDocument();
   });
 
   it("can render as the document main landmark for hosted notebook routes", () => {

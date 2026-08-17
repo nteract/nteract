@@ -21,7 +21,8 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { NotebookRailToolbarButton } from "@/components/notebook-rail";
 import { Avatar, AvatarBadge, AvatarFallback, AvatarGroup } from "@/components/ui/avatar";
 import {
   createNotebookInteractionModeProjection,
@@ -344,6 +345,7 @@ function CloudNotebookShellExampleContent() {
       onActivePanelChange={actions.setActivePanel}
       onCollapsedChange={actions.setRailCollapsed}
       className="bg-background"
+      toolbarPlacement="external"
     />
   );
 
@@ -366,9 +368,21 @@ function CloudNotebookShellExampleContent() {
           }
           stageToolbar={
             <NotebookToolbarFrame className="static top-auto z-auto bg-background">
-              <CloudNotebookToolbar mode={mode} scenario={scenario} />
+              <CloudNotebookToolbar
+                mode={mode}
+                scenario={scenario}
+                leadingControls={
+                  <NotebookRailToolbarButton
+                    activePanelId={railState.activePanelId}
+                    collapsed={railState.collapsed}
+                    onActivePanelChange={actions.setActivePanel}
+                    onCollapsedChange={actions.setRailCollapsed}
+                  />
+                }
+              />
             </NotebookToolbarFrame>
           }
+          stageToolbarPlacement="shell"
           toolbarClassName="border-b border-border bg-background"
           toolbarLabel="Cloud notebook session"
           toolbarPlacement="shell"
@@ -517,9 +531,11 @@ function CloudDocumentTitle({ title, subtitle }: { title: string; subtitle?: str
 }
 
 function CloudNotebookToolbar({
+  leadingControls,
   mode,
   scenario,
 }: {
+  leadingControls?: ReactNode;
   mode: CloudModeState;
   scenario: ElementsNotebookScenario;
 }) {
@@ -536,6 +552,7 @@ function CloudNotebookToolbar({
     <div className="min-w-0 overflow-hidden" data-slot="cloud-notebook-toolbar">
       <NotebookCommandToolbar
         capabilities={capabilities}
+        leadingControls={leadingControls}
         runtime="python"
         environmentManager={cloudEnvironmentManager(scenario)}
         environmentOutOfSync={cloudEnvironmentOutOfSync(scenario)}

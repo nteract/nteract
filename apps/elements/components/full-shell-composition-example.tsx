@@ -2,7 +2,7 @@
 
 import { NotebookHostProvider } from "@nteract/notebook-host";
 import { Share2 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { resolveNotebookOutlineSelection } from "runtimed";
 import {
   CrdtBridgeProvider,
@@ -27,7 +27,7 @@ import {
   type NotebookViewCell,
 } from "@/components/notebook";
 import type { CommentsProjection } from "@/components/notebook/comment-types";
-import type { NotebookRailPanelId } from "@/components/notebook-rail";
+import { NotebookRailToolbarButton, type NotebookRailPanelId } from "@/components/notebook-rail";
 import {
   flushCellUIState,
   setFocusedCellId as setNotebookFocusedCellId,
@@ -304,10 +304,19 @@ export function FullShellCompositionExample() {
           <FullShellCommandToolbar
             capabilities={capabilities}
             activePanel={activePanel}
+            leadingControls={
+              <NotebookRailToolbarButton
+                activePanelId={activePanel}
+                collapsed={railCollapsed}
+                onActivePanelChange={setActivePanel}
+                onCollapsedChange={setRailCollapsed}
+              />
+            }
             onTogglePackages={() => setActivePanel("packages")}
             onToggleWorkstations={() => setActivePanel("workstations")}
           />
         }
+        stageToolbarPlacement="shell"
         rail={
           <NotebookDocumentRail
             viewModel={scenario.viewModel}
@@ -340,6 +349,7 @@ export function FullShellCompositionExample() {
               focusFullShellCell(item.cellId);
             }}
             className="bg-background"
+            toolbarPlacement="external"
           />
         }
       >
@@ -350,7 +360,7 @@ export function FullShellCompositionExample() {
               className="min-h-0 overflow-y-auto bg-background"
               data-slot="full-shell-notebook-stage"
             >
-              <div className="mx-auto min-h-full w-full max-w-5xl px-5 py-5 sm:px-7 lg:px-10">
+              <div className="min-h-full w-full max-w-5xl py-5 pr-5 sm:pr-7 lg:pr-10">
                 {fixturesSeeded ? (
                   <NotebookView
                     cellIds={notebookViewCellIds}
@@ -462,11 +472,13 @@ function FullShellHeader({
 function FullShellCommandToolbar({
   activePanel,
   capabilities,
+  leadingControls,
   onTogglePackages,
   onToggleWorkstations,
 }: {
   activePanel: NotebookRailPanelId;
   capabilities: NotebookShellCapabilities;
+  leadingControls?: ReactNode;
   onTogglePackages: () => void;
   onToggleWorkstations: () => void;
 }) {
@@ -482,6 +494,7 @@ function FullShellCommandToolbar({
       <div className="min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <NotebookCommandToolbar
           capabilities={capabilities}
+          leadingControls={leadingControls}
           runtime="python"
           runtimeTarget={capabilities.runtime.target ?? null}
           environmentManager={null}

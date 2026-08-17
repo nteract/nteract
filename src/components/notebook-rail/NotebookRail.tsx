@@ -9,10 +9,12 @@ import {
 } from "runtimed";
 import {
   Rail,
+  RailButton,
   RAIL_TAKEOVER_MEDIA_QUERY,
   RAIL_TAKEOVER_PANEL_CLASS_NAMES,
   RAIL_TAKEOVER_STAGE_CLASS_NAME,
   type RailItem,
+  type RailToolbarPlacement,
 } from "@/components/rail";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +43,7 @@ export interface NotebookRailProps {
   workstationsPanelAction?: ReactNode;
   leadingSlot?: ReactNode;
   trailingSlot?: ReactNode;
+  toolbarPlacement?: RailToolbarPlacement;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   onSelectOutlineItem?: (item: NotebookOutlineItem) => void;
@@ -68,6 +71,7 @@ export function NotebookRail({
   workstationsPanelAction,
   leadingSlot,
   trailingSlot,
+  toolbarPlacement = "integrated",
   onActivePanelChange,
   onCollapsedChange,
   onSelectOutlineItem,
@@ -97,6 +101,8 @@ export function NotebookRail({
       activePanelId={activePanelId}
       collapsed={collapsed}
       items={railButtons}
+      toolbarPlacement={toolbarPlacement}
+      externalToolbarItemId={toolbarPlacement === "external" ? "outline" : undefined}
       panelTitle={title}
       panelAction={activePanelId === "workstations" ? workstationsPanelAction : undefined}
       leadingSlot={leadingSlot}
@@ -128,6 +134,41 @@ export function NotebookRail({
         workstationsPanel
       )}
     </Rail>
+  );
+}
+
+export interface NotebookRailToolbarButtonProps {
+  activePanelId: NotebookRailPanelId;
+  collapsed: boolean;
+  onActivePanelChange: (panelId: NotebookRailPanelId) => void;
+  onCollapsedChange: (collapsed: boolean) => void;
+  className?: string;
+}
+
+export function NotebookRailToolbarButton({
+  activePanelId,
+  collapsed,
+  onActivePanelChange,
+  onCollapsedChange,
+  className,
+}: NotebookRailToolbarButtonProps) {
+  const active = !collapsed && activePanelId === "outline";
+
+  return (
+    <RailButton
+      label="Outline"
+      icon={ListTree}
+      active={active}
+      className={className}
+      onClick={() => {
+        if (active) {
+          onCollapsedChange(true);
+          return;
+        }
+        onActivePanelChange("outline");
+        onCollapsedChange(false);
+      }}
+    />
   );
 }
 

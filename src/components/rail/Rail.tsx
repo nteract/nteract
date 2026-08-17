@@ -15,10 +15,14 @@ export interface RailItem<PanelId extends string = string> {
   disabled?: boolean;
 }
 
+export type RailToolbarPlacement = "integrated" | "external";
+
 export interface RailProps<PanelId extends string = string> {
   activePanelId: PanelId;
   collapsed: boolean;
   items: readonly RailItem<PanelId>[];
+  toolbarPlacement?: RailToolbarPlacement;
+  externalToolbarItemId?: PanelId;
   panelTitle: ReactNode;
   children: ReactNode;
   onActivePanelChange: (panelId: PanelId) => void;
@@ -38,6 +42,8 @@ export function Rail<PanelId extends string = string>({
   activePanelId,
   collapsed,
   items,
+  toolbarPlacement = "integrated",
+  externalToolbarItemId,
   panelTitle,
   panelAction,
   leadingSlot,
@@ -52,50 +58,74 @@ export function Rail<PanelId extends string = string>({
   panelTitleRowSlot = "rail-panel-title-row",
 }: RailProps<PanelId>) {
   const showPanelHeader = panelTitle != null || panelAction != null;
+  const hasIntegratedToolbar = toolbarPlacement === "integrated";
+  const cornerItem = hasIntegratedToolbar && !leadingSlot ? (items[0] ?? null) : null;
+  const navigationItems = cornerItem ? items.slice(1) : items;
+  const handleItemClick = (item: RailItem<PanelId>) => {
+    if (item.disabled) return;
+    if (!collapsed && activePanelId === item.id) {
+      onCollapsedChange(true);
+      return;
+    }
+    onActivePanelChange(item.id);
+    onCollapsedChange(false);
+  };
 
   return (
     <aside
       className={cn(
-        "grid min-h-0 shrink-0 grid-cols-[3.5rem_auto] grid-rows-[auto_minmax(0,1fr)] border-r bg-background",
-        !collapsed && "max-[599.98px]:border-r-0",
+        "grid h-full min-h-0 shrink-0 grid-cols-[3.5rem_auto] bg-background",
+        hasIntegratedToolbar ? "grid-rows-[auto_minmax(0,1fr)]" : "grid-rows-[minmax(0,1fr)]",
         className,
       )}
       data-testid={dataTestId}
       data-collapsed={collapsed ? "true" : "false"}
+      data-toolbar-placement={toolbarPlacement}
     >
-      <div
-        className={cn(
-          "col-start-1 row-start-1 flex w-14 items-start justify-center bg-background pt-2",
-          RAIL_HEADER_HEIGHT_CLASS_NAME,
-        )}
-        data-slot="rail-toolbar-corner"
-      >
-        {leadingSlot}
-      </div>
+      {hasIntegratedToolbar ? (
+        <div
+          className={cn(
+            "col-start-1 row-start-1 flex w-14 items-start justify-center bg-background pt-2",
+            RAIL_HEADER_HEIGHT_CLASS_NAME,
+          )}
+          data-slot="rail-toolbar-corner"
+        >
+          {leadingSlot ??
+            (cornerItem ? (
+              <RailButton
+                label={cornerItem.label}
+                icon={cornerItem.icon}
+                active={!collapsed && activePanelId === cornerItem.id}
+                disabled={cornerItem.disabled}
+                onClick={() => handleItemClick(cornerItem)}
+              />
+            ) : null)}
+        </div>
+      ) : null}
 
       <div
         className={cn(
-          "col-start-1 row-start-2 flex min-h-0 w-14 flex-col items-center gap-1 bg-background px-2 py-3",
-          !collapsed && "border-r",
+          "col-start-1 flex min-h-0 w-14 flex-col items-center gap-1 border-r bg-background px-2 py-3",
+          hasIntegratedToolbar ? "row-start-2" : "row-start-1",
         )}
         data-slot="rail-navigation"
       >
-        {items.map((item) => (
+        {!hasIntegratedToolbar && leadingSlot ? (
+          <div className="mb-4 flex flex-col items-center">{leadingSlot}</div>
+        ) : null}
+        {navigationItems.map((item) => (
           <RailButton
             key={item.id}
             label={item.label}
             icon={item.icon}
             active={!collapsed && activePanelId === item.id}
             disabled={item.disabled}
-            onClick={() => {
-              if (item.disabled) return;
-              if (!collapsed && activePanelId === item.id) {
-                onCollapsedChange(true);
-                return;
-              }
-              onActivePanelChange(item.id);
-              onCollapsedChange(false);
-            }}
+            className={
+              !hasIntegratedToolbar && item.id === externalToolbarItemId
+                ? "hidden max-[599.98px]:flex"
+                : undefined
+            }
+            onClick={() => handleItemClick(item)}
           />
         ))}
         {trailingSlot ? (
@@ -106,31 +136,47 @@ export function Rail<PanelId extends string = string>({
       {!collapsed && (
         <div
           className={cn(
-            "col-start-2 row-span-2 row-start-1 grid min-h-0 max-w-[calc(100vw-3.5rem)] grid-rows-[auto_minmax(0,1fr)] bg-background",
+            "col-start-2 row-start-1 grid min-h-0 max-w-[calc(100vw-3.5rem)] bg-background",
+            hasIntegratedToolbar
+              ? "row-span-2 grid-rows-[auto_minmax(0,1fr)]"
+              : showPanelHeader
+                ? "grid-rows-[auto_minmax(0,1fr)]"
+                : "grid-rows-[minmax(0,1fr)]",
+            !hasIntegratedToolbar && "border-r max-[599.98px]:border-r-0",
             panelClassName,
             RAIL_TAKEOVER_PANEL_CLASS_NAMES,
           )}
           data-slot={panelSlot}
         >
-          <div
-            className={cn("flex items-end border-b px-4", RAIL_HEADER_HEIGHT_CLASS_NAME)}
-            data-slot="rail-panel-header"
-          >
-            {showPanelHeader ? (
-              <div className="flex h-10 w-full flex-col justify-center gap-1.5">
-                <div
-                  className="flex min-w-0 flex-wrap items-center justify-between gap-2"
-                  data-slot={panelTitleRowSlot}
-                >
-                  {panelTitle != null ? (
-                    <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
-                  ) : null}
-                  {panelAction}
+          {hasIntegratedToolbar || showPanelHeader ? (
+            <div
+              className={cn("flex items-end border-b px-4", RAIL_HEADER_HEIGHT_CLASS_NAME)}
+              data-slot="rail-panel-header"
+            >
+              {showPanelHeader ? (
+                <div className="flex h-10 w-full flex-col justify-center gap-1.5">
+                  <div
+                    className="flex min-w-0 flex-wrap items-center justify-between gap-2"
+                    data-slot={panelTitleRowSlot}
+                  >
+                    {panelTitle != null ? (
+                      <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
+                    ) : null}
+                    {panelAction}
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
+          ) : null}
+          <div
+            className={cn(
+              "min-h-0 flex-1 overflow-y-auto p-3",
+              hasIntegratedToolbar && "border-r max-[599.98px]:border-r-0",
+            )}
+            data-slot="rail-panel-content"
+          >
+            {children}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-3">{children}</div>
         </div>
       )}
     </aside>
@@ -144,6 +190,7 @@ export interface RailButtonProps {
   active?: boolean;
   disabled?: boolean;
   onClick?: () => void;
+  className?: string;
 }
 
 export function RailButton({
@@ -153,6 +200,7 @@ export function RailButton({
   active = false,
   disabled = false,
   onClick,
+  className,
 }: RailButtonProps) {
   return (
     <button
@@ -170,6 +218,7 @@ export function RailButton({
           ? "bg-foreground text-background"
           : "text-foreground/70 hover:bg-muted hover:text-foreground",
         disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
+        className,
       )}
     >
       <Icon className="size-4" aria-hidden="true" />

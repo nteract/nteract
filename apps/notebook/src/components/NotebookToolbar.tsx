@@ -63,6 +63,7 @@ interface NotebookToolbarProps {
   updateStatus?: UpdateStatus;
   updateVersion?: string | null;
   onRestartToUpdate?: () => void;
+  leadingControls?: ReactNode;
   trailingControls?: ReactNode;
 }
 
@@ -95,6 +96,7 @@ export function NotebookToolbar({
   updateStatus,
   updateVersion,
   onRestartToUpdate,
+  leadingControls,
   trailingControls,
 }: NotebookToolbarProps) {
   const [kernelspecs, setKernelspecs] = useState<KernelspecInfo[]>([]);
@@ -249,6 +251,7 @@ export function NotebookToolbar({
     <NotebookToolbarFrame notices={notices}>
       <NotebookCommandToolbar
         capabilities={capabilities}
+        leadingControls={leadingControls}
         runtime={runtime}
         environmentManager={envManager}
         environmentPanelOpen={isDepsOpen}

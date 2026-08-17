@@ -7,4 +7,5 @@ export {
   type RailButtonProps,
   type RailItem,
   type RailProps,
+  type RailToolbarPlacement,
 } from "./Rail";

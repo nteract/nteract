@@ -7,6 +7,7 @@ import {
   NotebookPackagesPanel,
   NotebookOutlinePanel,
   NotebookRail,
+  NotebookRailToolbarButton,
 } from "../NotebookRail";
 
 const outlineItems = [
@@ -35,6 +36,39 @@ const outlineItems = [
 ];
 
 describe("NotebookRail", () => {
+  it("moves the outline toggle into an external command row", () => {
+    const onActivePanelChange = vi.fn();
+    const onCollapsedChange = vi.fn();
+
+    const { rerender } = render(
+      <NotebookRailToolbarButton
+        activePanelId="packages"
+        collapsed
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Outline" }));
+    expect(onActivePanelChange).toHaveBeenCalledWith("outline");
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
+
+    onActivePanelChange.mockClear();
+    onCollapsedChange.mockClear();
+    rerender(
+      <NotebookRailToolbarButton
+        activePanelId="outline"
+        collapsed={false}
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={onCollapsedChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Outline" }));
+    expect(onCollapsedChange).toHaveBeenCalledWith(true);
+    expect(onActivePanelChange).not.toHaveBeenCalled();
+  });
+
   it("explains how to populate an empty outline", () => {
     render(
       <NotebookRail

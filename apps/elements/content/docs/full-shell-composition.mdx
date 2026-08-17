@@ -25,9 +25,12 @@ and the comments panel against deterministic fixture state.
 - Desktop and cloud should continue to pass host facts into the same shared
   surfaces instead of forking shell layout logic.
 - The document title/header is shell chrome and spans the full notebook width,
-  including the rail. The command toolbar remains stage chrome in the row
-  below it.
-- The borderless fixed rail corner and contextual panel headers share the
-  command toolbar's explicit grid track. The panel header keeps the command-row
-  hairline even when it has no label. Outline relies on its active rail icon
-  and navigation label instead of repeating an `Outline` heading in that row.
+  including the rail. The command row is composed across the rail and notebook
+  stage on one explicit grid track.
+- Without a host-specific leading action, the outline toggle occupies the
+  borderless shell-command corner beside the notebook commands. The horizontal toolbar
+  rule begins after that corner, while rail and panel dividers begin below it,
+  so the join stays structural in both collapsed and expanded states.
+- The notebook is left-anchored: its cell gutter begins at the stage boundary
+  instead of inheriting centered-document padding. Outline relies on its active
+  rail icon and navigation label instead of repeating an `Outline` heading.

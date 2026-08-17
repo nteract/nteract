@@ -1,6 +1,7 @@
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail";
 import type { ReactNode } from "react";
 import type { NotebookOutlineItem } from "runtimed";
+import type { RailToolbarPlacement } from "@/components/rail";
 import type { NotebookViewModel } from "./view-model";
 
 export interface NotebookDocumentRailProps {
@@ -17,6 +18,7 @@ export interface NotebookDocumentRailProps {
   workstationsPanelAction?: ReactNode;
   leadingSlot?: ReactNode;
   trailingSlot?: ReactNode;
+  toolbarPlacement?: RailToolbarPlacement;
   onActivePanelChange: (panelId: NotebookRailPanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;
   onSelectOutlineItem?: (item: NotebookOutlineItem) => void;
@@ -38,6 +40,7 @@ export function NotebookDocumentRail({
   workstationsPanelAction,
   leadingSlot,
   trailingSlot,
+  toolbarPlacement,
   onActivePanelChange,
   onCollapsedChange,
   onSelectOutlineItem,
@@ -59,6 +62,7 @@ export function NotebookDocumentRail({
       workstationsPanelAction={workstationsPanelAction}
       leadingSlot={leadingSlot}
       trailingSlot={trailingSlot}
+      toolbarPlacement={toolbarPlacement}
       onActivePanelChange={onActivePanelChange}
       onCollapsedChange={onCollapsedChange}
       onSelectOutlineItem={onSelectOutlineItem}

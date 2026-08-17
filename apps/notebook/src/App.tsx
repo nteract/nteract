@@ -46,6 +46,7 @@ import {
   NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
   NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
   NotebookPackagesPanel,
+  NotebookRailToolbarButton,
   type NotebookRailPanelId,
 } from "@/components/notebook-rail";
 import {
@@ -2057,10 +2058,8 @@ function AppContent() {
               </NotebookNotice>
             ) : null
           }
-          toolbarPlacement="stage"
-          toolbarClassName="shrink-0"
-          toolbarLabel="Notebook execution and runtime controls"
-          toolbar={
+          stageToolbarPlacement="shell"
+          stageToolbar={
             <NotebookToolbar
               kernelStatus={displayKernelStatus}
               statusKey={displayStatusKey}
@@ -2089,6 +2088,14 @@ function AppContent() {
               updateStatus={updateStatus}
               updateVersion={updateVersion}
               onRestartToUpdate={restartToUpdate}
+              leadingControls={
+                <NotebookRailToolbarButton
+                  activePanelId={renderedActiveRailPanel}
+                  collapsed={railCollapsed}
+                  onActivePanelChange={handleRailPanelChange}
+                  onCollapsedChange={setNotebookRailCollapsed}
+                />
+              }
             />
           }
           stageClassName={cn(
@@ -2115,6 +2122,7 @@ function AppContent() {
               onCollapsedChange={setNotebookRailCollapsed}
               onSelectOutlineItem={handleSelectOutlineItem}
               onNavigateOutlineItem={handleNavigateOutlineItem}
+              toolbarPlacement="external"
               commentsPanel={commentsUiSurface.commentsPanel}
               packagesPanel={
                 <NotebookPackagesPanel readOnly={!shellCapabilities.canManagePackages}>

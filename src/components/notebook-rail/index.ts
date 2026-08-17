@@ -6,9 +6,11 @@ export {
   NotebookPackagesPanel,
   NotebookRail,
   NotebookRailButton,
+  NotebookRailToolbarButton,
   type NotebookOutlinePanelProps,
   type NotebookPackagesPanelProps,
   type NotebookRailButtonProps,
+  type NotebookRailToolbarButtonProps,
   type NotebookRailPanelId,
   type NotebookRailProps,
 } from "./NotebookRail";

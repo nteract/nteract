@@ -232,7 +232,8 @@ body {
 }
 
 .cloud-notebook-stage > [data-slot="notebook-document-toolbar"],
-.cloud-notebook-stage > [data-slot="notebook-document-stage-toolbar"] {
+.cloud-notebook-stage > [data-slot="notebook-document-stage-toolbar"],
+.cloud-notebook-shell [data-slot="notebook-document-shell-toolbar"] {
   flex: 0 0 auto;
   z-index: 16;
 }
@@ -661,7 +662,8 @@ body {
     flex: 1;
   }
 
-  .cloud-notebook-rail[data-collapsed="false"] + [data-slot="notebook-document-stage"] {
+  [data-slot="notebook-document-rail-region"]:has(.cloud-notebook-rail[data-collapsed="false"])
+    + [data-slot="notebook-document-stage"] {
     display: none;
   }
 }

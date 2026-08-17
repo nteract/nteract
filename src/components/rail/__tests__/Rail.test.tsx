@@ -35,7 +35,7 @@ describe("Rail", () => {
     );
 
     expect(screen.getByTestId("example-rail")).toHaveAttribute("data-collapsed", "false");
-    expect(screen.getByTestId("example-rail")).toHaveClass("max-[599.98px]:border-r-0");
+    expect(screen.getByTestId("example-rail")).not.toHaveClass("border-r");
     expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
     expect(screen.queryByText("uv · 2 packages")).not.toBeInTheDocument();
     expect(screen.getByTestId("panel-content")).toHaveTextContent("Dependencies");
@@ -49,10 +49,17 @@ describe("Rail", () => {
     const toolbarCorner = container.querySelector('[data-slot="rail-toolbar-corner"]');
     expect(toolbarCorner).toHaveClass("h-[var(--nb-rail-header-height)]");
     expect(toolbarCorner).not.toHaveClass("border-b", "border-r");
-    expect(container.querySelector('[data-slot="rail-navigation"]')).toHaveClass("row-start-2");
+    expect(toolbarCorner).toContainElement(screen.getByRole("button", { name: "Outline" }));
+    const navigation = container.querySelector('[data-slot="rail-navigation"]');
+    expect(navigation).toHaveClass("row-start-2", "border-r");
+    expect(navigation).not.toContainElement(screen.getByRole("button", { name: "Outline" }));
     expect(container.querySelector('[data-slot="rail-panel-header"]')).toHaveClass(
       "h-[var(--nb-rail-header-height)]",
       "border-b",
+    );
+    expect(container.querySelector('[data-slot="rail-panel-content"]')).toHaveClass(
+      "border-r",
+      "max-[599.98px]:border-r-0",
     );
   });
 
@@ -73,9 +80,9 @@ describe("Rail", () => {
 
     const corner = container.querySelector('[data-slot="rail-toolbar-corner"]');
     expect(corner).toContainElement(screen.getByRole("button", { name: "Notebook home" }));
-    expect(container.querySelector('[data-slot="rail-navigation"]')).not.toContainElement(
-      screen.getByRole("button", { name: "Notebook home" }),
-    );
+    const navigation = container.querySelector('[data-slot="rail-navigation"]');
+    expect(navigation).not.toContainElement(screen.getByRole("button", { name: "Notebook home" }));
+    expect(navigation).toContainElement(screen.getByRole("button", { name: "Outline" }));
   });
 
   it("keeps a label-free panel header track on the command-row baseline", () => {
@@ -94,6 +101,40 @@ describe("Rail", () => {
 
     expect(screen.queryByRole("heading", { name: "Outline" })).not.toBeInTheDocument();
     expect(container.querySelector('[data-slot="rail-panel-header"]')).toHaveClass("border-b");
+  });
+
+  it("leaves the command row outside the rail when the toolbar is external", () => {
+    const { container } = render(
+      <Rail
+        activePanelId="outline"
+        collapsed={false}
+        items={items}
+        toolbarPlacement="external"
+        externalToolbarItemId="outline"
+        panelTitle={null}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        Outline
+      </Rail>,
+    );
+
+    expect(container.querySelector('[data-slot="rail-toolbar-corner"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="rail-navigation"]')).toHaveClass(
+      "row-start-1",
+      "border-r",
+    );
+    expect(screen.getByRole("button", { name: "Outline" })).toHaveClass(
+      "hidden",
+      "max-[599.98px]:flex",
+    );
+    expect(screen.getByRole("button", { name: "Packages" })).toBeVisible();
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="rail-panel"]')).toHaveClass(
+      "border-r",
+      "max-[599.98px]:border-r-0",
+    );
+    expect(container.querySelector('[data-slot="rail-panel-content"]')).not.toHaveClass("border-r");
   });
 
   it("collapses the expanded active panel button", () => {

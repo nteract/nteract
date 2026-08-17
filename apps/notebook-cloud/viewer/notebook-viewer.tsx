@@ -24,7 +24,11 @@ import {
   useHasIsolatedOutputs,
   useIsolatedRenderer,
 } from "@/components/isolated/isolated-renderer-context";
-import { NotebookRailHomeButton, type NotebookRailPanelId } from "@/components/notebook-rail";
+import {
+  NotebookRailHomeButton,
+  NotebookRailToolbarButton,
+  type NotebookRailPanelId,
+} from "@/components/notebook-rail";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import {
   markdownProjectionMatchesSource,
@@ -1677,6 +1681,7 @@ export function NotebookViewer({
       onSelectOutlineItem={handleSelectOutlineItem}
       onNavigateOutlineItem={handleNavigateOutlineItem}
       className="cloud-notebook-rail"
+      toolbarPlacement="external"
     />
   );
 
@@ -1780,15 +1785,24 @@ export function NotebookViewer({
       <NotebookCommandToolbar
         capabilities={shellCapabilities}
         leadingControls={
-          <button
-            type="button"
-            className="cloud-mobile-rail-toggle hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Open notebook panels"
-            title="Notebook panels"
-            onClick={handleOpenMobileRail}
-          >
-            <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
-          </button>
+          <>
+            <NotebookRailToolbarButton
+              activePanelId={renderedActiveRailPanel}
+              collapsed={railCollapsed}
+              onActivePanelChange={handleRailPanelChange}
+              onCollapsedChange={setNotebookRailCollapsed}
+              className="max-[599.98px]:hidden"
+            />
+            <button
+              type="button"
+              className="cloud-mobile-rail-toggle hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Open notebook panels"
+              title="Notebook panels"
+              onClick={handleOpenMobileRail}
+            >
+              <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </>
         }
         runtime={toolbarRuntime}
         runtimeTarget={shellCapabilities.runtime.target ?? null}
@@ -1946,6 +1960,7 @@ export function NotebookViewer({
         toolbar={toolbar}
         toolbarPlacement="shell"
         stageToolbar={stageToolbar}
+        stageToolbarPlacement="shell"
         toolbarLabel="Notebook view status and controls"
         notices={notices}
         noticesPlacement="stage"

@@ -12,6 +12,7 @@ export interface NotebookDocumentShellProps {
   toolbar?: ReactNode;
   toolbarPlacement?: "shell" | "stage";
   stageToolbar?: ReactNode;
+  stageToolbarPlacement?: "stage" | "shell";
   notices?: ReactNode;
   noticesPlacement?: "shell" | "stage";
   children: ReactNode;
@@ -30,6 +31,7 @@ export function NotebookDocumentShell({
   toolbar,
   toolbarPlacement = "shell",
   stageToolbar,
+  stageToolbarPlacement = "stage",
   notices,
   noticesPlacement = "shell",
   children,
@@ -42,6 +44,7 @@ export function NotebookDocumentShell({
   stageLabel = "Notebook",
 }: NotebookDocumentShellProps) {
   const Root = rootElement as ElementType;
+  const hasShellCommandRow = Boolean(stageToolbar) && stageToolbarPlacement === "shell";
   const toolbarSlot = toolbar ? (
     <div
       className={toolbarClassName}
@@ -74,18 +77,45 @@ export function NotebookDocumentShell({
       {toolbarPlacement === "shell" ? toolbarSlot : null}
       {noticesPlacement === "shell" ? noticesSlot : null}
       <div
-        className="grid min-h-0 flex-1 grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden"
+        className={cn(
+          "grid min-h-0 flex-1 grid-cols-[auto_minmax(0,1fr)] overflow-hidden",
+          hasShellCommandRow ? "grid-rows-[auto_minmax(0,1fr)]" : "grid-rows-[minmax(0,1fr)]",
+        )}
         data-slot="notebook-document-body"
       >
-        {rail}
+        {hasShellCommandRow ? (
+          <div
+            className="col-span-2 col-start-1 row-start-1 min-w-0 [&_[data-slot=notebook-toolbar-frame]]:border-b-0"
+            data-slot="notebook-document-shell-toolbar"
+          >
+            {stageToolbar}
+          </div>
+        ) : null}
+        {hasShellCommandRow ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none z-10 col-start-2 row-start-1 border-b"
+            data-slot="notebook-document-shell-toolbar-baseline"
+          />
+        ) : null}
+        <div
+          className={cn("col-start-1 min-h-0", hasShellCommandRow ? "row-start-2" : "row-start-1")}
+          data-slot="notebook-document-rail-region"
+        >
+          {rail}
+        </div>
         <section
-          className={cn("col-start-2 row-start-1 flex min-h-0 min-w-0 flex-col", stageClassName)}
+          className={cn(
+            "col-start-2 flex min-h-0 min-w-0 flex-col",
+            hasShellCommandRow ? "row-start-2" : "row-start-1",
+            stageClassName,
+          )}
           aria-label={stageLabel}
           data-slot="notebook-document-stage"
         >
           {toolbarPlacement === "stage" ? toolbarSlot : null}
           {noticesPlacement === "stage" ? noticesSlot : null}
-          {stageToolbar ? (
+          {stageToolbar && stageToolbarPlacement === "stage" ? (
             <div data-slot="notebook-document-stage-toolbar">{stageToolbar}</div>
           ) : null}
           {children}
