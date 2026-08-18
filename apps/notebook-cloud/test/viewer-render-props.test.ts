@@ -589,14 +589,17 @@ test("cloud rail takes over constrained widths instead of pushing the stage offs
   const sourceText = readFileSync(sourcePath, "utf8");
 
   assert.match(sourceText, /@media \(max-width: 599\.98px\)/);
-  assert.match(sourceText, /\.cloud-notebook-rail\[data-collapsed="false"\]\s*\{/);
   assert.match(
     sourceText,
-    /\.cloud-notebook-rail\[data-collapsed="false"\] \[data-slot="notebook-rail-panel"\]\s*\{/,
+    /\.cloud-notebook-stage > \[data-slot="notebook-document-stage-body"\]\s*\{[\s\S]*display: grid;[\s\S]*grid-template-columns: auto minmax\(0, 1fr\);/,
   );
   assert.match(
     sourceText,
-    /\.cloud-notebook-rail\[data-collapsed="false"\] \+ \[data-slot="notebook-document-stage"\]\s*\{/,
+    /\[data-slot="notebook-document-rail-panel-host"\]:has\(\[data-slot="notebook-rail-panel"\]\)\s*\{[\s\S]*grid-column: 1 \/ -1;/,
+  );
+  assert.match(
+    sourceText,
+    /\[data-slot="notebook-document-rail-panel-host"\]:has\(\[data-slot="notebook-rail-panel"\]\)\s*\+ \[data-slot="notebook-document-stage-content"\]\s*\{[\s\S]*display: none;/,
   );
 });
 

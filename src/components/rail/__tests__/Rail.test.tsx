@@ -86,6 +86,23 @@ describe("Rail", () => {
     expect(screen.queryByRole("button", { name: "Collapse rail" })).not.toBeInTheDocument();
   });
 
+  it("omits redundant panel header chrome when no title or action is provided", () => {
+    const { container } = render(
+      <Rail
+        activePanelId="outline"
+        collapsed={false}
+        items={items}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        <div data-testid="outline-content">Outline</div>
+      </Rail>,
+    );
+
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toBeNull();
+    expect(screen.getByTestId("outline-content")).toBeVisible();
+  });
+
   it("expands and selects a panel while collapsed", () => {
     const onActivePanelChange = vi.fn();
     const onCollapsedChange = vi.fn();
@@ -139,6 +156,9 @@ describe("RailButton", () => {
     expect(screen.getByRole("button", { name: "Outline" })).toHaveClass(
       "bg-foreground",
       "text-background",
+      "rounded-md",
+      "focus-visible:ring-1",
+      "focus-visible:ring-ring",
     );
   });
 

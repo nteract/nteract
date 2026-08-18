@@ -2057,8 +2057,8 @@ function AppContent() {
               </NotebookNotice>
             ) : null
           }
-          toolbarPlacement="stage"
-          toolbarClassName="-ml-0.5 shrink-0 bg-background"
+          toolbarPlacement="stage-content"
+          toolbarClassName="shrink-0 bg-background"
           toolbarLabel="Notebook execution and runtime controls"
           toolbar={
             <NotebookToolbar
@@ -2092,8 +2092,8 @@ function AppContent() {
             />
           }
           stageClassName="min-w-0 flex-1"
-          // The expanded panel slides out inside the stage, under the utility
-          // bar; the rail strip stays at the left edge of the page content.
+          // The expanded panel is hosted inside the stage, while the notebook
+          // controls and content stay attached to the same live stage edge.
           railPanelPlacement="stage"
           stageContentClassName={cn(!railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME)}
           rail={

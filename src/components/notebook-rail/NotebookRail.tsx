@@ -91,7 +91,7 @@ export function NotebookRail({
         ? "Discussions"
         : activePanelId === "workstations"
           ? "Workstations"
-          : "Outline";
+          : null;
   return (
     <Rail
       activePanelId={activePanelId}

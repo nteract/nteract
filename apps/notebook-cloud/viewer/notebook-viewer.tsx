@@ -1946,6 +1946,7 @@ export function NotebookViewer({
         toolbar={toolbar}
         toolbarPlacement="stage"
         stageToolbar={stageToolbar}
+        stageToolbarPlacement="stage-content"
         toolbarLabel="Notebook view status and controls"
         notices={notices}
         noticesPlacement="stage"

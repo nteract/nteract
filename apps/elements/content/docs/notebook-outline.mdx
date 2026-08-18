@@ -46,8 +46,9 @@ outline rail.
   the production projection path from materialized markdown headings.
 - Contextual selection depends on `outlineCellIds`: a focused code cell inside a
   section highlights the nearest preceding markdown heading.
-- Outline panel chrome is intentionally sparse. The panel title names the mode,
-  and the rows carry the useful context without an extra item-count badge.
+- Outline panel chrome is intentionally sparse. The active rail control names
+  the mode, so the outline rows begin immediately without a redundant panel
+  title or item-count badge.
 - Notebook active-section tracking still belongs to the app shell through
   viewport observation and `resolveNotebookOutlineSelection`; this page only
   fixtures the active item.

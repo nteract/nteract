@@ -1,5 +1,7 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vite-plus/test";
+import { ListTree } from "lucide-react";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { Rail } from "@/components/rail";
 import { NotebookDocumentShell } from "../NotebookDocumentShell";
 import type { NotebookShellCapabilities } from "../capabilities";
 
@@ -48,6 +50,50 @@ describe("NotebookDocumentShell", () => {
 
     expect(container.querySelector("main[data-slot='notebook-document-shell']")).not.toBeNull();
     expect(screen.getByLabelText("Hosted notebook")).toBeVisible();
+  });
+
+  it("keeps stage-content controls and notebook content on the panel-aware column", () => {
+    const { container } = render(
+      <NotebookDocumentShell
+        railPanelPlacement="stage"
+        toolbar={<button type="button">Run</button>}
+        toolbarPlacement="stage-content"
+        stageToolbar={<button type="button">Restart</button>}
+        stageToolbarPlacement="stage-content"
+        rail={
+          <Rail
+            activePanelId="outline"
+            collapsed={false}
+            items={[{ id: "outline", label: "Outline", icon: ListTree }]}
+            onActivePanelChange={vi.fn()}
+            onCollapsedChange={vi.fn()}
+          >
+            <div data-testid="outline-content">Outline content</div>
+          </Rail>
+        }
+      >
+        <section aria-label="Notebook cells">cells</section>
+      </NotebookDocumentShell>,
+    );
+
+    const stageBody = container.querySelector('[data-slot="notebook-document-stage-body"]');
+    const contentToolbar = container.querySelector(
+      '[data-slot="notebook-document-stage-content-toolbar"]',
+    );
+    const panelHost = container.querySelector('[data-slot="notebook-document-rail-panel-host"]');
+    const stageContent = container.querySelector('[data-slot="notebook-document-stage-content"]');
+
+    expect(stageBody).toHaveClass(
+      "grid-cols-[auto_minmax(0,1fr)]",
+      "grid-rows-[auto_minmax(0,1fr)]",
+    );
+    expect(contentToolbar).toHaveClass("col-start-2", "row-start-1");
+    expect(contentToolbar).toContainElement(screen.getByRole("button", { name: "Run" }));
+    expect(contentToolbar).toContainElement(screen.getByRole("button", { name: "Restart" }));
+    expect(panelHost).toHaveClass("col-start-1", "row-start-2");
+    expect(panelHost).toContainElement(screen.getByTestId("outline-content"));
+    expect(stageContent).toHaveClass("col-start-2", "row-start-2");
+    expect(stageContent).toContainElement(screen.getByLabelText("Notebook cells"));
   });
 
   it("exposes host capabilities for adapters and smoke tests", () => {

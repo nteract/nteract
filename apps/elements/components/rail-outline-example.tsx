@@ -128,6 +128,7 @@ export function RailOutlineExample() {
         stageClassName="min-w-0 bg-fd-muted/20"
         stageContentClassName="min-w-[320px]"
         railPanelPlacement="stage"
+        toolbarPlacement="stage-content"
         toolbarClassName="border-b border-fd-border"
         toolbarLabel="Notebook fixture toolbar"
         stageLabel="Elements notebook scenario"
