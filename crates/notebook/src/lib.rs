@@ -4344,6 +4344,7 @@ fn write_dev_app_state(app: &tauri::App) -> Result<Option<PathBuf>, String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
     }
+    let _state_lock = lock_dev_app_state(&state_path)?;
     let temporary = state_path.with_extension(format!("json.{}.tmp", state.pid));
     let serialized = serde_json::to_vec_pretty(&state)
         .map_err(|error| format!("could not serialize dev app state: {error}"))?;
@@ -4358,9 +4359,30 @@ fn write_dev_app_state(app: &tauri::App) -> Result<Option<PathBuf>, String> {
     Ok(Some(state_path))
 }
 
+fn lock_dev_app_state(state_path: &Path) -> Result<std::fs::File, String> {
+    let lock_path = state_path.with_extension("lock");
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| format!("could not open {}: {error}", lock_path.display()))?;
+    lock.lock()
+        .map_err(|error| format!("could not lock {}: {error}", lock_path.display()))?;
+    Ok(lock)
+}
+
 fn clear_dev_app_state_for_pid(pid: u32) {
     let Some(state_path) = runt_workspace::dev_app_state_path() else {
         return;
+    };
+    let _state_lock = match lock_dev_app_state(&state_path) {
+        Ok(lock) => lock,
+        Err(error) => {
+            log::warn!("[shutdown] Failed to lock development app state: {error}");
+            return;
+        }
     };
     let recorded_pid = std::fs::read(&state_path)
         .ok()

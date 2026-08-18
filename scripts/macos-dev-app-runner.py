@@ -48,6 +48,8 @@ def write_app_bundle(bundle: Path, binary: Path, display_name: str, bundle_id: s
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleName": display_name,
         "CFBundlePackageType": "APPL",
+        # Deliberately synthetic: release versioning and crash reporting apply
+        # only to packaged apps, while this wrapper is a disposable dev flavor.
         "CFBundleShortVersionString": "0.0.0",
         "CFBundleVersion": "1",
         "LSMinimumSystemVersion": "11.0",
