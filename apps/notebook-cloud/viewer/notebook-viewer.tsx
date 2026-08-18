@@ -1944,14 +1944,17 @@ export function NotebookViewer({
         }
         stageClassName="cloud-notebook-stage"
         toolbar={toolbar}
-        toolbarPlacement="stage"
+        toolbarPlacement="shell"
         stageToolbar={stageToolbar}
+        stageToolbarPlacement="stage-content"
         toolbarLabel="Notebook view status and controls"
         notices={notices}
         noticesPlacement="stage"
         noticesClassName="cloud-notebook-notices"
         capabilities={shellCapabilities}
         rail={notebookStageGated ? undefined : rail}
+        railPanelPlacement="stage"
+        stageContentClassName="cloud-notebook-stage-content"
         stageLabel="Hosted notebook"
       >
         <h1 className="sr-only">{notebookTitle.title}</h1>

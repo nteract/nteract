@@ -9,6 +9,11 @@ This route composes the shared notebook shell at browser scale: app chrome,
 command toolbar, outline/packages/workstation rail, production notebook cells,
 and the comments panel against deterministic fixture state.
 
+The app and document header stays beside the icon rail. The notebook command
+row and notebook content share the panel's live edge, so both move together
+when a panel opens beneath the commands. This keeps the L-shaped boundary
+structural instead of covering a mismatched corner with an overlap.
+
 <Link
   href="/full-shell-composition"
   className="not-prose my-6 inline-flex h-10 items-center rounded-md bg-fd-primary px-4 text-sm font-medium text-fd-primary-foreground"

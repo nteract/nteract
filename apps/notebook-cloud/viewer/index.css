@@ -230,14 +230,46 @@ body {
   overflow: hidden;
 }
 
-.cloud-notebook-stage > [data-slot="notebook-document-toolbar"],
-.cloud-notebook-stage > [data-slot="notebook-document-stage-toolbar"] {
+.cloud-notebook-shell > [data-slot="notebook-document-toolbar"],
+.cloud-notebook-stage [data-slot="notebook-document-stage-toolbar"] {
   flex: 0 0 auto;
   z-index: 16;
 }
 
 .cloud-notebook-stage-toolbar {
   position: static;
+}
+
+/* The rail strip stays at the left edge of the page content. The expanded panel
+   portals into the first column while notebook commands and content share the
+   second column, so all notebook-local chrome follows the live stage edge. */
+.cloud-notebook-stage > [data-slot="notebook-document-stage-body"] {
+  display: grid;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.cloud-notebook-stage [data-slot="notebook-document-stage-content-toolbar"] {
+  position: relative;
+  z-index: 16;
+  min-width: 0;
+}
+
+.cloud-notebook-stage [data-slot="notebook-document-rail-panel-host"] {
+  z-index: 15;
+}
+
+.cloud-notebook-stage-content {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* Region chrome only — do not restyle [data-slot="notebook-notice"] /
@@ -645,18 +677,26 @@ body {
     min-height: 2rem;
   }
 
-  .cloud-notebook-rail[data-collapsed="false"] {
-    width: 100%;
-    max-width: 100%;
+  /* An expanded panel takes over the stage instead of squeezing the notebook
+     content offscreen. The panel is portalled into the stage, so the takeover
+     keys off the host actually holding a panel rather than rail adjacency. */
+  .cloud-notebook-stage
+    [data-slot="notebook-document-rail-panel-host"]:has([data-slot="notebook-rail-panel"]) {
+    grid-column: 1 / -1;
+    min-width: 0;
   }
 
-  .cloud-notebook-rail[data-collapsed="false"] [data-slot="notebook-rail-panel"] {
+  .cloud-notebook-stage
+    [data-slot="notebook-document-rail-panel-host"]
+    [data-slot="notebook-rail-panel"] {
     min-width: 0;
     max-width: none;
     flex: 1;
   }
 
-  .cloud-notebook-rail[data-collapsed="false"] + [data-slot="notebook-document-stage"] {
+  .cloud-notebook-stage
+    [data-slot="notebook-document-rail-panel-host"]:has([data-slot="notebook-rail-panel"])
+    + [data-slot="notebook-document-stage-content"] {
     display: none;
   }
 }

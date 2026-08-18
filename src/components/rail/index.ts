@@ -8,3 +8,4 @@ export {
   type RailItem,
   type RailProps,
 } from "./Rail";
+export { RailPanelSlotProvider, useRailPanelSlot } from "./rail-panel-slot";

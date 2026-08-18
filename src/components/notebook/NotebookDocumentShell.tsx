@@ -1,4 +1,5 @@
-import type { ElementType, ReactNode } from "react";
+import { useState, type ElementType, type ReactNode } from "react";
+import { RailPanelSlotProvider } from "@/components/rail";
 import { cn } from "@/lib/utils";
 import type { NotebookShellCapabilities } from "./capabilities";
 
@@ -9,15 +10,29 @@ export interface NotebookDocumentShellProps {
    */
   rootElement?: "div" | "main";
   rail?: ReactNode;
+  /**
+   * `rail` keeps an expanded rail panel inside the rail column, level with the
+   * toolbar chrome. `stage` hosts it in the stage instead, so the panel slides
+   * out below the utility bar and beside the notebook content while the rail's
+   * icon strip stays at the far left of the page content.
+   */
+  railPanelPlacement?: "rail" | "stage";
   toolbar?: ReactNode;
-  toolbarPlacement?: "shell" | "stage";
+  /**
+   * `stage-content` keeps notebook-local controls attached to the notebook
+   * column when a stage-hosted rail panel opens.
+   */
+  toolbarPlacement?: "shell" | "stage" | "stage-content";
   stageToolbar?: ReactNode;
+  stageToolbarPlacement?: "stage" | "stage-content";
   notices?: ReactNode;
   noticesPlacement?: "shell" | "stage";
   children: ReactNode;
   capabilities?: NotebookShellCapabilities;
   className?: string;
   stageClassName?: string;
+  /** Applied to the notebook content column beside a stage-hosted rail panel. */
+  stageContentClassName?: string;
   toolbarClassName?: string;
   toolbarLabel?: string;
   noticesClassName?: string;
@@ -27,21 +42,33 @@ export interface NotebookDocumentShellProps {
 export function NotebookDocumentShell({
   rootElement = "div",
   rail,
+  railPanelPlacement = "rail",
   toolbar,
   toolbarPlacement = "shell",
   stageToolbar,
+  stageToolbarPlacement = "stage",
   notices,
   noticesPlacement = "shell",
   children,
   capabilities,
   className,
   stageClassName,
+  stageContentClassName,
   toolbarClassName,
   toolbarLabel,
   noticesClassName,
   stageLabel = "Notebook",
 }: NotebookDocumentShellProps) {
   const Root = rootElement as ElementType;
+  // Callback-ref state lets the provider publish the host after it commits.
+  // Until that rerender, Rail's no-host fallback keeps an expanded panel inline
+  // instead of dropping it during portal setup.
+  const [railPanelSlotNode, setRailPanelSlotNode] = useState<HTMLDivElement | null>(null);
+  const hostsRailPanelInStage = railPanelPlacement === "stage";
+  const toolbarInStageContent = toolbarPlacement === "stage-content";
+  const stageToolbarInStageContent =
+    Boolean(stageToolbar) && stageToolbarPlacement === "stage-content";
+  const hasStageContentToolbar = toolbarInStageContent || stageToolbarInStageContent;
   const toolbarSlot = toolbar ? (
     <div
       className={toolbarClassName}
@@ -57,7 +84,7 @@ export function NotebookDocumentShell({
     </div>
   ) : null;
 
-  return (
+  const shell = (
     <Root
       className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", className)}
       data-authenticated={capabilities?.auth.canUseAuthenticatedIdentity}
@@ -80,14 +107,70 @@ export function NotebookDocumentShell({
           aria-label={stageLabel}
           data-slot="notebook-document-stage"
         >
-          {toolbarPlacement === "stage" ? toolbarSlot : null}
+          {toolbarPlacement === "stage" || (!hostsRailPanelInStage && toolbarInStageContent)
+            ? toolbarSlot
+            : null}
           {noticesPlacement === "stage" ? noticesSlot : null}
-          {stageToolbar ? (
+          {stageToolbar &&
+          (stageToolbarPlacement === "stage" ||
+            (!hostsRailPanelInStage && stageToolbarInStageContent)) ? (
             <div data-slot="notebook-document-stage-toolbar">{stageToolbar}</div>
           ) : null}
-          {children}
+          {hostsRailPanelInStage ? (
+            <div
+              className={cn(
+                "grid min-h-0 min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] overflow-hidden",
+                hasStageContentToolbar
+                  ? "grid-rows-[auto_minmax(0,1fr)]"
+                  : "grid-rows-[minmax(0,1fr)]",
+              )}
+              data-slot="notebook-document-stage-body"
+            >
+              {hasStageContentToolbar ? (
+                <div
+                  className="col-start-2 row-start-1 min-w-0"
+                  data-slot="notebook-document-stage-content-toolbar"
+                >
+                  {toolbarInStageContent ? toolbarSlot : null}
+                  {stageToolbarInStageContent ? (
+                    <div data-slot="notebook-document-stage-toolbar">{stageToolbar}</div>
+                  ) : null}
+                </div>
+              ) : null}
+              {/* Portal target for the expanded rail panel: it slides out here,
+                  beneath the notebook command row, while the rail strip stays
+                  on the left. Its width also anchors the command row and the
+                  notebook content to the same live stage edge. */}
+              <div
+                ref={setRailPanelSlotNode}
+                className={cn(
+                  "col-start-1 flex min-h-0 shrink-0",
+                  hasStageContentToolbar ? "row-start-2" : "row-start-1",
+                )}
+                data-slot="notebook-document-rail-panel-host"
+              />
+              <div
+                className={cn(
+                  "col-start-2 flex min-h-0 min-w-0 flex-1 flex-col",
+                  hasStageContentToolbar ? "row-start-2" : "row-start-1",
+                  stageContentClassName,
+                )}
+                data-slot="notebook-document-stage-content"
+              >
+                {children}
+              </div>
+            </div>
+          ) : (
+            children
+          )}
         </section>
       </div>
     </Root>
+  );
+
+  return hostsRailPanelInStage ? (
+    <RailPanelSlotProvider node={railPanelSlotNode}>{shell}</RailPanelSlotProvider>
+  ) : (
+    shell
   );
 }

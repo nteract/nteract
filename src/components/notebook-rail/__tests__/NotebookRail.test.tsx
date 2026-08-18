@@ -8,6 +8,7 @@ import {
   NotebookOutlinePanel,
   NotebookRail,
 } from "../NotebookRail";
+import { NotebookRailHomeButton } from "../NotebookRailHomeButton";
 
 const outlineItems = [
   {
@@ -35,6 +36,16 @@ const outlineItems = [
 ];
 
 describe("NotebookRail", () => {
+  it("keeps the home control in the shared rail button family", () => {
+    render(<NotebookRailHomeButton href="/n" />);
+
+    expect(screen.getByRole("link", { name: "Notebooks" })).toHaveClass(
+      "rounded-md",
+      "focus-visible:ring-1",
+      "focus-visible:ring-ring",
+    );
+  });
+
   it("explains how to populate an empty outline", () => {
     render(
       <NotebookRail
@@ -138,7 +149,7 @@ describe("NotebookRail", () => {
     );
 
     expect(screen.getByRole("button", { name: "Discussions" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Discussions" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Discussions" })).not.toBeInTheDocument();
     expect(screen.getByText("Thread list")).toBeVisible();
   });
 
@@ -200,8 +211,8 @@ describe("NotebookRail", () => {
     );
   });
 
-  it("keeps package metadata out of the title row", () => {
-    render(
+  it("omits redundant package panel header chrome", () => {
+    const { container } = render(
       <NotebookRail
         activePanelId="packages"
         collapsed={false}
@@ -212,7 +223,8 @@ describe("NotebookRail", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
+    expect(screen.queryByRole("heading", { name: "Packages" })).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toBeNull();
     expect(screen.queryByText("../pyproject.toml · 25 packages")).not.toBeInTheDocument();
   });
 
@@ -358,7 +370,7 @@ describe("NotebookRail", () => {
     expect(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY).toBe("(max-width: 599.98px)");
     expect(NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME).toBe("max-[599.98px]:hidden");
     expect(NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES).toContain(
-      "max-[599.98px]:w-[calc(100vw-3rem)]",
+      "max-[599.98px]:w-[calc(100vw-3.5rem)]",
     );
   });
 

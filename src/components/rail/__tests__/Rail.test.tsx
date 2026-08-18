@@ -42,6 +42,8 @@ describe("Rail", () => {
       "w-64",
       ...RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
+    expect(container.querySelector('[data-slot="example-rail-panel"]')).toHaveClass("border-r");
+    expect(container.querySelector('[data-slot="example-rail-panel"]')).toHaveClass("bg-muted/20");
     expect(container.querySelector('[data-slot="example-rail-title-row"]')).toHaveClass(
       "flex-wrap",
     );
@@ -86,6 +88,47 @@ describe("Rail", () => {
     expect(screen.queryByRole("button", { name: "Collapse rail" })).not.toBeInTheDocument();
   });
 
+  it("omits redundant panel header chrome when no title or action is provided", () => {
+    const { container } = render(
+      <Rail
+        activePanelId="outline"
+        collapsed={false}
+        items={items}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        <div data-testid="outline-content">Outline</div>
+      </Rail>,
+    );
+
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toBeNull();
+    expect(screen.getByTestId("outline-content")).toBeVisible();
+  });
+
+  it("reserves a command-row-height leading slot even without a leading control", () => {
+    const { container } = render(
+      <Rail
+        activePanelId="outline"
+        collapsed={false}
+        items={items}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        Outline
+      </Rail>,
+    );
+
+    expect(container.querySelector('[data-slot="rail-strip-grid"]')).toHaveClass(
+      "grid-rows-[2.5rem_minmax(0,1fr)]",
+    );
+    expect(container.querySelector('[data-slot="rail-leading-slot"]')).not.toHaveClass(
+      "border-b",
+      "border-r",
+    );
+    expect(container.querySelector('[data-slot="rail-strip-grid"]')).not.toHaveClass("border-r");
+    expect(container.querySelector('[data-slot="rail-strip-grid"]')).toHaveClass("bg-background");
+  });
+
   it("expands and selects a panel while collapsed", () => {
     const onActivePanelChange = vi.fn();
     const onCollapsedChange = vi.fn();
@@ -106,6 +149,40 @@ describe("Rail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Packages" }));
     expect(onActivePanelChange).toHaveBeenCalledWith("packages");
     expect(onCollapsedChange).toHaveBeenCalledWith(false);
+  });
+
+  it("moves the outer boundary from the collapsed strip to the expanded panel", () => {
+    const { container, rerender } = render(
+      <Rail
+        activePanelId="outline"
+        collapsed
+        items={items}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        Outline
+      </Rail>,
+    );
+
+    expect(container.querySelector('[data-slot="rail-leading-slot"]')).not.toHaveClass("border-r");
+    expect(container.querySelector('[data-slot="rail-body"]')).toHaveClass("border-r");
+    expect(container.querySelector('[data-slot="rail-panel"]')).toBeNull();
+
+    rerender(
+      <Rail
+        activePanelId="outline"
+        collapsed={false}
+        items={items}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        Outline
+      </Rail>,
+    );
+
+    expect(container.querySelector('[data-slot="rail-leading-slot"]')).not.toHaveClass("border-r");
+    expect(container.querySelector('[data-slot="rail-body"]')).not.toHaveClass("border-r");
+    expect(container.querySelector('[data-slot="rail-panel"]')).toHaveClass("border-r");
   });
 
   it("does not invoke callbacks for disabled rail items", () => {
@@ -139,6 +216,9 @@ describe("RailButton", () => {
     expect(screen.getByRole("button", { name: "Outline" })).toHaveClass(
       "bg-foreground",
       "text-background",
+      "rounded-md",
+      "focus-visible:ring-1",
+      "focus-visible:ring-ring",
     );
   });
 

@@ -27,7 +27,10 @@ import {
   type NotebookViewCell,
 } from "@/components/notebook";
 import type { CommentsProjection } from "@/components/notebook/comment-types";
-import type { NotebookRailPanelId } from "@/components/notebook-rail";
+import {
+  NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+  type NotebookRailPanelId,
+} from "@/components/notebook-rail";
 import {
   flushCellUIState,
   setFocusedCellId as setNotebookFocusedCellId,
@@ -278,30 +281,32 @@ export function FullShellCompositionExample() {
     <NotebookHostProvider host={notebookHost}>
       <NotebookDocumentShell
         rootElement="main"
-        className={cn(
-          "h-dvh bg-background text-foreground",
-          "max-[760px]:[&_[data-slot=notebook-document-stage]]:hidden",
-          "max-[760px]:[&_[data-testid=notebook-rail]]:w-full",
-          "max-[760px]:[&_[data-slot=notebook-rail-panel]]:min-w-0",
-          "max-[760px]:[&_[data-slot=notebook-rail-panel]]:max-w-none",
-          "max-[760px]:[&_[data-slot=notebook-rail-panel]]:flex-1",
-        )}
-        toolbarClassName="border-b border-border bg-background/95"
+        className="h-dvh bg-background text-foreground"
+        toolbarClassName="bg-background/95"
         toolbarLabel="Full shell composition toolbar"
+        toolbarPlacement="stage"
         stageClassName="bg-muted/20"
         stageLabel="Full notebook composition"
+        railPanelPlacement="stage"
         capabilities={capabilities}
         toolbar={
-          <FullShellToolbar
+          <FullShellHeader
             capabilities={capabilities}
             interaction={interaction}
             mode={mode}
-            activePanel={activePanel}
             onModeChange={setMode}
+          />
+        }
+        stageToolbar={
+          <FullShellCommandToolbar
+            capabilities={capabilities}
+            activePanel={activePanel}
             onTogglePackages={() => setActivePanel("packages")}
             onToggleWorkstations={() => setActivePanel("workstations")}
           />
         }
+        stageToolbarPlacement="stage-content"
+        stageContentClassName={NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME}
         rail={
           <NotebookDocumentRail
             viewModel={scenario.viewModel}
@@ -398,32 +403,19 @@ export function FullShellCompositionExample() {
   );
 }
 
-function FullShellToolbar({
-  activePanel,
+function FullShellHeader({
   capabilities,
   interaction,
   mode,
   onModeChange,
-  onTogglePackages,
-  onToggleWorkstations,
 }: {
-  activePanel: NotebookRailPanelId;
   capabilities: NotebookShellCapabilities;
   interaction: NotebookInteractionModeProjection;
   mode: NotebookInteractionMode;
   onModeChange: (mode: NotebookInteractionMode) => void;
-  onTogglePackages: () => void;
-  onToggleWorkstations: () => void;
 }) {
-  const runtimeStatus: NotebookCommandToolbarStatus = {
-    state: capabilities.canExecute ? "idle" : "unknown",
-    label: "Current Python",
-    ariaLabel: "Runtime: Current Python idle",
-    title: scenario.runtimeLabel,
-  };
-
   return (
-    <NotebookToolbarFrame className="static top-auto z-auto border-b-0 bg-background/95">
+    <NotebookToolbarFrame className="static top-auto z-auto bg-background/95">
       <NotebookDocumentHeader
         capabilities={capabilities}
         className={cn(
@@ -464,6 +456,30 @@ function FullShellToolbar({
           </button>
         }
       />
+    </NotebookToolbarFrame>
+  );
+}
+
+function FullShellCommandToolbar({
+  activePanel,
+  capabilities,
+  onTogglePackages,
+  onToggleWorkstations,
+}: {
+  activePanel: NotebookRailPanelId;
+  capabilities: NotebookShellCapabilities;
+  onTogglePackages: () => void;
+  onToggleWorkstations: () => void;
+}) {
+  const runtimeStatus: NotebookCommandToolbarStatus = {
+    state: capabilities.canExecute ? "idle" : "unknown",
+    label: "Current Python",
+    ariaLabel: "Runtime: Current Python idle",
+    title: scenario.runtimeLabel,
+  };
+
+  return (
+    <NotebookToolbarFrame className="static top-auto z-auto bg-background/95">
       <div className="min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <NotebookCommandToolbar
           capabilities={capabilities}

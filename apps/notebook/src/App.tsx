@@ -172,7 +172,7 @@ function focusActiveRailButtonWhenStageIsHidden(
   const activeElement = document.activeElement;
   if (!(activeElement instanceof HTMLElement)) return;
 
-  const stage = document.querySelector('[data-slot="notebook-document-stage"]');
+  const stage = document.querySelector('[data-slot="notebook-document-stage-content"]');
   const focusWasInStage = stage?.contains(activeElement);
   const focusWasClearedFromHiddenStage =
     stageHadFocusBeforeTakeover && activeElement === document.body;
@@ -452,7 +452,7 @@ function AppContent() {
     if (typeof document === "undefined") return;
 
     const handleFocusIn = (event: FocusEvent) => {
-      const stage = document.querySelector('[data-slot="notebook-document-stage"]');
+      const stage = document.querySelector('[data-slot="notebook-document-stage-content"]');
       stageHadFocusBeforeRailTakeoverRef.current = Boolean(
         event.target instanceof Node && stage?.contains(event.target),
       );
@@ -2057,8 +2057,8 @@ function AppContent() {
               </NotebookNotice>
             ) : null
           }
-          toolbarPlacement="stage"
-          toolbarClassName="-ml-0.5 shrink-0 bg-background"
+          toolbarPlacement="stage-content"
+          toolbarClassName="shrink-0 bg-background"
           toolbarLabel="Notebook execution and runtime controls"
           toolbar={
             <NotebookToolbar
@@ -2091,10 +2091,11 @@ function AppContent() {
               onRestartToUpdate={restartToUpdate}
             />
           }
-          stageClassName={cn(
-            "min-w-0 flex-1",
-            !railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
-          )}
+          stageClassName="min-w-0 flex-1"
+          // The expanded panel is hosted inside the stage, while the notebook
+          // controls and content stay attached to the same live stage edge.
+          railPanelPlacement="stage"
+          stageContentClassName={cn(!railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME)}
           rail={
             <NotebookDocumentRail
               trailingSlot={
