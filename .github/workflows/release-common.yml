@@ -816,6 +816,28 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
+      - name: Package notebook UI for embedders
+        run: |
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          python3 scripts/package-notebook-ui.py \
+            --dist apps/notebook/dist \
+            --license LICENSE \
+            --output "notebook-ui-assets/nteract-${CHANNEL}-notebook-ui.tar.gz" \
+            --channel "$CHANNEL" \
+            --version "${{ needs.compute-version.outputs.version }}" \
+            --commit "$GITHUB_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH"
+          cd notebook-ui-assets
+          sha256sum --check "nteract-${CHANNEL}-notebook-ui.tar.gz.sha256"
+
+      - name: Upload notebook UI release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: nteract-notebook-ui
+          path: notebook-ui-assets/
+          if-no-files-found: error
+
       - name: Install Tauri CLI
         uses: ./.github/actions/install-tauri-cli
 
@@ -1263,6 +1285,12 @@ jobs:
           name: nteract-linux-x64
           path: ./notebook-linux-x64
 
+      - name: Download notebook UI release bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: nteract-notebook-ui
+          path: ./notebook-ui
+
       - name: Report downloaded release artifact sizes
         run: |
           echo "Downloaded artifact directories:"
@@ -1271,7 +1299,8 @@ jobs:
             notebook-macos-arm64 \
             notebook-macos-x64 \
             notebook-windows-x64 \
-            notebook-linux-x64
+            notebook-linux-x64 \
+            notebook-ui
           echo ""
           echo "Downloaded artifact files:"
           find \
@@ -1280,6 +1309,7 @@ jobs:
             notebook-macos-x64 \
             notebook-windows-x64 \
             notebook-linux-x64 \
+            notebook-ui \
             -type f -printf "%12s  %p\n" | sort -nr
 
       - name: Prepare release assets
@@ -1317,6 +1347,9 @@ jobs:
           cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.dmg" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage" release-assets/
+          # Platform-neutral production notebook frontend for embedding hosts.
+          cp "notebook-ui/nteract-${CHANNEL}-notebook-ui.tar.gz" release-assets/
+          cp "notebook-ui/nteract-${CHANNEL}-notebook-ui.tar.gz.sha256" release-assets/
           # Updater bundles + signatures
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz" release-assets/
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig" release-assets/
@@ -1509,6 +1542,10 @@ jobs:
             fi
             echo 'This release includes auto-update support. Existing installations will be notified of this update automatically.'
             echo ''
+            echo '### Notebook UI (embedders)'
+            echo ''
+            echo "The platform-neutral production frontend is available as \`nteract-${VERSION_SUFFIX}-notebook-ui.tar.gz\`. Verify it with the adjacent \`.sha256\` file before extracting it into an embedding host."
+            echo ''
             echo '### runtimed (Python — macOS, Linux, Windows)'
             echo ''
             echo '```bash'
@@ -1578,6 +1615,8 @@ jobs:
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-x64.app.tar.gz
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-x64.app.tar.gz.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe
+            ./release-assets/nteract-${{ inputs.version_suffix }}-notebook-ui.tar.gz
+            ./release-assets/nteract-${{ inputs.version_suffix }}-notebook-ui.tar.gz.sha256
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe.sig
             ./release-assets/latest.json
             ./wheels/*.whl

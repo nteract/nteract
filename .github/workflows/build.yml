@@ -446,6 +446,21 @@ jobs:
           pnpm --dir apps/notebook build
           pnpm --dir apps/elements build
 
+      - name: Test and package notebook UI release bundle
+        run: |
+          python3 -m unittest scripts/tests/test_package_notebook_ui.py
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          python3 scripts/package-notebook-ui.py \
+            --dist apps/notebook/dist \
+            --license LICENSE \
+            --output "$RUNNER_TEMP/notebook-ui-assets/nteract-nightly-notebook-ui.tar.gz" \
+            --channel nightly \
+            --version "pr.${GITHUB_SHA}" \
+            --commit "$GITHUB_SHA" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH"
+          cd "$RUNNER_TEMP/notebook-ui-assets"
+          sha256sum --check nteract-nightly-notebook-ui.tar.gz.sha256
+
       - name: Upload UI build artifacts
         uses: actions/upload-artifact@v7
         with:
