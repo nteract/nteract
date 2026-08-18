@@ -125,7 +125,7 @@ test("cloud callback keeps sign-in handoff in the entry surface language", () =>
   assert.match(callbackSource, /cloud-oidc-layout/);
   assert.match(callbackSource, /setAttribute\("aria-label", "nteract sign-in callback"\)/);
   assert.match(callbackSource, /cloud-oidc-panel/);
-  assert.match(callbackSource, /returning to the notebook/);
+  assert.match(callbackSource, /Returning you to your notebook/);
   assert.match(callbackSource, /Try again/);
   assert.match(callbackSource, /Back to nteract/);
   assert.match(callbackSource, /status\.kind/);
@@ -200,8 +200,13 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(
     sourceText,
-    /<NotebookDocumentToolbar[\s\S]*frameClassName="z-20"[\s\S]*headerClassName="cloud-room-toolbar"[\s\S]*commandToolbar=\{\{[\s\S]*addAfterCellId: toolbarAddAfterCellId/,
+    /<NotebookDocumentToolbar[\s\S]*frameClassName="z-20"[\s\S]*headerClassName="cloud-room-toolbar"/,
   );
+  assert.match(
+    sourceText,
+    /const stageToolbar = showCloudCommandToolbar \? \([\s\S]*<NotebookToolbarFrame className="cloud-notebook-stage-toolbar">[\s\S]*<NotebookCommandToolbar[\s\S]*addAfterCellId=\{toolbarAddAfterCellId\}/,
+  );
+  assert.match(sourceText, /stageToolbarPlacement="stage-content"/);
   assert.match(sourceText, /<NotebookDocumentToolbar[\s\S]*capabilities=\{shellCapabilities\}/);
   assert.match(
     sourceText,
@@ -213,8 +218,9 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   );
   assert.match(sourceText, /cloudNotebookTitleDisplay,/);
   assert.match(sourceText, /cloudNotebookUrlAfterRename,/);
-  assert.match(titleSourceText, /homeLink: "cloud-notebook-home-link"/);
-  assert.match(titleSourceText, /<House aria-hidden="true" \/>/);
+  assert.match(titleSourceText, /import \{ DocumentTitle \}/);
+  assert.match(titleSourceText, /<DocumentTitle/);
+  assert.match(titleSourceText, /classNames=\{cloudNotebookTitleClassNames\}/);
   assert.match(titleSourceText, /renameButtonTitle="Rename notebook"/);
   assert.doesNotMatch(titleSourceText, /cloud-notebook-logo/);
   assert.doesNotMatch(sourceText, /function shouldShowCloudNotebookCommandToolbar/);
@@ -256,18 +262,16 @@ test("cloud viewer routes notebook header controls through the shared shell chro
   assert.ok(dismissedNotice, "expected a dismissed-request notice branch");
   assert.match(dismissedNotice[0], /icon=\{<Info \/>\}/);
   assert.doesNotMatch(dismissedNotice[0], /AlertCircle/);
-  // The connection/identity slot is filled by the shared quiet component:
+  // The rail's trailing connection/identity slot is filled by the shared quiet component:
   // avatar + connectivity dot, driven by the stable status bridge. It must
   // never regress into a text pill or a second status label surface. The
-  // match is scoped to the module that owns the slot (not the whole
-  // corpus) so an identityControls regression cannot false-pass against a
-  // mount elsewhere.
-  const slotOwnerSource = viewerFileContaining("identityControls=");
+  // match is scoped to the module that owns the slot (not the whole corpus).
+  const slotOwnerSource = viewerFileContaining("const identityControls =");
   assert.match(
     slotOwnerSource,
-    /identityControls=\{[\s\S]{0,400}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{connectionStatus\$\}/,
+    /const identityControls =[\s\S]{0,400}?<NotebookConnectionIdentity[\s\S]{0,200}?capabilities=\{shellCapabilities\}[\s\S]{0,200}?connectionStatus\$=\{connectionStatus\$\}[\s\S]{0,800}?trailingSlot=\{identityControls\}/,
   );
-  assert.doesNotMatch(sourceText, /identityControls=\{null\}/);
+  assert.doesNotMatch(sourceText, /trailingSlot=\{null\}/);
   // Session-side bridge wiring order (comment-enforced invariants, pinned):
   // attach follows each replacement transport; teardown paths report the
   // retry BEFORE the dispose emits its terminal "offline"; the effect
@@ -454,7 +458,7 @@ test("cloud viewer routes notebook header controls through the shared shell chro
     sharingSourceText,
     /import \{ Popover, PopoverContent, PopoverTrigger \} from "@\/components\/ui\/popover";/,
   );
-  assert.match(sharingSourceText, /<Popover open=\{open\} onOpenChange=\{setOpen\}>/);
+  assert.match(sharingSourceText, /<Popover open=\{open\} onOpenChange=\{handleOpenChange\}>/);
   assert.match(sharingSourceText, /<PopoverTrigger asChild>/);
   assert.match(
     sharingSourceText,
