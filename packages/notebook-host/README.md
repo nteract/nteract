@@ -15,6 +15,25 @@ The Electron adapter is split across two trust zones:
 The notebook iframe never receives `ipcRenderer`, filesystem primitives, a
 WebSocket URL, or the daemon socket path.
 
+## Published notebook UI bundle
+
+Stable and nightly GitHub releases publish the production notebook frontend as
+`nteract-stable-notebook-ui.tar.gz` and
+`nteract-nightly-notebook-ui.tar.gz`, respectively. Each archive has an
+adjacent `.sha256` file and expands into a single `nteract-notebook-ui/`
+directory containing:
+
+- the static frontend rooted at `index.html`;
+- the separately served `output-frame.html` document;
+- `nteract-notebook-ui.json`, which records the schema version, release
+  channel, nteract version, source commit, and entrypoint names; and
+- `LICENSE.nteract`.
+
+Pin a unique release tag, verify the checksum, and serve the extracted files
+from a secure origin. The archive is the same platform-neutral frontend used by
+the nteract desktop release; the embedding host still supplies the authorized
+runtime transport and host capabilities described below.
+
 ## Electron topology
 
 Create a `MessageChannelMain` in Electron main, serve one end, and transfer the
