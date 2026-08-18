@@ -97,7 +97,7 @@ export function NotebookRail({
       activePanelId={activePanelId}
       collapsed={collapsed}
       items={railButtons}
-      panelTitle={title}
+      panelTitle={title ?? undefined}
       panelAction={activePanelId === "workstations" ? workstationsPanelAction : undefined}
       leadingSlot={leadingSlot}
       trailingSlot={trailingSlot}
