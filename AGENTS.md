@@ -96,6 +96,16 @@ Conventional Commits: `<type>(<optional-scope>)!: <short imperative summary>`
 
 Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `build`, `perf`, `revert`.
 
+## Code review
+
+For independent model-assisted reviews, use the repository-independent
+`kilo-review` skill and its source-read-only workflow. Establish the exact
+review target and mutation boundary first, give each reviewer the shared
+`.agents/reviewers/nteract-code-review-rubric.md`, and choose distinct reviewer
+lenses that match the change. Treat every model finding as advisory: verify it
+against the checkout, assign a disposition, and rerun relevant checks after any
+fix before declaring the review clear.
+
 ## Load-bearing invariants
 
 Most invariants auto-load from `.claude/rules/*.md` and nested `AGENTS.md` files when you edit matching paths. A few that don't fit any path scope:
