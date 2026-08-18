@@ -47,6 +47,23 @@ Use `nteract-dev` for development against this worktree. The `nteract` and
 changes. If `nteract-dev` is unavailable, use `cargo xtask`; do not substitute
 an installed notebook server. Full server details are in the scoped MCP rules.
 
+For desktop source work, prefer `cargo xtask dev`. It starts the worktree-local
+daemon and hot-reload app together and stops the daemon it started when the app
+exits. On macOS, each worktree launches with a distinct `nteract Dev <hash>`
+name and bundle identifier so it does not alias an installed stable or Nightly
+app. Use `cargo xtask dev status` for the exact app PID, executable, identity,
+Vite URL, and daemon socket; use `cargo xtask dev focus` to activate that exact
+process. Accessibility automation must select the reported `Automation PID`,
+not resolve an application named `nteract` through LaunchServices.
+
+After changing Tauri bootstrap or listener setup, use `cargo xtask dev --fresh`
+to reset and relaunch this worktree's app and daemon. Use
+`cargo xtask dev reset` when a clean stop is needed without relaunching. Reserve
+`cargo xtask notebook` for an app-only loop when the worktree daemon is already
+managed separately. These commands derive and export the worktree namespace;
+`direnv allow` is still useful for an interactive shell but is not required for
+xtask isolation.
+
 Before every commit, run:
 
 ```bash
@@ -57,8 +74,9 @@ Run the narrow tests for the code you changed, then widen verification when the
 risk or subsystem guide calls for it. Use the `testing` skill for repository
 test workflows.
 
-`cargo xtask notebook` opens a GUI and blocks until it quits. Let the developer
-run it from their own terminal.
+Desktop dev commands open a GUI and block until it quits. Let the developer run
+them from their own terminal unless the task explicitly requires live desktop
+validation.
 
 ## Commits and reviews
 
