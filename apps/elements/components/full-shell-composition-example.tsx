@@ -280,7 +280,7 @@ export function FullShellCompositionExample() {
         rootElement="main"
         className={cn(
           "h-dvh bg-background text-foreground",
-          "max-[760px]:[&_[data-slot=notebook-document-stage]]:hidden",
+          "max-[760px]:[&_[data-slot=notebook-document-stage-content]]:hidden",
           "max-[760px]:[&_[data-testid=notebook-rail]]:w-full",
           "max-[760px]:[&_[data-slot=notebook-rail-panel]]:min-w-0",
           "max-[760px]:[&_[data-slot=notebook-rail-panel]]:max-w-none",
@@ -290,6 +290,7 @@ export function FullShellCompositionExample() {
         toolbarLabel="Full shell composition toolbar"
         stageClassName="bg-muted/20"
         stageLabel="Full notebook composition"
+        railPanelPlacement="stage"
         capabilities={capabilities}
         toolbar={
           <FullShellToolbar

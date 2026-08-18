@@ -240,6 +240,30 @@ body {
   position: static;
 }
 
+/* The rail strip stays at the left edge of the page content; its expanded panel
+   portals into this stage-owned host so it slides out under the utility bar and
+   beside the notebook content. */
+.cloud-notebook-stage > [data-slot="notebook-document-stage-body"] {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.cloud-notebook-stage [data-slot="notebook-document-rail-panel-host"] {
+  z-index: 15;
+}
+
+.cloud-notebook-stage-content {
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 /* Region chrome only — do not restyle [data-slot="notebook-notice"] /
    notebook-notice-stack; shared NotebookNotice owns tone, border-b, padding,
    and stack gap. Size to content so multi-notice stacks and disclosures are
@@ -648,18 +672,26 @@ body {
     min-height: 2rem;
   }
 
-  .cloud-notebook-rail[data-collapsed="false"] {
-    width: 100%;
-    max-width: 100%;
+  /* An expanded panel takes over the stage instead of squeezing the notebook
+     content offscreen. The panel is portalled into the stage, so the takeover
+     keys off the host actually holding a panel rather than rail adjacency. */
+  .cloud-notebook-stage
+    [data-slot="notebook-document-rail-panel-host"]:has([data-slot="notebook-rail-panel"]) {
+    flex: 1;
+    min-width: 0;
   }
 
-  .cloud-notebook-rail[data-collapsed="false"] [data-slot="notebook-rail-panel"] {
+  .cloud-notebook-stage
+    [data-slot="notebook-document-rail-panel-host"]
+    [data-slot="notebook-rail-panel"] {
     min-width: 0;
     max-width: none;
     flex: 1;
   }
 
-  .cloud-notebook-rail[data-collapsed="false"] + [data-slot="notebook-document-stage"] {
+  .cloud-notebook-stage
+    [data-slot="notebook-document-rail-panel-host"]:has([data-slot="notebook-rail-panel"])
+    + [data-slot="notebook-document-stage-content"] {
     display: none;
   }
 }
