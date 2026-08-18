@@ -54,10 +54,17 @@ fn main() {
     }
 
     match args[0].as_str() {
-        "dev" => {
-            let options = parse_dev_options(&args);
-            cmd_dev(options.notebook, options.skip_install, options.skip_build);
-        }
+        "dev" => match parse_dev_command(&args) {
+            DevCommand::Launch(options) => cmd_dev(
+                options.notebook,
+                options.skip_install,
+                options.skip_build,
+                options.fresh,
+            ),
+            DevCommand::Status => cmd_dev_status(),
+            DevCommand::Focus => cmd_dev_focus(),
+            DevCommand::Reset => cmd_dev_reset(),
+        },
         "notebook" => {
             let attach = args.iter().any(|a| a == "--attach");
             let notebook = args
@@ -173,8 +180,12 @@ fn print_help() {
 
 Development:
   dev [notebook.ipynb]         Setup once, start dev daemon + notebook app
+  dev --fresh                  Reset this worktree's app + daemon, then launch
   dev --skip-build             Reuse existing build artifacts before launch
   dev --skip-install           Reuse existing pnpm install before launch
+  dev status                   Report this worktree's exact app, PID, and daemon
+  dev focus                    Focus this worktree's exact app process (macOS)
+  dev reset                    Stop this worktree's app + daemon cleanly
   notebook [notebook.ipynb]    Start hot-reload dev server (dev mode, safe)
   notebook --attach [notebook] Attach Tauri to existing Vite server
   vite                       Start Vite server standalone
@@ -671,10 +682,26 @@ struct DevOptions<'a> {
     notebook: Option<&'a str>,
     skip_install: bool,
     skip_build: bool,
+    fresh: bool,
 }
 
-fn parse_dev_options(args: &[String]) -> DevOptions<'_> {
-    DevOptions {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DevCommand<'a> {
+    Launch(DevOptions<'a>),
+    Status,
+    Focus,
+    Reset,
+}
+
+fn parse_dev_command(args: &[String]) -> DevCommand<'_> {
+    match args.get(1).map(String::as_str) {
+        Some("status") => return DevCommand::Status,
+        Some("focus") => return DevCommand::Focus,
+        Some("reset") => return DevCommand::Reset,
+        _ => {}
+    }
+
+    DevCommand::Launch(DevOptions {
         notebook: args
             .iter()
             .skip(1)
@@ -682,10 +709,15 @@ fn parse_dev_options(args: &[String]) -> DevOptions<'_> {
             .map(String::as_str),
         skip_install: args.iter().any(|arg| arg == "--skip-install"),
         skip_build: args.iter().any(|arg| arg == "--skip-build"),
-    }
+        fresh: args.iter().any(|arg| arg == "--fresh"),
+    })
 }
 
-fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
+fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool, fresh: bool) {
+    if fresh {
+        cmd_dev_reset();
+        println!();
+    }
     require_pnpm();
     require_tauri();
 
@@ -772,11 +804,20 @@ fn cmd_notebook(notebook: Option<&str>, attach: bool) {
 }
 
 fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bool) -> ExitStatus {
+    ensure_no_running_dev_app();
+
     // Delete bundled marker since we're building a dev binary
     let marker = notebook_bundled_marker_path();
     let _ = fs::remove_file(marker);
 
     let vite_port = resolve_vite_port(force_dev_mode);
+    let identity = current_dev_app_identity();
+    println!(
+        "Development app: {} ({})",
+        identity.display_name, identity.bundle_identifier
+    );
+    println!("Worktree identity: {}", identity.workspace_hash);
+    let dev_runner = macos_dev_app_runner();
     let mut command = Command::new("cargo");
 
     if attach {
@@ -786,11 +827,13 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
 
         // Skip beforeDevCommand (Vite is already running), set devUrl,
         // and drop externalBin so sidecar binaries aren't required in dev
-        let config = format!(
-            r#"{{"build":{{"devUrl":"http://localhost:{port}","beforeDevCommand":""}},"bundle":{{"externalBin":[]}}}}"#
-        );
+        let config = dev_tauri_config(Some(&port), true, &identity);
 
-        let mut args = vec!["tauri", "dev", "--config", &config, "--", "-p", "notebook"];
+        let mut args = vec!["tauri", "dev", "--config", &config];
+        if let Some(runner) = dev_runner.as_deref() {
+            args.extend(["--runner", runner]);
+        }
+        args.extend(["--", "-p", "notebook"]);
         if let Some(path) = notebook {
             args.extend(["--", path]);
         }
@@ -801,17 +844,15 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
 
         // Always override externalBin so sidecar binaries aren't required
         // in dev mode (the daemon is started separately via dev-daemon)
-        let config_override = match vite_port.as_ref() {
-            Some(port) => {
-                println!("Using RUNTIMED_VITE_PORT={port}");
-                format!(
-                    r#"{{"build":{{"devUrl":"http://localhost:{port}"}},"bundle":{{"externalBin":[]}}}}"#
-                )
-            }
-            None => r#"{"bundle":{"externalBin":[]}}"#.to_string(),
-        };
+        if let Some(port) = vite_port.as_ref() {
+            println!("Using RUNTIMED_VITE_PORT={port}");
+        }
+        let config_override = dev_tauri_config(vite_port.as_deref(), false, &identity);
 
         let mut args = vec!["tauri", "dev", "--config", &config_override];
+        if let Some(runner) = dev_runner.as_deref() {
+            args.extend(["--runner", runner]);
+        }
         args.extend(["--", "-p", "notebook"]);
         if let Some(path) = notebook {
             args.extend(["--", path]);
@@ -826,11 +867,80 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
     if let Some(ref port) = vite_port {
         command.env("RUNTIMED_VITE_PORT", port);
     }
+    if cfg!(target_os = "macos") {
+        command
+            .env(
+                "NTERACT_DEV_BINARY_PATH",
+                cargo_debug_binary_path("notebook"),
+            )
+            .env(
+                "NTERACT_DEV_APP_BUNDLE_PATH",
+                dev_state_dir().join(format!("{}.app", identity.display_name)),
+            )
+            .env("NTERACT_DEV_APP_DISPLAY_NAME", &identity.display_name)
+            .env("NTERACT_DEV_APP_BUNDLE_ID", &identity.bundle_identifier);
+    }
 
     command.status().unwrap_or_else(|e| {
         eprintln!("Failed to run cargo tauri dev: {e}");
         exit(1);
     })
+}
+
+fn macos_dev_app_runner() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let path = workspace_root_or_exit().join("scripts/macos-dev-app-runner.py");
+    if !path.exists() {
+        eprintln!(
+            "macOS development app runner is missing: {}",
+            path.display()
+        );
+        exit(1);
+    }
+    Some(path.to_string_lossy().into_owned())
+}
+
+fn current_dev_app_identity() -> runt_workspace::DevAppIdentity {
+    let workspace = runt_workspace::get_workspace_path().unwrap_or_else(|| {
+        eprintln!("Error: could not resolve the current git worktree for the dev app identity.");
+        exit(1);
+    });
+    runt_workspace::dev_app_identity_for_workspace(&workspace)
+}
+
+fn dev_tauri_config(
+    vite_port: Option<&str>,
+    attach: bool,
+    identity: &runt_workspace::DevAppIdentity,
+) -> String {
+    let mut build = serde_json::Map::new();
+    if let Some(port) = vite_port {
+        build.insert(
+            "devUrl".to_string(),
+            serde_json::Value::String(format!("http://localhost:{port}")),
+        );
+    }
+    if attach {
+        build.insert(
+            "beforeDevCommand".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+    }
+
+    serde_json::json!({
+        "productName": identity.display_name,
+        "identifier": identity.bundle_identifier,
+        "build": build,
+        "bundle": {
+            "externalBin": [],
+            // A dev executable must never become a LaunchServices candidate
+            // for opening notebooks owned by an installed stable/nightly app.
+            "fileAssociations": []
+        }
+    })
+    .to_string()
 }
 
 fn cmd_vite() {
@@ -3000,17 +3110,395 @@ fn notebook_bundled_marker_path() -> PathBuf {
 }
 
 fn dev_socket_path() -> PathBuf {
+    dev_state_dir().join("runtimed.sock")
+}
+
+fn dev_state_dir() -> PathBuf {
     let workspace = runt_workspace::get_workspace_path().unwrap_or_else(|| {
         eprintln!("Error: could not resolve current git worktree.");
         exit(1);
     });
-    let hash = runt_workspace::worktree_hash(&workspace);
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(runt_workspace::cache_namespace())
         .join("worktrees")
-        .join(hash)
-        .join("runtimed.sock")
+        .join(runt_workspace::worktree_hash(&workspace))
+}
+
+fn dev_app_state_path() -> PathBuf {
+    dev_state_dir().join("dev-app.json")
+}
+
+#[derive(Debug)]
+struct RunningDevApp {
+    state: runt_workspace::DevAppState,
+    live_name: Option<String>,
+    live_bundle_identifier: Option<String>,
+    live_executable: PathBuf,
+}
+
+#[derive(Debug)]
+enum DevAppInspection {
+    NotRecorded,
+    Running(RunningDevApp),
+    Stale {
+        state: runt_workspace::DevAppState,
+        reason: String,
+    },
+}
+
+fn inspect_dev_app() -> DevAppInspection {
+    let state_path = dev_app_state_path();
+    let contents = match fs::read(&state_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return DevAppInspection::NotRecorded;
+        }
+        Err(error) => {
+            eprintln!("Failed to read {}: {error}", state_path.display());
+            return DevAppInspection::NotRecorded;
+        }
+    };
+    let state: runt_workspace::DevAppState = match serde_json::from_slice(&contents) {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!("Failed to parse {}: {error}", state_path.display());
+            return DevAppInspection::NotRecorded;
+        }
+    };
+
+    match live_dev_app_info(state.pid) {
+        Ok(Some((live_executable, live_name, live_bundle_identifier))) => {
+            let expected = canonical_path_or_original(&state.executable);
+            let actual = canonical_path_or_original(&live_executable);
+            if expected != actual {
+                return DevAppInspection::Stale {
+                    state,
+                    reason: format!(
+                        "PID now belongs to {} instead of {}",
+                        actual.display(),
+                        expected.display()
+                    ),
+                };
+            }
+            DevAppInspection::Running(RunningDevApp {
+                state,
+                live_name,
+                live_bundle_identifier,
+                live_executable: actual,
+            })
+        }
+        Ok(None) => DevAppInspection::Stale {
+            state,
+            reason: "recorded PID is no longer running".to_string(),
+        },
+        Err(reason) => DevAppInspection::Stale { state, reason },
+    }
+}
+
+fn canonical_path_or_original(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(target_os = "macos")]
+fn live_dev_app_info(
+    pid: u32,
+) -> Result<Option<(PathBuf, Option<String>, Option<String>)>, String> {
+    // NSRunningApplication can briefly retain a cached object after the Unix
+    // process has exited, so establish liveness before asking AppKit for its
+    // bundle metadata.
+    if !process_is_live(pid) {
+        return Ok(None);
+    }
+    let script = format!(
+        r#"ObjC.import("AppKit");
+const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier({pid});
+if (!app || Boolean(app.terminated)) {{
+  JSON.stringify(null);
+}} else {{
+  const unwrap = value => value ? ObjC.unwrap(value) : null;
+  JSON.stringify({{
+    executable: unwrap(app.executableURL.path),
+    name: unwrap(app.localizedName),
+    bundleIdentifier: unwrap(app.bundleIdentifier)
+  }});
+}}"#
+    );
+    let output = Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", &script])
+        .output()
+        .map_err(|error| format!("failed to inspect PID {pid} through AppKit: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "AppKit process inspection failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("invalid AppKit process response: {error}"))?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(executable) = value.get("executable").and_then(serde_json::Value::as_str) else {
+        return Err(format!("PID {pid} has no executable URL"));
+    };
+    Ok(Some((
+        PathBuf::from(executable),
+        value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        value
+            .get("bundleIdentifier")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    )))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn live_dev_app_info(
+    pid: u32,
+) -> Result<Option<(PathBuf, Option<String>, Option<String>)>, String> {
+    let state = fs::read_to_string(dev_app_state_path())
+        .ok()
+        .and_then(|contents| serde_json::from_str::<runt_workspace::DevAppState>(&contents).ok());
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let running = process_is_live(pid);
+    Ok(running.then(|| (state.executable, None, None)))
+}
+
+fn process_is_live(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn ensure_no_running_dev_app() {
+    match inspect_dev_app() {
+        DevAppInspection::Running(app) => {
+            eprintln!(
+                "{} is already running for this worktree (PID {}).",
+                app.state.identity.display_name, app.state.pid
+            );
+            eprintln!("Focus it with: cargo xtask dev focus");
+            eprintln!("Restart it cleanly with: cargo xtask dev --fresh");
+            exit(1);
+        }
+        DevAppInspection::Stale { reason, .. } => {
+            eprintln!("Removing stale dev app record: {reason}");
+            let _ = fs::remove_file(dev_app_state_path());
+        }
+        DevAppInspection::NotRecorded => {}
+    }
+}
+
+fn cmd_dev_status() {
+    let workspace = workspace_root_or_exit();
+    let identity = runt_workspace::dev_app_identity_for_workspace(&workspace);
+    println!("Worktree: {}", workspace.display());
+    println!(
+        "App identity: {} ({})",
+        identity.display_name, identity.bundle_identifier
+    );
+    match inspect_dev_app() {
+        DevAppInspection::Running(app) => {
+            println!("Desktop: running (PID {})", app.state.pid);
+            println!("Executable: {}", app.live_executable.display());
+            println!(
+                "macOS name: {}",
+                app.live_name.as_deref().unwrap_or("<not reported>")
+            );
+            println!(
+                "macOS bundle ID: {}",
+                app.live_bundle_identifier
+                    .as_deref()
+                    .unwrap_or("<not reported>")
+            );
+            println!("Automation PID: {}", app.state.pid);
+            println!("Vite: {}", app.state.vite_url);
+        }
+        DevAppInspection::Stale { state, reason } => {
+            println!("Desktop: stale record (PID {}): {reason}", state.pid);
+        }
+        DevAppInspection::NotRecorded => println!("Desktop: not running"),
+    }
+    println!(
+        "Daemon: {}",
+        if dev_daemon_running() {
+            "running"
+        } else {
+            "not running"
+        }
+    );
+    println!("Daemon socket: {}", dev_socket_path().display());
+}
+
+fn cmd_dev_focus() {
+    let DevAppInspection::Running(app) = inspect_dev_app() else {
+        eprintln!("No live development app is recorded for this worktree.");
+        eprintln!("Start it with: cargo xtask dev");
+        exit(1);
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"ObjC.import("AppKit");
+const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier({});
+JSON.stringify({{ activated: app ? Boolean(app.activateWithOptions(3)) : false }});"#,
+            app.state.pid
+        );
+        let output = Command::new("osascript")
+            .args(["-l", "JavaScript", "-e", &script])
+            .output()
+            .unwrap_or_else(|error| {
+                eprintln!("Failed to request AppKit activation: {error}");
+                exit(1);
+            });
+        let activated = output.status.success()
+            && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                .ok()
+                .and_then(|value| value.get("activated").and_then(serde_json::Value::as_bool))
+                .unwrap_or(false);
+        if !activated {
+            eprintln!(
+                "AppKit could not focus PID {}: {}",
+                app.state.pid,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            exit(1);
+        }
+        println!(
+            "Focused {} (PID {}).",
+            app.state.identity.display_name, app.state.pid
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        eprintln!("cargo xtask dev focus is currently supported on macOS only.");
+        exit(1);
+    }
+}
+
+fn cmd_dev_reset() {
+    match inspect_dev_app() {
+        DevAppInspection::Running(app) => {
+            println!(
+                "Stopping {} (PID {})...",
+                app.state.identity.display_name, app.state.pid
+            );
+            terminate_dev_app(app.state.pid);
+        }
+        DevAppInspection::Stale { reason, .. } => {
+            println!("Removing stale dev app record ({reason}).");
+        }
+        DevAppInspection::NotRecorded => println!("Development app is not running."),
+    }
+    let _ = fs::remove_file(dev_app_state_path());
+
+    if dev_daemon_running() {
+        let cli = dev_runt_cli_binary();
+        if !cli.exists() {
+            eprintln!(
+                "Development daemon is running, but {} is unavailable to stop it.",
+                cli.display()
+            );
+            exit(1);
+        }
+        println!("Stopping this worktree's development daemon...");
+        let mut command = Command::new(cli);
+        command.args(["daemon", "stop"]);
+        apply_worktree_env(&mut command, true);
+        let status = command.status().unwrap_or_else(|error| {
+            eprintln!("Failed to stop development daemon: {error}");
+            exit(1);
+        });
+        if !status.success() {
+            eprintln!("Development daemon stop failed with status {status}.");
+            exit(status.code().unwrap_or(1));
+        }
+    } else {
+        println!("Development daemon is not running.");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_dev_app(pid: u32) {
+    request_appkit_termination(pid, false);
+
+    for _ in 0..50 {
+        if matches!(live_dev_app_info(pid), Ok(None)) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    eprintln!("Development app did not quit within 5 seconds; forcing PID {pid} to terminate.");
+    request_appkit_termination(pid, true);
+
+    for _ in 0..20 {
+        if matches!(live_dev_app_info(pid), Ok(None)) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    eprintln!("Development app PID {pid} is still running after force termination.");
+    exit(1);
+}
+
+#[cfg(target_os = "macos")]
+fn request_appkit_termination(pid: u32, force: bool) {
+    let selector = if force { "forceTerminate" } else { "terminate" };
+    let force_script = format!(
+        r#"ObjC.import("AppKit");
+const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier({pid});
+JSON.stringify({{ requested: app ? Boolean(app.{selector}) : true }});"#
+    );
+    let output = Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", &force_script])
+        .output()
+        .unwrap_or_else(|error| {
+            eprintln!("Failed to request development app termination: {error}");
+            exit(1);
+        });
+    if !output.status.success() {
+        eprintln!(
+            "AppKit could not send {selector} to PID {pid}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        exit(1);
+    }
+    if serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|value| value.get("requested").and_then(serde_json::Value::as_bool))
+        .is_none()
+    {
+        eprintln!("AppKit returned an invalid {selector} response for PID {pid}.");
+        exit(1);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn terminate_dev_app(pid: u32) {
+    let status = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .unwrap_or_else(|error| {
+            eprintln!("Failed to terminate development app PID {pid}: {error}");
+            exit(1);
+        });
+    if !status.success() {
+        eprintln!("Failed to terminate development app PID {pid}.");
+        exit(1);
+    }
 }
 
 fn cmd_dev_daemon(release: bool) {
@@ -5316,23 +5804,55 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn parse_dev_options_reads_flags_and_path() {
+    fn parse_dev_command_reads_launch_flags_and_path() {
         let args = vec![
             "dev".to_string(),
             "--skip-install".to_string(),
             "notebooks/demo.ipynb".to_string(),
             "--skip-build".to_string(),
+            "--fresh".to_string(),
         ];
 
-        let options = parse_dev_options(&args);
+        let command = parse_dev_command(&args);
         assert_eq!(
-            options,
-            DevOptions {
+            command,
+            DevCommand::Launch(DevOptions {
                 notebook: Some("notebooks/demo.ipynb"),
                 skip_install: true,
                 skip_build: true,
-            }
+                fresh: true,
+            })
         );
+    }
+
+    #[test]
+    fn parse_dev_command_reads_lifecycle_commands() {
+        assert_eq!(
+            parse_dev_command(&["dev".to_string(), "status".to_string()]),
+            DevCommand::Status
+        );
+        assert_eq!(
+            parse_dev_command(&["dev".to_string(), "focus".to_string()]),
+            DevCommand::Focus
+        );
+        assert_eq!(
+            parse_dev_command(&["dev".to_string(), "reset".to_string()]),
+            DevCommand::Reset
+        );
+    }
+
+    #[test]
+    fn dev_tauri_config_isolates_identity_and_file_associations() {
+        let identity = runt_workspace::dev_app_identity_for_workspace(Path::new("/tmp/nteract"));
+        let config: serde_json::Value =
+            serde_json::from_str(&dev_tauri_config(Some("6123"), true, &identity)).unwrap();
+
+        assert_eq!(config["productName"], identity.display_name);
+        assert_eq!(config["identifier"], identity.bundle_identifier);
+        assert_eq!(config["build"]["devUrl"], "http://localhost:6123");
+        assert_eq!(config["build"]["beforeDevCommand"], "");
+        assert_eq!(config["bundle"]["externalBin"], serde_json::json!([]));
+        assert_eq!(config["bundle"]["fileAssociations"], serde_json::json!([]));
     }
 
     #[test]

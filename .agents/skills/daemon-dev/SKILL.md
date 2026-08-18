@@ -12,6 +12,10 @@ description: >
 
 | Task | Command |
 |------|---------|
+| Start full dev loop | `cargo xtask dev` |
+| Report app + daemon identity | `cargo xtask dev status` |
+| Focus exact macOS dev app | `cargo xtask dev focus` |
+| Restart app + daemon cleanly | `cargo xtask dev --fresh` |
 | Start dev daemon | `cargo xtask dev-daemon` |
 | Full build | `cargo xtask build` |
 | Rust-only rebuild | `cargo xtask build --rust-only` |
@@ -65,13 +69,29 @@ cargo xtask wasm sift        # only sift-wasm
 ### Fast iteration
 
 ```bash
+cargo xtask dev
+```
+
+This is the normal desktop workflow: it starts the per-worktree daemon, waits for
+readiness, launches the hot-reload app, and stops the daemon it started when the
+app exits. On macOS the app has a distinct per-worktree display name, bundle ID,
+and process record. Inspect or focus that exact process with:
+
+```bash
+cargo xtask dev status
+cargo xtask dev focus
+```
+
+After Tauri bootstrap or listener changes, use `cargo xtask dev --fresh` to reset
+only this worktree's app and daemon. Use the split workflow when the daemon must
+remain independently managed:
+
+```bash
 # Terminal 1
 cargo xtask dev-daemon
 
 # Terminal 2
-cargo xtask build --rust-only     # Fast rebuild (reuses frontend assets)
-cargo xtask build --rust-only --skip-tauri  # Faster compile check for Rust sidecars
-cargo xtask run                   # Run the bundled binary
+cargo xtask notebook
 ```
 
 ### Testing
@@ -84,7 +104,7 @@ cargo test -p runtimed test_daemon_ping_pong    # Specific test
 
 ### Per-worktree isolation
 
-`cargo xtask dev-daemon`, `cargo xtask notebook`, and `cargo xtask run-mcp` derive the git worktree automatically. State lives at `<cache>/runt-nightly/worktrees/{hash}/`. Set `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` only for raw `./target/debug/runt` commands outside xtask.
+`cargo xtask dev`, `cargo xtask dev-daemon`, `cargo xtask notebook`, and `cargo xtask run-mcp` derive the git worktree automatically. State lives at `<cache>/runt-nightly/worktrees/{hash}/`. Set `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` only for raw `./target/debug/runt` commands outside xtask.
 
 ## Python Bindings
 

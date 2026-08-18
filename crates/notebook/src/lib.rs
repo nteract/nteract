@@ -4292,6 +4292,85 @@ fn correct_window_scale(window: &tauri::WebviewWindow, saved_scale_factor: Optio
     let _ = window.set_size(tauri::PhysicalSize::new(corrected_width, corrected_height));
 }
 
+fn write_dev_app_state(app: &tauri::App) -> Result<Option<PathBuf>, String> {
+    if !runt_workspace::is_dev_mode() {
+        return Ok(None);
+    }
+
+    let workspace = runt_workspace::get_workspace_path()
+        .ok_or_else(|| "dev mode is active but the worktree path is unavailable".to_string())?;
+    let identity = runt_workspace::dev_app_identity_for_workspace(&workspace);
+    let state_path = runt_workspace::dev_app_state_path()
+        .ok_or_else(|| "dev app state path is unavailable".to_string())?;
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("could not resolve the dev app executable: {error}"))?;
+    let vite_port = std::env::var("RUNTIMED_VITE_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .or_else(runt_workspace::default_vite_port)
+        .unwrap_or(5174);
+    let started_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    let state = runt_workspace::DevAppState {
+        identity: identity.clone(),
+        pid: std::process::id(),
+        executable,
+        workspace,
+        daemon_socket: runt_workspace::default_socket_path(),
+        vite_url: format!("http://localhost:{vite_port}"),
+        started_at_unix_ms,
+    };
+
+    if app.config().identifier != identity.bundle_identifier {
+        return Err(format!(
+            "Tauri dev identifier mismatch: expected {}, got {}",
+            identity.bundle_identifier,
+            app.config().identifier
+        ));
+    }
+    if app.config().product_name.as_deref() != Some(identity.display_name.as_str()) {
+        return Err(format!(
+            "Tauri dev product name mismatch: expected {}, got {:?}",
+            identity.display_name,
+            app.config().product_name
+        ));
+    }
+
+    if let Some(parent) = state_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    let temporary = state_path.with_extension(format!("json.{}.tmp", state.pid));
+    let serialized = serde_json::to_vec_pretty(&state)
+        .map_err(|error| format!("could not serialize dev app state: {error}"))?;
+    std::fs::write(&temporary, serialized)
+        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+    std::fs::rename(&temporary, &state_path).map_err(|error| {
+        format!(
+            "could not publish dev app state {}: {error}",
+            state_path.display()
+        )
+    })?;
+    Ok(Some(state_path))
+}
+
+fn clear_dev_app_state_for_pid(pid: u32) {
+    let Some(state_path) = runt_workspace::dev_app_state_path() else {
+        return;
+    };
+    let recorded_pid = std::fs::read(&state_path)
+        .ok()
+        .and_then(|contents| serde_json::from_slice::<runt_workspace::DevAppState>(&contents).ok())
+        .map(|state| state.pid);
+    if recorded_pid == Some(pid) {
+        let _ = std::fs::remove_file(state_path);
+    }
+}
+
 /// Run the notebook Tauri app.
 ///
 /// If `notebook_path` is Some, opens that file. If None, creates a new empty notebook.
@@ -4735,6 +4814,17 @@ pub fn run(
         .setup(move |app| {
             let setup_start = std::time::Instant::now();
             log::info!("[startup] App setup starting");
+
+            match write_dev_app_state(app) {
+                Ok(Some(path)) => log::info!(
+                    "[startup] Development app identity: {} (PID {}, state {})",
+                    app.config().identifier,
+                    std::process::id(),
+                    path.display()
+                ),
+                Ok(None) => {}
+                Err(error) => log::warn!("[startup] Failed to publish dev app identity: {error}"),
+            }
 
             // Ensure ~/notebooks directory exists for new notebook saves and kernel CWD
             let notebooks_dir = ensure_notebooks_directory()
@@ -5514,6 +5604,7 @@ pub fn run(
             if let Err(e) = session::save_session(&registry_for_session, app_handle) {
                 log::error!("[session] Failed to save session: {}", e);
             }
+            clear_dev_app_state_for_pid(std::process::id());
         }
 
         // Handle file associations (macOS only).

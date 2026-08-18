@@ -6,7 +6,7 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -196,6 +196,54 @@ pub const NTERACT_BUNDLE_IDENTIFIERS: &[&str] =
 
 /// Legacy bundle identifiers that should no longer be the default `.ipynb` handler.
 pub const STALE_BUNDLE_IDENTIFIERS: &[&str] = &["com.runtimed.notebook"];
+
+/// A macOS-resolvable identity for a source-built desktop app.
+///
+/// Release builds keep the stable/nightly identities above. Development builds
+/// add the worktree hash so multiple source checkouts do not alias each other
+/// or an installed application in AppKit and accessibility tooling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevAppIdentity {
+    pub workspace_hash: String,
+    pub display_name: String,
+    pub bundle_identifier: String,
+}
+
+/// Runtime record written by a development desktop process.
+///
+/// The PID is intentionally paired with the executable and workspace paths.
+/// Callers must validate those fields against the live process before focusing
+/// or terminating it because PIDs can be reused after a crash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DevAppState {
+    pub identity: DevAppIdentity,
+    pub pid: u32,
+    pub executable: PathBuf,
+    pub workspace: PathBuf,
+    pub daemon_socket: PathBuf,
+    pub vite_url: String,
+    pub started_at_unix_ms: u64,
+}
+
+/// Derive the source-built desktop identity for one worktree.
+pub fn dev_app_identity_for_workspace(workspace: &Path) -> DevAppIdentity {
+    let workspace_hash = worktree_hash(workspace);
+    DevAppIdentity {
+        display_name: format!("nteract Dev {}", &workspace_hash[..6]),
+        bundle_identifier: format!("org.nteract.desktop.dev.{workspace_hash}"),
+        workspace_hash,
+    }
+}
+
+/// Derive the source-built desktop identity for the active worktree.
+pub fn dev_app_identity() -> Option<DevAppIdentity> {
+    get_workspace_path().map(|workspace| dev_app_identity_for_workspace(&workspace))
+}
+
+/// Per-worktree process record for the source-built desktop app.
+pub fn dev_app_state_path() -> Option<PathBuf> {
+    is_dev_mode().then(|| daemon_base_dir().join("dev-app.json"))
+}
 
 /// Human-readable channel name for display.
 pub fn channel_display_name() -> &'static str {
@@ -1353,6 +1401,26 @@ mod tests {
         let path1 = Path::new("/path/one");
         let path2 = Path::new("/path/two");
         assert_ne!(worktree_hash(path1), worktree_hash(path2));
+    }
+
+    #[test]
+    fn dev_app_identity_is_distinct_and_bundle_safe_per_worktree() {
+        let first = dev_app_identity_for_workspace(Path::new("/tmp/nteract-one"));
+        let second = dev_app_identity_for_workspace(Path::new("/tmp/nteract-two"));
+
+        assert_ne!(first, second);
+        assert_eq!(first.workspace_hash.len(), 12);
+        assert_eq!(
+            first.display_name,
+            format!("nteract Dev {}", &first.workspace_hash[..6])
+        );
+        assert_eq!(
+            first.bundle_identifier,
+            format!("org.nteract.desktop.dev.{}", first.workspace_hash)
+        );
+        assert!(first.bundle_identifier.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '.' || character == '-'
+        }));
     }
 
     #[test]

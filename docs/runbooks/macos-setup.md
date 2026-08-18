@@ -113,3 +113,36 @@ Subsequent launches skip slow steps:
 cargo xtask dev --skip-install   # skip pnpm install if deps haven't changed
 cargo xtask dev --skip-build     # reuse existing build artifacts
 ```
+
+### Development app identity and recovery
+
+Source-built macOS apps use a per-worktree wrapper in the development cache.
+The wrapper has a resolvable identity such as `nteract Dev f0f9d9` with bundle
+identifier `org.nteract.desktop.dev.f0f9d99b161f`; it does not replace stable or
+Nightly and does not register notebook file associations. Release bundle names,
+identifiers, signing, and packaging remain unchanged.
+
+```bash
+cargo xtask dev status  # exact PID, executable, app identity, Vite URL, and socket
+cargo xtask dev focus   # activate that exact NSRunningApplication on macOS
+cargo xtask dev reset   # stop only this worktree's app and daemon
+```
+
+For accessibility automation, copy the `Automation PID` from `dev status` and
+target the System Events process whose `unix id` matches it. Do not address an
+application by the generic name `nteract`; LaunchServices may resolve an installed
+stable or Nightly bundle instead of the source-built process.
+
+Vite handles ordinary frontend hot reload. If a Tauri bootstrap or listener has
+survived in a stale state, restart both halves of the worktree-local development
+session with:
+
+```bash
+cargo xtask dev --fresh
+```
+
+The command validates the recorded PID and executable before terminating the app,
+clears stale process metadata, stops the daemon at this worktree's socket, and then
+launches a clean daemon and desktop process. `direnv allow` remains recommended for
+an interactive shell, but xtask also derives and exports the worktree namespace
+explicitly.

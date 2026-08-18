@@ -212,8 +212,12 @@ cargo xtask dev
 
 | Workflow | Command | Use when |
 |----------|---------|----------|
-| One-shot setup + dev | `cargo xtask dev` | First-time setup plus daemon + app in one command |
-| Hot reload | `cargo xtask notebook` | Iterating on React UI |
+| Full dev loop | `cargo xtask dev` | Setup plus the per-worktree daemon and hot-reload app |
+| Clean dev restart | `cargo xtask dev --fresh` | Recover from stale Tauri listeners, bootstrap, or daemon state |
+| Dev status | `cargo xtask dev status` | Show the exact app identity, PID, executable, Vite URL, and daemon socket |
+| Focus dev app | `cargo xtask dev focus` | Activate this worktree's exact macOS app process |
+| Reset dev state | `cargo xtask dev reset` | Stop this worktree's app and daemon without affecting installed apps |
+| App-only hot reload | `cargo xtask notebook` | Run the app when the per-worktree daemon is already managed separately |
 | Standalone Vite | `cargo xtask vite` | Multi-window testing (Vite survives window closes) |
 | Attach to Vite | `cargo xtask notebook --attach` | Connect Tauri to already-running Vite |
 | Debug build | `cargo xtask build` | Full debug build (frontend + rust) |
@@ -229,9 +233,33 @@ cargo xtask dev
 | Release DMG | `cargo xtask build-dmg` | Distribution (usually CI) |
 | Generate icons | `cargo xtask icons [source.png]` | Generate icon variants from source image |
 
-`cargo xtask dev` runs the first-time bootstrap (`pnpm install` + `cargo xtask build`),
-starts the per-worktree dev daemon, waits for it to be ready, and then launches the
-notebook app. For repeat launches, use `cargo xtask dev --skip-install --skip-build`.
+`cargo xtask dev` installs dependencies, ensures generated artifacts, starts the
+per-worktree dev daemon, waits for it to be ready, and then launches the notebook
+app with hot reload. It stops the daemon it started when the app exits. For repeat
+launches, use `cargo xtask dev --skip-install --skip-build`.
+
+On macOS, every worktree gets a cached app wrapper with a distinct name and bundle
+identifier, such as `nteract Dev f0f9d9` and
+`org.nteract.desktop.dev.f0f9d99b161f`. This keeps unsigned source builds separate
+from installed stable and Nightly apps without changing release packaging or
+claiming `.ipynb` file associations. Use `cargo xtask dev status` to obtain the
+live automation PID. Accessibility scripts should select the System Events process
+by that PID instead of asking LaunchServices for an app named `nteract`:
+
+```applescript
+set devPid to 12345 -- copy Automation PID from `cargo xtask dev status`
+tell application "System Events"
+  tell first application process whose unix id is devPid
+    -- perform UI automation here
+  end tell
+end tell
+```
+
+Frontend edits continue through Vite hot reload. After changes to Tauri bootstrap
+or event-listener setup, use `cargo xtask dev --fresh` to terminate only this
+worktree's exact app process, stop its daemon, and relaunch both cleanly. The
+equivalent manual sequence is `cargo xtask dev reset` followed by
+`cargo xtask dev`.
 
 ### Build order
 
