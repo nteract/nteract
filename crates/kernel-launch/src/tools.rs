@@ -688,13 +688,13 @@ async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
             info!("Extracting deno to {:?}...", staging_env);
             tokio::task::spawn_blocking(move || -> Result<()> {
                 let _lease = lease;
-                let extracted_binary = extract_deno_zip(&zip_bytes, &staging_env)?;
+                let _extracted_binary = extract_deno_zip(&zip_bytes, &staging_env)?;
 
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     let perms = std::fs::Permissions::from_mode(0o755);
-                    std::fs::set_permissions(&extracted_binary, perms)?;
+                    std::fs::set_permissions(&_extracted_binary, perms)?;
                 }
 
                 if !staging_binary.exists() {
