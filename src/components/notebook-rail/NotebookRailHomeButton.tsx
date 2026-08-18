@@ -19,8 +19,8 @@ export function NotebookRailHomeButton({
       title={label}
       data-slot="notebook-rail-home"
       className={cn(
-        "flex size-9 items-center justify-center rounded-xl bg-foreground text-background transition-colors",
-        "hover:bg-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+        "flex size-9 items-center justify-center rounded-md bg-foreground text-background transition-colors",
+        "hover:bg-foreground/85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         className,
       )}
     >

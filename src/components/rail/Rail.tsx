@@ -6,6 +6,7 @@ import { useRailPanelSlot } from "./rail-panel-slot";
 
 export const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
 export const RAIL_TAKEOVER_STAGE_CLASS_NAME = "max-[599.98px]:hidden";
+// 3.5rem is the `w-14` icon strip below; takeover width must stay in lockstep.
 export const RAIL_TAKEOVER_PANEL_CLASS_NAMES =
   "max-[599.98px]:w-[calc(100vw-3.5rem)] max-[599.98px]:min-w-0 max-[599.98px]:max-w-none";
 
@@ -90,6 +91,7 @@ export function Rail<PanelId extends string = string>({
       data-collapsed={collapsed ? "true" : "false"}
       data-panel-hosted={panelSlotNode ? "true" : "false"}
     >
+      {/* Keep `w-14` paired with the 3.5rem takeover calculation above. */}
       <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-background px-2 py-3">
         {leadingSlot ? <div className="mb-4 flex flex-col items-center">{leadingSlot}</div> : null}
         {items.map((item) => (

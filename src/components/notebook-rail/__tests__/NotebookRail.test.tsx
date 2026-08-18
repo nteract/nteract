@@ -8,6 +8,7 @@ import {
   NotebookOutlinePanel,
   NotebookRail,
 } from "../NotebookRail";
+import { NotebookRailHomeButton } from "../NotebookRailHomeButton";
 
 const outlineItems = [
   {
@@ -35,6 +36,16 @@ const outlineItems = [
 ];
 
 describe("NotebookRail", () => {
+  it("keeps the home control in the shared rail button family", () => {
+    render(<NotebookRailHomeButton href="/n" />);
+
+    expect(screen.getByRole("link", { name: "Notebooks" })).toHaveClass(
+      "rounded-md",
+      "focus-visible:ring-1",
+      "focus-visible:ring-ring",
+    );
+  });
+
   it("explains how to populate an empty outline", () => {
     render(
       <NotebookRail

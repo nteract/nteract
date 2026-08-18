@@ -210,7 +210,7 @@ test("cloud command toolbar inserts below the focused cell before falling back t
   );
   assert.match(
     sourceText,
-    /<NotebookDocumentToolbar[\s\S]*commandToolbar=\{\{[\s\S]*addAfterCellId: toolbarAddAfterCellId/,
+    /const stageToolbar = showCloudCommandToolbar \? \([\s\S]*<NotebookCommandToolbar[\s\S]*addAfterCellId=\{toolbarAddAfterCellId\}/,
   );
 });
 
@@ -504,14 +504,13 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
     sourceText,
     /const showCloudCommandToolbar = shouldShowNotebookDocumentCommandToolbar\(shellCapabilities, \{[\s\S]*reserve: editAccessPending,[\s\S]*\}\)/,
   );
-  assert.match(sourceText, /reserveCommandToolbar=\{editAccessPending\}/);
-  assert.match(sourceText, /addCellControlsDisabled: editAccessPending/);
-  assert.match(sourceText, /runtimeStatus: cloudRuntimeStatus/);
-  assert.match(sourceText, /onStartRuntime: handleCloudStartRuntime/);
-  assert.match(sourceText, /onInterruptRuntime: handleCloudInterruptRuntime/);
-  assert.match(sourceText, /onRestartRuntime: handleCloudRestartRuntime/);
-  assert.match(sourceText, /onRunAllCells: handleCloudRunAllCells/);
-  assert.match(sourceText, /onRestartAndRunAll: handleCloudRestartAndRunAll/);
+  assert.match(sourceText, /addCellControlsDisabled=\{editAccessPending\}/);
+  assert.match(sourceText, /runtimeStatus=\{cloudRuntimeStatus\}/);
+  assert.match(sourceText, /onStartRuntime=\{handleCloudStartRuntime\}/);
+  assert.match(sourceText, /onInterruptRuntime=\{handleCloudInterruptRuntime\}/);
+  assert.match(sourceText, /onRestartRuntime=\{handleCloudRestartRuntime\}/);
+  assert.match(sourceText, /onRunAllCells=\{handleCloudRunAllCells\}/);
+  assert.match(sourceText, /onRestartAndRunAll=\{handleCloudRestartAndRunAll\}/);
   assert.doesNotMatch(sourceText, /CloudNotebookEditModePlaceholder/);
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
@@ -553,7 +552,7 @@ test("cloud mobile shell gives the collapsed rail a toolbar entrypoint", () => {
   assert.match(sourceText, /setNotebookRailCollapsed\(false\);/);
   assert.match(
     sourceText,
-    /leadingControls: \(\s*<button[\s\S]*className="cloud-mobile-rail-toggle hidden h-8 w-8[\s\S]*aria-label="Open notebook panels"[\s\S]*onClick=\{handleOpenMobileRail\}/,
+    /leadingControls=\{\s*<button[\s\S]*className="cloud-mobile-rail-toggle hidden h-8 w-8[\s\S]*aria-label="Open notebook panels"[\s\S]*onClick=\{handleOpenMobileRail\}/,
   );
   assert.match(
     cssText,
@@ -569,7 +568,7 @@ test("cloud mobile shell gives the collapsed rail a toolbar entrypoint", () => {
   );
   assert.match(
     cssText,
-    /@media \(max-width: 599\.98px\) \{[\s\S]*\.cloud-notebook-rail\[data-collapsed="false"\]\s*\{[\s\S]*width: 100%;/,
+    /@media \(max-width: 599\.98px\) \{[\s\S]*\[data-slot="notebook-document-rail-panel-host"\]:has\(\[data-slot="notebook-rail-panel"\]\)\s*\{[\s\S]*grid-column: 1 \/ -1;/,
   );
 });
 
@@ -776,7 +775,7 @@ test("readable cloud notebooks leave disconnected compute to the existing runtim
 
   assert.doesNotMatch(sourceText, /ComputeDisconnectedNotice/);
   assert.doesNotMatch(sourceText, /shouldRenderComputeDisconnectedNotice/);
-  assert.match(sourceText, /onStartRuntime: handleCloudStartRuntime/);
+  assert.match(sourceText, /onStartRuntime=\{handleCloudStartRuntime\}/);
   assert.match(sourceText, /workstationAction/);
 });
 
