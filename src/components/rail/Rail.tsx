@@ -59,7 +59,7 @@ export function Rail<PanelId extends string = string>({
   const panel = collapsed ? null : (
     <div
       className={cn(
-        "flex min-h-0 max-w-[calc(100vw-3.5rem)] flex-col border-r bg-background",
+        "flex min-h-0 max-w-[calc(100vw-3.5rem)] flex-col border-r bg-muted/20",
         panelClassName,
         RAIL_TAKEOVER_PANEL_CLASS_NAMES,
       )}
@@ -91,30 +91,46 @@ export function Rail<PanelId extends string = string>({
       data-collapsed={collapsed ? "true" : "false"}
       data-panel-hosted={panelSlotNode ? "true" : "false"}
     >
-      {/* Keep `w-14` paired with the 3.5rem takeover calculation above. */}
-      <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-background px-2 py-3">
-        {leadingSlot ? <div className="mb-4 flex flex-col items-center">{leadingSlot}</div> : null}
-        {items.map((item) => (
-          <RailButton
-            key={item.id}
-            label={item.label}
-            icon={item.icon}
-            active={!collapsed && activePanelId === item.id}
-            disabled={item.disabled}
-            onClick={() => {
-              if (item.disabled) return;
-              if (!collapsed && activePanelId === item.id) {
-                onCollapsedChange(true);
-                return;
-              }
-              onActivePanelChange(item.id);
-              onCollapsedChange(false);
-            }}
-          />
-        ))}
-        {trailingSlot ? (
-          <div className="mt-auto flex flex-col items-center pt-4">{trailingSlot}</div>
-        ) : null}
+      {/* Keep `w-14` paired with the 3.5rem takeover calculation above.
+          The explicit rows mirror the shell's command row and body: the
+          leading cell stays borderless, while the body cell owns the
+          collapsed drawer boundary. */}
+      <div
+        className="grid min-h-0 w-14 shrink-0 grid-rows-[2.5rem_minmax(0,1fr)] bg-background"
+        data-slot="rail-strip-grid"
+      >
+        <div className="flex min-h-0 items-center justify-center" data-slot="rail-leading-slot">
+          {leadingSlot}
+        </div>
+        <div
+          className={cn(
+            "flex min-h-0 flex-col items-center gap-1 px-2 py-3",
+            collapsed && "border-r",
+          )}
+          data-slot="rail-body"
+        >
+          {items.map((item) => (
+            <RailButton
+              key={item.id}
+              label={item.label}
+              icon={item.icon}
+              active={!collapsed && activePanelId === item.id}
+              disabled={item.disabled}
+              onClick={() => {
+                if (item.disabled) return;
+                if (!collapsed && activePanelId === item.id) {
+                  onCollapsedChange(true);
+                  return;
+                }
+                onActivePanelChange(item.id);
+                onCollapsedChange(false);
+              }}
+            />
+          ))}
+          {trailingSlot ? (
+            <div className="mt-auto flex flex-col items-center pt-4">{trailingSlot}</div>
+          ) : null}
+        </div>
       </div>
 
       {panelSlotNode ? null : panel}

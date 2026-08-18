@@ -1944,7 +1944,7 @@ export function NotebookViewer({
         }
         stageClassName="cloud-notebook-stage"
         toolbar={toolbar}
-        toolbarPlacement="stage"
+        toolbarPlacement="shell"
         stageToolbar={stageToolbar}
         stageToolbarPlacement="stage-content"
         toolbarLabel="Notebook view status and controls"

@@ -356,7 +356,7 @@ function CloudNotebookShellExampleContent() {
           className="h-[720px] bg-background text-foreground"
           stageClassName="bg-background"
           toolbar={
-            <CloudNotebookChrome
+            <CloudAppChrome
               connection="live"
               mode={mode}
               onModeChange={setMode}
@@ -364,6 +364,13 @@ function CloudNotebookShellExampleContent() {
               scenario={scenario}
             />
           }
+          toolbarPlacement="shell"
+          stageToolbar={
+            <NotebookToolbarFrame className="static top-auto z-auto bg-background/95">
+              <CloudNotebookToolbar mode={mode} scenario={scenario} />
+            </NotebookToolbarFrame>
+          }
+          stageToolbarPlacement="stage-content"
           toolbarClassName="bg-background/95 backdrop-blur"
           toolbarLabel="Cloud notebook session"
           rail={rail}
@@ -456,7 +463,7 @@ function BrowserFrame() {
   );
 }
 
-function CloudNotebookChrome({
+function CloudAppChrome({
   connection,
   mode,
   onModeChange,
@@ -478,7 +485,6 @@ function CloudNotebookChrome({
         people={people}
         scenario={scenario}
       />
-      <CloudNotebookToolbar mode={mode} scenario={scenario} />
     </NotebookToolbarFrame>
   );
 }

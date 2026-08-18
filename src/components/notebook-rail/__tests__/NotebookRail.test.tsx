@@ -149,7 +149,7 @@ describe("NotebookRail", () => {
     );
 
     expect(screen.getByRole("button", { name: "Discussions" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Discussions" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Discussions" })).not.toBeInTheDocument();
     expect(screen.getByText("Thread list")).toBeVisible();
   });
 
@@ -211,8 +211,8 @@ describe("NotebookRail", () => {
     );
   });
 
-  it("keeps package metadata out of the title row", () => {
-    render(
+  it("omits redundant package panel header chrome", () => {
+    const { container } = render(
       <NotebookRail
         activePanelId="packages"
         collapsed={false}
@@ -223,7 +223,8 @@ describe("NotebookRail", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Packages" })).toHaveClass("text-sm");
+    expect(screen.queryByRole("heading", { name: "Packages" })).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toBeNull();
     expect(screen.queryByText("../pyproject.toml · 25 packages")).not.toBeInTheDocument();
   });
 

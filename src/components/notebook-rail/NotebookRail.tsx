@@ -84,14 +84,7 @@ export function NotebookRail({
       ? [{ id: "workstations" as const, label: "Workstations", icon: Server }]
       : []),
   ];
-  const title =
-    activePanelId === "packages"
-      ? "Packages"
-      : activePanelId === "comments"
-        ? "Discussions"
-        : activePanelId === "workstations"
-          ? "Workstations"
-          : null;
+  const title = activePanelId === "workstations" ? "Workstations" : null;
   return (
     <Rail
       activePanelId={activePanelId}
