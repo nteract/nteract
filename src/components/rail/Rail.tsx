@@ -20,7 +20,8 @@ export interface RailProps<PanelId extends string = string> {
   activePanelId: PanelId;
   collapsed: boolean;
   items: readonly RailItem<PanelId>[];
-  panelTitle?: ReactNode;
+  /** Omit when the active rail control already names the panel. */
+  panelTitle?: string;
   children: ReactNode;
   onActivePanelChange: (panelId: PanelId) => void;
   onCollapsedChange: (collapsed: boolean) => void;

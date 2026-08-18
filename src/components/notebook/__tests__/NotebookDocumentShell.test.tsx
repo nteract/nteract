@@ -1,5 +1,7 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ListTree } from "lucide-react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { Rail } from "@/components/rail";
 import { NotebookDocumentShell } from "../NotebookDocumentShell";
@@ -96,6 +98,27 @@ describe("NotebookDocumentShell", () => {
     expect(stageContent).toContainElement(screen.getByLabelText("Notebook cells"));
   });
 
+  it("keeps an expanded panel mounted while its portal placement changes", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<StageHostedRailHarness />);
+
+    const panelHost = () =>
+      container.querySelector('[data-slot="notebook-document-rail-panel-host"]');
+    const rail = () => screen.getByTestId("rail");
+
+    expect(panelHost()).not.toContainElement(screen.queryByTestId("outline-content"));
+
+    await user.click(screen.getByRole("button", { name: "Expand panel" }));
+    expect(panelHost()).toContainElement(screen.getByTestId("outline-content"));
+
+    await user.click(screen.getByRole("button", { name: "Place panel in rail" }));
+    expect(panelHost()).toBeNull();
+    expect(rail()).toContainElement(screen.getByTestId("outline-content"));
+
+    await user.click(screen.getByRole("button", { name: "Place panel in stage" }));
+    expect(panelHost()).toContainElement(screen.getByTestId("outline-content"));
+  });
+
   it("exposes host capabilities for adapters and smoke tests", () => {
     const capabilities: NotebookShellCapabilities = {
       canRead: true,
@@ -147,3 +170,38 @@ describe("NotebookDocumentShell", () => {
     expect(shell).toHaveAttribute("data-can-write-runtime-state", "false");
   });
 });
+
+function StageHostedRailHarness() {
+  const [collapsed, setCollapsed] = useState(true);
+  const [placement, setPlacement] = useState<"rail" | "stage">("stage");
+
+  return (
+    <>
+      <button type="button" onClick={() => setCollapsed(false)}>
+        Expand panel
+      </button>
+      <button type="button" onClick={() => setPlacement("rail")}>
+        Place panel in rail
+      </button>
+      <button type="button" onClick={() => setPlacement("stage")}>
+        Place panel in stage
+      </button>
+      <NotebookDocumentShell
+        railPanelPlacement={placement}
+        rail={
+          <Rail
+            activePanelId="outline"
+            collapsed={collapsed}
+            items={[{ id: "outline", label: "Outline", icon: ListTree }]}
+            onActivePanelChange={vi.fn()}
+            onCollapsedChange={setCollapsed}
+          >
+            <div data-testid="outline-content">Outline content</div>
+          </Rail>
+        }
+      >
+        <section aria-label="Notebook cells">cells</section>
+      </NotebookDocumentShell>
+    </>
+  );
+}

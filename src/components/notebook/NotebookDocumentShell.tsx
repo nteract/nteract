@@ -60,8 +60,9 @@ export function NotebookDocumentShell({
   stageLabel = "Notebook",
 }: NotebookDocumentShellProps) {
   const Root = rootElement as ElementType;
-  // Callback-ref state (not a ref) so the rail re-renders once the host slot
-  // node exists and its panel portal can target it on the same commit pass.
+  // Callback-ref state lets the provider publish the host after it commits.
+  // Until that rerender, Rail's no-host fallback keeps an expanded panel inline
+  // instead of dropping it during portal setup.
   const [railPanelSlotNode, setRailPanelSlotNode] = useState<HTMLDivElement | null>(null);
   const hostsRailPanelInStage = railPanelPlacement === "stage";
   const toolbarInStageContent = toolbarPlacement === "stage-content";
