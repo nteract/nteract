@@ -10,7 +10,6 @@ Development home for nteract Python packages. The UV workspace root (`pyproject.
 | `python/nteract-kernel-launcher/` | Embedded launcher package vendored by the daemon into kernel environments |
 | `python/prewarm/` | Environment warm-up utility for Python kernels |
 | `python/gremlin/` | Autonomous notebook agent for stress testing |
-| `python/pr-reviewer/` | Internal opencode-backed PR reviewer |
 | `python/safari-timeline/` | Safari Web Inspector timeline unpacking utilities |
 
 The root project keeps install metadata empty. Workspace-local packages live in

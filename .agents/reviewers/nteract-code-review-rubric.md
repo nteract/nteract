@@ -1,6 +1,6 @@
 # nteract Code Review Rubric
 
-Use this rubric for custom Claude, Codex, Pullfrog, and `pr-reviewer` review
+Use this rubric for custom Claude, Codex, Pullfrog, and independent Kilo review
 passes. It is reviewer guidance, not general implementation guidance.
 
 ## Operating Mode

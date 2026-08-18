@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 packages = []
 
 [tool.uv.workspace]
-members = ["python/runtimed", "python/nteract", "python/gremlin", "python/prewarm", "python/dx", "python/nteract-kernel-launcher", "python/pr-reviewer", "python/safari-timeline"]
+members = ["python/runtimed", "python/nteract", "python/gremlin", "python/prewarm", "python/dx", "python/nteract-kernel-launcher", "python/safari-timeline"]
 
 [tool.uv]
 environments = [
@@ -30,7 +30,6 @@ nteract = { workspace = true }
 gremlin = { workspace = true }
 dx = { workspace = true }
 nteract-kernel-launcher = { workspace = true }
-pr-reviewer = { workspace = true }
 safari-timeline = { workspace = true }
 
 [tool.ruff]
@@ -50,7 +49,7 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["runtimed", "nteract", "prewarm", "pr_reviewer", "safari_timeline"]
+known-first-party = ["runtimed", "nteract", "prewarm", "safari_timeline"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["SIM105", "SIM117"]
@@ -61,7 +60,6 @@ dev = [
     "gremlin ; sys_platform == 'darwin'",
     "dx",
     "nteract-kernel-launcher",
-    "pr-reviewer ; sys_platform == 'darwin'",
     "safari-timeline",
     "pandas",
     "polars>=1.39.3",
@@ -96,7 +94,6 @@ extra-paths = [
     "python/gremlin/src",
     "python/prewarm/src",
     "python/dx/src",
-    "python/pr-reviewer/src",
     "python/safari-timeline/src",
     # nteract-kernel-launcher is a single top-level .py file, no src/ layout
     "python/nteract-kernel-launcher",

@@ -181,7 +181,6 @@ nteract/nteract
 │   ├── prewarm/           # Environment prewarm script
 │   ├── dx/                # Developer utilities
 │   ├── nteract-kernel-launcher/ # Kernel launcher for hosted notebooks
-│   ├── pr-reviewer/       # PR review agent
 │   └── safari-timeline/   # Safari timeline parser
 ├── plugins/                # Agent plugin distribution
 │   └── nteract/           # Codex plugin package
