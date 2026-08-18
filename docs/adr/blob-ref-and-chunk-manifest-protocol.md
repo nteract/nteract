@@ -161,6 +161,19 @@ Each `chunks[]` entry names a blob ref by hash. Each chunk is independently
 decodable as an Arrow IPC stream mini-stream. Consumers concatenate logical
 rows in ascending `index` order, not by reassembling raw bytes.
 
+Some live and published manifests also carry `blobs[]`, a side-car list of refs
+that are not part of the row stream. Unlike `chunks[]`, entries are not ordered
+and carry no row semantics. `OutputManifest::blob_refs`, `runt-publish`
+snapshot collection, and notebook-cloud blob-ref collection walk this slot
+alongside `chunks[]` and `coalesced` so the referenced payloads can be uploaded
+and resolved on demand.
+
+`blobs[]` is not yet a complete runtime-storage contract: the daemon's
+active-room GC walker does not retain its entries, and the durable `.ipynb`
+save/load transform below does not process them: neither the externalize nor
+restore step visits this slot. Producers must not depend on `blobs[]` until
+both paths are implemented.
+
 The manifest may later grow `coalesced` entries for derived artifacts. Unknown
 fields must be preserved at save/load boundaries.
 
