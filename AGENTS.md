@@ -98,13 +98,14 @@ Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `build`, `perf`
 
 ## Code review
 
-For independent model-assisted reviews, use the repository-independent
-`kilo-review` skill and its source-read-only workflow. Establish the exact
-review target and mutation boundary first, give each reviewer the shared
-`.agents/reviewers/nteract-code-review-rubric.md`, and choose distinct reviewer
-lenses that match the change. Treat every model finding as advisory: verify it
-against the checkout, assign a disposition, and rerun relevant checks after any
-fix before declaring the review clear.
+For independent model-assisted reviews initiated from a developer workstation,
+use the repository-independent `kilo-review` skill and its source-read-only
+workflow. Repository-hosted Pullfrog reviews remain a separate supported path.
+Establish the exact review target and mutation boundary first, give each
+reviewer the shared `.agents/reviewers/nteract-code-review-rubric.md`, and choose
+distinct reviewer lenses that match the change. Treat every model finding as
+advisory: verify it against the checkout, assign a disposition, and rerun
+relevant checks after any fix before declaring the review clear.
 
 ## Load-bearing invariants
 
