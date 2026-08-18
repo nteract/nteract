@@ -42,7 +42,7 @@ describe("NotebookDocumentRail", () => {
     expect(screen.getByText("Package details")).toBeVisible();
   });
 
-  it("keeps the package title row free of view-model summaries", () => {
+  it("omits redundant package header chrome and view-model summaries", () => {
     render(
       <NotebookDocumentRail
         viewModel={viewModel}
@@ -54,7 +54,7 @@ describe("NotebookDocumentRail", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Packages" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Packages" })).not.toBeInTheDocument();
     expect(screen.queryByText("uv · 2 packages")).not.toBeInTheDocument();
     expect(screen.getByText("Package details")).toBeVisible();
   });
