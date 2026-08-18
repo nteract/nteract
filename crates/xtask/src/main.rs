@@ -3137,6 +3137,8 @@ struct RunningDevApp {
     live_executable: PathBuf,
 }
 
+type LiveDevAppInfo = (PathBuf, Option<String>, Option<String>);
+
 #[derive(Debug)]
 enum DevAppInspection {
     NotRecorded,
@@ -3201,9 +3203,7 @@ fn canonical_path_or_original(path: &Path) -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn live_dev_app_info(
-    pid: u32,
-) -> Result<Option<(PathBuf, Option<String>, Option<String>)>, String> {
+fn live_dev_app_info(pid: u32) -> Result<Option<LiveDevAppInfo>, String> {
     // NSRunningApplication can briefly retain a cached object after the Unix
     // process has exited, so establish liveness before asking AppKit for its
     // bundle metadata.
@@ -3256,9 +3256,7 @@ if (!app || Boolean(app.terminated)) {{
 }
 
 #[cfg(not(target_os = "macos"))]
-fn live_dev_app_info(
-    pid: u32,
-) -> Result<Option<(PathBuf, Option<String>, Option<String>)>, String> {
+fn live_dev_app_info(pid: u32) -> Result<Option<LiveDevAppInfo>, String> {
     let state = fs::read_to_string(dev_app_state_path())
         .ok()
         .and_then(|contents| serde_json::from_str::<runt_workspace::DevAppState>(&contents).ok());
@@ -3266,7 +3264,7 @@ fn live_dev_app_info(
         return Ok(None);
     };
     let running = process_is_live(pid);
-    Ok(running.then(|| (state.executable, None, None)))
+    Ok(running.then_some((state.executable, None, None)))
 }
 
 fn process_is_live(pid: u32) -> bool {
