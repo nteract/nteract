@@ -367,6 +367,7 @@ function CloudNotebookShellExampleContent() {
           toolbarClassName="bg-background/95 backdrop-blur"
           toolbarLabel="Cloud notebook session"
           rail={rail}
+          railPanelPlacement="stage"
           capabilities={shellCapabilities}
         >
           <CloudNotebookDocument />

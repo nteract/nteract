@@ -1,6 +1,8 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
+import { useRailPanelSlot } from "./rail-panel-slot";
 
 export const RAIL_TAKEOVER_MEDIA_QUERY = "(max-width: 599.98px)";
 export const RAIL_TAKEOVER_STAGE_CLASS_NAME = "max-[599.98px]:hidden";
@@ -50,11 +52,37 @@ export function Rail<PanelId extends string = string>({
   panelSlot = "rail-panel",
   panelTitleRowSlot = "rail-panel-title-row",
 }: RailProps<PanelId>) {
-  return (
+  const panelSlotNode = useRailPanelSlot();
+  const panel = collapsed ? null : (
+    <div
+      className={cn(
+        "flex min-h-0 max-w-[calc(100vw-3rem)] flex-col border-r bg-background",
+        panelClassName,
+        RAIL_TAKEOVER_PANEL_CLASS_NAMES,
+      )}
+      data-slot={panelSlot}
+    >
+      <div className="border-b px-4 py-3">
+        <div className="flex flex-col gap-1.5">
+          <div
+            className="flex min-w-0 flex-wrap items-center justify-between gap-2"
+            data-slot={panelTitleRowSlot}
+          >
+            <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
+            {panelAction}
+          </div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">{children}</div>
+    </div>
+  );
+
+  const strip = (
     <aside
-      className={cn("flex min-h-0 shrink-0 border-r bg-background", className)}
+      className={cn("flex min-h-0 shrink-0 bg-background", className)}
       data-testid={dataTestId}
       data-collapsed={collapsed ? "true" : "false"}
+      data-panel-hosted={panelSlotNode ? "true" : "false"}
     >
       <div className="flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-background px-2 py-3">
         {leadingSlot ? <div className="mb-4 flex flex-col items-center">{leadingSlot}</div> : null}
@@ -81,30 +109,17 @@ export function Rail<PanelId extends string = string>({
         ) : null}
       </div>
 
-      {!collapsed && (
-        <div
-          className={cn(
-            "flex min-h-0 max-w-[calc(100vw-3rem)] flex-col bg-background",
-            panelClassName,
-            RAIL_TAKEOVER_PANEL_CLASS_NAMES,
-          )}
-          data-slot={panelSlot}
-        >
-          <div className="border-b px-4 py-3">
-            <div className="flex flex-col gap-1.5">
-              <div
-                className="flex min-w-0 flex-wrap items-center justify-between gap-2"
-                data-slot={panelTitleRowSlot}
-              >
-                <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
-                {panelAction}
-              </div>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-3">{children}</div>
-        </div>
-      )}
+      {panelSlotNode ? null : panel}
     </aside>
+  );
+
+  return panelSlotNode && panel ? (
+    <>
+      {strip}
+      {createPortal(panel, panelSlotNode)}
+    </>
+  ) : (
+    strip
   );
 }
 

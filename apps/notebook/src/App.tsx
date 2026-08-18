@@ -172,7 +172,7 @@ function focusActiveRailButtonWhenStageIsHidden(
   const activeElement = document.activeElement;
   if (!(activeElement instanceof HTMLElement)) return;
 
-  const stage = document.querySelector('[data-slot="notebook-document-stage"]');
+  const stage = document.querySelector('[data-slot="notebook-document-stage-content"]');
   const focusWasInStage = stage?.contains(activeElement);
   const focusWasClearedFromHiddenStage =
     stageHadFocusBeforeTakeover && activeElement === document.body;
@@ -452,7 +452,7 @@ function AppContent() {
     if (typeof document === "undefined") return;
 
     const handleFocusIn = (event: FocusEvent) => {
-      const stage = document.querySelector('[data-slot="notebook-document-stage"]');
+      const stage = document.querySelector('[data-slot="notebook-document-stage-content"]');
       stageHadFocusBeforeRailTakeoverRef.current = Boolean(
         event.target instanceof Node && stage?.contains(event.target),
       );
@@ -2091,10 +2091,11 @@ function AppContent() {
               onRestartToUpdate={restartToUpdate}
             />
           }
-          stageClassName={cn(
-            "min-w-0 flex-1",
-            !railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
-          )}
+          stageClassName="min-w-0 flex-1"
+          // The expanded panel slides out inside the stage, under the utility
+          // bar; the rail strip stays at the left edge of the page content.
+          railPanelPlacement="stage"
+          stageContentClassName={cn(!railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME)}
           rail={
             <NotebookDocumentRail
               trailingSlot={
