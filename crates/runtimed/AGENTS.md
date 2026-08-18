@@ -18,6 +18,23 @@ Scope: `crates/runtimed/**`, `crates/runt/**`, `crates/runtimed-client/**`, `cra
 
 7. **Process-isolated kernel execution.** Every kernel runs in a separate runtime agent subprocess (`runtimed runtime-agent`) connecting back as an Automerge peer. Execution is CRDT-driven — the coordinator writes execution entries (source + sequence number) to RuntimeStateDoc; the runtime agent discovers them via sync and executes in order. RPC handles lifecycle (`LaunchKernel`, `RestartKernel`, `ShutdownKernel`), interrupts, environment hot-sync (`SyncEnvironment`), completion/history queries, and ephemeral comm traffic (`SendComm`).
 
+## Lifecycle and output ordering
+
+- Stream output may use bounded, lossy periodic flushes. Ordering boundaries
+  may not lose or reorder messages.
+- Send `KernelIdle`, `ExecutionDone`, `CellError`, and `KernelDied` over the
+  reliable lifecycle channel, separate from the bounded output/work queue.
+  Drain lifecycle messages before bounded output work so output pressure cannot
+  delay interrupts or queue release.
+- Flush pending stdout and stderr through the priority commit path before
+  clearing terminal state for display or error output. Send `ExecutionDone`
+  through the same path so it follows the final stream manifest.
+- IOPub widget replay through `SendCommUpdate` is best-effort and non-blocking.
+  A full work queue must not delay later lifecycle messages. RuntimeStateDoc,
+  not widget replay, records runtime state.
+- Coalesce `update_display_data` by `display_id` away from the IOPub hot path.
+  Flush pending display updates after `KernelIdle` and before `ExecutionDone`.
+
 ## Crate boundaries
 
 | Crate | Owns | Consumers |

@@ -9,12 +9,11 @@ import { describe, expect, it } from "vite-plus/test";
  * them visually with CSS `order` inside a flex column. The invariant lives
  * in three places that must all hold together — regressing any one of them
  * silently reintroduces React `insertBefore` on reorder, which destroys
- * output iframes (white flashes, lost widget state). See CLAUDE.md
- * § "Cell list uses stable DOM order" and frontend-sync-bridge.md
- * Decision 2.
+ * output iframes (white flashes, lost widget state). See
+ * apps/notebook/src/AGENTS.md and frontend-sync-bridge.md Decision 2.
  *
  * This is a source-shape guard, not a behavior test: jsdom cannot observe
- * iframe teardown, so the load-bearing truth is pinned at the source level
+ * iframe teardown, so the required source shape is pinned at the source level
  * (same pattern as notebook-view-capabilities-source.test.ts).
  */
 describe("NotebookView stable DOM order invariant (FSB-2)", () => {

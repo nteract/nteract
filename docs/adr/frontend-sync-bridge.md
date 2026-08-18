@@ -403,4 +403,4 @@ machinery.
 - `apps/notebook/src/lib/project-runtime-stores.ts` - execution-view projection.
 - `packages/runtimed/src/sync-engine.ts` - the engine: `flushAndWait`, `scheduleFlush`, every `*$` Observable.
 - `apps/notebook/src/AGENTS.md` - companion frontend-architecture map (data-flow diagram).
-- `AGENTS.md` / `CLAUDE.md` - "Cell list uses stable DOM order" load-bearing invariant.
+- `apps/notebook/src/AGENTS.md` - the scoped stable DOM-order rule.

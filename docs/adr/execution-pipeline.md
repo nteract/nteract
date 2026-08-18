@@ -312,4 +312,5 @@ If lifecycle and work shared one channel, the interrupt's `KernelIdle` would hav
 - `crates/runtimed/src/notebook_sync_server/peer_writer.rs:167-256` - `required_heads` gate.
 - `crates/runt-mcp/src/execution.rs` - MCP consumer pattern.
 - `.agents/skills/execution-pipeline/SKILL.md` - the agent-facing summary that this ADR expands.
-- `AGENTS.md` / `CLAUDE.md` "Runtime control-plane signals are not output transport" - the load-bearing paragraph this ADR is the long-form of.
+- `crates/runtimed/AGENTS.md` "Lifecycle and output ordering" - the scoped
+  summary of the rules this ADR expands.
