@@ -51,8 +51,13 @@ success, and resolved outputs.
 pnpm --dir packages/runtimed-agent-tools typecheck
 pnpm --dir packages/runtimed-agent-tools test
 pnpm --dir packages/runtimed-agent-tools smoke:hosts
+RUNTIMED_SOCKET_PATH=/path/to/runtimed.sock pnpm --dir packages/runtimed-agent-tools smoke:live
 pnpm --dir packages/runtimed-agent-tools pack:dry-run
 ```
 
 The host smoke tests load the built local plugin through real OpenCode and Kilo
 config directories without changing the user's global configuration.
+
+The live smoke test creates a temporary notebook on the selected daemon, invokes
+the same `notebook_run_source` handler registered with both hosts, verifies its
+resolved output, and shuts the notebook down.

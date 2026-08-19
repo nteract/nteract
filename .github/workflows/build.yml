@@ -509,6 +509,11 @@ jobs:
       - name: Type-check runtimed tests
         run: pnpm --dir packages/runtimed typecheck
 
+      - name: Type-check and pack runtimed agent tools
+        run: |
+          pnpm --dir packages/runtimed-agent-tools typecheck
+          pnpm --dir packages/runtimed-agent-tools pack:dry-run
+
       # Same enforcement for the cloud viewer stores' equality manifests and
       # store typing: no other lane runs the notebook-cloud tsc pass. Its
       # wasm-ensure-runtime pretypecheck is satisfied by the artifact build

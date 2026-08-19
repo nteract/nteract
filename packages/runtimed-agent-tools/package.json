@@ -52,6 +52,7 @@
     "smoke:opencode": "pnpm build && node scripts/smoke-host.mjs opencode",
     "smoke:kilo": "pnpm build && node scripts/smoke-host.mjs kilo",
     "smoke:hosts": "pnpm smoke:opencode && pnpm smoke:kilo",
+    "smoke:live": "pnpm build && node scripts/smoke-live.mjs",
     "prepack": "pnpm build",
     "pack:dry-run": "pnpm pack --dry-run"
   },

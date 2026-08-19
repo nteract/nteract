@@ -276,6 +276,11 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "packages/runtimed-agent-tools/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
+    Target {
         path: "packages/runtimed-node/npm/darwin-arm64/package.json",
         format: Format::Json,
         matches: 1,
