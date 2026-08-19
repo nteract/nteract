@@ -7,6 +7,10 @@ appends a synced code cell, executes that cell, and returns the durable executio
 identity and resolved outputs. Sessions are reused within an agent session and
 closed when that agent session is deleted.
 
+OpenCode and Kilo emit `session.deleted` during normal session cleanup, which
+closes the corresponding `@runtimed/node` handles. If a host exits without that
+event, terminating the host process closes its underlying daemon peer connection.
+
 ## OpenCode
 
 Add the npm plugin to `opencode.json`:
