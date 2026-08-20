@@ -4023,6 +4023,120 @@ async fn test_notebook_sync_refuses_gone_uuid_without_phantom() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// A notebook created untitled keeps its UUID when saved. After the daemon is
+/// replaced, a client that only retained that UUID must follow the persistent
+/// registry binding to the saved path and recover the file-backed room.
+#[tokio::test]
+async fn test_notebook_sync_uuid_follows_saved_path_across_daemon_restart() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let saved_path = temp_dir.path().join("saved-from-untitled.ipynb");
+
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let mut daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let created = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .expect("untitled notebook should be created");
+    let notebook_id = created.info.notebook_id.clone();
+    assert!(
+        wait_for_session_ready(&created.handle, SESSION_READY_TIMEOUT).await,
+        "created notebook should become ready"
+    );
+    let starter = wait_for_daemon_starter_cell(&created.handle, SESSION_READY_TIMEOUT)
+        .await
+        .expect("daemon starter cell should arrive");
+    created
+        .handle
+        .update_source(&starter.id, "saved_value = 42")
+        .unwrap();
+    created.handle.confirm_sync().await.unwrap();
+
+    let save = created
+        .handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: Some(saved_path.to_string_lossy().into_owned()),
+        })
+        .await
+        .expect("untitled notebook should save");
+    assert!(
+        matches!(
+            save,
+            NotebookResponse::NotebookSaved { .. }
+                | NotebookResponse::NotebookAlreadyCurrent { .. }
+        ),
+        "unexpected save response: {save:?}"
+    );
+    let canonical_saved_path = std::fs::canonicalize(&saved_path).unwrap();
+    drop(created);
+    pool_client.shutdown().await.ok();
+    if tokio::time::timeout(Duration::from_secs(2), &mut daemon_handle)
+        .await
+        .is_err()
+    {
+        daemon_handle.abort();
+        let _ = daemon_handle.await;
+    }
+
+    // The test binary's global shutdown callback deliberately retains the
+    // first in-process daemon. A real restart is a new process and releases
+    // these process-local locks, so give the replacement equivalent fresh
+    // lock namespaces while preserving the registry, journal, and socket.
+    let mut restarted_config = config;
+    restarted_config.lock_dir = Some(temp_dir.path().join("restart-lock"));
+    restarted_config.file_claims_dir = Some(temp_dir.path().join("restart-file-claims"));
+    let restarted = Daemon::new_for_test(restarted_config).unwrap();
+    let mut restarted_handle = tokio::spawn(async move {
+        restarted.run().await.ok();
+    });
+    let restarted_pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&restarted_pool).await);
+
+    let rejoined = connect::connect(socket_path, notebook_id.clone(), "rejoin")
+        .await
+        .expect("saved notebook UUID should resolve after daemon restart");
+    assert_eq!(rejoined.handle.notebook_id(), notebook_id);
+    let rejoined_room = restarted_pool
+        .list_rooms()
+        .await
+        .expect("restarted daemon should list rejoined room")
+        .into_iter()
+        .find(|room| room.notebook_id == notebook_id)
+        .expect("rejoined room should be listed");
+    assert_eq!(
+        rejoined_room.notebook_path.as_deref(),
+        Some(canonical_saved_path.to_string_lossy().as_ref())
+    );
+    assert!(
+        wait_for_session_ready(&rejoined.handle, SESSION_READY_TIMEOUT).await,
+        "rejoined file-backed notebook should become ready"
+    );
+    assert!(
+        rejoined
+            .handle
+            .get_cells()
+            .iter()
+            .any(|cell| cell.source == "saved_value = 42"),
+        "rejoined notebook should retain the saved cell"
+    );
+
+    drop(rejoined);
+    restarted_pool.shutdown().await.ok();
+    if tokio::time::timeout(Duration::from_secs(2), &mut restarted_handle)
+        .await
+        .is_err()
+    {
+        restarted_handle.abort();
+        let _ = restarted_handle.await;
+    }
+}
+
 #[tokio::test]
 async fn test_pool_size_config_honored() {
     let temp_dir = TempDir::new().unwrap();

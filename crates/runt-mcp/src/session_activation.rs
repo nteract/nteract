@@ -124,6 +124,34 @@ impl SessionActivation {
             })
     }
 
+    /// Whether an already-installed session can satisfy another connect for
+    /// the same target without starting a new activation generation.
+    ///
+    /// A current flight always wins: returning the previous occupant while a
+    /// switch is in progress would make an A-B-A request observe stale A
+    /// state. Once the flight closes, a failed replacement leaves the last
+    /// installed identity reusable. Generation zero covers daemon-watch
+    /// rejoins, which are installed outside the explicit activation flow.
+    pub fn can_reuse_installed(&self, generation: u64, target: &str) -> bool {
+        let state = self.lock_state();
+        let current_flight_active = state.current_target.as_ref().is_some_and(|current| {
+            state
+                .in_flight
+                .get(current)
+                .is_some_and(|flight| flight.generation == state.generation)
+        });
+        if current_flight_active {
+            return false;
+        }
+        generation == 0
+            || state
+                .installed
+                .as_ref()
+                .is_some_and(|(installed_generation, installed_target)| {
+                    *installed_generation == generation && installed_target.as_str() == target
+                })
+    }
+
     pub fn has_current_local_path_flight(&self) -> bool {
         let state = self.lock_state();
         state.current_target.as_ref().is_some_and(|target| {
@@ -396,6 +424,24 @@ mod tests {
         drop(replacement);
 
         assert!(owner.is_current_identity(installed.generation(), installed.target().as_str()));
+        assert!(owner.can_reuse_installed(installed.generation(), installed.target().as_str()));
+    }
+
+    #[test]
+    fn active_flight_prevents_reusing_previous_occupant() {
+        let owner = Arc::new(SessionActivation::default());
+        let ActivationTicket::Leader(mut installed) = owner.begin(target("local:id:a")) else {
+            panic!("first activation must lead");
+        };
+        assert!(installed.mark_installed());
+        installed.complete(&success("connected a"));
+
+        assert!(owner.can_reuse_installed(installed.generation(), installed.target().as_str()));
+
+        let ActivationTicket::Leader(_replacement) = owner.begin(target("local:id:b")) else {
+            panic!("replacement activation must lead");
+        };
+        assert!(!owner.can_reuse_installed(installed.generation(), installed.target().as_str()));
     }
 
     #[tokio::test]

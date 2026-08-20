@@ -3014,6 +3014,39 @@ impl Daemon {
                         // reaper cannot remove it between this check and steady
                         // state (the guard is part of `found`).
                         found
+                    } else if let Some(canonical) = self.notebook_registry.lookup_path(parsed) {
+                        // A notebook created untitled keeps its UUID when saved.
+                        // After a daemon replacement its transient DocHandle and
+                        // UUID-keyed room may be gone, but the persistent registry
+                        // still binds that UUID to the file it became. Follow the
+                        // reverse binding so UUID-only clients recover the
+                        // file-backed room instead of receiving a false eviction.
+                        match self.gate_file_claim(&canonical, parsed) {
+                            FileClaimGate::Proceed => {}
+                            FileClaimGate::ActiveElsewhere(message) => {
+                                let (_reader, mut writer) = tokio::io::split(stream);
+                                send_error_response(
+                                    &mut writer,
+                                    message,
+                                    typed_bootstrap.unwrap_or(false),
+                                )
+                                .await?;
+                                return Ok(());
+                            }
+                        }
+                        crate::notebook_sync_server::get_or_create_room_result(
+                            &self.notebook_rooms,
+                            parsed,
+                            crate::notebook_sync_server::RoomCreationOptions {
+                                path: Some(canonical),
+                                initial_load_execution_store_dir: None,
+                                docs_dir: &docs_dir,
+                                blob_store: self.blob_store.clone(),
+                                ephemeral: false,
+                                trusted_packages: self.trusted_packages.clone(),
+                            },
+                        )
+                        .await?
                     } else if docs_dir
                         .join(crate::paths::notebook_doc_filename(&parsed.to_string()))
                         .exists()

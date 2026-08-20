@@ -56,6 +56,8 @@ impl NotebookRegistry {
                 notebook_id    TEXT NOT NULL,
                 recorded_at    TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS notebook_paths_by_id
+                ON notebook_paths (notebook_id);
             "#,
         )
         .with_context(|| format!("initialize notebook registry {}", path.display()))?;
@@ -106,6 +108,36 @@ impl NotebookRegistry {
                 None
             });
         stored.and_then(|s| Uuid::parse_str(&s).ok())
+    }
+
+    /// Return the current canonical path bound to `id`, or `None` if unknown /
+    /// unavailable.
+    ///
+    /// This is the reverse side of [`Self::lookup`]. It lets a client holding a
+    /// UUID for an untitled notebook follow that identity after the notebook is
+    /// saved and the daemon process is replaced. Save-as normally keeps one row
+    /// per id; ordering makes recovery deterministic if an older installation
+    /// left more than one historical row behind.
+    pub fn lookup_path(&self, id: Uuid) -> Option<PathBuf> {
+        let conn = match self.inner.as_ref() {
+            Inner::Sqlite { conn } => conn,
+            Inner::Unavailable { .. } => return None,
+        };
+        let guard = conn.lock().unwrap_or_else(|e| e.into_inner());
+        let stored: Option<String> = guard
+            .query_row(
+                "SELECT canonical_path FROM notebook_paths \
+                 WHERE notebook_id = ?1 \
+                 ORDER BY recorded_at DESC, canonical_path ASC LIMIT 1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap_or_else(|e| {
+                warn!("[notebook-registry] lookup_path({id}) failed: {e}");
+                None
+            });
+        stored.map(PathBuf::from)
     }
 
     /// Resolve `canonical` to its stable id, assigning and recording a fresh one
@@ -236,6 +268,23 @@ mod tests {
     }
 
     #[test]
+    fn reverse_lookup_survives_reopen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = tmp.path().join("notebook-registry.sqlite");
+        let path = Path::new("/Users/me/saved-from-untitled.ipynb");
+        let id = Uuid::new_v4();
+
+        NotebookRegistry::open(db.clone())
+            .unwrap()
+            .record(path, id, TS);
+
+        assert_eq!(
+            NotebookRegistry::open(db).unwrap().lookup_path(id),
+            Some(path.to_path_buf())
+        );
+    }
+
+    #[test]
     fn distinct_paths_get_distinct_ids() {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = NotebookRegistry::open(tmp.path().join("r.sqlite")).unwrap();
@@ -298,6 +347,7 @@ mod tests {
         store.record(new, id, TS);
 
         assert_eq!(store.lookup(new), Some(id));
+        assert_eq!(store.lookup_path(id), Some(new.to_path_buf()));
         // The old path is free: a new file there gets a fresh id, not the moved one.
         let reused = store.resolve_or_assign(old, TS);
         assert_ne!(reused, id);

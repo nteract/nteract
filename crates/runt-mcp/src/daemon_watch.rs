@@ -49,8 +49,12 @@ enum WatchDecision {
     /// `NTERACT_MCP_REJOIN_NOTEBOOK` — for the restarted-child case.
     RejoinInitial(String),
     /// Rejoin using the current session's state — for reconnect or
-    /// same-version restart while we already have a session.
+    /// a lagged disconnect while we still have a session.
     RejoinContinuation,
+    /// A same-version daemon process restart invalidated every local
+    /// DocHandle. Clear the stale session before opening and publishing its
+    /// replacement.
+    RestartLocalSession,
     /// Record that the daemon was lost. The watch loop uses this to
     /// gate `RejoinContinuation` — only after a disconnect.
     MarkDisconnected,
@@ -91,7 +95,7 @@ fn classify(
             if let Some(t) = initial_target.as_ref() {
                 WatchDecision::RejoinInitial(t.clone())
             } else if has_session {
-                WatchDecision::RejoinContinuation
+                WatchDecision::RestartLocalSession
             } else if let Some(t) = disconnect_target.as_ref() {
                 // Session was cleared on disconnect to prevent tool
                 // calls from hanging on a dead DocHandle. Rejoin
@@ -307,56 +311,107 @@ pub async fn watch(
                     disconnect_target = None;
                 }
             }
+            WatchDecision::RestartLocalSession => {
+                // An Upgraded event can arrive without a preceding Disconnected
+                // event. The installed DocHandle still belongs to the old daemon
+                // process, so remove it before rejoin; otherwise rejoin's
+                // publication guard correctly treats it as authoritative and
+                // drops the fresh replacement.
+                let target = clear_local_sessions_for_daemon_loss(
+                    &session,
+                    &last_session_drop,
+                    &parked_sessions,
+                )
+                .await;
+                if let Some(target) = target {
+                    info!("Daemon process restarted, rejoining notebook session");
+                    // Preserve the target and disconnected state until a
+                    // replacement is actually published. If the bounded retry
+                    // loop fails, the next Connected event will try again.
+                    was_disconnected = true;
+                    disconnect_target = Some(target.clone());
+                    let ok = rejoin(
+                        &socket_path,
+                        &session,
+                        &peer_label,
+                        &last_session_drop,
+                        Some(target),
+                        &session_intent_epoch,
+                        observed_intent_epoch,
+                    )
+                    .await;
+                    if ok {
+                        was_disconnected = false;
+                        disconnect_target = None;
+                    }
+                }
+            }
             WatchDecision::MarkDisconnected => {
                 was_disconnected = true;
                 // Immediately clear the session to prevent tool calls from
                 // hanging on a dead DocHandle while we wait for the daemon
                 // to come back. Save the notebook target so we can rejoin
                 // when the daemon reconnects.
-                let old_session = {
-                    let mut guard = session.write().await;
-                    if guard.as_ref().is_some_and(NotebookSession::is_hosted) {
-                        None
-                    } else {
-                        guard.take().map(|session| {
-                            (session.notebook_id.clone(), session.notebook_path.clone())
-                        })
-                    }
-                };
-                if let Some((notebook_id, notebook_path)) = old_session {
-                    info!(
-                        "Clearing session for disconnected daemon (notebook: {notebook_id}); \
-                         will rejoin on reconnect"
-                    );
-                    // Stash the target for rejoin. File-backed notebooks
-                    // use the file path; ephemeral notebooks use the UUID.
-                    disconnect_target =
-                        Some(notebook_path.clone().unwrap_or_else(|| notebook_id.clone()));
-                    *last_session_drop.write().await = Some(SessionDropInfo {
-                        reason: SessionDropReason::Disconnected,
-                        notebook_id,
-                        notebook_path: notebook_path.clone(),
-                        rejoin_target: disconnect_target.clone(),
-                    });
-                }
-                // Also clear parked local sessions — their DocHandles are dead
-                // too. Hosted parked sessions do not depend on this daemon.
-                {
-                    let mut parked = parked_sessions.write().await;
-                    let before = parked.len();
-                    parked.retain(|_, session| session.is_hosted());
-                    let removed = before.saturating_sub(parked.len());
-                    if removed > 0 {
-                        info!(
-                            "Clearing {} parked local session(s) on daemon disconnect",
-                            removed
-                        );
-                    }
-                }
+                disconnect_target = clear_local_sessions_for_daemon_loss(
+                    &session,
+                    &last_session_drop,
+                    &parked_sessions,
+                )
+                .await;
             }
             WatchDecision::NoOp => {}
         }
     }
+}
+
+/// Remove local sessions whose handles belong to a daemon process that was lost.
+///
+/// Returns the active session's durable rejoin target, preferring its file path.
+/// Hosted sessions survive because they do not depend on the local daemon.
+async fn clear_local_sessions_for_daemon_loss(
+    session: &Arc<RwLock<Option<NotebookSession>>>,
+    last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
+    parked_sessions: &Arc<RwLock<HashMap<String, NotebookSession>>>,
+) -> Option<String> {
+    let old_session = {
+        let mut guard = session.write().await;
+        if guard.as_ref().is_some_and(NotebookSession::is_hosted) {
+            None
+        } else {
+            guard.take()
+        }
+    };
+
+    let rejoin_target = if let Some(old_session) = old_session {
+        let notebook_id = old_session.notebook_id.clone();
+        let notebook_path = old_session.notebook_path.clone();
+        let rejoin_target = notebook_path.clone().unwrap_or_else(|| notebook_id.clone());
+        info!(
+            "Clearing session for unavailable daemon (notebook: {notebook_id}); \
+             will rejoin on reconnect"
+        );
+        *last_session_drop.write().await = Some(SessionDropInfo {
+            reason: SessionDropReason::Disconnected,
+            notebook_id,
+            notebook_path,
+            rejoin_target: Some(rejoin_target.clone()),
+        });
+        Some(rejoin_target)
+    } else {
+        None
+    };
+
+    // Parked local DocHandles belong to the old daemon too. Hosted parked
+    // sessions do not depend on it and remain valid.
+    let mut parked = parked_sessions.write().await;
+    let before = parked.len();
+    parked.retain(|_, session| session.is_hosted());
+    let removed = before.saturating_sub(parked.len());
+    if removed > 0 {
+        info!("Clearing {removed} parked local session(s) for unavailable daemon");
+    }
+
+    rejoin_target
 }
 
 /// Decide whether a target string should be treated as a notebook UUID
@@ -721,10 +776,10 @@ mod tests {
     }
 
     #[test]
-    fn same_version_restart_triggers_continuation_rejoin() {
-        // Upgraded (same-version) always triggers rejoin — the daemon
-        // process recycled so the old peer is dead. was_disconnected
-        // is irrelevant for Upgraded events.
+    fn same_version_restart_clears_stale_local_session_before_rejoin() {
+        // Upgraded (same-version) must clear the old session before rejoin —
+        // the daemon process recycled so its DocHandle is dead. Otherwise the
+        // publication guard sees an active session and drops the replacement.
         let event = DaemonEvent::Upgraded {
             previous: info_with("1.0.0", 100),
             current: info_with("1.0.0", 200),
@@ -733,7 +788,7 @@ mod tests {
         let disconnect = None;
         assert_eq!(
             classify(&event, &initial, true, false, &disconnect),
-            WatchDecision::RejoinContinuation
+            WatchDecision::RestartLocalSession
         );
     }
 

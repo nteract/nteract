@@ -13,7 +13,9 @@ use runtimed_client::protocol::{NotebookCellProjection, NotebookProjection};
 
 use crate::cloud::{self, CloudRegistry, NotebookTarget};
 use crate::formatting;
-use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
+use crate::session::{
+    NotebookSession, NotebookSessionSource, SessionDropInfo, SessionDropReason, SessionRequirement,
+};
 use crate::session_activation::{
     activation_error, ActivationLease, ActivationTicket, CanonicalNotebookTarget,
 };
@@ -614,6 +616,94 @@ async fn get_room_projection(
 
 fn superseded_result(lease: &ActivationLease) -> CallToolResult {
     lease.superseded_result()
+}
+
+fn session_matches_target(session: &NotebookSession, requested: &CanonicalNotebookTarget) -> bool {
+    if session.activation_target == requested.as_str() {
+        return true;
+    }
+
+    match &session.source {
+        NotebookSessionSource::Local => {
+            canonical_local_id_target(&session.notebook_id).is_ok_and(|target| target == *requested)
+                || session
+                    .notebook_path
+                    .as_deref()
+                    .is_some_and(|path| canonical_local_path_target(path) == *requested)
+        }
+        NotebookSessionSource::Hosted { domain } => {
+            let url = cloud::hosted_notebook_url(domain, &session.notebook_id);
+            CanonicalNotebookTarget::new(format!("hosted:{url}")) == *requested
+        }
+    }
+}
+
+/// Return the active same-target session without reconnecting its daemon peer.
+///
+/// The connect tool is declared idempotent. Replaying the activation after a
+/// successful progressive connect replaces the replica that is converging on
+/// the full document with another projection-backed replica, which can keep
+/// callers pinned to the initial bounded projection indefinitely.
+async fn reuse_active_session(
+    server: &NteractMcp,
+    requested: &CanonicalNotebookTarget,
+) -> Option<CallToolResult> {
+    let guard = server.session.read().await;
+    let session = guard.as_ref()?;
+    if !session_matches_target(session, requested)
+        || !server
+            .session_activation
+            .can_reuse_installed(session.activation_generation, &session.activation_target)
+    {
+        return None;
+    }
+
+    let readiness = session.readiness();
+    let projection = if readiness.interactive {
+        None
+    } else {
+        session
+            .access(SessionRequirement::ProjectionRead)
+            .ok()
+            .and_then(|access| access.projection)
+    };
+    let (runtime, dependencies, project_context, cells) = match projection {
+        Some(projection) => (
+            projected_runtime_info(&projection),
+            projection.dependencies.clone(),
+            serde_json::to_value(&projection.runtime.project_context)
+                .unwrap_or(serde_json::Value::Null),
+            format_projected_cell_summaries(&projection.cells),
+        ),
+        None => (
+            read_runtime_info(&session.handle),
+            get_dependencies(&session.handle),
+            read_project_context(&session.handle),
+            format_cell_summaries(&session.handle),
+        ),
+    };
+
+    let mut response = serde_json::json!({
+        "notebook_id": session.notebook_id,
+        "connected": true,
+        "already_connected": true,
+        "runtime": runtime,
+        "dependencies": dependencies,
+        "project_context": project_context,
+        "cells": cells,
+    });
+    if let Some(path) = &session.notebook_path {
+        response["path"] = serde_json::json!(path);
+        response["notebook_path"] = serde_json::json!(path);
+    }
+    if let NotebookSessionSource::Hosted { domain } = &session.source {
+        response["source"] = serde_json::json!("hosted");
+        response["domain"] = serde_json::json!(domain);
+        response["target"] =
+            serde_json::json!(cloud::hosted_notebook_url(domain, &session.notebook_id));
+    }
+    add_progressive_session_fields(&mut response, session);
+    Some(notebook_session_response(response, &session.notebook_id))
 }
 
 async fn install_activated_session(
@@ -1355,6 +1445,10 @@ pub async fn open_notebook(
             )
         }
     };
+
+    if let Some(result) = reuse_active_session(server, &canonical_target).await {
+        return Ok(result);
+    }
 
     let mut lease = match server.session_activation.begin(canonical_target) {
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),

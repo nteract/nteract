@@ -384,18 +384,20 @@ impl McpProxy {
 
                     // Session rejoin is now the child's responsibility
                     // (`daemon_watch` consumes the seeded REJOIN env var on
-                    // its first `Connected` event). We still record whether
-                    // we handed off a target so reconnection messages are
-                    // informative.
-                    let session_rejoined = rejoin_target.is_some();
+                    // its first `Connected` event). A handed-off target means
+                    // rejoin was requested, not that the asynchronous child
+                    // rejoin has completed successfully.
+                    let session_rejoin_requested = rejoin_target.is_some();
                     let reconnection_event = match (old_version.as_deref(), new_version.as_deref())
                     {
                         (Some(old), Some(new)) if old != new => ReconnectionEvent::DaemonUpgrade {
                             old_version: old.to_string(),
                             new_version: new.to_string(),
-                            session_rejoined,
+                            session_rejoin_requested,
                         },
-                        _ => ReconnectionEvent::ChildRestart { session_rejoined },
+                        _ => ReconnectionEvent::ChildRestart {
+                            session_rejoin_requested,
+                        },
                     };
                     state.reconnection_message = Some(reconnection_event.message());
                     state.tool_list_changed_tx.clone()
@@ -1414,6 +1416,45 @@ mod tests {
         assert_eq!(
             state.last_notebook_id,
             Some("/tmp/second.ipynb".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn track_session_promotes_saved_notebook_from_uuid_to_path() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        let create: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "create_notebook",
+            "arguments": {}
+        }))
+        .unwrap();
+        proxy
+            .track_session(
+                &create,
+                &CallToolResult::success(vec![Content::text(
+                    r#"{"notebook_id":"38582ef2-a117-4ce6-83d2-20c2c45d33d7"}"#,
+                )]),
+            )
+            .await;
+
+        let save: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "save_notebook",
+            "arguments": { "path": "analysis.ipynb" }
+        }))
+        .unwrap();
+        proxy
+            .track_session(
+                &save,
+                &CallToolResult::success(vec![Content::text(
+                    r#"{"path":"/tmp/analysis.ipynb","notebook_id":"38582ef2-a117-4ce6-83d2-20c2c45d33d7"}"#,
+                )]),
+            )
+            .await;
+
+        let state = proxy.state.read().await;
+        assert_eq!(
+            state.last_notebook_id,
+            Some("/tmp/analysis.ipynb".to_string())
         );
     }
 
