@@ -59,6 +59,36 @@ enum WatchDecision {
     NoOp,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstalledSessionIdentity {
+    notebook_id: String,
+    activation_generation: u64,
+    activation_target: String,
+}
+
+impl InstalledSessionIdentity {
+    fn from_session(session: &NotebookSession) -> Self {
+        Self {
+            notebook_id: session.notebook_id.clone(),
+            activation_generation: session.activation_generation,
+            activation_target: session.activation_target.clone(),
+        }
+    }
+}
+
+fn should_clear_local_session(
+    current: &InstalledSessionIdentity,
+    expected: Option<&InstalledSessionIdentity>,
+) -> bool {
+    expected == Some(current)
+}
+
+fn retain_latest_disconnect_target(current: &mut Option<String>, newly_cleared: Option<String>) {
+    if let Some(target) = newly_cleared {
+        *current = Some(target);
+    }
+}
+
 /// Classify a `DaemonEvent` into the action the watch loop should take.
 ///
 /// `initial_target` is **not consumed** by `classify()`. The watch loop
@@ -143,6 +173,7 @@ fn classify(
 fn clear_stale_disconnect_state_for_active_session(
     has_session: bool,
     has_local_session: bool,
+    local_session_connected: bool,
     was_disconnected: &mut bool,
     disconnect_target: &mut Option<String>,
 ) -> bool {
@@ -161,6 +192,15 @@ fn clear_stale_disconnect_state_for_active_session(
     }
 
     if !has_local_session && *was_disconnected {
+        *was_disconnected = false;
+        cleared = true;
+    }
+
+    // A connected local session established after a daemon-loss latch is
+    // authoritative. This covers a tool connect that publishes between an
+    // Upgraded/Lagged observation and the next heartbeat. A stale old-daemon
+    // handle reports Disconnected and leaves the latch intact for replacement.
+    if has_local_session && local_session_connected && *was_disconnected {
         *was_disconnected = false;
         cleared = true;
     }
@@ -211,13 +251,22 @@ pub async fn watch(
             Err(broadcast::error::RecvError::Closed) => return 0,
         };
 
-        let (has_session, has_local_session) = {
+        let (has_session, local_session_identity, local_session_connected) = {
             let guard = session.read().await;
             (
                 guard.is_some(),
-                guard.as_ref().is_some_and(|session| !session.is_hosted()),
+                guard
+                    .as_ref()
+                    .filter(|session| !session.is_hosted())
+                    .map(InstalledSessionIdentity::from_session),
+                guard.as_ref().is_some_and(|session| {
+                    !session.is_hosted()
+                        && session.handle.status().connection
+                            == notebook_sync::status::ConnectionState::Connected
+                }),
             )
         };
+        let has_local_session = local_session_identity.is_some();
 
         let current_intent_epoch = session_intent_epoch.load(Ordering::Acquire);
         if current_intent_epoch != observed_intent_epoch {
@@ -249,6 +298,7 @@ pub async fn watch(
         if clear_stale_disconnect_state_for_active_session(
             has_session,
             has_local_session,
+            local_session_connected,
             &mut was_disconnected,
             &mut disconnect_target,
         ) {
@@ -304,6 +354,7 @@ pub async fn watch(
                     &session,
                     &last_session_drop,
                     &parked_sessions,
+                    local_session_identity.as_ref(),
                 )
                 .await;
                 if let Some(target) = target {
@@ -335,12 +386,14 @@ pub async fn watch(
                 // hanging on a dead DocHandle while we wait for the daemon
                 // to come back. Save the notebook target so we can rejoin
                 // when the daemon reconnects.
-                disconnect_target = clear_local_sessions_for_daemon_loss(
+                let newly_cleared = clear_local_sessions_for_daemon_loss(
                     &session,
                     &last_session_drop,
                     &parked_sessions,
+                    local_session_identity.as_ref(),
                 )
                 .await;
+                retain_latest_disconnect_target(&mut disconnect_target, newly_cleared);
             }
             WatchDecision::NoOp => {}
         }
@@ -355,13 +408,21 @@ async fn clear_local_sessions_for_daemon_loss(
     session: &Arc<RwLock<Option<NotebookSession>>>,
     last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
     parked_sessions: &Arc<RwLock<HashMap<String, NotebookSession>>>,
+    expected_local_session: Option<&InstalledSessionIdentity>,
 ) -> Option<String> {
     let old_session = {
         let mut guard = session.write().await;
-        if guard.as_ref().is_some_and(NotebookSession::is_hosted) {
-            None
-        } else {
+        let should_take = guard.as_ref().is_some_and(|session| {
+            !session.is_hosted()
+                && should_clear_local_session(
+                    &InstalledSessionIdentity::from_session(session),
+                    expected_local_session,
+                )
+        });
+        if should_take {
             guard.take()
+        } else {
+            None
         }
     };
 
@@ -1038,6 +1099,41 @@ mod tests {
                 WatchDecision::RestartLocalSession
             );
         }
+
+        /// A later disconnect with no installed session must not erase the
+        /// durable target saved by the first daemon loss.
+        #[test]
+        fn repeat_disconnect_preserves_saved_target(target in "[a-z0-9/_-]{1,64}") {
+            let mut current = Some(target.clone());
+            retain_latest_disconnect_target(&mut current, None);
+            prop_assert_eq!(current, Some(target));
+        }
+
+        /// Clear-before-rejoin may only remove the exact session observed
+        /// during event classification, never a concurrent replacement.
+        #[test]
+        fn daemon_loss_clear_requires_exact_session_identity(
+            notebook_id in "[a-z0-9-]{1,24}",
+            target in "[a-z0-9:/_-]{1,48}",
+            generation in any::<u64>(),
+            other_generation in any::<u64>(),
+        ) {
+            let current = InstalledSessionIdentity {
+                notebook_id: notebook_id.clone(),
+                activation_generation: generation,
+                activation_target: target.clone(),
+            };
+            let exact = current.clone();
+            let replacement = InstalledSessionIdentity {
+                notebook_id,
+                activation_generation: other_generation,
+                activation_target: format!("{target}:replacement"),
+            };
+
+            prop_assert!(should_clear_local_session(&current, Some(&exact)));
+            prop_assert!(!should_clear_local_session(&replacement, Some(&exact)));
+            prop_assert!(!should_clear_local_session(&current, None));
+        }
     }
 
     /// When rejoin fails (returns false), initial_target must survive for
@@ -1163,6 +1259,7 @@ mod tests {
         assert!(clear_stale_disconnect_state_for_active_session(
             true,
             false,
+            false,
             &mut was_disconnected,
             &mut disconnect_target,
         ));
@@ -1195,6 +1292,7 @@ mod tests {
         assert!(clear_stale_disconnect_state_for_active_session(
             true,
             true,
+            true,
             &mut was_disconnected,
             &mut disconnect_target,
         ));
@@ -1211,5 +1309,37 @@ mod tests {
             ),
             WatchDecision::NoOp
         );
+    }
+
+    #[test]
+    fn connected_local_publication_clears_targetless_loss_latch() {
+        let mut was_disconnected = true;
+        let mut disconnect_target = None;
+
+        assert!(clear_stale_disconnect_state_for_active_session(
+            true,
+            true,
+            true,
+            &mut was_disconnected,
+            &mut disconnect_target,
+        ));
+        assert!(!was_disconnected);
+        assert_eq!(disconnect_target, None);
+    }
+
+    #[test]
+    fn disconnected_local_publication_keeps_targetless_loss_latch() {
+        let mut was_disconnected = true;
+        let mut disconnect_target = None;
+
+        assert!(!clear_stale_disconnect_state_for_active_session(
+            true,
+            true,
+            false,
+            &mut was_disconnected,
+            &mut disconnect_target,
+        ));
+        assert!(was_disconnected);
+        assert_eq!(disconnect_target, None);
     }
 }
