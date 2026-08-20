@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use runtimed_client::daemon_connection::{DaemonConnection, DaemonEvent};
+use runtimed_client::singleton::query_daemon_info;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
@@ -101,14 +102,6 @@ impl RecoveryState {
     }
 }
 
-fn event_live_info(event: &DaemonEvent) -> Option<&runtimed_client::singleton::DaemonInfo> {
-    match event {
-        DaemonEvent::Connected { info } => Some(info),
-        DaemonEvent::Upgraded { current, .. } => Some(current),
-        DaemonEvent::Disconnected => None,
-    }
-}
-
 async fn resync_live_info<F, Fut>(
     delivery_was_lagged: bool,
     read: F,
@@ -121,6 +114,10 @@ where
         info!("Re-reading daemon identity after lagged event delivery");
     }
     read().await
+}
+
+fn event_confirms_daemon_absence(event: Option<&DaemonEvent>) -> bool {
+    matches!(event, Some(DaemonEvent::Disconnected))
 }
 
 fn daemon_binding_matches(
@@ -274,17 +271,20 @@ pub async fn watch(resources: WatchResources) -> i32 {
             recovery.observe_explicit_intent(current_intent_epoch);
         }
 
-        if let Some(info) = event.as_ref().and_then(event_live_info) {
-            if recovery.live_version_requires_exit(&info.version) {
-                info!(version = %info.version, "Daemon version differs from MCP startup version");
-                return EXIT_DAEMON_UPGRADED;
-            }
+        // The event stream is only a wake-up signal. Query the socket for the
+        // identity used by reconciliation so a queued event cannot make a
+        // decision from the supervisor's up-to-10-second cached heartbeat.
+        // This direct read is also mandatory after Lagged.
+        let live_info =
+            resync_live_info(event.is_none(), || query_daemon_info(socket_path.clone())).await;
+        if live_info.is_none() && !event_confirms_daemon_absence(event.as_ref()) {
+            // A failed one-shot identity query is not proof that a healthy
+            // daemon disappeared. Only an explicit supervisor disconnect may
+            // reconcile local handles against absence; otherwise wait for the
+            // next event and preserve the current session.
+            warn!("Could not verify live daemon identity; deferring session reconciliation");
+            continue;
         }
-
-        // `info()` is the resynchronization authority for every event, and is
-        // mandatory after Lagged. It prevents a delayed event from making a
-        // decision about an already-replaced daemon.
-        let live_info = resync_live_info(event.is_none(), || daemon_conn.info()).await;
         if let Some(info) = live_info.as_ref() {
             if recovery.live_version_requires_exit(&info.version) {
                 info!(version = %info.version, "Live daemon version differs from MCP startup version");
@@ -319,7 +319,6 @@ pub async fn watch(resources: WatchResources) -> i32 {
         info!(%target, "Rejoining notebook against current daemon incarnation");
         if rejoin(
             RejoinResources {
-                daemon_conn: &daemon_conn,
                 socket_path: &socket_path,
                 session: &session,
                 peer_label: &peer_label,
@@ -392,7 +391,6 @@ async fn publish_rejoined_session<S>(
 /// failure or a daemon-incarnation change so the recovery target survives for
 /// the next live observation.
 struct RejoinResources<'a> {
-    daemon_conn: &'a DaemonConnection,
     socket_path: &'a Path,
     session: &'a Arc<RwLock<Option<NotebookSession>>>,
     peer_label: &'a Arc<RwLock<String>>,
@@ -407,7 +405,6 @@ async fn rejoin(
     expected_intent_epoch: u64,
 ) -> bool {
     let RejoinResources {
-        daemon_conn,
         socket_path,
         session,
         peer_label,
@@ -470,8 +467,7 @@ async fn rejoin(
             info!("Automatic notebook rejoin cancelled by explicit session intent");
             return true;
         }
-        if daemon_conn
-            .info()
+        if query_daemon_info(socket_path.to_path_buf())
             .await
             .as_ref()
             .map(DaemonIncarnation::from)
@@ -537,8 +533,7 @@ async fn rejoin(
 
                 // Sample again after the entire connect/readiness operation.
                 // A mismatch leaves no local handle eligible for publication.
-                if daemon_conn
-                    .info()
+                if query_daemon_info(socket_path.to_path_buf())
                     .await
                     .as_ref()
                     .map(DaemonIncarnation::from)
@@ -923,6 +918,14 @@ mod tests {
     fn lagged_live_version_mismatch_exits() {
         let mut state = RecoveryState::new(Some("2.7.0".to_string()), 0);
         assert!(state.live_version_requires_exit("2.7.1"));
+    }
+
+    #[test]
+    fn failed_identity_query_is_destructive_only_after_explicit_disconnect() {
+        assert!(!event_confirms_daemon_absence(None));
+        assert!(event_confirms_daemon_absence(Some(
+            &DaemonEvent::Disconnected
+        )));
     }
 
     #[test]

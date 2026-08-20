@@ -72,8 +72,8 @@ fn local_connection_scope_for_path(path: Option<&Path>) -> nteract_identity::Con
     }
 }
 
-fn registry_binding_has_recovery_source(source_path: &Path, recovery_path: &Path) -> bool {
-    source_path.is_file() || recovery_path.is_file()
+fn registry_binding_has_source_file(source_path: &Path) -> bool {
+    source_path.is_file()
 }
 
 /// Configuration for the pool daemon.
@@ -3055,21 +3055,30 @@ impl Daemon {
                         // state (the guard is part of `found`).
                         found
                     } else if let Some(canonical) = self.notebook_registry.lookup_path(parsed) {
-                        if !registry_binding_has_recovery_source(&canonical, &recovery_path) {
+                        if !registry_binding_has_source_file(&canonical) {
                             // A registry row is an identity binding, not notebook
                             // content. In particular, do not fall through to the
                             // legacy UUID-keyed `.automerge` mirror for a saved
-                            // notebook whose file and causal journal are both
-                            // gone: that mirror is unvalidated and may be stale.
+                            // notebook whose file is gone: that mirror is
+                            // unvalidated and may be stale. A recovery journal is
+                            // preserved, but finalizing a file-backed generation
+                            // still requires the matching source bytes.
+                            let message = if recovery_path.is_file() {
+                                format!(
+                                    "Notebook {parsed} is unavailable because its saved source file is missing; the recovery journal was preserved"
+                                )
+                            } else {
+                                format!(
+                                    "Notebook {parsed} is no longer available (not found or evicted)"
+                                )
+                            };
                             info!(
-                                "[runtimed] NotebookSync for {parsed}: registry binding has no source file or recovery journal — refusing (gone)"
+                                "[runtimed] NotebookSync for {parsed}: registry binding has no source file — refusing"
                             );
                             let (_reader, mut writer) = tokio::io::split(stream);
                             send_error_response(
                                 &mut writer,
-                                format!(
-                                    "Notebook {parsed} is no longer available (not found or evicted)"
-                                ),
+                                message,
                                 typed_bootstrap.unwrap_or(false),
                             )
                             .await?;
@@ -7747,19 +7756,19 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn registry_binding_requires_file_or_recovery_journal() {
+    fn registry_binding_requires_source_file() {
         let temp_dir = TempDir::new().unwrap();
         let source = temp_dir.path().join("moved.ipynb");
         let recovery = temp_dir.path().join("room.recovery");
 
-        assert!(!registry_binding_has_recovery_source(&source, &recovery));
+        assert!(!registry_binding_has_source_file(&source));
 
         std::fs::write(&source, b"{}").unwrap();
-        assert!(registry_binding_has_recovery_source(&source, &recovery));
+        assert!(registry_binding_has_source_file(&source));
 
         std::fs::remove_file(&source).unwrap();
         std::fs::write(&recovery, b"journal").unwrap();
-        assert!(registry_binding_has_recovery_source(&source, &recovery));
+        assert!(!registry_binding_has_source_file(&source));
     }
 
     #[test]

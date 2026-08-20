@@ -58,10 +58,17 @@ impl ChildRestartReason {
 
 fn circuit_breaker_allows_restart(
     circuit_breaker: &mut CircuitBreaker,
+    upgrade_handoff_limiter: &mut CircuitBreaker,
     child_was_dead: bool,
     reason: ChildRestartReason,
 ) -> bool {
-    child_was_dead || reason == ChildRestartReason::DaemonUpgrade || circuit_breaker.record_crash()
+    if child_was_dead {
+        return true;
+    }
+    match reason {
+        ChildRestartReason::DaemonUpgrade => upgrade_handoff_limiter.record_crash(),
+        ChildRestartReason::UnexpectedOrRequested => circuit_breaker.record_crash(),
+    }
 }
 
 /// Extract the daemon version from a freshly-initialized child's MCP
@@ -125,6 +132,10 @@ pub struct ProxyState {
     pub restart_count: u32,
     /// Circuit breaker for crash detection.
     pub circuit_breaker: CircuitBreaker,
+    /// Independent rate limit for intentional upgrade handoffs. Upgrade exits
+    /// do not consume the crash budget, but a flapping installation must not
+    /// respawn children forever in a tight loop.
+    upgrade_handoff_limiter: CircuitBreaker,
     /// Cached child tool definitions, loaded from disk at startup.
     pub cached_tools: Option<Vec<Tool>>,
     /// Last active notebook ID for auto-rejoin after restart.
@@ -181,6 +192,7 @@ impl McpProxy {
                 child_generation: 0,
                 restart_count: 0,
                 circuit_breaker: CircuitBreaker::new(),
+                upgrade_handoff_limiter: CircuitBreaker::new(),
                 cached_tools,
                 last_notebook_id: None,
                 upstream_name: "unknown".to_string(),
@@ -311,7 +323,20 @@ impl McpProxy {
 
             // Exit 75 is the child's intentional handoff protocol for a
             // daemon upgrade. It must not consume the crash budget.
-            if !circuit_breaker_allows_restart(&mut state.circuit_breaker, was_dead, reason) {
+            let restart_allowed = {
+                let ProxyState {
+                    circuit_breaker,
+                    upgrade_handoff_limiter,
+                    ..
+                } = &mut *state;
+                circuit_breaker_allows_restart(
+                    circuit_breaker,
+                    upgrade_handoff_limiter,
+                    was_dead,
+                    reason,
+                )
+            };
+            if !restart_allowed {
                 let msg = format!(
                     "The nteract MCP server failed after repeated restarts. \
                      Restart your Claude session so a fresh MCP connection \
@@ -815,7 +840,9 @@ impl McpProxy {
 
     /// Reset the circuit breaker (used by supervisor after manual restart or file change).
     pub async fn reset_circuit_breaker(&self) {
-        self.state.write().await.circuit_breaker.reset();
+        let mut state = self.state.write().await;
+        state.circuit_breaker.reset();
+        state.upgrade_handoff_limiter.reset();
     }
 
     /// Get the number of child restarts since proxy creation.
@@ -1376,8 +1403,13 @@ mod tests {
             let mut state = proxy.state.write().await;
             for _ in 0..10 {
                 state.circuit_breaker.record_crash();
+                state.upgrade_handoff_limiter.record_crash();
             }
             assert!(!state.circuit_breaker.record_crash(), "should be tripped");
+            assert!(
+                !state.upgrade_handoff_limiter.record_crash(),
+                "upgrade limiter should be tripped"
+            );
         }
 
         proxy.reset_circuit_breaker().await;
@@ -1387,6 +1419,10 @@ mod tests {
             assert!(
                 state.circuit_breaker.record_crash(),
                 "should allow crashes after reset"
+            );
+            assert!(
+                state.upgrade_handoff_limiter.record_crash(),
+                "should allow upgrade handoffs after reset"
             );
         }
     }
@@ -1410,26 +1446,36 @@ mod tests {
     #[test]
     fn intentional_upgrade_exits_do_not_consume_crash_budget() {
         let mut circuit_breaker = CircuitBreaker::new();
+        let mut upgrade_handoff_limiter = CircuitBreaker::new();
 
-        for _ in 0..20 {
+        for _ in 0..5 {
             assert!(circuit_breaker_allows_restart(
                 &mut circuit_breaker,
+                &mut upgrade_handoff_limiter,
                 false,
                 ChildRestartReason::DaemonUpgrade,
             ));
         }
+        assert!(!circuit_breaker_allows_restart(
+            &mut circuit_breaker,
+            &mut upgrade_handoff_limiter,
+            false,
+            ChildRestartReason::DaemonUpgrade,
+        ));
 
-        // The full five-crash budget remains after any number of intentional
-        // upgrade handoffs; the sixth unexpected restart trips the breaker.
+        // Exhausting the independent handoff limiter leaves the full crash
+        // budget untouched; the sixth unexpected restart trips that breaker.
         for _ in 0..5 {
             assert!(circuit_breaker_allows_restart(
                 &mut circuit_breaker,
+                &mut upgrade_handoff_limiter,
                 false,
                 ChildRestartReason::UnexpectedOrRequested,
             ));
         }
         assert!(!circuit_breaker_allows_restart(
             &mut circuit_breaker,
+            &mut upgrade_handoff_limiter,
             false,
             ChildRestartReason::UnexpectedOrRequested,
         ));

@@ -236,7 +236,7 @@ fails the connection directly.
 3. Watch loop compares the live version with its startup baseline and exits with `EX_TEMPFAIL` (75).
 4. Proxy's child monitor sees the transport close, calls `restart_child()`. Re-resolves the child binary (picks up new symlink target after upgrade), seeds `NTERACT_MCP_REJOIN_NOTEBOOK = <last_notebook_id>`, spawns the new child.
 5. New child's watch loop sees the handoff target. On the first live daemon observation it reconciles the empty slot, runs recovery against that daemon incarnation, and installs a freshly stamped `NotebookSession` if no tool activation won meanwhile.
-6. Supervisor detects the daemon-version change across the child boundary (compares `ServerInfo.title` of old vs new child) and stamps a reconnection banner. The actual string is `Daemon upgraded (2.1.2 -> 2.1.3), session reconnected` (`crates/runt-mcp-proxy/src/version.rs:35`), and it fires whenever `rejoin_target.is_some()`, before the rejoin's success is known.
+6. Supervisor detects the daemon-version change across the child boundary (compares `ServerInfo.title` of old vs new child) and stamps a reconnection banner. The banner says `Daemon upgraded (2.1.2 -> 2.1.3), session reconnect requested` when a handoff target was supplied; it intentionally reports the request rather than claiming the asynchronous rejoin already succeeded.
 7. The agent's next tool result has the banner prepended. The agent sees one message; underneath, the child has been completely replaced.
 
 ### Last peer leaves, comes back during teardown

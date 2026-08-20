@@ -4196,6 +4196,84 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
     stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
 }
 
+/// A recovery journal is preserved when the last saved `.ipynb` disappears,
+/// but file-backed recovery cannot validate/finalize without the source bytes.
+/// UUID attach must refuse clearly instead of exposing a disconnected room.
+#[tokio::test]
+async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let saved_path = temp_dir.path().join("journal-only-source.ipynb");
+    write_test_ipynb(
+        &saved_path,
+        &[("saved-cell", "code", "saved_value = 1", vec![])],
+    );
+
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let mut daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
+        .await
+        .expect("saved notebook should open");
+    let notebook_id = opened.info.notebook_id.clone();
+    assert_session_ready(&opened.handle, "journal-only setup").await;
+    let cell = opened
+        .handle
+        .get_cells()
+        .into_iter()
+        .find(|cell| cell.id == "saved-cell")
+        .expect("saved cell should load");
+    opened
+        .handle
+        .update_source(&cell.id, "journal_only_value = 2")
+        .unwrap();
+    opened.handle.confirm_sync().await.unwrap();
+    drop(opened);
+    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+
+    let persist_path = config
+        .notebook_docs_dir
+        .join(notebook_doc::notebook_doc_filename(&notebook_id));
+    let journal_path = persist_path.with_extension("recovery");
+    assert!(
+        journal_path.is_file(),
+        "shutdown should flush the recovery journal"
+    );
+    std::fs::remove_file(&saved_path).unwrap();
+
+    let restarted =
+        Daemon::new_for_test(replacement_config(config, &temp_dir, "journal-only")).unwrap();
+    let mut restarted_handle = tokio::spawn(async move {
+        restarted.run().await.ok();
+    });
+    let restarted_pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&restarted_pool).await);
+
+    match connect::connect(socket_path, notebook_id.clone(), "rejoin").await {
+        Err(notebook_sync::SyncError::NotebookUnavailable(ref message))
+            if message.contains("saved source file is missing")
+                && message.contains("recovery journal was preserved") => {}
+        Err(other) => panic!("journal-only UUID returned an unexpected error: {other:?}"),
+        Ok(_) => panic!("journal-only UUID should be refused, but it created a room"),
+    }
+    assert!(
+        journal_path.is_file(),
+        "refusal must preserve the recovery journal"
+    );
+    let rooms = restarted_pool.list_rooms().await.unwrap();
+    assert!(
+        !rooms.iter().any(|room| room.notebook_id == notebook_id),
+        "journal-only refusal must not publish a disconnected room: {rooms:?}"
+    );
+
+    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+}
+
 /// A UUID-keyed legacy `.automerge` mirror is not authoritative for a saved
 /// notebook. With a registry row and source file but no recovery journal, UUID
 /// attach must import the current `.ipynb` rather than silently serve the stale

@@ -1,5 +1,6 @@
 //! Session management tools: list, join, open notebooks.
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -27,12 +28,43 @@ use crate::NteractMcp;
 // must be longer so the daemon can return its typed current state instead of
 // the client racing it with an unclassified timeout.
 const MCP_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(125);
+const DAEMON_INCARNATION_SAMPLE_ATTEMPTS: usize = 3;
+const DAEMON_INCARNATION_SAMPLE_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+async fn sample_daemon_incarnation_with_retry<F, Fut>(
+    mut query: F,
+    retry_delay: Duration,
+) -> Option<DaemonIncarnation>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<DaemonIncarnation>>,
+{
+    for attempt in 0..DAEMON_INCARNATION_SAMPLE_ATTEMPTS {
+        if let Some(incarnation) = query().await {
+            return Some(incarnation);
+        }
+        if attempt + 1 < DAEMON_INCARNATION_SAMPLE_ATTEMPTS {
+            tokio::time::sleep(retry_delay).await;
+        }
+    }
+    None
+}
 
 async fn current_daemon_incarnation(server: &NteractMcp) -> Option<DaemonIncarnation> {
-    runtimed_client::singleton::query_daemon_info(server.socket_path.clone())
-        .await
-        .as_ref()
-        .map(DaemonIncarnation::from)
+    let socket_path = server.socket_path.clone();
+    sample_daemon_incarnation_with_retry(
+        move || {
+            let socket_path = socket_path.clone();
+            async move {
+                runtimed_client::singleton::query_daemon_info(socket_path)
+                    .await
+                    .as_ref()
+                    .map(DaemonIncarnation::from)
+            }
+        },
+        DAEMON_INCARNATION_SAMPLE_RETRY_DELAY,
+    )
+    .await
 }
 
 fn unchanged_daemon_incarnation(
@@ -1950,6 +1982,20 @@ mod tests {
             unchanged_daemon_incarnation(None, Some(test_incarnation(42))),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn daemon_incarnation_sample_retries_transient_unavailability() {
+        let expected = test_incarnation(42);
+        let mut samples = std::collections::VecDeque::from([None, None, Some(expected.clone())]);
+        let observed = sample_daemon_incarnation_with_retry(
+            || std::future::ready(samples.pop_front().unwrap()),
+            Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(observed, Some(expected));
+        assert!(samples.is_empty());
     }
 
     #[test]
