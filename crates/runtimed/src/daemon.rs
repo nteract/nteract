@@ -39,6 +39,43 @@ use crate::{default_blob_store_dir, is_pool_env_dir, is_within_cache_dir, EnvTyp
 use notebook_protocol::connection::{self, Handshake};
 use runtimed_client::singleton::DaemonInfo;
 
+fn existing_file_allows_write(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.permissions().readonly() => return false,
+        Ok(_) => {}
+        Err(_) => return false,
+    }
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: `path` is a valid NUL-terminated C string created from the
+        // OS path bytes above. `access` does not retain it.
+        unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn local_connection_scope_for_path(path: Option<&Path>) -> nteract_identity::ConnectionScope {
+    match path {
+        Some(path) if path.is_file() && !existing_file_allows_write(path) => {
+            nteract_identity::ConnectionScope::Viewer
+        }
+        _ => nteract_identity::ConnectionScope::Owner,
+    }
+}
+
+fn registry_binding_has_recovery_source(source_path: &Path, recovery_path: &Path) -> bool {
+    source_path.is_file() || recovery_path.is_file()
+}
+
 /// Configuration for the pool daemon.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -3002,6 +3039,9 @@ impl Daemon {
                 // the resident-room cache is meant to preserve.
                 let parsed_notebook_id = uuid::Uuid::parse_str(&notebook_id).ok();
                 let (room, _room_guard) = if let Some(parsed) = parsed_notebook_id {
+                    let persisted_doc_path =
+                        docs_dir.join(crate::paths::notebook_doc_filename(&parsed.to_string()));
+                    let recovery_path = persisted_doc_path.with_extension("recovery");
                     // NotebookSync by UUID is attach-only (see the notebook crate's
                     // `Attach` intent: "attach to a room the daemon has already
                     // created. No create, no load."). Attach to a resident room, or
@@ -3014,7 +3054,13 @@ impl Daemon {
                         // reaper cannot remove it between this check and steady
                         // state (the guard is part of `found`).
                         found
-                    } else if let Some(canonical) = self.notebook_registry.lookup_path(parsed) {
+                    } else if let Some(canonical) = self
+                        .notebook_registry
+                        .lookup_path(parsed)
+                        .filter(|canonical| {
+                            registry_binding_has_recovery_source(canonical, &recovery_path)
+                        })
+                    {
                         // A notebook created untitled keeps its UUID when saved.
                         // After a daemon replacement its transient DocHandle and
                         // UUID-keyed room may be gone, but the persistent registry
@@ -3049,10 +3095,7 @@ impl Daemon {
                             },
                         )
                         .await?
-                    } else if docs_dir
-                        .join(crate::paths::notebook_doc_filename(&parsed.to_string()))
-                        .exists()
-                    {
+                    } else if persisted_doc_path.exists() {
                         // Not resident but recoverable: reload from the persisted doc.
                         crate::notebook_sync_server::get_or_create_room_result(
                             &self.notebook_rooms,
@@ -3188,8 +3231,14 @@ impl Daemon {
 
                 // Convert working_dir String to PathBuf
                 let working_dir_path = working_dir.map(std::path::PathBuf::from);
+                let connection_scope =
+                    local_connection_scope_for_path(room.file_binding.path().await.as_deref());
                 let connection_identity =
-                    crate::notebook_sync_server::RoomConnectionIdentity::local(operator).await?;
+                    crate::notebook_sync_server::RoomConnectionIdentity::local_with_scope(
+                        operator,
+                        connection_scope,
+                    )
+                    .await?;
                 crate::notebook_sync_server::handle_notebook_sync_connection(
                     reader,
                     writer,
@@ -3998,30 +4047,6 @@ impl Daemon {
             }
         };
 
-        fn existing_file_allows_write(path: &std::path::Path) -> bool {
-            match std::fs::metadata(path) {
-                Ok(metadata) if metadata.permissions().readonly() => return false,
-                Ok(_) => {}
-                Err(_) => return false,
-            }
-            #[cfg(unix)]
-            {
-                use std::ffi::CString;
-                use std::os::unix::ffi::OsStrExt;
-
-                let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-                    return false;
-                };
-                // SAFETY: `path` is a valid NUL-terminated C string created
-                // from the OS path bytes above. `access` does not retain it.
-                unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
-            }
-            #[cfg(not(unix))]
-            {
-                true
-            }
-        }
-
         // Derive notebook_id from path
         // For existing files: canonicalize for stable cross-process identity
         // For new files: use absolute path (canonicalize would fail)
@@ -4048,11 +4073,7 @@ impl Daemon {
         };
 
         let connection_scope =
-            if file_exists && !existing_file_allows_write(&PathBuf::from(&notebook_id)) {
-                nteract_identity::ConnectionScope::Viewer
-            } else {
-                nteract_identity::ConnectionScope::Owner
-            };
+            local_connection_scope_for_path(file_exists.then(|| Path::new(&notebook_id)));
         let connection_identity =
             crate::notebook_sync_server::RoomConnectionIdentity::local_with_scope(
                 operator.clone(),
@@ -7710,6 +7731,44 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn registry_binding_requires_file_or_recovery_journal() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("moved.ipynb");
+        let recovery = temp_dir.path().join("room.recovery");
+
+        assert!(!registry_binding_has_recovery_source(&source, &recovery));
+
+        std::fs::write(&source, b"{}").unwrap();
+        assert!(registry_binding_has_recovery_source(&source, &recovery));
+
+        std::fs::remove_file(&source).unwrap();
+        std::fs::write(&recovery, b"journal").unwrap();
+        assert!(registry_binding_has_recovery_source(&source, &recovery));
+    }
+
+    #[test]
+    fn read_only_file_connections_use_viewer_scope() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("read-only.ipynb");
+        std::fs::write(&path, b"{}").unwrap();
+        let original_permissions = std::fs::metadata(&path).unwrap().permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        assert_eq!(
+            local_connection_scope_for_path(Some(&path)),
+            nteract_identity::ConnectionScope::Viewer
+        );
+        assert_eq!(
+            local_connection_scope_for_path(None),
+            nteract_identity::ConnectionScope::Owner
+        );
+
+        std::fs::set_permissions(&path, original_permissions).unwrap();
+    }
 
     #[test]
     fn daemon_defaults_preapprove_official_conda_sources() {

@@ -150,11 +150,11 @@ The cost: rejoin can do all the work (connect, initial sync, peer announce) and 
 |----------|---------|
 | `Exit(75)` | `Upgraded` with version change. Proxy will respawn with new binary. |
 | `RejoinInitial(target)` | `Connected`/`Upgraded` with `initial_target` set (proxy handoff), OR `Connected`/`Upgraded` with `disconnect_target` set (session was cleared on disconnect). |
-| `RejoinContinuation` | `Connected` after `Disconnected` with session still live, OR `Upgraded` (same version) with session still live. |
-| `MarkDisconnected` | `Disconnected` event. |
+| `RestartLocalSession` | `Connected` after daemon loss with a local session still installed, OR `Upgraded` (same version) with a local session installed. The loop clears the stale handle before rejoining. |
+| `MarkDisconnected` | `Disconnected`, or a same-version `Upgraded` observed while no session is installed. The latter preserves a repair latch for a concurrent connect that may still publish an old-daemon handle. |
 | `NoOp` | Everything else, notably `Connected` heartbeats. |
 
-The function is pure so the watch loop's interleavings are testable in isolation: the heartbeat-not-rejoin invariant (Decision 6), the proxy-handoff-clears-after-success rule, the disconnect-target priority, all live in the table.
+The function is pure so the watch loop's interleavings are testable in isolation: the heartbeat-not-rejoin invariant (Decision 6), clear-before-rejoin after event loss, the proxy-handoff-clears-after-success rule, and disconnect-target priority all live in the table. Property tests vary the disconnect latch and saved-target combinations around the two key invariants: healthy heartbeats never replace an installed handle, while daemon-loss reconnects always do.
 
 **The watch loop does the side effects.** It clears `initial_target` only after `rejoin()` returns `true` (success, including "session cleared because room was evicted"). It bumps `was_disconnected` to true on lag (`broadcast::error::RecvError::Lagged`) because a dropped batch may have contained the `Disconnected`. It stamps `last_session_drop` and clears `parked_sessions` when the daemon goes away (their `DocHandle`s are dead too).
 
@@ -169,9 +169,9 @@ The classify/act split is the same pattern as our other state machines (cell exe
 3. Drop the old peer connection.
 4. Decrement `active_peers` from 2 to 1.
 
-That sequence resets the room's eviction timer (the daemon zeroes `last_kernel_torn_down_at` on any peer count increase). With heartbeats every 10 s, an idle agent connection keeps a room alive forever. The fix (#2088) is the `was_disconnected` flag: a `Connected` only triggers a continuation rejoin if we previously saw a `Disconnected`.
+That sequence resets the room's eviction timer (the daemon zeroes `last_kernel_torn_down_at` on any peer count increase). With heartbeats every 10 s, an idle agent connection keeps a room alive forever. The fix (#2088) is the `was_disconnected` flag: a `Connected` only triggers stale-session replacement if we previously saw a daemon loss.
 
-This is structurally a workaround for `DaemonConnection`'s API conflating "I'm still here" with "I just came back." A cleaner shape would be a separate `Heartbeat` event variant, but the cost of the workaround is one boolean and a regression test.
+This is structurally a workaround for `DaemonConnection`'s API conflating "I'm still here" with "I just came back." A cleaner shape would be a separate `Heartbeat` event variant, but the cost of the workaround is one boolean and focused state-machine tests.
 
 ## Decision 7: Room is the durable entity; sessions and kernels are not
 

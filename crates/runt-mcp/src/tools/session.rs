@@ -8,6 +8,7 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use notebook_sync::status::ConnectionState;
 use runtimed_client::client::{ClientError, PoolClient};
 use runtimed_client::protocol::{NotebookCellProjection, NotebookProjection};
 
@@ -638,6 +639,14 @@ fn session_matches_target(session: &NotebookSession, requested: &CanonicalNotebo
     }
 }
 
+fn has_reusable_replica(
+    connection: ConnectionState,
+    interactive: bool,
+    projection_ready: bool,
+) -> bool {
+    connection == ConnectionState::Connected && (interactive || projection_ready)
+}
+
 /// Return the active same-target session without reconnecting its daemon peer.
 ///
 /// The connect tool is declared idempotent. Replaying the activation after a
@@ -659,6 +668,13 @@ async fn reuse_active_session(
     }
 
     let readiness = session.readiness();
+    if !has_reusable_replica(
+        session.handle.status().connection,
+        readiness.interactive,
+        readiness.projection_ready,
+    ) {
+        return None;
+    }
     let projection = if readiness.interactive {
         None
     } else {
@@ -1863,6 +1879,33 @@ mod tests {
             .expect("tool response text")
             .text
             .as_str()
+    }
+
+    #[test]
+    fn disconnected_session_is_not_reusable_even_with_old_readiness() {
+        assert!(!has_reusable_replica(
+            ConnectionState::Disconnected,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn connected_progressive_projection_remains_reusable() {
+        assert!(has_reusable_replica(
+            ConnectionState::Connected,
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn connected_session_without_readable_state_reconnects() {
+        assert!(!has_reusable_replica(
+            ConnectionState::Connected,
+            false,
+            false,
+        ));
     }
 
     /// When package_manager is explicitly provided, it takes precedence

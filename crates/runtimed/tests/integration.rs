@@ -4229,6 +4229,142 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
     }
 }
 
+/// A durable UUID-to-path binding is not itself recoverable notebook content.
+/// If both the source file and recovery state are gone after replacement, UUID
+/// attach must return the existing typed "gone" refusal without creating a
+/// failed-import phantom room.
+#[tokio::test]
+async fn test_notebook_sync_refuses_stale_registry_path_without_phantom() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let notebook_path = temp_dir.path().join("removed-after-open.ipynb");
+    write_test_ipynb(
+        &notebook_path,
+        &[("saved-cell", "code", "still_here = True", vec![])],
+    );
+
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let mut daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), notebook_path.clone(), "open")
+        .await
+        .expect("saved notebook should open");
+    let notebook_id = opened.info.notebook_id.clone();
+    assert_session_ready(&opened.handle, "initial stale-registry setup").await;
+    drop(opened);
+
+    pool_client.shutdown().await.ok();
+    if tokio::time::timeout(Duration::from_secs(2), &mut daemon_handle)
+        .await
+        .is_err()
+    {
+        daemon_handle.abort();
+        let _ = daemon_handle.await;
+    }
+
+    std::fs::remove_file(&notebook_path).unwrap();
+    if config.notebook_docs_dir.exists() {
+        std::fs::remove_dir_all(&config.notebook_docs_dir).unwrap();
+    }
+    std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
+
+    let mut restarted_config = config;
+    restarted_config.lock_dir = Some(temp_dir.path().join("restart-lock-stale-registry"));
+    restarted_config.file_claims_dir = Some(temp_dir.path().join("restart-claims-stale-registry"));
+    let restarted = Daemon::new_for_test(restarted_config).unwrap();
+    let mut restarted_handle = tokio::spawn(async move {
+        restarted.run().await.ok();
+    });
+    let restarted_pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&restarted_pool).await);
+
+    match connect::connect(socket_path, notebook_id.clone(), "rejoin").await {
+        Err(notebook_sync::SyncError::NotebookUnavailable(ref message))
+            if message.contains("no longer available") => {}
+        Err(other) => panic!("stale registry UUID returned an unexpected error: {other:?}"),
+        Ok(_) => panic!("stale registry UUID should be refused, but it created a room"),
+    }
+    let rooms = restarted_pool.list_rooms().await.unwrap();
+    assert!(
+        !rooms.iter().any(|room| room.notebook_id == notebook_id),
+        "stale registry refusal must not create a phantom room: {rooms:?}"
+    );
+
+    restarted_pool.shutdown().await.ok();
+    if tokio::time::timeout(Duration::from_secs(2), &mut restarted_handle)
+        .await
+        .is_err()
+    {
+        restarted_handle.abort();
+        let _ = restarted_handle.await;
+    }
+}
+
+/// UUID attach must derive the same read-only capability as OpenNotebook.
+/// Otherwise reconnecting a read-only file by its stable id silently upgrades
+/// the peer from Viewer to Owner.
+#[tokio::test]
+async fn test_notebook_sync_uuid_attach_preserves_read_only_scope() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let notebook_path = temp_dir.path().join("read-only-reattach.ipynb");
+    write_test_ipynb(
+        &notebook_path,
+        &[("saved-cell", "code", "read_only = True", vec![])],
+    );
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), notebook_path.clone(), "open")
+        .await
+        .expect("saved notebook should open");
+    let notebook_id = opened.info.notebook_id.clone();
+    assert_session_ready(&opened.handle, "read-only UUID setup").await;
+
+    let original_permissions = std::fs::metadata(&notebook_path).unwrap().permissions();
+    let mut permissions = original_permissions.clone();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&notebook_path, permissions).unwrap();
+
+    let attached = connect::connect(socket_path, notebook_id, "reattach")
+        .await
+        .expect("read-only notebook should remain readable by UUID");
+    let response = attached
+        .handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: None,
+        })
+        .await
+        .expect("viewer refusal should be a correlated response");
+    assert!(
+        matches!(
+            response,
+            NotebookResponse::Error { ref error }
+                if error.contains("not allowed for viewer connections")
+        ),
+        "UUID attach should retain Viewer scope, got {response:?}"
+    );
+
+    std::fs::set_permissions(&notebook_path, original_permissions).unwrap();
+
+    drop(attached);
+    drop(opened);
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 #[tokio::test]
 async fn test_pool_size_config_honored() {
     let temp_dir = TempDir::new().unwrap();

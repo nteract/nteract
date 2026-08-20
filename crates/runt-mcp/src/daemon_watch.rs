@@ -48,15 +48,12 @@ enum WatchDecision {
     /// Rejoin using the provided initial target (UUID or file path) from
     /// `NTERACT_MCP_REJOIN_NOTEBOOK` — for the restarted-child case.
     RejoinInitial(String),
-    /// Rejoin using the current session's state — for reconnect or
-    /// a lagged disconnect while we still have a session.
-    RejoinContinuation,
     /// A same-version daemon process restart invalidated every local
     /// DocHandle. Clear the stale session before opening and publishing its
     /// replacement.
     RestartLocalSession,
     /// Record that the daemon was lost. The watch loop uses this to
-    /// gate `RejoinContinuation` — only after a disconnect.
+    /// gate session replacement — only after a disconnect.
     MarkDisconnected,
     /// Nothing to do.
     NoOp,
@@ -74,8 +71,8 @@ enum WatchDecision {
 /// `was_disconnected` tracks whether the daemon connection was lost since
 /// the last successful join. This prevents the 10-second heartbeat
 /// `Connected` events from triggering spurious rejoins — only a
-/// `Connected` event that follows an actual `Disconnected` triggers a
-/// `RejoinContinuation`. Without this, every heartbeat creates a brief
+/// `Connected` event that follows an actual `Disconnected` replaces the stale
+/// local session. Without this, every heartbeat creates a brief
 /// 2→1 peer cycle that keeps the room alive indefinitely (#2088).
 fn classify(
     event: &DaemonEvent,
@@ -102,7 +99,10 @@ fn classify(
                 // using the saved target.
                 WatchDecision::RejoinInitial(t.clone())
             } else {
-                WatchDecision::NoOp
+                // No session may mean a connect is still in flight. Keep the
+                // daemon-loss latch set so a later heartbeat can replace any
+                // stale handle that publishes after this event.
+                WatchDecision::MarkDisconnected
             }
         }
         DaemonEvent::Connected { .. } => {
@@ -116,7 +116,7 @@ fn classify(
             // watch loop would reconnect every 10s, creating a brief
             // 2-peer spike that resets the eviction timer (#2088).
             if has_session && was_disconnected {
-                WatchDecision::RejoinContinuation
+                WatchDecision::RestartLocalSession
             } else if !has_session && was_disconnected {
                 // Session was cleared on disconnect to prevent tool
                 // calls from hanging on a dead DocHandle. Rejoin
@@ -139,7 +139,7 @@ fn classify(
 /// Hosted sessions do not depend on the local daemon, so local daemon disconnects
 /// should not stay latched while a hosted session survives. Local sessions still
 /// preserve `was_disconnected` when it came from a lagged event with no saved
-/// target; that path intentionally triggers a continuity rejoin.
+/// target; that path intentionally clears the stale handle before rejoin.
 fn clear_stale_disconnect_state_for_active_session(
     has_session: bool,
     has_local_session: bool,
@@ -245,7 +245,7 @@ pub async fn watch(
         // If a tool call re-established a session after a disconnect, or
         // a hosted session survived a local daemon disconnect, clear the
         // stale daemon disconnect state so it cannot trigger a later
-        // continuity rejoin against a healthy tool-selected session.
+        // replacement against a healthy tool-selected session.
         if clear_stale_disconnect_state_for_active_session(
             has_session,
             has_local_session,
@@ -291,23 +291,6 @@ pub async fn watch(
                 if ok {
                     was_disconnected = false;
                     initial_target = None;
-                    disconnect_target = None;
-                }
-            }
-            WatchDecision::RejoinContinuation => {
-                info!("Daemon reachable, rejoining notebook session");
-                let ok = rejoin(
-                    &socket_path,
-                    &session,
-                    &peer_label,
-                    &last_session_drop,
-                    None,
-                    &session_intent_epoch,
-                    observed_intent_epoch,
-                )
-                .await;
-                if ok {
-                    was_disconnected = false;
                     disconnect_target = None;
                 }
             }
@@ -745,6 +728,7 @@ async fn rejoin_hosted(
 mod tests {
     use super::*;
     use chrono::Utc;
+    use proptest::prelude::*;
     use runtimed_client::singleton::DaemonInfo;
 
     fn info_with(version: &str, pid: u32) -> DaemonInfo {
@@ -793,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn same_version_restart_without_session_is_noop() {
+    fn same_version_restart_without_session_keeps_disconnect_latched() {
         let event = DaemonEvent::Upgraded {
             previous: info_with("1.0.0", 100),
             current: info_with("1.0.0", 200),
@@ -802,7 +786,7 @@ mod tests {
         let disconnect = None;
         assert_eq!(
             classify(&event, &initial, false, false, &disconnect),
-            WatchDecision::NoOp
+            WatchDecision::MarkDisconnected
         );
     }
 
@@ -877,7 +861,7 @@ mod tests {
     }
 
     /// Connected events that are just heartbeat refreshes (no prior
-    /// disconnect) must NOT trigger RejoinContinuation. This is the
+    /// disconnect) must NOT trigger session replacement. This is the
     /// primary fix for #2088 — without this gate, every 10s heartbeat
     /// Connected event would create a brief 2→1 peer cycle that resets
     /// the eviction timer, keeping the room alive indefinitely.
@@ -890,7 +874,7 @@ mod tests {
         let disconnect = None;
 
         // has_session=true but was_disconnected=false (steady-state
-        // heartbeat) → must be NoOp, not RejoinContinuation.
+        // heartbeat) → must be NoOp, not RestartLocalSession.
         assert_eq!(
             classify(&event, &initial, true, false, &disconnect),
             WatchDecision::NoOp,
@@ -899,9 +883,9 @@ mod tests {
     }
 
     /// Connected events after a lagged disconnect should trigger
-    /// RejoinContinuation because the peer connection was actually lost.
+    /// replacement because the installed peer belongs to the lost daemon.
     #[test]
-    fn lagged_connected_after_disconnect_triggers_rejoin_continuation() {
+    fn lagged_connected_after_disconnect_clears_before_rejoin() {
         let connected = DaemonEvent::Connected {
             info: info_with("1.0.0", 100),
         };
@@ -912,13 +896,13 @@ mod tests {
         // is still live.
         assert_eq!(
             classify(&connected, &initial, true, true, &disconnect),
-            WatchDecision::RejoinContinuation
+            WatchDecision::RestartLocalSession
         );
     }
 
     /// After an ephemeral notebook is evicted and the session is cleared
     /// WITHOUT a disconnect_target, subsequent Connected/Upgraded events
-    /// should produce NoOp (not RejoinContinuation). This regression test
+    /// should produce NoOp. This regression test
     /// verifies the fix for #2088 — without clearing the session, the
     /// watch loop would reconnect every 10s, briefly creating peers and
     /// preventing proper room eviction.
@@ -931,10 +915,10 @@ mod tests {
         let disconnect = None;
 
         // With has_session=true AND was_disconnected=true, we get
-        // RejoinContinuation.
+        // RestartLocalSession.
         assert_eq!(
             classify(&event, &initial, true, true, &disconnect),
-            WatchDecision::RejoinContinuation
+            WatchDecision::RestartLocalSession
         );
 
         // After the session is cleared (has_session=false) and no
@@ -946,14 +930,15 @@ mod tests {
             WatchDecision::NoOp
         );
 
-        // Same for Upgraded (same-version restart).
+        // A same-version restart keeps the disconnect latch active in case a
+        // concurrent connect publishes a stale handle after this event.
         let upgraded = DaemonEvent::Upgraded {
             previous: info_with("1.0.0", 100),
             current: info_with("1.0.0", 200),
         };
         assert_eq!(
             classify(&upgraded, &initial, false, false, &disconnect),
-            WatchDecision::NoOp
+            WatchDecision::MarkDisconnected
         );
     }
 
@@ -961,7 +946,7 @@ mod tests {
     /// session, the proxy's initial handoff target becomes stale. The watch
     /// loop clears initial_target before calling classify() when
     /// has_session=true, so a heartbeat Connected with a stale handoff
-    /// yields RejoinContinuation (if was_disconnected) or NoOp — never
+    /// yields RestartLocalSession (if was_disconnected) or NoOp — never
     /// RejoinInitial that would overwrite the user's active notebook.
     #[test]
     fn stale_handoff_cleared_when_session_exists() {
@@ -985,12 +970,74 @@ mod tests {
         );
 
         // With session active and was_disconnected=true (daemon bounced),
-        // RejoinContinuation uses the current session — not the stale target.
+        // RestartLocalSession uses the current session's durable target after
+        // clearing the stale handle — not the stale proxy target.
         assert_eq!(
             classify(&connected, &initial_after_clear, true, true, &disconnect),
-            WatchDecision::RejoinContinuation,
+            WatchDecision::RestartLocalSession,
             "should rejoin current session, not stale target"
         );
+    }
+
+    proptest! {
+        /// Any reconnect following possible event loss must clear an installed
+        /// local handle before attempting publication of its replacement.
+        #[test]
+        fn reconnect_after_daemon_loss_never_reuses_installed_handle(
+            disconnect_target in prop::option::of("[a-z0-9/_-]{1,32}")
+        ) {
+            let connected = DaemonEvent::Connected {
+                info: info_with("1.0.0", 100),
+            };
+            let initial = None;
+
+            prop_assert_eq!(
+                classify(&connected, &initial, true, true, &disconnect_target),
+                WatchDecision::RestartLocalSession
+            );
+        }
+
+        /// A healthy heartbeat never replaces a local session, independent of
+        /// any stale saved target value that is awaiting loop cleanup.
+        #[test]
+        fn heartbeat_never_restarts_installed_handle(
+            disconnect_target in prop::option::of("[a-z0-9/_-]{1,32}")
+        ) {
+            let connected = DaemonEvent::Connected {
+                info: info_with("1.0.0", 100),
+            };
+            let initial = None;
+
+            prop_assert_eq!(
+                classify(&connected, &initial, true, false, &disconnect_target),
+                WatchDecision::NoOp
+            );
+        }
+
+        /// Same-version process replacement always invalidates an installed
+        /// handle, regardless of prior disconnect observations or saved target.
+        #[test]
+        fn same_version_restart_always_clears_installed_handle(
+            was_disconnected in any::<bool>(),
+            disconnect_target in prop::option::of("[a-z0-9/_-]{1,32}")
+        ) {
+            let upgraded = DaemonEvent::Upgraded {
+                previous: info_with("1.0.0", 100),
+                current: info_with("1.0.0", 200),
+            };
+            let initial = None;
+
+            prop_assert_eq!(
+                classify(
+                    &upgraded,
+                    &initial,
+                    true,
+                    was_disconnected,
+                    &disconnect_target,
+                ),
+                WatchDecision::RestartLocalSession
+            );
+        }
     }
 
     /// When rejoin fails (returns false), initial_target must survive for
@@ -1123,8 +1170,7 @@ mod tests {
         assert_eq!(disconnect_target, None);
 
         // If the user later opens a local notebook, the old daemon
-        // disconnect must not force a continuity rejoin that replaces the
-        // healthy tool-selected local peer.
+        // disconnect must not displace the healthy tool-selected local peer.
         assert_eq!(
             classify(
                 &connected,
