@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 
 use rmcp::model::Implementation;
 use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::{async_rw::AsyncRwTransport, Transport};
 use rmcp::{ClientHandler, ServiceExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tracing::{info, warn};
 
 /// rmcp client role type alias.
@@ -35,6 +35,16 @@ impl ClientHandler for ChildClientHandler {
 
 /// A running child service.
 pub type RunningChild = rmcp::service::RunningService<RoleChild, ChildClientHandler>;
+
+/// Exit status observed by the task that owns and reaps the child process.
+pub type ChildExitStatus = watch::Receiver<Option<ExitStatus>>;
+
+/// An initialized MCP client plus the operating-system exit status channel for
+/// the process behind it.
+pub struct SpawnedChild {
+    pub client: RunningChild,
+    pub exit_status: ChildExitStatus,
+}
 
 /// Transport for a child MCP process whose lifecycle is owned by this proxy.
 struct ManagedChildTransport {
@@ -77,13 +87,20 @@ impl Transport<RoleChild> for ManagedChildTransport {
     }
 }
 
-async fn wait_for_child(mut child: Child, mut shutdown_rx: oneshot::Receiver<()>) {
+async fn wait_for_child(
+    mut child: Child,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    exit_status_tx: watch::Sender<Option<ExitStatus>>,
+) {
     let child_id = child.id();
 
     tokio::select! {
         status = child.wait() => {
             match status {
-                Ok(status) => info!(pid = ?child_id, %status, "Child process reaped"),
+                Ok(status) => {
+                    let _ = exit_status_tx.send(Some(status));
+                    info!(pid = ?child_id, %status, "Child process reaped");
+                }
                 Err(e) => warn!(pid = ?child_id, error = %e, "Failed to wait for child process"),
             }
         }
@@ -93,7 +110,10 @@ async fn wait_for_child(mut child: Child, mut shutdown_rx: oneshot::Receiver<()>
             }
 
             match child.wait().await {
-                Ok(status) => info!(pid = ?child_id, %status, "Child process stopped and reaped"),
+                Ok(status) => {
+                    let _ = exit_status_tx.send(Some(status));
+                    info!(pid = ?child_id, %status, "Child process stopped and reaped");
+                }
                 Err(e) => warn!(pid = ?child_id, error = %e, "Failed to reap child process after shutdown"),
             }
         }
@@ -104,6 +124,7 @@ async fn wait_for_child(mut child: Child, mut shutdown_rx: oneshot::Receiver<()>
 /// discard the lifecycle handle; tests use it as an oracle.
 struct SpawnedTransport {
     transport: ManagedChildTransport,
+    exit_status: ChildExitStatus,
     /// Handle to the background `wait_for_child` task. Completes when
     /// the child has been reaped (naturally or via shutdown signal).
     lifecycle_handle: tokio::task::JoinHandle<()>,
@@ -157,13 +178,15 @@ fn spawn_managed_transport_inner(
         .ok_or_else(|| std::io::Error::other("child stdout was not piped"))?;
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let lifecycle_handle = tokio::spawn(wait_for_child(child, shutdown_rx));
+    let (exit_status_tx, exit_status) = watch::channel(None);
+    let lifecycle_handle = tokio::spawn(wait_for_child(child, shutdown_rx, exit_status_tx));
 
     Ok(SpawnedTransport {
         transport: ManagedChildTransport {
             inner: AsyncRwTransport::new(stdout, stdin),
             shutdown_tx: Some(shutdown_tx),
         },
+        exit_status,
         lifecycle_handle,
     })
 }
@@ -172,11 +195,11 @@ fn spawn_managed_transport(
     command: &Path,
     args: &[String],
     env: &HashMap<String, String>,
-) -> std::io::Result<ManagedChildTransport> {
+) -> std::io::Result<(ManagedChildTransport, ChildExitStatus)> {
     let spawned = spawn_managed_transport_inner(command, args, env)?;
     // Production path: drop the lifecycle handle (task runs detached).
     drop(spawned.lifecycle_handle);
-    Ok(spawned.transport)
+    Ok((spawned.transport, spawned.exit_status))
 }
 
 /// Spawn `runt mcp` (or similar) as a child process and return an rmcp client.
@@ -190,7 +213,7 @@ pub async fn spawn_child(
     env: &HashMap<String, String>,
     upstream_name: &str,
     upstream_title: Option<&str>,
-) -> Result<RunningChild, String> {
+) -> Result<SpawnedChild, String> {
     if !command.exists() {
         return Err(format!("Child binary not found at {}", command.display()));
     }
@@ -201,7 +224,7 @@ pub async fn spawn_child(
         args.join(" ")
     );
 
-    let transport = spawn_managed_transport(command, args, env)
+    let (transport, exit_status) = spawn_managed_transport(command, args, env)
         .map_err(|e| format!("Failed to spawn child process: {e}"))?;
 
     let handler = ChildClientHandler {
@@ -214,7 +237,10 @@ pub async fn spawn_child(
         .await
         .map_err(|e| format!("Failed to initialize child MCP client: {e}"))?;
 
-    Ok(client)
+    Ok(SpawnedChild {
+        client,
+        exit_status,
+    })
 }
 
 #[cfg(test)]
@@ -312,10 +338,14 @@ mod tests {
         let mut cmd = instant_exit_command();
         let child = cmd.spawn().expect("spawn child");
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (exit_status_tx, _exit_status) = watch::channel(None);
 
-        tokio::time::timeout(Duration::from_secs(5), wait_for_child(child, shutdown_rx))
-            .await
-            .expect("child wait should complete");
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_child(child, shutdown_rx, exit_status_tx),
+        )
+        .await
+        .expect("child wait should complete");
     }
 
     #[tokio::test]
@@ -323,8 +353,9 @@ mod tests {
         let mut cmd = long_running_command();
         let child = cmd.spawn().expect("spawn child");
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (exit_status_tx, _exit_status) = watch::channel(None);
 
-        let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+        let task = tokio::spawn(wait_for_child(child, shutdown_rx, exit_status_tx));
         shutdown_tx.send(()).expect("send shutdown");
 
         tokio::time::timeout(Duration::from_secs(5), task)
@@ -342,8 +373,9 @@ mod tests {
         let mut cmd = instant_exit_command();
         let child = cmd.spawn().expect("spawn child");
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (exit_status_tx, _exit_status) = watch::channel(None);
 
-        let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+        let task = tokio::spawn(wait_for_child(child, shutdown_rx, exit_status_tx));
 
         // The instant-exit child is very likely reaped by the natural
         // `child.wait()` branch before we get here, so the shutdown
@@ -373,10 +405,19 @@ mod tests {
         };
         let child = cmd.spawn().expect("spawn child");
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (exit_status_tx, exit_status) = watch::channel(None);
 
-        tokio::time::timeout(Duration::from_secs(5), wait_for_child(child, shutdown_rx))
-            .await
-            .expect("child with exit(75) should be reaped");
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_child(child, shutdown_rx, exit_status_tx),
+        )
+        .await
+        .expect("child with exit(75) should be reaped");
+        assert_eq!(
+            exit_status.borrow().as_ref().and_then(ExitStatus::code),
+            Some(75),
+            "child owner must publish intentional daemon-upgrade exit status"
+        );
     }
 
     /// Rapid spawn/kill cycles must not leak tasks or panic. This exercises
@@ -387,8 +428,9 @@ mod tests {
             let mut cmd = long_running_command();
             let child = cmd.spawn().expect("spawn child");
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
+            let (exit_status_tx, _exit_status) = watch::channel(None);
 
-            let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+            let task = tokio::spawn(wait_for_child(child, shutdown_rx, exit_status_tx));
             // Immediately kill
             shutdown_tx.send(()).expect("send shutdown");
 

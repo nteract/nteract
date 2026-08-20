@@ -12,10 +12,10 @@ pub enum ReconnectionEvent {
     DaemonUpgrade {
         old_version: String,
         new_version: String,
-        session_rejoined: bool,
+        session_rejoin_requested: bool,
     },
     /// Child restarted for non-upgrade reasons (crash, etc.).
-    ChildRestart { session_rejoined: bool },
+    ChildRestart { session_rejoin_requested: bool },
 }
 
 impl ReconnectionEvent {
@@ -25,18 +25,20 @@ impl ReconnectionEvent {
             ReconnectionEvent::DaemonUpgrade {
                 old_version,
                 new_version,
-                session_rejoined,
+                session_rejoin_requested,
             } => {
-                let session_msg = if *session_rejoined {
-                    ", session reconnected"
+                let session_msg = if *session_rejoin_requested {
+                    ", session reconnect requested"
                 } else {
                     ""
                 };
                 format!("Daemon upgraded ({old_version} → {new_version}){session_msg}")
             }
-            ReconnectionEvent::ChildRestart { session_rejoined } => {
-                if *session_rejoined {
-                    "MCP server restarted, session reconnected".to_string()
+            ReconnectionEvent::ChildRestart {
+                session_rejoin_requested,
+            } => {
+                if *session_rejoin_requested {
+                    "MCP server restarted, session reconnect requested".to_string()
                 } else {
                     "MCP server restarted".to_string()
                 }
@@ -54,11 +56,11 @@ mod tests {
         let event = ReconnectionEvent::DaemonUpgrade {
             old_version: "2.1.2".to_string(),
             new_version: "2.1.3".to_string(),
-            session_rejoined: true,
+            session_rejoin_requested: true,
         };
         assert_eq!(
             event.message(),
-            "Daemon upgraded (2.1.2 → 2.1.3), session reconnected"
+            "Daemon upgraded (2.1.2 → 2.1.3), session reconnect requested"
         );
     }
 
@@ -67,7 +69,7 @@ mod tests {
         let event = ReconnectionEvent::DaemonUpgrade {
             old_version: "2.1.2".to_string(),
             new_version: "2.1.3".to_string(),
-            session_rejoined: false,
+            session_rejoin_requested: false,
         };
         assert_eq!(event.message(), "Daemon upgraded (2.1.2 → 2.1.3)");
     }
@@ -75,15 +77,18 @@ mod tests {
     #[test]
     fn restart_message_with_session() {
         let event = ReconnectionEvent::ChildRestart {
-            session_rejoined: true,
+            session_rejoin_requested: true,
         };
-        assert_eq!(event.message(), "MCP server restarted, session reconnected");
+        assert_eq!(
+            event.message(),
+            "MCP server restarted, session reconnect requested"
+        );
     }
 
     #[test]
     fn restart_message_without_session() {
         let event = ReconnectionEvent::ChildRestart {
-            session_rejoined: false,
+            session_rejoin_requested: false,
         };
         assert_eq!(event.message(), "MCP server restarted");
     }
@@ -93,7 +98,7 @@ mod tests {
         let event = ReconnectionEvent::DaemonUpgrade {
             old_version: "2.1.2+abc1234".to_string(),
             new_version: "2.1.3+def5678".to_string(),
-            session_rejoined: false,
+            session_rejoin_requested: false,
         };
         assert_eq!(
             event.message(),
@@ -106,7 +111,7 @@ mod tests {
         let event = ReconnectionEvent::DaemonUpgrade {
             old_version: "1.0".to_string(),
             new_version: "2.0".to_string(),
-            session_rejoined: false,
+            session_rejoin_requested: false,
         };
         let msg = event.message();
         assert!(msg.contains('→'));
@@ -118,7 +123,7 @@ mod tests {
         let event = ReconnectionEvent::DaemonUpgrade {
             old_version: "1.0".to_string(),
             new_version: "2.0".to_string(),
-            session_rejoined: true,
+            session_rejoin_requested: true,
         };
         let cloned = event.clone();
         assert_eq!(event.message(), cloned.message());
