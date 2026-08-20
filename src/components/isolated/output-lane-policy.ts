@@ -1,15 +1,6 @@
 import type { JupyterOutput } from "@/components/cell/jupyter-output";
-import {
-  BOKEHJS_EXEC_MIME_TYPE,
-  BOKEHJS_LOAD_MIME_TYPE,
-  NTERACT_BOKEH_SESSION_MIME_TYPE,
-  isBokehMimeType,
-} from "@/components/outputs/bokeh-mime";
-import {
-  PANEL_EXEC_MIME_TYPE,
-  PANEL_LOAD_MIME_TYPE,
-  isPanelMimeType,
-} from "@/components/outputs/panel-mime";
+import { isBokehMimeType } from "@/components/outputs/bokeh-mime";
+import { isPanelMimeType } from "@/components/outputs/panel-mime";
 import { DEFAULT_PRIORITY, selectMimeType } from "@/components/outputs/mime-priority";
 import { isSafeForMainDom } from "@/components/outputs/safe-mime-types";
 import { isVegaMimeType } from "@/components/outputs/vega-mime";
@@ -40,20 +31,12 @@ export interface OutputSegmentationOptions {
 }
 
 const SCROLL_PASSTHROUGH_MIME_TYPES = new Set([
-  // Static document-like outputs (markdown / HTML / SVG) all behave better as
-  // click-to-engage: the page wheels through them by default, while
-  // pointer-down hands events back to the iframe.
+  // Static document-like outputs can use click-to-engage so the page wheels
+  // through them by default. HTML and JavaScript are deliberately excluded:
+  // they may contain controls or their own scroll regions, so disabling iframe
+  // pointer events would make those interactions unreachable.
   "text/markdown",
-  "text/html",
   "image/svg+xml",
-  // JavaScript display outputs often act on adjacent HTML display outputs in
-  // the same cell (Bokeh and Panel notebook loader/root pairs are common).
-  "application/javascript",
-  BOKEHJS_LOAD_MIME_TYPE,
-  BOKEHJS_EXEC_MIME_TYPE,
-  NTERACT_BOKEH_SESSION_MIME_TYPE,
-  PANEL_LOAD_MIME_TYPE,
-  PANEL_EXEC_MIME_TYPE,
   // Sift's interactive tables are also click-to-engage (see SIFT_MIME_TYPES).
   "application/vnd.apache.parquet",
   "application/vnd.apache.arrow.stream",
@@ -253,7 +236,10 @@ export function splitOutputSegments(
     const lane = outputSegmentLane(output, priority);
     const previous = segments.at(-1);
 
-    if (previous?.lane === "static-frame" && isEmptyDisplayOutput(output, priority)) {
+    if (
+      (previous?.lane === "static-frame" || previous?.lane === "interactive-frame") &&
+      isEmptyDisplayOutput(output, priority)
+    ) {
       previous.outputs.push(output);
     } else if (!laneStandsAlone(lane) && previous && previous.lane === lane) {
       previous.outputs.push(output);

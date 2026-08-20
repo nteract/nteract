@@ -124,6 +124,43 @@ test.describe("isolated rich output rendering", () => {
     expect(logs).not.toContain("renderer-bundle-pending");
     expect(logs).not.toContain("renderer-error");
   });
+
+  test("keeps HTML output buttons clickable and inner regions scrollable", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+    await waitForKernelStatus(page, "idle", 120_000);
+
+    const cell = await ensureCodeCell(page);
+    await setCellSource(
+      cell,
+      [
+        "from IPython.display import HTML, display",
+        'display(HTML("""',
+        '<button id="html-action" type="button" onclick="document.getElementById(\'html-status\').textContent=\'clicked\'">Click me</button>',
+        '<span id="html-status">waiting</span>',
+        '<div id="html-scroller" style="height: 80px; overflow-y: auto">',
+        '<div style="height: 480px">Scrollable HTML content</div>',
+        "</div>",
+        '"""))',
+      ].join("\n"),
+    );
+
+    await executeCell(cell);
+    await waitForKernelStatus(page, "idle", 120_000);
+
+    const frame = cell.frameLocator('[data-slot="isolated-frame"]');
+    const button = frame.getByRole("button", { name: "Click me" });
+    await expect(button).toBeVisible({ timeout: 60_000 });
+    await button.click();
+    await expect(frame.locator("#html-status")).toHaveText("clicked");
+
+    const scroller = frame.locator("#html-scroller");
+    await scroller.hover();
+    await page.mouse.wheel(0, 240);
+    await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  });
 });
 
 function normalizeOutputText(text: string): string {
