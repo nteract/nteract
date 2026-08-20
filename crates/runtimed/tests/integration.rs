@@ -291,6 +291,30 @@ async fn assert_session_ready(handle: &notebook_sync::DocHandle, context: &str) 
     }
 }
 
+async fn stop_daemon_for_replacement(
+    pool_client: &PoolClient,
+    daemon_handle: &mut tokio::task::JoinHandle<()>,
+) {
+    pool_client.shutdown().await.ok();
+    if tokio::time::timeout(Duration::from_secs(2), &mut *daemon_handle)
+        .await
+        .is_err()
+    {
+        daemon_handle.abort();
+        let _ = daemon_handle.await;
+    }
+}
+
+fn replacement_config(mut config: DaemonConfig, temp_dir: &TempDir, suffix: &str) -> DaemonConfig {
+    // The test binary's global shutdown callback deliberately retains the
+    // first in-process daemon. A real restart is a new process and releases
+    // these process-local locks, so give the replacement equivalent fresh
+    // lock namespaces while preserving the registry, journals, and socket.
+    config.lock_dir = Some(temp_dir.path().join(format!("restart-lock-{suffix}")));
+    config.file_claims_dir = Some(temp_dir.path().join(format!("restart-claims-{suffix}")));
+    config
+}
+
 async fn wait_for_cell_count(
     handle: &notebook_sync::DocHandle,
     expected: usize,
@@ -4019,6 +4043,372 @@ async fn test_notebook_sync_refuses_gone_uuid_without_phantom() {
         "refused NotebookSync must not mint a phantom room: {rooms:?}"
     );
 
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+/// A notebook created untitled keeps its UUID when saved. After the daemon is
+/// replaced, a client that retained only that UUID must follow the persistent
+/// registry binding to the saved path and recover the file-backed room.
+#[tokio::test]
+async fn test_notebook_sync_uuid_follows_saved_path_across_daemon_restart() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let saved_path = temp_dir.path().join("saved-from-untitled.ipynb");
+
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let mut daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let created = connect::connect_create(socket_path.clone(), create_spec("test"))
+        .await
+        .expect("untitled notebook should be created");
+    let notebook_id = created.info.notebook_id.clone();
+    assert_session_ready(&created.handle, "created notebook").await;
+    let starter = wait_for_daemon_starter_cell(&created.handle, SESSION_READY_TIMEOUT)
+        .await
+        .expect("daemon starter cell should arrive");
+    created
+        .handle
+        .update_source(&starter.id, "saved_value = 42")
+        .unwrap();
+    created.handle.confirm_sync().await.unwrap();
+
+    let save = created
+        .handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: Some(saved_path.to_string_lossy().into_owned()),
+        })
+        .await
+        .expect("untitled notebook should save");
+    assert!(
+        matches!(
+            save,
+            NotebookResponse::NotebookSaved { .. }
+                | NotebookResponse::NotebookAlreadyCurrent { .. }
+        ),
+        "unexpected save response: {save:?}"
+    );
+    let canonical_saved_path = std::fs::canonicalize(&saved_path).unwrap();
+    drop(created);
+    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+
+    let restarted =
+        Daemon::new_for_test(replacement_config(config, &temp_dir, "saved-path")).unwrap();
+    let mut restarted_handle = tokio::spawn(async move {
+        restarted.run().await.ok();
+    });
+    let restarted_pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&restarted_pool).await);
+
+    let rejoined = connect::connect(socket_path, notebook_id.clone(), "rejoin")
+        .await
+        .expect("saved notebook UUID should resolve after daemon restart");
+    assert_eq!(rejoined.handle.notebook_id(), notebook_id);
+    let rejoined_room = restarted_pool
+        .list_rooms()
+        .await
+        .expect("restarted daemon should list rejoined room")
+        .into_iter()
+        .find(|room| room.notebook_id == notebook_id)
+        .expect("rejoined room should be listed");
+    assert_eq!(
+        rejoined_room.notebook_path.as_deref(),
+        Some(canonical_saved_path.to_string_lossy().as_ref())
+    );
+    assert_session_ready(&rejoined.handle, "rejoined file-backed notebook").await;
+    assert!(
+        rejoined
+            .handle
+            .get_cells()
+            .iter()
+            .any(|cell| cell.source == "saved_value = 42"),
+        "rejoined notebook should retain the saved cell"
+    );
+
+    drop(rejoined);
+    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+}
+
+/// UUID recovery must import the saved `.ipynb` when no recovery journal
+/// survives. The durable path registry locates content; it never substitutes
+/// for loading that content.
+#[tokio::test]
+async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let saved_path = temp_dir.path().join("existing-saved-notebook.ipynb");
+    write_test_ipynb(
+        &saved_path,
+        &[
+            ("saved-cell-0", "code", "persisted_value_0 = 0", vec![]),
+            ("saved-cell-1", "code", "persisted_value_1 = 1", vec![]),
+            ("saved-cell-2", "code", "persisted_value_2 = 2", vec![]),
+        ],
+    );
+
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let mut daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
+        .await
+        .expect("saved notebook should open");
+    let notebook_id = opened.info.notebook_id.clone();
+    assert_session_ready(&opened.handle, "initial saved notebook open").await;
+    assert_eq!(opened.handle.get_cells().len(), 3);
+    drop(opened);
+    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+
+    if config.notebook_docs_dir.exists() {
+        std::fs::remove_dir_all(&config.notebook_docs_dir).unwrap();
+    }
+    std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
+
+    let restarted =
+        Daemon::new_for_test(replacement_config(config, &temp_dir, "no-journal")).unwrap();
+    let mut restarted_handle = tokio::spawn(async move {
+        restarted.run().await.ok();
+    });
+    let restarted_pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&restarted_pool).await);
+
+    let rejoined = connect::connect(socket_path, notebook_id, "rejoin")
+        .await
+        .expect("registry-backed UUID should reconnect without a journal");
+    assert_session_ready(&rejoined.handle, "registry-only UUID recovery").await;
+    let recovered_cells = rejoined.handle.get_cells();
+    assert_eq!(recovered_cells.len(), 3);
+    assert!(recovered_cells
+        .iter()
+        .any(|cell| cell.source == "persisted_value_2 = 2"));
+
+    drop(rejoined);
+    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+}
+
+/// A UUID-keyed legacy `.automerge` mirror is not authoritative for a saved
+/// notebook. With a registry row and source file but no recovery journal, UUID
+/// attach must import the current `.ipynb` rather than silently serve the stale
+/// mirror as writable state.
+#[tokio::test]
+async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let saved_path = temp_dir.path().join("mirror-source.ipynb");
+    write_test_ipynb(
+        &saved_path,
+        &[("original-file", "code", "original_file = True", vec![])],
+    );
+
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let mut daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
+        .await
+        .expect("saved notebook should open");
+    let notebook_id = opened.info.notebook_id.clone();
+    assert_session_ready(&opened.handle, "stale mirror setup").await;
+    drop(opened);
+    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+
+    std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
+    let persist_path = config
+        .notebook_docs_dir
+        .join(notebook_doc::notebook_doc_filename(&notebook_id));
+    let journal_path = persist_path.with_extension("recovery");
+    if journal_path.exists() {
+        std::fs::remove_file(&journal_path).unwrap();
+    }
+
+    // Fabricate the exact legacy hazard: an id-keyed Automerge mirror whose
+    // content disagrees with the current file, with no causal journal capable
+    // of validating it.
+    let mut stale_doc =
+        notebook_doc::NotebookDoc::new_with_actor(&notebook_id, "stale-mirror-writer");
+    stale_doc.add_cell(0, "stale-mirror", "code").unwrap();
+    stale_doc
+        .update_source("stale-mirror", "stale_mirror = True")
+        .unwrap();
+    std::fs::write(&persist_path, stale_doc.save()).unwrap();
+    assert!(persist_path.is_file());
+    assert!(!journal_path.exists());
+
+    write_test_ipynb(
+        &saved_path,
+        &[("current-file", "code", "current_file = True", vec![])],
+    );
+
+    let restarted =
+        Daemon::new_for_test(replacement_config(config, &temp_dir, "stale-mirror")).unwrap();
+    let mut restarted_handle = tokio::spawn(async move {
+        restarted.run().await.ok();
+    });
+    let restarted_pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&restarted_pool).await);
+
+    let rejoined = connect::connect(socket_path, notebook_id, "rejoin")
+        .await
+        .expect("registry-backed UUID should import the current source file");
+    assert_session_ready(&rejoined.handle, "stale mirror UUID recovery").await;
+    let recovered_cells = rejoined.handle.get_cells();
+    assert!(
+        recovered_cells
+            .iter()
+            .any(|cell| cell.source == "current_file = True"),
+        "UUID recovery should materialize the current .ipynb: {recovered_cells:?}"
+    );
+    assert!(
+        recovered_cells
+            .iter()
+            .all(|cell| cell.source != "stale_mirror = True"),
+        "UUID recovery must not silently serve the stale mirror: {recovered_cells:?}"
+    );
+
+    drop(rejoined);
+    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+}
+
+/// A durable UUID-to-path binding is not itself recoverable notebook content.
+/// If both the source file and recovery journal are gone after replacement,
+/// UUID attach must return the typed gone refusal without creating a phantom.
+#[tokio::test]
+async fn test_notebook_sync_refuses_stale_registry_path_without_phantom() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let notebook_path = temp_dir.path().join("removed-after-open.ipynb");
+    write_test_ipynb(
+        &notebook_path,
+        &[("saved-cell", "code", "still_here = True", vec![])],
+    );
+
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let mut daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), notebook_path.clone(), "open")
+        .await
+        .expect("saved notebook should open");
+    let notebook_id = opened.info.notebook_id.clone();
+    assert_session_ready(&opened.handle, "initial stale-registry setup").await;
+    drop(opened);
+    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+
+    std::fs::remove_file(&notebook_path).unwrap();
+    std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
+    let persist_path = config
+        .notebook_docs_dir
+        .join(notebook_doc::notebook_doc_filename(&notebook_id));
+    let journal_path = persist_path.with_extension("recovery");
+    if journal_path.exists() {
+        std::fs::remove_file(journal_path).unwrap();
+    }
+    let mut stale_doc =
+        notebook_doc::NotebookDoc::new_with_actor(&notebook_id, "stale-registry-mirror");
+    stale_doc.add_cell(0, "stale-cell", "code").unwrap();
+    stale_doc
+        .update_source("stale-cell", "must_not_be_served = True")
+        .unwrap();
+    std::fs::write(&persist_path, stale_doc.save()).unwrap();
+    assert!(persist_path.is_file());
+
+    let restarted =
+        Daemon::new_for_test(replacement_config(config, &temp_dir, "stale-registry")).unwrap();
+    let mut restarted_handle = tokio::spawn(async move {
+        restarted.run().await.ok();
+    });
+    let restarted_pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&restarted_pool).await);
+
+    match connect::connect(socket_path, notebook_id.clone(), "rejoin").await {
+        Err(notebook_sync::SyncError::NotebookUnavailable(ref message))
+            if message.contains("no longer available") => {}
+        Err(other) => panic!("stale registry UUID returned an unexpected error: {other:?}"),
+        Ok(_) => panic!("stale registry UUID should be refused, but it created a room"),
+    }
+    let rooms = restarted_pool.list_rooms().await.unwrap();
+    assert!(
+        !rooms.iter().any(|room| room.notebook_id == notebook_id),
+        "stale registry refusal must not create a phantom room: {rooms:?}"
+    );
+
+    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+}
+
+/// UUID attach must derive the same read-only capability as OpenNotebook.
+/// Otherwise reconnecting a read-only file by its stable id silently upgrades
+/// the peer from Viewer to Owner.
+#[tokio::test]
+async fn test_notebook_sync_uuid_attach_preserves_read_only_scope() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let notebook_path = temp_dir.path().join("read-only-reattach.ipynb");
+    write_test_ipynb(
+        &notebook_path,
+        &[("saved-cell", "code", "read_only = True", vec![])],
+    );
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), notebook_path.clone(), "open")
+        .await
+        .expect("saved notebook should open");
+    let notebook_id = opened.info.notebook_id.clone();
+    assert_session_ready(&opened.handle, "read-only UUID setup").await;
+
+    let original_permissions = std::fs::metadata(&notebook_path).unwrap().permissions();
+    let mut permissions = original_permissions.clone();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&notebook_path, permissions).unwrap();
+
+    let attached = connect::connect(socket_path, notebook_id, "reattach")
+        .await
+        .expect("read-only notebook should remain readable by UUID");
+    let response = attached
+        .handle
+        .send_request(NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: None,
+        })
+        .await
+        .expect("viewer refusal should be a correlated response");
+    assert!(
+        matches!(
+            response,
+            NotebookResponse::Error { ref error }
+                if error.contains("not allowed for viewer connections")
+        ),
+        "UUID attach should retain Viewer scope, got {response:?}"
+    );
+
+    std::fs::set_permissions(&notebook_path, original_permissions).unwrap();
+
+    drop(attached);
+    drop(opened);
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
