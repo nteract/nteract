@@ -7427,6 +7427,7 @@ dependencies = [
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
+ "proptest",
  "regex",
  "repr-llm",
  "reqwest 0.12.28",

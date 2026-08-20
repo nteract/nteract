@@ -124,6 +124,29 @@ impl SessionActivation {
             })
     }
 
+    /// Whether an already-installed session can satisfy a repeated connect.
+    /// An in-flight activation always wins; generation zero is reserved for
+    /// daemon-watch recovery outside the explicit activation flow.
+    pub fn can_reuse_installed(&self, generation: u64, target: &str) -> bool {
+        let state = self.lock_state();
+        let current_flight_active = state.current_target.as_ref().is_some_and(|current| {
+            state
+                .in_flight
+                .get(current)
+                .is_some_and(|flight| flight.generation == state.generation)
+        });
+        if current_flight_active {
+            return false;
+        }
+        generation == 0
+            || state
+                .installed
+                .as_ref()
+                .is_some_and(|(installed_generation, installed_target)| {
+                    *installed_generation == generation && installed_target.as_str() == target
+                })
+    }
+
     pub fn has_current_local_path_flight(&self) -> bool {
         let state = self.lock_state();
         state.current_target.as_ref().is_some_and(|target| {

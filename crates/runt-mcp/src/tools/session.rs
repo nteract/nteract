@@ -8,12 +8,16 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use notebook_sync::status::ConnectionState;
 use runtimed_client::client::{ClientError, PoolClient};
 use runtimed_client::protocol::{NotebookCellProjection, NotebookProjection};
 
 use crate::cloud::{self, CloudRegistry, NotebookTarget};
 use crate::formatting;
-use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
+use crate::session::{
+    DaemonIncarnation, NotebookSession, NotebookSessionSource, SessionDropInfo, SessionDropReason,
+    SessionRequirement,
+};
 use crate::session_activation::{
     activation_error, ActivationLease, ActivationTicket, CanonicalNotebookTarget,
 };
@@ -23,6 +27,23 @@ use crate::NteractMcp;
 // must be longer so the daemon can return its typed current state instead of
 // the client racing it with an unclassified timeout.
 const MCP_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(125);
+
+async fn current_daemon_incarnation(server: &NteractMcp) -> Option<DaemonIncarnation> {
+    runtimed_client::singleton::query_daemon_info(server.socket_path.clone())
+        .await
+        .as_ref()
+        .map(DaemonIncarnation::from)
+}
+
+fn unchanged_daemon_incarnation(
+    before: Option<DaemonIncarnation>,
+    after: Option<DaemonIncarnation>,
+) -> Option<DaemonIncarnation> {
+    match (before, after) {
+        (Some(before), Some(after)) if before == after => Some(after),
+        _ => None,
+    }
+}
 
 /// Read the current session's notebook_id (if any) before replacing it.
 async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
@@ -616,11 +637,129 @@ fn superseded_result(lease: &ActivationLease) -> CallToolResult {
     lease.superseded_result()
 }
 
+fn session_matches_target(session: &NotebookSession, requested: &CanonicalNotebookTarget) -> bool {
+    if session.activation_target == requested.as_str() {
+        return true;
+    }
+
+    match &session.source {
+        NotebookSessionSource::Local => {
+            canonical_local_id_target(&session.notebook_id).is_ok_and(|target| target == *requested)
+                || session
+                    .notebook_path
+                    .as_deref()
+                    .is_some_and(|path| canonical_local_path_target(path) == *requested)
+        }
+        NotebookSessionSource::Hosted { domain } => {
+            let url = cloud::hosted_notebook_url(domain, &session.notebook_id);
+            CanonicalNotebookTarget::new(format!("hosted:{url}")) == *requested
+        }
+    }
+}
+
+fn has_reusable_replica(
+    connection: ConnectionState,
+    interactive: bool,
+    projection_ready: bool,
+) -> bool {
+    connection == ConnectionState::Connected && (interactive || projection_ready)
+}
+
+async fn reuse_active_session(
+    server: &NteractMcp,
+    requested: &CanonicalNotebookTarget,
+) -> Option<CallToolResult> {
+    // Sample the local daemon before taking the session lock. The lock is only
+    // used for synchronous validation and response construction.
+    let current_incarnation = current_daemon_incarnation(server).await;
+    let guard = server.session.read().await;
+    let session = guard.as_ref()?;
+    if !session_matches_target(session, requested)
+        || !server
+            .session_activation
+            .can_reuse_installed(session.activation_generation, &session.activation_target)
+        || (!session.is_hosted()
+            && !current_incarnation
+                .as_ref()
+                .is_some_and(|current| session.local_daemon_incarnation.as_ref() == Some(current)))
+    {
+        return None;
+    }
+
+    let readiness = session.readiness();
+    if !has_reusable_replica(
+        session.handle.status().connection,
+        readiness.interactive,
+        readiness.projection_ready,
+    ) {
+        return None;
+    }
+    let projection = if readiness.interactive {
+        None
+    } else {
+        session
+            .access(SessionRequirement::ProjectionRead)
+            .ok()
+            .and_then(|access| access.projection)
+    };
+    let (runtime, dependencies, project_context, cells) = match projection {
+        Some(projection) => (
+            projected_runtime_info(&projection),
+            projection.dependencies.clone(),
+            serde_json::to_value(&projection.runtime.project_context)
+                .unwrap_or(serde_json::Value::Null),
+            format_projected_cell_summaries(&projection.cells),
+        ),
+        None => (
+            read_runtime_info(&session.handle),
+            get_dependencies(&session.handle),
+            read_project_context(&session.handle),
+            format_cell_summaries(&session.handle),
+        ),
+    };
+
+    let mut response = serde_json::json!({
+        "notebook_id": session.notebook_id,
+        "connected": true,
+        "already_connected": true,
+        "runtime": runtime,
+        "dependencies": dependencies,
+        "project_context": project_context,
+        "cells": cells,
+    });
+    if let Some(path) = &session.notebook_path {
+        response["path"] = serde_json::json!(path);
+        response["notebook_path"] = serde_json::json!(path);
+    }
+    if let NotebookSessionSource::Hosted { domain } = &session.source {
+        response["source"] = serde_json::json!("hosted");
+        response["domain"] = serde_json::json!(domain);
+        response["target"] =
+            serde_json::json!(cloud::hosted_notebook_url(domain, &session.notebook_id));
+    }
+    add_progressive_session_fields(&mut response, session);
+    Some(notebook_session_response(response, &session.notebook_id))
+}
+
 async fn install_activated_session(
     server: &NteractMcp,
     lease: &ActivationLease,
     session: NotebookSession,
 ) -> Result<(), CallToolResult> {
+    if !session.is_hosted() {
+        let current_incarnation = current_daemon_incarnation(server).await;
+        let is_bound_to_current = current_incarnation
+            .as_ref()
+            .is_some_and(|current| session.local_daemon_incarnation.as_ref() == Some(current));
+        if !is_bound_to_current {
+            return Err(activation_error(
+                "daemon_replaced",
+                "The local daemon changed while the notebook connection was being established; retry the connection",
+                lease.generation(),
+                lease.target(),
+            ));
+        }
+    }
     let session_key = session.session_key();
     let previous = lease.install_in_slot(&server.session, session).await?;
 
@@ -1151,6 +1290,7 @@ async fn connect_local_path_progressive(
     lease: &ActivationLease,
 ) -> Result<CallToolResult, McpError> {
     let abs_path = PathBuf::from(canonicalize_local_path(&path));
+    let incarnation_before = current_daemon_incarnation(server).await;
     let result = match notebook_sync::connect::connect_open(
         server.socket_path.clone(),
         abs_path.clone(),
@@ -1178,7 +1318,6 @@ async fn connect_local_path_progressive(
     if !lease.is_current() {
         return Ok(superseded_result(lease));
     }
-
     let mut session = NotebookSession::local_with_projection(
         result.handle,
         notebook_id.clone(),
@@ -1186,6 +1325,7 @@ async fn connect_local_path_progressive(
         lease.generation(),
         lease.target().clone(),
         projection.clone(),
+        None,
     );
 
     if session.notebook_path.is_none() {
@@ -1193,6 +1333,8 @@ async fn connect_local_path_progressive(
     }
     let peer_label = server.get_peer_label().await;
     crate::presence::announce(&session.handle, &peer_label).await;
+    session.local_daemon_incarnation =
+        unchanged_daemon_incarnation(incarnation_before, current_daemon_incarnation(server).await);
 
     let mut response = serde_json::json!({
         "notebook_id": notebook_id,
@@ -1221,6 +1363,7 @@ async fn connect_local_id_progressive(
     prev: Option<String>,
     lease: &ActivationLease,
 ) -> Result<CallToolResult, McpError> {
+    let incarnation_before = current_daemon_incarnation(server).await;
     let result = match notebook_sync::connect::connect(
         server.socket_path.clone(),
         notebook_id.clone(),
@@ -1258,6 +1401,7 @@ async fn connect_local_id_progressive(
         lease.generation(),
         lease.target().clone(),
         projection.clone(),
+        None,
     );
     if session.notebook_path.is_none() {
         session.notebook_path = notebook_path.clone();
@@ -1265,6 +1409,8 @@ async fn connect_local_id_progressive(
 
     let peer_label = server.get_peer_label().await;
     crate::presence::announce(&session.handle, &peer_label).await;
+    session.local_daemon_incarnation =
+        unchanged_daemon_incarnation(incarnation_before, current_daemon_incarnation(server).await);
     let mut response = serde_json::json!({
         "notebook_id": notebook_id,
         "connected": true,
@@ -1356,6 +1502,10 @@ pub async fn open_notebook(
         }
     };
 
+    if let Some(result) = reuse_active_session(server, &canonical_target).await {
+        return Ok(result);
+    }
+
     let mut lease = match server.session_activation.begin(canonical_target) {
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
         ActivationTicket::Leader(lease) => lease,
@@ -1434,6 +1584,7 @@ pub async fn create_notebook(
     let prev = previous_notebook_id(server).await;
 
     let outcome = async {
+        let incarnation_before = current_daemon_incarnation(server).await;
         match notebook_sync::connect::connect_create(
             server.socket_path.clone(),
             notebook_sync::connect::CreateNotebookSpec {
@@ -1484,7 +1635,8 @@ pub async fn create_notebook(
                     )
                 };
 
-                let mut session = NotebookSession::local(result.handle, notebook_id.clone(), None);
+                let mut session =
+                    NotebookSession::local(result.handle, notebook_id.clone(), None, None);
                 session.reactivate(activation_lease.generation(), activation_lease.target());
 
                 let runtime_info = collect_runtime_info(&session.handle).await;
@@ -1494,6 +1646,10 @@ pub async fn create_notebook(
                     Vec::new() // Deno: no Python deps
                 };
                 let project_context = read_project_context(&session.handle);
+                session.local_daemon_incarnation = unchanged_daemon_incarnation(
+                    incarnation_before,
+                    current_daemon_incarnation(server).await,
+                );
 
                 let mut info = serde_json::json!({
                     "notebook_id": notebook_id,
@@ -1754,6 +1910,14 @@ pub async fn show_notebook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{TimeZone, Utc};
+
+    fn test_incarnation(pid: u32) -> DaemonIncarnation {
+        DaemonIncarnation {
+            pid,
+            started_at: Utc.timestamp_opt(pid.into(), 0).single().unwrap(),
+        }
+    }
 
     fn make_request(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {
         serde_json::from_value(serde_json::json!({
@@ -1769,6 +1933,47 @@ mod tests {
             .expect("tool response text")
             .text
             .as_str()
+    }
+
+    #[test]
+    fn daemon_binding_requires_equal_samples() {
+        let daemon = test_incarnation(41);
+        assert_eq!(
+            unchanged_daemon_incarnation(Some(daemon.clone()), Some(daemon.clone())),
+            Some(daemon)
+        );
+        assert_eq!(
+            unchanged_daemon_incarnation(Some(test_incarnation(41)), Some(test_incarnation(42))),
+            None
+        );
+        assert_eq!(
+            unchanged_daemon_incarnation(None, Some(test_incarnation(42))),
+            None
+        );
+    }
+
+    #[test]
+    fn reuse_requires_connected_readable_replica() {
+        assert!(has_reusable_replica(
+            ConnectionState::Connected,
+            true,
+            false
+        ));
+        assert!(has_reusable_replica(
+            ConnectionState::Connected,
+            false,
+            true
+        ));
+        assert!(!has_reusable_replica(
+            ConnectionState::Disconnected,
+            true,
+            true
+        ));
+        assert!(!has_reusable_replica(
+            ConnectionState::Connected,
+            false,
+            false
+        ));
     }
 
     /// When package_manager is explicitly provided, it takes precedence

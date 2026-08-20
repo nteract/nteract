@@ -730,6 +730,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     .ok()
     .flatten();
     let daemon_version = daemon_info.as_ref().map(|info| info.version.clone());
+    let watch_startup_version = daemon_version.clone();
     let execution_store_path = daemon_info
         .as_ref()
         .and_then(|info| info.execution_store_dir.as_ref())
@@ -768,15 +769,16 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     );
     let watch_socket = socket_path;
     let watch_handle = tokio::spawn(async move {
-        runt_mcp::daemon_watch::watch(
+        runt_mcp::daemon_watch::watch(runt_mcp::daemon_watch::WatchResources {
             daemon_conn,
-            watch_socket,
+            socket_path: watch_socket,
             session,
             peer_label,
             last_session_drop,
             parked_sessions,
             session_intent_epoch,
-        )
+            startup_version: watch_startup_version,
+        })
         .await
     });
 

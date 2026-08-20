@@ -14,6 +14,7 @@
 //! `Reconnecting` while the daemon is healthy, short-circuiting every tool call.
 //! See #2000.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -24,7 +25,7 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
 use crate::cloud::{self, NotebookTarget};
-use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
+use crate::session::{DaemonIncarnation, NotebookSession, SessionDropInfo, SessionDropReason};
 use std::collections::HashMap;
 
 /// Exit code when the daemon has been upgraded and the MCP server should
@@ -40,321 +41,298 @@ const REJOIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const REJOIN_MAX_RETRIES: u32 = 3;
 const REJOIN_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// What the watch loop should do in response to a `DaemonEvent`.
-#[derive(Debug, PartialEq, Eq)]
-enum WatchDecision {
-    /// Exit the process with the given code (daemon upgraded).
-    Exit(i32),
-    /// Rejoin using the provided initial target (UUID or file path) from
-    /// `NTERACT_MCP_REJOIN_NOTEBOOK` — for the restarted-child case.
-    RejoinInitial(String),
-    /// Rejoin using the current session's state — for reconnect or
-    /// same-version restart while we already have a session.
-    RejoinContinuation,
-    /// Record that the daemon was lost. The watch loop uses this to
-    /// gate `RejoinContinuation` — only after a disconnect.
-    MarkDisconnected,
-    /// Nothing to do.
-    NoOp,
+#[derive(Debug)]
+struct RecoveryState {
+    startup_version: Option<String>,
+    initial_target: Option<String>,
+    recovery_target: Option<String>,
+    observed_intent_epoch: u64,
 }
 
-/// Classify a `DaemonEvent` into the action the watch loop should take.
-///
-/// `initial_target` is **not consumed** by `classify()`. The watch loop
-/// is responsible for clearing it — either after a successful rejoin, or
-/// when a tool call establishes a session first (making the handoff
-/// stale). This ensures the target survives failed rejoin attempts and
-/// can be retried on the next `Connected` event, but never overwrites a
-/// session that the user explicitly switched to.
-///
-/// `was_disconnected` tracks whether the daemon connection was lost since
-/// the last successful join. This prevents the 10-second heartbeat
-/// `Connected` events from triggering spurious rejoins — only a
-/// `Connected` event that follows an actual `Disconnected` triggers a
-/// `RejoinContinuation`. Without this, every heartbeat creates a brief
-/// 2→1 peer cycle that keeps the room alive indefinitely (#2088).
-fn classify(
-    event: &DaemonEvent,
-    initial_target: &Option<String>,
-    has_session: bool,
-    was_disconnected: bool,
-    disconnect_target: &Option<String>,
-) -> WatchDecision {
+impl RecoveryState {
+    fn new(startup_version: Option<String>, observed_intent_epoch: u64) -> Self {
+        Self {
+            startup_version,
+            initial_target: std::env::var(REJOIN_ENV_VAR).ok(),
+            recovery_target: None,
+            observed_intent_epoch,
+        }
+    }
+
+    fn observe_explicit_intent(&mut self, epoch: u64) {
+        if epoch != self.observed_intent_epoch {
+            self.observed_intent_epoch = epoch;
+            self.initial_target = None;
+            self.recovery_target = None;
+        }
+    }
+
+    fn live_version_requires_exit(&mut self, version: &str) -> bool {
+        match self.startup_version.as_deref() {
+            Some(startup) => startup != version,
+            None => {
+                self.startup_version = Some(version.to_string());
+                false
+            }
+        }
+    }
+
+    fn remember_target(&mut self, target: String) {
+        // A file path is the durable identity. Never replace one with a UUID
+        // from a later, less informative observation of the same loss.
+        let should_replace = match self.recovery_target.as_deref() {
+            None => true,
+            Some(existing) => looks_like_uuid(existing) || !looks_like_uuid(&target),
+        };
+        if should_replace {
+            self.recovery_target = Some(target);
+        }
+    }
+
+    fn target(&self) -> Option<String> {
+        self.initial_target
+            .clone()
+            .or_else(|| self.recovery_target.clone())
+    }
+
+    fn rejoin_succeeded(&mut self) {
+        self.initial_target = None;
+        self.recovery_target = None;
+    }
+}
+
+fn event_live_info(event: &DaemonEvent) -> Option<&runtimed_client::singleton::DaemonInfo> {
     match event {
-        DaemonEvent::Upgraded { previous, current } => {
-            if previous.version != current.version {
-                return WatchDecision::Exit(EXIT_DAEMON_UPGRADED);
-            }
-            // Same-version restart (new pid) always needs a rejoin —
-            // the old peer connection is dead regardless of
-            // was_disconnected (the daemon process recycled).
-            if let Some(t) = initial_target.as_ref() {
-                WatchDecision::RejoinInitial(t.clone())
-            } else if has_session {
-                WatchDecision::RejoinContinuation
-            } else if let Some(t) = disconnect_target.as_ref() {
-                // Session was cleared on disconnect to prevent tool
-                // calls from hanging on a dead DocHandle. Rejoin
-                // using the saved target.
-                WatchDecision::RejoinInitial(t.clone())
-            } else {
-                WatchDecision::NoOp
-            }
-        }
-        DaemonEvent::Connected { .. } => {
-            // Initial target always takes priority (proxy hand-off).
-            if let Some(t) = initial_target.as_ref() {
-                return WatchDecision::RejoinInitial(t.clone());
-            }
-            // Only rejoin after a real disconnect, not on routine
-            // heartbeat refreshes. DaemonConnection emits Connected
-            // every HEARTBEAT_INTERVAL (10s); without this gate the
-            // watch loop would reconnect every 10s, creating a brief
-            // 2-peer spike that resets the eviction timer (#2088).
-            if has_session && was_disconnected {
-                WatchDecision::RejoinContinuation
-            } else if !has_session && was_disconnected {
-                // Session was cleared on disconnect to prevent tool
-                // calls from hanging on a dead DocHandle. Rejoin
-                // using the saved target.
-                if let Some(t) = disconnect_target.as_ref() {
-                    WatchDecision::RejoinInitial(t.clone())
-                } else {
-                    WatchDecision::NoOp
-                }
-            } else {
-                WatchDecision::NoOp
-            }
-        }
-        DaemonEvent::Disconnected => WatchDecision::MarkDisconnected,
+        DaemonEvent::Connected { info } => Some(info),
+        DaemonEvent::Upgraded { current, .. } => Some(current),
+        DaemonEvent::Disconnected => None,
     }
 }
 
-/// Clear daemon-disconnect state when a tool-established session made it stale.
-///
-/// Hosted sessions do not depend on the local daemon, so local daemon disconnects
-/// should not stay latched while a hosted session survives. Local sessions still
-/// preserve `was_disconnected` when it came from a lagged event with no saved
-/// target; that path intentionally triggers a continuity rejoin.
-fn clear_stale_disconnect_state_for_active_session(
-    has_session: bool,
-    has_local_session: bool,
-    was_disconnected: &mut bool,
-    disconnect_target: &mut Option<String>,
+async fn resync_live_info<F, Fut>(
+    delivery_was_lagged: bool,
+    read: F,
+) -> Option<runtimed_client::singleton::DaemonInfo>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Option<runtimed_client::singleton::DaemonInfo>>,
+{
+    if delivery_was_lagged {
+        info!("Re-reading daemon identity after lagged event delivery");
+    }
+    read().await
+}
+
+fn daemon_binding_matches(
+    is_hosted: bool,
+    binding: Option<&DaemonIncarnation>,
+    live_incarnation: Option<&DaemonIncarnation>,
 ) -> bool {
-    if !has_session {
-        return false;
+    is_hosted || live_incarnation.is_some_and(|live| binding == Some(live))
+}
+
+trait RecoverySession {
+    fn hosted(&self) -> bool;
+    fn daemon_incarnation(&self) -> Option<&DaemonIncarnation>;
+    fn recovery_notebook_id(&self) -> &str;
+    fn recovery_notebook_path(&self) -> Option<&str>;
+    fn recovery_target(&self) -> String;
+}
+
+impl RecoverySession for NotebookSession {
+    fn hosted(&self) -> bool {
+        self.is_hosted()
     }
 
-    let mut cleared = false;
+    fn daemon_incarnation(&self) -> Option<&DaemonIncarnation> {
+        self.local_daemon_incarnation.as_ref()
+    }
 
-    if disconnect_target.is_some() {
-        *disconnect_target = None;
-        cleared = true;
-        if *was_disconnected {
-            *was_disconnected = false;
+    fn recovery_notebook_id(&self) -> &str {
+        &self.notebook_id
+    }
+
+    fn recovery_notebook_path(&self) -> Option<&str> {
+        self.notebook_path.as_deref()
+    }
+
+    fn recovery_target(&self) -> String {
+        self.rejoin_target()
+    }
+}
+
+fn local_session_matches<S: RecoverySession>(
+    session: &S,
+    live_incarnation: Option<&DaemonIncarnation>,
+) -> bool {
+    daemon_binding_matches(
+        session.hosted(),
+        session.daemon_incarnation(),
+        live_incarnation,
+    )
+}
+
+/// Reconcile all local handles with the one daemon incarnation currently
+/// reported live. This contains no disconnect latch: ownership is the entire
+/// stale-session predicate.
+async fn reconcile_sessions<S: RecoverySession>(
+    live_incarnation: Option<&DaemonIncarnation>,
+    session: &Arc<RwLock<Option<S>>>,
+    parked_sessions: &Arc<RwLock<HashMap<String, S>>>,
+    last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
+    recovery: &mut RecoveryState,
+) {
+    let stale_active = {
+        let mut guard = session.write().await;
+        if guard
+            .as_ref()
+            .is_some_and(|active| !local_session_matches(active, live_incarnation))
+        {
+            guard.take()
+        } else {
+            None
         }
+    };
+
+    if let Some(stale) = stale_active {
+        let target = stale.recovery_target();
+        recovery.remember_target(target.clone());
+        *last_session_drop.write().await = Some(SessionDropInfo {
+            reason: SessionDropReason::Disconnected,
+            notebook_id: stale.recovery_notebook_id().to_string(),
+            notebook_path: stale.recovery_notebook_path().map(str::to_string),
+            rejoin_target: Some(target),
+        });
+        info!(
+            notebook_id = %stale.recovery_notebook_id(),
+            "Removed local session owned by a stale daemon incarnation"
+        );
     }
 
-    if !has_local_session && *was_disconnected {
-        *was_disconnected = false;
-        cleared = true;
+    let mut parked = parked_sessions.write().await;
+    let before = parked.len();
+    parked.retain(|_, parked_session| local_session_matches(parked_session, live_incarnation));
+    let removed = before.saturating_sub(parked.len());
+    if removed > 0 {
+        info!(
+            removed,
+            "Removed parked sessions owned by a stale daemon incarnation"
+        );
     }
+}
 
-    cleared
+pub struct WatchResources {
+    pub daemon_conn: Arc<DaemonConnection>,
+    pub socket_path: PathBuf,
+    pub session: Arc<RwLock<Option<NotebookSession>>>,
+    pub peer_label: Arc<RwLock<String>>,
+    pub last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
+    pub parked_sessions: Arc<RwLock<HashMap<String, NotebookSession>>>,
+    pub session_intent_epoch: Arc<AtomicU64>,
+    pub startup_version: Option<String>,
 }
 
 /// Run the watch loop to completion. Returns the exit code the caller
 /// should use; 0 means the event stream closed cleanly.
-pub async fn watch(
-    daemon_conn: Arc<DaemonConnection>,
-    socket_path: PathBuf,
-    session: Arc<RwLock<Option<NotebookSession>>>,
-    peer_label: Arc<RwLock<String>>,
-    last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
-    parked_sessions: Arc<RwLock<HashMap<String, NotebookSession>>>,
-    session_intent_epoch: Arc<AtomicU64>,
-) -> i32 {
+pub async fn watch(resources: WatchResources) -> i32 {
+    let WatchResources {
+        daemon_conn,
+        socket_path,
+        session,
+        peer_label,
+        last_session_drop,
+        parked_sessions,
+        session_intent_epoch,
+        startup_version,
+    } = resources;
     let mut rx = daemon_conn.subscribe();
-    let mut initial_target: Option<String> = std::env::var(REJOIN_ENV_VAR).ok();
-    if initial_target.is_some() {
+    let mut recovery = RecoveryState::new(
+        startup_version,
+        session_intent_epoch.load(Ordering::Acquire),
+    );
+    if recovery.initial_target.is_some() {
         info!("Seeded initial rejoin target from {REJOIN_ENV_VAR}");
     }
 
-    // Track whether we've been through a Disconnected state.
-    // `initial_target.is_some()` seeds this to true so the first
-    // Connected event (which always fires on supervisor startup)
-    // triggers the initial rejoin without requiring a prior disconnect.
-    let mut was_disconnected = initial_target.is_some();
-
-    // When a disconnect clears the session (to prevent tool calls from
-    // hanging on a dead DocHandle), we stash the notebook target here so
-    // the next Connected/Upgraded event can rejoin without requiring an
-    // initial_target from the proxy.
-    let mut disconnect_target: Option<String> = None;
-    let mut observed_intent_epoch = session_intent_epoch.load(Ordering::Acquire);
-
     loop {
         let event = match rx.recv().await {
-            Ok(ev) => ev,
+            Ok(event) => Some(event),
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("Daemon event stream lagged, dropped {n} events");
-                // Treat a lag as a potential disconnect — we may have
-                // missed a Disconnected event in the dropped batch.
-                was_disconnected = true;
-                continue;
+                None
             }
             Err(broadcast::error::RecvError::Closed) => return 0,
         };
 
-        let (has_session, has_local_session) = {
-            let guard = session.read().await;
-            (
-                guard.is_some(),
-                guard.as_ref().is_some_and(|session| !session.is_hosted()),
-            )
-        };
-
         let current_intent_epoch = session_intent_epoch.load(Ordering::Acquire);
-        if current_intent_epoch != observed_intent_epoch {
+        if current_intent_epoch != recovery.observed_intent_epoch {
             info!(
-                previous_epoch = observed_intent_epoch,
+                previous_epoch = recovery.observed_intent_epoch,
                 current_epoch = current_intent_epoch,
                 "Clearing automatic rejoin state after explicit session intent"
             );
-            observed_intent_epoch = current_intent_epoch;
-            initial_target = None;
-            disconnect_target = None;
-            was_disconnected = false;
+            recovery.observe_explicit_intent(current_intent_epoch);
         }
 
-        // Once a tool call (connect_notebook / create_notebook) has
-        // established a live session, the proxy's initial handoff target
-        // is stale. Without this, a pending initial_target would win over
-        // the user's active session on the next Connected/Upgraded event,
-        // overwriting or clearing whatever notebook the user switched to.
-        if has_session && initial_target.is_some() {
-            info!("Clearing stale initial rejoin target (session already active)");
-            initial_target = None;
+        if let Some(info) = event.as_ref().and_then(event_live_info) {
+            if recovery.live_version_requires_exit(&info.version) {
+                info!(version = %info.version, "Daemon version differs from MCP startup version");
+                return EXIT_DAEMON_UPGRADED;
+            }
         }
 
-        // If a tool call re-established a session after a disconnect, or
-        // a hosted session survived a local daemon disconnect, clear the
-        // stale daemon disconnect state so it cannot trigger a later
-        // continuity rejoin against a healthy tool-selected session.
-        if clear_stale_disconnect_state_for_active_session(
-            has_session,
-            has_local_session,
-            &mut was_disconnected,
-            &mut disconnect_target,
-        ) {
-            info!("Clearing stale daemon disconnect state (session already active)");
+        // `info()` is the resynchronization authority for every event, and is
+        // mandatory after Lagged. It prevents a delayed event from making a
+        // decision about an already-replaced daemon.
+        let live_info = resync_live_info(event.is_none(), || daemon_conn.info()).await;
+        if let Some(info) = live_info.as_ref() {
+            if recovery.live_version_requires_exit(&info.version) {
+                info!(version = %info.version, "Live daemon version differs from MCP startup version");
+                return EXIT_DAEMON_UPGRADED;
+            }
+        }
+        let live_incarnation = live_info.as_ref().map(DaemonIncarnation::from);
+
+        reconcile_sessions(
+            live_incarnation.as_ref(),
+            &session,
+            &parked_sessions,
+            &last_session_drop,
+            &mut recovery,
+        )
+        .await;
+
+        // Any live tool-installed session is authoritative. This also makes a
+        // same-incarnation Connected heartbeat a structural no-op.
+        if session.read().await.is_some() {
+            recovery.rejoin_succeeded();
+            continue;
         }
 
-        match classify(
-            &event,
-            &initial_target,
-            has_local_session,
-            was_disconnected,
-            &disconnect_target,
-        ) {
-            WatchDecision::Exit(code) => {
-                if let DaemonEvent::Upgraded { previous, current } = &event {
-                    info!(
-                        "Daemon upgraded ({} → {}), exiting for proxy respawn",
-                        previous.version, current.version
-                    );
-                }
-                return code;
-            }
-            WatchDecision::RejoinInitial(target) => {
-                info!("Performing initial rejoin to {target}");
-                let ok = rejoin(
-                    &socket_path,
-                    &session,
-                    &peer_label,
-                    &last_session_drop,
-                    Some(target),
-                    &session_intent_epoch,
-                    observed_intent_epoch,
-                )
-                .await;
-                // Only clear the disconnect flag and consume the initial
-                // target if rejoin succeeded or the session was explicitly
-                // cleared (room evicted). If rejoin exhausted retries,
-                // keep both was_disconnected=true and initial_target
-                // intact so the next Connected event retries.
-                if ok {
-                    was_disconnected = false;
-                    initial_target = None;
-                    disconnect_target = None;
-                }
-            }
-            WatchDecision::RejoinContinuation => {
-                info!("Daemon reachable, rejoining notebook session");
-                let ok = rejoin(
-                    &socket_path,
-                    &session,
-                    &peer_label,
-                    &last_session_drop,
-                    None,
-                    &session_intent_epoch,
-                    observed_intent_epoch,
-                )
-                .await;
-                if ok {
-                    was_disconnected = false;
-                    disconnect_target = None;
-                }
-            }
-            WatchDecision::MarkDisconnected => {
-                was_disconnected = true;
-                // Immediately clear the session to prevent tool calls from
-                // hanging on a dead DocHandle while we wait for the daemon
-                // to come back. Save the notebook target so we can rejoin
-                // when the daemon reconnects.
-                let old_session = {
-                    let mut guard = session.write().await;
-                    if guard.as_ref().is_some_and(NotebookSession::is_hosted) {
-                        None
-                    } else {
-                        guard.take().map(|session| {
-                            (session.notebook_id.clone(), session.notebook_path.clone())
-                        })
-                    }
-                };
-                if let Some((notebook_id, notebook_path)) = old_session {
-                    info!(
-                        "Clearing session for disconnected daemon (notebook: {notebook_id}); \
-                         will rejoin on reconnect"
-                    );
-                    // Stash the target for rejoin. File-backed notebooks
-                    // use the file path; ephemeral notebooks use the UUID.
-                    disconnect_target =
-                        Some(notebook_path.clone().unwrap_or_else(|| notebook_id.clone()));
-                    *last_session_drop.write().await = Some(SessionDropInfo {
-                        reason: SessionDropReason::Disconnected,
-                        notebook_id,
-                        notebook_path: notebook_path.clone(),
-                        rejoin_target: disconnect_target.clone(),
-                    });
-                }
-                // Also clear parked local sessions — their DocHandles are dead
-                // too. Hosted parked sessions do not depend on this daemon.
-                {
-                    let mut parked = parked_sessions.write().await;
-                    let before = parked.len();
-                    parked.retain(|_, session| session.is_hosted());
-                    let removed = before.saturating_sub(parked.len());
-                    if removed > 0 {
-                        info!(
-                            "Clearing {} parked local session(s) on daemon disconnect",
-                            removed
-                        );
-                    }
-                }
-            }
-            WatchDecision::NoOp => {}
+        let Some(target) = recovery.target() else {
+            continue;
+        };
+        let Some(expected_incarnation) = live_incarnation else {
+            continue;
+        };
+
+        info!(%target, "Rejoining notebook against current daemon incarnation");
+        if rejoin(
+            RejoinResources {
+                daemon_conn: &daemon_conn,
+                socket_path: &socket_path,
+                session: &session,
+                peer_label: &peer_label,
+                last_session_drop: &last_session_drop,
+                session_intent_epoch: &session_intent_epoch,
+            },
+            target,
+            expected_incarnation,
+            recovery.observed_intent_epoch,
+        )
+        .await
+        {
+            recovery.rejoin_succeeded();
         }
     }
 }
@@ -366,6 +344,30 @@ fn looks_like_uuid(target: &str) -> bool {
     path.components().count() == 1
         && path.extension().is_none()
         && uuid::Uuid::parse_str(target).is_ok()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicationResult {
+    Installed,
+    Superseded,
+    Cancelled,
+}
+
+async fn publish_rejoined_session<S>(
+    session: &Arc<RwLock<Option<S>>>,
+    new_session: S,
+    session_intent_epoch: &AtomicU64,
+    expected_intent_epoch: u64,
+) -> PublicationResult {
+    let mut guard = session.write().await;
+    if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
+        return PublicationResult::Cancelled;
+    }
+    if guard.is_some() {
+        return PublicationResult::Superseded;
+    }
+    *guard = Some(new_session);
+    PublicationResult::Installed
 }
 
 /// Re-join the active notebook session.
@@ -385,68 +387,73 @@ fn looks_like_uuid(target: &str) -> bool {
 /// and the session is cleared as `Evicted` without retries; the phantom-room
 /// guard (#2088) now lives in the daemon, not a client `list_rooms` heuristic.
 ///
-/// Returns `true` if the rejoin succeeded or the session was explicitly
-/// cleared (room evicted). Returns `false` if retries were exhausted
-/// without success — the caller should keep `was_disconnected` true so
-/// the next `Connected` event retries.
+/// Returns `true` if the rejoin succeeded, was superseded by explicit user
+/// intent, or the room was definitively evicted. Returns `false` for transient
+/// failure or a daemon-incarnation change so the recovery target survives for
+/// the next live observation.
+struct RejoinResources<'a> {
+    daemon_conn: &'a DaemonConnection,
+    socket_path: &'a Path,
+    session: &'a Arc<RwLock<Option<NotebookSession>>>,
+    peer_label: &'a Arc<RwLock<String>>,
+    last_session_drop: &'a Arc<RwLock<Option<SessionDropInfo>>>,
+    session_intent_epoch: &'a Arc<AtomicU64>,
+}
+
 async fn rejoin(
-    socket_path: &Path,
-    session: &Arc<RwLock<Option<NotebookSession>>>,
-    peer_label: &Arc<RwLock<String>>,
-    last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
-    override_target: Option<String>,
-    session_intent_epoch: &Arc<AtomicU64>,
+    resources: RejoinResources<'_>,
+    target: String,
+    expected_incarnation: DaemonIncarnation,
     expected_intent_epoch: u64,
 ) -> bool {
+    let RejoinResources {
+        daemon_conn,
+        socket_path,
+        session,
+        peer_label,
+        last_session_drop,
+        session_intent_epoch,
+    } = resources;
     if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
         return true;
     }
-    if let Some(target) = override_target.as_deref() {
-        match cloud::parse_connect_target(Some(target), None, None, None) {
-            Ok(NotebookTarget::Hosted {
+    match cloud::parse_connect_target(Some(&target), None, None, None) {
+        Ok(NotebookTarget::Hosted {
+            domain,
+            notebook_id,
+            ..
+        }) => {
+            return rejoin_hosted(
+                session,
+                peer_label,
+                last_session_drop,
                 domain,
                 notebook_id,
-                ..
-            }) => {
-                return rejoin_hosted(
-                    session,
-                    peer_label,
-                    last_session_drop,
-                    domain,
-                    notebook_id,
-                    session_intent_epoch,
-                    expected_intent_epoch,
-                )
-                .await;
-            }
-            Ok(NotebookTarget::LocalPath(_)) | Ok(NotebookTarget::LocalNotebookId(_)) => {}
-            Err(e) if target.starts_with("http://") || target.starts_with("https://") => {
-                warn!("Hosted rejoin target is invalid: {e}");
-                *last_session_drop.write().await = Some(SessionDropInfo {
-                    reason: SessionDropReason::Disconnected,
-                    notebook_id: target.to_string(),
-                    notebook_path: None,
-                    rejoin_target: Some(target.to_string()),
-                });
-                return false;
-            }
-            Err(_) => {}
+                session_intent_epoch,
+                expected_intent_epoch,
+            )
+            .await;
         }
+        Ok(NotebookTarget::LocalPath(_)) | Ok(NotebookTarget::LocalNotebookId(_)) => {}
+        Err(e) if target.starts_with("http://") || target.starts_with("https://") => {
+            warn!("Hosted rejoin target is invalid: {e}");
+            *last_session_drop.write().await = Some(SessionDropInfo {
+                reason: SessionDropReason::Disconnected,
+                notebook_id: target.to_string(),
+                notebook_path: None,
+                rejoin_target: Some(target.to_string()),
+            });
+            return false;
+        }
+        Err(_) => {}
     }
 
-    let (notebook_id, notebook_path) = match override_target {
-        Some(target) if looks_like_uuid(&target) => (target, None),
-        Some(target) => {
+    let (notebook_id, notebook_path) = match target {
+        target if looks_like_uuid(&target) => (target, None),
+        target => {
             // Treat as file path. We'll learn the real notebook_id from
             // connect_open's response.
             (target.clone(), Some(target))
-        }
-        None => {
-            let guard = session.read().await;
-            match guard.as_ref() {
-                Some(s) => (s.notebook_id.clone(), s.notebook_path.clone()),
-                None => return true, // No session to rejoin — not a failure
-            }
         }
     };
 
@@ -462,6 +469,17 @@ async fn rejoin(
         if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
             info!("Automatic notebook rejoin cancelled by explicit session intent");
             return true;
+        }
+        if daemon_conn
+            .info()
+            .await
+            .as_ref()
+            .map(DaemonIncarnation::from)
+            .as_ref()
+            != Some(&expected_incarnation)
+        {
+            info!("Automatic notebook rejoin cancelled because daemon incarnation changed");
+            return false;
         }
         let use_path = notebook_path
             .as_ref()
@@ -517,28 +535,51 @@ async fn rejoin(
             Ok((handle, new_cell_count, new_notebook_id)) => {
                 crate::presence::announce(&handle, &label).await;
 
-                let new_session =
-                    NotebookSession::local(handle, new_notebook_id, notebook_path.clone());
+                // Sample again after the entire connect/readiness operation.
+                // A mismatch leaves no local handle eligible for publication.
+                if daemon_conn
+                    .info()
+                    .await
+                    .as_ref()
+                    .map(DaemonIncarnation::from)
+                    .as_ref()
+                    != Some(&expected_incarnation)
+                {
+                    info!("Dropping rejoin completed against a replaced daemon incarnation");
+                    return false;
+                }
+
+                let new_session = NotebookSession::local(
+                    handle,
+                    new_notebook_id,
+                    notebook_path.clone(),
+                    Some(expected_incarnation.clone()),
+                );
                 // Hold the publication lock across the check/install. Any
                 // active session is authoritative, even for the same UUID:
                 // an explicit tool activation may carry retained projection
                 // heads/generation that a background rejoin must not erase.
-                let mut guard = session.write().await;
-                if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
-                    info!("Dropping automatic rejoin superseded by explicit disconnect");
-                    return true;
-                }
-                if let Some(existing) = guard.as_ref() {
-                    info!(
-                        "Rejoin target {} superseded by active session {}; \
-                         dropping rejoined connection",
-                        new_session.notebook_id, existing.notebook_id
-                    );
-                    return true;
-                }
-                *guard = Some(new_session);
-                info!("Rejoined notebook session ({new_cell_count} cells)");
-                return true;
+                return match publish_rejoined_session(
+                    session,
+                    new_session,
+                    session_intent_epoch,
+                    expected_intent_epoch,
+                )
+                .await
+                {
+                    PublicationResult::Installed => {
+                        info!("Rejoined notebook session ({new_cell_count} cells)");
+                        true
+                    }
+                    PublicationResult::Superseded => {
+                        info!("Dropping rejoin superseded by an active tool-installed session");
+                        true
+                    }
+                    PublicationResult::Cancelled => {
+                        info!("Dropping automatic rejoin superseded by explicit disconnect");
+                        true
+                    }
+                };
             }
             Err(e) => {
                 if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
@@ -641,22 +682,27 @@ async fn rejoin_hosted(
                     notebook_id.clone(),
                     domain_config.base_url.clone(),
                 );
-                let mut guard = session.write().await;
-                if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
-                    info!("Dropping hosted rejoin superseded by explicit disconnect");
-                    return true;
-                }
-                if let Some(existing) = guard.as_ref() {
-                    info!(
-                        "Hosted rejoin target {target} superseded by active session {}; \
-                         dropping rejoined connection",
-                        existing.session_key()
-                    );
-                    return true;
-                }
-                *guard = Some(new_session);
-                info!("Rejoined hosted notebook session {target}");
-                return true;
+                return match publish_rejoined_session(
+                    session,
+                    new_session,
+                    session_intent_epoch,
+                    expected_intent_epoch,
+                )
+                .await
+                {
+                    PublicationResult::Installed => {
+                        info!("Rejoined hosted notebook session {target}");
+                        true
+                    }
+                    PublicationResult::Superseded => {
+                        info!("Dropping hosted rejoin superseded by an active session");
+                        true
+                    }
+                    PublicationResult::Cancelled => {
+                        info!("Dropping hosted rejoin superseded by explicit disconnect");
+                        true
+                    }
+                };
             }
             Err(e) => {
                 if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
@@ -689,15 +735,73 @@ async fn rejoin_hosted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-    use runtimed_client::singleton::DaemonInfo;
+    use chrono::{TimeZone, Utc};
+    use proptest::prelude::*;
+    use std::sync::atomic::AtomicUsize;
 
-    fn info_with(version: &str, pid: u32) -> DaemonInfo {
-        DaemonInfo {
+    fn incarnation(pid: u32) -> DaemonIncarnation {
+        DaemonIncarnation {
+            pid,
+            started_at: Utc.timestamp_opt(pid.into(), 0).single().unwrap(),
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct FakeSession {
+        id: String,
+        path: Option<String>,
+        hosted: bool,
+        incarnation: Option<DaemonIncarnation>,
+    }
+
+    impl FakeSession {
+        fn local(id: &str, path: Option<&str>, pid: u32) -> Self {
+            Self {
+                id: id.to_string(),
+                path: path.map(str::to_string),
+                hosted: false,
+                incarnation: Some(incarnation(pid)),
+            }
+        }
+
+        fn hosted(id: &str) -> Self {
+            Self {
+                id: id.to_string(),
+                path: None,
+                hosted: true,
+                incarnation: None,
+            }
+        }
+    }
+
+    impl RecoverySession for FakeSession {
+        fn hosted(&self) -> bool {
+            self.hosted
+        }
+
+        fn daemon_incarnation(&self) -> Option<&DaemonIncarnation> {
+            self.incarnation.as_ref()
+        }
+
+        fn recovery_notebook_id(&self) -> &str {
+            &self.id
+        }
+
+        fn recovery_notebook_path(&self) -> Option<&str> {
+            self.path.as_deref()
+        }
+
+        fn recovery_target(&self) -> String {
+            self.path.clone().unwrap_or_else(|| self.id.clone())
+        }
+    }
+
+    fn daemon_info(version: &str, pid: u32) -> runtimed_client::singleton::DaemonInfo {
+        runtimed_client::singleton::DaemonInfo {
             endpoint: "/tmp/test.sock".to_string(),
             pid,
             version: version.to_string(),
-            started_at: Utc::now(),
+            started_at: incarnation(pid).started_at,
             blob_port: None,
             execution_store_dir: None,
             worktree_path: None,
@@ -705,410 +809,284 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum ModelSession {
+        Hosted,
+        Local(Option<u8>),
+    }
+
+    #[derive(Clone, Debug)]
+    struct LoopModel {
+        active: Option<ModelSession>,
+        parked: Vec<ModelSession>,
+        recovery_target: Option<String>,
+        startup_version: u8,
+        exited: bool,
+    }
+
+    impl LoopModel {
+        fn reconcile(&mut self, live: Option<u8>, version: u8) {
+            if version != self.startup_version {
+                self.exited = true;
+                return;
+            }
+            let active_matches = self.active.as_ref().is_none_or(|session| match session {
+                ModelSession::Hosted => true,
+                ModelSession::Local(binding) => live.is_some() && *binding == live,
+            });
+            if !active_matches {
+                self.active = None;
+                if self.recovery_target.is_none() {
+                    self.recovery_target = Some("saved.ipynb".to_string());
+                }
+            }
+            self.parked.retain(|session| match session {
+                ModelSession::Hosted => true,
+                ModelSession::Local(binding) => live.is_some() && *binding == live,
+            });
+        }
+
+        fn remember(&mut self, target: &str) {
+            let mut state = RecoveryState {
+                startup_version: Some(self.startup_version.to_string()),
+                initial_target: None,
+                recovery_target: self.recovery_target.take(),
+                observed_intent_epoch: 0,
+            };
+            state.remember_target(target.to_string());
+            self.recovery_target = state.recovery_target;
+        }
+    }
+
     #[test]
-    fn version_change_triggers_exit() {
-        let event = DaemonEvent::Upgraded {
-            previous: info_with("1.0.0", 100),
-            current: info_with("1.1.0", 200),
+    fn same_incarnation_heartbeat_is_structural_noop() {
+        let binding = incarnation(10);
+        assert!(daemon_binding_matches(
+            false,
+            Some(&binding),
+            Some(&binding)
+        ));
+        assert!(!daemon_binding_matches(
+            false,
+            Some(&binding),
+            Some(&incarnation(11))
+        ));
+        assert!(!daemon_binding_matches(false, None, Some(&binding)));
+    }
+
+    #[test]
+    fn hosted_binding_survives_local_daemon_loss() {
+        assert!(daemon_binding_matches(true, None, None));
+        assert!(daemon_binding_matches(true, None, Some(&incarnation(4))));
+    }
+
+    #[test]
+    fn saved_path_is_not_replaced_by_later_uuid_observation() {
+        let mut state = RecoveryState {
+            startup_version: Some("2.7.1".to_string()),
+            initial_target: None,
+            recovery_target: Some("/tmp/saved.ipynb".to_string()),
+            observed_intent_epoch: 0,
         };
-        let initial = None;
-        let disconnect = None;
-        // Version change exits regardless of was_disconnected.
-        assert_eq!(
-            classify(&event, &initial, false, false, &disconnect),
-            WatchDecision::Exit(EXIT_DAEMON_UPGRADED)
-        );
+        state.remember_target("550e8400-e29b-41d4-a716-446655440000".to_string());
+        assert_eq!(state.recovery_target.as_deref(), Some("/tmp/saved.ipynb"));
     }
 
     #[test]
-    fn same_version_restart_triggers_continuation_rejoin() {
-        // Upgraded (same-version) always triggers rejoin — the daemon
-        // process recycled so the old peer is dead. was_disconnected
-        // is irrelevant for Upgraded events.
-        let event = DaemonEvent::Upgraded {
-            previous: info_with("1.0.0", 100),
-            current: info_with("1.0.0", 200),
+    fn recovery_target_prefers_handoff_and_survives_until_success_or_intent() {
+        let mut state = RecoveryState {
+            startup_version: Some("2.7.1".to_string()),
+            initial_target: Some("proxy-target".to_string()),
+            recovery_target: Some("/tmp/recovery.ipynb".to_string()),
+            observed_intent_epoch: 3,
         };
-        let initial = None;
-        let disconnect = None;
-        assert_eq!(
-            classify(&event, &initial, true, false, &disconnect),
-            WatchDecision::RejoinContinuation
-        );
+        assert_eq!(state.target().as_deref(), Some("proxy-target"));
+        // A failed rejoin makes no state transition.
+        assert_eq!(state.target().as_deref(), Some("proxy-target"));
+        state.rejoin_succeeded();
+        assert!(state.target().is_none());
+
+        state.initial_target = Some("stale".to_string());
+        state.recovery_target = Some("stale-recovery".to_string());
+        state.observe_explicit_intent(4);
+        assert!(state.target().is_none());
     }
 
     #[test]
-    fn same_version_restart_without_session_is_noop() {
-        let event = DaemonEvent::Upgraded {
-            previous: info_with("1.0.0", 100),
-            current: info_with("1.0.0", 200),
-        };
-        let initial = None;
-        let disconnect = None;
-        assert_eq!(
-            classify(&event, &initial, false, false, &disconnect),
-            WatchDecision::NoOp
-        );
-    }
-
-    #[test]
-    fn connected_returns_initial_target_without_consuming() {
-        let event = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let initial = Some("abc-uuid".to_string());
-        let disconnect = None;
-        // Initial target triggers RejoinInitial but classify() does NOT
-        // consume it — the watch loop consumes after successful rejoin.
-        assert_eq!(
-            classify(&event, &initial, false, false, &disconnect),
-            WatchDecision::RejoinInitial("abc-uuid".to_string())
-        );
-        assert!(
-            initial.is_some(),
-            "classify must not consume initial target"
-        );
-
-        // With initial_target still present, next Connected still returns
-        // RejoinInitial (retry semantics — will keep trying until the
-        // watch loop clears it after a successful rejoin).
-        assert_eq!(
-            classify(&event, &initial, false, false, &disconnect),
-            WatchDecision::RejoinInitial("abc-uuid".to_string())
-        );
-    }
-
-    #[test]
-    fn cleared_initial_target_falls_through() {
-        let event = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        // After the watch loop clears initial_target (on successful rejoin),
-        // subsequent Connected events without session/disconnect are NoOp.
-        let initial: Option<String> = None;
-        let disconnect = None;
-        assert_eq!(
-            classify(&event, &initial, false, false, &disconnect),
-            WatchDecision::NoOp
-        );
-    }
-
-    #[test]
-    fn disconnected_marks_disconnected() {
-        let initial = Some("abc".to_string());
-        let disconnect = None;
-        assert_eq!(
-            classify(
-                &DaemonEvent::Disconnected,
-                &initial,
-                true,
-                false,
-                &disconnect
-            ),
-            WatchDecision::MarkDisconnected
-        );
-        assert!(
-            initial.is_some(),
-            "disconnect must not consume initial target"
-        );
-    }
-
-    #[test]
-    fn uuid_target_detected() {
+    fn uuid_and_path_recovery_targets_are_distinct() {
         assert!(looks_like_uuid("550e8400-e29b-41d4-a716-446655440000"));
         assert!(!looks_like_uuid("/tmp/notebook.ipynb"));
-        assert!(!looks_like_uuid("notebook.ipynb"));
-        assert!(!looks_like_uuid("relative/path"));
-    }
-
-    /// Connected events that are just heartbeat refreshes (no prior
-    /// disconnect) must NOT trigger RejoinContinuation. This is the
-    /// primary fix for #2088 — without this gate, every 10s heartbeat
-    /// Connected event would create a brief 2→1 peer cycle that resets
-    /// the eviction timer, keeping the room alive indefinitely.
-    #[test]
-    fn heartbeat_connected_does_not_rejoin() {
-        let event = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let initial = None;
-        let disconnect = None;
-
-        // has_session=true but was_disconnected=false (steady-state
-        // heartbeat) → must be NoOp, not RejoinContinuation.
-        assert_eq!(
-            classify(&event, &initial, true, false, &disconnect),
-            WatchDecision::NoOp,
-            "heartbeat Connected must not trigger rejoin"
-        );
-    }
-
-    /// Connected events after a lagged disconnect should trigger
-    /// RejoinContinuation because the peer connection was actually lost.
-    #[test]
-    fn lagged_connected_after_disconnect_triggers_rejoin_continuation() {
-        let connected = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let initial = None;
-        let disconnect = None;
-
-        // After disconnect, Connected should trigger rejoin while the session
-        // is still live.
-        assert_eq!(
-            classify(&connected, &initial, true, true, &disconnect),
-            WatchDecision::RejoinContinuation
-        );
-    }
-
-    /// After an ephemeral notebook is evicted and the session is cleared
-    /// WITHOUT a disconnect_target, subsequent Connected/Upgraded events
-    /// should produce NoOp (not RejoinContinuation). This regression test
-    /// verifies the fix for #2088 — without clearing the session, the
-    /// watch loop would reconnect every 10s, briefly creating peers and
-    /// preventing proper room eviction.
-    #[test]
-    fn cleared_session_stops_continuation_rejoins() {
-        let event = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let initial = None;
-        let disconnect = None;
-
-        // With has_session=true AND was_disconnected=true, we get
-        // RejoinContinuation.
-        assert_eq!(
-            classify(&event, &initial, true, true, &disconnect),
-            WatchDecision::RejoinContinuation
-        );
-
-        // After the session is cleared (has_session=false) and no
-        // disconnect_target, same event is NoOp even with
-        // was_disconnected=true. This is the eviction case: the room
-        // is gone, so there's nothing to rejoin.
-        assert_eq!(
-            classify(&event, &initial, false, true, &disconnect),
-            WatchDecision::NoOp
-        );
-
-        // Same for Upgraded (same-version restart).
-        let upgraded = DaemonEvent::Upgraded {
-            previous: info_with("1.0.0", 100),
-            current: info_with("1.0.0", 200),
-        };
-        assert_eq!(
-            classify(&upgraded, &initial, false, false, &disconnect),
-            WatchDecision::NoOp
-        );
-    }
-
-    /// Once a tool call (connect_notebook / create_notebook) establishes a
-    /// session, the proxy's initial handoff target becomes stale. The watch
-    /// loop clears initial_target before calling classify() when
-    /// has_session=true, so a heartbeat Connected with a stale handoff
-    /// yields RejoinContinuation (if was_disconnected) or NoOp — never
-    /// RejoinInitial that would overwrite the user's active notebook.
-    #[test]
-    fn stale_handoff_cleared_when_session_exists() {
-        let connected = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let disconnect = None;
-
-        // Simulate: proxy set initial_target, but before the first
-        // Connected event, a connect_notebook tool call established a
-        // session. The watch loop clears initial_target because
-        // has_session=true.
-        let initial_after_clear: Option<String> = None;
-
-        // With session active and was_disconnected=false (steady state),
-        // heartbeat is NoOp — does NOT rejoin to the stale target.
-        assert_eq!(
-            classify(&connected, &initial_after_clear, true, false, &disconnect),
-            WatchDecision::NoOp,
-            "stale handoff must not override active session"
-        );
-
-        // With session active and was_disconnected=true (daemon bounced),
-        // RejoinContinuation uses the current session — not the stale target.
-        assert_eq!(
-            classify(&connected, &initial_after_clear, true, true, &disconnect),
-            WatchDecision::RejoinContinuation,
-            "should rejoin current session, not stale target"
-        );
-    }
-
-    /// When rejoin fails (returns false), initial_target must survive for
-    /// retry on the next Connected event. This test simulates the classify
-    /// behavior: with initial_target present, classify always returns
-    /// RejoinInitial — it never consumes the target. The watch loop only
-    /// clears it after successful rejoin.
-    #[test]
-    fn failed_initial_rejoin_preserves_target_for_retry() {
-        let connected = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let disconnect = None;
-
-        // Simulate the watch loop's initial_target across multiple events.
-        let mut initial_target = Some("target-uuid".to_string());
-
-        // First Connected → RejoinInitial.
-        assert_eq!(
-            classify(&connected, &initial_target, false, true, &disconnect),
-            WatchDecision::RejoinInitial("target-uuid".to_string())
-        );
-
-        // Simulate rejoin failure (watch loop does NOT clear initial_target).
-        // was_disconnected stays true, initial_target stays Some.
-
-        // Second Connected → still RejoinInitial (retry).
-        assert_eq!(
-            classify(&connected, &initial_target, false, true, &disconnect),
-            WatchDecision::RejoinInitial("target-uuid".to_string())
-        );
-
-        // Simulate rejoin success (watch loop clears initial_target).
-        initial_target = None;
-
-        // Third Connected without session → NoOp.
-        assert_eq!(
-            classify(&connected, &initial_target, false, false, &disconnect),
-            WatchDecision::NoOp
-        );
-    }
-
-    /// When the session is cleared on disconnect (to prevent tool calls
-    /// from hanging on a dead DocHandle), the saved disconnect_target
-    /// enables automatic rejoin when the daemon reconnects.
-    #[test]
-    fn disconnect_target_triggers_rejoin_on_reconnect() {
-        let connected = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let initial = None;
-        let disconnect_target = Some("/tmp/notebook.ipynb".to_string());
-
-        // Session cleared (has_session=false), was_disconnected=true,
-        // disconnect_target present → RejoinInitial with the saved path.
-        assert_eq!(
-            classify(&connected, &initial, false, true, &disconnect_target),
-            WatchDecision::RejoinInitial("/tmp/notebook.ipynb".to_string())
-        );
-    }
-
-    /// Same-version daemon restart with a disconnect_target (session was
-    /// cleared on disconnect) triggers RejoinInitial with the saved target.
-    #[test]
-    fn disconnect_target_triggers_rejoin_on_upgraded() {
-        let upgraded = DaemonEvent::Upgraded {
-            previous: info_with("1.0.0", 100),
-            current: info_with("1.0.0", 200),
-        };
-        let initial = None;
-        let disconnect_target = Some("some-uuid".to_string());
-
-        // Session cleared, disconnect_target present → RejoinInitial.
-        assert_eq!(
-            classify(&upgraded, &initial, false, false, &disconnect_target),
-            WatchDecision::RejoinInitial("some-uuid".to_string())
-        );
-    }
-
-    /// When both initial_target and disconnect_target are present,
-    /// initial_target takes priority (it's the proxy's handoff).
-    #[test]
-    fn initial_target_takes_priority_over_disconnect_target() {
-        let connected = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let initial = Some("proxy-target".to_string());
-        let disconnect_target = Some("disconnect-target".to_string());
-
-        assert_eq!(
-            classify(&connected, &initial, false, true, &disconnect_target),
-            WatchDecision::RejoinInitial("proxy-target".to_string())
-        );
-    }
-
-    /// After a successful rejoin clears disconnect_target, heartbeats
-    /// should not trigger rejoins (prevents the #2088 regression).
-    #[test]
-    fn cleared_disconnect_target_prevents_spurious_rejoins() {
-        let connected = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let initial = None;
-        let disconnect = None; // cleared after successful rejoin
-
-        // Session re-established (has_session=true), steady-state heartbeat.
-        assert_eq!(
-            classify(&connected, &initial, true, false, &disconnect),
-            WatchDecision::NoOp,
-            "cleared disconnect target must not trigger rejoin"
-        );
+        assert!(!looks_like_uuid("relative/notebook.ipynb"));
     }
 
     #[test]
-    fn hosted_session_clears_stale_daemon_disconnect_state() {
-        let connected = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
+    fn lagged_live_version_mismatch_exits() {
+        let mut state = RecoveryState::new(Some("2.7.0".to_string()), 0);
+        assert!(state.live_version_requires_exit("2.7.1"));
+    }
+
+    #[test]
+    fn new_incarnation_tool_install_survives_next_heartbeat() {
+        let mut model = LoopModel {
+            active: Some(ModelSession::Local(Some(1))),
+            parked: vec![],
+            recovery_target: None,
+            startup_version: 1,
+            exited: false,
         };
-        let initial = None;
-        let mut was_disconnected = true;
-        let mut disconnect_target = Some("550e8400-e29b-41d4-a716-446655440000".to_string());
+        model.reconcile(Some(2), 1);
+        assert!(model.active.is_none());
+        model.active = Some(ModelSession::Local(Some(2)));
+        let before = model.clone();
+        model.reconcile(Some(2), 1);
+        assert_eq!(model.active, before.active);
+        assert!(!model.exited);
+    }
 
-        assert!(clear_stale_disconnect_state_for_active_session(
-            true,
-            false,
-            &mut was_disconnected,
-            &mut disconnect_target,
-        ));
-        assert!(!was_disconnected);
-        assert_eq!(disconnect_target, None);
-
-        // If the user later opens a local notebook, the old daemon
-        // disconnect must not force a continuity rejoin that replaces the
-        // healthy tool-selected local peer.
-        assert_eq!(
-            classify(
-                &connected,
-                &initial,
-                true,
-                was_disconnected,
-                &disconnect_target
+    #[tokio::test]
+    async fn async_reconciliation_clears_stale_handles_and_retains_new_tool_install() {
+        let session = Arc::new(RwLock::new(Some(FakeSession::local(
+            "old",
+            Some("/tmp/saved.ipynb"),
+            1,
+        ))));
+        let parked = Arc::new(RwLock::new(HashMap::from([
+            (
+                "old-parked".to_string(),
+                FakeSession::local("old-parked", None, 1),
             ),
-            WatchDecision::NoOp
+            ("hosted".to_string(), FakeSession::hosted("hosted")),
+        ])));
+        let last_drop = Arc::new(RwLock::new(None));
+        let mut recovery = RecoveryState {
+            startup_version: Some("2.7.1".to_string()),
+            initial_target: None,
+            recovery_target: None,
+            observed_intent_epoch: 0,
+        };
+
+        reconcile_sessions(
+            Some(&incarnation(2)),
+            &session,
+            &parked,
+            &last_drop,
+            &mut recovery,
+        )
+        .await;
+        assert!(session.read().await.is_none());
+        assert_eq!(
+            recovery.recovery_target.as_deref(),
+            Some("/tmp/saved.ipynb")
+        );
+        assert_eq!(parked.read().await.len(), 1);
+        assert!(parked.read().await.contains_key("hosted"));
+
+        // A user activation published for the new incarnation is the slot
+        // authority and survives the next same-incarnation heartbeat.
+        *session.write().await = Some(FakeSession::local("new", None, 2));
+        reconcile_sessions(
+            Some(&incarnation(2)),
+            &session,
+            &parked,
+            &last_drop,
+            &mut recovery,
+        )
+        .await;
+        assert_eq!(
+            session.read().await.as_ref().map(|s| s.id.as_str()),
+            Some("new")
         );
     }
 
-    #[test]
-    fn local_session_with_disconnect_target_clears_rejoin_latch() {
-        let connected = DaemonEvent::Connected {
-            info: info_with("1.0.0", 100),
-        };
-        let initial = None;
-        let mut was_disconnected = true;
-        let mut disconnect_target = Some("/tmp/previous.ipynb".to_string());
-
-        assert!(clear_stale_disconnect_state_for_active_session(
-            true,
-            true,
-            &mut was_disconnected,
-            &mut disconnect_target,
-        ));
-        assert!(!was_disconnected);
-        assert_eq!(disconnect_target, None);
-
+    #[tokio::test]
+    async fn async_publication_never_overwrites_tool_installed_session() {
+        let session = Arc::new(RwLock::new(Some(FakeSession::local("tool", None, 2))));
+        let epoch = AtomicU64::new(4);
+        let result = publish_rejoined_session(
+            &session,
+            FakeSession::local("background", None, 2),
+            &epoch,
+            4,
+        )
+        .await;
+        assert_eq!(result, PublicationResult::Superseded);
         assert_eq!(
-            classify(
-                &connected,
-                &initial,
-                true,
-                was_disconnected,
-                &disconnect_target
-            ),
-            WatchDecision::NoOp
+            session.read().await.as_ref().map(|s| s.id.as_str()),
+            Some("tool")
         );
+
+        *session.write().await = None;
+        epoch.store(5, Ordering::Release);
+        let result = publish_rejoined_session(
+            &session,
+            FakeSession::local("background", None, 2),
+            &epoch,
+            4,
+        )
+        .await;
+        assert_eq!(result, PublicationResult::Cancelled);
+        assert!(session.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn lagged_delivery_rereads_live_info_and_detects_version_exit() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let reads_in_provider = Arc::clone(&reads);
+        let info = resync_live_info(true, move || async move {
+            reads_in_provider.fetch_add(1, Ordering::AcqRel);
+            Some(daemon_info("2.7.2", 22))
+        })
+        .await
+        .expect("lag recovery must return the provider's current info");
+
+        assert_eq!(reads.load(Ordering::Acquire), 1);
+        let mut state = RecoveryState::new(Some("2.7.1".to_string()), 0);
+        assert!(state.live_version_requires_exit(&info.version));
+    }
+
+    proptest! {
+        /// Exercise transition sequences instead of independent classifier
+        /// inputs. Each byte selects a daemon reconciliation, explicit tool
+        /// install, hosted switch, target observation, or version replacement.
+        #[test]
+        fn transition_sequences_preserve_incarnation_invariants(ops in prop::collection::vec(any::<u8>(), 1..200)) {
+            let mut model = LoopModel {
+                active: Some(ModelSession::Local(Some(1))),
+                parked: vec![ModelSession::Local(Some(1)), ModelSession::Hosted],
+                recovery_target: Some("/tmp/original.ipynb".to_string()),
+                startup_version: 7,
+                exited: false,
+            };
+            let mut live = Some(1u8);
+
+            for op in ops {
+                if model.exited {
+                    break;
+                }
+                match op % 6 {
+                    0 => model.reconcile(live, 7),
+                    1 => {
+                        live = Some(op.wrapping_add(1));
+                        model.reconcile(live, 7);
+                    }
+                    2 => {
+                        model.active = Some(ModelSession::Local(live));
+                    }
+                    3 => model.active = Some(ModelSession::Hosted),
+                    4 => model.remember("550e8400-e29b-41d4-a716-446655440000"),
+                    _ => model.reconcile(live, 8),
+                }
+
+                if !model.exited {
+                    if let Some(ModelSession::Local(binding)) = &model.active {
+                        // A tool install may precede reconciliation, but it is
+                        // always stamped with the live incarnation.
+                        prop_assert_eq!(*binding, live);
+                    }
+                    prop_assert!(model.parked.iter().any(|s| matches!(s, ModelSession::Hosted)));
+                    prop_assert_ne!(model.recovery_target.as_deref(), Some("550e8400-e29b-41d4-a716-446655440000"));
+                }
+            }
+        }
     }
 }

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use notebook_sync::handle::DocHandle;
 use notebook_sync::status::{
     ConnectionState, InitialLoadPhase, NotebookDocPhase, RuntimeStatePhase,
@@ -12,6 +13,26 @@ use runtimed_client::protocol::{
 use serde::Serialize;
 
 use crate::session_activation::CanonicalNotebookTarget;
+
+/// Identity of one concrete local daemon process.
+///
+/// A PID alone can be reused by the operating system. Pairing it with the
+/// daemon's persisted start timestamp gives MCP sessions an explicit owner
+/// across disconnects and same-version restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DaemonIncarnation {
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+}
+
+impl From<&runtimed_client::singleton::DaemonInfo> for DaemonIncarnation {
+    fn from(info: &runtimed_client::singleton::DaemonInfo) -> Self {
+        Self {
+            pid: info.pid,
+            started_at: info.started_at,
+        }
+    }
+}
 
 /// Where the active notebook document is hosted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +146,10 @@ pub struct NotebookSession {
     pub notebook_path: Option<String>,
     /// Session source. Hosted sessions do not depend on the local daemon.
     pub source: NotebookSessionSource,
+    /// The local daemon process that owns this handle. `None` means either a
+    /// hosted session or a local connection whose daemon changed while the
+    /// connection was being established. An unbound local handle is stale.
+    pub local_daemon_incarnation: Option<DaemonIncarnation>,
     /// Monotonic MCP activation generation. Daemon rejoin/create legacy paths
     /// use generation zero until they are replaced by an explicit activation.
     pub activation_generation: u64,
@@ -134,13 +159,19 @@ pub struct NotebookSession {
 }
 
 impl NotebookSession {
-    pub fn local(handle: DocHandle, notebook_id: String, notebook_path: Option<String>) -> Self {
+    pub fn local(
+        handle: DocHandle,
+        notebook_id: String,
+        notebook_path: Option<String>,
+        daemon_incarnation: Option<DaemonIncarnation>,
+    ) -> Self {
         let activation_target = format!("local:id:{notebook_id}");
         Self {
             handle,
             notebook_id,
             notebook_path,
             source: NotebookSessionSource::Local,
+            local_daemon_incarnation: daemon_incarnation,
             activation_generation: 0,
             activation_target,
             readiness_evidence: SessionReadinessEvidence::AwaitedSessionReady,
@@ -154,12 +185,14 @@ impl NotebookSession {
         activation_generation: u64,
         activation_target: CanonicalNotebookTarget,
         projection: NotebookProjection,
+        daemon_incarnation: Option<DaemonIncarnation>,
     ) -> Self {
         Self {
             handle,
             notebook_id,
             notebook_path,
             source: NotebookSessionSource::Local,
+            local_daemon_incarnation: daemon_incarnation,
             activation_generation,
             activation_target: activation_target.as_str().to_string(),
             readiness_evidence: SessionReadinessEvidence::RetainedProjection {
@@ -175,6 +208,7 @@ impl NotebookSession {
             notebook_id,
             notebook_path: None,
             source: NotebookSessionSource::Hosted { domain },
+            local_daemon_incarnation: None,
             activation_generation: 0,
             activation_target,
             readiness_evidence: SessionReadinessEvidence::HostedLegacy,
@@ -193,6 +227,7 @@ impl NotebookSession {
             notebook_id,
             notebook_path: None,
             source: NotebookSessionSource::Hosted { domain },
+            local_daemon_incarnation: None,
             activation_generation,
             activation_target: activation_target.as_str().to_string(),
             readiness_evidence: SessionReadinessEvidence::HostedLegacy,
