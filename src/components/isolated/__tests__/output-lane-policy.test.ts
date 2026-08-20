@@ -176,6 +176,22 @@ describe("output lane policy", () => {
     ).toBe("interactive-frame");
   });
 
+  it("keeps HTML and JavaScript documents interactive for controls and inner scrolling", () => {
+    const outputs = [
+      displayOutput("html-output", {
+        "text/html": '<button type="button">Run</button><div style="overflow:auto">Rows</div>',
+      }),
+      displayOutput("javascript-output", {
+        "application/javascript": "document.querySelector('button')?.focus();",
+      }),
+    ];
+
+    expect(outputs.map((output) => outputAllowsScrollPassthrough(output))).toEqual([false, false]);
+    expect(splitOutputSegments(outputs).map((segment) => segment.lane)).toEqual([
+      "interactive-frame",
+    ]);
+  });
+
   it("routes Vega/Altair charts onto the click-to-engage static frame", () => {
     const output = displayOutput("vega-output", {
       "application/vnd.vegalite.v5+json": { mark: "circle" },
@@ -218,12 +234,12 @@ describe("output lane policy", () => {
     expect(outputUsesBokeh(outputs[3])).toBe(true);
     expect(outputUsesWheelOwningFrame(outputs[3])).toBe(true);
     expect(outputs.map((output) => outputAllowsScrollPassthrough(output))).toEqual([
-      true,
-      true,
-      true,
-      true,
+      false,
+      false,
+      false,
+      false,
     ]);
-    expect(segments.map((segment) => segment.lane)).toEqual(["static-frame"]);
+    expect(segments.map((segment) => segment.lane)).toEqual(["interactive-frame"]);
     expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
       "bokeh-loading-html",
       "bokeh-load-js",
@@ -245,14 +261,14 @@ describe("output lane policy", () => {
 
     const segments = splitOutputSegments(outputs);
 
-    expect(segments.map((segment) => segment.lane)).toEqual(["static-frame"]);
+    expect(segments.map((segment) => segment.lane)).toEqual(["interactive-frame"]);
     expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
       "bokeh-root-html",
       "bokeh-exec-js",
     ]);
   });
 
-  it("routes native Bokeh sessions through a click-to-engage document frame", () => {
+  it("routes native Bokeh sessions through an interactive document frame", () => {
     const output = displayOutput("bokeh-session", {
       [NTERACT_BOKEH_SESSION_MIME_TYPE]: { schema_version: 1 },
       "text/plain": "fallback",
@@ -261,8 +277,8 @@ describe("output lane policy", () => {
     expect(selectedOutputMimeType(output)).toBe(NTERACT_BOKEH_SESSION_MIME_TYPE);
     expect(outputUsesBokeh(output)).toBe(true);
     expect(outputUsesWheelOwningFrame(output)).toBe(true);
-    expect(outputAllowsScrollPassthrough(output)).toBe(true);
-    expect(outputSegmentLane(output)).toBe("static-frame");
+    expect(outputAllowsScrollPassthrough(output)).toBe(false);
+    expect(outputSegmentLane(output)).toBe("interactive-frame");
   });
 
   it("keeps Panel's HTML and JavaScript display outputs in one document lane", () => {
@@ -299,13 +315,13 @@ describe("output lane policy", () => {
     expect(hasWidgetOutputs(outputs)).toBe(false);
     expect(outputUsesWheelOwningFrame(outputs[4])).toBe(true);
     expect(outputs.map((output) => outputAllowsScrollPassthrough(output))).toEqual([
+      false,
+      false,
       true,
-      true,
-      true,
-      true,
-      true,
+      false,
+      false,
     ]);
-    expect(segments.map((segment) => segment.lane)).toEqual(["static-frame"]);
+    expect(segments.map((segment) => segment.lane)).toEqual(["interactive-frame"]);
     expect(segments[0].outputs.map((output) => output.output_id)).toEqual([
       "panel-loading-html",
       "panel-load-js",
@@ -431,9 +447,9 @@ describe("output lane policy", () => {
 
     expect(
       segmentedOutputLanes(outputs, { isolated: true }).map((segment) => segment.lane),
-    ).toEqual(["dom", "static-frame", "sift-frame"]);
+    ).toEqual(["dom", "interactive-frame", "sift-frame"]);
     expect(
       segmentedOutputLanes(outputs, { hasCollapseControl: true }).map((segment) => segment.lane),
-    ).toEqual(["dom", "static-frame", "sift-frame"]);
+    ).toEqual(["dom", "interactive-frame", "sift-frame"]);
   });
 });

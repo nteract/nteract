@@ -188,6 +188,20 @@ function makeStreamOutput(text = "hey\n"): JupyterOutput[] {
   ];
 }
 
+function makeHtmlOutput(): JupyterOutput[] {
+  return [
+    {
+      output_id: "html-output",
+      output_type: "display_data",
+      data: {
+        "text/html":
+          '<button type="button">Run</button><div style="max-height: 80px; overflow-y: auto">Rows</div>',
+      },
+      metadata: {},
+    },
+  ];
+}
+
 function makeWidgetOutput(outputId = "widget-output", modelId = "widget-model"): JupyterOutput {
   return {
     output_id: outputId,
@@ -617,6 +631,15 @@ describe("OutputArea iframe theme sync", () => {
     );
   });
 
+  it("keeps HTML iframe controls and inner scroll regions interactive by default", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeHtmlOutput()} isolated />);
+    const frame = getByTestId("isolated-frame");
+
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("true");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("true");
+  });
+
   it("releases static document iframe outputs after a plain iframe click", () => {
     const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
     const frame = getByTestId("isolated-frame");
@@ -1039,7 +1062,7 @@ describe("OutputArea iframe theme sync", () => {
 
     const frames = screen.getAllByTestId("isolated-frame");
     expect(frames).toHaveLength(1);
-    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("false");
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
@@ -1082,7 +1105,7 @@ describe("OutputArea iframe theme sync", () => {
 
     const frames = screen.getAllByTestId("isolated-frame");
     expect(frames).toHaveLength(1);
-    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("false");
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
@@ -1110,7 +1133,7 @@ describe("OutputArea iframe theme sync", () => {
 
     const frames = screen.getAllByTestId("isolated-frame");
     expect(frames).toHaveLength(1);
-    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("false");
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
