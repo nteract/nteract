@@ -3039,7 +3039,9 @@ impl Daemon {
                             parsed,
                             crate::notebook_sync_server::RoomCreationOptions {
                                 path: Some(canonical),
-                                initial_load_execution_store_dir: None,
+                                initial_load_execution_store_dir: Some(
+                                    self.config.execution_store_dir.as_path(),
+                                ),
                                 docs_dir: &docs_dir,
                                 blob_store: self.blob_store.clone(),
                                 ephemeral: false,

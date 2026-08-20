@@ -4137,6 +4137,98 @@ async fn test_notebook_sync_uuid_follows_saved_path_across_daemon_restart() {
     }
 }
 
+/// UUID recovery must use the saved `.ipynb` as its source even when no
+/// Automerge recovery journal survives the daemon replacement. This covers
+/// older installations and cache cleanup: the path registry is durable, but
+/// its presence alone must never turn an existing file into a fresh notebook.
+#[tokio::test]
+async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let saved_path = temp_dir.path().join("existing-saved-notebook.ipynb");
+    let owned_cells: Vec<(String, String)> = (0..19)
+        .map(|index| {
+            (
+                format!("saved-cell-{index}"),
+                format!("persisted_value_{index} = {index}"),
+            )
+        })
+        .collect();
+    let borrowed_cells: Vec<(&str, &str, &str, Vec<&str>)> = owned_cells
+        .iter()
+        .map(|(id, source)| (id.as_str(), "code", source.as_str(), vec![]))
+        .collect();
+    write_test_ipynb(&saved_path, &borrowed_cells);
+
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let mut daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
+        .await
+        .expect("saved notebook should open");
+    let notebook_id = opened.info.notebook_id.clone();
+    assert_session_ready(&opened.handle, "initial saved notebook open").await;
+    assert_eq!(opened.handle.get_cells().len(), 19);
+
+    drop(opened);
+    pool_client.shutdown().await.ok();
+    if tokio::time::timeout(Duration::from_secs(2), &mut daemon_handle)
+        .await
+        .is_err()
+    {
+        daemon_handle.abort();
+        let _ = daemon_handle.await;
+    }
+
+    // Preserve the durable path registry and source file while removing the
+    // auxiliary Automerge recovery cache. A replacement process must still
+    // materialize the `.ipynb` rather than treating the UUID attach as fresh.
+    if config.notebook_docs_dir.exists() {
+        std::fs::remove_dir_all(&config.notebook_docs_dir).unwrap();
+    }
+    std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
+
+    let mut restarted_config = config;
+    restarted_config.lock_dir = Some(temp_dir.path().join("restart-lock-no-journal"));
+    restarted_config.file_claims_dir = Some(temp_dir.path().join("restart-claims-no-journal"));
+    let restarted = Daemon::new_for_test(restarted_config).unwrap();
+    let mut restarted_handle = tokio::spawn(async move {
+        restarted.run().await.ok();
+    });
+    let restarted_pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&restarted_pool).await);
+
+    let rejoined = connect::connect(socket_path, notebook_id.clone(), "rejoin")
+        .await
+        .expect("registry-backed UUID should reconnect without a journal");
+    assert_session_ready(&rejoined.handle, "registry-only UUID recovery").await;
+    let recovered_cells = rejoined.handle.get_cells();
+    assert_eq!(
+        recovered_cells.len(),
+        19,
+        "UUID recovery must import the populated saved file; status={:?}",
+        rejoined.handle.status()
+    );
+    assert!(recovered_cells
+        .iter()
+        .any(|cell| cell.source == "persisted_value_18 = 18"));
+
+    drop(rejoined);
+    restarted_pool.shutdown().await.ok();
+    if tokio::time::timeout(Duration::from_secs(2), &mut restarted_handle)
+        .await
+        .is_err()
+    {
+        restarted_handle.abort();
+        let _ = restarted_handle.await;
+    }
+}
+
 #[tokio::test]
 async fn test_pool_size_config_honored() {
     let temp_dir = TempDir::new().unwrap();
