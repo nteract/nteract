@@ -88,6 +88,34 @@ processedFrames += await timed("bob_to_alice_anonymous_convergence", () =>
   ),
 );
 
+await timed("anonymous_viewer_authority_boundary", async () => {
+  await settleHandleSync(anonymous, anonymousHandle);
+  anonymousHandle.update_source("cell-wasm-1", "Viewer attempted mutation\n");
+  assert(
+    cellSource(anonymousHandle, "cell-wasm-1") === "Viewer attempted mutation\n",
+    "viewer probe did not create a local document change",
+  );
+  // A hostile client is not obligated to preserve the cooperative in-flight
+  // bookkeeping used by the normal UI. Clear it so this probe puts actual
+  // change bytes on the wire and exercises the server mutation boundary.
+  anonymousHandle.cancel_last_flush();
+  sendHandleChanges(anonymous, anonymousHandle);
+  await driveViewerMutationProbe(anonymous, anonymousHandle);
+  assert(
+    cellSource(aliceHandle, "cell-wasm-1") === "Bob edited live markdown\n" &&
+      cellSource(bobHandle, "cell-wasm-1") === "Bob edited live markdown\n",
+    "viewer mutation changed an editor replica",
+  );
+  const observer = await connect(roomId, "alice", "desktop:viewer-boundary-observer", "owner");
+  const observerHandle = NotebookHandle.create_bootstrap(observer.ready.actor_label);
+  await driveSyncUntil(
+    [{ name: "observer", client: observer, handle: observerHandle }],
+    () => cellSource(observerHandle, "cell-wasm-1") === "Bob edited live markdown\n",
+    "authoritative room incorporated the viewer mutation",
+  );
+  await closeClient(observer);
+});
+
 assert(
   bobHandle.contributing_actors().includes(alice.ready.actor_label),
   `Bob handle did not record Alice actor: ${bobHandle.contributing_actors().join(", ")}`,
@@ -114,6 +142,7 @@ console.log(
         "durable_object_materialized_room_sync",
         "editor_editor_convergence",
         "anonymous_viewer_live_convergence",
+        "anonymous_viewer_authoritative_mutation_absent",
         "actor_attribution_preserved",
       ],
       timings_ms: {
@@ -235,6 +264,57 @@ async function driveSyncUntil(participants, predicate, failureMessage) {
   }
 
   throw new Error(failureMessage);
+}
+
+async function driveViewerMutationProbe(client, handle) {
+  const deadline = Date.now() + 750;
+  while (Date.now() < deadline) {
+    const frame = await client
+      .nextFrame(
+        (candidate) =>
+          candidate.type === FrameType.AUTOMERGE_SYNC ||
+          (candidate.type === FrameType.SESSION_CONTROL &&
+            (candidate.json?.type === "cloud_frame_rejected" ||
+              candidate.json?.type === "cloud_frame_accepted")),
+        250,
+      )
+      .catch(() => undefined);
+    if (!frame) {
+      continue;
+    }
+    if (frame.type === FrameType.SESSION_CONTROL) {
+      if (frame.json?.type === "cloud_frame_rejected") {
+        return frame;
+      }
+      continue;
+    }
+    for (const event of handle.receive_frame(frame.bytes)) {
+      if (Array.isArray(event.reply)) {
+        sendBinaryFrame(client.socket, FrameType.AUTOMERGE_SYNC, new Uint8Array(event.reply));
+      }
+    }
+    const pending = handle.flush_local_changes();
+    if (pending?.byteLength > 0) {
+      sendBinaryFrame(client.socket, FrameType.AUTOMERGE_SYNC, pending);
+    }
+  }
+  return undefined;
+}
+
+async function settleHandleSync(client, handle) {
+  for (let round = 0; round < 8; round += 1) {
+    const frame = await client
+      .nextFrame((candidate) => candidate.type === FrameType.AUTOMERGE_SYNC, 250)
+      .catch(() => undefined);
+    if (!frame) {
+      return;
+    }
+    for (const event of handle.receive_frame(frame.bytes)) {
+      if (Array.isArray(event.reply)) {
+        sendBinaryFrame(client.socket, FrameType.AUTOMERGE_SYNC, new Uint8Array(event.reply));
+      }
+    }
+  }
 }
 
 function cellSource(handle, cellId) {

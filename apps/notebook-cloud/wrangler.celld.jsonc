@@ -1,7 +1,7 @@
 {
   "name": "nteract-notebook-cloud-celld-proof",
   "main": "./dist-portable/worker/index.js",
-  "no_bundle": true,
+  "no_bundle": false,
   "compatibility_date": "2024-11-06",
   "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {

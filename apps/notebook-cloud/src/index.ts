@@ -6073,7 +6073,10 @@ interface ViewerShellResourceHints {
 function rootNotebookListRedirect(request: Request): Response {
   const url = new URL(request.url);
   url.pathname = "/n";
-  return Response.redirect(url.toString(), 302);
+  return new Response(null, {
+    status: 302,
+    headers: { Location: url.toString() },
+  });
 }
 
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {

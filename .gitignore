@@ -61,6 +61,7 @@ out/
 apps/notebook-cloud/dist-portable/
 .wrangler/
 apps/notebook-cloud/wrangler.deploy.*.toml
+apps/notebook-cloud/wrangler.celld.proof.*.json
 *.tsbuildinfo
 
 # Generated isolated-renderer bundle (built from src/isolated-renderer)

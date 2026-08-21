@@ -49,16 +49,18 @@ async function main() {
       "--conditions=workerd,worker,browser",
       "--external:node:*",
       "--external:cloudflare:*",
-      "--loader:.wasm=binary",
+      "--loader:.wasm=copy",
+      "--asset-names=[name]-[hash]",
       `--outfile=${workerPath}`,
       `--metafile=${metafilePath}`,
     ],
     REPO_ROOT,
   );
 
-  const [commit, workerBytes, assets] = await Promise.all([
+  const [commit, workerBytes, workerModules, assets] = await Promise.all([
     gitOutput(["rev-parse", "HEAD"]),
     readFile(workerPath),
+    workerModuleDigest(resolve(outputDir, "worker")),
     directoryDigest(resolve(outputDir, "assets")),
   ]);
   const configuration = {
@@ -67,7 +69,7 @@ async function main() {
     platform: "browser",
     target: "es2024",
     conditions: ["workerd", "worker", "browser"],
-    wasmLoader: "binary",
+    wasmLoader: "copy",
   };
   const manifest = {
     schema_version: 1,
@@ -78,12 +80,29 @@ async function main() {
       path: "worker/index.js",
       bytes: workerBytes.byteLength,
       sha256: sha256(workerBytes),
+      modules: workerModules,
     },
     assets,
     elapsed_ms: Math.round(performance.now() - startedAt),
   };
   await writeFile(resolve(outputDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(JSON.stringify({ output: outputDir, ...manifest }));
+}
+
+async function workerModuleDigest(directory) {
+  const { readdir } = await import("node:fs/promises");
+  const names = (await readdir(directory))
+    .filter((name) => name.endsWith(".wasm"))
+    .sort((left, right) => left.localeCompare(right));
+  const modules = [];
+  for (const name of names) {
+    const bytes = await readFile(resolve(directory, name));
+    modules.push({ path: `worker/${name}`, bytes: bytes.byteLength, sha256: sha256(bytes) });
+  }
+  if (modules.length === 0) {
+    throw new Error("portable Worker build did not emit a compiled WASM module");
+  }
+  return modules;
 }
 
 export function parsePortableBuildArgs(args) {

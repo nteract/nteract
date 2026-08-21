@@ -14,6 +14,7 @@
     "deploy:renderer-assets": "wrangler deploy -c wrangler.renderer-assets.toml",
     "deploy:check": "curl -fsS https://preview.runt.run/api/health",
     "celld:dry-run": "pnpm run build:portable-host && celld deploy --config wrangler.celld.jsonc --bucket s3://nteract-celld-dry-run --dry-run",
+    "celld:proof-config": "node scripts/celld-proof-config.mjs",
     "ops:cloudflare:usage": "node scripts/cloudflare-usage.mjs --script nteract-notebook-cloud --script nteract-notebook-cloud-assets",
     "auth:preview:health": "node scripts/preview-auth-health.mjs",
     "pretypecheck": "cargo xtask wasm-ensure-runtime",
@@ -41,6 +42,8 @@
     "publish:fixture": "node scripts/publish-fixture.mjs",
     "publish:live": "node --import tsx scripts/publish-live.mjs",
     "wasm:roundtrip": "node --import tsx scripts/wasm-roundtrip.mjs",
+    "wasm:reopen": "node --import tsx scripts/wasm-reopen.mjs",
+    "websocket:ingress-probe": "node --import tsx scripts/websocket-ingress-probe.mjs",
     "dev:browser": "node scripts/dev-browser.mjs"
   },
   "dependencies": {

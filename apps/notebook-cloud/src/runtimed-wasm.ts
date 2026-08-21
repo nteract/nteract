@@ -10,6 +10,7 @@ import initWasm, {
   RoomHostHandle,
   RuntimeStatePeerHandle,
 } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
+import bundledRuntimedWasm from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm";
 
 export type RuntimedWasmModule =
   typeof import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js");
@@ -34,8 +35,7 @@ export function initializeRuntimedWasm(moduleOrPath?: RuntimedWasmModuleOrPath):
 }
 
 async function loadBundledWasmModule(): Promise<WebAssembly.Module> {
-  const module = await import("../../notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm");
-  return module.default;
+  return bundledRuntimedWasm;
 }
 
 export async function decodePresenceFrame(payload: Uint8Array): Promise<unknown> {
