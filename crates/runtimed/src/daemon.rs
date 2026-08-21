@@ -7516,21 +7516,32 @@ impl Daemon {
         let config_json = serde_json::to_string(&config)
             .map_err(|e| format!("Failed to serialize warm-env config: {e}"))?;
 
-        let mut child = tokio::process::Command::new(&exe)
+        let mut command = tokio::process::Command::new(&exe);
+        command
             .arg("warm-env")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        crate::warm_env::configure_process_tree(&mut command);
+
+        let mut child = command
             .spawn()
             .map_err(|e| format!("Failed to spawn warm-env: {e}"))?;
+        let mut process_tree = match crate::warm_env::own_process_tree(&child) {
+            Ok(process_tree) => process_tree,
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(format!("Failed to own warm-env process tree: {error}"));
+            }
+        };
 
         // Drain the child's stderr into the daemon log. Retain the tail so a
         // failure result with no `error` field (e.g. the child was killed by a
         // native loader error before it could emit one) can still surface a
         // real message instead of a generic placeholder.
         let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let stderr_task = child.stderr.take().map(|stderr| {
+        let mut stderr_task = child.stderr.take().map(|stderr| {
             let type_str = type_str.to_string();
             let stderr_tail = stderr_tail.clone();
             tokio::spawn(async move {
@@ -7580,7 +7591,7 @@ impl Daemon {
         let mut last_result: Option<crate::warm_env::WarmEnvResult> = None;
 
         let timeout = warm_env_timeout();
-        let read_result = tokio::time::timeout(timeout, async {
+        let operation = tokio::time::timeout(timeout, async {
             while let Ok(Some(line)) = lines.next_line().await {
                 match serde_json::from_str::<crate::warm_env::WarmEnvEvent>(&line) {
                     Ok(crate::warm_env::WarmEnvEvent::Progress { phase, detail }) => {
@@ -7594,30 +7605,43 @@ impl Daemon {
                     }
                 }
             }
+
+            let status = child.wait().await;
+            // Include stderr EOF in the same overall timeout. Descendants can
+            // inherit this pipe even after the direct child exits.
+            if let Some(task) = stderr_task.as_mut() {
+                let _ = task.await;
+            }
+            status
         })
         .await;
 
-        if read_result.is_err() {
-            // Kill before waiting — don't block on a wedged child.
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            if let Some(task) = stderr_task {
+        let status = match operation {
+            Ok(status) => status,
+            Err(_) => {
+                // Stop the pipe reader before teardown so a descendant that
+                // inherited stderr cannot keep this timeout path blocked.
+                if let Some(task) = stderr_task.take() {
+                    task.abort();
+                    let _ = task.await;
+                }
+                crate::warm_env::reap_timed_out_child(&mut child, &mut process_tree).await;
+                let tail = drain_stderr_tail(&stderr_tail);
+                return Err(format!(
+                    "warm-env subprocess timed out after {}s{}",
+                    timeout.as_secs(),
+                    tail.map(|t| format!("; last stderr: {t}"))
+                        .unwrap_or_default()
+                ));
+            }
+        };
+
+        // The task was awaited inside the timeout, but take the completed
+        // handle so no detached reader remains on any return path.
+        if let Some(task) = stderr_task.take() {
+            if !task.is_finished() {
                 let _ = task.await;
             }
-            let tail = drain_stderr_tail(&stderr_tail);
-            return Err(format!(
-                "warm-env subprocess timed out after {}s{}",
-                timeout.as_secs(),
-                tail.map(|t| format!("; last stderr: {t}"))
-                    .unwrap_or_default()
-            ));
-        }
-
-        let status = child.wait().await;
-        // The stderr drain finishes once the pipe closes on child exit; await
-        // it so the tail buffer is complete before we read it for diagnostics.
-        if let Some(task) = stderr_task {
-            let _ = task.await;
         }
 
         if let Some(mut result) = last_result {

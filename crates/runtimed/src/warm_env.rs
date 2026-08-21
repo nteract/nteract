@@ -234,24 +234,24 @@ where
 }
 
 #[cfg(unix)]
-struct ChildProcessTree {
+pub(crate) struct ChildProcessTree {
     pgid: i32,
 }
 
 #[cfg(windows)]
-struct ChildProcessTree {
+pub(crate) struct ChildProcessTree {
     job: Option<crate::runtime_agent_manifest::WindowsJob>,
 }
 
 #[cfg(not(any(unix, windows)))]
-struct ChildProcessTree;
+pub(crate) struct ChildProcessTree;
 
-fn configure_process_tree(command: &mut tokio::process::Command) {
+pub(crate) fn configure_process_tree(command: &mut tokio::process::Command) {
     #[cfg(unix)]
     command.process_group(0);
 }
 
-fn own_process_tree(child: &tokio::process::Child) -> io::Result<ChildProcessTree> {
+pub(crate) fn own_process_tree(child: &tokio::process::Child) -> io::Result<ChildProcessTree> {
     #[cfg(unix)]
     {
         let pgid = child
@@ -317,7 +317,7 @@ fn terminate_process_tree(process_tree: &mut ChildProcessTree) {
     }
 }
 
-async fn reap_timed_out_child(
+pub(crate) async fn reap_timed_out_child(
     child: &mut tokio::process::Child,
     process_tree: &mut ChildProcessTree,
 ) {
