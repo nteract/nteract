@@ -1,6 +1,5 @@
 //! Session management tools: list, join, open notebooks.
 
-use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -16,8 +15,8 @@ use runtimed_client::protocol::{NotebookCellProjection, NotebookProjection};
 use crate::cloud::{self, CloudRegistry, NotebookTarget};
 use crate::formatting;
 use crate::session::{
-    DaemonIncarnation, NotebookSession, NotebookSessionSource, SessionDropInfo, SessionDropReason,
-    SessionRequirement,
+    query_current_daemon_incarnation, DaemonIncarnation, NotebookSession, NotebookSessionSource,
+    SessionDropInfo, SessionDropReason, SessionRequirement,
 };
 use crate::session_activation::{
     activation_error, ActivationLease, ActivationTicket, CanonicalNotebookTarget,
@@ -28,43 +27,9 @@ use crate::NteractMcp;
 // must be longer so the daemon can return its typed current state instead of
 // the client racing it with an unclassified timeout.
 const MCP_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(125);
-const DAEMON_INCARNATION_SAMPLE_ATTEMPTS: usize = 3;
-const DAEMON_INCARNATION_SAMPLE_RETRY_DELAY: Duration = Duration::from_millis(50);
-
-async fn sample_daemon_incarnation_with_retry<F, Fut>(
-    mut query: F,
-    retry_delay: Duration,
-) -> Option<DaemonIncarnation>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Option<DaemonIncarnation>>,
-{
-    for attempt in 0..DAEMON_INCARNATION_SAMPLE_ATTEMPTS {
-        if let Some(incarnation) = query().await {
-            return Some(incarnation);
-        }
-        if attempt + 1 < DAEMON_INCARNATION_SAMPLE_ATTEMPTS {
-            tokio::time::sleep(retry_delay).await;
-        }
-    }
-    None
-}
 
 async fn current_daemon_incarnation(server: &NteractMcp) -> Option<DaemonIncarnation> {
-    let socket_path = server.socket_path.clone();
-    sample_daemon_incarnation_with_retry(
-        move || {
-            let socket_path = socket_path.clone();
-            async move {
-                runtimed_client::singleton::query_daemon_info(socket_path)
-                    .await
-                    .as_ref()
-                    .map(DaemonIncarnation::from)
-            }
-        },
-        DAEMON_INCARNATION_SAMPLE_RETRY_DELAY,
-    )
-    .await
+    query_current_daemon_incarnation(server.socket_path.clone()).await
 }
 
 fn unchanged_daemon_incarnation(
@@ -118,8 +83,9 @@ const MAX_PARKED_SESSIONS: usize = 8;
 /// Instead of dropping the old session (which would decrement the daemon's
 /// peer count and start the eviction timer), we move it into a parked
 /// sessions map. The daemon peer connection stays alive, so the room and
-/// kernel survive. When the agent switches back, the parked session is
-/// resumed without a new connection.
+/// kernel survive. Hosted sessions can reuse the parked peer when the agent
+/// switches back. Local sessions are retained only for keepalive and are
+/// rebuilt from their durable identity after daemon replacement.
 ///
 /// If parking would exceed [`MAX_PARKED_SESSIONS`], one existing parked
 /// session is evicted to keep the cache bounded.
@@ -155,7 +121,7 @@ async fn park_session(server: &NteractMcp, old: NotebookSession) {
     parked.insert(session_key, old);
 }
 
-/// Try to resume a parked session for the given notebook_id.
+/// Try to resume a parked hosted session for the given notebook URL.
 ///
 /// Returns `Some(session)` if a parked session was found and removed from
 /// the parked map. The caller should install it as the active session.
@@ -800,7 +766,9 @@ async fn install_activated_session(
     // actually publishes; failed attempts never poison the active slot.
     if !lease.is_current() {
         if let Some(old) = previous {
-            park_session(server, old).await;
+            if old.session_key() != session_key {
+                park_session(server, old).await;
+            }
         }
         return Err(superseded_result(lease));
     }
@@ -814,6 +782,27 @@ async fn install_activated_session(
     // room. Remove it only after successful generation publication.
     server.parked_sessions.write().await.remove(&session_key);
     Ok(())
+}
+
+fn add_created_notebook_recovery(mut result: CallToolResult, notebook_id: &str) -> CallToolResult {
+    let mut details = result
+        .structured_content
+        .take()
+        .unwrap_or_else(|| serde_json::json!({ "error": {} }));
+    if !details
+        .get("error")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        details["error"] = serde_json::json!({});
+    }
+    details["error"]["notebook_id"] = serde_json::json!(notebook_id);
+    details["error"]["recovery"] = serde_json::json!({
+        "tool": "connect_notebook",
+        "notebook_id": notebook_id,
+    });
+    result.content = vec![Content::text(details.to_string())];
+    result.structured_content = Some(details);
+    result
 }
 
 fn notebook_session_response(mut response: serde_json::Value, notebook_id: &str) -> CallToolResult {
@@ -1247,9 +1236,34 @@ async fn connect_hosted_notebook(
         }
 
         add_progressive_session_fields(&mut response, &parked);
-        if let Err(result) = install_activated_session(server, lease, parked).await {
-            return Ok(result);
+        let previous = match lease
+            .install_in_slot_recovering(&server.session, parked)
+            .await
+        {
+            Ok(previous) => previous,
+            Err((result, rejected)) => {
+                server
+                    .parked_sessions
+                    .write()
+                    .await
+                    .insert(session_key.clone(), rejected);
+                return Ok(result);
+            }
+        };
+        if !lease.is_current() {
+            if let Some(old) = previous {
+                if old.session_key() != session_key {
+                    park_session(server, old).await;
+                }
+            }
+            return Ok(superseded_result(lease));
         }
+        if let Some(old) = previous {
+            if old.session_key() != session_key {
+                park_session(server, old).await;
+            }
+        }
+        server.parked_sessions.write().await.remove(&session_key);
         return Ok(notebook_session_response(response, &notebook_id));
     }
 
@@ -1712,7 +1726,7 @@ pub async fn create_notebook(
                 if let Err(result) =
                     install_activated_session(server, &activation_lease, session).await
                 {
-                    return Ok(result);
+                    return Ok(add_created_notebook_recovery(result, &notebook_id));
                 }
 
                 Ok(notebook_session_response(info, &notebook_id))
@@ -1984,18 +1998,26 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn daemon_incarnation_sample_retries_transient_unavailability() {
-        let expected = test_incarnation(42);
-        let mut samples = std::collections::VecDeque::from([None, None, Some(expected.clone())]);
-        let observed = sample_daemon_incarnation_with_retry(
-            || std::future::ready(samples.pop_front().unwrap()),
-            Duration::ZERO,
-        )
-        .await;
+    #[test]
+    fn created_notebook_recovery_keeps_new_identity() {
+        let original = activation_error(
+            "daemon_replaced",
+            "retry",
+            7,
+            &CanonicalNotebookTarget::new("local:create:test"),
+        );
+        let result = add_created_notebook_recovery(original, "new-notebook-id");
+        let details = result.structured_content.expect("structured error");
 
-        assert_eq!(observed, Some(expected));
-        assert!(samples.is_empty());
+        assert_eq!(details["error"]["notebook_id"], "new-notebook-id");
+        assert_eq!(
+            details["error"]["recovery"],
+            serde_json::json!({
+                "tool": "connect_notebook",
+                "notebook_id": "new-notebook-id",
+            })
+        );
+        assert_eq!(result.is_error, Some(true));
     }
 
     #[test]

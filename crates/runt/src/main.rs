@@ -814,25 +814,44 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
         }
     };
 
-    tokio::select! {
+    let daemon_upgrade_exit = tokio::select! {
         result = handle.waiting() => {
             // MCP client disconnected — normal shutdown
             result?;
+            false
         }
-        exit_code = watch_handle => {
-            // Watcher returned — daemon was upgraded.
-            // Gracefully close the MCP transport so the client sees a clean
-            // EOF rather than a broken pipe, then exit with EX_TEMPFAIL (75)
-            // so the wrapper or client knows to restart us.
-            let code = exit_code.unwrap_or(runt_mcp::daemon_watch::EXIT_DAEMON_UPGRADED);
-            eprintln!("Daemon upgraded, exiting for restart (exit code {code}).");
-            cancel_token.cancel();
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            std::process::exit(code);
+        watch_result = watch_handle => {
+            match watch_result {
+                Ok(runt_mcp::daemon_watch::EXIT_DAEMON_UPGRADED) => true,
+                Ok(0) => {
+                    tracing::info!("[mcp] Daemon watch stream closed; shutting down normally");
+                    false
+                }
+                Ok(code) => {
+                    return Err(anyhow::anyhow!(
+                        "daemon watch exited with unexpected code {code}"
+                    ));
+                }
+                Err(error) => {
+                    return Err(anyhow::anyhow!("daemon watch task failed: {error}"));
+                }
+            }
         }
         _ = sigterm => {
             tracing::info!("[mcp] Received SIGTERM, shutting down gracefully");
+            false
         }
+    };
+
+    if daemon_upgrade_exit {
+        // Gracefully close the MCP transport so the client sees a clean EOF,
+        // then use EX_TEMPFAIL so the proxy can classify the intentional
+        // daemon-upgrade handoff separately from a crash.
+        let code = runt_mcp::daemon_watch::EXIT_DAEMON_UPGRADED;
+        eprintln!("Daemon upgraded, exiting for restart (exit code {code}).");
+        cancel_token.cancel();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        std::process::exit(code);
     }
 
     // Disconnect our peer from the notebook session before the process exits.

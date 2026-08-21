@@ -126,7 +126,7 @@ pub(crate) fn is_hosted_session_target(target: &str) -> bool {
 }
 
 /// Parse notebook_id from a tool result's text content (JSON response body).
-fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
+pub(crate) fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
     for content in &result.content {
         if let Some(text) = content.raw.as_text() {
             if let Ok(json) = serde_json::from_str::<Value>(&text.text) {

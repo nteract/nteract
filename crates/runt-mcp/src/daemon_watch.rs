@@ -26,7 +26,10 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
 use crate::cloud::{self, NotebookTarget};
-use crate::session::{DaemonIncarnation, NotebookSession, SessionDropInfo, SessionDropReason};
+use crate::session::{
+    query_current_daemon_incarnation, DaemonIncarnation, NotebookSession, SessionDropInfo,
+    SessionDropReason,
+};
 use std::collections::HashMap;
 
 /// Exit code when the daemon has been upgraded and the MCP server should
@@ -345,6 +348,10 @@ fn looks_like_uuid(target: &str) -> bool {
         && uuid::Uuid::parse_str(target).is_ok()
 }
 
+fn missing_saved_rejoin_source(path: Option<&str>) -> Option<&str> {
+    path.filter(|path| !Path::new(path).is_file())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationResult {
     Installed,
@@ -467,21 +474,26 @@ async fn rejoin(
             info!("Automatic notebook rejoin cancelled by explicit session intent");
             return true;
         }
-        if query_daemon_info(socket_path.to_path_buf())
+        if query_current_daemon_incarnation(socket_path.to_path_buf())
             .await
-            .as_ref()
-            .map(DaemonIncarnation::from)
             .as_ref()
             != Some(&expected_incarnation)
         {
             info!("Automatic notebook rejoin cancelled because daemon incarnation changed");
             return false;
         }
-        let use_path = notebook_path
-            .as_ref()
-            .filter(|p| std::path::Path::new(p.as_str()).exists());
+        if let Some(path) = missing_saved_rejoin_source(notebook_path.as_deref()) {
+            info!(%path, "Saved notebook source is missing; cancelling automatic rejoin");
+            *last_session_drop.write().await = Some(SessionDropInfo {
+                reason: SessionDropReason::Evicted,
+                notebook_id: notebook_id.clone(),
+                notebook_path: notebook_path.clone(),
+                rejoin_target: Some(path.to_string()),
+            });
+            return true;
+        }
 
-        let result = if let Some(path) = use_path {
+        let result = if let Some(path) = notebook_path.as_ref() {
             match notebook_sync::connect::connect_open(
                 socket_path.to_path_buf(),
                 PathBuf::from(path),
@@ -533,10 +545,8 @@ async fn rejoin(
 
                 // Sample again after the entire connect/readiness operation.
                 // A mismatch leaves no local handle eligible for publication.
-                if query_daemon_info(socket_path.to_path_buf())
+                if query_current_daemon_incarnation(socket_path.to_path_buf())
                     .await
-                    .as_ref()
-                    .map(DaemonIncarnation::from)
                     .as_ref()
                     != Some(&expected_incarnation)
                 {
@@ -912,6 +922,20 @@ mod tests {
         assert!(looks_like_uuid("550e8400-e29b-41d4-a716-446655440000"));
         assert!(!looks_like_uuid("/tmp/notebook.ipynb"));
         assert!(!looks_like_uuid("relative/notebook.ipynb"));
+    }
+
+    #[test]
+    fn missing_saved_path_is_refused_before_uuid_connect_fallback() {
+        let missing = std::env::temp_dir().join(format!(
+            "nteract-missing-rejoin-{}.ipynb",
+            uuid::Uuid::new_v4()
+        ));
+
+        assert_eq!(
+            missing_saved_rejoin_source(missing.to_str()),
+            missing.to_str()
+        );
+        assert_eq!(missing_saved_rejoin_source(None), None);
     }
 
     #[test]

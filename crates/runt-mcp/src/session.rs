@@ -1,6 +1,9 @@
 //! Notebook session state management.
 
+use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use notebook_sync::handle::DocHandle;
@@ -32,6 +35,51 @@ impl From<&runtimed_client::singleton::DaemonInfo> for DaemonIncarnation {
             started_at: info.started_at,
         }
     }
+}
+
+const DAEMON_INCARNATION_SAMPLE_ATTEMPTS: usize = 3;
+const DAEMON_INCARNATION_SAMPLE_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+pub(crate) async fn sample_daemon_incarnation_with_retry<F, Fut>(
+    mut query: F,
+    retry_delay: Duration,
+) -> Option<DaemonIncarnation>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<DaemonIncarnation>>,
+{
+    for attempt in 0..DAEMON_INCARNATION_SAMPLE_ATTEMPTS {
+        if let Some(incarnation) = query().await {
+            return Some(incarnation);
+        }
+        if attempt + 1 < DAEMON_INCARNATION_SAMPLE_ATTEMPTS {
+            tokio::time::sleep(retry_delay).await;
+        }
+    }
+    None
+}
+
+/// Sample the live daemon identity with a short retry window.
+///
+/// Both explicit tool activation and automatic rejoin use this boundary so a
+/// brief socket transition cannot make one path publish while the other path
+/// cancels against a single transient miss.
+pub(crate) async fn query_current_daemon_incarnation(
+    socket_path: PathBuf,
+) -> Option<DaemonIncarnation> {
+    sample_daemon_incarnation_with_retry(
+        move || {
+            let socket_path = socket_path.clone();
+            async move {
+                runtimed_client::singleton::query_daemon_info(socket_path)
+                    .await
+                    .as_ref()
+                    .map(DaemonIncarnation::from)
+            }
+        },
+        DAEMON_INCARNATION_SAMPLE_RETRY_DELAY,
+    )
+    .await
 }
 
 /// Where the active notebook document is hosted.
@@ -610,6 +658,23 @@ pub struct SessionDropInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn daemon_incarnation_sample_retries_transient_unavailability() {
+        let expected = DaemonIncarnation {
+            pid: 42,
+            started_at: Utc::now(),
+        };
+        let mut samples = std::collections::VecDeque::from([None, None, Some(expected.clone())]);
+        let observed = sample_daemon_incarnation_with_retry(
+            || std::future::ready(samples.pop_front().unwrap()),
+            Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(observed, Some(expected));
+        assert!(samples.is_empty());
+    }
 
     #[test]
     fn stalled_local_peer_keeps_document_capabilities_closed() {

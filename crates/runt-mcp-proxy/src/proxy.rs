@@ -138,8 +138,13 @@ pub struct ProxyState {
     upgrade_handoff_limiter: CircuitBreaker,
     /// Cached child tool definitions, loaded from disk at startup.
     pub cached_tools: Option<Vec<Tool>>,
-    /// Last active notebook ID for auto-rejoin after restart.
+    /// Durable active notebook target for auto-rejoin after restart. This may
+    /// be a daemon UUID, canonical file path, or hosted notebook URL.
     pub last_notebook_id: Option<String>,
+    /// Daemon/cloud notebook id corresponding to `last_notebook_id`. The
+    /// durable handoff target may instead be a path or hosted URL, so retain
+    /// both forms to recognize an explicit disconnect by notebook id.
+    last_notebook_session_id: Option<String>,
     /// Upstream MCP client name (forwarded to child).
     pub upstream_name: String,
     /// Upstream MCP client title (forwarded to child).
@@ -195,6 +200,7 @@ impl McpProxy {
                 upgrade_handoff_limiter: CircuitBreaker::new(),
                 cached_tools,
                 last_notebook_id: None,
+                last_notebook_session_id: None,
                 upstream_name: "unknown".to_string(),
                 upstream_title: None,
                 last_daemon_version: None,
@@ -933,6 +939,24 @@ impl McpProxy {
     }
 
     async fn track_session(&self, params: &CallToolRequestParams, result: &CallToolResult) {
+        if params.name.as_ref() == "disconnect_notebook" && result.is_error != Some(true) {
+            let requested_id = params
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("notebook_id"))
+                .and_then(serde_json::Value::as_str);
+            let mut state = self.state.write().await;
+            let disconnected_active = requested_id.is_none()
+                || requested_id == state.last_notebook_id.as_deref()
+                || requested_id == state.last_notebook_session_id.as_deref();
+            if disconnected_active {
+                info!("Clearing notebook handoff target after explicit disconnect");
+                state.last_notebook_id = None;
+                state.last_notebook_session_id = None;
+            }
+            return;
+        }
+
         if let Some(id) = session::extract_session_id(params, result) {
             let mut state = self.state.write().await;
             let saving_hosted_session = params.name.as_ref() == "save_notebook"
@@ -945,6 +969,9 @@ impl McpProxy {
             } else {
                 info!("Tracking active notebook session: {id}");
                 state.last_notebook_id = Some(id);
+            }
+            if let Some(notebook_id) = session::extract_notebook_id_from_result(result) {
+                state.last_notebook_session_id = Some(notebook_id);
             }
         }
     }
@@ -1673,6 +1700,59 @@ mod tests {
             proxy.state.read().await.last_notebook_id.as_deref(),
             Some(hosted_target)
         );
+    }
+
+    #[tokio::test]
+    async fn track_session_clears_handoff_after_active_disconnect() {
+        let proxy = McpProxy::new(test_config(), None);
+        {
+            let mut state = proxy.state.write().await;
+            state.last_notebook_id = Some("/tmp/analysis.ipynb".to_string());
+            state.last_notebook_session_id =
+                Some("38582ef2-a117-4ce6-83d2-20c2c45d33d7".to_string());
+        }
+        let disconnect: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "disconnect_notebook",
+            "arguments": { "notebook_id": "38582ef2-a117-4ce6-83d2-20c2c45d33d7" }
+        }))
+        .unwrap();
+
+        proxy
+            .track_session(
+                &disconnect,
+                &CallToolResult::success(vec![Content::text("ok")]),
+            )
+            .await;
+
+        let state = proxy.state.read().await;
+        assert!(state.last_notebook_id.is_none());
+        assert!(state.last_notebook_session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn track_session_keeps_active_handoff_when_parked_session_disconnects() {
+        let proxy = McpProxy::new(test_config(), None);
+        {
+            let mut state = proxy.state.write().await;
+            state.last_notebook_id = Some("/tmp/active.ipynb".to_string());
+            state.last_notebook_session_id = Some("active-id".to_string());
+        }
+        let disconnect: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "disconnect_notebook",
+            "arguments": { "notebook_id": "parked-id" }
+        }))
+        .unwrap();
+
+        proxy
+            .track_session(
+                &disconnect,
+                &CallToolResult::success(vec![Content::text("ok")]),
+            )
+            .await;
+
+        let state = proxy.state.read().await;
+        assert_eq!(state.last_notebook_id.as_deref(), Some("/tmp/active.ipynb"));
+        assert_eq!(state.last_notebook_session_id.as_deref(), Some("active-id"));
     }
 
     #[tokio::test]
