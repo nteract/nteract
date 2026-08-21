@@ -50,7 +50,7 @@ function PoolErrorItem({ envType, error, onDismiss, onOpenSettings }: PoolErrorI
     <NotebookNotice
       tone="warning"
       icon={isTimeout ? <Clock /> : <AlertTriangle />}
-      title={<AnsiText>{error.message}</AnsiText>}
+      title={<AnsiText fallback={`${envType} environment warmup failed`}>{error.message}</AnsiText>}
       onDismiss={onDismiss}
       actions={
         showSettingsButton(error) && onOpenSettings ? (

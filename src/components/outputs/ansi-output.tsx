@@ -75,7 +75,10 @@ function paletteIndexToRgb(index: number): string {
 /**
  * Parse an anser JSON entry's color fields into a React style + className.
  */
-function resolveAnsiStyle(entry: Anser.AnserJsonEntry): {
+function resolveAnsiStyle(
+  entry: Anser.AnserJsonEntry,
+  preserveConceal: boolean,
+): {
   style: CSSProperties;
   className: string;
 } {
@@ -120,7 +123,9 @@ function resolveAnsiStyle(entry: Anser.AnserJsonEntry): {
         style.fontStyle = "italic";
         break;
       case "hidden":
-        style.visibility = "hidden";
+        if (preserveConceal) {
+          style.visibility = "hidden";
+        }
         break;
       case "strikethrough":
         style.textDecoration =
@@ -165,12 +170,26 @@ function ansiToJson(input: string): Anser.AnserJsonEntry[] {
 /**
  * Render parsed ANSI entries to React spans.
  */
-function renderAnsiEntries(entries: Anser.AnserJsonEntry[]): ReactNode[] {
+const INVISIBLE_CONTROL_CHARACTERS = new RegExp(
+  // eslint-disable-next-line no-control-regex -- remove residual C0/C1 controls except tab/newline
+  "[\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F]",
+  "g",
+);
+
+function sanitizeAnsiContent(content: string): string {
+  return stripAnsi(content).replace(INVISIBLE_CONTROL_CHARACTERS, "");
+}
+
+function ansiEntriesToPlainText(entries: Anser.AnserJsonEntry[]): string {
+  return entries.map((entry) => sanitizeAnsiContent(entry.content)).join("");
+}
+
+function renderAnsiEntries(entries: Anser.AnserJsonEntry[], preserveConceal: boolean): ReactNode[] {
   return entries.map((entry, i) => {
-    const { style, className } = resolveAnsiStyle(entry);
+    const { style, className } = resolveAnsiStyle(entry, preserveConceal);
     const hasStyle = Object.keys(style).length > 0;
     const hasClass = className.length > 0;
-    const content = stripAnsi(entry.content);
+    const content = sanitizeAnsiContent(entry.content);
 
     if (!hasStyle && !hasClass) {
       return <span key={i}>{content}</span>;
@@ -194,6 +213,8 @@ function renderAnsiEntries(entries: Anser.AnserJsonEntry[]): ReactNode[] {
 
 interface AnsiTextProps {
   children: string;
+  fallback?: ReactNode;
+  preserveConceal?: boolean;
 }
 
 /** Convert ANSI terminal text to normalized, copyable plain text. */
@@ -202,20 +223,27 @@ export function ansiToPlainText(input: string): string {
     return "";
   }
 
-  return ansiToJson(input)
-    .map((entry) => stripAnsi(entry.content))
-    .join("");
+  return ansiEntriesToPlainText(ansiToJson(input));
 }
 
 /**
  * Render ANSI text inline, inheriting layout and typography from its parent.
  */
-export function AnsiText({ children }: AnsiTextProps) {
-  if (!children || typeof children !== "string") {
+export function AnsiText({ children, fallback, preserveConceal = false }: AnsiTextProps) {
+  const entries = useMemo(
+    () => (children && typeof children === "string" ? ansiToJson(children) : []),
+    [children],
+  );
+
+  if (fallback !== undefined && ansiEntriesToPlainText(entries).trim().length === 0) {
+    return <>{fallback}</>;
+  }
+
+  if (entries.length === 0) {
     return null;
   }
 
-  return <>{renderAnsiEntries(ansiToJson(children))}</>;
+  return <>{renderAnsiEntries(entries, preserveConceal)}</>;
 }
 
 interface AnsiOutputProps {
@@ -245,7 +273,7 @@ export function AnsiOutput({ children, className = "", isError = false }: AnsiOu
       )}
     >
       <code>
-        <AnsiText>{children}</AnsiText>
+        <AnsiText preserveConceal>{children}</AnsiText>
       </code>
     </div>
   );

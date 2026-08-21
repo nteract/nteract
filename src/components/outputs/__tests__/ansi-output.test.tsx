@@ -50,6 +50,24 @@ describe("AnsiText", () => {
     expect(container.textContent).not.toContain("\x07");
     expect(container.textContent).not.toContain("https://example.com");
   });
+
+  it("removes residual controls from truncated ANSI sequences", () => {
+    const { container } = render(
+      <AnsiText>{"8;;https://example.com\x07documentation \x1b]8;;https://ex"}</AnsiText>,
+    );
+
+    expect(container.textContent).not.toContain("\x1b");
+    expect(container.textContent).not.toContain("\x07");
+  });
+
+  it("keeps concealed inline text perceivable", () => {
+    const { container } = render(<AnsiText>{"\x1b[8mFailure details\x1b[0m"}</AnsiText>);
+
+    const text = screen.getByText("Failure details");
+    expect(text).toBeVisible();
+    expect(text).not.toHaveStyle({ visibility: "hidden" });
+    expect(container.textContent).toBe("Failure details");
+  });
 });
 
 describe("AnsiOutput", () => {
@@ -206,6 +224,12 @@ describe("AnsiOutput", () => {
       expect(combinedSpan?.style).toContain("font-weight: bold");
       expect(combinedSpan?.style).toContain("font-style: italic");
       expect(combinedSpan?.style).toContain("text-decoration: underline");
+    });
+
+    it("preserves terminal conceal styling", () => {
+      const { container } = render(<AnsiOutput>{"\x1b[8mHidden\x1b[0m"}</AnsiOutput>);
+      const hiddenSpan = getSpanStyles(container).find((span) => span.text === "Hidden");
+      expect(hiddenSpan?.style).toContain("visibility: hidden");
     });
   });
 

@@ -78,4 +78,15 @@ describe("NotebookNotice", () => {
     expect(details?.textContent).not.toContain("\x1b");
     expect(details?.querySelector(".ansi-red-fg")).toHaveTextContent("failed");
   });
+
+  it("provides a fallback when details contain only ANSI controls", () => {
+    render(
+      <NotebookNotice
+        title="Runtime unavailable"
+        details={<NotebookNoticeDetails>{"\x1b[2K\x1b[1G"}</NotebookNoticeDetails>}
+      />,
+    );
+
+    expect(screen.getByText("No further details reported.")).toBeInTheDocument();
+  });
 });
