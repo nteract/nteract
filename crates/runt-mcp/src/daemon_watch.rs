@@ -804,6 +804,8 @@ mod tests {
     fn daemon_info(version: &str, pid: u32) -> runtimed_client::singleton::DaemonInfo {
         runtimed_client::singleton::DaemonInfo {
             endpoint: "/tmp/test.sock".to_string(),
+            protocol_version: notebook_protocol::connection::PROTOCOL_VERSION.into(),
+            daemon_api_version: runtimed_client::protocol::DAEMON_API_VERSION,
             pid,
             version: version.to_string(),
             started_at: incarnation(pid).started_at,

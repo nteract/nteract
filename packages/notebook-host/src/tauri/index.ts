@@ -164,6 +164,9 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
       reconnectGovernor.reset();
       await reconnectDaemon(options?.force === true);
     },
+    async repair() {
+      await invoke<void>("repair_daemon");
+    },
     async getInfo() {
       return invoke<DaemonInfo | null>("get_daemon_info");
     },

@@ -489,7 +489,7 @@ async fn main() -> anyhow::Result<()> {
 
             run_daemon(config).await
         }
-        Some(Commands::Install { binary }) => install_service(binary),
+        Some(Commands::Install { binary }) => install_service(binary).await,
         // Deprecated commands - still work but print warnings
         Some(Commands::Uninstall) => {
             eprintln!(
@@ -824,7 +824,7 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     result
 }
 
-fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
+async fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
     let source_binary = match binary {
         Some(path) => path,
         None => std::env::current_exe()?,
@@ -838,22 +838,16 @@ fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
         include_str!(concat!(env!("OUT_DIR"), "/git_hash.txt"))
     );
 
-    let mut manager = ServiceManager::default();
-
-    if manager.is_installed() {
-        // Already installed - upgrade the binary instead of failing
-        // upgrade() handles: stop old -> copy binary -> start new
-        println!("Service already installed, upgrading...");
-        manager.upgrade(&source_binary)?;
-    } else {
-        // Fresh install
-        manager.install(&source_binary)?;
-        println!("Starting daemon...");
-        manager.start()?;
-    }
+    let verified =
+        runtimed::service_repair::repair_service(&source_binary, runtimed::daemon_version())
+            .await?;
 
     println!();
     println!("Service installed and running!");
+    println!(
+        "Verified daemon: pid={} version={}",
+        verified.pid, verified.version
+    );
     println!("The daemon will start automatically at login.");
     println!();
     println!("To check status: {} daemon status", cli_command_name());

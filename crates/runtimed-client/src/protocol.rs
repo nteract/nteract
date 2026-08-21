@@ -8,6 +8,17 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// Semantic contract implemented by the daemon's Pool API.
+///
+/// This is deliberately separate from the wire protocol version. The wire
+/// version changes when framing or serialization becomes incompatible;
+/// this version changes when clients require newer daemon behavior while the
+/// existing wire format remains readable.
+pub const DAEMON_API_VERSION: u32 = 1;
+
+/// Oldest semantic daemon API this client can safely use.
+pub const MIN_DAEMON_API_VERSION: u32 = 1;
 use std::path::PathBuf;
 
 use notebook_doc::pool_state::PoolState;
@@ -131,6 +142,10 @@ pub enum Response {
     DaemonInfo {
         /// Numeric protocol version (matches `PROTOCOL_VERSION`).
         protocol_version: u32,
+        /// Semantic daemon API version. Missing on pre-versioned daemons and
+        /// therefore deserialized as zero so a new client can repair them.
+        #[serde(default)]
+        daemon_api_version: u32,
         /// Daemon version string (e.g., "2.0.0+abc123").
         daemon_version: String,
         /// Daemon process ID.
@@ -725,6 +740,28 @@ mod tests {
                 assert_eq!(daemon_version, None);
             }
             _ => panic!("unexpected response type"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_info_defaults_missing_semantic_api_to_zero() {
+        let json = serde_json::json!({
+            "type": "daemon_info",
+            "protocol_version": 4,
+            "daemon_version": "2.4.6+old",
+            "pid": 42,
+            "started_at": "2026-08-12T00:00:00Z",
+            "blob_port": null,
+            "execution_store_dir": null,
+            "worktree_path": null,
+            "workspace_description": null
+        });
+
+        match serde_json::from_value(json).expect("legacy daemon info should deserialize") {
+            Response::DaemonInfo {
+                daemon_api_version, ..
+            } => assert_eq!(daemon_api_version, 0),
+            other => panic!("unexpected response type: {other:?}"),
         }
     }
 

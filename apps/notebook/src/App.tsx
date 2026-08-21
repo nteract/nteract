@@ -1685,6 +1685,22 @@ function AppContent() {
     });
   }, [host]);
 
+  const repairRuntime = useCallback(() => {
+    const repair = host.daemon.repair;
+    if (!repair) return;
+
+    setDaemonStatus({ status: "upgrading" });
+    repair()
+      .then(() => host.daemon.reconnect({ force: true }))
+      .catch((e: unknown) => {
+        setDaemonStatus({
+          status: "failed",
+          error: `Runtime repair failed: ${e}`,
+          guidance: "Repair could not complete. You can retry the connection or try repair again.",
+        });
+      });
+  }, [host]);
+
   const documentDirty = ephemeral === true ? true : isFileBacked ? fileBackedDirty : false;
 
   // Untitled notebooks remain dirty. File-backed notebooks get the `*`
@@ -1954,6 +1970,7 @@ function AppContent() {
           status={daemonStatus}
           onDismiss={() => setDaemonStatus(null)}
           onRetry={reconnectRuntime}
+          onRepair={host.daemon.repair ? repairRuntime : undefined}
         />
         <PoolErrorBanner
           uvError={poolUvError}

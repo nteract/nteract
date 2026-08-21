@@ -125,6 +125,8 @@ fn placeholder_daemon_info(custom_lock_dir: Option<&PathBuf>) -> client_singleto
         .unwrap_or_else(runt_workspace::default_socket_path);
     client_singleton::DaemonInfo {
         endpoint: endpoint.to_string_lossy().to_string(),
+        protocol_version: notebook_protocol::connection::PROTOCOL_VERSION.into(),
+        daemon_api_version: runtimed_client::protocol::DAEMON_API_VERSION,
         pid: 0,
         version: "unknown".to_string(),
         started_at: chrono::Utc::now(),
