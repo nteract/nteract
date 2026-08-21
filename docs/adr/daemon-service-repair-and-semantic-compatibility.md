@@ -40,8 +40,12 @@ The `runtimed install` sidecar performs the complete repair, including when no
 recognized service artifact exists:
 
 1. Inspect the live stable-socket owner and capture its process incarnation.
-2. Request graceful shutdown over the Pool channel.
-3. Stop the registered service as a compatibility fallback.
+2. Request graceful shutdown over the Pool channel and allow the daemon to
+   finish its notebook durability barriers. If clean shutdown is refused or
+   exceeds the repair patience bound while the daemon remains responsive,
+   abort repair without stopping the service or process.
+3. After clean shutdown completes, or after the daemon becomes unresponsive,
+   stop the registered service as a compatibility fallback.
 4. If the captured process remains, stop that specific process and confirm the
    socket owner is gone.
 5. Install or normalize the service definition using the sidecar's own binary.
@@ -71,6 +75,8 @@ daemon admission result.
   version rather than accidental build identity.
 - launchd/SMAppService configuration and live socket ownership are inspected
   independently.
+- Repair never escalates process termination merely because a responsive
+  daemon is still completing or has rejected its durability-safe shutdown.
 - Exact build equality remains a required postcondition of an explicit repair,
   where it proves that the intended sidecar actually took ownership.
 - Cross-version updater tests must include a live orphan daemon with no current

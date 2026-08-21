@@ -12,9 +12,13 @@ use runtimed_client::client::PoolClient;
 use runtimed_client::singleton::{compatibility_error, query_daemon_info, DaemonInfo};
 use runtimed_service::ServiceManager;
 
-const SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-const GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
-const SERVICE_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+const DAEMON_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+// Clean shutdown may spend up to 20 seconds per notebook establishing its
+// durability barrier. This is an overall patience bound, not permission to
+// kill a daemon that is still responsive when the bound expires.
+const CLEAN_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(120);
+const GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+const SERVICE_EXIT_TIMEOUT: Duration = Duration::from_secs(120);
 const FORCED_EXIT_TIMEOUT: Duration = Duration::from_secs(7);
 const READY_ATTEMPTS: u32 = 40;
 const READY_INTERVAL: Duration = Duration::from_millis(250);
@@ -82,22 +86,33 @@ impl Default for SystemDaemonRuntime {
 
 impl DaemonRuntime for SystemDaemonRuntime {
     async fn inspect(&self) -> Option<DaemonInfo> {
-        query_daemon_info(self.socket_path.clone()).await
+        tokio::time::timeout(
+            DAEMON_PROBE_TIMEOUT,
+            query_daemon_info(self.socket_path.clone()),
+        )
+        .await
+        .ok()
+        .flatten()
     }
 
     async fn is_responding(&self) -> bool {
-        PoolClient::new(self.socket_path.clone())
-            .ping()
-            .await
-            .is_ok()
+        tokio::time::timeout(
+            DAEMON_PROBE_TIMEOUT,
+            PoolClient::new(self.socket_path.clone()).ping(),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok())
     }
 
     async fn request_shutdown(&self) -> std::result::Result<(), String> {
         let client = PoolClient::new(self.socket_path.clone());
-        match tokio::time::timeout(SHUTDOWN_REQUEST_TIMEOUT, client.shutdown()).await {
+        match tokio::time::timeout(CLEAN_SHUTDOWN_TIMEOUT, client.shutdown()).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(error.to_string()),
-            Err(_) => Err("shutdown request timed out".to_string()),
+            Err(_) => Err(format!(
+                "clean shutdown did not finish within {} seconds",
+                CLEAN_SHUTDOWN_TIMEOUT.as_secs()
+            )),
         }
     }
 
@@ -181,11 +196,16 @@ where
         "[service-repair] Live daemon predates GetDaemonInfo; stopping without PID metadata"
     );
     if let Err(error) = daemon.request_shutdown().await {
-        tracing::warn!("[service-repair] Legacy daemon shutdown failed: {error}");
+        if daemon.is_responding().await {
+            return Err(anyhow!(
+                "legacy daemon remained responsive after clean shutdown did not complete: {error}; repair stopped to preserve notebook recovery state"
+            ));
+        }
+        tracing::warn!(
+            "[service-repair] Legacy daemon became unresponsive during shutdown: {error}"
+        );
     }
-    if let Err(error) = service.stop() {
-        tracing::warn!("[service-repair] Legacy service-manager stop did not complete: {error}");
-    }
+    stop_service_with_retry(service, daemon).await;
     for _ in 0..50 {
         if !daemon.is_responding().await {
             return Ok(());
@@ -209,11 +229,16 @@ where
         info.started_at
     );
 
-    let graceful_requested = match daemon.request_shutdown().await {
+    let graceful_completed = match daemon.request_shutdown().await {
         Ok(()) => true,
         Err(error) => {
+            if daemon.is_responding().await {
+                return Err(anyhow!(
+                    "daemon remained responsive after clean shutdown did not complete: {error}; repair stopped to preserve notebook recovery state"
+                ));
+            }
             tracing::warn!(
-                "[service-repair] Graceful shutdown failed for pid {}: {}",
+                "[service-repair] Daemon pid {} became unresponsive during shutdown: {}",
                 info.pid,
                 error
             );
@@ -226,10 +251,8 @@ where
     // graceful request before repair has installed the new definition. Do this
     // even when is_installed() is false: a legacy SMAppService job can exist
     // without the current per-user service artifact.
-    if let Err(error) = service.stop() {
-        tracing::warn!("[service-repair] Service-manager stop did not complete: {error}");
-    }
-    let exit_timeout = if graceful_requested {
+    stop_service_with_retry(service, daemon).await;
+    let exit_timeout = if graceful_completed {
         GRACEFUL_EXIT_TIMEOUT
     } else {
         SERVICE_EXIT_TIMEOUT
@@ -274,6 +297,30 @@ where
         ));
     }
     ensure_socket_owner_released(daemon, info).await
+}
+
+async fn stop_service_with_retry<S, D>(service: &mut S, daemon: &D)
+where
+    S: ServiceRuntime,
+    D: DaemonRuntime,
+{
+    match service.stop() {
+        Ok(()) => {}
+        Err(first_error) => {
+            tracing::warn!(
+                "[service-repair] Service-manager stop did not complete: {first_error}; retrying"
+            );
+            daemon.sleep(Duration::from_millis(250)).await;
+            match service.stop() {
+                Ok(()) => {}
+                Err(second_error) => {
+                    tracing::warn!(
+                        "[service-repair] Service-manager stop retry did not complete: {second_error}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 async fn ensure_socket_owner_released<D>(daemon: &D, previous: &DaemonInfo) -> Result<()>
@@ -412,6 +459,7 @@ async fn stop_process_by_pid(_pid: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use chrono::{TimeZone, Utc};
@@ -438,7 +486,8 @@ mod tests {
         info: Arc<Mutex<Option<DaemonInfo>>>,
         events: Arc<Mutex<Vec<&'static str>>>,
         shutdown_exits: bool,
-        responds_without_info: bool,
+        shutdown_error: Option<&'static str>,
+        responds_without_info: Arc<AtomicBool>,
     }
 
     impl DaemonRuntime for FakeDaemon {
@@ -448,13 +497,17 @@ mod tests {
         }
 
         async fn is_responding(&self) -> bool {
-            self.info.lock().unwrap().is_some() || self.responds_without_info
+            self.info.lock().unwrap().is_some() || self.responds_without_info.load(Ordering::SeqCst)
         }
 
         async fn request_shutdown(&self) -> std::result::Result<(), String> {
             self.events.lock().unwrap().push("shutdown");
+            if let Some(error) = self.shutdown_error {
+                return Err(error.to_string());
+            }
             if self.shutdown_exits {
                 *self.info.lock().unwrap() = None;
+                self.responds_without_info.store(false, Ordering::SeqCst);
             }
             Ok(())
         }
@@ -523,7 +576,8 @@ mod tests {
             info: info.clone(),
             events: events.clone(),
             shutdown_exits: false,
-            responds_without_info: false,
+            shutdown_error: None,
+            responds_without_info: Arc::new(AtomicBool::new(false)),
         };
         let replacement = daemon_info(84, "2.7.1+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -568,5 +622,90 @@ mod tests {
         assert!(service_stop < wait_pid);
         assert!(wait_pid < stop_process);
         assert!(stop_process < install_start);
+    }
+
+    #[tokio::test]
+    async fn live_legacy_orphan_without_metadata_is_repaired() {
+        let info = Arc::new(Mutex::new(None));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let daemon = FakeDaemon {
+            info: info.clone(),
+            events: events.clone(),
+            shutdown_exits: true,
+            shutdown_error: None,
+            responds_without_info: Arc::new(AtomicBool::new(true)),
+        };
+        let replacement = daemon_info(91, "2.7.1+new", DAEMON_API_VERSION);
+        let mut service = FakeService {
+            installed: false,
+            info,
+            events: events.clone(),
+            replacement: replacement.clone(),
+        };
+
+        let result = repair_service_with(
+            &mut service,
+            &daemon,
+            Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
+            &replacement.version,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.pid, replacement.pid);
+        let events = events.lock().unwrap();
+        let shutdown = events
+            .iter()
+            .position(|event| *event == "shutdown")
+            .unwrap();
+        let service_stop = events
+            .iter()
+            .position(|event| *event == "service_stop")
+            .unwrap();
+        let install_start = events
+            .iter()
+            .position(|event| *event == "install_start")
+            .unwrap();
+        assert!(shutdown < service_stop);
+        assert!(service_stop < install_start);
+    }
+
+    #[tokio::test]
+    async fn responsive_daemon_is_not_forced_after_clean_shutdown_failure() {
+        let old = daemon_info(41, "2.4.6+old", 0);
+        let info = Arc::new(Mutex::new(Some(old)));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let daemon = FakeDaemon {
+            info: info.clone(),
+            events: events.clone(),
+            shutdown_exits: false,
+            shutdown_error: Some("durability barrier still active"),
+            responds_without_info: Arc::new(AtomicBool::new(false)),
+        };
+        let replacement = daemon_info(84, "2.7.1+new", DAEMON_API_VERSION);
+        let mut service = FakeService {
+            installed: true,
+            info,
+            events: events.clone(),
+            replacement,
+        };
+
+        let error = repair_service_with(
+            &mut service,
+            &daemon,
+            Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
+            "2.7.1+new",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("preserve notebook recovery state"));
+        let events = events.lock().unwrap();
+        assert!(events.contains(&"shutdown"));
+        assert!(!events.contains(&"service_stop"));
+        assert!(!events.contains(&"stop_process"));
+        assert!(!events.contains(&"install_start"));
     }
 }
