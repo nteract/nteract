@@ -22,6 +22,8 @@ import {
   outputAllowsScrollPassthrough,
   outputNeedsIsolation,
   type OutputSegment,
+  outputUsesBokeh,
+  outputUsesPanel,
   outputUsesSift,
   outputUsesWheelOwningFrame,
   type RenderPayload,
@@ -717,12 +719,19 @@ function OutputAreaSingle({
   const hasWheelOwningOutputs = outputs.some((output) =>
     outputUsesWheelOwningFrame(output, priority),
   );
+  const hasBokehOrPanelOutputs = outputs.some(
+    (output) => outputUsesBokeh(output, priority) || outputUsesPanel(output, priority),
+  );
   const shouldUseBridge = shouldIsolate && hasWidgets && widgetContext !== null;
+  // Bokeh and Panel emit a sequence of HTML and JavaScript outputs that must
+  // share one iframe document. Gate that whole document until it is engaged so
+  // scrolling the notebook does not accidentally pan or zoom its contents.
   const shouldUseScrollPassthroughFrame =
     shouldIsolate &&
     !focused &&
     !hasWidgets &&
-    outputs.every((output) => outputAllowsScrollPassthrough(output, priority));
+    (hasBokehOrPanelOutputs ||
+      outputs.every((output) => outputAllowsScrollPassthrough(output, priority)));
   const shouldScrollPassthroughFrame =
     shouldUseScrollPassthroughFrame && !staticFrameInteractionActive;
   const shouldLockWheelBoundary = hasWheelOwningOutputs && staticFrameInteractionActive;

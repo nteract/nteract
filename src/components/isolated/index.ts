@@ -113,6 +113,8 @@ export {
   outputAllowsScrollPassthrough,
   outputNeedsIsolation,
   outputSegmentLane,
+  outputUsesBokeh,
+  outputUsesPanel,
   outputUsesSift,
   outputUsesVega,
   outputUsesWheelOwningFrame,

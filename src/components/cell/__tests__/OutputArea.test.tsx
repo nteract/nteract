@@ -1062,7 +1062,19 @@ describe("OutputArea iframe theme sync", () => {
 
     const frames = screen.getAllByTestId("isolated-frame");
     expect(frames).toHaveLength(1);
-    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("false");
+    const frame = frames[0];
+    const activationWell = frame.parentElement as HTMLElement;
+
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
+
+    fireEvent.pointerDown(activationWell);
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
@@ -1105,7 +1117,7 @@ describe("OutputArea iframe theme sync", () => {
 
     const frames = screen.getAllByTestId("isolated-frame");
     expect(frames).toHaveLength(1);
-    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("true");
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
@@ -1133,7 +1145,19 @@ describe("OutputArea iframe theme sync", () => {
 
     const frames = screen.getAllByTestId("isolated-frame");
     expect(frames).toHaveLength(1);
-    expect(frames[0].getAttribute("data-scroll-passthrough")).toBe("false");
+    const frame = frames[0];
+    const activationWell = frame.parentElement as HTMLElement;
+
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("true");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
+
+    fireEvent.pointerDown(activationWell);
+
+    expect(activationWell.getAttribute("data-frame-interaction-active")).toBe("true");
+    expect(frame.getAttribute("data-scroll-passthrough")).toBe("false");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+    expect(frame.getAttribute("data-forward-wheel-boundary-scroll")).toBe("false");
 
     await waitFor(() => {
       expect(mockFrameHandle.renderBatch).toHaveBeenCalledWith([
