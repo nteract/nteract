@@ -1,7 +1,11 @@
 //! Notebook session state management.
 
+use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use notebook_sync::handle::DocHandle;
 use notebook_sync::status::{
     ConnectionState, InitialLoadPhase, NotebookDocPhase, RuntimeStatePhase,
@@ -12,6 +16,71 @@ use runtimed_client::protocol::{
 use serde::Serialize;
 
 use crate::session_activation::CanonicalNotebookTarget;
+
+/// Identity of one concrete local daemon process.
+///
+/// A PID alone can be reused by the operating system. Pairing it with the
+/// daemon's persisted start timestamp gives MCP sessions an explicit owner
+/// across disconnects and same-version restarts.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DaemonIncarnation {
+    pub pid: u32,
+    pub started_at: DateTime<Utc>,
+}
+
+impl From<&runtimed_client::singleton::DaemonInfo> for DaemonIncarnation {
+    fn from(info: &runtimed_client::singleton::DaemonInfo) -> Self {
+        Self {
+            pid: info.pid,
+            started_at: info.started_at,
+        }
+    }
+}
+
+const DAEMON_INCARNATION_SAMPLE_ATTEMPTS: usize = 3;
+const DAEMON_INCARNATION_SAMPLE_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+pub(crate) async fn sample_daemon_incarnation_with_retry<F, Fut>(
+    mut query: F,
+    retry_delay: Duration,
+) -> Option<DaemonIncarnation>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<DaemonIncarnation>>,
+{
+    for attempt in 0..DAEMON_INCARNATION_SAMPLE_ATTEMPTS {
+        if let Some(incarnation) = query().await {
+            return Some(incarnation);
+        }
+        if attempt + 1 < DAEMON_INCARNATION_SAMPLE_ATTEMPTS {
+            tokio::time::sleep(retry_delay).await;
+        }
+    }
+    None
+}
+
+/// Sample the live daemon identity with a short retry window.
+///
+/// Both explicit tool activation and automatic rejoin use this boundary so a
+/// brief socket transition cannot make one path publish while the other path
+/// cancels against a single transient miss.
+pub(crate) async fn query_current_daemon_incarnation(
+    socket_path: PathBuf,
+) -> Option<DaemonIncarnation> {
+    sample_daemon_incarnation_with_retry(
+        move || {
+            let socket_path = socket_path.clone();
+            async move {
+                runtimed_client::singleton::query_daemon_info(socket_path)
+                    .await
+                    .as_ref()
+                    .map(DaemonIncarnation::from)
+            }
+        },
+        DAEMON_INCARNATION_SAMPLE_RETRY_DELAY,
+    )
+    .await
+}
 
 /// Where the active notebook document is hosted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +194,10 @@ pub struct NotebookSession {
     pub notebook_path: Option<String>,
     /// Session source. Hosted sessions do not depend on the local daemon.
     pub source: NotebookSessionSource,
+    /// The local daemon process that owns this handle. `None` means either a
+    /// hosted session or a local connection whose daemon changed while the
+    /// connection was being established. An unbound local handle is stale.
+    pub local_daemon_incarnation: Option<DaemonIncarnation>,
     /// Monotonic MCP activation generation. Daemon rejoin/create legacy paths
     /// use generation zero until they are replaced by an explicit activation.
     pub activation_generation: u64,
@@ -134,13 +207,19 @@ pub struct NotebookSession {
 }
 
 impl NotebookSession {
-    pub fn local(handle: DocHandle, notebook_id: String, notebook_path: Option<String>) -> Self {
+    pub fn local(
+        handle: DocHandle,
+        notebook_id: String,
+        notebook_path: Option<String>,
+        daemon_incarnation: Option<DaemonIncarnation>,
+    ) -> Self {
         let activation_target = format!("local:id:{notebook_id}");
         Self {
             handle,
             notebook_id,
             notebook_path,
             source: NotebookSessionSource::Local,
+            local_daemon_incarnation: daemon_incarnation,
             activation_generation: 0,
             activation_target,
             readiness_evidence: SessionReadinessEvidence::AwaitedSessionReady,
@@ -154,12 +233,14 @@ impl NotebookSession {
         activation_generation: u64,
         activation_target: CanonicalNotebookTarget,
         projection: NotebookProjection,
+        daemon_incarnation: Option<DaemonIncarnation>,
     ) -> Self {
         Self {
             handle,
             notebook_id,
             notebook_path,
             source: NotebookSessionSource::Local,
+            local_daemon_incarnation: daemon_incarnation,
             activation_generation,
             activation_target: activation_target.as_str().to_string(),
             readiness_evidence: SessionReadinessEvidence::RetainedProjection {
@@ -175,6 +256,7 @@ impl NotebookSession {
             notebook_id,
             notebook_path: None,
             source: NotebookSessionSource::Hosted { domain },
+            local_daemon_incarnation: None,
             activation_generation: 0,
             activation_target,
             readiness_evidence: SessionReadinessEvidence::HostedLegacy,
@@ -193,6 +275,7 @@ impl NotebookSession {
             notebook_id,
             notebook_path: None,
             source: NotebookSessionSource::Hosted { domain },
+            local_daemon_incarnation: None,
             activation_generation,
             activation_target: activation_target.as_str().to_string(),
             readiness_evidence: SessionReadinessEvidence::HostedLegacy,
@@ -575,6 +658,23 @@ pub struct SessionDropInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn daemon_incarnation_sample_retries_transient_unavailability() {
+        let expected = DaemonIncarnation {
+            pid: 42,
+            started_at: Utc::now(),
+        };
+        let mut samples = std::collections::VecDeque::from([None, None, Some(expected.clone())]);
+        let observed = sample_daemon_incarnation_with_retry(
+            || std::future::ready(samples.pop_front().unwrap()),
+            Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(observed, Some(expected));
+        assert!(samples.is_empty());
+    }
 
     #[test]
     fn stalled_local_peer_keeps_document_capabilities_closed() {

@@ -124,6 +124,29 @@ impl SessionActivation {
             })
     }
 
+    /// Whether an already-installed session can satisfy a repeated connect.
+    /// An in-flight activation always wins; generation zero is reserved for
+    /// daemon-watch recovery outside the explicit activation flow.
+    pub fn can_reuse_installed(&self, generation: u64, target: &str) -> bool {
+        let state = self.lock_state();
+        let current_flight_active = state.current_target.as_ref().is_some_and(|current| {
+            state
+                .in_flight
+                .get(current)
+                .is_some_and(|flight| flight.generation == state.generation)
+        });
+        if current_flight_active {
+            return false;
+        }
+        generation == 0
+            || state
+                .installed
+                .as_ref()
+                .is_some_and(|(installed_generation, installed_target)| {
+                    *installed_generation == generation && installed_target.as_str() == target
+                })
+    }
+
     pub fn has_current_local_path_flight(&self) -> bool {
         let state = self.lock_state();
         state.current_target.as_ref().is_some_and(|target| {
@@ -191,20 +214,34 @@ impl ActivationLease {
         slot: &tokio::sync::RwLock<Option<S>>,
         session: S,
     ) -> Result<Option<S>, CallToolResult> {
+        self.install_in_slot_recovering(slot, session)
+            .await
+            .map_err(|(result, _rejected)| result)
+    }
+
+    /// Variant of [`Self::install_in_slot`] that returns a rejected payload to
+    /// the caller. Hosted-session resume uses this to put a healthy parked peer
+    /// back when a newer activation wins during slot publication.
+    pub async fn install_in_slot_recovering<S>(
+        &self,
+        slot: &tokio::sync::RwLock<Option<S>>,
+        session: S,
+    ) -> Result<Option<S>, (CallToolResult, S)> {
         if !self.is_current() {
-            return Err(self.superseded_result());
+            return Err((self.superseded_result(), session));
         }
 
         let mut guard = slot.write().await;
         if !self.is_current() {
-            return Err(self.superseded_result());
+            return Err((self.superseded_result(), session));
         }
         let previous = guard.replace(session);
         if !self.mark_installed() {
-            let stale = guard.take();
+            let Some(stale) = guard.take() else {
+                unreachable!("slot contains the session installed immediately above");
+            };
             *guard = previous;
-            drop(stale);
-            return Err(self.superseded_result());
+            return Err((self.superseded_result(), stale));
         }
         Ok(previous)
     }
@@ -324,6 +361,26 @@ mod tests {
 
     fn target(value: &str) -> CanonicalNotebookTarget {
         CanonicalNotebookTarget::new(value)
+    }
+
+    #[tokio::test]
+    async fn recovering_install_returns_payload_when_superseded() {
+        let activation = Arc::new(SessionActivation::default());
+        let ActivationTicket::Leader(stale) = activation.begin(target("a")) else {
+            panic!("first activation should lead");
+        };
+        let ActivationTicket::Leader(_newer) = activation.begin(target("b")) else {
+            panic!("different target should supersede and lead");
+        };
+        let slot = tokio::sync::RwLock::new(None);
+
+        let (_result, rejected) = stale
+            .install_in_slot_recovering(&slot, "parked-peer".to_string())
+            .await
+            .expect_err("superseded install should return its payload");
+
+        assert_eq!(rejected, "parked-peer");
+        assert!(slot.read().await.is_none());
     }
 
     fn success(value: &str) -> CallToolResult {

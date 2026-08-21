@@ -1,6 +1,6 @@
 # MCP Session Lifecycle and Daemon Supervision
 
-**Status:** Accepted, 2026-07-13; supersedes Draft from 2026-05-23.
+**Status:** Accepted, 2026-07-13; amended 2026-08-20; supersedes Draft from 2026-05-23.
 
 **Neighbors:**
 - `docs/adr/room-source-lifecycle-and-file-recovery.md` - the room-owned source states, recovery journal, and progressive capability gates observed by MCP sessions.
@@ -79,99 +79,37 @@ For the stable / nightly desktop apps (the non-dev path), there is no `NTERACT_D
 
 This is a structural choice, not an oversight: the daemon doesn't know who its clients are beyond a peer label, so it cannot push "owner exited" anywhere. If we want explicit owner handoff (e.g., owner relinquishes ownership cleanly without killing the daemon), that's a feature on the daemon, not the proxy.
 
-## Decision 3: `Arc<RwLock<Option<NotebookSession>>>` is the only session truth
+## Decision 3: The active slot plus daemon incarnation are session truth
 
-The child holds exactly one place that says "the current session is X":
+The child holds one active slot:
 
 ```rust
 session: Arc<RwLock<Option<NotebookSession>>>
 ```
 
-`Option` is the load-bearing part. Three things set it to `None`:
+A local session also carries `local_daemon_incarnation: Option<DaemonIncarnation>`, where the incarnation is `pid + started_at`. The slot answers which notebook is selected; the incarnation answers whether its local `DocHandle` belongs to the daemon that is live now. A hosted session deliberately has no local incarnation.
 
-1. **Daemon disconnect.** The watch loop's `MarkDisconnected` branch clears the session immediately so tool calls don't hang on a dead `DocHandle`. The previous notebook target is stashed in `disconnect_target` for automatic rejoin on the next `Connected`.
-2. **Room eviction.** When `rejoin()` runs and `list_rooms` does not contain the target notebook UUID, the session is cleared and `SessionDropReason::Evicted` is recorded. No phantom empty room is created.
-3. **Rejoin failure after `REJOIN_MAX_RETRIES`.** The session is cleared and `SessionDropReason::Disconnected` is recorded with the original notebook id and path so the next tool call gets a meaningful error.
+A local connect samples daemon identity before and after connection/readiness. Equal samples bind the session. A missing or changed sample leaves it unbound and it is not published as an active tool session. The watch loop removes any active or parked local session whose binding does not equal the live incarnation. Hosted sessions survive local-daemon reconciliation.
 
-Three things set it to `Some(_)`:
+Tool handlers still clone the `DocHandle` under a read lock and release the lock before async work. The parked map remains a bounded cache, but parked local entries obey the same incarnation rule as the active slot.
 
-1. **A tool call** (`connect_notebook`, `create_notebook`, or the legacy `open_notebook` alias). Always wins. The user (or agent) explicitly chose this notebook.
-2. **The watch loop's `rejoin()`** after a `Disconnected`, an `Upgraded`, or the initial proxy handoff. Conditional on the session-write guard (Decision 4).
-3. **Resume from `parked_sessions`** when a tool call targets a notebook whose session was parked during a previous switch.
+## Decision 4: Tool intent and guarded publication are the convergence point
 
-**Why one optional slot and not a registry of sessions.** Because the MCP protocol itself is single-client-per-connection. The MCP client is the agent (a single conversation), and that agent has one current notebook by convention. Multi-notebook would mean every tool call carries a `notebook_id` arg; today most don't. The `parked_sessions` map is a compromise: it lets `connect_notebook` switch back and forth between a small set of notebooks without re-doing the initial sync, but it does not let *concurrent* tool calls land on different notebooks. The "current" notebook is still one slot.
+Recovery connects outside the session lock. It captures the explicit `session_intent_epoch` and expected daemon incarnation, verifies both after the async connect/readiness window, then takes the active-slot write lock. Publication occurs only if the epoch is unchanged and the slot is empty. A user tool that installs any session during recovery therefore wins, including a session for the same notebook.
 
-**Why `RwLock` and not `Mutex`.** Tool handlers clone the `DocHandle` under a read lock and drop the lock before doing any async work. Holding a write lock during async work would block every other tool call and the watch loop. `DocHandle` is cheap to clone (it's an `Arc<Mutex<SharedDocState>>` internally); the read lock is held only long enough to clone.
+A completed recovery connection may be dropped after doing useful work. Dropping its handle cleanly releases the extra peer; it is preferable to overwriting the user's selected session.
 
-This convention is enforced by the `require_handle!` macro:
+## Decision 5: Live daemon incarnation drives reconciliation
 
-```rust
-let handle = {
-    let guard = session.read().await;
-    match guard.as_ref() {
-        Some(s) => s.handle.clone(),
-        None => return no_session_error(...).await,
-    }
-};
-// guard dropped; handle owned
-handle.with_doc(|doc| { ... });
-```
+The watch loop does not infer connection state from a boolean latch. For every `DaemonEvent`, and obligatorily after `RecvError::Lagged`, it re-reads `DaemonConnection::info()`. That current info is the sole authority for local-session ownership.
 
-Tool code that doesn't use the macro and holds the lock through an `.await` is the most likely way to wedge the child. The `tokio-mutex-guard-stays-sync` rule in `AGENTS.md` / `CLAUDE.md` applies here too.
+Reconciliation removes active and parked local handles whose incarnation is missing or unequal. Removing the active handle records its best recovery target, preferring a file path and never replacing a saved path with a later UUID-only observation. With a live incarnation and an empty active slot, recovery uses the proxy handoff target first, then the preserved target.
 
-## Decision 4: The session-write guard is the convergence point
+The daemon version observed when the child starts is the version baseline. Every live event and every current `info()` result is compared with it; a mismatch exits with 75. If startup had no live daemon, the first live version establishes the baseline.
 
-The longest async window in the child is `rejoin()`. It connects to the daemon socket, sends the initial sync handshake, awaits session-ready (up to 120 s), and only then installs the new session. During that window, a tool call can land and call `connect_notebook` on a different notebook. The guard:
+## Decision 6: A same-incarnation heartbeat is structurally a no-op
 
-```rust
-{
-    let guard = session.read().await;
-    if let Some(existing) = guard.as_ref() {
-        if existing.notebook_id != new_notebook_id {
-            info!("Rejoin superseded by active session; dropping");
-            return true;
-        }
-    }
-}
-*session.write().await = Some(new_session);
-```
-
-**Invariant: user-initiated session changes always win over background rejoin.** The guard runs immediately before the write. Anything else (the proxy's seeded target, the disconnect target, the previous session's notebook id) is advisory.
-
-The guard does *not* hold the write lock across the entire rejoin. That would defeat the read-clone-drop pattern from Decision 3 and serialize every tool call behind a 120-second async window on the daemon socket.
-
-The cost: rejoin can do all the work (connect, initial sync, peer announce) and then drop the result on the floor. That's fine. The peer connection drops cleanly when the `handle` goes out of scope, the daemon decrements its peer count, and the user's chosen session is left alone. We've paid one network round trip and one initial sync we then discard. Acceptable for what would otherwise be a class of bugs where the wrong notebook silently becomes the active session.
-
-## Decision 5: `classify()` is the pure decision function; the loop is plumbing
-
-`daemon_watch::classify()` is a pure function over `(event, initial_target, has_session, was_disconnected, disconnect_target)`. It returns one of:
-
-| Decision | Trigger |
-|----------|---------|
-| `Exit(75)` | `Upgraded` with version change. Proxy will respawn with new binary. |
-| `RejoinInitial(target)` | `Connected`/`Upgraded` with `initial_target` set (proxy handoff), OR `Connected`/`Upgraded` with `disconnect_target` set (session was cleared on disconnect). |
-| `RejoinContinuation` | `Connected` after `Disconnected` with session still live, OR `Upgraded` (same version) with session still live. |
-| `MarkDisconnected` | `Disconnected` event. |
-| `NoOp` | Everything else, notably `Connected` heartbeats. |
-
-The function is pure so the watch loop's interleavings are testable in isolation: the heartbeat-not-rejoin invariant (Decision 6), the proxy-handoff-clears-after-success rule, the disconnect-target priority, all live in the table.
-
-**The watch loop does the side effects.** It clears `initial_target` only after `rejoin()` returns `true` (success, including "session cleared because room was evicted"). It bumps `was_disconnected` to true on lag (`broadcast::error::RecvError::Lagged`) because a dropped batch may have contained the `Disconnected`. It stamps `last_session_drop` and clears `parked_sessions` when the daemon goes away (their `DocHandle`s are dead too).
-
-The classify/act split is the same pattern as our other state machines (cell execution, room teardown), and it's there for the same reason: every interleaving is a unit test, none of the side effects need an async runtime.
-
-## Decision 6: Daemon `Connected` is a heartbeat, not a reconnect signal
-
-`DaemonConnection` (in `runtimed-client`) emits `Connected` every ~10 s as a liveness ping. Without gating, every heartbeat would trigger a `rejoin()`, which would:
-
-1. Open a fresh peer connection to the daemon.
-2. Bump the room's `active_peers` from 1 to 2.
-3. Drop the old peer connection.
-4. Decrement `active_peers` from 2 to 1.
-
-That sequence resets the room's eviction timer (the daemon zeroes `last_kernel_torn_down_at` on any peer count increase). With heartbeats every 10 s, an idle agent connection keeps a room alive forever. The fix (#2088) is the `was_disconnected` flag: a `Connected` only triggers a continuation rejoin if we previously saw a `Disconnected`.
-
-This is structurally a workaround for `DaemonConnection`'s API conflating "I'm still here" with "I just came back." A cleaner shape would be a separate `Heartbeat` event variant, but the cost of the workaround is one boolean and a regression test.
+`Connected` may be emitted as a routine liveness refresh. When its live incarnation equals the active and parked local bindings, reconciliation changes nothing and has no recovery target to act on. No separate `was_disconnected` gate is required. A same-version daemon restart has a different `pid + started_at`, so the same reconciliation removes the old handles and recovers them against the new incarnation.
 
 ## Decision 7: Room is the durable entity; sessions and kernels are not
 
@@ -295,10 +233,10 @@ fails the connection directly.
 
 1. User upgrades the nteract desktop app. The installed daemon restarts; the new binary has version 2.1.3 (old was 2.1.2).
 2. Child's `DaemonConnection` detects the daemon version change and emits `DaemonEvent::Upgraded { previous: 2.1.2, current: 2.1.3 }`.
-3. Watch loop classifies as `Exit(75)`. Process exits with `EX_TEMPFAIL`.
+3. Watch loop compares the live version with its startup baseline and exits with `EX_TEMPFAIL` (75).
 4. Proxy's child monitor sees the transport close, calls `restart_child()`. Re-resolves the child binary (picks up new symlink target after upgrade), seeds `NTERACT_MCP_REJOIN_NOTEBOOK = <last_notebook_id>`, spawns the new child.
-5. New child's watch loop sees `initial_target = Some(<id>)`. On first `Connected`, classifies as `RejoinInitial`, runs `rejoin()`, installs new `NotebookSession`. Same `notebook_id`, fresh `DocHandle`.
-6. Supervisor detects the daemon-version change across the child boundary (compares `ServerInfo.title` of old vs new child) and stamps a reconnection banner. The actual string is `Daemon upgraded (2.1.2 -> 2.1.3), session reconnected` (`crates/runt-mcp-proxy/src/version.rs:35`), and it fires whenever `rejoin_target.is_some()`, before the rejoin's success is known.
+5. New child's watch loop sees the handoff target. On the first live daemon observation it reconciles the empty slot, runs recovery against that daemon incarnation, and installs a freshly stamped `NotebookSession` if no tool activation won meanwhile.
+6. Supervisor detects the daemon-version change across the child boundary (compares `ServerInfo.title` of old vs new child) and stamps a reconnection banner. The banner says `Daemon upgraded (2.1.2 -> 2.1.3), session reconnect requested` when a handoff target was supplied; it intentionally reports the request rather than claiming the asynchronous rejoin already succeeded.
 7. The agent's next tool result has the banner prepended. The agent sees one message; underneath, the child has been completely replaced.
 
 ### Last peer leaves, comes back during teardown
@@ -311,17 +249,11 @@ fails the connection directly.
 
 ### Daemon goes away mid-execution
 
-1. Agent calls `execute_cell`. Tool dispatch clones the handle, sends the
-   request, then polls `RuntimeStateDoc` until the execution reaches a terminal
-   state, with the execution pipeline's output-sync grace applied before
-   returning outputs.
-2. Daemon process is killed (SIGKILL from `runt daemon stop`, or a crash). Watch loop receives `DaemonEvent::Disconnected`, classifies as `MarkDisconnected`. Stashes `disconnect_target = "/tmp/foo.ipynb"`, sets `session = None`, sets `last_session_drop = Disconnected`. Also drains `parked_sessions` (their handles are dead).
-3. In-flight `execute_cell` tool call's `DocHandle` is now connected to a
-   closed socket. Whatever it was awaiting (RPC response or RuntimeStateDoc
-   convergence) errors out. Tool returns failure to the agent.
-4. Daemon comes back (launchd respawn, or user restart). Child's `DaemonConnection` reconnects; emits `Connected`.
-5. Watch loop classifies as `RejoinInitial("/tmp/foo.ipynb")` because `disconnect_target` is set and `was_disconnected = true`. Runs `rejoin()` via `connect_open`, installs new session.
-6. Next tool call from the agent lands on a fresh `DocHandle` for the same notebook. Cells the agent had already authored before the disconnect are restored from the matching recovery journal and `.ipynb` checkpoint; cells authored during the disconnect window (there are none, because the agent's tool call failed) are not lost.
+1. The tool call owns a cloned local handle stamped with daemon incarnation A.
+2. When the daemon disappears, the watch loop re-reads no live daemon info. Reconciliation removes active and parked local handles, preserves the active session's path when available, and records `SessionDropReason::Disconnected`. Hosted handles remain installed.
+3. The in-flight tool's cloned handle observes the closed socket and returns failure; no session lock is held across that await.
+4. When daemon incarnation B becomes live, reconciliation still cannot retain any handle from A. With an empty active slot it reconnects using the preserved path (or UUID for recoverable untitled notebooks).
+5. Recovery verifies incarnation B again after readiness, then publishes only if explicit tool intent has not advanced and the slot is still empty. A tool-installed session for B wins the race and is retained.
 
 ### Two MCP clients, attach mode
 
@@ -330,6 +262,43 @@ fails the connection directly.
 3. Both children have their own `NotebookSession` slots. Both can call `connect_notebook` on the same notebook; each becomes a separate peer on the room, with `active_peers` going from 1 to 2.
 4. One agent calls `execute_cell`; the other agent sees the cell-state changes via Automerge sync. There is no per-client routing, no per-client identity, no per-client scope (Decision 5 in `identity-and-trust.md` will eventually change this).
 5. If Claude Code exits, its child closes the socket, daemon decrements `active_peers` to 1. The daemon does *not* tear down because Codex is still connected. The daemon is now orphan-owned (Claude Code started it, Codex is using it). If Codex also exits, `active_peers` goes to 0 and the kernel-teardown timer starts.
+
+## 2026-08-20 implementation note
+
+Decisions 3 through 6 use daemon incarnation rather than disconnect latches as
+the authority for whether a local `DocHandle` is usable.
+
+Every local `NotebookSession` is stamped with a `DaemonIncarnation` consisting
+of the daemon PID and `started_at`. The connect path samples daemon identity
+before and after establishing the peer. Only an unchanged pair binds the
+session; a missing or changed sample produces an unbound local session, which
+is stale by definition. Hosted sessions have no local incarnation.
+
+On every daemon event, and after a lagged broadcast receiver, the watch loop
+reads `DaemonConnection::info()` and reconciles the active slot and parked map
+under their locks. A local session survives exactly when its incarnation equals
+the live incarnation. Hosted sessions always survive local-daemon events. Thus
+a same-incarnation `Connected` heartbeat makes no state change, while a
+same-version restart with a new incarnation removes old handles without a
+separate disconnect latch. Parked local handles follow the same rule.
+
+When reconciliation removes the active local session it preserves the path,
+when known, as the recovery target; a later UUID-only observation cannot
+replace that path. Recovery connects outside the session lock, samples the
+expected incarnation again after readiness, and publishes only if the explicit
+`session_intent_epoch` is unchanged and no tool-installed session occupies the
+slot. Explicit tool activation therefore remains authoritative.
+
+The child records the daemon version observed at startup. Every live event and
+every post-lag `info()` sample is compared with that baseline. A mismatch exits
+with `EX_TEMPFAIL` (75), even if the event stream dropped the original upgrade
+event. If no daemon was reachable at startup, the first live version becomes
+the baseline.
+
+Repeated `connect_notebook` calls may reuse the active same-target replica only
+when its peer is connected, its document or retained projection is readable,
+and (for local sessions) its incarnation equals the current daemon. Reuse of a
+stale but locally readable replica is forbidden.
 
 ## Open Questions
 
@@ -341,7 +310,10 @@ These are the architectural gaps surfaced while writing this ADR. None block the
 
 3. **Daemon ownership across attach/owner boundaries.** Attach-mode children do not know who owns the daemon. If the owner exits cleanly, the daemon may or may not exit too depending on whether anyone else is connected. There is no protocol-level "I am the owner, I am exiting now" signal. Today this is fine because the user is responsible for noticing. As we ship more agents that auto-spawn MCP clients, the implicit "first wins, others attach" rule will get racy.
 
-4. **`disconnect_target` precision after a real `Disconnected`.** When the daemon disappears, the child stashes the *last known* notebook target. But the daemon could have been gone for hours; the room may have been reaped during that window. The current `rejoin()` does the right thing for ephemeral notebooks when daemon attach refuses the room and clears the session with `Evicted`, but the agent gets a confusing trail: first `Disconnected`, then `Evicted` on the next tool call.
+4. **Recovery-target precision after a daemon replacement.** The child retains
+   the removed session's best target, preferring a path over a UUID. The daemon
+   can still refuse an ephemeral UUID that is no longer recoverable, producing
+   a `Disconnected` then `Evicted` trail for the agent.
 
 5. **`parked_sessions` lifetime.** Capped at `MAX_PARKED_SESSIONS` with arbitrary HashMap-iteration eviction. Every parked session holds a live peer connection to the daemon, which means the daemon's `active_peers` for those rooms stays at 1 even when the agent is not actively using them. That keeps the kernel alive (good if the agent comes back), but it also disables the eviction timer for any notebook the agent has touched in the recent past. Open question: is the kernel-keep-alive the intended cost, or do we want parked sessions to drop the peer connection and rebuild on resume?
 
@@ -357,7 +329,7 @@ These are the architectural gaps surfaced while writing this ADR. None block the
 
 ## References
 
-- `crates/runt-mcp/src/daemon_watch.rs` - `classify`, `watch`, `rejoin`, all the watch-loop tests.
+- `crates/runt-mcp/src/daemon_watch.rs` - incarnation reconciliation, `watch`, `rejoin`, and transition-sequence tests.
 - `crates/runt-mcp/src/session.rs` - `NotebookSession`, `SessionDropReason`, `SessionDropInfo`.
 - `crates/runt-mcp/src/lib.rs` - `NteractMcp` server, `require_handle!` macro, tool dispatch.
 - `crates/runt-mcp/src/tools/session.rs` - `connect_notebook`, `create_notebook`, parking, `disconnect_previous_session`.

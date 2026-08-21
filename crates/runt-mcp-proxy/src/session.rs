@@ -1,15 +1,15 @@
-//! Notebook session tracking — records the notebook_id of session-establishing
-//! tool calls so that when the child is restarted, the supervisor can seed the
-//! new child's `NTERACT_MCP_REJOIN_NOTEBOOK` env var and let the child's
-//! `daemon_watch` loop re-join on its first `Connected` event.
+//! Notebook session tracking — records the durable target of session-establishing
+//! and persistence tool calls so that when the child is restarted, the supervisor
+//! can seed the new child's `NTERACT_MCP_REJOIN_NOTEBOOK` env var and let the
+//! child's `daemon_watch` loop re-join on its first `Connected` event.
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use serde_json::Value;
 
-/// Track notebook_id from session-establishing tool calls.
+/// Track a durable notebook target from session-establishing or persistence calls.
 ///
-/// When `connect_notebook` or `create_notebook` succeeds, returns the notebook_id
-/// to persist for seeding the next child restart.
+/// When `connect_notebook`, `create_notebook`, or `save_notebook` succeeds,
+/// returns the best target to persist for seeding the next child restart.
 ///
 /// Checks request arguments first (connect_notebook passes path/notebook_id),
 /// then falls back to parsing the response content (create_notebook returns
@@ -81,6 +81,11 @@ pub fn extract_session_id(
 
             extract_notebook_id_from_result(result)
         }
+        // Saving an ephemeral notebook promotes its durable restart identity
+        // from the daemon-scoped UUID tracked at creation time to the canonical
+        // path returned by the daemon. Without this update, an upgrade hands the
+        // stale UUID to the new daemon and the notebook cannot be recovered.
+        "save_notebook" => extract_path_from_result(result),
         _ => None,
     }
 }
@@ -100,8 +105,28 @@ fn extract_notebook_path_from_result(result: &CallToolResult) -> Option<String> 
     None
 }
 
+/// Parse the canonical `path` returned by `save_notebook`.
+fn extract_path_from_result(result: &CallToolResult) -> Option<String> {
+    for content in &result.content {
+        if let Some(text) = content.raw.as_text() {
+            if let Ok(json) = serde_json::from_str::<Value>(&text.text) {
+                if let Some(path) = json.get("path").and_then(Value::as_str) {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether a tracked target is a hosted notebook identity that must survive
+/// local persistence calls unchanged.
+pub(crate) fn is_hosted_session_target(target: &str) -> bool {
+    is_hosted_target(target)
+}
+
 /// Parse notebook_id from a tool result's text content (JSON response body).
-fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
+pub(crate) fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
     for content in &result.content {
         if let Some(text) = content.raw.as_text() {
             if let Ok(json) = serde_json::from_str::<Value>(&text.text) {
@@ -409,7 +434,22 @@ mod tests {
     }
 
     #[test]
-    fn ignores_save_notebook() {
+    fn tracks_save_notebook_canonical_path_from_response() {
+        let params = make_params(
+            "save_notebook",
+            serde_json::json!({"path": "/tmp/test.ipynb"}),
+        );
+        let result = CallToolResult::success(vec![Content::text(
+            r#"{"path": "/private/tmp/test.ipynb", "notebook_id": "abc-123"}"#,
+        )]);
+        assert_eq!(
+            extract_session_id(&params, &result),
+            Some("/private/tmp/test.ipynb".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_save_notebook_without_canonical_path() {
         let params = make_params(
             "save_notebook",
             serde_json::json!({"path": "/tmp/test.ipynb"}),

@@ -19,7 +19,7 @@ use rmcp::{ErrorData as McpError, ServerHandler};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{error, info, warn};
 
-use crate::child::{self, RunningChild};
+use crate::child::{self, ChildExitStatus, RunningChild};
 use crate::circuit_breaker::CircuitBreaker;
 use crate::session;
 use crate::tools::{self, ToolDivergence};
@@ -29,6 +29,47 @@ use crate::version::ReconnectionEvent;
 /// target. Must match `runt_mcp::daemon_watch::REJOIN_ENV_VAR`.
 const REJOIN_ENV_VAR: &str = "NTERACT_MCP_REJOIN_NOTEBOOK";
 const SLOW_CHILD_CALL: Duration = Duration::from_secs(30);
+const EX_TEMPFAIL: i32 = 75;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildRestartReason {
+    /// The child deliberately asked the proxy to pick up a new daemon binary.
+    DaemonUpgrade,
+    /// A crash, closed transport without exit metadata, or an explicit restart.
+    UnexpectedOrRequested,
+}
+
+impl ChildRestartReason {
+    fn from_exit_code(exit_code: Option<i32>) -> Self {
+        if exit_code == Some(EX_TEMPFAIL) {
+            Self::DaemonUpgrade
+        } else {
+            Self::UnexpectedOrRequested
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::DaemonUpgrade => "daemon_upgrade_exit_75",
+            Self::UnexpectedOrRequested => "unexpected_or_requested",
+        }
+    }
+}
+
+fn circuit_breaker_allows_restart(
+    circuit_breaker: &mut CircuitBreaker,
+    upgrade_handoff_limiter: &mut CircuitBreaker,
+    child_was_dead: bool,
+    reason: ChildRestartReason,
+) -> bool {
+    if child_was_dead {
+        return true;
+    }
+    match reason {
+        ChildRestartReason::DaemonUpgrade => upgrade_handoff_limiter.record_crash(),
+        ChildRestartReason::UnexpectedOrRequested => circuit_breaker.record_crash(),
+    }
+}
 
 /// Extract the daemon version from a freshly-initialized child's MCP
 /// `ServerInfo`. `runt mcp` stamps the daemon version into
@@ -80,6 +121,8 @@ pub struct ProxyConfig {
 pub struct ProxyState {
     /// rmcp client connected to the child process.
     pub child_client: Option<RunningChild>,
+    /// OS exit status published by the task that owns the current child.
+    child_exit_status: Option<ChildExitStatus>,
     /// Monotonic generation for the child transport.
     ///
     /// Forwarded calls snapshot this with a cloned child peer so stale calls
@@ -89,10 +132,19 @@ pub struct ProxyState {
     pub restart_count: u32,
     /// Circuit breaker for crash detection.
     pub circuit_breaker: CircuitBreaker,
+    /// Independent rate limit for intentional upgrade handoffs. Upgrade exits
+    /// do not consume the crash budget, but a flapping installation must not
+    /// respawn children forever in a tight loop.
+    upgrade_handoff_limiter: CircuitBreaker,
     /// Cached child tool definitions, loaded from disk at startup.
     pub cached_tools: Option<Vec<Tool>>,
-    /// Last active notebook ID for auto-rejoin after restart.
+    /// Durable active notebook target for auto-rejoin after restart. This may
+    /// be a daemon UUID, canonical file path, or hosted notebook URL.
     pub last_notebook_id: Option<String>,
+    /// Daemon/cloud notebook id corresponding to `last_notebook_id`. The
+    /// durable handoff target may instead be a path or hosted URL, so retain
+    /// both forms to recognize an explicit disconnect by notebook id.
+    last_notebook_session_id: Option<String>,
     /// Upstream MCP client name (forwarded to child).
     pub upstream_name: String,
     /// Upstream MCP client title (forwarded to child).
@@ -141,11 +193,14 @@ impl McpProxy {
         Self {
             state: Arc::new(RwLock::new(ProxyState {
                 child_client: None,
+                child_exit_status: None,
                 child_generation: 0,
                 restart_count: 0,
                 circuit_breaker: CircuitBreaker::new(),
+                upgrade_handoff_limiter: CircuitBreaker::new(),
                 cached_tools,
                 last_notebook_id: None,
+                last_notebook_session_id: None,
                 upstream_name: "unknown".to_string(),
                 upstream_title: None,
                 last_daemon_version: None,
@@ -187,7 +242,7 @@ impl McpProxy {
             "Spawning child process"
         );
 
-        let client = child::spawn_child(
+        let spawned = child::spawn_child(
             &child_command,
             &self.config.child_args,
             &self.config.child_env,
@@ -200,12 +255,13 @@ impl McpProxy {
         // before we move the client into state. `runt mcp` stamps the
         // daemon version there during its startup handshake (see
         // crates/runt-mcp/src/lib.rs::get_info).
-        let daemon_version = extract_daemon_version(&client);
+        let daemon_version = extract_daemon_version(&spawned.client);
 
         let generation = {
             let mut state = self.state.write().await;
             state.child_generation = state.child_generation.wrapping_add(1);
-            state.child_client = Some(client);
+            state.child_client = Some(spawned.client);
+            state.child_exit_status = Some(spawned.exit_status);
             state.child_spawn_time = Some(Instant::now());
             state.last_daemon_version = daemon_version;
             state.child_generation
@@ -227,6 +283,10 @@ impl McpProxy {
     /// Handles circuit breaker, version detection, session rejoin, and
     /// tool divergence detection.
     pub async fn restart_child(&self) -> Result<(), String> {
+        self.restart_child_for_reason().await
+    }
+
+    async fn restart_child_for_reason(&self) -> Result<(), String> {
         // Prevent concurrent restarts (monitor task + tool call racing)
         let mut restart_lock = self.restart_in_progress.lock().await;
         if *restart_lock {
@@ -236,11 +296,19 @@ impl McpProxy {
         *restart_lock = true;
         drop(restart_lock);
 
+        let reason = self.current_child_restart_reason().await;
+        info!(
+            event = "child_restart_classified",
+            restart_reason = reason.label(),
+            "Classified child restart reason"
+        );
+
         // Phase 1: Drop old client, check circuit breaker
         let (child_was_dead, old_child) = {
             let mut state = self.state.write().await;
             let was_dead = state.child_client.is_none();
             let old_child = state.child_client.take();
+            state.child_exit_status = None;
             if old_child.is_some() {
                 state.child_generation = state.child_generation.wrapping_add(1);
             }
@@ -254,12 +322,27 @@ impl McpProxy {
                 event = "child_restart_requested",
                 restart_num = state.restart_count + 1,
                 child_was_dead = was_dead,
+                restart_reason = reason.label(),
                 uptime_secs = uptime,
                 "Restarting child process"
             );
 
-            // Skip circuit breaker if child exited on its own (daemon upgrade)
-            if !was_dead && !state.circuit_breaker.record_crash() {
+            // Exit 75 is the child's intentional handoff protocol for a
+            // daemon upgrade. It must not consume the crash budget.
+            let restart_allowed = {
+                let ProxyState {
+                    circuit_breaker,
+                    upgrade_handoff_limiter,
+                    ..
+                } = &mut *state;
+                circuit_breaker_allows_restart(
+                    circuit_breaker,
+                    upgrade_handoff_limiter,
+                    was_dead,
+                    reason,
+                )
+            };
+            if !restart_allowed {
                 let msg = format!(
                     "The nteract MCP server failed after repeated restarts. \
                      Restart your Claude session so a fresh MCP connection \
@@ -279,7 +362,7 @@ impl McpProxy {
         }
 
         // Phase 2: Backoff (skip for daemon upgrade exits)
-        if !child_was_dead {
+        if !child_was_dead && reason != ChildRestartReason::DaemonUpgrade {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
 
@@ -334,15 +417,16 @@ impl McpProxy {
         )
         .await
         {
-            Ok(client) => {
+            Ok(spawned) => {
                 // Read new daemon version from the restarted child's
                 // ServerInfo.title before moving the client into state.
-                let new_version = extract_daemon_version(&client);
+                let new_version = extract_daemon_version(&spawned.client);
 
                 let (old_tools, generation) = {
                     let mut state = self.state.write().await;
                     state.child_generation = state.child_generation.wrapping_add(1);
-                    state.child_client = Some(client);
+                    state.child_client = Some(spawned.client);
+                    state.child_exit_status = Some(spawned.exit_status);
                     state.restart_count += 1;
                     state.child_spawn_time = Some(Instant::now());
                     state.last_restart_time = Some(Instant::now());
@@ -384,18 +468,20 @@ impl McpProxy {
 
                     // Session rejoin is now the child's responsibility
                     // (`daemon_watch` consumes the seeded REJOIN env var on
-                    // its first `Connected` event). We still record whether
-                    // we handed off a target so reconnection messages are
-                    // informative.
-                    let session_rejoined = rejoin_target.is_some();
+                    // its first `Connected` event). A handed-off target means
+                    // rejoin was requested, not that the asynchronous child
+                    // rejoin has completed successfully.
+                    let session_rejoin_requested = rejoin_target.is_some();
                     let reconnection_event = match (old_version.as_deref(), new_version.as_deref())
                     {
                         (Some(old), Some(new)) if old != new => ReconnectionEvent::DaemonUpgrade {
                             old_version: old.to_string(),
                             new_version: new.to_string(),
-                            session_rejoined,
+                            session_rejoin_requested,
                         },
-                        _ => ReconnectionEvent::ChildRestart { session_rejoined },
+                        _ => ReconnectionEvent::ChildRestart {
+                            session_rejoin_requested,
+                        },
                     };
                     state.reconnection_message = Some(reconnection_event.message());
                     state.tool_list_changed_tx.clone()
@@ -424,6 +510,43 @@ impl McpProxy {
                 Err(e)
             }
         }
+    }
+
+    /// Observe the process owner's exit status after the MCP transport closes.
+    /// The short wait closes the race where stdout EOF reaches rmcp just before
+    /// `Child::wait` publishes the status. A live transport is an explicit or
+    /// manual restart and does not wait here.
+    async fn current_child_restart_reason(&self) -> ChildRestartReason {
+        let mut exit_status = {
+            let state = self.state.read().await;
+            let transport_closed = state
+                .child_client
+                .as_ref()
+                .is_some_and(|child| child.is_transport_closed());
+            if !transport_closed {
+                return ChildRestartReason::UnexpectedOrRequested;
+            }
+            state.child_exit_status.clone()
+        };
+
+        let Some(ref mut exit_status) = exit_status else {
+            return ChildRestartReason::UnexpectedOrRequested;
+        };
+
+        let observed = exit_status
+            .borrow()
+            .as_ref()
+            .and_then(|status| status.code());
+        if observed.is_some() {
+            return ChildRestartReason::from_exit_code(observed);
+        }
+
+        let _ = tokio::time::timeout(Duration::from_secs(1), exit_status.changed()).await;
+        let observed = exit_status
+            .borrow()
+            .as_ref()
+            .and_then(|status| status.code());
+        ChildRestartReason::from_exit_code(observed)
     }
 
     /// Spawn a background task to monitor the child process and auto-restart on exit.
@@ -488,7 +611,7 @@ impl McpProxy {
                 );
 
                 // Attempt to restart the child
-                match proxy.restart_child().await {
+                match proxy.restart_child_for_reason().await {
                     Ok(_) => {
                         info!("Child monitor: restart successful, exiting (new monitor spawned)");
                         // Exit this monitor — restart_child() spawned a new one
@@ -723,7 +846,9 @@ impl McpProxy {
 
     /// Reset the circuit breaker (used by supervisor after manual restart or file change).
     pub async fn reset_circuit_breaker(&self) {
-        self.state.write().await.circuit_breaker.reset();
+        let mut state = self.state.write().await;
+        state.circuit_breaker.reset();
+        state.upgrade_handoff_limiter.reset();
     }
 
     /// Get the number of child restarts since proxy creation.
@@ -755,6 +880,7 @@ impl McpProxy {
     pub async fn shutdown_child(&self) {
         let old = {
             let mut state = self.state.write().await;
+            state.child_exit_status = None;
             state.child_client.take()
         };
         if let Some(child) = old {
@@ -813,9 +939,40 @@ impl McpProxy {
     }
 
     async fn track_session(&self, params: &CallToolRequestParams, result: &CallToolResult) {
+        if params.name.as_ref() == "disconnect_notebook" && result.is_error != Some(true) {
+            let requested_id = params
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("notebook_id"))
+                .and_then(serde_json::Value::as_str);
+            let mut state = self.state.write().await;
+            let disconnected_active = requested_id.is_none()
+                || requested_id == state.last_notebook_id.as_deref()
+                || requested_id == state.last_notebook_session_id.as_deref();
+            if disconnected_active {
+                info!("Clearing notebook handoff target after explicit disconnect");
+                state.last_notebook_id = None;
+                state.last_notebook_session_id = None;
+            }
+            return;
+        }
+
         if let Some(id) = session::extract_session_id(params, result) {
-            info!("Tracking active notebook session: {id}");
-            self.state.write().await.last_notebook_id = Some(id);
+            let mut state = self.state.write().await;
+            let saving_hosted_session = params.name.as_ref() == "save_notebook"
+                && state
+                    .last_notebook_id
+                    .as_deref()
+                    .is_some_and(session::is_hosted_session_target);
+            if saving_hosted_session {
+                info!("Preserving hosted notebook target across save_notebook");
+            } else {
+                info!("Tracking active notebook session: {id}");
+                state.last_notebook_id = Some(id);
+            }
+            if let Some(notebook_id) = session::extract_notebook_id_from_result(result) {
+                state.last_notebook_session_id = Some(notebook_id);
+            }
         }
     }
 
@@ -1273,8 +1430,13 @@ mod tests {
             let mut state = proxy.state.write().await;
             for _ in 0..10 {
                 state.circuit_breaker.record_crash();
+                state.upgrade_handoff_limiter.record_crash();
             }
             assert!(!state.circuit_breaker.record_crash(), "should be tripped");
+            assert!(
+                !state.upgrade_handoff_limiter.record_crash(),
+                "upgrade limiter should be tripped"
+            );
         }
 
         proxy.reset_circuit_breaker().await;
@@ -1285,7 +1447,65 @@ mod tests {
                 state.circuit_breaker.record_crash(),
                 "should allow crashes after reset"
             );
+            assert!(
+                state.upgrade_handoff_limiter.record_crash(),
+                "should allow upgrade handoffs after reset"
+            );
         }
+    }
+
+    #[test]
+    fn exit_75_is_classified_as_daemon_upgrade() {
+        assert_eq!(
+            ChildRestartReason::from_exit_code(Some(75)),
+            ChildRestartReason::DaemonUpgrade
+        );
+        assert_eq!(
+            ChildRestartReason::from_exit_code(Some(1)),
+            ChildRestartReason::UnexpectedOrRequested
+        );
+        assert_eq!(
+            ChildRestartReason::from_exit_code(None),
+            ChildRestartReason::UnexpectedOrRequested
+        );
+    }
+
+    #[test]
+    fn intentional_upgrade_exits_do_not_consume_crash_budget() {
+        let mut circuit_breaker = CircuitBreaker::new();
+        let mut upgrade_handoff_limiter = CircuitBreaker::new();
+
+        for _ in 0..5 {
+            assert!(circuit_breaker_allows_restart(
+                &mut circuit_breaker,
+                &mut upgrade_handoff_limiter,
+                false,
+                ChildRestartReason::DaemonUpgrade,
+            ));
+        }
+        assert!(!circuit_breaker_allows_restart(
+            &mut circuit_breaker,
+            &mut upgrade_handoff_limiter,
+            false,
+            ChildRestartReason::DaemonUpgrade,
+        ));
+
+        // Exhausting the independent handoff limiter leaves the full crash
+        // budget untouched; the sixth unexpected restart trips that breaker.
+        for _ in 0..5 {
+            assert!(circuit_breaker_allows_restart(
+                &mut circuit_breaker,
+                &mut upgrade_handoff_limiter,
+                false,
+                ChildRestartReason::UnexpectedOrRequested,
+            ));
+        }
+        assert!(!circuit_breaker_allows_restart(
+            &mut circuit_breaker,
+            &mut upgrade_handoff_limiter,
+            false,
+            ChildRestartReason::UnexpectedOrRequested,
+        ));
     }
 
     // ── Reconnection message lifecycle ────────────────────────────────
@@ -1415,6 +1635,124 @@ mod tests {
             state.last_notebook_id,
             Some("/tmp/second.ipynb".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn track_session_promotes_saved_notebook_from_uuid_to_path() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        let create: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "create_notebook",
+            "arguments": {}
+        }))
+        .unwrap();
+        proxy
+            .track_session(
+                &create,
+                &CallToolResult::success(vec![Content::text(
+                    r#"{"notebook_id":"38582ef2-a117-4ce6-83d2-20c2c45d33d7"}"#,
+                )]),
+            )
+            .await;
+
+        let save: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "save_notebook",
+            "arguments": { "path": "analysis.ipynb" }
+        }))
+        .unwrap();
+        proxy
+            .track_session(
+                &save,
+                &CallToolResult::success(vec![Content::text(
+                    r#"{"path":"/tmp/analysis.ipynb","notebook_id":"38582ef2-a117-4ce6-83d2-20c2c45d33d7"}"#,
+                )]),
+            )
+            .await;
+
+        let state = proxy.state.read().await;
+        assert_eq!(
+            state.last_notebook_id,
+            Some("/tmp/analysis.ipynb".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn track_session_preserves_hosted_target_across_save() {
+        let proxy = McpProxy::new(test_config(), None);
+        let hosted_target = "https://preview.runt.run/n/01KTZA152886TK1WAHYA48G7HJ";
+        proxy.state.write().await.last_notebook_id = Some(hosted_target.to_string());
+
+        let save: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "save_notebook",
+            "arguments": { "path": "analysis.ipynb" }
+        }))
+        .unwrap();
+        proxy
+            .track_session(
+                &save,
+                &CallToolResult::success(vec![Content::text(
+                    r#"{"path":"/tmp/analysis.ipynb","notebook_id":"01KTZA152886TK1WAHYA48G7HJ"}"#,
+                )]),
+            )
+            .await;
+
+        assert_eq!(
+            proxy.state.read().await.last_notebook_id.as_deref(),
+            Some(hosted_target)
+        );
+    }
+
+    #[tokio::test]
+    async fn track_session_clears_handoff_after_active_disconnect() {
+        let proxy = McpProxy::new(test_config(), None);
+        {
+            let mut state = proxy.state.write().await;
+            state.last_notebook_id = Some("/tmp/analysis.ipynb".to_string());
+            state.last_notebook_session_id =
+                Some("38582ef2-a117-4ce6-83d2-20c2c45d33d7".to_string());
+        }
+        let disconnect: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "disconnect_notebook",
+            "arguments": { "notebook_id": "38582ef2-a117-4ce6-83d2-20c2c45d33d7" }
+        }))
+        .unwrap();
+
+        proxy
+            .track_session(
+                &disconnect,
+                &CallToolResult::success(vec![Content::text("ok")]),
+            )
+            .await;
+
+        let state = proxy.state.read().await;
+        assert!(state.last_notebook_id.is_none());
+        assert!(state.last_notebook_session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn track_session_keeps_active_handoff_when_parked_session_disconnects() {
+        let proxy = McpProxy::new(test_config(), None);
+        {
+            let mut state = proxy.state.write().await;
+            state.last_notebook_id = Some("/tmp/active.ipynb".to_string());
+            state.last_notebook_session_id = Some("active-id".to_string());
+        }
+        let disconnect: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name": "disconnect_notebook",
+            "arguments": { "notebook_id": "parked-id" }
+        }))
+        .unwrap();
+
+        proxy
+            .track_session(
+                &disconnect,
+                &CallToolResult::success(vec![Content::text("ok")]),
+            )
+            .await;
+
+        let state = proxy.state.read().await;
+        assert_eq!(state.last_notebook_id.as_deref(), Some("/tmp/active.ipynb"));
+        assert_eq!(state.last_notebook_session_id.as_deref(), Some("active-id"));
     }
 
     #[tokio::test]
