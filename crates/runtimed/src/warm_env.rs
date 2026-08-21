@@ -180,6 +180,7 @@ const UV_OFFLINE_INSTALL_TIMEOUT: Duration = Duration::from_secs(30);
 const UV_ONLINE_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const UV_VENV_TIMEOUT: Duration = Duration::from_secs(60);
 const PYTHON_RUNTIME_VALIDATION_TIMEOUT: Duration = Duration::from_secs(60);
+const PROCESS_TREE_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 // Keep optional warming below the daemon's 120s pool-take wait. Long compileall
 // runs should not keep a validated environment out of the pool.
 const PYTHON_WARMUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -232,12 +233,105 @@ where
     Ok(output)
 }
 
-async fn collect_reader(
-    handle: tokio::task::JoinHandle<io::Result<Vec<u8>>>,
-) -> io::Result<Vec<u8>> {
-    handle
-        .await
-        .map_err(|error| io::Error::other(format!("failed to join child output reader: {error}")))?
+#[cfg(unix)]
+struct ChildProcessTree {
+    pgid: i32,
+}
+
+#[cfg(windows)]
+struct ChildProcessTree {
+    job: Option<crate::runtime_agent_manifest::WindowsJob>,
+}
+
+#[cfg(not(any(unix, windows)))]
+struct ChildProcessTree;
+
+fn configure_process_tree(command: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    command.process_group(0);
+}
+
+fn own_process_tree(child: &tokio::process::Child) -> io::Result<ChildProcessTree> {
+    #[cfg(unix)]
+    {
+        let pgid = child
+            .id()
+            .ok_or_else(|| io::Error::other("spawned child has no process id"))?
+            as i32;
+        Ok(ChildProcessTree { pgid })
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::RawHandle;
+
+        let pid = child
+            .id()
+            .ok_or_else(|| io::Error::other("spawned child has no process id"))?;
+        let process_handle = child
+            .raw_handle()
+            .ok_or_else(|| io::Error::other("spawned child has no process handle"))?
+            as RawHandle;
+        let job_name = format!("nteract-warm-env-command-{pid}");
+        let job = crate::runtime_agent_manifest::create_windows_kill_on_close_job_for_process(
+            &job_name,
+            process_handle,
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(ChildProcessTree { job: Some(job) })
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = child;
+        Ok(ChildProcessTree)
+    }
+}
+
+fn terminate_process_tree(process_tree: &mut ChildProcessTree) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{killpg, Signal};
+        use nix::unistd::Pid;
+
+        if let Err(error) = killpg(Pid::from_raw(process_tree.pgid), Signal::SIGKILL) {
+            if error != nix::errno::Errno::ESRCH {
+                warn!(
+                    "[warm-env] Failed to terminate subprocess group {}: {error}",
+                    process_tree.pgid
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // The job uses JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, so dropping the
+        // final handle terminates the child and every process it spawned.
+        process_tree.job.take();
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = process_tree;
+    }
+}
+
+async fn reap_timed_out_child(
+    child: &mut tokio::process::Child,
+    process_tree: &mut ChildProcessTree,
+) {
+    terminate_process_tree(process_tree);
+    let _ = child.start_kill();
+
+    match tokio::time::timeout(PROCESS_TREE_REAP_TIMEOUT, child.wait()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => warn!("[warm-env] Failed to reap timed-out subprocess: {error}"),
+        Err(_) => warn!(
+            "[warm-env] Timed-out subprocess did not exit within {} seconds of tree termination",
+            PROCESS_TREE_REAP_TIMEOUT.as_secs()
+        ),
+    }
 }
 
 async fn run_output_with_timeout(
@@ -248,61 +342,58 @@ async fn run_output_with_timeout(
         .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    configure_process_tree(&mut command);
 
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => return TimedResult::Failed(error),
     };
 
-    let stdout = child
-        .stdout
-        .take()
-        .map(|pipe| tokio::spawn(read_pipe_to_end(pipe)));
-    let stderr = child
-        .stderr
-        .take()
-        .map(|pipe| tokio::spawn(read_pipe_to_end(pipe)));
-
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => return TimedResult::Failed(error),
-        Err(_) => {
-            // Dropping `Command::output()` on timeout can leave the spawned
-            // process running. Keep ownership of the child handle and kill it
-            // before reporting the timeout so warmup retries do not accumulate
-            // orphaned Python processes.
+    let mut process_tree = match own_process_tree(&child) {
+        Ok(process_tree) => process_tree,
+        Err(error) => {
             let _ = child.kill().await;
-            let _ = child.wait().await;
-            if let Some(stdout) = stdout {
-                let _ = collect_reader(stdout).await;
-            }
-            if let Some(stderr) = stderr {
-                let _ = collect_reader(stderr).await;
-            }
-            return TimedResult::TimedOut;
+            return TimedResult::Failed(error);
         }
     };
 
-    let stdout = match stdout {
-        Some(stdout) => match collect_reader(stdout).await {
-            Ok(output) => output,
-            Err(error) => return TimedResult::Failed(error),
-        },
-        None => Vec::new(),
-    };
-    let stderr = match stderr {
-        Some(stderr) => match collect_reader(stderr).await {
-            Ok(output) => output,
-            Err(error) => return TimedResult::Failed(error),
-        },
-        None => Vec::new(),
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let collect_output = async {
+        let status = child.wait();
+        let stdout = async {
+            match stdout {
+                Some(pipe) => read_pipe_to_end(pipe).await,
+                None => Ok(Vec::new()),
+            }
+        };
+        let stderr = async {
+            match stderr {
+                Some(pipe) => read_pipe_to_end(pipe).await,
+                None => Ok(Vec::new()),
+            }
+        };
+        let (status, stdout, stderr) = tokio::join!(status, stdout, stderr);
+
+        Ok(Output {
+            status: status?,
+            stdout: stdout?,
+            stderr: stderr?,
+        })
     };
 
-    TimedResult::Completed(Output {
-        status,
-        stdout,
-        stderr,
-    })
+    match tokio::time::timeout(timeout, collect_output).await {
+        Ok(Ok(output)) => TimedResult::Completed(output),
+        Ok(Err(error)) => TimedResult::Failed(error),
+        Err(_) => {
+            // The collection future owns the pipe readers, so timing it out
+            // drops both read ends before teardown. This prevents descendants
+            // that inherited stdout/stderr from keeping cleanup blocked.
+            reap_timed_out_child(&mut child, &mut process_tree).await;
+            TimedResult::TimedOut
+        }
+    }
 }
 
 fn stderr_excerpt(output: &Output) -> String {
@@ -1011,6 +1102,117 @@ mod tests {
         let result = run_output_with_timeout(command, Duration::from_millis(25)).await;
 
         assert!(matches!(result, TimedResult::TimedOut));
+    }
+
+    const INHERITED_PIPE_HELPER_MODE: &str = "NTERACT_WARM_ENV_PIPE_HELPER_MODE";
+    const INHERITED_PIPE_HELPER_PID_FILE: &str = "NTERACT_WARM_ENV_PIPE_HELPER_PID_FILE";
+    const INHERITED_PIPE_HELPER_TEST: &str =
+        "warm_env::tests::run_output_with_timeout_inherited_pipe_helper";
+
+    #[test]
+    #[ignore = "subprocess helper invoked by the process-tree regression test"]
+    fn run_output_with_timeout_inherited_pipe_helper() {
+        match std::env::var(INHERITED_PIPE_HELPER_MODE).as_deref() {
+            Ok("parent") => {
+                // Give the outer process time to establish its Windows Job
+                // Object before this helper creates the inherited descendant.
+                std::thread::sleep(Duration::from_millis(250));
+
+                let child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        INHERITED_PIPE_HELPER_TEST,
+                        "--exact",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env(INHERITED_PIPE_HELPER_MODE, "descendant")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .unwrap();
+
+                std::fs::write(
+                    std::env::var(INHERITED_PIPE_HELPER_PID_FILE).unwrap(),
+                    child.id().to_string(),
+                )
+                .unwrap();
+            }
+            Ok("descendant") => std::thread::sleep(Duration::from_secs(30)),
+            _ => panic!("process-tree helper invoked without a mode"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn process_is_alive(pid: u32) -> bool {
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        result == 0 || io::Error::last_os_error().kind() == io::ErrorKind::PermissionDenied
+    }
+
+    #[cfg(windows)]
+    fn process_is_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process == 0 {
+            return false;
+        }
+
+        let mut exit_code = 0;
+        let ok = unsafe { GetExitCodeProcess(process, &mut exit_code) };
+        unsafe { CloseHandle(process) };
+        ok != 0 && exit_code == 259 // STILL_ACTIVE
+    }
+
+    #[cfg(any(unix, windows))]
+    async fn wait_for_process_exit(pid: u32) -> bool {
+        for _ in 0..100 {
+            if !process_is_alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn run_output_with_timeout_kills_descendant_holding_output_pipes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("descendant.pid");
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                INHERITED_PIPE_HELPER_TEST,
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(INHERITED_PIPE_HELPER_MODE, "parent")
+            .env(INHERITED_PIPE_HELPER_PID_FILE, &pid_file);
+
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(8),
+            run_output_with_timeout(command, Duration::from_secs(1)),
+        )
+        .await
+        .expect("subprocess cleanup must return within its bounded reap window");
+
+        assert!(matches!(result, TimedResult::TimedOut));
+        assert!(started.elapsed() < Duration::from_secs(8));
+
+        let descendant_pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("helper must record its descendant pid before the timeout")
+            .parse()
+            .unwrap();
+        assert!(
+            wait_for_process_exit(descendant_pid).await,
+            "descendant {descendant_pid} survived process-tree cleanup"
+        );
     }
 
     #[test]

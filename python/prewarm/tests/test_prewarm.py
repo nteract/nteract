@@ -134,7 +134,7 @@ def test_build_warmup_script_with_site_packages():
     from prewarm import build_warmup_script
 
     script = build_warmup_script([], include_conda=False, site_packages="/fake/path")
-    assert "compileall" in script
+    assert "compileall.compile_dir('/fake/path', quiet=2, workers=1)" in script
     assert "/fake/path" in script
 
 
