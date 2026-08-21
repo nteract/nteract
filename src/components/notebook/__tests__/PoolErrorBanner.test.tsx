@@ -70,4 +70,29 @@ describe("PoolErrorBanner", () => {
 
     expect(screen.queryByText("Settings")).not.toBeInTheDocument();
   });
+
+  it("renders ANSI in pool error titles without literal escape bytes", () => {
+    render(
+      <PoolErrorBanner
+        uvError={null}
+        condaError={{
+          message: "Environment warmup \x1b[33mtimed out\x1b[0m",
+          error_kind: "timeout",
+          consecutive_failures: 1,
+          retry_in_secs: 60,
+          receivedAt: Date.now(),
+        }}
+        pixiError={null}
+        onDismissUv={() => {}}
+        onDismissConda={() => {}}
+        onDismissPixi={() => {}}
+      />,
+    );
+
+    const styledTitle = screen.getByText("timed out");
+    const title = styledTitle.parentElement;
+    expect(title?.textContent).toBe("Environment warmup timed out");
+    expect(title?.textContent).not.toContain("\x1b");
+    expect(styledTitle).toHaveClass("ansi-yellow-fg");
+  });
 });

@@ -4,6 +4,7 @@ import {
   NotebookNoticeAction,
   NotebookNoticeStack,
 } from "@/components/notebook/NotebookNotice";
+import { AnsiText } from "@/components/outputs/ansi-output";
 
 export interface PoolErrorDetails {
   message: string;
@@ -49,7 +50,7 @@ function PoolErrorItem({ envType, error, onDismiss, onOpenSettings }: PoolErrorI
     <NotebookNotice
       tone="warning"
       icon={isTimeout ? <Clock /> : <AlertTriangle />}
-      title={error.message}
+      title={<AnsiText>{error.message}</AnsiText>}
       onDismiss={onDismiss}
       actions={
         showSettingsButton(error) && onOpenSettings ? (

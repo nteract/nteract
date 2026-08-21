@@ -1,6 +1,7 @@
 import { AlertTriangle, Bug, CheckCircle2, ChevronRight, Info, XCircle, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { AnsiText } from "@/components/outputs/ansi-output";
 import { cn } from "@/lib/utils";
 
 export type NotebookNoticeTone = "info" | "warning" | "error" | "success" | "debug";
@@ -193,7 +194,7 @@ export function NotebookNoticeDetails({
         {label}
       </summary>
       <pre className="mt-1.5 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded bg-current/5 px-2 py-1.5 font-mono text-[11px] leading-snug">
-        {children}
+        <AnsiText>{children}</AnsiText>
       </pre>
     </details>
   );

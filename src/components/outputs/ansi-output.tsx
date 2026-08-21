@@ -190,6 +190,21 @@ function renderAnsiEntries(entries: Anser.AnserJsonEntry[]): ReactNode[] {
 // Public components
 // ---------------------------------------------------------------------------
 
+interface AnsiTextProps {
+  children: string;
+}
+
+/**
+ * Render ANSI text inline, inheriting layout and typography from its parent.
+ */
+export function AnsiText({ children }: AnsiTextProps) {
+  if (!children || typeof children !== "string") {
+    return null;
+  }
+
+  return <>{renderAnsiEntries(ansiToJson(children))}</>;
+}
+
 interface AnsiOutputProps {
   children: string;
   className?: string;
@@ -207,8 +222,6 @@ export function AnsiOutput({ children, className = "", isError = false }: AnsiOu
     return null;
   }
 
-  const entries = ansiToJson(children);
-
   return (
     <div
       data-slot="ansi-output"
@@ -218,7 +231,9 @@ export function AnsiOutput({ children, className = "", isError = false }: AnsiOu
         className,
       )}
     >
-      <code>{renderAnsiEntries(entries)}</code>
+      <code>
+        <AnsiText>{children}</AnsiText>
+      </code>
     </div>
   );
 }

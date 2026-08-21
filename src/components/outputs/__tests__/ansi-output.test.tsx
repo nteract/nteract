@@ -7,7 +7,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
-import { AnsiErrorOutput, AnsiOutput, AnsiStreamOutput } from "../ansi-output";
+import { AnsiErrorOutput, AnsiOutput, AnsiStreamOutput, AnsiText } from "../ansi-output";
 
 // Helper to get styles from rendered spans
 function getSpanStyles(container: HTMLElement) {
@@ -18,6 +18,27 @@ function getSpanStyles(container: HTMLElement) {
     style: span.getAttribute("style"),
   }));
 }
+
+describe("AnsiText", () => {
+  it("renders ANSI text inline without literal escape bytes", () => {
+    const { container } = render(
+      <p>
+        Status: <AnsiText>{"\x1b[31mfailed\x1b[0m"}</AnsiText>
+      </p>,
+    );
+
+    const styledText = screen.getByText("failed");
+    expect(styledText).toHaveClass("ansi-red-fg");
+    expect(styledText.parentElement?.tagName).toBe("P");
+    expect(styledText.parentElement?.textContent).toBe("Status: failed");
+    expect(container.textContent).not.toContain("\x1b");
+  });
+
+  it("preserves plain text", () => {
+    render(<AnsiText>Plain notice</AnsiText>);
+    expect(screen.getByText("Plain notice")).toBeInTheDocument();
+  });
+});
 
 describe("AnsiOutput", () => {
   describe("plain text", () => {
