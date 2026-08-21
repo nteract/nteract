@@ -1111,6 +1111,7 @@ mod tests {
 
     #[test]
     #[ignore = "subprocess helper invoked by the process-tree regression test"]
+    #[allow(clippy::zombie_processes)] // Parent must exit while its descendant keeps the pipes open.
     fn run_output_with_timeout_inherited_pipe_helper() {
         match std::env::var(INHERITED_PIPE_HELPER_MODE).as_deref() {
             Ok("parent") => {
