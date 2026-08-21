@@ -6,6 +6,7 @@ import {
   NotebookNoticeAction,
   NotebookNoticeDetails,
 } from "@/components/notebook/NotebookNotice";
+import { ansiToPlainText } from "@/components/outputs/ansi-output";
 
 const RUNTIME_PEER_DISCONNECTED_ERROR_PREFIX = "runtime peer disconnected:";
 
@@ -96,7 +97,7 @@ export function KernelLaunchErrorBanner({
   }, [errorDetails]);
 
   const copyDetails = useCallback(async () => {
-    await navigator.clipboard.writeText(errorDetails);
+    await navigator.clipboard.writeText(ansiToPlainText(errorDetails));
     setCopied(true);
   }, [errorDetails]);
 

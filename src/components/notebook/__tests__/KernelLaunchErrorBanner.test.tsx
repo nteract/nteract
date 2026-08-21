@@ -68,6 +68,7 @@ describe("KernelLaunchErrorBanner", () => {
   it("copies the launch details", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
+    const ansiDetails = `\x1b[31m${STDERR_TAIL}\x1b[0m\nSee \x1b]8;;https://example.com\x07documentation\x1b]8;;\x07`;
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText },
       configurable: true,
@@ -75,14 +76,14 @@ describe("KernelLaunchErrorBanner", () => {
 
     render(
       <KernelLaunchErrorBanner
-        errorDetails={STDERR_TAIL}
+        errorDetails={ansiDetails}
         onRetry={() => {}}
         onDismiss={() => {}}
       />,
     );
 
     await user.click(screen.getByTestId("copy-kernel-launch-error"));
-    expect(writeText).toHaveBeenCalledWith(STDERR_TAIL);
+    expect(writeText).toHaveBeenCalledWith(`${STDERR_TAIL}\nSee documentation`);
     expect(screen.getByText("Copied")).toBeInTheDocument();
   });
 

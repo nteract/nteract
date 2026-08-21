@@ -35,8 +35,20 @@ describe("AnsiText", () => {
   });
 
   it("preserves plain text", () => {
-    render(<AnsiText>Plain notice</AnsiText>);
-    expect(screen.getByText("Plain notice")).toBeInTheDocument();
+    const { container } = render(<AnsiText>Plain notice</AnsiText>);
+    expect(container.textContent).toBe("Plain notice");
+    expect(container.querySelectorAll("span")).toHaveLength(1);
+  });
+
+  it("removes unsupported ANSI controls while preserving visible text", () => {
+    const { container } = render(
+      <AnsiText>{"See \x1b]8;;https://example.com\x07documentation\x1b]8;;\x07"}</AnsiText>,
+    );
+
+    expect(container.textContent).toBe("See documentation");
+    expect(container.textContent).not.toContain("\x1b");
+    expect(container.textContent).not.toContain("\x07");
+    expect(container.textContent).not.toContain("https://example.com");
   });
 });
 

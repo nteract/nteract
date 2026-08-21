@@ -2,6 +2,7 @@ import Anser from "anser";
 import { escapeCarriageReturn } from "escape-carriage";
 import { X } from "lucide-react";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import stripAnsi from "strip-ansi";
 import { cn } from "@/lib/utils";
 
 /**
@@ -169,9 +170,10 @@ function renderAnsiEntries(entries: Anser.AnserJsonEntry[]): ReactNode[] {
     const { style, className } = resolveAnsiStyle(entry);
     const hasStyle = Object.keys(style).length > 0;
     const hasClass = className.length > 0;
+    const content = stripAnsi(entry.content);
 
     if (!hasStyle && !hasClass) {
-      return <span key={i}>{entry.content}</span>;
+      return <span key={i}>{content}</span>;
     }
 
     return (
@@ -180,7 +182,7 @@ function renderAnsiEntries(entries: Anser.AnserJsonEntry[]): ReactNode[] {
         style={hasStyle ? style : undefined}
         className={hasClass ? className : undefined}
       >
-        {entry.content}
+        {content}
       </span>
     );
   });
@@ -192,6 +194,17 @@ function renderAnsiEntries(entries: Anser.AnserJsonEntry[]): ReactNode[] {
 
 interface AnsiTextProps {
   children: string;
+}
+
+/** Convert ANSI terminal text to normalized, copyable plain text. */
+export function ansiToPlainText(input: string): string {
+  if (!input || typeof input !== "string") {
+    return "";
+  }
+
+  return ansiToJson(input)
+    .map((entry) => stripAnsi(entry.content))
+    .join("");
 }
 
 /**
