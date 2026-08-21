@@ -29,16 +29,9 @@ trait ServiceRuntime {
     fn install_and_start(&mut self, source_binary: &Path) -> std::result::Result<(), String>;
 }
 
+#[derive(Default)]
 struct SystemServiceRuntime {
     manager: ServiceManager,
-}
-
-impl Default for SystemServiceRuntime {
-    fn default() -> Self {
-        Self {
-            manager: ServiceManager::default(),
-        }
-    }
 }
 
 impl ServiceRuntime for SystemServiceRuntime {
@@ -216,45 +209,49 @@ where
         info.started_at
     );
 
-    match daemon.request_shutdown().await {
-        Ok(()) => {
-            if daemon
-                .wait_for_pid_exit(info.pid, GRACEFUL_EXIT_TIMEOUT)
-                .await
-            {
-                tracing::info!("[service-repair] Daemon stopped gracefully");
-                return ensure_socket_owner_released(daemon, info).await;
-            }
+    let graceful_requested = match daemon.request_shutdown().await {
+        Ok(()) => true,
+        Err(error) => {
             tracing::warn!(
-                "[service-repair] Daemon acknowledged shutdown but pid {} remained",
-                info.pid
+                "[service-repair] Graceful shutdown failed for pid {}: {}",
+                info.pid,
+                error
             );
+            false
         }
-        Err(error) => tracing::warn!(
-            "[service-repair] Graceful shutdown failed for pid {}: {}",
-            info.pid,
-            error
-        ),
-    }
+    };
 
-    // Do this even when is_installed() is false. A legacy SMAppService job can
-    // exist without the current per-user service artifact.
+    // Always disable the service before waiting for the process to exit. A
+    // KeepAlive launcher can otherwise replace a daemon that honored the
+    // graceful request before repair has installed the new definition. Do this
+    // even when is_installed() is false: a legacy SMAppService job can exist
+    // without the current per-user service artifact.
     if let Err(error) = service.stop() {
         tracing::warn!("[service-repair] Service-manager stop did not complete: {error}");
     }
-    if daemon
-        .wait_for_pid_exit(info.pid, SERVICE_EXIT_TIMEOUT)
-        .await
-    {
+    let exit_timeout = if graceful_requested {
+        GRACEFUL_EXIT_TIMEOUT
+    } else {
+        SERVICE_EXIT_TIMEOUT
+    };
+    if daemon.wait_for_pid_exit(info.pid, exit_timeout).await {
+        tracing::info!("[service-repair] Daemon process exited");
         return ensure_socket_owner_released(daemon, info).await;
     }
 
-    if let Some(current) = daemon.inspect().await {
-        if !same_incarnation(&current, info) {
+    match daemon.inspect().await {
+        Some(current) if same_incarnation(&current, info) => {}
+        Some(current) => {
             return Err(anyhow!(
                 "daemon socket ownership changed during repair: pid {} became pid {}",
                 info.pid,
                 current.pid
+            ));
+        }
+        None => {
+            return Err(anyhow!(
+                "daemon pid {} remained but no longer proved ownership of the stable socket; refusing unsafe process termination",
+                info.pid
             ));
         }
     }
@@ -547,9 +544,17 @@ mod tests {
 
         assert_eq!(result.pid, replacement.pid);
         let events = events.lock().unwrap();
+        let shutdown = events
+            .iter()
+            .position(|event| *event == "shutdown")
+            .unwrap();
         let service_stop = events
             .iter()
             .position(|event| *event == "service_stop")
+            .unwrap();
+        let wait_pid = events
+            .iter()
+            .position(|event| *event == "wait_pid")
             .unwrap();
         let stop_process = events
             .iter()
@@ -559,7 +564,9 @@ mod tests {
             .iter()
             .position(|event| *event == "install_start")
             .unwrap();
-        assert!(service_stop < stop_process);
+        assert!(shutdown < service_stop);
+        assert!(service_stop < wait_pid);
+        assert!(wait_pid < stop_process);
         assert!(stop_process < install_start);
     }
 }
