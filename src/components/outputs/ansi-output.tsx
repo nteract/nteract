@@ -77,16 +77,21 @@ function paletteIndexToRgb(index: number): string {
  */
 function resolveAnsiStyle(
   entry: Anser.AnserJsonEntry,
-  preserveConceal: boolean,
+  terminalFidelity: boolean,
 ): {
   style: CSSProperties;
   className: string;
 } {
   const style: CSSProperties = {};
   const classes: string[] = [];
+  const isInverted = (
+    entry as Anser.AnserJsonEntry & {
+      isInverted?: boolean;
+    }
+  ).isInverted;
 
   // Foreground
-  if (entry.fg) {
+  if (entry.fg && (terminalFidelity || !isInverted)) {
     if (isStandardColor(entry.fg)) {
       // Use CSS variable via class: .ansi-red-fg { color: var(--ansi-red) }
       classes.push(`${entry.fg}-fg`);
@@ -99,7 +104,7 @@ function resolveAnsiStyle(
   }
 
   // Background
-  if (entry.bg) {
+  if (entry.bg && terminalFidelity) {
     if (isStandardColor(entry.bg)) {
       classes.push(`${entry.bg}-bg`);
     } else if (entry.bg === "ansi-truecolor" && entry.bg_truecolor) {
@@ -117,13 +122,15 @@ function resolveAnsiStyle(
         style.fontWeight = "bold";
         break;
       case "dim":
-        style.opacity = 0.5;
+        if (terminalFidelity) {
+          style.opacity = 0.5;
+        }
         break;
       case "italic":
         style.fontStyle = "italic";
         break;
       case "hidden":
-        if (preserveConceal) {
+        if (terminalFidelity) {
           style.visibility = "hidden";
         }
         break;
@@ -177,14 +184,14 @@ const INVISIBLE_CONTROL_CHARACTERS = new RegExp(
 );
 const OSC_SEQUENCE = new RegExp(
   // eslint-disable-next-line no-control-regex -- strip complete or tail-truncated OSC sequences
-  "(?:\\u001B\\]|\\u009D)[\\s\\S]*?(?:\\u0007|\\u001B\\\\|\\u009C|$)",
+  "(?:\\u001B\\]|\\u009D)[^\\n]*?(?:\\u0007|\\u001B\\\\|\\u009C|(?=\\n)|$)",
   "g",
 );
 // eslint-disable-next-line no-control-regex -- strip a head-truncated OSC 8 opener through BEL
-const TRUNCATED_OSC_8_PREFIX = new RegExp("^8;;[^\\u0007\\n]*(?:\\u0007|$)");
+const TRUNCATED_OSC_8_SEQUENCE = new RegExp("8;;[^\\u0007\\n]*\\u0007", "g");
 
 function sanitizeAnsiContent(content: string): string {
-  const withoutOsc = content.replace(OSC_SEQUENCE, "").replace(TRUNCATED_OSC_8_PREFIX, "");
+  const withoutOsc = content.replace(OSC_SEQUENCE, "").replace(TRUNCATED_OSC_8_SEQUENCE, "");
   return stripAnsi(withoutOsc).replace(INVISIBLE_CONTROL_CHARACTERS, "");
 }
 
@@ -192,9 +199,12 @@ function ansiEntriesToPlainText(entries: Anser.AnserJsonEntry[]): string {
   return entries.map((entry) => sanitizeAnsiContent(entry.content)).join("");
 }
 
-function renderAnsiEntries(entries: Anser.AnserJsonEntry[], preserveConceal: boolean): ReactNode[] {
+function renderAnsiEntries(
+  entries: Anser.AnserJsonEntry[],
+  terminalFidelity: boolean,
+): ReactNode[] {
   return entries.map((entry, i) => {
-    const { style, className } = resolveAnsiStyle(entry, preserveConceal);
+    const { style, className } = resolveAnsiStyle(entry, terminalFidelity);
     const hasStyle = Object.keys(style).length > 0;
     const hasClass = className.length > 0;
     const content = sanitizeAnsiContent(entry.content);
@@ -222,7 +232,7 @@ function renderAnsiEntries(entries: Anser.AnserJsonEntry[], preserveConceal: boo
 interface AnsiTextProps {
   children: string;
   fallback?: ReactNode;
-  preserveConceal?: boolean;
+  terminalFidelity?: boolean;
 }
 
 /** Convert ANSI terminal text to normalized, copyable plain text. */
@@ -237,7 +247,7 @@ export function ansiToPlainText(input: string): string {
 /**
  * Render ANSI text inline, inheriting layout and typography from its parent.
  */
-export function AnsiText({ children, fallback, preserveConceal = false }: AnsiTextProps) {
+export function AnsiText({ children, fallback, terminalFidelity = false }: AnsiTextProps) {
   const entries = useMemo(
     () => (children && typeof children === "string" ? ansiToJson(children) : []),
     [children],
@@ -251,7 +261,7 @@ export function AnsiText({ children, fallback, preserveConceal = false }: AnsiTe
     return null;
   }
 
-  return <>{renderAnsiEntries(entries, preserveConceal)}</>;
+  return <>{renderAnsiEntries(entries, terminalFidelity)}</>;
 }
 
 interface AnsiOutputProps {
@@ -281,7 +291,7 @@ export function AnsiOutput({ children, className = "", isError = false }: AnsiOu
       )}
     >
       <code>
-        <AnsiText preserveConceal>{children}</AnsiText>
+        <AnsiText terminalFidelity>{children}</AnsiText>
       </code>
     </div>
   );

@@ -97,6 +97,8 @@ describe("KernelLaunchErrorBanner", () => {
     );
 
     expect(screen.queryByTestId("copy-kernel-launch-error")).not.toBeInTheDocument();
+    expect(screen.queryByText("Show error details")).not.toBeInTheDocument();
+    expect(screen.getByText("No diagnostic output was captured.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 

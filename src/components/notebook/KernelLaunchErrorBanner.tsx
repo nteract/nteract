@@ -92,6 +92,7 @@ export function KernelLaunchErrorBanner({
 }: KernelLaunchErrorBannerProps) {
   const [copied, setCopied] = useState(false);
   const plainErrorDetails = useMemo(() => ansiToPlainText(errorDetails), [errorDetails]);
+  const hasDiagnosticDetails = plainErrorDetails.trim().length > 0;
 
   useEffect(() => {
     setCopied(false);
@@ -109,11 +110,13 @@ export function KernelLaunchErrorBanner({
       title="Kernel failed to start"
       onDismiss={onDismiss}
       details={
-        <NotebookNoticeDetails label="Show error details">{errorDetails}</NotebookNoticeDetails>
+        hasDiagnosticDetails ? (
+          <NotebookNoticeDetails label="Show error details">{errorDetails}</NotebookNoticeDetails>
+        ) : null
       }
       actions={
         <>
-          {plainErrorDetails.trim() ? (
+          {hasDiagnosticDetails ? (
             <NotebookNoticeAction
               onClick={copyDetails}
               icon={copied ? <Check /> : <Copy />}
@@ -127,7 +130,9 @@ export function KernelLaunchErrorBanner({
           </NotebookNoticeAction>
         </>
       }
-    />
+    >
+      {hasDiagnosticDetails ? null : "No diagnostic output was captured."}
+    </NotebookNotice>
   );
 }
 

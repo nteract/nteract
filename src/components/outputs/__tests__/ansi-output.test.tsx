@@ -53,10 +53,20 @@ describe("AnsiText", () => {
 
   it("removes residual controls from truncated ANSI sequences", () => {
     const { container } = render(
-      <AnsiText>{"8;;https://example.com\x07documentation\x1b]8;;https://ex"}</AnsiText>,
+      <AnsiText>
+        {"warm-env failed; stderr: 8;;https://example.com\x07documentation\x1b]8;;https://ex"}
+      </AnsiText>,
     );
 
-    expect(container.textContent).toBe("documentation");
+    expect(container.textContent).toBe("warm-env failed; stderr: documentation");
+  });
+
+  it("preserves later lines after an unterminated OSC sequence", () => {
+    const { container } = render(
+      <AnsiText>{"message \x1b]8;;https://example.com\nactual failure"}</AnsiText>,
+    );
+
+    expect(container.textContent).toBe("message \nactual failure");
   });
 
   it("keeps concealed inline text perceivable", () => {
@@ -65,6 +75,15 @@ describe("AnsiText", () => {
     const text = screen.getByText("Failure details");
     expect(text).toBeVisible();
     expect(text).not.toHaveStyle({ visibility: "hidden" });
+    expect(container.textContent).toBe("Failure details");
+  });
+
+  it("keeps terminal-only dim and background styles out of inline text", () => {
+    const { container } = render(<AnsiText>{"\x1b[2;41mFailure details\x1b[0m"}</AnsiText>);
+
+    const text = screen.getByText("Failure details");
+    expect(text).not.toHaveStyle({ opacity: 0.5 });
+    expect(text).not.toHaveClass("ansi-red-bg");
     expect(container.textContent).toBe("Failure details");
   });
 });
