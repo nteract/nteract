@@ -135,7 +135,11 @@ copy attempted in the closed spike. It has demonstrated:
 - malformed frame rejection;
 - process-death recovery after stale-owner fencing and lease expiry;
 - same-ID reopen with the acknowledged content; and
-- cross-node ingress to a room owned by another node.
+- cross-node ingress to a room owned by another node; and
+- forced loss of an owning process during a two-editor session, followed by
+  takeover on the second node, recovery of the durably acknowledged source,
+  and convergence of a new edit. The first repeatable local run reconnected in
+  9.85 seconds.
 
 The proof also found two portability seams worth keeping upstream:
 
@@ -144,9 +148,10 @@ The proof also found two portability seams worth keeping upstream:
 2. `runtimed-wasm` must remain a static compiled-module import, rather than an
    inlined byte array or a runtime dynamic import.
 
-This evidence is sufficient to keep CellD in the benchmark. It is not
-sufficient to pass the security, backup, active-failover, workload-identity, or
-production-operations gates.
+This evidence is sufficient to keep CellD in the benchmark and passes the
+first active-failover correctness scenario. It is not sufficient to pass the
+security, backup, workload-identity, repeated-churn, or production-operations
+gates.
 
 ## Native Rust Proof Boundary
 
@@ -185,4 +190,3 @@ not inferred from the actor API.
 
 Until step 6, existing architecture documents remain evidence and constraints;
 none of them is permission to call a candidate selected.
-

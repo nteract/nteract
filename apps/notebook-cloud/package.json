@@ -43,6 +43,9 @@
     "publish:fixture": "node scripts/publish-fixture.mjs",
     "publish:live": "node --import tsx scripts/publish-live.mjs",
     "wasm:roundtrip": "node --import tsx scripts/wasm-roundtrip.mjs",
+    "wasm:active-failover": "node --import tsx scripts/wasm-active-failover.mjs",
+    "proof:celld:active-failover": "node scripts/celld-active-failover-proof.mjs",
+    "proof:celld:backup": "node scripts/celld-backup.mjs",
     "wasm:reopen": "node --import tsx scripts/wasm-reopen.mjs",
     "websocket:ingress-probe": "node --import tsx scripts/websocket-ingress-probe.mjs",
     "dev:browser": "node scripts/dev-browser.mjs"

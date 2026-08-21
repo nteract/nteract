@@ -14,6 +14,7 @@ const CHECKPOINT_COMMS_DOC_KEY = "room-host:comms-doc";
 const CHECKPOINT_COMMENTS_DOC_KEY = "room-host:comments-doc";
 const CHECKPOINT_META_KEY = "room-host:checkpoint";
 const CHECKPOINT_VERSION = 6;
+const PORTABLE_CHECKPOINT_MANIFEST_VERSION = 1;
 
 interface RoomHostOutboundFrame {
   peer_id: string;
@@ -46,6 +47,27 @@ interface RoomCheckpointMetadata {
   published_runtime_state_heads: string[] | null;
   published_comms_doc_heads: string[] | null;
   published_comments_doc_heads: string[] | null;
+}
+
+interface PortableRoomCheckpointManifest {
+  version: number;
+  notebook_id: string;
+  metadata: RoomCheckpointMetadata;
+  objects: {
+    notebook: string;
+    runtime_state: string;
+    comms: string;
+    comments: string;
+  };
+}
+
+interface RoomCheckpoint {
+  source: "durable_object" | "portable_object_store";
+  notebookBytes: Uint8Array;
+  runtimeStateBytes: Uint8Array;
+  commsDocBytes?: Uint8Array;
+  commentsDocBytes?: Uint8Array;
+  metadata: RoomCheckpointMetadata;
 }
 
 interface RoomPeer {
@@ -196,13 +218,21 @@ export class RoomMaterializer {
         published_comms_doc_heads: this.loadedPublishedCommsDocHeads,
         published_comments_doc_heads: this.loadedPublishedCommentsDocHeads,
       };
-      await Promise.all([
+      const durableObjectCheckpoint = Promise.all([
         this.state.storage.put(CHECKPOINT_NOTEBOOK_KEY, notebookBytes),
         this.state.storage.put(CHECKPOINT_RUNTIME_STATE_KEY, runtimeStateBytes),
         this.state.storage.put(CHECKPOINT_COMMS_DOC_KEY, commsDocBytes),
         this.state.storage.put(CHECKPOINT_COMMENTS_DOC_KEY, commentsDocBytes),
         this.state.storage.put(CHECKPOINT_META_KEY, metadata),
       ]);
+      const portableCheckpoint = this.savePortableCheckpoint(
+        notebookBytes,
+        runtimeStateBytes,
+        commsDocBytes,
+        commentsDocBytes,
+        metadata,
+      );
+      await Promise.all([durableObjectCheckpoint, portableCheckpoint]);
       cloudLog("debug", "room.materializer.checkpoint.saved", {
         notebook_id: this.notebookId,
         duration_ms: durationMs(startedAt),
@@ -266,7 +296,7 @@ export class RoomMaterializer {
             );
             cloudLog("info", "room.materializer.loaded", {
               notebook_id: this.notebookId,
-              source: "durable_object_checkpoint",
+              source: checkpointLogSource(checkpoint),
               reason: checkpointKeepReason,
               checkpoint_published_revision_id: checkpoint.metadata.published_revision_id,
               published_revision_id: latestPublished.revisionId,
@@ -310,7 +340,7 @@ export class RoomMaterializer {
         );
         cloudLog("info", "room.materializer.loaded", {
           notebook_id: this.notebookId,
-          source: "durable_object_checkpoint",
+          source: checkpointLogSource(checkpoint),
           published_revision_id: checkpoint.metadata.published_revision_id,
           duration_ms: durationMs(startedAt),
           notebook_byte_length: checkpoint.notebookBytes.byteLength,
@@ -375,13 +405,7 @@ export class RoomMaterializer {
   }
 
   private async loadCheckpointForHydration(startedAt: number): Promise<{
-    checkpoint: {
-      notebookBytes: Uint8Array;
-      runtimeStateBytes: Uint8Array;
-      commsDocBytes?: Uint8Array;
-      commentsDocBytes?: Uint8Array;
-      metadata: RoomCheckpointMetadata;
-    } | null;
+    checkpoint: RoomCheckpoint | null;
     error: unknown | null;
   }> {
     try {
@@ -537,22 +561,44 @@ export class RoomMaterializer {
   }
 
   private async clearCheckpoint(): Promise<void> {
+    const objectStore = notebookObjectStore(this.env);
     await Promise.all([
       this.state.storage.delete(CHECKPOINT_NOTEBOOK_KEY),
       this.state.storage.delete(CHECKPOINT_RUNTIME_STATE_KEY),
       this.state.storage.delete(CHECKPOINT_COMMS_DOC_KEY),
       this.state.storage.delete(CHECKPOINT_COMMENTS_DOC_KEY),
       this.state.storage.delete(CHECKPOINT_META_KEY),
+      objectStore?.delete(portableCheckpointManifestKey(this.notebookId)),
     ]);
   }
 
-  private async loadCheckpoint(): Promise<{
-    notebookBytes: Uint8Array;
-    runtimeStateBytes: Uint8Array;
-    commsDocBytes?: Uint8Array;
-    commentsDocBytes?: Uint8Array;
-    metadata: RoomCheckpointMetadata;
-  } | null> {
+  private async loadCheckpoint(): Promise<RoomCheckpoint | null> {
+    const [durableResult, portableResult] = await Promise.allSettled([
+      this.loadDurableObjectCheckpoint(),
+      this.loadPortableCheckpoint(),
+    ]);
+    const candidates: RoomCheckpoint[] = [];
+    if (durableResult.status === "fulfilled" && durableResult.value) {
+      candidates.push(durableResult.value);
+    }
+    if (portableResult.status === "fulfilled" && portableResult.value) {
+      candidates.push(portableResult.value);
+    }
+    if (candidates.length > 0) {
+      return candidates.reduce((latest, candidate) =>
+        checkpointSavedAt(candidate.metadata) >= checkpointSavedAt(latest.metadata)
+          ? candidate
+          : latest,
+      );
+    }
+    const failure = [durableResult, portableResult].find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure) throw failure.reason;
+    return null;
+  }
+
+  private async loadDurableObjectCheckpoint(): Promise<RoomCheckpoint | null> {
     const [notebookBytes, runtimeStateBytes, commsDocBytes, commentsDocBytes] = await Promise.all([
       this.state.storage.get<ArrayBuffer>(CHECKPOINT_NOTEBOOK_KEY),
       this.state.storage.get<ArrayBuffer>(CHECKPOINT_RUNTIME_STATE_KEY),
@@ -579,38 +625,109 @@ export class RoomMaterializer {
       return null;
     }
     return {
+      source: "durable_object",
       notebookBytes: new Uint8Array(notebookBytes),
       runtimeStateBytes: new Uint8Array(runtimeStateBytes),
       commsDocBytes: commsDocBytes ? new Uint8Array(commsDocBytes) : undefined,
       commentsDocBytes: commentsDocBytes ? new Uint8Array(commentsDocBytes) : undefined,
-      metadata: {
-        version: typeof metadata.version === "number" ? metadata.version : CHECKPOINT_VERSION,
-        notebook_heads: Array.isArray(metadata.notebook_heads) ? metadata.notebook_heads : [],
-        runtime_state_heads: Array.isArray(metadata.runtime_state_heads)
-          ? metadata.runtime_state_heads
-          : [],
-        comms_doc_heads: Array.isArray(metadata.comms_doc_heads) ? metadata.comms_doc_heads : [],
-        comments_doc_heads: Array.isArray(metadata.comments_doc_heads)
-          ? metadata.comments_doc_heads
-          : [],
-        saved_at: typeof metadata.saved_at === "string" ? metadata.saved_at : "",
-        published_revision_id:
-          typeof metadata.published_revision_id === "string"
-            ? metadata.published_revision_id
-            : null,
-        published_notebook_heads: Array.isArray(metadata.published_notebook_heads)
-          ? metadata.published_notebook_heads
-          : null,
-        published_runtime_state_heads: Array.isArray(metadata.published_runtime_state_heads)
-          ? metadata.published_runtime_state_heads
-          : null,
-        published_comms_doc_heads: Array.isArray(metadata.published_comms_doc_heads)
-          ? metadata.published_comms_doc_heads
-          : null,
-        published_comments_doc_heads: Array.isArray(metadata.published_comments_doc_heads)
-          ? metadata.published_comments_doc_heads
-          : null,
+      metadata: normalizeCheckpointMetadata(metadata),
+    };
+  }
+
+  private async savePortableCheckpoint(
+    notebookBytes: ArrayBuffer,
+    runtimeStateBytes: ArrayBuffer,
+    commsDocBytes: ArrayBuffer,
+    commentsDocBytes: ArrayBuffer,
+    metadata: RoomCheckpointMetadata,
+  ): Promise<void> {
+    const objectStore = notebookObjectStore(this.env);
+    if (!objectStore) return;
+    const [notebookHash, runtimeHash, commsHash, commentsHash] = await Promise.all([
+      sha256Hex(notebookBytes),
+      sha256Hex(runtimeStateBytes),
+      sha256Hex(commsDocBytes),
+      sha256Hex(commentsDocBytes),
+    ]);
+    const objects = {
+      notebook: portableCheckpointObjectKey(this.notebookId, "notebook", notebookHash),
+      runtime_state: portableCheckpointObjectKey(this.notebookId, "runtime-state", runtimeHash),
+      comms: portableCheckpointObjectKey(this.notebookId, "comms", commsHash),
+      comments: portableCheckpointObjectKey(this.notebookId, "comments", commentsHash),
+    };
+    await Promise.all([
+      objectStore.put(
+        objects.notebook,
+        notebookBytes,
+        portableCheckpointObjectMetadata("notebook"),
+      ),
+      objectStore.put(
+        objects.runtime_state,
+        runtimeStateBytes,
+        portableCheckpointObjectMetadata("runtime-state"),
+      ),
+      objectStore.put(objects.comms, commsDocBytes, portableCheckpointObjectMetadata("comms")),
+      objectStore.put(
+        objects.comments,
+        commentsDocBytes,
+        portableCheckpointObjectMetadata("comments"),
+      ),
+    ]);
+    const manifest: PortableRoomCheckpointManifest = {
+      version: PORTABLE_CHECKPOINT_MANIFEST_VERSION,
+      notebook_id: this.notebookId,
+      metadata,
+      objects,
+    };
+    await objectStore.put(
+      portableCheckpointManifestKey(this.notebookId),
+      JSON.stringify(manifest),
+      {
+        httpMetadata: { contentType: "application/json", cacheControl: "no-store" },
+        customMetadata: {
+          artifact: "portable-room-checkpoint-manifest",
+          notebook_id: this.notebookId,
+        },
       },
+    );
+  }
+
+  private async loadPortableCheckpoint(): Promise<RoomCheckpoint | null> {
+    const objectStore = notebookObjectStore(this.env);
+    if (!objectStore) return null;
+    const manifestObject = await objectStore.get(portableCheckpointManifestKey(this.notebookId));
+    if (!manifestObject) return null;
+    const manifest = JSON.parse(
+      await manifestObject.text(),
+    ) as Partial<PortableRoomCheckpointManifest>;
+    if (
+      manifest.version !== PORTABLE_CHECKPOINT_MANIFEST_VERSION ||
+      manifest.notebook_id !== this.notebookId ||
+      !manifest.metadata ||
+      manifest.metadata.version !== CHECKPOINT_VERSION ||
+      !manifest.objects?.notebook ||
+      !manifest.objects.runtime_state ||
+      !manifest.objects.comms ||
+      !manifest.objects.comments
+    ) {
+      throw new Error("portable room checkpoint manifest is invalid");
+    }
+    const [notebook, runtimeState, comms, comments] = await Promise.all([
+      objectStore.get(manifest.objects.notebook),
+      objectStore.get(manifest.objects.runtime_state),
+      objectStore.get(manifest.objects.comms),
+      objectStore.get(manifest.objects.comments),
+    ]);
+    if (!notebook || !runtimeState || !comms || !comments) {
+      throw new Error("portable room checkpoint references a missing object");
+    }
+    return {
+      source: "portable_object_store",
+      notebookBytes: new Uint8Array(await notebook.arrayBuffer()),
+      runtimeStateBytes: new Uint8Array(await runtimeState.arrayBuffer()),
+      commsDocBytes: new Uint8Array(await comms.arrayBuffer()),
+      commentsDocBytes: new Uint8Array(await comments.arrayBuffer()),
+      metadata: normalizeCheckpointMetadata(manifest.metadata),
     };
   }
 
@@ -711,6 +828,75 @@ export class RoomMaterializer {
 
 function roomHostActorLabel(notebookId: string): string {
   return `${ROOM_HOST_ACTOR_PRINCIPAL}/room:${stableRoomKey(notebookId)}`;
+}
+
+function normalizeCheckpointMetadata(
+  metadata: Partial<RoomCheckpointMetadata>,
+): RoomCheckpointMetadata {
+  return {
+    version: typeof metadata.version === "number" ? metadata.version : CHECKPOINT_VERSION,
+    notebook_heads: Array.isArray(metadata.notebook_heads) ? metadata.notebook_heads : [],
+    runtime_state_heads: Array.isArray(metadata.runtime_state_heads)
+      ? metadata.runtime_state_heads
+      : [],
+    comms_doc_heads: Array.isArray(metadata.comms_doc_heads) ? metadata.comms_doc_heads : [],
+    comments_doc_heads: Array.isArray(metadata.comments_doc_heads)
+      ? metadata.comments_doc_heads
+      : [],
+    saved_at: typeof metadata.saved_at === "string" ? metadata.saved_at : "",
+    published_revision_id:
+      typeof metadata.published_revision_id === "string" ? metadata.published_revision_id : null,
+    published_notebook_heads: Array.isArray(metadata.published_notebook_heads)
+      ? metadata.published_notebook_heads
+      : null,
+    published_runtime_state_heads: Array.isArray(metadata.published_runtime_state_heads)
+      ? metadata.published_runtime_state_heads
+      : null,
+    published_comms_doc_heads: Array.isArray(metadata.published_comms_doc_heads)
+      ? metadata.published_comms_doc_heads
+      : null,
+    published_comments_doc_heads: Array.isArray(metadata.published_comments_doc_heads)
+      ? metadata.published_comments_doc_heads
+      : null,
+  };
+}
+
+function checkpointSavedAt(metadata: RoomCheckpointMetadata): number {
+  const value = Date.parse(metadata.saved_at);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function checkpointLogSource(checkpoint: RoomCheckpoint): string {
+  return checkpoint.source === "portable_object_store"
+    ? "portable_object_store_checkpoint"
+    : "durable_object_checkpoint";
+}
+
+function portableCheckpointBaseKey(notebookId: string): string {
+  return `n/${encodeURIComponent(notebookId)}/live-checkpoints`;
+}
+
+function portableCheckpointManifestKey(notebookId: string): string {
+  return `${portableCheckpointBaseKey(notebookId)}/latest.json`;
+}
+
+function portableCheckpointObjectKey(notebookId: string, document: string, sha256: string): string {
+  return `${portableCheckpointBaseKey(notebookId)}/${document}/${sha256}.am`;
+}
+
+function portableCheckpointObjectMetadata(document: string) {
+  return {
+    httpMetadata: {
+      contentType: "application/octet-stream",
+      cacheControl: "public, max-age=31536000, immutable",
+    },
+    customMetadata: { artifact: `portable-room-checkpoint-${document}` },
+  };
+}
+
+async function sha256Hex(value: ArrayBuffer): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function initialHostedCellId(notebookId: string): string {

@@ -56,8 +56,8 @@ not claims from the CellD documentation.
 | R2 binding | snapshots and content-addressed blobs in the control | Deliberately unsupported | R2 access is behind `NotebookObjectStore`; CellD uses S3 | Pass through application adapter |
 | S3-compatible application data | snapshots, summaries, and blobs | Not a Worker binding; outbound fetch is available | Separate application identity wrote the expected notebook prefix | Pass for local S3-compatible proof |
 | Fleet storage | deployment, cell state, leases, and fleet secret | Required S3-compatible bucket | Deployment, D1 state, ownership recovery, and node leases ran | Pass for local proof |
-| Node loss | acknowledged room checkpoint and catalog recovery | Ownership epochs and fleet-bucket replication | Forced process death, stale-owner fencing, lease expiry, and same-ID reopen ran | Pass for one-node restart |
-| Multi-node routing | any public node may receive a room connection | Signed private peer routing | A second public listener reopened a room owned by the first node and ran the collaboration contract | Pass for two local nodes |
+| Node loss | acknowledged room checkpoint and catalog recovery | Ownership epochs and fleet-bucket replication | A repeatable two-node probe killed the owning process during a two-editor session, reconnected through the second node, recovered the acknowledged source, and converged another edit | Pass for forced active-node loss |
+| Multi-node routing | any public node may receive a room connection | Signed private peer routing | A second public listener reopened a room owned by the first node and ran the collaboration contract; the active-node-loss probe then took ownership after fencing | Pass for two local nodes |
 | Hostile multi-tenancy | isolate and tenant boundary | Explicitly not safe in the current alpha | Not waived by application tests | Fail for hostile shared tenancy |
 | Internal/operator exposure | peer and operator endpoints must be private | Separate internal listener; most operator routes are unauthenticated | Public and internal listeners were bound separately on loopback | Configuration proof only |
 
@@ -130,14 +130,21 @@ The current proof established:
 - actor attribution for both editors;
 - a viewer-local mutation did not enter the authoritative document;
 - rejection of unknown and malformed typed frames;
+- synchronous checkpoint persistence before an edit receives
+  `cloud_frame_accepted`;
 - checkpoint recovery after forced process death and lease expiry;
 - reopening the same notebook ID with the acknowledged cell source; and
-- cross-node ingress to a room resident on another node.
+- cross-node ingress to a room resident on another node; and
+- active two-editor node loss, takeover, acknowledged-state recovery, and a
+  converged post-failover edit. The measured reconnect after `SIGKILL` was
+  9.85 seconds in this local two-node run.
 
-These are functional proofs. Backup/export/restore, origin and frame-budget
-matrices, active-session node loss, two-node ownership churn, long-lived
-hibernation, real workload identity, and operator-network isolation still need
-repeatable result bundles.
+These are functional proofs. The active-loss run is emitted as a
+machine-readable bundle containing candidate and nteract commits,
+configuration hash, failure signal, timings, checks, and bounded logs.
+Backup/export/restore, origin and frame-budget matrices, repeated ownership
+churn, long-lived hibernation, real workload identity, and operator-network
+isolation still need repeatable result bundles.
 
 ## Security and Operations Consequences
 
@@ -160,7 +167,9 @@ containment, upgrade behavior, observability, and incident recovery.
 1. Run every current D1 query and export/import path.
 2. Run the full origin, ACL, malformed, stale, oversized, and cross-room frame
    matrix against the same artifact on the control and each finalist.
-3. Force node loss during active collaboration and measure reconnect bounds.
+3. Repeat active node loss under load and define the acceptable reconnect
+   service-level objective; the first local forced-loss measurement was 9.85
+   seconds.
 4. Exercise alarm delivery, WebSocket hibernation, and restore over longer idle
    intervals.
 5. Run object-store parity against R2 and a qualified S3 service with transient
@@ -170,4 +179,3 @@ containment, upgrade behavior, observability, and incident recovery.
 7. Replace disposable Worker credentials with an acceptable workload-identity
    or secret-delivery boundary.
 8. Complete licensing and production-operability review before scoring.
-
