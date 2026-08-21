@@ -125,7 +125,9 @@ test.describe("isolated rich output rendering", () => {
     expect(logs).not.toContain("renderer-error");
   });
 
-  test("keeps HTML output buttons clickable and inner regions scrollable", async ({ page }) => {
+  test("keeps HTML controls interactive and hands scroll back to the notebook at boundaries", async ({
+    page,
+  }) => {
     test.setTimeout(180_000);
 
     const notebookId = crypto.randomUUID();
@@ -143,6 +145,7 @@ test.describe("isolated rich output rendering", () => {
         '<div id="html-scroller" style="height: 80px; overflow-y: auto">',
         '<div style="height: 480px">Scrollable HTML content</div>',
         "</div>",
+        '<div style="height: 1200px">Notebook scroll runway</div>',
         '"""))',
       ].join("\n"),
     );
@@ -160,6 +163,26 @@ test.describe("isolated rich output rendering", () => {
     await scroller.hover();
     await page.mouse.wheel(0, 240);
     await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+
+    const notebookScroller = page.locator("[data-notebook-synced]");
+    await expect
+      .poll(() =>
+        notebookScroller.evaluate((element) => element.scrollHeight - element.clientHeight),
+      )
+      .toBeGreaterThan(240);
+
+    await scroller.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    await notebookScroller.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await scroller.hover();
+    await page.mouse.wheel(0, 240);
+
+    await expect
+      .poll(() => notebookScroller.evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(0);
   });
 });
 
