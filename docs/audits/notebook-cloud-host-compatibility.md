@@ -46,7 +46,7 @@ not claims from the CellD documentation.
 | --- | --- | --- | --- | --- |
 | Module Worker | `fetch`, `env`, `ctx.waitUntil` | Supported | Current Worker booted and served `/api/health` | Pass |
 | Durable Objects | `NotebookRoom`, `WorkstationEvents`, `OwnerComputeIndex` with SQLite storage | Supported | All three current classes deployed and activated | Pass |
-| D1 | Catalog, ACLs, app sessions, shares, workstation records, and jobs | Partial: `prepare`, `bind`, `all`, `first`, `run`, `raw`, `exec`, `batch`, and sessions | All eight current migrations applied; create/list/ACL queries ran | Pass for queries exercised; full SQL inventory remains a gate |
+| D1 | Catalog, ACLs, app sessions, shares, workstation records, and jobs | Partial: `prepare`, `bind`, `all`, `first`, `run`, `raw`, `exec`, `batch`, and sessions | All eight current migrations applied; create/list/ACL queries ran; the live schema and rows exported and restored into a new database identity | Pass for queries exercised and local restore; full SQL inventory remains a gate |
 | Hibernatable WebSockets | attachments, auto-response, `webSocketMessage`, close/error, restored socket enumeration | Supported; `getTags()` absent | Typed-frame v4 ready, sync, broadcast, and malformed-frame paths ran | Pass |
 | Durable Object alarms | runtime-peer reconciliation, idle teardown, and room-summary refresh | Supported | Deployment and handlers load; timing/failover scenarios remain to run | Partial |
 | WebAssembly | `runtimed-wasm` room host and frame policy | Compiled sibling-module imports supported | Static `.wasm` module import ran real Automerge sync | Pass |
@@ -54,7 +54,7 @@ not claims from the CellD documentation.
 | Fetch/Response | redirects, JSON, streams, upgrades | `Response.redirect()` absent; core constructors supported | Replaced the one helper call with an equivalent `302` response | Pass with portable seam |
 | Streams | object bodies and response bodies | Supported except `ReadableStream.from()` | S3 adapter uses ordinary readable bodies; parity suite is not complete | Partial |
 | R2 binding | snapshots and content-addressed blobs in the control | Deliberately unsupported | R2 access is behind `NotebookObjectStore`; CellD uses S3 | Pass through application adapter |
-| S3-compatible application data | snapshots, summaries, and blobs | Not a Worker binding; outbound fetch is available | Separate application identity wrote the expected notebook prefix | Pass for local S3-compatible proof |
+| S3-compatible application data | live checkpoints, published snapshots, summaries, and blobs | Not a Worker binding; outbound fetch is available | Separate application identity wrote content-addressed room documents and a last-written checkpoint manifest; a separate restore identity reconstructed the prefix in another bucket | Pass for local S3-compatible proof |
 | Fleet storage | deployment, cell state, leases, and fleet secret | Required S3-compatible bucket | Deployment, D1 state, ownership recovery, and node leases ran | Pass for local proof |
 | Node loss | acknowledged room checkpoint and catalog recovery | Ownership epochs and fleet-bucket replication | A repeatable two-node probe killed the owning process during a two-editor session, reconnected through the second node, recovered the acknowledged source, and converged another edit | Pass for forced active-node loss |
 | Multi-node routing | any public node may receive a room connection | Signed private peer routing | A second public listener reopened a room owned by the first node and ran the collaboration contract; the active-node-loss probe then took ownership after fencing | Pass for two local nodes |
@@ -79,8 +79,13 @@ must enumerate and run the remaining query families before D1 compatibility
 can be called complete.
 
 CellD does not provide D1 Time Travel or `dump()`. Its documented migration
-path is Cloudflare export followed by `celld d1 execute`; backup/export/restore
-therefore remains an explicit gate rather than an inferred capability.
+path is Cloudflare export followed by `celld d1 execute`. The nteract proof now
+packages the live SQLite schema, catalog rows, and checksummed application
+objects, then restores them through `celld d1` and the S3 API. The first
+restore exposed runtime-added columns absent from the numbered migrations; the
+package now records and reconciles the actual schema before inserting rows.
+That local round trip is evidence, not a substitute for production backup,
+retention, encryption, and disaster-recovery policy.
 
 ## WASM Packaging Finding
 
@@ -110,6 +115,13 @@ ETag, and custom metadata; and deterministic keys. R2 and S3-compatible
 adapters implement the same interface. Short-lived signed client transfers
 belong in a later `BlobTransferBroker`, not this primitive.
 
+An acknowledged live edit is now portable without publishing a revision. The
+room host writes the four document bytes under content-addressed application
+keys, then writes `latest.json` last as the checkpoint commit point. The
+Durable Object copy remains a fast host-local recovery cache. Hydration reads
+both and chooses the newest valid checkpoint; a new host with no Durable
+Object state can therefore recover from the application store alone.
+
 CellD fleet state and nteract application data are separate security domains.
 The proof used one identity for the fleet bucket and another for the notebook
 application bucket, and verified that each identity received `403` against the
@@ -137,14 +149,18 @@ The current proof established:
 - cross-node ingress to a room resident on another node; and
 - active two-editor node loss, takeover, acknowledged-state recovery, and a
   converged post-failover edit. The measured reconnect after `SIGKILL` was
-  9.85 seconds in this local two-node run.
+  9.85 seconds in this local two-node run; and
+- export of the actual catalog schema and rows plus 64 checksummed application
+  objects, restore into a different database identity and application bucket,
+  deployment under a different application name, and same-ID reopen with the
+  exact acknowledged source in 340 ms.
 
 These are functional proofs. The active-loss run is emitted as a
 machine-readable bundle containing candidate and nteract commits,
 configuration hash, failure signal, timings, checks, and bounded logs.
-Backup/export/restore, origin and frame-budget matrices, repeated ownership
-churn, long-lived hibernation, real workload identity, and operator-network
-isolation still need repeatable result bundles.
+Origin and frame-budget matrices, repeated ownership churn, long-lived
+hibernation, real workload identity, production backup policy, and
+operator-network isolation still need repeatable result bundles.
 
 ## Security and Operations Consequences
 
@@ -164,7 +180,8 @@ containment, upgrade behavior, observability, and incident recovery.
 
 ## Open Evidence Gates
 
-1. Run every current D1 query and export/import path.
+1. Run every current D1 query and repeat export/import against a production-
+   qualified S3 service and database-sized fixtures.
 2. Run the full origin, ACL, malformed, stale, oversized, and cross-room frame
    matrix against the same artifact on the control and each finalist.
 3. Repeat active node loss under load and define the acceptable reconnect
@@ -174,8 +191,8 @@ containment, upgrade behavior, observability, and incident recovery.
    intervals.
 5. Run object-store parity against R2 and a qualified S3 service with transient
    failures and version recovery.
-6. Produce a repeatable backup/export/restore package with unchanged notebook
-   IDs and blob references.
+6. Exercise backup retention, encryption, version recovery, partial upload,
+   corrupt manifest, and interrupted restore behavior.
 7. Replace disposable Worker credentials with an acceptable workload-identity
    or secret-delivery boundary.
 8. Complete licensing and production-operability review before scoring.

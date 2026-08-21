@@ -163,6 +163,10 @@ async function restoreBackup() {
 
   const objectStore = applicationStore();
   for (const entry of manifest.application_objects.entries) {
+    assert(
+      entry.key.startsWith(objectStore.prefix),
+      `backup object ${entry.key} is outside the configured application prefix`,
+    );
     const bytes = new Uint8Array(await readFile(resolve(archiveDir, entry.file)));
     assert(bytes.byteLength === entry.size, `size mismatch for ${entry.key}`);
     assert(sha256(bytes) === entry.sha256, `checksum mismatch for ${entry.key}`);
@@ -176,6 +180,11 @@ async function restoreBackup() {
         Metadata: entry.metadata,
       }),
     );
+    const restored = await objectStore.client.send(
+      new GetObjectCommand({ Bucket: objectStore.bucket, Key: entry.key }),
+    );
+    const restoredBytes = new Uint8Array(await restored.Body.transformToByteArray());
+    assert(sha256(restoredBytes) === entry.sha256, `restored checksum mismatch for ${entry.key}`);
   }
 
   for (const [table, expectedRows] of Object.entries(catalog)) {

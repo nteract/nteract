@@ -39,17 +39,19 @@ customer-operated hosting.
 | --- | --- | --- | --- |
 | CellD 0.3 | Reuses the current Worker, three Durable Object classes, D1 schema, WebSockets, alarms, WASM, and assets | Alpha security and operations boundary; separate fleet authority; no R2 binding | Functional local proof passes the documents-first slice; production gates open |
 | Native Rust room host | Maximum control and direct reuse of nteract protocol and room-host crates | Largest new service and operations implementation | Existing memo and reusable seams identified; proof not yet run |
-| Rivet Actors | Entity lifecycle, persistence, WebSockets, migration, and self-hosting match room semantics | Separate control plane; multi-node Postgres remains experimental; hibernation is beta | Desk evaluation only |
+| Rivet Actors | Entity lifecycle, persistence, WebSockets, migration, and self-hosting match room semantics | Separate stateful control plane; Postgres is scoped to light-to-moderate multi-node workloads; hibernation is beta | Desk evaluation only |
 | Cloudflare | Known-good Worker and Durable Object behavior | Not a customer-operated substrate | Control implementation |
 | Automerge Repo | Useful storage/network adapters and concurrent repository plumbing | Does not provide nteract ACLs, room authority, runtime documents, artifact policy, or product APIs | Ingredient / desk evaluation |
 | Restate | Durable execution and self-hosting comparison | Process-oriented rewrite and separate cluster; source license is not an OSI production baseline | Landscape only |
 
 Rivet's public documentation describes actor lifecycle and sleeping, with
 [WebSocket hibernation](https://rivet.dev/actors/docs/websocket-handler/) marked
-beta. Its [filesystem self-hosting](https://rivet.dev/docs/self-hosting/filesystem/)
-path is production-oriented for a single node, while the multi-node Postgres
-path is documented as experimental. That makes it a useful operational
-contrast, not an assumed production winner.
+beta. Its current [self-hosting guide](https://rivet.dev/actors/self-host/)
+recommends a filesystem backend for one node and Postgres for multi-node
+light-to-moderate workloads, while reserving its most scalable backend for an
+enterprise offering. The Apache-2.0 source and improved Postgres positioning
+keep it in the benchmark; the extra stateful control plane and beta connection
+migration still need direct failure evidence.
 
 [Automerge Repo](https://automerge.org/docs/reference/repositories/) supplies a
 repository abstraction with storage and networking adapters. It can be an
@@ -140,6 +142,12 @@ copy attempted in the closed spike. It has demonstrated:
   takeover on the second node, recovery of the durably acknowledged source,
   and convergence of a new edit. The first repeatable local run reconnected in
   9.85 seconds.
+- content-addressed live document checkpoints committed through a last-written
+  application-store manifest; and
+- catalog-schema, catalog-row, and application-object export followed by
+  restore into different database and bucket identities, a different
+  application deployment, and same-ID reopen with the exact acknowledged
+  source.
 
 The proof also found two portability seams worth keeping upstream:
 
@@ -149,9 +157,9 @@ The proof also found two portability seams worth keeping upstream:
    inlined byte array or a runtime dynamic import.
 
 This evidence is sufficient to keep CellD in the benchmark and passes the
-first active-failover correctness scenario. It is not sufficient to pass the
-security, backup, workload-identity, repeated-churn, or production-operations
-gates.
+first active-failover and local backup/restore correctness scenarios. It is
+not sufficient to pass the security, workload-identity, production-scale
+backup, repeated-churn, or production-operations gates.
 
 ## Native Rust Proof Boundary
 
@@ -180,8 +188,8 @@ not inferred from the actor API.
 ## Decision Sequence
 
 1. Complete the Cloudflare control result bundle.
-2. Finish the CellD hard-gate matrix, including backup/export and active-node
-   loss.
+2. Finish the remaining CellD hard-gate matrix, especially identity,
+   operator-network isolation, production-store failure, and repeated churn.
 3. Implement the minimal Rust and Rivet proofs against the same contract.
 4. Publish raw results and gate failures.
 5. Score only candidates that passed every gate.

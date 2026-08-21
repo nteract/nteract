@@ -141,33 +141,50 @@ async function reconnectUntil(baseUrl, notebookId, user, scope, timeoutMs) {
 }
 
 async function seedNotebookOwner(baseUrl, notebookId) {
-  const response = await fetch(
-    new URL(
-      `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/bootstrap-runtime`,
-      baseUrl,
-    ),
-    {
-      method: "PUT",
-      headers: requestHeaders("alice", "owner", "application/octet-stream"),
-      body: new Uint8Array([0]),
-    },
-  );
-  assert(
-    response.status === 201,
-    `owner bootstrap failed: ${response.status} ${await response.text()}`,
-  );
+  const request = () =>
+    fetch(
+      new URL(
+        `/api/n/${encodeURIComponent(notebookId)}/runtime-snapshots/bootstrap-runtime`,
+        baseUrl,
+      ),
+      {
+        method: "PUT",
+        headers: requestHeaders("alice", "owner", "application/octet-stream"),
+        body: new Uint8Array([0]),
+      },
+    );
+  const { response, body } = await fetchAfterOwnershipSettles(request);
+  assert(response.status === 201, `owner bootstrap failed: ${response.status} ${body}`);
 }
 
 async function grantEditor(baseUrl, notebookId) {
-  const response = await fetch(new URL(`/api/n/${encodeURIComponent(notebookId)}/acl`, baseUrl), {
-    method: "POST",
-    headers: requestHeaders("alice", "owner", "application/json"),
-    body: JSON.stringify({ subject_kind: "principal", subject: "user:dev:bob", scope: "editor" }),
-  });
-  assert(
-    response.status === 201,
-    `editor grant failed: ${response.status} ${await response.text()}`,
-  );
+  const request = () =>
+    fetch(new URL(`/api/n/${encodeURIComponent(notebookId)}/acl`, baseUrl), {
+      method: "POST",
+      headers: requestHeaders("alice", "owner", "application/json"),
+      body: JSON.stringify({
+        subject_kind: "principal",
+        subject: "user:dev:bob",
+        scope: "editor",
+      }),
+    });
+  const { response, body } = await fetchAfterOwnershipSettles(request);
+  assert(response.status === 201, `editor grant failed: ${response.status} ${body}`);
+}
+
+async function fetchAfterOwnershipSettles(request) {
+  const deadline = Date.now() + 20_000;
+  let lastResponse;
+  let lastBody = "";
+  while (Date.now() < deadline) {
+    lastResponse = await request();
+    lastBody = await lastResponse.text();
+    if (![500, 502, 503, 504].includes(lastResponse.status)) {
+      return { response: lastResponse, body: lastBody };
+    }
+    await sleep(200);
+  }
+  return { response: lastResponse, body: lastBody };
 }
 
 function requestHeaders(user, scope, contentType) {
