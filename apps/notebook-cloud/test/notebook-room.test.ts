@@ -1956,7 +1956,7 @@ describe("NotebookRoom materialized sync routing", () => {
     );
   });
 
-  it("acknowledges changed materialized sync frames without persisted room history", async () => {
+  it("acknowledges changed materialized sync frames only after checkpoint persistence", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
       new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
@@ -1993,6 +1993,48 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(
       decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
       "cloud_frame_accepted",
+    );
+  });
+
+  it("does not acknowledge changed materialized sync frames when checkpoint persistence fails", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "editor",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+    };
+    const harness = roomHarness(room);
+    harness.materializers.set("demo", {
+      receiveFrame: async () => ({
+        ...noopMaterializedResult(),
+        changed: true,
+        notebook_changed: true,
+      }),
+      checkpoint: async () => {
+        throw new Error("application store unavailable");
+      },
+      removePeer: async () => undefined,
+    });
+
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([1])),
+    );
+
+    assert.equal(socket.sent.length, 1);
+    assert.equal(
+      decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).type,
+      "cloud_room_degraded",
+    );
+    assert.match(
+      String(decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1)).reason),
+      /checkpoint failed; frame was not acknowledged/,
     );
   });
 

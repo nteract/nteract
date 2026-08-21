@@ -1284,10 +1284,22 @@ export class NotebookRoom {
         counter_delta: 1,
       });
 
-      this.deliverRoomHostFrames(notebookId, result);
       if (result.changed) {
-        this.scheduleRoomHostCheckpoint(notebookId, materializer, "materialized_frame");
+        const checkpointPersisted = await this.checkpointRoomHost(
+          notebookId,
+          materializer,
+          "materialized_frame",
+        );
+        if (!checkpointPersisted) {
+          this.sendRoomDegradedControl(
+            notebookId,
+            peer,
+            "room checkpoint failed; frame was not acknowledged",
+          );
+          return;
+        }
       }
+      this.deliverRoomHostFrames(notebookId, result);
       if (result.runtime_state_changed) {
         this.refreshRuntimeIdleWatch(notebookId);
         this.state.waitUntil(
