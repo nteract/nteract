@@ -246,9 +246,9 @@ pub(crate) struct ChildProcessTree {
 #[cfg(not(any(unix, windows)))]
 pub(crate) struct ChildProcessTree;
 
-pub(crate) fn configure_process_tree(command: &mut tokio::process::Command) {
+pub(crate) fn configure_process_tree(_command: &mut tokio::process::Command) {
     #[cfg(unix)]
-    command.process_group(0);
+    _command.process_group(0);
 }
 
 pub(crate) fn own_process_tree(child: &tokio::process::Child) -> io::Result<ChildProcessTree> {
