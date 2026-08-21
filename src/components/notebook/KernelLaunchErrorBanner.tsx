@@ -1,5 +1,5 @@
 import { AlertCircle, Check, Copy, RotateCw, WifiOff } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { KERNEL_ERROR_REASON, type RuntimeLifecycle } from "runtimed";
 import {
   NotebookNotice,
@@ -91,15 +91,16 @@ export function KernelLaunchErrorBanner({
   onDismiss,
 }: KernelLaunchErrorBannerProps) {
   const [copied, setCopied] = useState(false);
+  const plainErrorDetails = useMemo(() => ansiToPlainText(errorDetails), [errorDetails]);
 
   useEffect(() => {
     setCopied(false);
   }, [errorDetails]);
 
   const copyDetails = useCallback(async () => {
-    await navigator.clipboard.writeText(ansiToPlainText(errorDetails));
+    await navigator.clipboard.writeText(plainErrorDetails);
     setCopied(true);
-  }, [errorDetails]);
+  }, [plainErrorDetails]);
 
   return (
     <NotebookNotice
@@ -112,13 +113,15 @@ export function KernelLaunchErrorBanner({
       }
       actions={
         <>
-          <NotebookNoticeAction
-            onClick={copyDetails}
-            icon={copied ? <Check /> : <Copy />}
-            data-testid="copy-kernel-launch-error"
-          >
-            {copied ? "Copied" : "Copy"}
-          </NotebookNoticeAction>
+          {plainErrorDetails.trim() ? (
+            <NotebookNoticeAction
+              onClick={copyDetails}
+              icon={copied ? <Check /> : <Copy />}
+              data-testid="copy-kernel-launch-error"
+            >
+              {copied ? "Copied" : "Copy"}
+            </NotebookNoticeAction>
+          ) : null}
           <NotebookNoticeAction onClick={onRetry} icon={<RotateCw />}>
             Retry
           </NotebookNoticeAction>

@@ -87,6 +87,19 @@ describe("KernelLaunchErrorBanner", () => {
     expect(screen.getByText("Copied")).toBeInTheDocument();
   });
 
+  it("hides Copy when ANSI controls contain no diagnostic text", () => {
+    render(
+      <KernelLaunchErrorBanner
+        errorDetails={"\x1b[2K\x1b[1G"}
+        onRetry={() => {}}
+        onDismiss={() => {}}
+      />,
+    );
+
+    expect(screen.queryByTestId("copy-kernel-launch-error")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
   it("invokes onDismiss when the X is clicked", async () => {
     const user = userEvent.setup();
     const onDismiss = vi.fn();

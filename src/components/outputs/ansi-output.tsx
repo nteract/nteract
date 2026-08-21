@@ -175,9 +175,17 @@ const INVISIBLE_CONTROL_CHARACTERS = new RegExp(
   "[\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F]",
   "g",
 );
+const OSC_SEQUENCE = new RegExp(
+  // eslint-disable-next-line no-control-regex -- strip complete or tail-truncated OSC sequences
+  "(?:\\u001B\\]|\\u009D)[\\s\\S]*?(?:\\u0007|\\u001B\\\\|\\u009C|$)",
+  "g",
+);
+// eslint-disable-next-line no-control-regex -- strip a head-truncated OSC 8 opener through BEL
+const TRUNCATED_OSC_8_PREFIX = new RegExp("^8;;[^\\u0007\\n]*(?:\\u0007|$)");
 
 function sanitizeAnsiContent(content: string): string {
-  return stripAnsi(content).replace(INVISIBLE_CONTROL_CHARACTERS, "");
+  const withoutOsc = content.replace(OSC_SEQUENCE, "").replace(TRUNCATED_OSC_8_PREFIX, "");
+  return stripAnsi(withoutOsc).replace(INVISIBLE_CONTROL_CHARACTERS, "");
 }
 
 function ansiEntriesToPlainText(entries: Anser.AnserJsonEntry[]): string {

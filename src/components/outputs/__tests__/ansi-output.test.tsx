@@ -53,11 +53,10 @@ describe("AnsiText", () => {
 
   it("removes residual controls from truncated ANSI sequences", () => {
     const { container } = render(
-      <AnsiText>{"8;;https://example.com\x07documentation \x1b]8;;https://ex"}</AnsiText>,
+      <AnsiText>{"8;;https://example.com\x07documentation\x1b]8;;https://ex"}</AnsiText>,
     );
 
-    expect(container.textContent).not.toContain("\x1b");
-    expect(container.textContent).not.toContain("\x07");
+    expect(container.textContent).toBe("documentation");
   });
 
   it("keeps concealed inline text perceivable", () => {
