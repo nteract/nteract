@@ -1,4 +1,4 @@
-import type { R2Object, R2ObjectBody } from "./cloudflare-types.ts";
+import type { NotebookObject, NotebookObjectBody } from "./notebook-object-store.ts";
 import { DEV_AUTH_TOKEN_HEADER } from "./auth-shared.ts";
 
 export function json(value: unknown, status = 200): Response {
@@ -54,13 +54,13 @@ export function withBrowserSecurityHeaders(
   return response;
 }
 
-interface ImmutableR2ObjectOptions {
+interface ImmutableNotebookObjectOptions {
   includeContentLength?: boolean;
 }
 
-export function immutableR2ObjectHeaders(
-  object: R2Object,
-  options: ImmutableR2ObjectOptions = {},
+export function immutableNotebookObjectHeaders(
+  object: NotebookObject,
+  options: ImmutableNotebookObjectOptions = {},
 ): Headers {
   const headers = new Headers({
     "Cache-Control": "public, max-age=31536000, immutable",
@@ -73,19 +73,25 @@ export function immutableR2ObjectHeaders(
   return headers;
 }
 
-export function immutableR2ObjectResponse(
-  object: R2ObjectBody,
-  options: ImmutableR2ObjectOptions = {},
+export function immutableNotebookObjectResponse(
+  object: NotebookObjectBody,
+  options: ImmutableNotebookObjectOptions = {},
 ): Response {
   return withCors(
-    new Response(object.body, { headers: immutableR2ObjectHeaders(object, options) }),
+    new Response(object.body, { headers: immutableNotebookObjectHeaders(object, options) }),
   );
 }
 
-export function immutableR2ObjectHeadResponse(object: R2Object): Response {
+export function immutableNotebookObjectHeadResponse(object: NotebookObject): Response {
   return withCors(
     new Response(null, {
-      headers: immutableR2ObjectHeaders(object, { includeContentLength: true }),
+      headers: immutableNotebookObjectHeaders(object, { includeContentLength: true }),
     }),
   );
 }
+
+// Compatibility aliases for downstream callers while the implementation and
+// new code use the provider-neutral names.
+export const immutableR2ObjectHeaders = immutableNotebookObjectHeaders;
+export const immutableR2ObjectResponse = immutableNotebookObjectResponse;
+export const immutableR2ObjectHeadResponse = immutableNotebookObjectHeadResponse;

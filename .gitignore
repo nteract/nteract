@@ -58,6 +58,7 @@ dist/
 out/
 **/out/
 **/dist-output-document/
+apps/notebook-cloud/dist-portable/
 .wrangler/
 apps/notebook-cloud/wrangler.deploy.*.toml
 *.tsbuildinfo

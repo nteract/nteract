@@ -64,6 +64,7 @@ import {
   type WorkstationAccelerator,
   type WorkstationRow,
 } from "./storage.ts";
+import { notebookObjectStore } from "./notebook-object-store.ts";
 import {
   workstationEventsObjectName,
   type WorkstationAttachJobNotification,
@@ -2549,7 +2550,7 @@ export class NotebookRoom {
     notebookId: string,
     reason: "peer_joined" | "peer_left" | "hibernation_restore" | "refresh_alarm",
   ): Promise<void> {
-    const bucket = this.env.NOTEBOOK_SNAPSHOTS;
+    const bucket = notebookObjectStore(this.env);
     if (!bucket) {
       await this.refreshRoomSummaryWatch(notebookId, 0);
       return;

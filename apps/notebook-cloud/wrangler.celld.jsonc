@@ -1,0 +1,46 @@
+{
+  "name": "nteract-notebook-cloud-celld-proof",
+  "main": "./dist-portable/worker/index.js",
+  "no_bundle": true,
+  "compatibility_date": "2024-11-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NOTEBOOK_ROOMS",
+        "class_name": "PortableNotebookRoom",
+      },
+      {
+        "name": "WORKSTATION_EVENTS",
+        "class_name": "WorkstationEvents",
+      },
+      {
+        "name": "OWNER_COMPUTE_INDEX",
+        "class_name": "OwnerComputeIndex",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "celld-v1",
+      "new_sqlite_classes": ["PortableNotebookRoom", "WorkstationEvents", "OwnerComputeIndex"],
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nteract-notebook-cloud-celld-proof",
+      "database_id": "nteract-notebook-cloud-celld-proof",
+      "migrations_dir": "./migrations",
+    },
+  ],
+  "assets": {
+    "directory": "./dist-portable/assets",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+  },
+  "vars": {
+    "DEPLOYMENT_ENV": "celld-proof",
+    "NOTEBOOK_CLOUD_ALLOWED_ORIGINS": "http://127.0.0.1:8080",
+  },
+}

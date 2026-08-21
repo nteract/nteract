@@ -5,6 +5,7 @@ import { createEmptyRoomHost, loadRoomHostSnapshot, type RoomHostHandle } from "
 import { getNotebookCatalog } from "./storage.ts";
 import type { AuthenticatedConnection } from "./identity.ts";
 import { cloudLog, durationMs, errorMessage } from "./observability.ts";
+import { notebookObjectStore } from "./notebook-object-store.ts";
 
 const ROOM_HOST_ACTOR_PRINCIPAL = "system:notebook-cloud-room";
 const CHECKPOINT_NOTEBOOK_KEY = "room-host:notebook-doc";
@@ -658,7 +659,8 @@ export class RoomMaterializer {
     commsDocBytes?: Uint8Array;
     commentsDocBytes?: Uint8Array;
   } | null> {
-    if (!this.env.DB || !this.env.NOTEBOOK_SNAPSHOTS) {
+    const objectStore = notebookObjectStore(this.env);
+    if (!this.env.DB || !objectStore) {
       return null;
     }
 
@@ -671,12 +673,10 @@ export class RoomMaterializer {
     }
 
     const [notebookObject, runtimeObject, commsObject, commentsObject] = await Promise.all([
-      this.env.NOTEBOOK_SNAPSHOTS.get(latest.snapshot_key),
-      this.env.NOTEBOOK_SNAPSHOTS.get(latest.runtime_snapshot_key),
-      latest.comms_snapshot_key ? this.env.NOTEBOOK_SNAPSHOTS.get(latest.comms_snapshot_key) : null,
-      latest.comments_snapshot_key
-        ? this.env.NOTEBOOK_SNAPSHOTS.get(latest.comments_snapshot_key)
-        : null,
+      objectStore.get(latest.snapshot_key),
+      objectStore.get(latest.runtime_snapshot_key),
+      latest.comms_snapshot_key ? objectStore.get(latest.comms_snapshot_key) : null,
+      latest.comments_snapshot_key ? objectStore.get(latest.comments_snapshot_key) : null,
     ]);
     if (
       !notebookObject ||
