@@ -138,7 +138,9 @@ def normalize_module_name(spec: str) -> str | None:
 
 def _compile_site_packages(path: str) -> None:
     """Pre-compile all .py files in site-packages to .pyc."""
-    compileall.compile_dir(path, quiet=2, workers=0)
+    # Keep optional warming single-process so one timeout cannot fan out into
+    # a CPU-sized multiprocessing pool that competes with environment setup.
+    compileall.compile_dir(path, quiet=2, workers=1)
 
 
 def _collect_modules(extra: list[str], *, include_conda: bool = False) -> list[str]:
@@ -207,7 +209,9 @@ def build_warmup_script(
     # Phase 1: compileall (always import, conditionally run)
     lines.append("import compileall")
     if site_packages:
-        lines.append(f"compileall.compile_dir({site_packages!r}, quiet=2, workers=0)")
+        # Match _compile_site_packages: warming is background optimization,
+        # not a reason to fan out across every CPU in the pool subprocess.
+        lines.append(f"compileall.compile_dir({site_packages!r}, quiet=2, workers=1)")
 
     # Phase 2: critical imports — these MUST succeed or the script exits non-zero,
     # preventing a broken environment from being admitted to the pool.

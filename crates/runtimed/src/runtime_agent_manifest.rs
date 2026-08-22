@@ -406,6 +406,16 @@ pub fn create_windows_job_for_process(
     runtime_agent_id: &str,
     process_handle: std::os::windows::io::RawHandle,
 ) -> Result<(String, WindowsJob)> {
+    let job_name = windows_job_name(runtime_agent_id);
+    let job = create_windows_kill_on_close_job_for_process(&job_name, process_handle)?;
+    Ok((job_name, job))
+}
+
+#[cfg(windows)]
+pub(crate) fn create_windows_kill_on_close_job_for_process(
+    job_name: &str,
+    process_handle: std::os::windows::io::RawHandle,
+) -> Result<WindowsJob> {
     use std::mem::{size_of, zeroed};
     use std::ptr::null;
     use windows_sys::Win32::Foundation::{GetLastError, HANDLE};
@@ -415,8 +425,7 @@ pub fn create_windows_job_for_process(
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
-    let job_name = windows_job_name(runtime_agent_id);
-    let wide_name = wide_null(&job_name);
+    let wide_name = wide_null(job_name);
     let job = unsafe { CreateJobObjectW(null(), wide_name.as_ptr()) };
     if job == 0 {
         anyhow::bail!("CreateJobObjectW({job_name}) failed: {}", unsafe {
@@ -450,7 +459,7 @@ pub fn create_windows_job_for_process(
         });
     }
 
-    Ok((job_name, job_handle))
+    Ok(job_handle)
 }
 
 #[cfg(windows)]
