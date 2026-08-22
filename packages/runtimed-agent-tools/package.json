@@ -1,0 +1,70 @@
+{
+  "name": "@runtimed/agent-tools",
+  "version": "0.1.0",
+  "description": "OpenCode and Kilo notebook tools backed directly by @runtimed/node.",
+  "type": "module",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/nteract.git",
+    "directory": "packages/runtimed-agent-tools"
+  },
+  "homepage": "https://github.com/nteract/nteract/tree/main/packages/runtimed-agent-tools#readme",
+  "bugs": {
+    "url": "https://github.com/nteract/nteract/issues"
+  },
+  "keywords": [
+    "nteract",
+    "runtimed",
+    "opencode",
+    "kilo",
+    "notebook",
+    "jupyter",
+    "agent-tools"
+  ],
+  "main": "./dist/opencode.js",
+  "types": "./dist/opencode.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/opencode.d.ts",
+      "import": "./dist/opencode.js",
+      "default": "./dist/opencode.js"
+    },
+    "./server": {
+      "types": "./dist/kilo.d.ts",
+      "import": "./dist/kilo.js",
+      "default": "./dist/kilo.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js",
+      "default": "./dist/core.js"
+    }
+  },
+  "files": [
+    "README.md",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm --dir ../.. exec vp test run packages/runtimed-agent-tools/tests",
+    "smoke:opencode": "pnpm build && node scripts/smoke-host.mjs opencode",
+    "smoke:kilo": "pnpm build && node scripts/smoke-host.mjs kilo",
+    "smoke:hosts": "pnpm smoke:opencode && pnpm smoke:kilo",
+    "smoke:live": "pnpm build && node scripts/smoke-live.mjs",
+    "prepack": "pnpm build",
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "dependencies": {
+    "@runtimed/node": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3",
+    "vite-plus": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
