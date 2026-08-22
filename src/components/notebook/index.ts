@@ -280,6 +280,10 @@ export {
   type NotebookWorkstationsPanelProps,
   type WorkstationPairingDialogProps,
 } from "./NotebookWorkstationsPanel";
+export {
+  WorkstationComputeNotice,
+  shouldShowWorkstationComputeNotice,
+} from "./WorkstationComputeNotice";
 export { NotebookDocumentRail, type NotebookDocumentRailProps } from "./NotebookDocumentRail";
 export { NotebookReadOnlyView, type NotebookReadOnlyViewProps } from "./NotebookReadOnlyView";
 export {

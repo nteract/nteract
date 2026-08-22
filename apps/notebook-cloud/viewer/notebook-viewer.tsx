@@ -47,6 +47,8 @@ import {
   NotebookWorkstationsPanel,
   NotebookWorkstationsPanelAction,
   WorkstationPairingDialog,
+  WorkstationComputeNotice,
+  shouldShowWorkstationComputeNotice,
   KernelLaunchErrorBanner,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
   shouldShowKernelLaunchErrorBanner,
@@ -859,7 +861,9 @@ export function NotebookViewer({
     onStartSelectedWorkstation,
     onStartPairing,
     onCancelPairing,
+    canRegisterWorkstation,
     workstationAction,
+    workstationLaunchReadiness,
     workstationPairing,
     workstationPanelStatusMessage,
     workstationSelection,
@@ -1860,11 +1864,20 @@ export function NotebookViewer({
         onDismiss={() => setDismissedLaunchError(cloudKernelErrorDetails)}
       />
     ) : null;
+  // A fresh cloud notebook has nowhere to run and only says so inside the
+  // collapsed workstations rail; this raises it onto the stage.
+  const computeNotice = shouldShowWorkstationComputeNotice({
+    canRegisterWorkstation,
+    launchReadinessState: workstationLaunchReadiness.state,
+  }) ? (
+    <WorkstationComputeNotice onConnect={handleOpenWorkstationsRail} />
+  ) : null;
   const diagnostics =
-    kernelLaunchNotice || accessRequestNotice ? (
+    kernelLaunchNotice || accessRequestNotice || computeNotice ? (
       <>
         {kernelLaunchNotice}
         {accessRequestNotice}
+        {computeNotice}
       </>
     ) : null;
   const hasNotices = cloudNotebookHasNotices({
