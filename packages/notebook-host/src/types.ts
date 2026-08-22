@@ -146,6 +146,11 @@ export interface HostDaemon {
   isConnected(): Promise<boolean>;
   /** Reconnects the relay; `force` drops an existing stale handle first. */
   reconnect(options?: { force?: boolean }): Promise<void>;
+  /**
+   * Replace and re-register the installed local runtime, when this host owns
+   * such a service. This is distinct from reconnecting to the current daemon.
+   */
+  repair?(): Promise<void>;
   /** Daemon diagnostics for banners / debug UI. */
   getInfo(): Promise<DaemonInfo | null>;
   /**

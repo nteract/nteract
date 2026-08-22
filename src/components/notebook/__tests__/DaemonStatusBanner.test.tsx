@@ -93,6 +93,22 @@ describe("DaemonStatusBanner", () => {
       expect(onRetry).toHaveBeenCalledOnce();
     });
 
+    it("offers repair separately from retry", async () => {
+      const onRetry = vi.fn();
+      const onRepair = vi.fn();
+      render(
+        <DaemonStatusBanner
+          status={{ status: "failed", error: "err" }}
+          onRetry={onRetry}
+          onRepair={onRepair}
+        />,
+      );
+
+      await userEvent.click(screen.getByText("Repair Runtime"));
+      expect(onRepair).toHaveBeenCalledOnce();
+      expect(onRetry).not.toHaveBeenCalled();
+    });
+
     it("shows dismiss button when onDismiss is provided", () => {
       render(
         <DaemonStatusBanner status={{ status: "failed", error: "err" }} onDismiss={vi.fn()} />,

@@ -1,4 +1,4 @@
-import { Loader2, RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw, Wrench } from "lucide-react";
 import {
   NotebookNotice,
   NotebookNoticeAction,
@@ -23,6 +23,7 @@ export interface DaemonStatusBannerProps {
   status: DaemonStatus;
   onDismiss?: () => void;
   onRetry?: () => void;
+  onRepair?: () => void;
 }
 
 /**
@@ -33,7 +34,12 @@ export interface DaemonStatusBannerProps {
  * - Amber/warning: Failed state with retry button
  * - Hidden: Ready state or null
  */
-export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusBannerProps) {
+export function DaemonStatusBanner({
+  status,
+  onDismiss,
+  onRetry,
+  onRepair,
+}: DaemonStatusBannerProps) {
   // Don't show banner for ready or null state
   if (!status || status.status === "ready") {
     return null;
@@ -47,10 +53,19 @@ export function DaemonStatusBanner({ status, onDismiss, onRetry }: DaemonStatusB
         title="Runtime unavailable"
         onDismiss={onDismiss}
         actions={
-          onRetry ? (
-            <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw />}>
-              Retry
-            </NotebookNoticeAction>
+          onRetry || onRepair ? (
+            <>
+              {onRetry ? (
+                <NotebookNoticeAction onClick={onRetry} icon={<RefreshCw />}>
+                  Retry
+                </NotebookNoticeAction>
+              ) : null}
+              {onRepair ? (
+                <NotebookNoticeAction onClick={onRepair} icon={<Wrench />}>
+                  Repair Runtime
+                </NotebookNoticeAction>
+              ) : null}
+            </>
           ) : null
         }
         details={

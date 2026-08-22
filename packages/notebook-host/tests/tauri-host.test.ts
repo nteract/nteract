@@ -210,6 +210,12 @@ describe("createTauriHost()", () => {
     });
   });
 
+  it("routes daemon.repair to the sidecar-owned repair command", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await host.daemon.repair?.();
+    expect(capturedInvokes.at(-1)?.cmd).toBe("repair_daemon");
+  });
+
   it("queues a forced reconnect behind an in-flight non-forced reconnect", async () => {
     const host = createTauriHost({ transport: stubTransport });
     let resolveReconnect!: () => void;

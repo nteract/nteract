@@ -1310,7 +1310,7 @@ async fn setup_sync_receivers(
 #[cfg(test)]
 mod tests {
     use super::{
-        create_window_context_for_daemon, extract_commit_hash, hosted_notebook_window_label,
+        create_window_context_for_daemon, hosted_notebook_window_label,
         is_reusable_startup_placeholder, next_available_sample_path, normalize_font_families,
         normalize_hosted_notebook_locator, pathless_file_open_policy, reopen_action,
         require_current_sync_generation, reserve_window_context, PathlessFileOpenPolicy,
@@ -1319,17 +1319,6 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
-
-    #[test]
-    fn extract_commit_hash_returns_sha_without_dirty_suffix() {
-        assert_eq!(extract_commit_hash("1.4.1+abc1234"), Some("abc1234"));
-        assert_eq!(
-            extract_commit_hash("1.4.1+abc1234+dirty"),
-            Some("abc1234"),
-            "dirty suffix is informational; SHA equality is what drives upgrade decisions"
-        );
-        assert_eq!(extract_commit_hash("1.4.1"), None);
-    }
 
     #[test]
     fn normalize_font_families_returns_empty_for_empty_input() {
@@ -1605,20 +1594,6 @@ fn bundled_daemon_version() -> String {
     )
 }
 
-/// Extract the SHA portion from a version string.
-/// Version format: "X.Y.Z+SHA[+dirty]" -> returns "SHA".
-///
-/// The `+dirty` suffix (when present) is intentionally stripped: this
-/// helper is used to decide whether two binaries identify the same
-/// commit for upgrade and version-match purposes. Treating dirty and
-/// clean rebuilds at the same SHA as a mismatch would cause perpetual
-/// reinstalls when one side of the comparison was rebuilt off a dirty
-/// tree and the other wasn't. Dirty status is surfaced separately via
-/// the dev banner.
-fn extract_commit_hash(version: &str) -> Option<&str> {
-    version.split('+').nth(1)
-}
-
 /// Upgrade the daemon via sidecar when version mismatch detected.
 ///
 /// Runs `runtimed install` which handles: stop old → copy binary → start new.
@@ -1632,8 +1607,11 @@ where
     use runtimed::client::DaemonProgress;
     use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
-    let bundled = bundled_daemon_version();
-    log::info!("[startup] Upgrading daemon to bundled version: {}", bundled);
+    let coordinator_build = bundled_daemon_version();
+    log::info!(
+        "[startup] Requesting sidecar-owned daemon repair (coordinator build={})",
+        coordinator_build
+    );
     on_progress(DaemonProgress::Installing); // Reuse "installing" state for upgrade
 
     // "runtimed install" handles: stop old → copy binary → start new
@@ -1679,10 +1657,7 @@ where
         log::error!("[startup] {}", error);
         on_progress(DaemonProgress::Failed {
             error: error.clone(),
-            guidance: format!(
-                "Try running: {} install",
-                runt_workspace::daemon_binary_basename()
-            ),
+            guidance: "Use Repair Runtime to try again.".to_string(),
         });
         return Err(error);
     }
@@ -1691,7 +1666,6 @@ where
     log::info!("[startup] Sidecar install exited successfully, waiting for daemon to be ready...");
     on_progress(DaemonProgress::Starting);
 
-    let client = runtimed::client::PoolClient::default();
     let max_attempts = 40;
     for attempt in 1..=max_attempts {
         on_progress(DaemonProgress::WaitingForReady {
@@ -1699,38 +1673,26 @@ where
             max_attempts,
         });
 
-        if client.ping().await.is_ok() {
-            // `GetDaemonInfo` is the canonical readiness and version source.
-            // A ping-only daemon is not ready enough after daemon.json removal.
-            if let Some(version) =
-                runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path())
-                    .await
-                    .map(|i| i.version)
-            {
-                let running_commit = extract_commit_hash(&version);
-                let bundled_commit = extract_commit_hash(&bundled);
-                if running_commit == bundled_commit {
-                    log::info!(
-                        "[startup] Upgraded daemon version confirmed: {} (attempt {})",
-                        version,
-                        attempt
-                    );
-                } else {
-                    log::warn!(
-                        "[startup] Daemon version mismatch after upgrade! running={}, bundled={}",
-                        version,
-                        bundled
-                    );
-                }
-
-                let endpoint = runt_workspace::default_socket_path()
-                    .to_string_lossy()
-                    .to_string();
-                on_progress(DaemonProgress::Ready {
-                    endpoint: endpoint.clone(),
-                });
-                return Ok(endpoint);
-            }
+        // `GetDaemonInfo` is the canonical readiness source. The sidecar
+        // verifies its own exact build and incarnation before exiting zero;
+        // this coordinator may still be the old app process after replacement.
+        if let Some(info) =
+            runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path())
+                .await
+        {
+            log::info!(
+                "[startup] Sidecar repair confirmed daemon metadata: pid={} version={} (attempt {})",
+                info.pid,
+                info.version,
+                attempt
+            );
+            let endpoint = runt_workspace::default_socket_path()
+                .to_string_lossy()
+                .to_string();
+            on_progress(DaemonProgress::Ready {
+                endpoint: endpoint.clone(),
+            });
+            return Ok(endpoint);
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -1746,6 +1708,42 @@ where
         ),
     });
     Err(error)
+}
+
+/// Explicit user-requested repair of the installed runtime service.
+///
+/// This uses the same sidecar-owned transaction as app upgrades. Reconnection
+/// remains a separate frontend action after the replacement is verified.
+#[tauri::command]
+async fn repair_daemon(
+    app: tauri::AppHandle,
+    restart_in_progress: tauri::State<'_, DaemonRestartInProgress>,
+    status_state: tauri::State<'_, DaemonStatusState>,
+) -> Result<(), String> {
+    if runt_workspace::is_dev_mode() {
+        return Err("Runtime repair is only available for installed builds.".to_string());
+    }
+    if restart_in_progress
+        .0
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Another runtime restart or repair is already in progress.".to_string());
+    }
+
+    let progress_app = app.clone();
+    let progress_state = status_state.0.clone();
+    let result = upgrade_daemon_via_sidecar(&app, move |progress| {
+        if let Ok(mut guard) = progress_state.lock() {
+            *guard = Some(progress.clone());
+        }
+        let _ = progress_app.emit("daemon:progress", &progress);
+    })
+    .await
+    .map(|_| ());
+
+    restart_in_progress.0.store(false, Ordering::SeqCst);
+    result
 }
 
 /// Install/upgrade the daemon in preparation for app restart after update.
@@ -2062,33 +2060,30 @@ where
     // Check if daemon is already running
     let client = PoolClient::default();
     if let Ok(()) = client.ping().await {
-        // Daemon is running - check version alignment (production only).
+        // Daemon is running - check wire and semantic compatibility in
+        // production. Build identity is diagnostic, not an admission gate.
         // `GetDaemonInfo` is the canonical daemon metadata source.
         if !runt_workspace::is_dev_mode() {
-            let running_version = runtimed_client::singleton::query_daemon_info(
+            let running_info = runtimed_client::singleton::query_daemon_info(
                 runt_workspace::default_socket_path(),
             )
-            .await
-            .map(|i| i.version);
-            if let Some(version) = running_version {
-                // Compare commit hashes only - CI appends "+{git_sha}" to the version
-                // at build time, so commit hash is the precise compatibility check.
-                let running_commit = extract_commit_hash(&version);
-                let bundled_commit = extract_commit_hash(&bundled_version);
-
-                if running_commit != bundled_commit {
+            .await;
+            if let Some(info) = running_info {
+                if let Some(reason) = runtimed::singleton::compatibility_error(&info) {
                     log::info!(
-                        "[startup] Daemon commit mismatch — will upgrade: running={}, bundled={}",
-                        version,
-                        bundled_version
+                        "[startup] Daemon requires repair: {} (running={}, bundled={})",
+                        reason,
+                        info.version,
+                        bundled_version,
                     );
-                    // Upgrade daemon to match bundled version
                     return upgrade_daemon_via_sidecar(app, on_progress).await;
                 }
                 log::info!(
-                    "[startup] Daemon version aligned: running={}, bundled={}",
-                    version,
-                    bundled_version
+                    "[startup] Daemon compatible: running={} wire={} api={} bundled={}",
+                    info.version,
+                    info.protocol_version,
+                    info.daemon_api_version,
+                    bundled_version,
                 );
             } else {
                 log::warn!(
@@ -2168,10 +2163,7 @@ where
         log::error!("[startup] {}", error);
         on_progress(DaemonProgress::Failed {
             error: error.clone(),
-            guidance: format!(
-                "Try running: {} install",
-                runt_workspace::daemon_binary_basename()
-            ),
+            guidance: "Use Repair Runtime to try again.".to_string(),
         });
         return Err(error);
     }
@@ -2187,7 +2179,10 @@ where
             max_attempts,
         });
 
-        if client.ping().await.is_ok() {
+        if runtimed_client::singleton::query_daemon_info(runt_workspace::default_socket_path())
+            .await
+            .is_some()
+        {
             let endpoint = runt_workspace::default_socket_path()
                 .to_string_lossy()
                 .to_string();
@@ -4791,6 +4786,7 @@ pub fn run(
             get_daemon_status,
             get_pool_status,
             reconnect_to_daemon,
+            repair_daemon,
             subscribe_notebook_frames,
             notify_sync_ready,
             get_daemon_ready_info,

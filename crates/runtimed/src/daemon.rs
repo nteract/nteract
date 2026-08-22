@@ -1995,6 +1995,7 @@ impl Daemon {
         };
         Response::DaemonInfo {
             protocol_version: notebook_protocol::connection::PROTOCOL_VERSION.into(),
+            daemon_api_version: runtimed_client::protocol::DAEMON_API_VERSION,
             daemon_version: crate::daemon_version().to_string(),
             pid: std::process::id(),
             started_at: self.started_at,

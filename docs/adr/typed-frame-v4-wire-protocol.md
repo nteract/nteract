@@ -49,7 +49,11 @@ The daemon does its own preamble read (`crates/runtimed/src/daemon.rs:2424-2443`
 
 The asymmetry is load-bearing. The client gets a friendly error string because it can render one; the daemon defers version rejection so it can produce a JSON-shaped error on the right channel.
 
-The daemon's bundled-sidecar story (commit-hash equality between app and daemon) lives in `crates/notebook-wire/AGENTS.md`; for the wire protocol the only fact that matters is that there is no in-band downgrade. The connection fails closed.
+Daemon semantic compatibility and the bundled-sidecar repair transaction are
+separate from this wire version. They are defined in
+`docs/adr/daemon-service-repair-and-semantic-compatibility.md`; for the wire
+protocol the only fact that matters is that there is no in-band downgrade. The
+connection fails closed.
 
 ## Decision 2: Two framing surfaces share the preamble
 

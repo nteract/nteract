@@ -78,6 +78,9 @@ pub struct PongInfo {
 pub struct DaemonInfo {
     /// Numeric protocol version.
     pub protocol_version: u32,
+    /// Semantic daemon API version. Zero identifies a daemon that predates
+    /// explicit semantic compatibility reporting.
+    pub daemon_api_version: u32,
     /// Daemon version string (e.g., "2.0.0+abc123").
     pub daemon_version: String,
     /// Daemon process ID.
@@ -218,6 +221,7 @@ impl PoolClient {
         match response {
             Response::DaemonInfo {
                 protocol_version,
+                daemon_api_version,
                 daemon_version,
                 pid,
                 started_at,
@@ -227,6 +231,7 @@ impl PoolClient {
                 workspace_description,
             } => Ok(DaemonInfo {
                 protocol_version,
+                daemon_api_version,
                 daemon_version,
                 pid,
                 started_at,
