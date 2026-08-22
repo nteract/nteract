@@ -221,6 +221,8 @@ sessions.
 - `shutdownNotebook(notebookId, options)` shuts down a notebook room by ID.
 - `getExecutionResult(executionId, options)` reads a result by execution ID.
 - `Session.listCells()` and `Session.getCell(cellId)` inspect notebook cells.
+  `Session.getCellOutputs(cellId)` reads that cell's durable outputs with blob
+  and widget references resolved, returning `null` when the cell is absent.
 - `Session.createCell(source, options)`, `Session.setCell(cellId, options)`,
   `Session.deleteCell(cellId)`, and `Session.moveCell(cellId, options)` provide
   direct notebook editing without MCP JSON round-trips. `createCell()` appends
@@ -240,7 +242,10 @@ sessions.
 - `Session.runtimeState$`, `Session.executionTransitions$`,
   `Session.executionViewChanges$`, `Session.cellChanges$`, `Session.broadcasts$`,
   and `Session.sessionStatus$` expose the same projected event families used by
-  the browser sync engine.
+  the browser sync engine. `sessionStatus$` includes the native connection state,
+  replays the current status to late subscribers, and lets long-lived hosts
+  discard a session after it reports `disconnected`
+  instead of mutating a detached local document.
 - `Session.getExecutionView()` returns the current materialized execution view:
   non-null notebook cell pointers, execution snapshots keyed by `execution_id`,
   and the execution-ID-first queue projection. Use this for status surfaces;

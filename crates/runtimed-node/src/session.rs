@@ -15,7 +15,10 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
-use notebook_sync::{BroadcastReceiver, DocHandle};
+use notebook_sync::{
+    BroadcastReceiver, ConnectionState, DocHandle, InitialLoadPhase, NotebookDocPhase,
+    RuntimeStatePhase, SyncStatus,
+};
 use runtimed_client::client::PoolClient;
 use runtimed_outputs::output_resolver as shared_resolver;
 use runtimed_outputs::resolved_output::DataValue as SharedDataValue;
@@ -27,7 +30,57 @@ use runtime_doc::{diff_executions, ExecutionViewProjector, ProjectContext, Proje
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
 
 type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
-type JsonCallback = ThreadsafeFunction<String, (), (String,), napi::Status, false, false, 0>;
+type JsonCallback =
+    ThreadsafeFunction<String, (), FnArgs<(String,)>, napi::Status, false, false, 0>;
+
+/// Stable JSON contract for `Session.sessionStatus$`.
+///
+/// `notebook_sync::SyncStatus` is an internal Rust type whose default Serde
+/// representation uses Rust enum variant names. Keep that representation out
+/// of the JavaScript API and mirror the browser session-status wire shape here.
+#[derive(Serialize)]
+struct SessionStatusJson<'a> {
+    connection: &'static str,
+    notebook_doc: &'static str,
+    runtime_state: &'static str,
+    initial_load: InitialLoadPhaseJson<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+enum InitialLoadPhaseJson<'a> {
+    NotNeeded,
+    Streaming,
+    Ready,
+    Failed { reason: &'a str },
+}
+
+impl<'a> From<&'a SyncStatus> for SessionStatusJson<'a> {
+    fn from(status: &'a SyncStatus) -> Self {
+        Self {
+            connection: match status.connection {
+                ConnectionState::Connected => "connected",
+                ConnectionState::Disconnected => "disconnected",
+            },
+            notebook_doc: match status.notebook_doc {
+                NotebookDocPhase::Pending => "pending",
+                NotebookDocPhase::Syncing => "syncing",
+                NotebookDocPhase::Interactive => "interactive",
+            },
+            runtime_state: match status.runtime_state {
+                RuntimeStatePhase::Pending => "pending",
+                RuntimeStatePhase::Syncing => "syncing",
+                RuntimeStatePhase::Ready => "ready",
+            },
+            initial_load: match &status.initial_load {
+                InitialLoadPhase::NotNeeded => InitialLoadPhaseJson::NotNeeded,
+                InitialLoadPhase::Streaming => InitialLoadPhaseJson::Streaming,
+                InitialLoadPhase::Ready => InitialLoadPhaseJson::Ready,
+                InitialLoadPhase::Failed { reason } => InitialLoadPhaseJson::Failed { reason },
+            },
+        }
+    }
+}
 
 // ── Options ────────────────────────────────────────────────────────────
 
@@ -469,7 +522,7 @@ fn json_callback(callback: Function<'_, (String,), ()>) -> Result<JsonCallback> 
     callback
         .build_threadsafe_function::<String>()
         .callee_handled::<false>()
-        .build_callback(|ctx| Ok((ctx.value,)))
+        .build_callback(|ctx| Ok(FnArgs::from((ctx.value,))))
 }
 
 fn emit_json<T: Serialize>(callback: &JsonCallback, value: &T) {
@@ -730,9 +783,9 @@ impl Session {
         let mut rx = handle.subscribe_status();
         let tsfn = json_callback(callback)?;
         let task = spawn_event_task(async move {
-            emit_json(&tsfn, &*rx.borrow_and_update());
+            emit_json(&tsfn, &SessionStatusJson::from(&*rx.borrow_and_update()));
             while rx.changed().await.is_ok() {
-                emit_json(&tsfn, &*rx.borrow_and_update());
+                emit_json(&tsfn, &SessionStatusJson::from(&*rx.borrow_and_update()));
             }
         });
         Ok(EventSubscription::new(task))
@@ -990,6 +1043,43 @@ impl Session {
     pub async fn get_cell(&self, cell_id: String) -> Result<Option<JsCellSnapshot>> {
         let handle = session_handle(&self.state).await?;
         Ok(handle.get_cell(&cell_id).map(js_cell_from_snapshot))
+    }
+
+    /// Return one cell's durable outputs, resolved through the same blob and
+    /// widget-aware path used by execution results. Returns null when the cell
+    /// does not exist and an empty array when it exists without outputs.
+    #[napi]
+    pub async fn get_cell_outputs(&self, cell_id: String) -> Result<Option<Vec<JsOutput>>> {
+        let (snapshot, blob_base_url, blob_store_path) = {
+            let st = self.state.lock().await;
+            let handle = st
+                .handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?;
+            let snapshot = handle
+                .get_cell_outputs_snapshot(&cell_id)
+                .map_err(to_napi_err)?;
+            (
+                snapshot,
+                st.blob_base_url.clone(),
+                st.blob_store_path.clone(),
+            )
+        };
+        let Some(snapshot) = snapshot else {
+            return Ok(None);
+        };
+        let resolved = shared_resolver::resolve_cell_outputs(
+            &snapshot.outputs,
+            &blob_base_url,
+            &blob_store_path,
+            Some(&snapshot.runtime_state.comms),
+        )
+        .await;
+        let outputs = resolved
+            .into_iter()
+            .map(to_js_output)
+            .collect::<napi::Result<Vec<_>>>()?;
+        Ok(Some(outputs))
     }
 
     /// Create a cell without executing it. Returns the new cell ID.
@@ -2247,6 +2337,31 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::Path;
+
+    #[test]
+    fn session_status_json_matches_the_javascript_contract() {
+        let status = SyncStatus {
+            connection: ConnectionState::Disconnected,
+            notebook_doc: NotebookDocPhase::Interactive,
+            runtime_state: RuntimeStatePhase::Ready,
+            initial_load: InitialLoadPhase::Failed {
+                reason: "daemon connection closed".to_string(),
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(SessionStatusJson::from(&status)).unwrap(),
+            json!({
+                "connection": "disconnected",
+                "notebook_doc": "interactive",
+                "runtime_state": "ready",
+                "initial_load": {
+                    "phase": "failed",
+                    "reason": "daemon connection closed"
+                }
+            }),
+        );
+    }
 
     #[test]
     fn resolve_socket_path_prefers_explicit_override() {
