@@ -63,9 +63,6 @@ import { commentHighlightExtension } from "../lib/comment-highlight-extension";
 import { refreshCellCommentHighlights, type SourceCommentThread } from "../lib/comment-highlights";
 import {
   resolveSourceRangeAnchor,
-  selectionRectFromDomRect,
-  selectionRectFromDomSelection,
-  type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "../lib/comment-source-anchor";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
@@ -85,7 +82,7 @@ const MARKDOWN_EDITOR_CONTENT_ATTRIBUTES = {
   autocorrect: "on",
   spellcheck: "true",
 } as const;
-const MARKDOWN_RENDERED_COMMENT_BUTTON_SIZE = 24;
+const MARKDOWN_RENDERED_COMMENT_BUTTON_SIZE = 34;
 const MARKDOWN_PREVIEW_MIN_HEIGHT = 24;
 const MARKDOWN_PREVIEW_MAX_INITIAL_HEIGHT = 720;
 
@@ -158,11 +155,7 @@ interface MarkdownCellProps {
   rightGutterContent?: ReactNode;
   headingAnchors?: readonly MarkdownHeadingAnchor[];
   readOnly?: boolean;
-  onCreateSourceComment?: (
-    anchor: SourceRangeCommentAnchor,
-    rect: SourceCommentSelectionRect | null,
-    quote?: string | null,
-  ) => void;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   onActivateCommentThread?: (threadId: string) => void;
   commentThreads?: readonly SourceCommentThread[];
   pendingCommentAnchor?: SourceRangeCommentAnchor | null;
@@ -540,12 +533,11 @@ export const MarkdownCell = memo(function MarkdownCell({
     );
 
     if (!anchor) return false;
-    const rect = selectionRectFromDomSelection(window.getSelection());
     const range = resolveSourceRangeAnchor(previewSource, anchor);
     const quote = range
       ? renderedTextForSourceRange(markdownProjection, range.from, range.to)
       : null;
-    onCreateSourceComment(anchor, rect, quote);
+    onCreateSourceComment(anchor, quote);
     window.getSelection()?.removeAllRanges();
     clearRenderedSourceCommentTarget();
     return true;
@@ -565,15 +557,11 @@ export const MarkdownCell = memo(function MarkdownCell({
       if (requestRenderedSourceComment()) return;
       const anchor = renderedSourceCommentTarget?.anchor;
       if (!anchor || !onCreateSourceComment) return;
-      const rect =
-        selectionRectFromDomSelection(
-          typeof window !== "undefined" ? window.getSelection() : null,
-        ) ?? selectionRectFromDomRect(event.currentTarget.getBoundingClientRect());
       const range = resolveSourceRangeAnchor(previewSource, anchor);
       const quote = range
         ? renderedTextForSourceRange(markdownProjection, range.from, range.to)
         : null;
-      onCreateSourceComment(anchor, rect, quote);
+      onCreateSourceComment(anchor, quote);
       if (typeof window !== "undefined") {
         window.getSelection()?.removeAllRanges();
       }
@@ -1158,7 +1146,7 @@ export const MarkdownCell = memo(function MarkdownCell({
                     left: renderedSourceCommentTarget.left,
                     top: renderedSourceCommentTarget.top,
                   }}
-                  label="Comment on selected markdown"
+                  label="Add comment on selected markdown"
                   testId="markdown-source-comment-button"
                   onActivate={handleRenderedSourceCommentClick}
                 />

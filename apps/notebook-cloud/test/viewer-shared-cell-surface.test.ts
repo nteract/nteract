@@ -66,7 +66,6 @@ test("cloud viewer imports desktop notebook code only through public surfaces", 
   const viewerDir = new URL("../viewer", import.meta.url);
   const offenders: string[] = [];
   const allowedSharedNotebookInternals = new Set([
-    "../../notebook/src/components/InlineCommentComposer",
     "../../notebook/src/lib/comment-highlights",
     "../../notebook/src/lib/comment-source-anchor",
     "../../notebook/src/lib/frame-pipeline",

@@ -80,7 +80,7 @@ describe("NotebookCommentsPanel", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent("Comments sync unavailable.");
     expect(screen.getByRole("alert")).toHaveTextContent("Comment request failed.");
-    expect(screen.queryByText("No comments yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No discussions yet")).not.toBeInTheDocument();
     expect(screen.getByLabelText(DOCUMENT_COMMENT_LABEL)).toBeDisabled();
   });
 
@@ -429,6 +429,86 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByTestId("comment-thread-source-quote")).toHaveTextContent("important_call()");
     fireEvent.click(screen.getByRole("button", { name: "Show cell for Source comment 1" }));
     expect(onFocusThreadAnchor).toHaveBeenCalledWith(sourceThread);
+  });
+
+  it("orders threads by the notebook position of the content they reference", () => {
+    const threadFor = (id: string, anchor: CommentsProjection["threads"][number]["anchor"]) => ({
+      ...projection.threads[0],
+      id,
+      anchor,
+      badge_cell_ids: "cell_id" in anchor ? [anchor.cell_id] : [],
+      messages: [{ ...projection.threads[0].messages[0], id: `message-${id}`, body: id }],
+    });
+
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [
+            threadFor("document", { kind: "notebook" }),
+            threadFor("second-cell", { kind: "cell", cell_id: "cell-b" }),
+            threadFor("first-cell-line-9", {
+              kind: "source_range",
+              cell_id: "cell-a",
+              start_line: 9,
+              start_column: 0,
+              end_line: 9,
+              end_column: 4,
+              exact_quote: "late",
+            }),
+            threadFor("first-cell-line-2", {
+              kind: "source_range",
+              cell_id: "cell-a",
+              start_line: 2,
+              start_column: 0,
+              end_line: 2,
+              end_column: 5,
+              exact_quote: "early",
+            }),
+          ],
+        }}
+        cellIds={["cell-a", "cell-b"]}
+      />,
+    );
+
+    const rendered = screen
+      .getAllByRole("listitem")
+      .map((item) => item.textContent ?? "")
+      .map((text) =>
+        ["first-cell-line-2", "first-cell-line-9", "second-cell", "document"].find((id) =>
+          text.includes(id),
+        ),
+      );
+    expect(rendered).toEqual(["first-cell-line-2", "first-cell-line-9", "second-cell", "document"]);
+  });
+
+  it("reveals the referenced cell when a thread card is clicked", () => {
+    const onFocusThreadAnchor = vi.fn();
+    const cellThread = projection.threads[1];
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [cellThread] }}
+        onFocusThreadAnchor={onFocusThreadAnchor}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Cell-scoped comment"));
+    expect(onFocusThreadAnchor).toHaveBeenCalledWith(cellThread);
+  });
+
+  it("does not reveal the referenced cell when a thread's own control is clicked", () => {
+    const onFocusThreadAnchor = vi.fn();
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [projection.threads[1]] }}
+        onFocusThreadAnchor={onFocusThreadAnchor}
+        onReplyThread={vi.fn()}
+        onResolveThread={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    expect(onFocusThreadAnchor).not.toHaveBeenCalled();
   });
 
   it("formats local actor labels without exposing the raw durable id", () => {

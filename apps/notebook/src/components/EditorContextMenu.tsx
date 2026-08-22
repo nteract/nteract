@@ -8,9 +8,7 @@ import {
   type NotebookContextMenuGroup,
 } from "@/components/notebook/NotebookContextMenu";
 import {
-  selectionRectFromView,
   sourceRangeAnchorFromSelection,
-  type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "../lib/comment-source-anchor";
 import { getCellEditor } from "../lib/editor-registry";
@@ -26,11 +24,7 @@ interface EditorContextMenuProps {
   cellType: "code" | "markdown" | "raw";
   readOnly?: boolean;
   onChangeCellType?: (type: "code" | "markdown") => void;
-  onCreateSourceComment?: (
-    anchor: SourceRangeCommentAnchor,
-    rect: SourceCommentSelectionRect | null,
-    quote?: string | null,
-  ) => void;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   children: ReactNode;
 }
 
@@ -161,7 +155,7 @@ export function EditorContextMenu({
             ? () => {
                 const anchor = sourceRangeAnchorFromSelection(cellId, view);
                 if (!anchor) return;
-                onCreateSourceComment(anchor, selectionRectFromView(view));
+                onCreateSourceComment(anchor);
               }
             : undefined,
       }),

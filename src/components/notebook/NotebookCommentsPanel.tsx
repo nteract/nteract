@@ -4,13 +4,20 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  CornerDownRight,
   MessageSquare,
   RotateCcw,
   X,
 } from "lucide-react";
 import { actorInitials, onBehalfOfText } from "runtimed";
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import type {
   CommentAnchor,
   CommentMessageSnapshot,
@@ -75,6 +82,11 @@ export interface NotebookCommentsPanelProps {
    * the live cell projection. Falls back to the anchor's exact quote.
    */
   resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined;
+  /**
+   * Ordered notebook cell IDs, used to sort threads by the position of the
+   * content they reference. Without it, threads keep their projection order.
+   */
+  cellIds?: readonly string[];
   /** Thread to scroll to and flash (e.g. after clicking its editor highlight). */
   focusedThreadId?: string | null;
   /** Bumped each focus request so repeat focuses of the same thread re-flash. */
@@ -96,11 +108,14 @@ export function NotebookCommentsPanel({
   resolveCommentAuthor,
   resolveSourceLanguage,
   resolveSourceQuote,
+  cellIds,
   focusedThreadId = null,
   focusNonce = 0,
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
-  const labeledThreads = labelCommentThreads(threads);
+  const labeledThreads = labelCommentThreads(
+    sortCommentThreadsByNotebookPosition(threads, cellIds),
+  );
   const openThreads = labeledThreads.filter(({ thread }) => thread.status !== "resolved");
   const resolvedThreads = labeledThreads.filter(({ thread }) => thread.status === "resolved");
   const [showResolved, setShowResolved] = useState(false);
@@ -111,6 +126,15 @@ export function NotebookCommentsPanel({
   useEffect(() => {
     if (focusedIsResolved) setShowResolved(true);
   }, [focusedIsResolved, focusNonce]);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  // Autofocus the reply box only when the reader selects a thread inside the
+  // panel. A notebook-driven focus must not pull the caret out of the editor.
+  const [autoFocusReplyThreadId, setAutoFocusReplyThreadId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusedThreadId) return;
+    setSelectedThreadId(focusedThreadId);
+    setAutoFocusReplyThreadId(null);
+  }, [focusedThreadId, focusNonce]);
   const canCreate = !readOnly && Boolean(onCreateThread);
   const canReply = !readOnly && Boolean(onReplyThread);
   const canUpdateStatus = !readOnly && (Boolean(onResolveThread) || Boolean(onReopenThread));
@@ -132,10 +156,16 @@ export function NotebookCommentsPanel({
       onResolveThread={onResolveThread}
       onReopenThread={onReopenThread}
       onFocusThreadAnchor={onFocusThreadAnchor}
+      onSelect={() => {
+        setSelectedThreadId(thread.id);
+        setAutoFocusReplyThreadId(thread.id);
+      }}
       resolveCommentAuthor={resolveCommentAuthor}
       resolveSourceLanguage={resolveSourceLanguage}
       resolveSourceQuote={resolveSourceQuote}
       focused={thread.id === focusedThreadId}
+      selected={thread.id === selectedThreadId}
+      autoFocusReply={thread.id === autoFocusReplyThreadId}
       focusNonce={focusNonce}
     />
   );
@@ -143,13 +173,13 @@ export function NotebookCommentsPanel({
   return (
     <section className="flex h-full min-h-0 flex-col" data-testid="notebook-comments-panel">
       <div
-        className="min-h-0 flex-1 overflow-y-auto pr-1"
+        className="min-h-0 flex-1 overflow-y-auto pr-0"
         data-testid="notebook-comments-thread-scroll"
       >
-        <div className="space-y-3 pb-3">
+        <div className="space-y-1 pb-0">
           {statusMessage ? (
             <div
-              className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground"
+              className="rounded-md border border-dashed px-2.5 py-1.5 text-xs text-muted-foreground"
               role="status"
             >
               {statusMessage}
@@ -157,7 +187,7 @@ export function NotebookCommentsPanel({
           ) : null}
           {errorMessage ? (
             <div
-              className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+              className="rounded-md border border-destructive/40 bg-destructive/5 px-2.5 py-1.5 text-xs text-destructive"
               role="alert"
             >
               {errorMessage}
@@ -165,27 +195,30 @@ export function NotebookCommentsPanel({
           ) : null}
 
           {projection && threads.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-md border border-dashed px-3 py-6 text-center text-sm text-muted-foreground">
-              <MessageSquare className="size-4" aria-hidden="true" />
-              <span>No comments yet.</span>
+            <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed px-4 py-6 text-center">
+              <MessageSquare className="size-4 text-muted-foreground" aria-hidden="true" />
+              <span className="text-xs font-medium text-foreground">No discussions yet</span>
+              <span className="max-w-56 text-xs leading-4 text-muted-foreground">
+                Select code or an output to comment on it, or start a discussion below.
+              </span>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {openThreads.length > 0 ? (
-                <ol className="space-y-4">{openThreads.map(renderThread)}</ol>
+                <ol className="space-y-1.5">{openThreads.map(renderThread)}</ol>
               ) : resolvedThreads.length > 0 ? (
-                <p className="px-1 py-4 text-center text-sm text-muted-foreground">
+                <p className="px-1 py-3 text-center text-xs text-muted-foreground">
                   No open comments.
                 </p>
               ) : null}
 
               {resolvedThreads.length > 0 ? (
-                <div className="space-y-3">
+                <div className="space-y-1.5 border-t pt-2">
                   <button
                     type="button"
                     onClick={() => setShowResolved((value) => !value)}
                     aria-expanded={showResolved}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                    className="flex w-full items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
                   >
                     {showResolved ? (
                       <ChevronDown className="size-3.5" aria-hidden="true" />
@@ -195,7 +228,7 @@ export function NotebookCommentsPanel({
                     {showResolved ? "Hide" : "Show"} resolved ({resolvedThreads.length})
                   </button>
                   {showResolved ? (
-                    <ol className="space-y-4">{resolvedThreads.map(renderThread)}</ol>
+                    <ol className="space-y-1.5">{resolvedThreads.map(renderThread)}</ol>
                   ) : null}
                 </div>
               ) : null}
@@ -205,7 +238,7 @@ export function NotebookCommentsPanel({
       </div>
 
       <div
-        className="shrink-0 space-y-2 border-t bg-background pt-3"
+        className="shrink-0 space-y-1.5 border-t bg-background pt-2"
         data-testid="notebook-comments-composer-dock"
       >
         {draftTarget ? (
@@ -253,7 +286,7 @@ function CommentDraftTargetView({
 
   return (
     <div
-      className="rounded-md border bg-muted/25 px-3 py-2 text-sm"
+      className="rounded-md border bg-muted/25 px-2.5 py-1.5 text-sm"
       data-testid="comment-draft-target"
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
@@ -292,10 +325,13 @@ function CommentThreadItem({
   onResolveThread,
   onReopenThread,
   onFocusThreadAnchor,
+  onSelect,
   resolveCommentAuthor,
   resolveSourceLanguage,
   resolveSourceQuote,
   focused,
+  selected,
+  autoFocusReply,
   focusNonce,
 }: {
   thread: CommentThreadSnapshot;
@@ -306,15 +342,19 @@ function CommentThreadItem({
   onResolveThread?: (threadId: string) => void | Promise<void>;
   onReopenThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
+  onSelect?: () => void;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
   resolveSourceLanguage?: (cellId: string) => string | undefined;
   resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined;
   focused?: boolean;
+  /** Standing selection: the thread the reader is currently working in. */
+  selected?: boolean;
+  /** Place the caret in the reply box, set only for panel-driven selection. */
+  autoFocusReply?: boolean;
   focusNonce?: number;
 }) {
   const itemRef = useRef<HTMLLIElement>(null);
   const [flashing, setFlashing] = useState(false);
-  const [replying, setReplying] = useState(false);
   // On a focus request for this thread, scroll it into view and flash softly.
   useEffect(() => {
     if (!focused) return;
@@ -358,16 +398,62 @@ function CommentThreadItem({
     : undefined;
   const canShowCell = Boolean(commentThreadTargetCellId(thread) && onFocusThreadAnchor);
   // Document-level threads carry no anchor context, so they show no header and
-  // read as a plain conversation; source/cell/output threads keep their label.
-  const showAnchorHeader = Boolean(quote) || thread.anchor.kind !== "notebook";
+  // read as a plain conversation; cell/output threads without a quote keep their
+  // label.
+  const showAnchorLabel = !quote && thread.anchor.kind !== "notebook";
+
+  // The quote sits inside the opening comment, under its author line, so the
+  // reader sees who spoke before what they were speaking about.
+  const sourceQuote = quote ? (
+    <CommentSourceQuote
+      quote={quote}
+      language={
+        resolveSourceLanguage
+          ? resolveSourceLanguage(commentThreadTargetCellId(thread) ?? "")
+          : undefined
+      }
+      color={threadAuthor?.color}
+    />
+  ) : null;
+  const sourceQuoteBlock =
+    sourceQuote && canShowCell ? (
+      <button
+        type="button"
+        onClick={() => onFocusThreadAnchor?.(thread)}
+        aria-label={`Show cell for ${threadLabel}`}
+        title="Show cell"
+        className="block w-full rounded-sm py-0.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+      >
+        {sourceQuote}
+      </button>
+    ) : (
+      sourceQuote
+    );
+
+  // Clicking the card reveals the referenced cell, but clicks that land on the
+  // thread's own controls or on selected text must not also navigate.
+  const handleCardClick = (event: ReactMouseEvent<HTMLLIElement>) => {
+    if (event.target instanceof Element && event.target.closest("button, a, textarea, input")) {
+      return;
+    }
+    if (itemRef.current?.ownerDocument.getSelection()?.isCollapsed === false) return;
+    onSelect?.();
+    if (!canShowCell) return;
+    onFocusThreadAnchor?.(thread);
+  };
 
   return (
     <li
       ref={itemRef}
+      onClick={handleCardClick}
+      aria-current={selected ? "true" : undefined}
+      data-selected={selected ? "true" : undefined}
       className={cn(
-        "group relative rounded-lg px-2.5 py-2 transition-colors duration-700 hover:bg-muted/40",
-        thread.status === "resolved" && "opacity-70",
-        flashing && "bg-primary/5 hover:bg-primary/5",
+        "group relative rounded-md bg-card px-2 py-1.5 transition-all duration-200 hover:border-border hover:bg-muted/40",
+        thread.status === "resolved" && "border-dashed bg-muted/20 opacity-80",
+        selected && "bg-info opacity-100 hover:bg-info/90",
+        flashing && "bg-primary/5 hover:bg-muted/40",
+        selected ? "cursor-default" : "cursor-pointer",
       )}
     >
       <button
@@ -376,91 +462,44 @@ function CommentThreadItem({
         disabled={statusAction.disabled || statusSubmitting}
         aria-label={statusAction.ariaLabel}
         title={statusAction.label}
-        className="absolute right-1.5 top-1.5 inline-grid size-7 place-items-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-40"
+        className="absolute right-1 top-1 inline-grid size-6 place-items-center rounded-md text-muted-foreground opacity-0 transition-all hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <StatusIcon className="size-3.5" aria-hidden="true" />
       </button>
-      <div className="space-y-2.5 pr-7">
-        {showAnchorHeader ? (
-          quote ? (
-            canShowCell ? (
-              <button
-                type="button"
-                onClick={() => onFocusThreadAnchor?.(thread)}
-                aria-label={`Show cell for ${threadLabel}`}
-                title="Show cell"
-                className="block w-full rounded-sm py-0.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-              >
-                <CommentSourceQuote
-                  quote={quote}
-                  language={
-                    resolveSourceLanguage
-                      ? resolveSourceLanguage(commentThreadTargetCellId(thread) ?? "")
-                      : undefined
-                  }
-                  color={threadAuthor?.color}
-                />
-              </button>
-            ) : (
-              <CommentSourceQuote
-                quote={quote}
-                language={
-                  resolveSourceLanguage
-                    ? resolveSourceLanguage(commentThreadTargetCellId(thread) ?? "")
-                    : undefined
-                }
-                color={threadAuthor?.color}
-              />
-            )
-          ) : (
-            <div className="text-xs text-muted-foreground">{anchorLabel(thread)}</div>
-          )
+      <div className="space-y-1.5 pr-6">
+        {showAnchorLabel ? (
+          <div className="text-xs text-muted-foreground">{anchorLabel(thread)}</div>
         ) : null}
 
-        <div className="space-y-3">
-          {thread.messages.map((message) => (
+        <div className="space-y-2">
+          {thread.messages.map((message, index) => (
             <CommentMessage
               key={message.id}
               message={message}
+              isReply={index > 0}
               resolveCommentAuthor={resolveCommentAuthor}
+              beforeBody={index === 0 ? sourceQuoteBlock : null}
             />
           ))}
           {thread.status === "resolved" ? (
             <CommentResolutionReceipt thread={thread} resolveCommentAuthor={resolveCommentAuthor} />
           ) : null}
         </div>
-
-        {canReply ? (
-          replying ? (
-            <CommentComposer
-              ariaLabel={`Reply to ${threadLabel}`}
-              submitAriaLabel={`Submit reply to ${threadLabel}`}
-              disabled={!canReply}
-              autoFocusKey={`${thread.id}:reply`}
-              placeholder={thread.status === "resolved" ? "Reply to reopen…" : "Reply…"}
-              compact
-              onCollapse={() => setReplying(false)}
-              onSubmit={
-                onReplyThread
-                  ? async (body) => {
-                      await onReplyThread(thread.id, body);
-                      setReplying(false);
-                    }
-                  : undefined
-              }
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => setReplying(true)}
-              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <CornerDownRight className="size-3.5" aria-hidden="true" />
-              Reply
-            </button>
-          )
-        ) : null}
       </div>
+
+      {canReply && selected ? (
+        <div className="mt-1.5">
+          <CommentComposer
+            ariaLabel={`Reply to ${threadLabel}`}
+            submitAriaLabel={`Submit reply to ${threadLabel}`}
+            disabled={!canReply}
+            autoFocusKey={autoFocusReply ? `${thread.id}:reply` : null}
+            placeholder={thread.status === "resolved" ? "Reply to reopen…" : "Reply…"}
+            compact
+            onSubmit={onReplyThread ? (body) => onReplyThread(thread.id, body) : undefined}
+          />
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -512,10 +551,16 @@ function CommentResolutionReceipt({
 
 function CommentMessage({
   message,
+  isReply = false,
   resolveCommentAuthor,
+  beforeBody = null,
 }: {
   message: CommentMessageSnapshot;
+  /** Indent and rule-mark messages after a thread's opening comment. */
+  isReply?: boolean;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
+  /** Anchor context (source quote) shown between the author line and the body. */
+  beforeBody?: ReactNode;
 }) {
   const author: CommentAuthor | null = message.created_by_actor_label
     ? (resolveCommentAuthor?.(message.created_by_actor_label) ?? {
@@ -524,13 +569,16 @@ function CommentMessage({
     : null;
 
   return (
-    <article className="flex gap-2.5">
+    <article
+      className={cn("flex gap-2", isReply && "ml-2 border-l border-border pl-2")}
+      data-comment-reply={isReply ? "true" : undefined}
+    >
       {author ? (
         <CommentAuthorAvatar author={author} />
       ) : (
         <div className="mt-0.5 size-5 shrink-0 rounded-full bg-muted" aria-hidden="true" />
       )}
-      <div className="min-w-0 flex-1 space-y-0.5">
+      <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-1.5">
           <span
             className="text-xs font-semibold text-foreground"
@@ -547,6 +595,7 @@ function CommentMessage({
             {formatRelativeTime(message.created_at)}
           </span>
         </div>
+        {beforeBody ? <div className="mt-2 text-muted-foreground">{beforeBody}</div> : null}
         <CommentBody body={message.body} />
       </div>
     </article>
@@ -593,17 +642,6 @@ function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
   );
 }
 
-/**
- * Render a comment body through the shared markdown engine so inline code,
- * emphasis, links, and lists match the rest of the app. The projector returns
- * a structured plan (never raw HTML), so this is safe by construction; falls
- * back to plain text when the projector is unavailable.
- */
-/**
- * The selected source a thread is anchored to, rendered as a single-line,
- * syntax-highlighted snippet with a left bar tinted to the thread author's
- * color. Uses the same static highlighter as markdown code blocks.
- */
 function CommentSourceQuote({
   quote,
   language,
@@ -632,10 +670,12 @@ function CommentBody({ body }: { body: string }) {
   const plan = projectMarkdownPlan(body);
   if (!plan) {
     return (
-      <p className="whitespace-pre-wrap break-words text-sm leading-5 text-foreground">{body}</p>
+      <p className="whitespace-pre-wrap break-words text-[13px] leading-[1.45] text-foreground">
+        {body}
+      </p>
     );
   }
-  return <ProjectedMarkdownView plan={plan} className="text-sm leading-5" />;
+  return <ProjectedMarkdownView plan={plan} className="text-[13px] leading-[1.45]" />;
 }
 
 function CommentComposer({
@@ -646,7 +686,6 @@ function CommentComposer({
   placeholder,
   compact = false,
   onSubmit,
-  onCollapse,
 }: {
   ariaLabel: string;
   submitAriaLabel: string;
@@ -656,7 +695,6 @@ function CommentComposer({
   /** Collapse to a single line until focused or non-empty (used for replies). */
   compact?: boolean;
   onSubmit?: (body: string) => void | Promise<void>;
-  onCollapse?: () => void;
 }) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -701,7 +739,6 @@ function CommentComposer({
 
   const handleBlur = () => {
     setFocused(false);
-    if (body.trim().length === 0) onCollapse?.();
   };
 
   const handleSubmit = async (event: FormEvent) => {
@@ -714,7 +751,6 @@ function CommentComposer({
       event.preventDefault();
       setBody("");
       setFocused(false);
-      onCollapse?.();
       textareaRef.current?.blur();
       return;
     }
@@ -737,12 +773,12 @@ function CommentComposer({
           onFocus={() => setFocused(true)}
           onBlur={handleBlur}
           onKeyDown={handleKeyDown}
-          rows={expanded ? 3 : 1}
+          rows={expanded ? 2 : 1}
           className={cn(
-            "block w-full border bg-background pl-3 pr-10 text-sm leading-5",
+            "block w-full border bg-background pl-2.5 pr-8 text-[13px] leading-5",
             expanded
-              ? "min-h-20 resize-y rounded-md py-2"
-              : "min-h-10 resize-none rounded-full py-2",
+              ? "min-h-16 resize-y rounded-md py-1.5"
+              : "min-h-9 resize-none rounded-full py-1.5",
             "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
             (disabled || submitting) && "cursor-not-allowed opacity-60",
           )}
@@ -757,11 +793,11 @@ function CommentComposer({
             color: "var(--comment-author-contrast, #ffffff)",
           }}
           className={cn(
-            "absolute bottom-1.5 right-1.5 inline-flex size-7 items-center justify-center rounded-full transition-opacity",
+            "absolute bottom-1.5 right-1.5 inline-flex size-6 items-center justify-center rounded-full transition-opacity",
             !canSubmit && "cursor-not-allowed opacity-40",
           )}
         >
-          <ArrowUp className="size-4" aria-hidden="true" />
+          <ArrowUp className="size-3.5" aria-hidden="true" />
         </button>
       </div>
     </form>
@@ -820,6 +856,47 @@ function commentThreadTargetCellId(thread: CommentThreadSnapshot): string | null
     default:
       return thread.badge_cell_ids[0] ?? null;
   }
+}
+
+export function sortCommentThreadsByNotebookPosition(
+  threads: readonly CommentThreadSnapshot[],
+  cellIds?: readonly string[],
+): CommentThreadSnapshot[] {
+  if (!cellIds || cellIds.length === 0) return [...threads];
+
+  const cellIndexById = new Map(cellIds.map((cellId, index) => [cellId, index]));
+  const keyed = threads.map((thread, index) => ({
+    thread,
+    index,
+    key: commentThreadOrderKey(thread, cellIndexById),
+  }));
+
+  keyed.sort((left, right) => {
+    for (let part = 0; part < left.key.length; part++) {
+      const delta = left.key[part]! - right.key[part]!;
+      if (delta !== 0) return delta;
+    }
+    return left.index - right.index;
+  });
+
+  return keyed.map(({ thread }) => thread);
+}
+
+function commentThreadOrderKey(
+  thread: CommentThreadSnapshot,
+  cellIndexById: ReadonlyMap<string, number>,
+): number[] {
+  const { anchor } = thread;
+  if (anchor.kind === "notebook") return [2, 0, 0, 0, 0];
+
+  const cellId = commentThreadTargetCellId(thread);
+  const cellIndex = cellId === null ? undefined : cellIndexById.get(cellId);
+  if (cellIndex === undefined) return [1, 0, 0, 0, 0];
+
+  const withinCell = anchor.kind === "output" ? 2 : anchor.kind === "source_range" ? 1 : 0;
+  const line = anchor.kind === "source_range" ? anchor.start_line : 0;
+  const column = anchor.kind === "source_range" ? anchor.start_column : 0;
+  return [0, cellIndex, withinCell, line, column];
 }
 
 function labelCommentThreads(
