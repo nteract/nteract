@@ -68,6 +68,7 @@ describe("KernelLaunchErrorBanner", () => {
   it("copies the launch details", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
+    const ansiDetails = `\x1b[31m${STDERR_TAIL}\x1b[0m\nSee \x1b]8;;https://example.com\x07documentation\x1b]8;;\x07`;
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText },
       configurable: true,
@@ -75,15 +76,30 @@ describe("KernelLaunchErrorBanner", () => {
 
     render(
       <KernelLaunchErrorBanner
-        errorDetails={STDERR_TAIL}
+        errorDetails={ansiDetails}
         onRetry={() => {}}
         onDismiss={() => {}}
       />,
     );
 
     await user.click(screen.getByTestId("copy-kernel-launch-error"));
-    expect(writeText).toHaveBeenCalledWith(STDERR_TAIL);
+    expect(writeText).toHaveBeenCalledWith(`${STDERR_TAIL}\nSee documentation`);
     expect(screen.getByText("Copied")).toBeInTheDocument();
+  });
+
+  it("hides Copy when ANSI controls contain no diagnostic text", () => {
+    render(
+      <KernelLaunchErrorBanner
+        errorDetails={"\x1b[2K\x1b[1G"}
+        onRetry={() => {}}
+        onDismiss={() => {}}
+      />,
+    );
+
+    expect(screen.queryByTestId("copy-kernel-launch-error")).not.toBeInTheDocument();
+    expect(screen.queryByText("Show error details")).not.toBeInTheDocument();
+    expect(screen.getByText("No diagnostic output was captured.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
   it("invokes onDismiss when the X is clicked", async () => {

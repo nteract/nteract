@@ -2,7 +2,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AlertTriangle } from "lucide-react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { NotebookNotice, NotebookNoticeAction, NotebookNoticeStack } from "../NotebookNotice";
+import {
+  NotebookNotice,
+  NotebookNoticeAction,
+  NotebookNoticeDetails,
+  NotebookNoticeStack,
+} from "../NotebookNotice";
 
 describe("NotebookNotice", () => {
   it("renders shared title, body, details, tone, and icon slots", () => {
@@ -58,5 +63,30 @@ describe("NotebookNotice", () => {
     expect(stack).toContainElement(
       screen.getByText("Auth needs attention").closest("[data-slot='notebook-notice']"),
     );
+  });
+
+  it("renders ANSI details without literal escape bytes", () => {
+    const { container } = render(
+      <NotebookNotice
+        title="Runtime unavailable"
+        details={<NotebookNoticeDetails>{"stderr: \x1b[31mfailed\x1b[0m"}</NotebookNoticeDetails>}
+      />,
+    );
+
+    const details = container.querySelector("pre");
+    expect(details?.textContent).toBe("stderr: failed");
+    expect(details?.textContent).not.toContain("\x1b");
+    expect(details?.querySelector(".ansi-red-fg")).toHaveTextContent("failed");
+  });
+
+  it("provides a fallback when details contain only ANSI controls", () => {
+    render(
+      <NotebookNotice
+        title="Runtime unavailable"
+        details={<NotebookNoticeDetails>{"\x1b[2K\x1b[1G"}</NotebookNoticeDetails>}
+      />,
+    );
+
+    expect(screen.getByText("No further details reported.")).toBeInTheDocument();
   });
 });

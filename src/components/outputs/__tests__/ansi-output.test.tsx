@@ -7,7 +7,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
-import { AnsiErrorOutput, AnsiOutput, AnsiStreamOutput } from "../ansi-output";
+import { AnsiErrorOutput, AnsiOutput, AnsiStreamOutput, AnsiText } from "../ansi-output";
 
 // Helper to get styles from rendered spans
 function getSpanStyles(container: HTMLElement) {
@@ -18,6 +18,75 @@ function getSpanStyles(container: HTMLElement) {
     style: span.getAttribute("style"),
   }));
 }
+
+describe("AnsiText", () => {
+  it("renders ANSI text inline without literal escape bytes", () => {
+    const { container } = render(
+      <p>
+        Status: <AnsiText>{"\x1b[31mfailed\x1b[0m"}</AnsiText>
+      </p>,
+    );
+
+    const styledText = screen.getByText("failed");
+    expect(styledText).toHaveClass("ansi-red-fg");
+    expect(styledText.parentElement?.tagName).toBe("P");
+    expect(styledText.parentElement?.textContent).toBe("Status: failed");
+    expect(container.textContent).not.toContain("\x1b");
+  });
+
+  it("preserves plain text", () => {
+    const { container } = render(<AnsiText>Plain notice</AnsiText>);
+    expect(container.textContent).toBe("Plain notice");
+    expect(container.querySelectorAll("span")).toHaveLength(1);
+  });
+
+  it("removes unsupported ANSI controls while preserving visible text", () => {
+    const { container } = render(
+      <AnsiText>{"See \x1b]8;;https://example.com\x07documentation\x1b]8;;\x07"}</AnsiText>,
+    );
+
+    expect(container.textContent).toBe("See documentation");
+    expect(container.textContent).not.toContain("\x1b");
+    expect(container.textContent).not.toContain("\x07");
+    expect(container.textContent).not.toContain("https://example.com");
+  });
+
+  it("removes residual controls from truncated ANSI sequences", () => {
+    const { container } = render(
+      <AnsiText>
+        {"warm-env failed; stderr: 8;;https://example.com\x07documentation\x1b]8;;https://ex"}
+      </AnsiText>,
+    );
+
+    expect(container.textContent).toBe("warm-env failed; stderr: documentation");
+  });
+
+  it("preserves later lines after an unterminated OSC sequence", () => {
+    const { container } = render(
+      <AnsiText>{"message \x1b]8;;https://example.com\nactual failure"}</AnsiText>,
+    );
+
+    expect(container.textContent).toBe("message \nactual failure");
+  });
+
+  it("keeps concealed inline text perceivable", () => {
+    const { container } = render(<AnsiText>{"\x1b[8mFailure details\x1b[0m"}</AnsiText>);
+
+    const text = screen.getByText("Failure details");
+    expect(text).toBeVisible();
+    expect(text).not.toHaveStyle({ visibility: "hidden" });
+    expect(container.textContent).toBe("Failure details");
+  });
+
+  it("keeps terminal-only dim and background styles out of inline text", () => {
+    const { container } = render(<AnsiText>{"\x1b[2;41mFailure details\x1b[0m"}</AnsiText>);
+
+    const text = screen.getByText("Failure details");
+    expect(text).not.toHaveStyle({ opacity: 0.5 });
+    expect(text).not.toHaveClass("ansi-red-bg");
+    expect(container.textContent).toBe("Failure details");
+  });
+});
 
 describe("AnsiOutput", () => {
   describe("plain text", () => {
@@ -173,6 +242,12 @@ describe("AnsiOutput", () => {
       expect(combinedSpan?.style).toContain("font-weight: bold");
       expect(combinedSpan?.style).toContain("font-style: italic");
       expect(combinedSpan?.style).toContain("text-decoration: underline");
+    });
+
+    it("preserves terminal conceal styling", () => {
+      const { container } = render(<AnsiOutput>{"\x1b[8mHidden\x1b[0m"}</AnsiOutput>);
+      const hiddenSpan = getSpanStyles(container).find((span) => span.text === "Hidden");
+      expect(hiddenSpan?.style).toContain("visibility: hidden");
     });
   });
 

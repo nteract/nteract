@@ -80,6 +80,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "runtimed": "workspace:*",
+    "strip-ansi": "^7.2.0",
     "tailwind-merge": "^3.4.0",
     "vega": "^6.2.0",
     "vega-embed": "^7.1.0",

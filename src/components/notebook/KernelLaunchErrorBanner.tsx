@@ -1,11 +1,12 @@
 import { AlertCircle, Check, Copy, RotateCw, WifiOff } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { KERNEL_ERROR_REASON, type RuntimeLifecycle } from "runtimed";
 import {
   NotebookNotice,
   NotebookNoticeAction,
   NotebookNoticeDetails,
 } from "@/components/notebook/NotebookNotice";
+import { ansiToPlainText } from "@/components/outputs/ansi-output";
 
 const RUNTIME_PEER_DISCONNECTED_ERROR_PREFIX = "runtime peer disconnected:";
 
@@ -90,15 +91,17 @@ export function KernelLaunchErrorBanner({
   onDismiss,
 }: KernelLaunchErrorBannerProps) {
   const [copied, setCopied] = useState(false);
+  const plainErrorDetails = useMemo(() => ansiToPlainText(errorDetails), [errorDetails]);
+  const hasDiagnosticDetails = plainErrorDetails.trim().length > 0;
 
   useEffect(() => {
     setCopied(false);
   }, [errorDetails]);
 
   const copyDetails = useCallback(async () => {
-    await navigator.clipboard.writeText(errorDetails);
+    await navigator.clipboard.writeText(plainErrorDetails);
     setCopied(true);
-  }, [errorDetails]);
+  }, [plainErrorDetails]);
 
   return (
     <NotebookNotice
@@ -107,23 +110,29 @@ export function KernelLaunchErrorBanner({
       title="Kernel failed to start"
       onDismiss={onDismiss}
       details={
-        <NotebookNoticeDetails label="Show error details">{errorDetails}</NotebookNoticeDetails>
+        hasDiagnosticDetails ? (
+          <NotebookNoticeDetails label="Show error details">{errorDetails}</NotebookNoticeDetails>
+        ) : null
       }
       actions={
         <>
-          <NotebookNoticeAction
-            onClick={copyDetails}
-            icon={copied ? <Check /> : <Copy />}
-            data-testid="copy-kernel-launch-error"
-          >
-            {copied ? "Copied" : "Copy"}
-          </NotebookNoticeAction>
+          {hasDiagnosticDetails ? (
+            <NotebookNoticeAction
+              onClick={copyDetails}
+              icon={copied ? <Check /> : <Copy />}
+              data-testid="copy-kernel-launch-error"
+            >
+              {copied ? "Copied" : "Copy"}
+            </NotebookNoticeAction>
+          ) : null}
           <NotebookNoticeAction onClick={onRetry} icon={<RotateCw />}>
             Retry
           </NotebookNoticeAction>
         </>
       }
-    />
+    >
+      {hasDiagnosticDetails ? null : "No diagnostic output was captured."}
+    </NotebookNotice>
   );
 }
 
