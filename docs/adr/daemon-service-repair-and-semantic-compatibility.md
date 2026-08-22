@@ -7,10 +7,11 @@
 The desktop updater replaces the application bundle while the old app process
 continues coordinating the upgrade. That old process can launch the new
 `runtimed` sidecar from the replaced bundle while an older daemon still owns
-the stable socket. Service configuration is not proof of process ownership:
-the socket owner may come from a legacy launchd registration, SMAppService, a
-manual start, or an orphaned process even when the current service artifact is
-missing.
+the stable socket. Service configuration is not proof of process ownership. In
+the reported incident, the launchd plist was present and the job was registered
+but not running while another daemon process still owned the socket. The socket
+owner may also come from a legacy launchd registration, SMAppService, a manual
+start, or an orphaned process when the current service artifact is missing.
 
 Commit equality also answers a different question from compatibility. Two
 builds can implement the same supported daemon behavior, while an older daemon
@@ -79,5 +80,6 @@ daemon admission result.
   daemon is still completing or has rejected its durability-safe shutdown.
 - Exact build equality remains a required postcondition of an explicit repair,
   where it proves that the intended sidecar actually took ownership.
-- Cross-version updater tests must include a live orphan daemon with no current
-  service artifact.
+- Cross-version updater tests must include both a registered-but-not-running
+  service whose stop fails while an orphan still owns the socket, and a live
+  orphan daemon with no current service artifact.

@@ -1,8 +1,9 @@
 //! Transactional repair of the installed runtimed service.
 //!
 //! Service registration and live socket ownership are deliberately inspected
-//! separately. An older daemon may still own the stable socket even when the
-//! current launchd/systemd/Startup artifact is missing.
+//! separately. An older daemon may still own the stable socket while the
+//! current service is registered but not running, or when its current
+//! launchd/systemd/Startup artifact is missing.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -550,7 +551,11 @@ mod tests {
         }
 
         fn install_and_start(&mut self, _source_binary: &Path) -> std::result::Result<(), String> {
-            self.events.lock().unwrap().push("install_start");
+            self.events.lock().unwrap().push(if self.installed {
+                "upgrade_start"
+            } else {
+                "install_start"
+            });
             self.installed = true;
             *self.info.lock().unwrap() = Some(self.replacement.clone());
             Ok(())
@@ -622,6 +627,71 @@ mod tests {
         assert!(service_stop < wait_pid);
         assert!(wait_pid < stop_process);
         assert!(stop_process < install_start);
+    }
+
+    #[tokio::test]
+    async fn installed_service_stop_failure_repairs_orphaned_socket_owner() {
+        let info = Arc::new(Mutex::new(Some(daemon_info(41, "2.4.6+old", 0))));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let daemon = FakeDaemon {
+            info: info.clone(),
+            events: events.clone(),
+            shutdown_exits: false,
+            shutdown_error: None,
+            responds_without_info: Arc::new(AtomicBool::new(false)),
+        };
+        let replacement = daemon_info(84, "2.7.2+new", DAEMON_API_VERSION);
+        let mut service = FakeService {
+            installed: true,
+            info,
+            events: events.clone(),
+            replacement: replacement.clone(),
+        };
+
+        let result = repair_service_with(
+            &mut service,
+            &daemon,
+            Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
+            &replacement.version,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.pid, replacement.pid);
+        let events = events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == "service_stop")
+                .count(),
+            2,
+            "a failed service stop should be retried before process escalation"
+        );
+        let shutdown = events
+            .iter()
+            .position(|event| *event == "shutdown")
+            .unwrap();
+        let first_service_stop = events
+            .iter()
+            .position(|event| *event == "service_stop")
+            .unwrap();
+        let wait_pid = events
+            .iter()
+            .position(|event| *event == "wait_pid")
+            .unwrap();
+        let stop_process = events
+            .iter()
+            .position(|event| *event == "stop_process")
+            .unwrap();
+        let upgrade_start = events
+            .iter()
+            .position(|event| *event == "upgrade_start")
+            .unwrap();
+        assert!(shutdown < first_service_stop);
+        assert!(first_service_stop < wait_pid);
+        assert!(wait_pid < stop_process);
+        assert!(stop_process < upgrade_start);
+        assert!(!events.contains(&"install_start"));
     }
 
     #[tokio::test]
