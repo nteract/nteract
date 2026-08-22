@@ -17,6 +17,10 @@ apps/notebook/src/renderer-plugins/leaflet.css filter=lfs diff=lfs merge=lfs -te
 # each time we regenerate them for a schema change.
 packages/runtimed/tests/fixtures/**/*.bin filter=lfs diff=lfs merge=lfs -text
 
+# Recovery manifests fingerprint notebook fixture bytes. Keep those fixtures
+# LF-stable so Windows checkouts validate the same content as macOS and Linux.
+crates/runtimed/tests/fixtures/**/*.ipynb text eol=lf
+
 # Docs catalog static copy of the Sift WASM runtime. This lets apps/elements
 # exercise @nteract/sift URL loading without depending on ignored local
 # wasm-pack outputs at build time.
