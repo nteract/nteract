@@ -1,8 +1,11 @@
+import type { NotebookObjectStore } from "./notebook-object-store.ts";
+
 export interface Env {
   NOTEBOOK_ROOMS: DurableObjectNamespace;
   OWNER_COMPUTE_INDEX?: DurableObjectNamespace;
   WORKSTATION_EVENTS?: DurableObjectNamespace;
   DB?: D1Database;
+  NOTEBOOK_OBJECT_STORE?: NotebookObjectStore;
   NOTEBOOK_SNAPSHOTS?: R2Bucket;
   ASSETS?: WorkerAssets;
   DEPLOYMENT_ENV?: string;

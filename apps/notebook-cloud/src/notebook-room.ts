@@ -64,6 +64,7 @@ import {
   type WorkstationAccelerator,
   type WorkstationRow,
 } from "./storage.ts";
+import { notebookObjectStore } from "./notebook-object-store.ts";
 import {
   workstationEventsObjectName,
   type WorkstationAttachJobNotification,
@@ -1283,10 +1284,22 @@ export class NotebookRoom {
         counter_delta: 1,
       });
 
-      this.deliverRoomHostFrames(notebookId, result);
       if (result.changed) {
-        this.scheduleRoomHostCheckpoint(notebookId, materializer, "materialized_frame");
+        const checkpointPersisted = await this.checkpointRoomHost(
+          notebookId,
+          materializer,
+          "materialized_frame",
+        );
+        if (!checkpointPersisted) {
+          this.sendRoomDegradedControl(
+            notebookId,
+            peer,
+            "room checkpoint failed; frame was not acknowledged",
+          );
+          return;
+        }
       }
+      this.deliverRoomHostFrames(notebookId, result);
       if (result.runtime_state_changed) {
         this.refreshRuntimeIdleWatch(notebookId);
         this.state.waitUntil(
@@ -2549,7 +2562,7 @@ export class NotebookRoom {
     notebookId: string,
     reason: "peer_joined" | "peer_left" | "hibernation_restore" | "refresh_alarm",
   ): Promise<void> {
-    const bucket = this.env.NOTEBOOK_SNAPSHOTS;
+    const bucket = notebookObjectStore(this.env);
     if (!bucket) {
       await this.refreshRoomSummaryWatch(notebookId, 0);
       return;

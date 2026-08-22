@@ -156,12 +156,13 @@ import {
   type WorkerRoute,
 } from "./worker-routing.ts";
 import {
-  immutableR2ObjectHeadResponse,
-  immutableR2ObjectResponse,
+  immutableNotebookObjectHeadResponse,
+  immutableNotebookObjectResponse,
   json,
   withBrowserSecurityHeaders,
   withCors,
 } from "./http-responses.ts";
+import { notebookObjectStore, type NotebookObjectStore } from "./notebook-object-store.ts";
 import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
@@ -1476,7 +1477,7 @@ async function listNotebookRoomPresenceForRows(
   notebooks: readonly ListedNotebookRow[],
   requester: NotebookListRequesterPresence,
 ): Promise<Map<string, NotebookRoomSummaryOccupant[]>> {
-  const bucket = env.NOTEBOOK_SNAPSHOTS;
+  const bucket = notebookObjectStore(env);
   if (!bucket || notebooks.length === 0) {
     return new Map();
   }
@@ -3593,12 +3594,12 @@ async function routeSnapshot(
     if (identity instanceof Response) {
       return identity;
     }
-    const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+    const object = await notebookObjectStore(env)?.get(key);
     if (!object) {
       return json({ error: "snapshot not found" }, 404);
     }
 
-    return immutableR2ObjectResponse(object);
+    return immutableNotebookObjectResponse(object);
   }
 
   if (request.method !== "PUT") {
@@ -3614,8 +3615,9 @@ async function routeSnapshot(
   if (identity instanceof Response) {
     return identity;
   }
-  if (!env.NOTEBOOK_SNAPSHOTS) {
-    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
+  const objectStore = notebookObjectStore(env);
+  if (!objectStore) {
+    return json({ error: "notebook object store is not configured" }, 503);
   }
 
   const body = await request.arrayBuffer();
@@ -3632,7 +3634,7 @@ async function routeSnapshot(
   }
   const runtimeKey = runtimeStateSnapshotKey(runtimeStateDocId, runtimeHeadsHash);
   const commsKey = commsHeadsHash ? commsDocSnapshotKey(runtimeStateDocId, commsHeadsHash) : null;
-  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+  await objectStore.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
       cacheControl: "public, max-age=31536000, immutable",
@@ -3645,9 +3647,9 @@ async function routeSnapshot(
     },
   });
 
-  const runtimeObject = await env.NOTEBOOK_SNAPSHOTS.get(runtimeKey);
+  const runtimeObject = await objectStore.get(runtimeKey);
   if (!runtimeObject) {
-    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    await objectStore.delete(key).catch(() => undefined);
     return json(
       {
         error: "snapshot publish missing runtime-state snapshot",
@@ -3656,9 +3658,9 @@ async function routeSnapshot(
       424,
     );
   }
-  const commsObject = commsKey ? await env.NOTEBOOK_SNAPSHOTS.get(commsKey) : null;
+  const commsObject = commsKey ? await objectStore.get(commsKey) : null;
   if (commsKey && !commsObject) {
-    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    await objectStore.delete(key).catch(() => undefined);
     return json(
       {
         error: "snapshot publish missing comms-doc snapshot",
@@ -3680,7 +3682,7 @@ async function routeSnapshot(
     commsDocBytes: commsObject ? new Uint8Array(await commsObject.arrayBuffer()) : undefined,
   });
   if (!validated.ok) {
-    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    await objectStore.delete(key).catch(() => undefined);
     return json(validated.body, validated.status);
   }
 
@@ -3699,7 +3701,7 @@ async function routeSnapshot(
       publishPublic: true,
     });
   } catch (error) {
-    await env.NOTEBOOK_SNAPSHOTS.delete(key).catch(() => undefined);
+    await objectStore.delete(key).catch(() => undefined);
     throw error;
   }
 
@@ -3767,7 +3769,7 @@ async function routeCommsSnapshot(
       return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
     }
     const key = commsDocSnapshotKey(runtimeStateDocId, headsHash);
-    const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+    const object = await notebookObjectStore(env)?.get(key);
     if (!object) {
       return json({ error: "comms snapshot not found" }, 404);
     }
@@ -3778,7 +3780,7 @@ async function routeCommsSnapshot(
       return json({ error: "comms snapshot not found" }, 404);
     }
 
-    return immutableR2ObjectResponse(object);
+    return immutableNotebookObjectResponse(object);
   }
 
   if (request.method !== "PUT") {
@@ -3799,8 +3801,9 @@ async function routeCommsSnapshot(
   if (identity instanceof Response) {
     return identity;
   }
-  if (!env.NOTEBOOK_SNAPSHOTS) {
-    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
+  const objectStore = notebookObjectStore(env);
+  if (!objectStore) {
+    return json({ error: "notebook object store is not configured" }, 503);
   }
 
   const body = await request.arrayBuffer();
@@ -3811,7 +3814,7 @@ async function routeCommsSnapshot(
     return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
   }
   const key = commsDocSnapshotKey(runtimeStateDocId, headsHash);
-  const existing = await env.NOTEBOOK_SNAPSHOTS.head(key);
+  const existing = await objectStore.head(key);
   if (
     existing &&
     (existing.customMetadata?.notebook_id !== notebookId ||
@@ -3819,7 +3822,7 @@ async function routeCommsSnapshot(
   ) {
     return json({ error: "comms snapshot belongs to another notebook" }, 403);
   }
-  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+  await objectStore.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
       cacheControl: "public, max-age=31536000, immutable",
@@ -3861,7 +3864,7 @@ async function routeRuntimeSnapshot(
       return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
     }
     const key = runtimeStateSnapshotKey(runtimeStateDocId, headsHash);
-    const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+    const object = await notebookObjectStore(env)?.get(key);
     if (!object) {
       return json({ error: "runtime snapshot not found" }, 404);
     }
@@ -3872,7 +3875,7 @@ async function routeRuntimeSnapshot(
       return json({ error: "runtime snapshot not found" }, 404);
     }
 
-    return immutableR2ObjectResponse(object);
+    return immutableNotebookObjectResponse(object);
   }
 
   if (request.method !== "PUT") {
@@ -3893,8 +3896,9 @@ async function routeRuntimeSnapshot(
   if (identity instanceof Response) {
     return identity;
   }
-  if (!env.NOTEBOOK_SNAPSHOTS) {
-    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
+  const objectStore = notebookObjectStore(env);
+  if (!objectStore) {
+    return json({ error: "notebook object store is not configured" }, 503);
   }
 
   const body = await request.arrayBuffer();
@@ -3905,7 +3909,7 @@ async function routeRuntimeSnapshot(
     return json({ error: "X-Runtime-State-Doc-Id header is required" }, 400);
   }
   const key = runtimeStateSnapshotKey(runtimeStateDocId, headsHash);
-  const existing = await env.NOTEBOOK_SNAPSHOTS.head(key);
+  const existing = await objectStore.head(key);
   if (
     existing &&
     (existing.customMetadata?.notebook_id !== notebookId ||
@@ -3913,7 +3917,7 @@ async function routeRuntimeSnapshot(
   ) {
     return json({ error: "runtime snapshot belongs to another notebook" }, 403);
   }
-  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+  await objectStore.put(key, body, {
     httpMetadata: {
       contentType: request.headers.get("content-type") ?? "application/octet-stream",
       cacheControl: "public, max-age=31536000, immutable",
@@ -4902,12 +4906,12 @@ async function validateSnapshotPair(options: {
   commsDocBytes?: Uint8Array;
 }): Promise<SnapshotPairValidationResult> {
   const startedAt = Date.now();
-  const bucket = options.env.NOTEBOOK_SNAPSHOTS;
+  const bucket = notebookObjectStore(options.env);
   if (!bucket) {
     return {
       ok: false,
       status: 503,
-      body: { error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" },
+      body: { error: "notebook object store is not configured" },
     };
   }
 
@@ -5027,7 +5031,7 @@ async function validateSnapshotPair(options: {
 }
 
 async function findMissingSnapshotBlobs(
-  bucket: NonNullable<Env["NOTEBOOK_SNAPSHOTS"]>,
+  bucket: NotebookObjectStore,
   notebookId: string,
   render: unknown,
 ): Promise<MissingSnapshotBlob[]> {
@@ -5095,14 +5099,14 @@ async function routeLatestNotebookOgImage(
 
   const key = blobKey(notebookId, cover.blobHash);
   if (request.method === "HEAD") {
-    const object = await env.NOTEBOOK_SNAPSHOTS?.head(key);
+    const object = await notebookObjectStore(env)?.head(key);
     if (!object) {
       return notebookOgImageNotFound(request);
     }
     return withCors(new Response(null, { headers: notebookOgImageHeaders(object, cover.mime) }));
   }
 
-  const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+  const object = await notebookObjectStore(env)?.get(key);
   if (!object) {
     return notebookOgImageNotFound(request);
   }
@@ -5149,7 +5153,7 @@ async function publicLatestRasterCover(
       return null;
     }
     if (options.verifyBlob) {
-      const object = await env.NOTEBOOK_SNAPSHOTS?.head(
+      const object = await notebookObjectStore(env)?.head(
         blobKey(notebookId, revision.cover_blob_hash),
       );
       if (!object) {
@@ -5185,7 +5189,7 @@ async function routeBlob(
     if (identity instanceof Response) {
       return identity;
     }
-    const object = await env.NOTEBOOK_SNAPSHOTS?.head(key);
+    const object = await notebookObjectStore(env)?.head(key);
     if (!object) {
       cloudLog("warn", "blob.read.missing", {
         notebook_id: notebookId,
@@ -5197,7 +5201,7 @@ async function routeBlob(
       return json({ error: "blob not found" }, 404);
     }
 
-    return immutableR2ObjectHeadResponse(object);
+    return immutableNotebookObjectHeadResponse(object);
   }
 
   if (request.method === "GET") {
@@ -5225,7 +5229,7 @@ async function routeBlob(
       return cachedResponse;
     }
 
-    const object = await env.NOTEBOOK_SNAPSHOTS?.get(key);
+    const object = await notebookObjectStore(env)?.get(key);
     if (!object) {
       cloudLog("warn", "blob.read.missing", {
         notebook_id: notebookId,
@@ -5237,7 +5241,7 @@ async function routeBlob(
       return json({ error: "blob not found" }, 404);
     }
 
-    const response = immutableR2ObjectResponse(object, { includeContentLength: true });
+    const response = immutableNotebookObjectResponse(object, { includeContentLength: true });
     if (cache) {
       response.headers.set("X-Notebook-Cloud-Blob-Cache", "miss");
       ctx.waitUntil(
@@ -5273,8 +5277,9 @@ async function routeBlob(
   if (!allowsBlobUpload(identity.scope)) {
     return json({ error: `${identity.scope} cannot upload blobs` }, 403);
   }
-  if (!env.NOTEBOOK_SNAPSHOTS) {
-    return json({ error: "R2 binding NOTEBOOK_SNAPSHOTS is not configured" }, 503);
+  const objectStore = notebookObjectStore(env);
+  if (!objectStore) {
+    return json({ error: "notebook object store is not configured" }, 503);
   }
 
   const contentType = normalizedBlobUploadContentType(request.headers.get("content-type"));
@@ -5321,9 +5326,9 @@ async function routeBlob(
 
   // Content-addressed first-writer-wins: an existing object already holds
   // these exact bytes (the hash was verified above), and its stored metadata
-  // (Content-Type) must not be rewritable by later writers. Skip the R2 write;
+  // (Content-Type) must not be rewritable by later writers. Skip the object-store write;
   // recordBlob is idempotent and heals a missing catalog row.
-  const existing = await env.NOTEBOOK_SNAPSHOTS.head(key);
+  const existing = await objectStore.head(key);
   if (existing) {
     await recordBlob(env, {
       notebookId,
@@ -5344,7 +5349,7 @@ async function routeBlob(
     return json({ ok: true, key, size: body.byteLength, deduplicated: true }, 200);
   }
 
-  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+  await objectStore.put(key, body, {
     httpMetadata: {
       contentType,
       cacheControl: "public, max-age=31536000, immutable",
@@ -6068,7 +6073,10 @@ interface ViewerShellResourceHints {
 function rootNotebookListRedirect(request: Request): Response {
   const url = new URL(request.url);
   url.pathname = "/n";
-  return Response.redirect(url.toString(), 302);
+  return new Response(null, {
+    status: 302,
+    headers: { Location: url.toString() },
+  });
 }
 
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {

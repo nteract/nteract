@@ -745,6 +745,53 @@ describe("RoomMaterializer", () => {
     assert.equal(cells[1].source, "");
   });
 
+  it("reloads an acknowledged room checkpoint from portable object storage", async () => {
+    const sourceState = fakeState();
+    const bucket = new FakeR2Bucket();
+    const env = { NOTEBOOK_SNAPSHOTS: bucket } as unknown as Env;
+    const editorIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
+    );
+    const editorPeer = { id: "peer-editor", identity: editorIdentity };
+    const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
+    const materializer = new RoomMaterializer("demo", sourceState, env);
+
+    await syncMaterializerWithClient(materializer, editorPeer, editor);
+    editor.add_cell(0, "portable-cell", "markdown");
+    editor.update_source("portable-cell", "Portable acknowledged checkpoint\n");
+    const message = editor.flush_local_changes();
+    assert.ok(message);
+    const applied = await materializer.receiveFrame(editorPeer, {
+      type: FrameType.AUTOMERGE_SYNC,
+      payload: message,
+    });
+    assert.equal(applied.changed, true);
+    await materializer.checkpoint();
+
+    assert.equal(bucket.objects.has("n/demo/live-checkpoints/latest.json"), true);
+    assert.equal(
+      [...bucket.objects.keys()].filter((key) => key.startsWith("n/demo/live-checkpoints/")).length,
+      5,
+    );
+
+    const restored = new RoomMaterializer("demo", fakeState(), env);
+    const viewer = NotebookHandle.create_bootstrap("user:dev:bob/desktop:b");
+    await syncMaterializerWithClient(
+      restored,
+      {
+        id: "peer-viewer",
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+        ),
+      },
+      viewer,
+    );
+
+    const cells = JSON.parse(viewer.get_cells_json()) as Array<{ id: string; source: string }>;
+    assert.equal(cells[0]?.id, "portable-cell");
+    assert.equal(cells[0]?.source, "Portable acknowledged checkpoint\n");
+  });
+
   it("projects comment author labels from the room-host CommentsDoc", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);
