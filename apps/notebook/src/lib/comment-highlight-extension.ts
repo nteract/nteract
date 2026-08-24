@@ -7,6 +7,7 @@ import {
   ViewPlugin,
 } from "@codemirror/view";
 import { actorInitials, onBehalfOfText } from "runtimed";
+import { RAIL_TAKEOVER_MEDIA_QUERY } from "@/components/rail";
 
 /** Compact thread summary shown when hovering a highlighted range. */
 export interface CommentHighlightPreview {
@@ -194,8 +195,21 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   return root;
 }
 
+/**
+ * Hover previews repeat what the Discussions panel already shows, so they only earn
+ * their keep when the panel cannot sit beside the notebook. Below the rail takeover
+ * width the panel covers the stage, so hovering a highlight is the only way to read
+ * its thread without leaving the notebook. Read per hover rather than captured when
+ * the extension is built, so resizing the window takes effect immediately.
+ */
+export function commentHoverPreviewsEnabled(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia(RAIL_TAKEOVER_MEDIA_QUERY).matches;
+}
+
 const commentHoverTooltip = hoverTooltip(
   (view, pos) => {
+    if (!commentHoverPreviewsEnabled()) return null;
     const match = highlightAt(view, pos);
     if (!match?.preview) return null;
     return {

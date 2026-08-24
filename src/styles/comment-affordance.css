@@ -1,79 +1,42 @@
+/* Layout for the "comment on selection" affordance, shared by the CodeMirror source
+   plane and the rendered-markdown plane. The badge itself is the shared badge
+   primitive (components/ui/badge.tsx, applied through
+   components/comments/comment-selection-badge.ts), and the collapse-to-dot morph
+   lives in components/comments/comment-affordance-motion.ts. Only positioning, the
+   sizes both sides share, and the CodeMirror tooltip reset live here. */
 .comment-affordance {
-  --comment-affordance-color: var(--comment-author-color, var(--primary, #2563eb));
+  /* Motion tokens, read back by comment-affordance-motion.ts so the CSS and the
+     morph keyframes have one source of truth. Diameter of the resting dot, and one
+     decelerating curve per stage (a spring here read as thrashy). */
+  --comment-affordance-dot-size: 8px;
+  --comment-affordance-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Natural height of the open badge: a text-xs line box, py-0.5, and a 1px border.
+     Only a fallback for the motion helper, which measures the real box. */
+  --comment-affordance-pill-height: 22px;
   position: relative;
   display: inline-flex;
   align-items: center;
-  padding: 3px;
+  /* Reserve the open badge's height so CodeMirror measures and anchors the tooltip
+     once: animating the badge's height inside a box that shrinks with it would
+     re-anchor the tooltip mid-morph, an unanimated jump. The padding doubles as hit
+     area, so the hover zone stays reachable once the badge is only a dot. */
+  height: calc(var(--comment-affordance-pill-height) + 8px);
+  padding: 4px;
 }
 
-.comment-affordance-button {
-  box-sizing: border-box;
-  display: inline-flex;
+/* The morphing element. The badge look comes from the shared primitive; this adds
+   only what the morph needs: a fixed flex size the animation can drive, and the clip
+   that hides the label until the pill has room for it. */
+.comment-affordance-badge {
   flex: none;
-  align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--border, #e5e5e5);
-  border-radius: 999px;
-  background-color: var(--popover, #ffffff);
-  box-shadow:
-    0 1px 2px rgb(0 0 0 / 8%),
-    0 4px 12px rgb(0 0 0 / 8%);
-  color: var(--muted-foreground, #737373);
-  cursor: pointer;
-  transition:
-    color 120ms ease,
-    background-color 120ms ease;
+  overflow: hidden;
 }
 
-.comment-affordance-button:hover,
-.comment-affordance-button:focus-visible {
-  background-color: var(--muted, #f5f5f5);
-  color: var(--comment-affordance-color);
-}
-
-.comment-affordance-button:focus-visible {
-  outline: 2px solid var(--ring, #a3a3a3);
-  outline-offset: 2px;
-}
-
-.comment-affordance-icon {
-  width: 15px;
-  height: 15px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.comment-affordance-tip {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  z-index: 1;
-  margin-top: 4px;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background-color: var(--foreground, #171717);
-  color: var(--background, #ffffff);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.4;
-  white-space: nowrap;
-  opacity: 0;
-  transform: translateX(-50%);
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.comment-affordance-button:hover ~ .comment-affordance-tip,
-.comment-affordance-button:focus-visible ~ .comment-affordance-tip {
-  opacity: 1;
-}
-
+/* Leftward selection (editor plane): the head is at the selection start, so anchor
+   the wrapper's right edge at the head and let it grow leftward, keeping the badge on
+   the cursor's outer side and off the selected text. translateX is a percentage of
+   the wrapper's own width, so it re-anchors as the badge morphs. */
 .comment-affordance-flip {
   transform: translateX(-100%);
 }

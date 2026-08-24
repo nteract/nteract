@@ -12,6 +12,7 @@
 @source "../**/*.{ts,tsx,mdx}";
 @source "../../notebook-cloud/viewer/**/*.{ts,tsx}";
 @source "../../../src/components/cell/**/*.{ts,tsx}";
+@source "../../../src/components/comments/**/*.{ts,tsx}";
 @source "../../../src/components/editor/**/*.{ts,tsx}";
 @source "../../../src/components/isolated/**/*.{ts,tsx}";
 @source "../../../src/components/markdown/**/*.{ts,tsx}";

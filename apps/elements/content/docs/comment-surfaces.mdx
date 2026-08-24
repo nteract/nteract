@@ -16,11 +16,13 @@ kernel, so the surface and its rationale stand on their own.
 
 ## Commenting on a selection
 
-Selecting text raises a small floating toolbar beside the selection with a
-single add-comment button. Clicking it opens the Discussions panel with the
-selection staged as the draft target, so comments are always composed in the
-panel and land in notebook order. The same toolbar appears in the CodeMirror
-editor and in rendered markdown.
+Selecting text raises a "Comment" badge beside the selection, styled with the
+shared badge primitive so it reads like every other badge. It arrives open, then
+shrinks to a dot after a second untouched and springs back open on hover or
+focus, so the offer is legible when it appears without parking a pill next to the
+text. Clicking it opens the Discussions panel with the selection staged as the
+draft target, so comments are always composed in the panel and land in notebook
+order. The same badge appears in the CodeMirror editor and in rendered markdown.
 
 <CommentSelectionAffordanceExample />
 
