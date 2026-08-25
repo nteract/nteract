@@ -310,14 +310,19 @@ impl Runner {
     /// the merged heads must equal the live document heads.
     fn apply_peer_merge(&mut self, concurrent: bool) {
         let changes = self.author_peer_edit(concurrent);
-        let outcome = self.durability.commit_peer_changes(changes.clone());
+        let outcome = self
+            .durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(changes.clone()));
         self.expect_committed(outcome);
         self.record_peer_commit();
 
         // Re-sending the already-durable batch dedupes against both the
         // union and the manifest hashes without appending.
         let before = self.durability.manifest();
-        let again = self.durability.commit_peer_changes(changes).unwrap();
+        let again = self
+            .durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(changes))
+            .unwrap();
         assert!(
             matches!(again, DurableCommitOutcome::AlreadyDurable(_)),
             "re-committing durable peer changes must be a no-op, got {again:?}"

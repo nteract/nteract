@@ -1222,7 +1222,9 @@ async fn peer_only_pending_recovery_never_regenerates_or_reports_ready() {
             .unwrap();
         doc.doc_mut().get_changes(&before)
     };
-    room.durability.commit_peer_changes(changes).unwrap();
+    room.durability
+        .commit_peer_changes(AdmittedNotebookChanges::for_test(changes))
+        .unwrap();
     drop(room);
 
     let rooms: NotebookRooms = Arc::new(RoomRegistry::new());
@@ -2725,17 +2727,15 @@ async fn commit_test_room_source(room: &NotebookRoom) {
         .expect("test source generation should become Ready");
 }
 
-#[tokio::test]
-async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (room, _) = test_room_with_path(&tmp, "peer-journal-failure.ipynb");
-    let (server_snapshot, server_heads, server_actor) = {
-        let mut doc = room.doc.write().await;
-        (doc.save(), doc.get_heads(), doc.get_actor_id())
-    };
-    let mut client = NotebookDoc::load_with_actor(&server_snapshot, "mcp:test-peer").unwrap();
-    client.add_cell(0, "peer-cell", "code").unwrap();
-    client.update_source("peer-cell", "peer_value = 1").unwrap();
+async fn notebook_change_frame(
+    room: &NotebookRoom,
+    actor_label: &str,
+    cell_id: &str,
+) -> (Vec<u8>, sync::State) {
+    let server_snapshot = room.doc.write().await.save();
+    let mut client = NotebookDoc::load_with_actor(&server_snapshot, actor_label).unwrap();
+    client.add_cell(0, cell_id, "code").unwrap();
+    client.update_source(cell_id, "peer_value = 1").unwrap();
     let mut client_state = sync::State::new();
     let mut server_peer_state = sync::State::new();
     let initial_server_message = room
@@ -2759,8 +2759,104 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
         .encode();
     assert!(
         !sync::Message::decode(&payload).unwrap().changes.is_empty(),
-        "the injected frame must cross the peer durability path"
+        "the test frame must carry peer changes"
     );
+    (payload, server_peer_state)
+}
+
+#[tokio::test]
+async fn foreign_actor_changes_never_reach_durability() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "foreign-actor-admission.ipynb");
+    let manifest_before = room.durability.manifest();
+    let durable_before = room.durability.durable_snapshot();
+    let (payload, mut server_peer_state) =
+        notebook_change_frame(&room, "user:anaconda:evil/desktop:forge", "foreign-cell").await;
+    let peer_state_before = format!("{server_peer_state:?}");
+    let identity = RoomConnectionIdentity::local(Some("desktop:forge".to_string()))
+        .await
+        .unwrap();
+    let mut changed = room.broadcasts.changed_tx.subscribe();
+
+    let error = super::peer_notebook_sync::apply_notebook_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &identity,
+        &payload,
+    )
+    .await;
+    let error = match error {
+        Ok(_) => panic!("foreign actor changes must fail admission"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("not authorized"));
+    assert_eq!(room.durability.manifest(), manifest_before);
+    assert_eq!(
+        room.durability.durable_snapshot().as_ref(),
+        durable_before.as_ref()
+    );
+    assert!(room.doc.read().await.get_cell("foreign-cell").is_none());
+    assert_eq!(format!("{server_peer_state:?}"), peer_state_before);
+    assert!(matches!(
+        changed.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn viewer_changes_never_reach_durability() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "viewer-admission.ipynb");
+    let identity = RoomConnectionIdentity::local_with_scope(
+        Some("desktop:viewer".to_string()),
+        nteract_identity::ConnectionScope::Viewer,
+    )
+    .await
+    .unwrap();
+    let manifest_before = room.durability.manifest();
+    let durable_before = room.durability.durable_snapshot();
+    let (payload, mut server_peer_state) =
+        notebook_change_frame(&room, identity.actor_label().as_str(), "viewer-cell").await;
+    let mut changed = room.broadcasts.changed_tx.subscribe();
+
+    let (_, reply) = super::peer_notebook_sync::apply_notebook_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &identity,
+        &payload,
+    )
+    .await
+    .expect("viewer sync continues after stripping unauthorized changes");
+
+    assert!(
+        reply.is_some(),
+        "viewer receives the authoritative sync reply"
+    );
+    assert_eq!(room.durability.manifest(), manifest_before);
+    assert_eq!(
+        room.durability.durable_snapshot().as_ref(),
+        durable_before.as_ref()
+    );
+    assert!(room.doc.read().await.get_cell("viewer-cell").is_none());
+    assert!(matches!(
+        changed.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+#[tokio::test]
+async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "peer-journal-failure.ipynb");
+    let (server_heads, server_actor) = {
+        let mut doc = room.doc.write().await;
+        (doc.get_heads(), doc.get_actor_id())
+    };
+    let manifest_before = room.durability.manifest();
+    let durable_before = room.durability.durable_snapshot();
+    let (payload, mut server_peer_state) =
+        notebook_change_frame(&room, "mcp:test-peer", "peer-cell").await;
 
     let journal_path = room
         .durability
@@ -2786,6 +2882,11 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
         Ok(_) => panic!("journal failure must reject the peer frame before acknowledgement"),
     };
     assert!(error.to_string().contains("before peer acknowledgement"));
+    assert_eq!(room.durability.manifest(), manifest_before);
+    assert_eq!(
+        room.durability.durable_snapshot().as_ref(),
+        durable_before.as_ref()
+    );
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(20), changed.recv())
             .await
@@ -2818,6 +2919,15 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
     .expect("retry should accept and durably acknowledge the same peer change");
     assert!(reply.is_some());
     assert_eq!(room.doc.read().await.cell_count(), 1);
+    assert!(room.durability.manifest().peer_change_count > manifest_before.peer_change_count);
+    let recovered = match room.durability.journal().unwrap().latest_record().unwrap() {
+        super::recovery::RecoveryLatestOutcome::Recovered(recovered) => recovered,
+        other => panic!("authorized peer acknowledgement must follow durable recovery: {other:?}"),
+    };
+    let recovered_doc =
+        NotebookDoc::load_with_actor(&recovered.record.automerge_snapshot, "test-recovery")
+            .unwrap();
+    assert!(recovered_doc.get_cell("peer-cell").is_some());
     tokio::time::timeout(std::time::Duration::from_secs(1), changed.recv())
         .await
         .expect("accepted peer change should broadcast")

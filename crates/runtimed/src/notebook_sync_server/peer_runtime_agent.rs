@@ -9,7 +9,10 @@ use crate::async_outcome::{flatten_joined_result, JoinedResult};
 
 use super::peer_runtime_sync::{persist_terminal_execution_records, runtime_file_save_fingerprint};
 use super::peer_writer::spawn_peer_writer;
-use super::{NotebookRoom, RuntimeAgentMessage, STATE_SYNC_COMPACT_THRESHOLD};
+use super::{
+    admit_trusted_notebook_changes, NotebookRoom, RuntimeAgentMessage, TrustedNotebookChangeSource,
+    STATE_SYNC_COMPACT_THRESHOLD,
+};
 
 /// Apply one NotebookDoc sync frame from the runtime agent.
 ///
@@ -45,7 +48,11 @@ async fn apply_runtime_agent_notebook_doc_frame(
                     .get_changes(&heads_before)
                     .into_iter()
                     .collect::<Vec<_>>();
-                if let Err(error) = room.durability.commit_peer_changes(agent_changes) {
+                let admitted_changes = admit_trusted_notebook_changes(
+                    agent_changes,
+                    TrustedNotebookChangeSource::RuntimeAgent,
+                );
+                if let Err(error) = room.durability.commit_peer_changes(admitted_changes) {
                     let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
                         notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
                     });

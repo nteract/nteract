@@ -8,7 +8,7 @@ use super::{
     check_and_broadcast_sync_state, check_and_update_trust_state, process_markdown_assets,
     NotebookRoom, RoomConnectionIdentity,
 };
-use notebook_doc::diff::{diff_metadata_touched, extract_change_actor_hashes};
+use notebook_doc::diff::diff_metadata_touched;
 
 pub(super) async fn handle_notebook_doc_frame(
     room: &NotebookRoom,
@@ -55,7 +55,7 @@ pub(super) async fn apply_notebook_doc_frame(
         super::durability::run_blocking_durability_boundary(|| -> anyhow::Result<_> {
             let rollback_state = has_client_changes.then(|| (doc.save(), doc.get_actor_id()));
 
-            if has_client_changes {
+            let admitted_changes = if has_client_changes {
                 // v1: clone-preview validator. Replace with sync_message_new_changes
                 // once nteract/automerge ships Patch 1.
                 let heads_before = doc.get_heads();
@@ -67,15 +67,21 @@ pub(super) async fn apply_notebook_doc_frame(
                     "doc-auth-preview",
                 ) {
                     Ok(()) => {
-                        let actors = extract_change_actor_hashes(preview.doc_mut(), &heads_before);
-                        connection_identity.validate_notebook_change_actors(actors.iter())?;
+                        let changes = preview
+                            .doc_mut()
+                            .get_changes(&heads_before)
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        connection_identity.admit_notebook_changes(changes)?
                     }
                     Err(e) => {
                         warn!("[notebook-sync] doc auth preview failed: {}", e);
                         return Err(anyhow::anyhow!("doc auth preview failed: {e}"));
                     }
                 }
-            }
+            } else {
+                connection_identity.admit_notebook_changes(Vec::new())?
+            };
 
             let heads_before = doc.get_heads();
 
@@ -94,12 +100,7 @@ pub(super) async fn apply_notebook_doc_frame(
 
             let bytes = if changed { Some(doc.save()) } else { None };
             if changed && has_client_changes {
-                let peer_changes = doc
-                    .doc_mut()
-                    .get_changes(&heads_before)
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                if let Err(error) = room.durability.commit_peer_changes(peer_changes) {
+                if let Err(error) = room.durability.commit_peer_changes(admitted_changes) {
                     let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
                         notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
                     });

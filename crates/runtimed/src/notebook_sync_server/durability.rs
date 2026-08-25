@@ -20,6 +20,7 @@ use super::recovery::{
     PendingFileCheckpoint, RecoveredJournalRecord, RecoveryJournal, RecoveryJournalError,
     RecoveryManifest, RecoverySourcePhase, RecoveryUnavailableReason, SourceFingerprint,
 };
+use super::AdmittedNotebookChanges;
 
 /// Structural classification of a room degradation. The kind is lifecycle
 /// policy, not display text: shutdown and reaping consult it through
@@ -1048,9 +1049,10 @@ impl RoomDurability {
     /// every acknowledged peer change.
     pub(crate) fn commit_peer_changes(
         &self,
-        changes: Vec<Change>,
+        changes: AdmittedNotebookChanges,
     ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
         self.ensure_accepting_commits()?;
+        let changes = changes.into_changes();
         if changes.is_empty() {
             return Ok(DurableCommitOutcome::AlreadyDurable(self.status()));
         }
@@ -1898,7 +1900,9 @@ mod tests {
         let peer_baseline = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&peer_baseline))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&peer_baseline),
+            ))
             .unwrap();
         let after_peer = durability.status();
 
@@ -1952,7 +1956,9 @@ mod tests {
         let baseline = peer.get_heads();
         peer.put(ROOT, "next", 2).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&baseline))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&baseline),
+            ))
             .unwrap();
 
         assert_eq!(durability.manifest().peer_change_count, 2_252);
@@ -2152,7 +2158,9 @@ mod tests {
         let peer_heads = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         let peer_changes = peer.get_changes(&peer_heads);
-        durability.commit_peer_changes(peer_changes).unwrap();
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(peer_changes))
+            .unwrap();
 
         let mut staged = AutoCommit::load(&genesis_snapshot).unwrap();
         staged.put(ROOT, "source", 3).unwrap();
@@ -2243,7 +2251,9 @@ mod tests {
         let before_peer = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&before_peer))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&before_peer),
+            ))
             .unwrap();
         let before_observed = durability.status();
 
@@ -2340,7 +2350,9 @@ mod tests {
         let before_peer = peer.get_heads();
         peer.put(ROOT, "peer", true).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&before_peer))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&before_peer),
+            ))
             .unwrap();
         let before_conflict = durability.status();
 

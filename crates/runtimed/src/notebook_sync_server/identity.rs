@@ -1,8 +1,43 @@
+use automerge::Change;
 use notebook_doc::diff::ChangeActor;
 use nteract_identity::{
     ActorLabel, AuthenticatedConnection, ConnectionScope, Credential, IdentityProvider,
     LocalPeerCredential, Operator,
 };
+
+/// Notebook changes that crossed an explicit room admission boundary.
+///
+/// The wrapped Automerge changes are intentionally private: durability accepts
+/// this capability instead of raw changes so network ingress cannot persist a
+/// batch before its actual change actors have been authorized.
+#[derive(Debug)]
+pub(crate) struct AdmittedNotebookChanges(Vec<Change>);
+
+impl AdmittedNotebookChanges {
+    #[cfg(test)]
+    pub(crate) fn for_test(changes: Vec<Change>) -> Self {
+        Self(changes)
+    }
+
+    pub(super) fn into_changes(self) -> Vec<Change> {
+        self.0
+    }
+}
+
+/// Daemon-owned mutation paths that do not represent an authenticated room
+/// connection but still share the peer-change durability machinery.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum TrustedNotebookChangeSource {
+    FileWatcher,
+    RuntimeAgent,
+}
+
+pub(super) fn admit_trusted_notebook_changes(
+    changes: Vec<Change>,
+    _source: TrustedNotebookChangeSource,
+) -> AdmittedNotebookChanges {
+    AdmittedNotebookChanges(changes)
+}
 
 /// Identity state attached to one room connection.
 #[derive(Debug, Clone)]
@@ -94,6 +129,29 @@ impl RoomConnectionIdentity {
 
     pub(crate) fn allows_notebook_write(&self) -> bool {
         self.scope().allows_notebook_write()
+    }
+
+    /// Authorize the exact Automerge changes that may cross the durable peer
+    /// acceptance boundary.
+    pub(crate) fn admit_notebook_changes(
+        &self,
+        changes: Vec<Change>,
+    ) -> anyhow::Result<AdmittedNotebookChanges> {
+        if !changes.is_empty() && !self.allows_notebook_write() {
+            anyhow::bail!(
+                "NotebookDoc changes are not allowed for {} connections",
+                self.scope()
+            );
+        }
+        let actors = changes
+            .iter()
+            .map(|change| ChangeActor {
+                actor_label: notebook_doc::actor_label_from_id(change.actor_id()),
+                hash: change.hash(),
+            })
+            .collect::<Vec<_>>();
+        self.validate_notebook_change_actors(actors.iter())?;
+        Ok(AdmittedNotebookChanges(changes))
     }
 
     #[cfg(test)]
@@ -205,7 +263,15 @@ fn sanitize_local_username(username: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use automerge::{transaction::Transactable, ActorId, AutoCommit, ROOT};
+
     use super::*;
+
+    fn change_by_actor(actor_label: &str) -> Vec<Change> {
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(actor_label.as_bytes()));
+        doc.put(ROOT, "admission-test", true).unwrap();
+        doc.get_changes(&[])
+    }
 
     #[tokio::test]
     async fn local_identity_preserves_presented_operator() {
@@ -273,6 +339,59 @@ mod tests {
             .expect_err("wrong principal should be rejected");
 
         assert!(error.to_string().contains("not authorized"));
+    }
+
+    #[tokio::test]
+    async fn admission_wraps_exact_changes_for_the_authenticated_principal() {
+        let identity = RoomConnectionIdentity::local(Some("desktop:window-1".to_string()))
+            .await
+            .expect("local identity");
+        let changes = change_by_actor(identity.actor_label().as_str());
+        let expected_hashes = changes
+            .iter()
+            .map(automerge::Change::hash)
+            .collect::<Vec<_>>();
+
+        let admitted = identity
+            .admit_notebook_changes(changes)
+            .expect("authenticated actor changes should be admitted");
+        let admitted_hashes = admitted
+            .into_changes()
+            .iter()
+            .map(automerge::Change::hash)
+            .collect::<Vec<_>>();
+
+        assert_eq!(admitted_hashes, expected_hashes);
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_foreign_actual_change_actors() {
+        let identity = RoomConnectionIdentity::local(Some("desktop:window-1".to_string()))
+            .await
+            .expect("local identity");
+
+        let error = identity
+            .admit_notebook_changes(change_by_actor("user:anaconda:evil/desktop:window-1"))
+            .expect_err("foreign actual changes must not produce a capability");
+
+        assert!(error.to_string().contains("not authorized"));
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_viewer_actual_changes() {
+        let identity = RoomConnectionIdentity::local_with_scope(
+            Some("desktop:window-1".to_string()),
+            ConnectionScope::Viewer,
+        )
+        .await
+        .expect("local viewer identity");
+        let changes = change_by_actor(identity.actor_label().as_str());
+
+        let error = identity
+            .admit_notebook_changes(changes)
+            .expect_err("viewer changes must not produce a capability");
+
+        assert!(error.to_string().contains("not allowed for viewer"));
     }
 
     #[tokio::test]
