@@ -25,6 +25,7 @@ const CHUNK_KIND_SNAPSHOT: i64 = 0;
 const CHUNK_KIND_INCREMENTAL: i64 = 1;
 const HASH_BYTES: usize = 32;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const STORE_SCHEMA_VERSION: i64 = 1;
 
 /// Stable identity of one stored Automerge document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -156,6 +157,10 @@ pub enum StoreError {
     SequenceExhausted(DocumentId),
     #[error("SQLite refused WAL journal mode and selected {0:?}")]
     WalUnavailable(String),
+    #[error(
+        "document store schema version {actual} is newer than the supported version {supported}"
+    )]
+    UnsupportedSchemaVersion { actual: i64, supported: i64 },
 }
 
 /// SQLite-backed implementation with an `fsync`-equivalent commit boundary.
@@ -169,9 +174,9 @@ pub struct SqliteDocumentStore {
 
 impl SqliteDocumentStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let connection = Connection::open(path)?;
+        let mut connection = Connection::open(path)?;
         configure_connection(&connection)?;
-        initialize_schema(&connection)?;
+        initialize_schema(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -361,8 +366,17 @@ fn configure_connection(connection: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn initialize_schema(connection: &Connection) -> Result<(), StoreError> {
-    connection.execute_batch(
+fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
+    let schema_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if schema_version > STORE_SCHEMA_VERSION {
+        return Err(StoreError::UnsupportedSchemaVersion {
+            actual: schema_version,
+            supported: STORE_SCHEMA_VERSION,
+        });
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS documents (
              document_id      BLOB PRIMARY KEY NOT NULL CHECK(length(document_id) = 16),
              sequence         INTEGER NOT NULL CHECK(sequence >= 0),
@@ -381,6 +395,10 @@ fn initialize_schema(connection: &Connection) -> Result<(), StoreError> {
          CREATE INDEX IF NOT EXISTS chunks_document_kind
              ON chunks(document_id, kind);",
     )?;
+    if schema_version == 0 {
+        transaction.pragma_update(None, "user_version", STORE_SCHEMA_VERSION)?;
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -692,9 +710,35 @@ mod tests {
         let synchronous: i64 = connection
             .query_row("PRAGMA synchronous", [], |row| row.get(0))
             .unwrap_or_else(|error| panic!("read synchronous mode: {error}"));
+        let schema_version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or_else(|error| panic!("read schema version: {error}"));
 
         assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
         assert_eq!(synchronous, 2, "SQLite FULL synchronous mode is 2");
+        assert_eq!(schema_version, STORE_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn newer_store_schema_is_rejected() {
+        let directory = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("create schema test directory: {error}"));
+        let path = directory.path().join("documents.sqlite");
+        let connection =
+            Connection::open(&path).unwrap_or_else(|error| panic!("open future store: {error}"));
+        connection
+            .pragma_update(None, "user_version", STORE_SCHEMA_VERSION + 1)
+            .unwrap_or_else(|error| panic!("set future schema version: {error}"));
+        drop(connection);
+
+        let result = SqliteDocumentStore::open(&path);
+        assert!(matches!(
+            result,
+            Err(StoreError::UnsupportedSchemaVersion {
+                actual,
+                supported
+            }) if actual == STORE_SCHEMA_VERSION + 1 && supported == STORE_SCHEMA_VERSION
+        ));
     }
 
     #[test]
