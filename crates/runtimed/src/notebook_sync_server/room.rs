@@ -1744,11 +1744,11 @@ impl NotebookRoom {
                     }
                     super::recovery::RecoverySourcePhase::Pending
                     | super::recovery::RecoverySourcePhase::Failed
-                        if !manifest.peer_change_hashes.is_empty() =>
+                        if manifest.peer_change_count > 0 =>
                     {
                         let reason = format!(
                             "source_degraded: recovery contains {} peer changes but no durably staged source generation",
-                            manifest.peer_change_hashes.len()
+                            manifest.peer_change_count
                         );
                         state.with_doc(|runtime| {
                             runtime.set_file_source_issue(Some(
