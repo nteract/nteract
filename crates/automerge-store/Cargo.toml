@@ -1,0 +1,20 @@
+[package]
+name = "automerge-store"
+version = "0.1.0"
+edition.workspace = true
+description = "Durable, content-addressed storage for Automerge documents"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+automerge = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
