@@ -266,12 +266,20 @@ promotion, and garbage-collection cases cover their recovery responsibilities.
   counts.
 - The current peer-ingress path durably commits before acknowledgment and rolls
   back document plus sync state on failure.
+- The storage contract has a strict SQLite implementation with immutable,
+  head-addressed snapshots and incrementals, atomic application state, explicit
+  schema admission, and transactional compaction.
+- Network-authored notebook changes cross a typed admission boundary before
+  they can reach durability. This changes no room authorization policy; it
+  makes the existing policy structurally harder to bypass.
+- Versioned notebook application state preserves projection and activation
+  metadata without duplicating the store-owned sequence or causal frontier.
+
+This foundational slice changes no authorization policy, save, eviction, or
+legacy-authority behavior.
 
 ## Next
 
-- Introduce the store contract beneath `RoomDurability` and run the existing
-  durability suite against a snapshot-oriented SQLite backend. The first PR
-  changes no authorization, save, eviction, or legacy-authority behavior.
 - Add corruption handling and idempotent journal and untitled-mirror migration
   with an atomic activation marker, preserving conflicts and checkpoints.
 - Activate repository-backed `RoomDurability` with rollback and pre-acknowledge
