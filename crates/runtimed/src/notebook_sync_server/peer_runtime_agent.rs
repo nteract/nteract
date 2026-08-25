@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use automerge::SaveOptions;
 use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFrameType};
 use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentResponse};
 use tracing::{debug, info, warn};
@@ -36,22 +37,84 @@ async fn apply_runtime_agent_notebook_doc_frame(
         let mut doc = room.doc.write().await;
         super::durability::run_blocking_durability_boundary(|| -> anyhow::Result<_> {
             let rollback_state = has_agent_changes.then(|| (doc.save(), doc.get_actor_id()));
+            let preview_snapshot = has_agent_changes.then(|| {
+                doc.doc_mut().save_with_options(SaveOptions {
+                    deflate: true,
+                    retain_orphans: false,
+                })
+            });
             let heads_before = doc.get_heads();
 
-            doc.receive_sync_message_recovering(sync_state, message, "peer-runtime-agent-doc")
-                .map_err(|error| anyhow::anyhow!("runtime-agent doc receive failed: {error}"))?;
-
-            let changed = heads_before != doc.get_heads();
-            if changed && has_agent_changes {
-                let agent_changes = doc
+            let admitted_changes = if has_agent_changes {
+                let (_, actor) = rollback_state
+                    .as_ref()
+                    .expect("agent changes always capture rollback state");
+                // Reloading the preview from bytes intentionally excludes any
+                // previously parked orphan queue from the live Automerge doc.
+                let mut preview = notebook_doc::NotebookDoc::load_with_actor(
+                    preview_snapshot
+                        .as_ref()
+                        .expect("agent changes always capture a clean preview"),
+                    actor,
+                )
+                .map_err(|error| anyhow::anyhow!("runtime-agent preview load failed: {error}"))?;
+                let mut preview_sync_state = sync_state.clone();
+                preview
+                    .receive_sync_message_recovering(
+                        &mut preview_sync_state,
+                        message.clone(),
+                        "peer-runtime-agent-doc-preview",
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!("runtime-agent doc preview failed: {error}")
+                    })?;
+                let preview_changes = preview
                     .doc_mut()
                     .get_changes(&heads_before)
                     .into_iter()
                     .collect::<Vec<_>>();
-                let admitted_changes = admit_trusted_notebook_changes(
-                    agent_changes,
+                admit_trusted_notebook_changes(
+                    preview_changes,
                     TrustedNotebookChangeSource::RuntimeAgent,
-                );
+                )
+            } else {
+                admit_trusted_notebook_changes(
+                    Vec::new(),
+                    TrustedNotebookChangeSource::RuntimeAgent,
+                )
+            };
+
+            doc.receive_sync_message_recovering(sync_state, message, "peer-runtime-agent-doc")
+                .map_err(|error| anyhow::anyhow!("runtime-agent doc receive failed: {error}"))?;
+
+            let applied_changes = doc
+                .doc_mut()
+                .get_changes(&heads_before)
+                .into_iter()
+                .collect::<Vec<_>>();
+            let admitted_changes = match admitted_changes.reconcile_applied(applied_changes) {
+                Ok(changes) => changes,
+                Err(error) => {
+                    if let Some(restored) = rollback_state.as_ref().and_then(|(_, actor)| {
+                        notebook_doc::NotebookDoc::load_with_actor(
+                            preview_snapshot
+                                .as_ref()
+                                .expect("agent changes always capture a clean preview"),
+                            actor,
+                        )
+                        .ok()
+                    }) {
+                        *doc = restored;
+                    }
+                    *sync_state = sync_state_before.clone();
+                    return Err(error.context(
+                        "runtime-agent preview differed from live NotebookDoc application",
+                    ));
+                }
+            };
+
+            let changed = heads_before != doc.get_heads();
+            if changed && has_agent_changes {
                 if let Err(error) = room.durability.commit_peer_changes(admitted_changes) {
                     let restored = rollback_state.as_ref().and_then(|(snapshot, actor)| {
                         notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
@@ -686,6 +749,8 @@ fn validate_runtime_agent_broadcast(broadcast: &NotebookBroadcast) -> anyhow::Re
 mod tests {
     use super::*;
 
+    use automerge::{transaction::Transactable, ReadDoc, ROOT};
+
     use crate::blob_store::BlobStore;
 
     fn test_file_backed_room(tmp: &tempfile::TempDir) -> (uuid::Uuid, PathBuf, Arc<NotebookRoom>) {
@@ -856,6 +921,91 @@ mod tests {
                 .is_some(),
             "acknowledged runtime-agent change survives journal recovery"
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_agent_frame_cannot_activate_a_previously_parked_change() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let (_, _, room) = test_file_backed_room(&tmp);
+        let mut server_state = automerge::sync::State::new();
+
+        let (snapshot, initial) = {
+            let mut doc = room.doc.write().await;
+            let snapshot = doc.save();
+            let initial = doc
+                .generate_sync_message_recovering(
+                    &mut server_state,
+                    "runtime-agent-orphan-test-init",
+                )
+                .expect("generate initial server sync")
+                .expect("fresh sync state should produce an initial message");
+            (snapshot, initial)
+        };
+        let mut agent = notebook_doc::NotebookDoc::load_with_actor(&snapshot, "runtime-agent:test")
+            .expect("load runtime-agent test document");
+        let mut agent_state = automerge::sync::State::new();
+        agent
+            .receive_sync_message_recovering(
+                &mut agent_state,
+                initial,
+                "runtime-agent-orphan-test-receive-init",
+            )
+            .expect("receive initial server sync");
+
+        agent
+            .doc_mut()
+            .put(ROOT, "runtime-dependency", true)
+            .expect("author dependency change");
+        let dependency_heads = agent.get_heads();
+        let agent_with_dependency = agent.save();
+        let mut attacker =
+            notebook_doc::NotebookDoc::load_with_actor(&agent_with_dependency, "untrusted:parked")
+                .expect("load attacker branch");
+        attacker
+            .doc_mut()
+            .put(ROOT, "parked-change", true)
+            .expect("author parked change");
+        let parked_changes = attacker
+            .doc_mut()
+            .get_changes(&dependency_heads)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(parked_changes.len(), 1);
+
+        let heads_before = {
+            let mut doc = room.doc.write().await;
+            let heads = doc.get_heads();
+            doc.doc_mut()
+                .apply_changes(parked_changes)
+                .expect("Automerge parks unresolved changes without an error");
+            assert_eq!(doc.get_heads(), heads, "parked change is not yet applied");
+            heads
+        };
+        let frame = agent
+            .generate_sync_message_recovering(
+                &mut agent_state,
+                "runtime-agent-orphan-test-dependency",
+            )
+            .expect("generate dependency sync")
+            .expect("dependency should produce a sync message")
+            .encode();
+
+        let error = apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame)
+            .await
+            .expect_err("trusted frame must not sweep in a parked change");
+        assert!(error.to_string().contains("preview differed"));
+        let mut doc = room.doc.write().await;
+        assert_eq!(doc.get_heads(), heads_before);
+        assert!(doc
+            .doc_mut()
+            .get(ROOT, "runtime-dependency")
+            .expect("read dependency")
+            .is_none());
+        assert!(doc
+            .doc_mut()
+            .get(ROOT, "parked-change")
+            .expect("read parked change")
+            .is_none());
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use automerge::Change;
+use automerge::{Change, ChangeHash};
 use notebook_doc::diff::ChangeActor;
 use nteract_identity::{
     ActorLabel, AuthenticatedConnection, ConnectionScope, Credential, IdentityProvider,
@@ -22,6 +22,28 @@ impl AdmittedNotebookChanges {
     pub(super) fn into_changes(self) -> Vec<Change> {
         self.0
     }
+
+    /// Bind preview admission to the exact changes applied by the live
+    /// document. Equal hashes imply equal Automerge change contents.
+    pub(super) fn reconcile_applied(self, applied: Vec<Change>) -> anyhow::Result<Self> {
+        let expected = canonical_change_hashes(&self.0);
+        let actual = canonical_change_hashes(&applied);
+        if expected != actual {
+            anyhow::bail!(
+                "admitted NotebookDoc change set differed from live application (expected {} changes, applied {})",
+                expected.len(),
+                actual.len()
+            );
+        }
+        Ok(Self(applied))
+    }
+}
+
+fn canonical_change_hashes(changes: &[Change]) -> Vec<ChangeHash> {
+    let mut hashes = changes.iter().map(Change::hash).collect::<Vec<_>>();
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
 }
 
 /// Daemon-owned mutation paths that do not represent an authenticated room
@@ -368,6 +390,22 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(admitted_hashes, expected_hashes);
+    }
+
+    #[tokio::test]
+    async fn admission_rejects_a_different_live_applied_change_set() {
+        let identity = RoomConnectionIdentity::local(Some("desktop:window-1".to_string()))
+            .await
+            .expect("local identity");
+        let admitted = identity
+            .admit_notebook_changes(change_by_actor(identity.actor_label().as_str()))
+            .expect("authenticated actor changes should be admitted");
+        let applied = change_by_actor("different-live-actor");
+
+        let error = admitted
+            .reconcile_applied(applied)
+            .expect_err("different live hashes must not inherit preview admission");
+        assert!(error.to_string().contains("differed from live application"));
     }
 
     #[tokio::test]

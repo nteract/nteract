@@ -93,6 +93,25 @@ pub(super) async fn apply_notebook_doc_frame(
                 }
             }
 
+            let applied_changes = doc
+                .doc_mut()
+                .get_changes(&heads_before)
+                .into_iter()
+                .collect::<Vec<_>>();
+            let admitted_changes = match admitted_changes.reconcile_applied(applied_changes) {
+                Ok(changes) => changes,
+                Err(error) => {
+                    if let Some(restored) = rollback_state.as_ref().and_then(|(snapshot, actor)| {
+                        notebook_doc::NotebookDoc::load_with_actor(snapshot, actor).ok()
+                    }) {
+                        *doc = restored;
+                    }
+                    *peer_state = peer_state_before.clone();
+                    return Err(error
+                        .context("NotebookDoc admission preview differed from live application"));
+                }
+            };
+
             let heads_after = doc.get_heads();
             let changed = heads_before != heads_after;
             let metadata_changed =
