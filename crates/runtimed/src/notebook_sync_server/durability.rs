@@ -148,8 +148,6 @@ pub(crate) enum RoomDurabilityError {
     ShutdownInProgress,
     #[error("room journal sequence is exhausted")]
     SequenceExhausted,
-    #[error("room durability batch has {unresolved} changes with unresolved dependencies")]
-    UnresolvedChanges { unresolved: usize },
     #[error("file checkpoint heads are not contained in the durable recovery snapshot")]
     FileCheckpointHeadsNotDurable,
     #[error(
@@ -1063,7 +1061,7 @@ impl RoomDurability {
         let mut state = self.lock_state();
         let mut durable = AutoCommit::load(&state.durable_snapshot)
             .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
-        let peer_hashes = apply_complete_change_batch(&mut durable, changes)?;
+        let peer_hashes = apply_retained_change_batch(&mut durable, changes)?;
         if peer_hashes.is_empty() {
             return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
                 &state,
@@ -1141,7 +1139,7 @@ impl RoomDurability {
             .filter(|hash| source_hashes_seen.insert(*hash))
             .map(|hash| hash.0)
             .collect::<Vec<_>>();
-        apply_complete_change_batch(&mut durable, changes)?;
+        apply_retained_change_batch(&mut durable, changes)?;
         let durable_heads = durable
             .get_heads()
             .iter()
@@ -1253,7 +1251,13 @@ impl RoomDurability {
     }
 }
 
-fn apply_complete_change_batch(
+/// Apply a deduplicated batch while retaining causally out-of-order changes.
+///
+/// Automerge queues changes whose dependencies have not arrived yet, and its
+/// default full save retains those raw bytes. Callers save the document in the
+/// same durable transaction, so admitted out-of-order changes survive restart
+/// without advancing the applied causal frontier.
+fn apply_retained_change_batch(
     document: &mut AutoCommit,
     changes: Vec<Change>,
 ) -> Result<Vec<ChangeHash>, RoomDurabilityError> {
@@ -1267,13 +1271,6 @@ fn apply_complete_change_batch(
     document
         .apply_changes(missing)
         .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
-    let unresolved = hashes
-        .iter()
-        .filter(|hash| document.get_change_by_hash(hash).is_none())
-        .count();
-    if unresolved > 0 {
-        return Err(RoomDurabilityError::UnresolvedChanges { unresolved });
-    }
     Ok(hashes)
 }
 
@@ -1903,7 +1900,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_applicable_and_orphan_peer_batch_does_not_reach_the_journal() {
+    fn mixed_applicable_and_orphan_peer_batch_resolves_after_restart() {
         let mut seed = AutoCommit::new();
         seed.put(ROOT, "base", true).unwrap();
         let base_heads = seed.get_heads();
@@ -1925,19 +1922,36 @@ mod tests {
             .unwrap()
             .with_actor(automerge::ActorId::from(b"incomplete".as_slice()));
         incomplete.put(ROOT, "missing", 1_i64).unwrap();
+        let dependency_changes = incomplete.get_changes(&base_heads);
         let dependency_heads = incomplete.get_heads();
         incomplete.put(ROOT, "orphan", 2_i64).unwrap();
         mixed.extend(incomplete.get_changes(&dependency_heads));
 
-        let result = durability
+        durability
             .commit_peer_changes(AdmittedNotebookChanges::for_test(mixed))
-            .expect_err("mixed incomplete peer batch must fail closed");
-        assert!(matches!(
-            result,
-            RoomDurabilityError::UnresolvedChanges { unresolved: 1 }
-        ));
-        assert_eq!(durability.status(), status_before);
-        assert_eq!(durability.durable_snapshot().as_ref(), base_snapshot);
+            .expect("admitted out-of-order peer changes are durable");
+        assert_eq!(
+            durability.status().journal_sequence,
+            status_before.journal_sequence + 1
+        );
+
+        let pending_snapshot = durability.durable_snapshot();
+        let pending = AutoCommit::load(&pending_snapshot).expect("reload retained orphan");
+        assert!(pending
+            .get(ROOT, "applicable")
+            .is_ok_and(|value| value.is_some()));
+        assert!(pending
+            .get(ROOT, "orphan")
+            .is_ok_and(|value| value.is_none()));
+
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(dependency_changes))
+            .expect("missing dependency resolves retained peer change");
+        let resolved_snapshot = durability.durable_snapshot();
+        let resolved = AutoCommit::load(&resolved_snapshot).expect("reload resolved peer changes");
+        for key in ["applicable", "missing", "orphan"] {
+            assert!(resolved.get(ROOT, key).is_ok_and(|value| value.is_some()));
+        }
     }
 
     #[test]

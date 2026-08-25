@@ -51,7 +51,9 @@ The first durable write for a document may be a complete Automerge snapshot.
 Subsequent accepted mutations persist only changes not already covered by the
 stored heads. Loading applies snapshots first and incremental chunks second,
 then verifies that the reconstructed document covers the recorded durable
-frontier. Missing dependencies or a frontier mismatch fail closed as a durability
+frontier. Valid out-of-order changes remain as content-addressed, inert chunks
+until their dependencies arrive; they do not advance the applied frontier.
+Invalid change bytes or a frontier mismatch fail closed as a durability
 degradation; the daemon never opens a parsed prefix and calls it recovered.
 
 A transitional backend may commit a complete snapshot for each frontier while
@@ -64,6 +66,9 @@ snapshot keyed by its heads and removes only source chunks represented by that
 snapshot. An adapter without a shared transaction must commit the new snapshot
 before a separate prune. A crash may leave extra chunks, but it must not leave
 the document without a complete recovery path.
+Compaction is deferred while Automerge reports missing dependencies so the
+incremental chunks carrying queued out-of-order changes cannot be collapsed
+into a snapshot key that represents only the applied frontier.
 
 The storage adapter is SQLite initially. `runtimed` already ships SQLite, and a
 transaction gives the daemon one explicit commit boundary for document chunks,

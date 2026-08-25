@@ -90,6 +90,9 @@ pub struct CommitReceipt {
 pub struct CompactionReceipt {
     pub durable_heads: Vec<ChangeHash>,
     pub removed_chunks: usize,
+    /// True when queued out-of-order changes require preserving their exact
+    /// incremental chunks until missing dependencies arrive.
+    pub deferred_for_missing_dependencies: bool,
 }
 
 /// Storage contract used by a document authority.
@@ -150,13 +153,6 @@ pub enum StoreError {
     ChunkKeyMismatch {
         document_id: DocumentId,
         chunk_key: String,
-    },
-    #[error("document {0} produced an empty incremental save for new changes")]
-    EmptyIncremental(DocumentId),
-    #[error("document {document_id} batch has {unresolved} changes with unresolved dependencies")]
-    UnresolvedChanges {
-        document_id: DocumentId,
-        unresolved: usize,
     },
     #[error("document {0} commit sequence is exhausted")]
     SequenceExhausted(DocumentId),
@@ -223,11 +219,20 @@ impl AutomergeDocumentStore for SqliteDocumentStore {
 
         let previous_heads = loaded.durable_heads.clone();
         let mut seen = HashSet::new();
+        let persisted_incremental_keys = loaded
+            .source_chunks
+            .iter()
+            .filter(|chunk| chunk.kind == CHUNK_KIND_INCREMENTAL)
+            .map(|chunk| chunk.key.clone())
+            .collect::<HashSet<_>>();
         let missing = request
             .changes
             .into_iter()
             .filter(|change| seen.insert(change.hash()))
             .filter(|change| loaded.document.get_change_by_hash(&change.hash()).is_none())
+            .filter(|change| {
+                !persisted_incremental_keys.contains(sha256(change.raw_bytes()).as_slice())
+            })
             .collect::<Vec<_>>();
 
         if missing.is_empty() && loaded.application_state == request.application_state {
@@ -239,23 +244,14 @@ impl AutomergeDocumentStore for SqliteDocumentStore {
         }
 
         if !missing.is_empty() {
-            let missing_hashes = missing.iter().map(Change::hash).collect::<Vec<_>>();
-            loaded.document.apply_changes(missing)?;
-            let unresolved = missing_hashes
+            let incremental_chunks = missing
                 .iter()
-                .filter(|hash| loaded.document.get_change_by_hash(hash).is_none())
-                .count();
-            if unresolved > 0 {
-                return Err(StoreError::UnresolvedChanges {
-                    document_id: request.document_id,
-                    unresolved,
-                });
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>();
+            loaded.document.apply_changes(missing)?;
+            for incremental in incremental_chunks {
+                insert_incremental_chunk(&transaction, request.document_id, &incremental)?;
             }
-            let incremental = loaded.document.save_after(&previous_heads);
-            if incremental.is_empty() {
-                return Err(StoreError::EmptyIncremental(request.document_id));
-            }
-            insert_incremental_chunk(&transaction, request.document_id, &incremental)?;
         }
 
         let durable_heads = canonical_heads(&loaded.document.get_heads());
@@ -329,6 +325,13 @@ impl AutomergeDocumentStore for SqliteDocumentStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut loaded = load_document(&transaction, document_id)?
             .ok_or(StoreError::DocumentNotFound(document_id))?;
+        if !loaded.document.get_missing_deps(&[]).is_empty() {
+            return Ok(CompactionReceipt {
+                durable_heads: loaded.durable_heads,
+                removed_chunks: 0,
+                deferred_for_missing_dependencies: true,
+            });
+        }
         let snapshot = loaded.document.save();
         let snapshot_key =
             insert_snapshot_chunk(&transaction, document_id, &snapshot, &loaded.durable_heads)?;
@@ -357,6 +360,7 @@ impl AutomergeDocumentStore for SqliteDocumentStore {
         Ok(CompactionReceipt {
             durable_heads: loaded.durable_heads,
             removed_chunks,
+            deferred_for_missing_dependencies: false,
         })
     }
 }
@@ -1003,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_dependent_change_rolls_back_history_and_application_state() {
+    fn orphan_change_is_durable_and_resolves_when_its_dependency_arrives() {
         let test = TestStore::new();
         let document_id = DocumentId::new(Uuid::new_v4());
         let mut stored = seed_document();
@@ -1017,31 +1021,75 @@ mod tests {
         incomplete
             .put(ROOT, "dependency", 1_i64)
             .unwrap_or_else(|error| panic!("dependency change: {error}"));
+        let dependency_changes = incomplete.get_changes(&durable_heads);
         let dependency_heads = incomplete.get_heads();
         incomplete
             .put(ROOT, "dependent", 2_i64)
             .unwrap_or_else(|error| panic!("dependent change: {error}"));
         let dependent_only = incomplete.get_changes(&dependency_heads);
 
-        let result = test.store.commit(CommitRequest {
-            document_id,
-            changes: dependent_only,
-            application_state: b"must-not-land".to_vec(),
-        });
-        assert!(
-            result.is_err(),
-            "incomplete batch unexpectedly committed: {result:?}"
-        );
+        let pending = test
+            .store
+            .commit(CommitRequest {
+                document_id,
+                changes: dependent_only.clone(),
+                application_state: b"pending".to_vec(),
+            })
+            .unwrap_or_else(|error| panic!("persist orphan change: {error}"));
+        assert!(pending.newly_persisted);
+        assert_eq!(pending.durable_heads, canonical_heads(&durable_heads));
+        assert_eq!(pending.sequence, 2);
 
         let reloaded = load_doc(&test.store, document_id);
-        assert_eq!(reloaded.application_state, b"stable");
+        assert_eq!(reloaded.application_state, b"pending");
         assert_eq!(reloaded.durable_heads, canonical_heads(&durable_heads));
-        assert_eq!(reloaded.sequence, 1);
-        assert_eq!(test.chunk_count(document_id), chunks_before);
+        assert_eq!(reloaded.sequence, 2);
+        assert_eq!(test.chunk_count(document_id), chunks_before + 1);
+
+        let deferred = test
+            .store
+            .compact(document_id)
+            .unwrap_or_else(|error| panic!("defer orphan compaction: {error}"));
+        assert!(deferred.deferred_for_missing_dependencies);
+        assert_eq!(deferred.removed_chunks, 0);
+        assert_eq!(test.chunk_count(document_id), chunks_before + 1);
+
+        let duplicate = test
+            .store
+            .commit(CommitRequest {
+                document_id,
+                changes: dependent_only,
+                application_state: b"pending".to_vec(),
+            })
+            .unwrap_or_else(|error| panic!("deduplicate orphan change: {error}"));
+        assert!(!duplicate.newly_persisted);
+        assert_eq!(duplicate.sequence, 2);
+
+        let resolved = test
+            .store
+            .commit(CommitRequest {
+                document_id,
+                changes: dependency_changes,
+                application_state: b"resolved".to_vec(),
+            })
+            .unwrap_or_else(|error| panic!("persist missing dependency: {error}"));
+        assert!(resolved.newly_persisted);
+        assert_eq!(resolved.sequence, 3);
+        let stored = load_doc(&test.store, document_id);
+        let document = AutoCommit::load(&stored.snapshot)
+            .unwrap_or_else(|error| panic!("load resolved document: {error}"));
+        assert_eq!(stored.application_state, b"resolved");
+        assert!(document
+            .get(ROOT, "dependency")
+            .is_ok_and(|value| value.is_some()));
+        assert!(document
+            .get(ROOT, "dependent")
+            .is_ok_and(|value| value.is_some()));
+        assert_eq!(test.chunk_count(document_id), chunks_before + 2);
     }
 
     #[test]
-    fn mixed_applicable_and_orphan_changes_roll_back_the_whole_batch() {
+    fn mixed_applicable_and_orphan_changes_are_retained_atomically() {
         let test = TestStore::new();
         let document_id = DocumentId::new(Uuid::new_v4());
         let mut stored = seed_document();
@@ -1064,30 +1112,43 @@ mod tests {
         incomplete
             .put(ROOT, "missing", 1_i64)
             .unwrap_or_else(|error| panic!("missing dependency change: {error}"));
+        let dependency_changes = incomplete.get_changes(&durable_heads);
         let dependency_heads = incomplete.get_heads();
         incomplete
             .put(ROOT, "orphan", 2_i64)
             .unwrap_or_else(|error| panic!("orphan change: {error}"));
         mixed.extend(incomplete.get_changes(&dependency_heads));
 
-        let result = test.store.commit(CommitRequest {
-            document_id,
-            changes: mixed,
-            application_state: b"must-not-land".to_vec(),
-        });
-        assert!(matches!(
-            result,
-            Err(StoreError::UnresolvedChanges {
-                document_id: failed_id,
-                unresolved: 1,
-            }) if failed_id == document_id
-        ));
+        let pending = test
+            .store
+            .commit(CommitRequest {
+                document_id,
+                changes: mixed,
+                application_state: b"pending".to_vec(),
+            })
+            .unwrap_or_else(|error| panic!("persist mixed batch: {error}"));
+        assert!(pending.newly_persisted);
+        assert_eq!(
+            pending.durable_heads,
+            canonical_heads(&applicable.get_heads())
+        );
+        assert_eq!(test.chunk_count(document_id), chunks_before + 2);
 
+        test.store
+            .commit(CommitRequest {
+                document_id,
+                changes: dependency_changes,
+                application_state: b"resolved".to_vec(),
+            })
+            .unwrap_or_else(|error| panic!("resolve mixed batch: {error}"));
         let reloaded = load_doc(&test.store, document_id);
-        assert_eq!(reloaded.application_state, b"stable");
-        assert_eq!(reloaded.durable_heads, canonical_heads(&durable_heads));
-        assert_eq!(reloaded.sequence, 1);
-        assert_eq!(test.chunk_count(document_id), chunks_before);
+        let document = AutoCommit::load(&reloaded.snapshot)
+            .unwrap_or_else(|error| panic!("load resolved mixed batch: {error}"));
+        assert_eq!(reloaded.application_state, b"resolved");
+        for key in ["applicable", "missing", "orphan"] {
+            assert!(document.get(ROOT, key).is_ok_and(|value| value.is_some()));
+        }
+        assert_eq!(test.chunk_count(document_id), chunks_before + 3);
     }
 
     #[test]
@@ -1175,6 +1236,7 @@ mod tests {
         let after = load_doc(&test.store, document_id);
 
         assert_eq!(compacted.removed_chunks, 5);
+        assert!(!compacted.deferred_for_missing_dependencies);
         assert_eq!(test.chunk_count(document_id), 1);
         assert_eq!(after.durable_heads, before.durable_heads);
         assert_eq!(after.application_state, before.application_state);
