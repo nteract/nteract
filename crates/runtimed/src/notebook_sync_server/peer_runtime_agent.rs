@@ -46,18 +46,18 @@ async fn apply_runtime_agent_notebook_doc_frame(
             let heads_before = doc.get_heads();
 
             let admitted_changes = if has_agent_changes {
-                let (_, actor) = rollback_state
-                    .as_ref()
-                    .expect("agent changes always capture rollback state");
+                let Some((_, actor)) = rollback_state.as_ref() else {
+                    anyhow::bail!("runtime-agent changes did not capture rollback state");
+                };
+                let Some(preview_snapshot) = preview_snapshot.as_ref() else {
+                    anyhow::bail!("runtime-agent changes did not capture a clean preview");
+                };
                 // Reloading the preview from bytes intentionally excludes any
                 // previously parked orphan queue from the live Automerge doc.
-                let mut preview = notebook_doc::NotebookDoc::load_with_actor(
-                    preview_snapshot
-                        .as_ref()
-                        .expect("agent changes always capture a clean preview"),
-                    actor,
-                )
-                .map_err(|error| anyhow::anyhow!("runtime-agent preview load failed: {error}"))?;
+                let mut preview =
+                    notebook_doc::NotebookDoc::load_with_actor(preview_snapshot, actor).map_err(
+                        |error| anyhow::anyhow!("runtime-agent preview load failed: {error}"),
+                    )?;
                 let mut preview_sync_state = sync_state.clone();
                 preview
                     .receive_sync_message_recovering(
@@ -95,16 +95,14 @@ async fn apply_runtime_agent_notebook_doc_frame(
             let admitted_changes = match admitted_changes.reconcile_applied(applied_changes) {
                 Ok(changes) => changes,
                 Err(error) => {
-                    if let Some(restored) = rollback_state.as_ref().and_then(|(_, actor)| {
-                        notebook_doc::NotebookDoc::load_with_actor(
-                            preview_snapshot
-                                .as_ref()
-                                .expect("agent changes always capture a clean preview"),
-                            actor,
-                        )
-                        .ok()
-                    }) {
-                        *doc = restored;
+                    if let (Some((_, actor)), Some(preview_snapshot)) =
+                        (rollback_state.as_ref(), preview_snapshot.as_ref())
+                    {
+                        if let Ok(restored) =
+                            notebook_doc::NotebookDoc::load_with_actor(preview_snapshot, actor)
+                        {
+                            *doc = restored;
+                        }
                     }
                     *sync_state = sync_state_before.clone();
                     return Err(error.context(
