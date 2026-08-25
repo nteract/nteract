@@ -20,11 +20,15 @@ use crate::paths::notebook_doc_filename;
 
 const RECORD_MAGIC: [u8; 8] = *b"NTRJNL01";
 const RECORD_FORMAT_VERSION: u16 = 1;
-pub(crate) const RECOVERY_MANIFEST_VERSION: u16 = 1;
+const LEGACY_RECOVERY_MANIFEST_VERSION: u16 = 1;
+pub(crate) const RECOVERY_MANIFEST_VERSION: u16 = 2;
 
 const HEADER_PREFIX_LEN: usize = 8 + 2 + 4 + 8;
 const CHECKSUM_LEN: usize = 32;
 const HEADER_LEN: usize = HEADER_PREFIX_LEN + CHECKSUM_LEN;
+/// Bound causal metadata independently from the document snapshot so a corrupt
+/// record cannot request an unbounded allocation while scanning recovery data.
+/// Normal edit history must be summarized before it reaches this boundary.
 const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 const MAX_AUTOMERGE_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = HEADER_LEN + MAX_MANIFEST_BYTES + MAX_AUTOMERGE_SNAPSHOT_BYTES;
@@ -110,12 +114,15 @@ pub(crate) struct RecoveryManifest {
     pub(crate) source_generation: u64,
     #[serde(default)]
     pub(crate) source_phase: RecoverySourcePhase,
-    pub(crate) staged_change_hashes: Vec<[u8; 32]>,
+    /// Number of changes in the staged source generation. Exact causal
+    /// coverage is represented by `exported_heads`; retaining every ancestor
+    /// hash made this metadata grow without bound.
+    pub(crate) staged_change_count: u64,
     /// Peer-authored changes durably accepted after (or concurrently with)
     /// source publication. Recovery uses this evidence to forbid implicit
     /// source regeneration over collaborative work.
     #[serde(default)]
-    pub(crate) peer_change_hashes: Vec<[u8; 32]>,
+    pub(crate) peer_change_count: u64,
     pub(crate) durable_heads: Vec<[u8; 32]>,
     pub(crate) exported_heads: Vec<[u8; 32]>,
     #[serde(default)]
@@ -142,8 +149,8 @@ impl RecoveryManifest {
             source_fingerprint,
             source_generation,
             source_phase: RecoverySourcePhase::Pending,
-            staged_change_hashes: Vec::new(),
-            peer_change_hashes: Vec::new(),
+            staged_change_count: 0,
+            peer_change_count: 0,
             durable_heads: Vec::new(),
             exported_heads: Vec::new(),
             file_save_sequence: None,
@@ -175,6 +182,78 @@ impl RecoveryManifest {
         exported.sort_unstable();
         durable.sort_unstable();
         exported == durable
+    }
+}
+
+/// Version 1 retained every staged and peer-authored change hash. Long-lived
+/// untitled notebooks eventually filled the fixed-size manifest with ordinary
+/// edit history. Decode it only as a migration source; all new records use the
+/// bounded version 2 representation.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LegacyRecoveryManifestV1 {
+    version: u16,
+    sequence: u64,
+    notebook_id: Uuid,
+    canonical_path: Option<PathBuf>,
+    notebook_schema_version: u64,
+    source_fingerprint: SourceFingerprint,
+    source_generation: u64,
+    #[serde(default)]
+    source_phase: RecoverySourcePhase,
+    staged_change_hashes: Vec<[u8; 32]>,
+    #[serde(default)]
+    peer_change_hashes: Vec<[u8; 32]>,
+    durable_heads: Vec<[u8; 32]>,
+    exported_heads: Vec<[u8; 32]>,
+    #[serde(default)]
+    file_save_sequence: Option<u64>,
+    #[serde(default)]
+    pending_file_checkpoint: Option<PendingFileCheckpoint>,
+}
+
+impl From<LegacyRecoveryManifestV1> for RecoveryManifest {
+    fn from(legacy: LegacyRecoveryManifestV1) -> Self {
+        Self {
+            version: RECOVERY_MANIFEST_VERSION,
+            sequence: legacy.sequence,
+            notebook_id: legacy.notebook_id,
+            canonical_path: legacy.canonical_path,
+            notebook_schema_version: legacy.notebook_schema_version,
+            source_fingerprint: legacy.source_fingerprint,
+            source_generation: legacy.source_generation,
+            source_phase: legacy.source_phase,
+            staged_change_count: u64::try_from(legacy.staged_change_hashes.len())
+                .unwrap_or(u64::MAX),
+            peer_change_count: u64::try_from(legacy.peer_change_hashes.len()).unwrap_or(u64::MAX),
+            durable_heads: legacy.durable_heads,
+            exported_heads: legacy.exported_heads,
+            file_save_sequence: legacy.file_save_sequence,
+            pending_file_checkpoint: legacy.pending_file_checkpoint,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RecoveryManifestHeader {
+    version: u16,
+}
+
+enum DecodedRecoveryManifest {
+    Supported(Box<RecoveryManifest>),
+    Unsupported(u16),
+}
+
+fn decode_manifest(bytes: &[u8]) -> Result<DecodedRecoveryManifest, serde_json::Error> {
+    let header: RecoveryManifestHeader = serde_json::from_slice(bytes)?;
+    match header.version {
+        LEGACY_RECOVERY_MANIFEST_VERSION => serde_json::from_slice(bytes)
+            .map(LegacyRecoveryManifestV1::into)
+            .map(Box::new)
+            .map(DecodedRecoveryManifest::Supported),
+        RECOVERY_MANIFEST_VERSION => serde_json::from_slice(bytes)
+            .map(Box::new)
+            .map(DecodedRecoveryManifest::Supported),
+        version => Ok(DecodedRecoveryManifest::Unsupported(version)),
     }
 }
 
@@ -1025,8 +1104,13 @@ fn scan_file(file: &mut File) -> Result<JournalScan, RecoveryJournalError> {
             break;
         }
 
-        let manifest: RecoveryManifest = match serde_json::from_slice(&manifest_bytes) {
-            Ok(manifest) => manifest,
+        let manifest = match decode_manifest(&manifest_bytes) {
+            Ok(DecodedRecoveryManifest::Supported(manifest)) => *manifest,
+            Ok(DecodedRecoveryManifest::Unsupported(version)) => {
+                ignored_tail =
+                    Some(JournalTailIssue::UnsupportedManifestVersion { offset, version });
+                break;
+            }
             Err(error) => {
                 ignored_tail = Some(JournalTailIssue::InvalidManifest {
                     offset,
@@ -1035,14 +1119,6 @@ fn scan_file(file: &mut File) -> Result<JournalScan, RecoveryJournalError> {
                 break;
             }
         };
-        if manifest.version != RECOVERY_MANIFEST_VERSION {
-            ignored_tail = Some(JournalTailIssue::UnsupportedManifestVersion {
-                offset,
-                version: manifest.version,
-            });
-            break;
-        }
-
         let record_len = HEADER_LEN as u64 + payload_len;
         last_valid_end = offset + record_len;
         offset = last_valid_end;
@@ -1303,7 +1379,7 @@ mod tests {
             source_fingerprint(source),
             7,
         );
-        manifest.staged_change_hashes = vec![[sequence as u8; 32]];
+        manifest.staged_change_count = 1;
         manifest.durable_heads = vec![[(sequence + 1) as u8; 32]];
         manifest.exported_heads = vec![[(sequence + 2) as u8; 32]];
         manifest
@@ -1314,6 +1390,29 @@ mod tests {
             RecoveryLoadOutcome::Match(recovery) => recovery,
             other => panic!("expected matching recovery record, got {other:?}"),
         }
+    }
+
+    fn encode_legacy_record(
+        manifest: &LegacyRecoveryManifestV1,
+        automerge_snapshot: &[u8],
+    ) -> Vec<u8> {
+        let manifest_bytes = serde_json::to_vec(manifest).unwrap();
+        assert!(manifest_bytes.len() <= MAX_MANIFEST_BYTES);
+        let mut prefix = Vec::with_capacity(HEADER_PREFIX_LEN);
+        prefix.extend_from_slice(&RECORD_MAGIC);
+        prefix.extend_from_slice(&RECORD_FORMAT_VERSION.to_le_bytes());
+        prefix.extend_from_slice(&u32::try_from(manifest_bytes.len()).unwrap().to_le_bytes());
+        prefix.extend_from_slice(
+            &u64::try_from(automerge_snapshot.len())
+                .unwrap()
+                .to_le_bytes(),
+        );
+        let checksum = record_checksum(&prefix, &manifest_bytes, automerge_snapshot);
+        let mut bytes = prefix;
+        bytes.extend_from_slice(&checksum);
+        bytes.extend_from_slice(&manifest_bytes);
+        bytes.extend_from_slice(automerge_snapshot);
+        bytes
     }
 
     #[test]
@@ -1339,6 +1438,79 @@ mod tests {
 
         assert_eq!(recovered.record.manifest.version, RECOVERY_MANIFEST_VERSION);
         assert_eq!(recovered.record.manifest.notebook_schema_version, 42);
+    }
+
+    #[test]
+    fn legacy_manifest_near_cap_migrates_to_bounded_summary() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let source = b"source";
+        let snapshot = snapshot("long editing session");
+        let mut document = AutoCommit::load(&snapshot).unwrap();
+        let heads = document.get_heads().iter().map(|head| head.0).collect();
+        let candidate_hashes = (0_u64..3_000)
+            .map(|index| Sha256::digest(index.to_le_bytes()).into())
+            .collect::<Vec<[u8; 32]>>();
+        let mut legacy = LegacyRecoveryManifestV1 {
+            version: LEGACY_RECOVERY_MANIFEST_VERSION,
+            sequence: 2_251,
+            notebook_id: Uuid::new_v4(),
+            canonical_path: None,
+            notebook_schema_version: notebook_doc::SCHEMA_VERSION,
+            source_fingerprint: source_fingerprint(source),
+            source_generation: 0,
+            source_phase: RecoverySourcePhase::Pending,
+            staged_change_hashes: Vec::new(),
+            peer_change_hashes: Vec::new(),
+            durable_heads: heads,
+            exported_heads: Vec::new(),
+            file_save_sequence: None,
+            pending_file_checkpoint: None,
+        };
+
+        let (mut low, mut high) = (0_usize, candidate_hashes.len());
+        while low < high {
+            let mid = low + (high - low).div_ceil(2);
+            legacy.peer_change_hashes = candidate_hashes[..mid].to_vec();
+            if serde_json::to_vec(&legacy).unwrap().len() <= MAX_MANIFEST_BYTES {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        legacy.peer_change_hashes = candidate_hashes[..low].to_vec();
+        let legacy_size = serde_json::to_vec(&legacy).unwrap().len();
+        assert!(legacy_size > MAX_MANIFEST_BYTES - 256);
+        std::fs::write(journal.path(), encode_legacy_record(&legacy, &snapshot)).unwrap();
+
+        let recovered = match journal.latest_record().unwrap() {
+            RecoveryLatestOutcome::Recovered(recovered) => *recovered,
+            other => panic!("expected migrated recovery record, got {other:?}"),
+        };
+        assert_eq!(recovered.record.manifest.version, RECOVERY_MANIFEST_VERSION);
+        assert_eq!(
+            recovered.record.manifest.peer_change_count,
+            u64::try_from(low).unwrap()
+        );
+        assert!(
+            serde_json::to_vec(&recovered.record.manifest)
+                .unwrap()
+                .len()
+                < 1_024
+        );
+
+        let mut next = recovered.record.manifest;
+        next.sequence += 1;
+        next.peer_change_count += 1;
+        journal
+            .append(&next, &recovered.record.automerge_snapshot)
+            .unwrap();
+        let latest = match journal.latest_record().unwrap() {
+            RecoveryLatestOutcome::Recovered(recovered) => recovered,
+            other => panic!("expected version 2 recovery record, got {other:?}"),
+        };
+        assert_eq!(latest.record.manifest, next);
+        assert!(latest.ignored_tail.is_none());
     }
 
     #[test]

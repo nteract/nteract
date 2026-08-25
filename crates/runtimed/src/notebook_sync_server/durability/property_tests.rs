@@ -112,7 +112,7 @@ fn classify(manifest: &RecoveryManifest) -> RecoveryCase {
         RecoverySourcePhase::Pending | RecoverySourcePhase::Failed => {
             if manifest.pending_file_checkpoint.is_some() {
                 RecoveryCase::ResolvableIntent
-            } else if manifest.peer_change_hashes.is_empty() {
+            } else if manifest.peer_change_count == 0 {
                 RecoveryCase::Regenerable
             } else {
                 RecoveryCase::NeedsReconciliation
@@ -624,7 +624,7 @@ impl Runner {
             );
         }
         if case == RecoveryCase::NeedsReconciliation {
-            assert!(!manifest.peer_change_hashes.is_empty());
+            assert!(manifest.peer_change_count > 0);
             assert_ne!(
                 sorted(&manifest.durable_heads),
                 sorted(&manifest.exported_heads),
@@ -669,10 +669,7 @@ impl Runner {
             manifest.pending_file_checkpoint.is_some(),
             self.model.pending.is_some()
         );
-        assert_eq!(
-            !manifest.peer_change_hashes.is_empty(),
-            self.model.has_peer_changes
-        );
+        assert_eq!(manifest.peer_change_count > 0, self.model.has_peer_changes);
         self.assert_coverage_matches_model(&manifest);
         assert!(!self.durability.status().is_degraded());
     }
