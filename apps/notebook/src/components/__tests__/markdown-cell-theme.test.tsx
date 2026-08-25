@@ -2,11 +2,14 @@ import { act, cleanup, createEvent, fireEvent, render, waitFor } from "@testing-
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { MarkdownProjectionPlan } from "@/lib/markdown-projection";
+import type { NotebookInteractionTarget } from "runtimed";
 import type { MarkdownCell as MarkdownCellType } from "../../types";
 
 let mockDarkMode = false;
 let mockColorTheme: string | undefined;
 let mockIsFocused = false;
+let mockIsEditorTarget = false;
+let mockActiveInteractionTarget: NotebookInteractionTarget | null = null;
 let mockEditorSelectionHead = 0;
 let mockEditorDoc: string | null = null;
 const isolatedFrameProps: Array<Record<string, unknown>> = [];
@@ -137,7 +140,14 @@ vi.mock("@/components/editor/codemirror-editor", () => ({
         tabIndex={0}
         onBlur={props.onBlur}
         onKeyDown={(event) => {
-          const key = event.ctrlKey && event.key === "Enter" ? "Ctrl-Enter" : event.key;
+          const key =
+            event.shiftKey && event.key === "Enter"
+              ? "Shift-Enter"
+              : event.metaKey && event.key === "Enter"
+                ? "Mod-Enter"
+                : event.ctrlKey && event.key === "Enter"
+                  ? "Ctrl-Enter"
+                  : event.key;
           const binding = props.keyMap?.find((entry) => entry.key === key);
           if (binding?.run()) {
             event.preventDefault();
@@ -169,7 +179,34 @@ vi.mock("../../contexts/PresenceContext", () => ({
 }));
 
 vi.mock("../../hooks/useCellKeyboardNavigation", () => ({
-  useCellKeyboardNavigation: () => [],
+  useCellKeyboardNavigation: (options: {
+    onFocusNext: (position: "start" | "end") => void;
+    onExecute?: () => void;
+    onExecuteInPlace?: () => void;
+  }) => [
+    {
+      key: "Shift-Enter",
+      run: () => {
+        options.onExecute?.();
+        options.onFocusNext("start");
+        return true;
+      },
+    },
+    {
+      key: "Ctrl-Enter",
+      run: () => {
+        (options.onExecuteInPlace ?? options.onExecute)?.();
+        return true;
+      },
+    },
+    {
+      key: "Mod-Enter",
+      run: () => {
+        (options.onExecuteInPlace ?? options.onExecute)?.();
+        return true;
+      },
+    },
+  ],
 }));
 
 vi.mock("../../hooks/useCrdtBridge", () => ({
@@ -182,6 +219,8 @@ vi.mock("../../lib/blob-port", () => ({
 }));
 
 vi.mock("@/components/notebook/state/cell-ui-state", () => ({
+  getActiveInteractionTarget: () => mockActiveInteractionTarget,
+  useIsCellEditorTarget: () => mockIsEditorTarget,
   useIsCellFocused: () => mockIsFocused,
   useIsNextCellFromFocused: () => false,
   useIsPreviousCellFromFocused: () => false,
@@ -292,6 +331,8 @@ describe("MarkdownCell theme sync", () => {
     mockDarkMode = false;
     mockColorTheme = undefined;
     mockIsFocused = false;
+    mockIsEditorTarget = false;
+    mockActiveInteractionTarget = null;
     mockEditorSelectionHead = 0;
     mockEditorDoc = null;
     isolatedFrameProps.length = 0;
@@ -419,6 +460,19 @@ describe("MarkdownCell theme sync", () => {
     await waitFor(() => {
       expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
     });
+  });
+
+  it("selects a rendered markdown cell without publishing editor focus", () => {
+    const onSelect = vi.fn();
+    const onFocus = vi.fn();
+    const { getByLabelText } = render(
+      <MarkdownCell cell={makeCell()} onSelect={onSelect} onFocus={onFocus} onDelete={() => {}} />,
+    );
+
+    fireEvent.focus(getByLabelText("Markdown cell content"));
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onFocus).not.toHaveBeenCalled();
   });
 
   it("activates markdown iframe pointer interaction after clicking the preview", () => {
@@ -589,9 +643,16 @@ describe("MarkdownCell theme sync", () => {
 
   it("Ctrl+Enter exits edit mode for markdown cells", async () => {
     const cell = { ...makeCell(), source: "" };
+    const onEnterCommandMode = vi.fn();
 
     const { getByLabelText, getByTestId } = render(
-      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
+      <MarkdownCell
+        cell={cell}
+        onSelect={() => {}}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onEnterCommandMode={onEnterCommandMode}
+      />,
     );
 
     const preview = getByLabelText("Markdown cell content");
@@ -605,14 +666,156 @@ describe("MarkdownCell theme sync", () => {
     await waitFor(() => {
       expect(preview.className).not.toContain("hidden");
     });
+    expect(onEnterCommandMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape renders an empty markdown cell and enters command mode", async () => {
+    const cell = { ...makeCell(), source: "" };
+    const onEnterCommandMode = vi.fn();
+
+    const { getByLabelText, getByTestId } = render(
+      <MarkdownCell
+        cell={cell}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onEnterCommandMode={onEnterCommandMode}
+      />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(preview.className).toContain("hidden");
+
+    fireEvent.keyDown(getByTestId("markdown-editor"), { key: "Escape" });
+
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+    expect(onEnterCommandMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cmd+Enter renders markdown in place", async () => {
+    const cell = { ...makeCell(), source: "# Current" };
+    const onEnterCommandMode = vi.fn();
+
+    const { getByLabelText, getByTestId } = render(
+      <MarkdownCell
+        cell={cell}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onEnterCommandMode={onEnterCommandMode}
+      />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    fireEvent.keyDown(getByTestId("markdown-editor"), {
+      key: "Enter",
+      metaKey: true,
+    });
+
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+    expect(onEnterCommandMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cmd+Enter stays rendered while the editor-target selector is briefly stale", async () => {
+    const cell = { ...makeCell(), source: "# Current" };
+    mockIsEditorTarget = true;
+    mockActiveInteractionTarget = { kind: "editor", cellId: cell.id };
+    const onEnterCommandMode = vi.fn(() => {
+      // The non-reactive store snapshot updates synchronously, but the
+      // useSyncExternalStore selector can remain true until the queued UI
+      // state flush notifies React. This is the live race that previously
+      // reopened markdown immediately after it rendered.
+      mockActiveInteractionTarget = { kind: "cell", cellId: cell.id };
+    });
+
+    const { getByLabelText, getByTestId } = render(
+      <MarkdownCell
+        cell={cell}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onEnterCommandMode={onEnterCommandMode}
+      />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    fireEvent.keyDown(getByTestId("markdown-editor"), {
+      key: "Enter",
+      metaKey: true,
+    });
+
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+    expect(onEnterCommandMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cmd+Enter stays rendered if editor focus republishes the editor target during exit", async () => {
+    const cell = { ...makeCell(), source: "### title" };
+    mockIsEditorTarget = true;
+    mockActiveInteractionTarget = { kind: "editor", cellId: cell.id };
+    const onEnterCommandMode = vi.fn();
+
+    const { getByLabelText, getByTestId } = render(
+      <MarkdownCell
+        cell={cell}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onEnterCommandMode={onEnterCommandMode}
+      />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    fireEvent.keyDown(getByTestId("markdown-editor"), {
+      key: "Enter",
+      metaKey: true,
+    });
+
+    // Simulate the live CodeMirror focus/selection path briefly leaving the
+    // shared target at editor while the local render transition commits.
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+    expect(onEnterCommandMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("Shift+Enter renders markdown and focuses the next cell", async () => {
+    const cell = { ...makeCell(), source: "# Current" };
+    const onFocusNext = vi.fn();
+
+    const { getByLabelText, getByTestId } = render(
+      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} onFocusNext={onFocusNext} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    fireEvent.keyDown(getByTestId("markdown-editor"), {
+      key: "Enter",
+      shiftKey: true,
+    });
+
+    await waitFor(() => {
+      expect(preview.className).not.toContain("hidden");
+    });
+    expect(onFocusNext).toHaveBeenCalledWith("start");
   });
 
   it("renders the current editor document when explicitly switching to preview", async () => {
     const cell = { ...makeCell(), source: "" };
     mockEditorDoc = "hello";
+    mockIsEditorTarget = true;
+    mockActiveInteractionTarget = { kind: "editor", cellId: cell.id };
+    const onEnterCommandMode = vi.fn(() => {
+      mockActiveInteractionTarget = { kind: "cell", cellId: cell.id };
+    });
 
     const { getByLabelText, getByRole } = render(
-      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
+      <MarkdownCell
+        cell={cell}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onEnterCommandMode={onEnterCommandMode}
+      />,
     );
 
     const preview = getByLabelText("Markdown cell content");
@@ -623,6 +826,7 @@ describe("MarkdownCell theme sync", () => {
     await waitFor(() => {
       expect(preview.className).not.toContain("hidden");
     });
+    expect(onEnterCommandMode).toHaveBeenCalledTimes(1);
     await waitFor(() => {
       expect(mockFrameHandle.render).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -743,6 +947,33 @@ describe("MarkdownCell theme sync", () => {
 
     fireEvent.keyDown(preview, { key: "Enter" });
     expect(preview.className).not.toContain("hidden");
+  });
+
+  it("keeps Arrow navigation on rendered markdown surfaces", () => {
+    const onFocusNext = vi.fn();
+    const onFocusPrevious = vi.fn();
+    const onPreviewFocusNext = vi.fn();
+    const onPreviewFocusPrevious = vi.fn();
+
+    const { getByLabelText } = render(
+      <MarkdownCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onFocusNext={onFocusNext}
+        onFocusPrevious={onFocusPrevious}
+        onPreviewFocusNext={onPreviewFocusNext}
+        onPreviewFocusPrevious={onPreviewFocusPrevious}
+      />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    fireEvent.keyDown(preview, { key: "ArrowDown" });
+    fireEvent.keyDown(preview, { key: "ArrowUp" });
+
+    expect(onPreviewFocusNext).toHaveBeenCalledTimes(1);
+    expect(onPreviewFocusPrevious).toHaveBeenCalledTimes(1);
+    expect(onFocusNext).not.toHaveBeenCalled();
+    expect(onFocusPrevious).not.toHaveBeenCalled();
   });
 
   it("updates markdown task markers from projected task checkboxes", () => {

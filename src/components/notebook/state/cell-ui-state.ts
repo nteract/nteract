@@ -175,6 +175,20 @@ export function useIsCellFocused(cellId: string): boolean {
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
+/**
+ * Returns true only when this specific cell's editor is the active
+ * interaction target (`{kind:"editor", cellId}`). Scoped like
+ * `useIsCellFocused` — subscribes to every interaction change but only
+ * re-renders the cell whose editor-target status actually flipped, instead
+ * of the raw `useActiveInteractionTarget()` object that changes reference
+ * on every notebook-wide focus change.
+ */
+export function useIsCellEditorTarget(cellId: string): boolean {
+  const subscribe = useMemo(() => subscribeInteractionFor(cellId), [cellId]);
+  const getSnapshot = useMemo(() => getIsEditorTargetSnapshot(cellId), [cellId]);
+  return useSyncExternalStore(subscribe, getSnapshot);
+}
+
 /** Returns true only when this specific cell is executing. */
 export function useIsCellExecuting(cellId: string): boolean {
   const subscribe = useMemo(() => subscribeExecutingFor(cellId), [cellId]);
@@ -288,6 +302,30 @@ function getIsFocusedSnapshot(cellId: string): () => boolean {
   let prev = _focusedCellId === cellId;
   return () => {
     const next = _focusedCellId === cellId;
+    if (next !== prev) prev = next;
+    return prev;
+  };
+}
+
+// Per-cell editor-target: subscribes to the global interaction change, but
+// snapshot returns a boolean so useSyncExternalStore only re-renders when
+// this cell's editor-target status actually flips.
+function subscribeInteractionFor(_cellId: string): (cb: () => void) => () => void {
+  return (cb: () => void) => {
+    _interactionSubscribers.add(cb);
+    return () => _interactionSubscribers.delete(cb);
+  };
+}
+
+function isEditorTargetFor(cellId: string): boolean {
+  const target = _interactionStore.getSnapshot().activeTarget;
+  return target?.kind === "editor" && target.cellId === cellId;
+}
+
+function getIsEditorTargetSnapshot(cellId: string): () => boolean {
+  let prev = isEditorTargetFor(cellId);
+  return () => {
+    const next = isEditorTargetFor(cellId);
     if (next !== prev) prev = next;
     return prev;
   };

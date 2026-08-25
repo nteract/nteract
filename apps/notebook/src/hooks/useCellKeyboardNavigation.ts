@@ -10,6 +10,13 @@ interface UseCellKeyboardNavigationOptions {
   onExecuteAndInsert?: () => void;
   consumeExecutionShortcuts?: boolean;
   onDelete?: () => void;
+  /**
+   * Escape blurs the editor and hands off to Jupyter-style command mode
+   * (`{kind:"cell"}`). Omit for cells that already override Escape
+   * themselves (e.g. MarkdownCell exits to preview on Escape and calls this
+   * on its own terms instead of taking this binding).
+   */
+  onEnterCommandMode?: () => void;
   /** Cell ID for debug logging */
   cellId?: string;
 }
@@ -30,6 +37,7 @@ export function useCellKeyboardNavigation({
   onExecuteAndInsert,
   consumeExecutionShortcuts = false,
   onDelete,
+  onEnterCommandMode,
   cellId,
 }: UseCellKeyboardNavigationOptions): KeyBinding[] {
   // Store callbacks in refs so keybindings always access current versions
@@ -39,6 +47,7 @@ export function useCellKeyboardNavigation({
   const onExecuteInPlaceRef = useRef(onExecuteInPlace);
   const onExecuteAndInsertRef = useRef(onExecuteAndInsert);
   const onDeleteRef = useRef(onDelete);
+  const onEnterCommandModeRef = useRef(onEnterCommandMode);
   const cellIdRef = useRef(cellId);
 
   // Update refs on every render
@@ -48,6 +57,7 @@ export function useCellKeyboardNavigation({
   onExecuteInPlaceRef.current = onExecuteInPlace;
   onExecuteAndInsertRef.current = onExecuteAndInsert;
   onDeleteRef.current = onDelete;
+  onEnterCommandModeRef.current = onEnterCommandMode;
   cellIdRef.current = cellId;
 
   // Memoize keybindings - they're stable because they read from refs.
@@ -139,8 +149,27 @@ export function useCellKeyboardNavigation({
             },
           ]
         : []),
+      ...(onEnterCommandMode
+        ? [
+            {
+              key: "Escape",
+              run: (view: EditorView) => {
+                view.contentDOM.blur();
+                onEnterCommandModeRef.current?.();
+                return true;
+              },
+            },
+          ]
+        : []),
     ],
     // Only recreate if the presence of optional callbacks changes
-    [!!onExecute, !!onExecuteInPlace, !!onExecuteAndInsert, consumeExecutionShortcuts, !!onDelete],
+    [
+      !!onExecute,
+      !!onExecuteInPlace,
+      !!onExecuteAndInsert,
+      consumeExecutionShortcuts,
+      !!onDelete,
+      !!onEnterCommandMode,
+    ],
   );
 }

@@ -12,10 +12,12 @@ let mockExecution: {
   success?: boolean | null;
 } | null = null;
 let mockIsExecuting = false;
+let mockIsEditorTarget = false;
 let mockIsFocused = false;
 let mockIsQueued = false;
 let mockQueuePriority = 0;
 const mockEditorBlur = vi.fn();
+let mockEditorAutoFocus = false;
 
 vi.mock("@/components/cell/CellContainer", () => ({
   CellContainer: ({
@@ -79,7 +81,11 @@ vi.mock("@/components/cell/OutputArea", () => ({
 vi.mock("@/components/editor/codemirror-editor", async () => {
   const React = await import("react");
 
-  const CodeMirrorEditor = React.forwardRef(function CodeMirrorEditor(_props, ref) {
+  const CodeMirrorEditor = React.forwardRef(function CodeMirrorEditor(
+    props: { autoFocus?: boolean },
+    ref,
+  ) {
+    mockEditorAutoFocus = props.autoFocus === true;
     React.useImperativeHandle(ref, () => ({
       focus: vi.fn(),
       setCursorPosition: vi.fn(),
@@ -123,6 +129,7 @@ vi.mock("../../hooks/useCrdtBridge", () => ({
 vi.mock("@/components/notebook/state/cell-ui-state", () => ({
   useCellQueuePriority: () => mockQueuePriority,
   useIsCellExecuting: () => mockIsExecuting,
+  useIsCellEditorTarget: () => mockIsEditorTarget,
   useIsCellFocused: () => mockIsFocused,
   useIsCellQueued: () => mockIsQueued,
   useIsGroupExecuting: () => false,
@@ -191,6 +198,7 @@ describe("CodeCell output focus", () => {
   beforeEach(() => {
     mockExecution = null;
     mockIsExecuting = false;
+    mockIsEditorTarget = false;
     mockIsFocused = false;
     mockIsQueued = false;
     mockQueuePriority = 0;
@@ -202,6 +210,24 @@ describe("CodeCell output focus", () => {
       },
     ];
     mockEditorBlur.mockClear();
+    mockEditorAutoFocus = false;
+  });
+
+  it("autofocuses the source only for an explicit editor target", () => {
+    mockIsFocused = true;
+
+    const { rerender } = render(
+      <CodeCell cell={makeCell()} onFocus={() => {}} onExecute={() => {}} onInterrupt={() => {}} />,
+    );
+
+    expect(mockEditorAutoFocus).toBe(false);
+
+    mockIsEditorTarget = true;
+    rerender(
+      <CodeCell cell={makeCell()} onFocus={() => {}} onExecute={() => {}} onInterrupt={() => {}} />,
+    );
+
+    expect(mockEditorAutoFocus).toBe(true);
   });
 
   it("blurs the editor before marking the cell focused from iframe output interaction", () => {

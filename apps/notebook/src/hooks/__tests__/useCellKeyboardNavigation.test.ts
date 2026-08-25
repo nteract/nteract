@@ -86,4 +86,33 @@ describe("useCellKeyboardNavigation", () => {
 
     expect(onFocusNext).not.toHaveBeenCalled();
   });
+
+  it("does not bind Escape when onEnterCommandMode is omitted", () => {
+    const { result } = renderHook(() =>
+      useCellKeyboardNavigation({
+        onFocusPrevious: vi.fn(),
+        onFocusNext: vi.fn(),
+      }),
+    );
+
+    expect(result.current.some((binding) => binding.key === "Escape")).toBe(false);
+  });
+
+  it("blurs the editor and enters command mode on Escape when provided", () => {
+    const onEnterCommandMode = vi.fn();
+    const blur = vi.fn();
+    const view = { contentDOM: { blur } } as unknown as EditorView;
+
+    const { result } = renderHook(() =>
+      useCellKeyboardNavigation({
+        onFocusPrevious: vi.fn(),
+        onFocusNext: vi.fn(),
+        onEnterCommandMode,
+      }),
+    );
+
+    expect(bindingFor(result.current, "Escape").run?.(view)).toBe(true);
+    expect(blur).toHaveBeenCalledTimes(1);
+    expect(onEnterCommandMode).toHaveBeenCalledTimes(1);
+  });
 });
