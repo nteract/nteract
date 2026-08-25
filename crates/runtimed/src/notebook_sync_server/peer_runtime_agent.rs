@@ -68,6 +68,13 @@ async fn apply_runtime_agent_notebook_doc_frame(
                     .map_err(|error| {
                         anyhow::anyhow!("runtime-agent doc preview failed: {error}")
                     })?;
+                let unresolved = preview.doc_mut().get_missing_deps(&[]);
+                if !unresolved.is_empty() {
+                    anyhow::bail!(
+                        "runtime-agent sync frame left {} unresolved dependencies",
+                        unresolved.len()
+                    );
+                }
                 let preview_changes = preview
                     .doc_mut()
                     .get_changes(&heads_before)
@@ -969,6 +976,29 @@ mod tests {
             .into_iter()
             .collect::<Vec<_>>();
         assert_eq!(parked_changes.len(), 1);
+
+        let unresolved_frame = automerge::sync::Message {
+            heads: attacker.get_heads(),
+            need: Vec::new(),
+            have: Vec::new(),
+            changes: parked_changes
+                .iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>()
+                .into(),
+            flags: None,
+            version: automerge::sync::MessageVersion::V1,
+        }
+        .encode();
+        let sync_state_before = format!("{server_state:?}");
+        let unresolved_error =
+            apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &unresolved_frame)
+                .await
+                .expect_err("orphan-only frame must not be acknowledged");
+        assert!(unresolved_error
+            .to_string()
+            .contains("unresolved dependencies"));
+        assert_eq!(format!("{server_state:?}"), sync_state_before);
 
         let heads_before = {
             let mut doc = room.doc.write().await;

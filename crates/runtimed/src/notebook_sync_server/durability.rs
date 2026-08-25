@@ -1073,6 +1073,11 @@ impl RoomDurability {
             .collect::<Vec<_>>();
         let durable_heads = durable.get_heads().iter().map(|head| head.0).collect();
         let snapshot = durable.save();
+        if snapshot.as_slice() == state.durable_snapshot.as_ref() {
+            return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
+                &state,
+            )));
+        }
 
         let mut manifest = state.manifest.clone();
         manifest.sequence = manifest
@@ -1925,7 +1930,8 @@ mod tests {
         let dependency_changes = incomplete.get_changes(&base_heads);
         let dependency_heads = incomplete.get_heads();
         incomplete.put(ROOT, "orphan", 2_i64).unwrap();
-        mixed.extend(incomplete.get_changes(&dependency_heads));
+        let orphan_changes = incomplete.get_changes(&dependency_heads);
+        mixed.extend(orphan_changes.clone());
 
         durability
             .commit_peer_changes(AdmittedNotebookChanges::for_test(mixed))
@@ -1943,6 +1949,17 @@ mod tests {
         assert!(pending
             .get(ROOT, "orphan")
             .is_ok_and(|value| value.is_none()));
+
+        let pending_status = durability.status();
+        let duplicate = durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(orphan_changes))
+            .expect("duplicate retained orphan is a no-op");
+        assert!(matches!(duplicate, DurableCommitOutcome::AlreadyDurable(_)));
+        assert_eq!(durability.status(), pending_status);
+        assert_eq!(
+            durability.durable_snapshot().as_ref(),
+            pending_snapshot.as_ref()
+        );
 
         durability
             .commit_peer_changes(AdmittedNotebookChanges::for_test(dependency_changes))

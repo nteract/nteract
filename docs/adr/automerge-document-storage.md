@@ -136,6 +136,13 @@ daemon does not persist or reuse it across authenticated sessions. Reconnection
 may preserve a document handle, but a new connection receives fresh sync state
 and passes current authorization again.
 
+The current Automerge sync API does not expose queued out-of-order changes as
+inspectable `Change` values. A network or runtime-agent frame that still has
+missing dependencies after isolated preview is therefore rejected before live
+application: nteract neither actor-admits nor acknowledges bytes it cannot bind
+to the durable batch. A future upstream API may allow those changes to cross the
+same typed admission boundary and use the store's retained-chunk behavior.
+
 ## Decision 4: File projection recovery is separate metadata
 
 The `.ipynb` relationship remains nteract-specific. Repository storage owns

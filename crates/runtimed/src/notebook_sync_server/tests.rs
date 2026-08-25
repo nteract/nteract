@@ -1,5 +1,5 @@
 use super::*;
-use automerge::{transaction::Transactable, ActorId, AutoCommit, ObjType};
+use automerge::{transaction::Transactable, ActorId, AutoCommit, ObjType, ReadDoc, ROOT};
 use base64::Engine;
 use runtime_doc::{KernelActivity, KernelErrorReason, RuntimeLifecycle};
 use uuid::Uuid;
@@ -2843,6 +2843,72 @@ async fn viewer_changes_never_reach_durability() {
         changed.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
+}
+
+#[tokio::test]
+async fn unresolved_peer_changes_are_rejected_before_acknowledgement() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "unresolved-peer-change.ipynb");
+    let snapshot = room.doc.write().await.save();
+    let mut client = NotebookDoc::load_with_actor(&snapshot, "mcp:orphan-peer").unwrap();
+    client
+        .doc_mut()
+        .put(ROOT, "dependency", true)
+        .expect("author dependency change");
+    let dependency_heads = client.get_heads();
+    client
+        .doc_mut()
+        .put(ROOT, "orphan", true)
+        .expect("author dependent change");
+    let orphan_changes = client.doc_mut().get_changes(&dependency_heads);
+    assert_eq!(orphan_changes.len(), 1);
+    let payload = sync::Message {
+        heads: client.get_heads(),
+        need: Vec::new(),
+        have: Vec::new(),
+        changes: orphan_changes
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect::<Vec<_>>()
+            .into(),
+        flags: None,
+        version: sync::MessageVersion::V1,
+    }
+    .encode();
+    let identity = RoomConnectionIdentity::local(Some("mcp:orphan-peer".to_string()))
+        .await
+        .unwrap();
+    let mut server_peer_state = sync::State::new();
+    let peer_state_before = format!("{server_peer_state:?}");
+    let manifest_before = room.durability.manifest();
+    let durable_before = room.durability.durable_snapshot();
+    let heads_before = room.doc.write().await.get_heads();
+
+    let error = match super::peer_notebook_sync::apply_notebook_doc_frame(
+        &room,
+        &mut server_peer_state,
+        &identity,
+        &payload,
+    )
+    .await
+    {
+        Ok(_) => panic!("unresolved peer changes must not be acknowledged"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("unresolved dependencies"));
+    assert_eq!(format!("{server_peer_state:?}"), peer_state_before);
+    assert_eq!(room.durability.manifest(), manifest_before);
+    assert_eq!(
+        room.durability.durable_snapshot().as_ref(),
+        durable_before.as_ref()
+    );
+    let mut doc = room.doc.write().await;
+    assert_eq!(doc.get_heads(), heads_before);
+    assert!(doc
+        .doc_mut()
+        .get(ROOT, "orphan")
+        .is_ok_and(|value| value.is_none()));
 }
 
 #[tokio::test]

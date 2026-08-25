@@ -67,6 +67,13 @@ pub(super) async fn apply_notebook_doc_frame(
                     "doc-auth-preview",
                 ) {
                     Ok(()) => {
+                        let unresolved = preview.doc_mut().get_missing_deps(&[]);
+                        if !unresolved.is_empty() {
+                            anyhow::bail!(
+                                "NotebookDoc sync frame left {} unresolved dependencies",
+                                unresolved.len()
+                            );
+                        }
                         let changes = preview
                             .doc_mut()
                             .get_changes(&heads_before)
