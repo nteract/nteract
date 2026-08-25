@@ -239,7 +239,7 @@ struct RecoveryManifestHeader {
 }
 
 enum DecodedRecoveryManifest {
-    Supported(RecoveryManifest),
+    Supported(Box<RecoveryManifest>),
     Unsupported(u16),
 }
 
@@ -248,10 +248,11 @@ fn decode_manifest(bytes: &[u8]) -> Result<DecodedRecoveryManifest, serde_json::
     match header.version {
         LEGACY_RECOVERY_MANIFEST_VERSION => serde_json::from_slice(bytes)
             .map(LegacyRecoveryManifestV1::into)
+            .map(Box::new)
             .map(DecodedRecoveryManifest::Supported),
-        RECOVERY_MANIFEST_VERSION => {
-            serde_json::from_slice(bytes).map(DecodedRecoveryManifest::Supported)
-        }
+        RECOVERY_MANIFEST_VERSION => serde_json::from_slice(bytes)
+            .map(Box::new)
+            .map(DecodedRecoveryManifest::Supported),
         version => Ok(DecodedRecoveryManifest::Unsupported(version)),
     }
 }
@@ -1104,7 +1105,7 @@ fn scan_file(file: &mut File) -> Result<JournalScan, RecoveryJournalError> {
         }
 
         let manifest = match decode_manifest(&manifest_bytes) {
-            Ok(DecodedRecoveryManifest::Supported(manifest)) => manifest,
+            Ok(DecodedRecoveryManifest::Supported(manifest)) => *manifest,
             Ok(DecodedRecoveryManifest::Unsupported(version)) => {
                 ignored_tail =
                     Some(JournalTailIssue::UnsupportedManifestVersion { offset, version });
