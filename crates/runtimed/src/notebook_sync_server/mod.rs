@@ -64,6 +64,10 @@ mod lifecycle;
 mod load;
 mod metadata;
 mod nbformat_convert;
+// The versioned projection-state codec lands before repository-backed room
+// activation. It has no production callers until migration selects the store.
+#[allow(dead_code)]
+pub(crate) mod notebook_application_state;
 mod path_index;
 mod peer_comments_sync;
 mod peer_comms_sync;
