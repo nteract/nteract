@@ -803,9 +803,19 @@ describe("MarkdownCell theme sync", () => {
   it("renders the current editor document when explicitly switching to preview", async () => {
     const cell = { ...makeCell(), source: "" };
     mockEditorDoc = "hello";
+    mockIsEditorTarget = true;
+    mockActiveInteractionTarget = { kind: "editor", cellId: cell.id };
+    const onEnterCommandMode = vi.fn(() => {
+      mockActiveInteractionTarget = { kind: "cell", cellId: cell.id };
+    });
 
     const { getByLabelText, getByRole } = render(
-      <MarkdownCell cell={cell} onFocus={() => {}} onDelete={() => {}} />,
+      <MarkdownCell
+        cell={cell}
+        onFocus={() => {}}
+        onDelete={() => {}}
+        onEnterCommandMode={onEnterCommandMode}
+      />,
     );
 
     const preview = getByLabelText("Markdown cell content");
@@ -816,6 +826,7 @@ describe("MarkdownCell theme sync", () => {
     await waitFor(() => {
       expect(preview.className).not.toContain("hidden");
     });
+    expect(onEnterCommandMode).toHaveBeenCalledTimes(1);
     await waitFor(() => {
       expect(mockFrameHandle.render).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -936,6 +947,33 @@ describe("MarkdownCell theme sync", () => {
 
     fireEvent.keyDown(preview, { key: "Enter" });
     expect(preview.className).not.toContain("hidden");
+  });
+
+  it("keeps Arrow navigation on rendered markdown surfaces", () => {
+    const onFocusNext = vi.fn();
+    const onFocusPrevious = vi.fn();
+    const onPreviewFocusNext = vi.fn();
+    const onPreviewFocusPrevious = vi.fn();
+
+    const { getByLabelText } = render(
+      <MarkdownCell
+        cell={makeCell()}
+        onFocus={() => {}}
+        onFocusNext={onFocusNext}
+        onFocusPrevious={onFocusPrevious}
+        onPreviewFocusNext={onPreviewFocusNext}
+        onPreviewFocusPrevious={onPreviewFocusPrevious}
+      />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    fireEvent.keyDown(preview, { key: "ArrowDown" });
+    fireEvent.keyDown(preview, { key: "ArrowUp" });
+
+    expect(onPreviewFocusNext).toHaveBeenCalledTimes(1);
+    expect(onPreviewFocusPrevious).toHaveBeenCalledTimes(1);
+    expect(onFocusNext).not.toHaveBeenCalled();
+    expect(onFocusPrevious).not.toHaveBeenCalled();
   });
 
   it("updates markdown task markers from projected task checkboxes", () => {

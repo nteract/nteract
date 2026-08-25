@@ -21,6 +21,7 @@ import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {
   useCellQueuePriority,
   useIsCellExecuting,
+  useIsCellEditorTarget,
   useIsCellFocused,
   useIsCellQueued,
   useIsGroupExecuting,
@@ -378,6 +379,7 @@ export const CodeCell = memo(function CodeCell({
 }: CodeCellProps) {
   // Read transient UI state from the store
   const isFocused = useIsCellFocused(cell.id);
+  const isEditorTarget = useIsCellEditorTarget(cell.id);
   const isExecuting = useIsCellExecuting(cell.id);
   const isQueued = useIsCellQueued(cell.id);
   const queuePriority = useCellQueuePriority(cell.id);
@@ -861,7 +863,7 @@ export const CodeCell = memo(function CodeCell({
                     keyMap={keyMap}
                     extensions={editorExtensions}
                     placeholder="Enter code..."
-                    autoFocus={isFocused}
+                    autoFocus={isEditorTarget}
                     readOnly={readOnly}
                   />
                 </EditorContextMenu>

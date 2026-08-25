@@ -78,7 +78,7 @@ describe("useCommandMode", () => {
 
   it("enters edit mode on Enter while in command mode", () => {
     mockTarget = { kind: "cell", cellId: "cell-1" };
-    const enterEditMode = vi.fn();
+    const enterEditMode = vi.fn(() => true);
 
     renderHook(() =>
       useCommandMode({ showCommandMode: vi.fn(), enterEditMode, runCommand: vi.fn() }),
@@ -86,6 +86,18 @@ describe("useCommandMode", () => {
 
     dispatchKeyDown({ key: "Enter" });
 
+    expect(enterEditMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves Enter unhandled when the selected cell cannot enter edit mode", () => {
+    mockTarget = { kind: "cell", cellId: "cell-1" };
+    const enterEditMode = vi.fn(() => false);
+
+    renderHook(() =>
+      useCommandMode({ showCommandMode: vi.fn(), enterEditMode, runCommand: vi.fn() }),
+    );
+
+    expect(dispatchKeyDown({ key: "Enter" })).toBe(true);
     expect(enterEditMode).toHaveBeenCalledTimes(1);
   });
 
@@ -103,13 +115,12 @@ describe("useCommandMode", () => {
   });
 
   it.each([
-    ["a", "notebook.insertCellAbove", undefined],
-    ["b", "notebook.insertCellBelow", undefined],
-    ["m", "notebook.changeCellType", { type: "markdown" }],
-    ["y", "notebook.changeCellType", { type: "code" }],
-    ["x", "notebook.cutCell", undefined],
-    ["o", "notebook.toggleOutput", undefined],
-  ] as const)("routes bare '%s' to %s while in command mode", (key, commandId, payload) => {
+    ["a", "insert-above"],
+    ["b", "insert-below"],
+    ["m", "change-to-markdown"],
+    ["y", "change-to-code"],
+    ["o", "toggle-output"],
+  ] as const)("routes bare '%s' to %s while in command mode", (key, command) => {
     mockTarget = { kind: "cell", cellId: "cell-1" };
     const runCommand = vi.fn();
 
@@ -120,7 +131,7 @@ describe("useCommandMode", () => {
     dispatchKeyDown({ key });
 
     expect(runCommand).toHaveBeenCalledTimes(1);
-    expect(runCommand).toHaveBeenCalledWith(commandId, payload);
+    expect(runCommand).toHaveBeenCalledWith(command, "cell-1");
   });
 
   it("ignores letter shortcuts when not in command mode", () => {
@@ -133,6 +144,20 @@ describe("useCommandMode", () => {
 
     dispatchKeyDown({ key: "a" });
 
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it("does not bind X until recoverable cell cut and paste semantics exist", () => {
+    mockTarget = { kind: "cell", cellId: "cell-1" };
+    const runCommand = vi.fn();
+
+    renderHook(() =>
+      useCommandMode({ showCommandMode: vi.fn(), enterEditMode: vi.fn(), runCommand }),
+    );
+
+    const unhandled = dispatchKeyDown({ key: "x" });
+
+    expect(unhandled).toBe(true);
     expect(runCommand).not.toHaveBeenCalled();
   });
 
@@ -167,6 +192,26 @@ describe("useCommandMode", () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
+  it("does not hijack Enter, Escape, or letter keys from a focused button", () => {
+    mockTarget = { kind: "cell", cellId: "cell-1" };
+    const showCommandMode = vi.fn();
+    const enterEditMode = vi.fn();
+    const runCommand = vi.fn();
+    const button = document.createElement("button");
+    document.body.appendChild(button);
+    button.focus();
+
+    renderHook(() => useCommandMode({ showCommandMode, enterEditMode, runCommand }));
+
+    dispatchKeyDown({ key: "Enter" });
+    dispatchKeyDown({ key: "Escape" });
+    dispatchKeyDown({ key: "a" });
+
+    expect(showCommandMode).not.toHaveBeenCalled();
+    expect(enterEditMode).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
   it("deletes the cell on a second bare 'd' within the double-key window", () => {
     mockTarget = { kind: "cell", cellId: "cell-1" };
     const runCommand = vi.fn();
@@ -180,7 +225,7 @@ describe("useCommandMode", () => {
 
     dispatchKeyDown({ key: "d" });
     expect(runCommand).toHaveBeenCalledTimes(1);
-    expect(runCommand).toHaveBeenCalledWith("notebook.deleteFocusedCell", undefined);
+    expect(runCommand).toHaveBeenCalledWith("delete", "cell-1");
   });
 
   it("does not delete on a single 'd' followed by an unrelated key", () => {
@@ -195,7 +240,7 @@ describe("useCommandMode", () => {
     dispatchKeyDown({ key: "b" });
 
     expect(runCommand).toHaveBeenCalledTimes(1);
-    expect(runCommand).toHaveBeenCalledWith("notebook.insertCellBelow", undefined);
+    expect(runCommand).toHaveBeenCalledWith("insert-below", "cell-1");
   });
 
   it("ignores a repeated (auto-repeat) 'd' keydown as the second press", () => {
@@ -214,7 +259,7 @@ describe("useCommandMode", () => {
     // A genuine second distinct press still completes the pair afterward.
     dispatchKeyDown({ key: "d" });
     expect(runCommand).toHaveBeenCalledTimes(1);
-    expect(runCommand).toHaveBeenCalledWith("notebook.deleteFocusedCell", undefined);
+    expect(runCommand).toHaveBeenCalledWith("delete", "cell-1");
   });
 
   it("does not carry a pending 'd' press over to a different cell", () => {
@@ -238,7 +283,7 @@ describe("useCommandMode", () => {
     // third press on cell-2 within the window completes the pair.
     dispatchKeyDown({ key: "d" });
     expect(runCommand).toHaveBeenCalledTimes(1);
-    expect(runCommand).toHaveBeenCalledWith("notebook.deleteFocusedCell", undefined);
+    expect(runCommand).toHaveBeenCalledWith("delete", "cell-2");
   });
 
   it("does nothing for letter shortcuts when disabled", () => {

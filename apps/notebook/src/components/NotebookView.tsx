@@ -38,10 +38,9 @@ import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
-import { type CommandId, type CommandPayloads, useNotebookHost } from "@nteract/notebook-host";
 import { usePresenceContext } from "@/components/notebook/presence-context";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
-import { useCommandMode } from "../hooks/useCommandMode";
+import { type CommandModeCommand, useCommandMode } from "../hooks/useCommandMode";
 import {
   flushCellUIState,
   getFocusedCellId,
@@ -101,14 +100,6 @@ export interface NotebookViewProps {
   onRequestExecuteCell?: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
-  /**
-   * Called once with the scroll-anchor-aware delete function so callers
-   * outside the component tree (command-mode keyboard shortcuts in App.tsx)
-   * can delete a cell through the same path as the trash-can button and
-   * Backspace-on-empty-cell, instead of calling `onDeleteCell` directly and
-   * skipping scroll-position preservation.
-   */
-  registerDeleteCellHandler?: (fn: (cellId: string) => void) => void;
   onUpdateCellSource?: (cellId: string, source: string) => void;
   onAddCell: AddCellHandler;
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
@@ -402,7 +393,6 @@ function NotebookViewContent({
   onRequestExecuteCell,
   onInterruptKernel,
   onDeleteCell,
-  registerDeleteCellHandler,
   onUpdateCellSource,
   onAddCell,
   onMoveCell,
@@ -422,7 +412,6 @@ function NotebookViewContent({
   autoFocusFirstCell = true,
 }: NotebookViewProps) {
   const presence = usePresenceContext();
-  const host = useNotebookHost();
   const containerRef = useRef<HTMLDivElement>(null);
   const tailPinnedRef = useRef(false);
   const tailScrollFrameRef = useRef<number | null>(null);
@@ -500,7 +489,7 @@ function NotebookViewContent({
 
   // Jupyter-style command mode: Escape blurs the editor/output and selects
   // the cell ({kind:"cell"}); Enter re-focuses the source editor; single
-  // letters (A/B/M/Y/X/O, D,D) run cell-management commands while a cell is
+  // letters (A/B/M/Y/O, D,D) run cell-management commands while a cell is
   // selected but not being edited. This also covers the Esc-while-
   // output-focused case that used to have its own listener — output focus
   // and editor focus both funnel into the same {kind:"cell"} exit.
@@ -555,28 +544,15 @@ function NotebookViewContent({
   cellIdsRef.current = cellIds;
   const { focusCell } = useEditorRegistry();
 
-  const enterEditMode = useCallback(() => {
+  const enterEditMode = useCallback((): boolean => {
     const cellId = getFocusedCellId();
-    if (!cellId) return;
+    if (!cellId) return false;
+    const cell = getCellById(cellId);
+    if (cell?.cell_type === "markdown" && !canEditMarkdownSources) return false;
     focusInteractionTarget({ kind: "editor", cellId });
     focusCell(cellId, "start");
-  }, [focusInteractionTarget, focusCell]);
-
-  const runCommand = useCallback(
-    <K extends CommandId>(id: K, payload: CommandPayloads[K]) => {
-      host.commands.run(id, payload).catch((error) => {
-        logger.error(`[command-mode] ${id} failed:`, error);
-      });
-    },
-    [host],
-  );
-
-  useCommandMode({
-    showCommandMode,
-    enterEditMode,
-    runCommand,
-    disabled: isLoading || cellIds.length === 0,
-  });
+    return true;
+  }, [canEditMarkdownSources, focusInteractionTarget, focusCell]);
 
   // Track full materializations for cross-cell derived state
   const materializeVersion = useMaterializeVersion();
@@ -770,9 +746,51 @@ function NotebookViewContent({
     [cancelTailScrollFrame, focusInteractionTarget, onDeleteCell],
   );
 
-  useEffect(() => {
-    registerDeleteCellHandler?.(handleDeleteCell);
-  }, [registerDeleteCellHandler, handleDeleteCell]);
+  const runCommandModeAction = useCallback(
+    (command: CommandModeCommand, cellId: string): boolean => {
+      if (!canMutateCells) return false;
+
+      switch (command) {
+        case "insert-above": {
+          const cellIds = cellIdsRef.current;
+          const index = cellIds.indexOf(cellId);
+          if (index < 0) return false;
+          return onAddCell("code", index > 0 ? cellIds[index - 1] : null) !== null;
+        }
+        case "insert-below":
+          return onAddCell("code", cellId) !== null;
+        case "change-to-markdown":
+          if (!onChangeCellType) return false;
+          onChangeCellType(cellId, "markdown");
+          return true;
+        case "change-to-code":
+          if (!onChangeCellType) return false;
+          onChangeCellType(cellId, "code");
+          return true;
+        case "delete": {
+          const cellIds = cellIdsRef.current;
+          if (cellIds.length <= 1 || !cellIds.includes(cellId)) return false;
+          handleDeleteCell(cellId);
+          return true;
+        }
+        case "toggle-output": {
+          if (!onSetCellOutputsHidden) return false;
+          const cell = getCellById(cellId);
+          if (!cell || cell.cell_type !== "code") return false;
+          onSetCellOutputsHidden(cellId, !isCellOutputsHidden(cell));
+          return true;
+        }
+      }
+    },
+    [canMutateCells, handleDeleteCell, onAddCell, onChangeCellType, onSetCellOutputsHidden],
+  );
+
+  useCommandMode({
+    showCommandMode,
+    enterEditMode,
+    runCommand: runCommandModeAction,
+    disabled: isLoading || cellIds.length === 0,
+  });
 
   useLayoutEffect(() => {
     const pending = pendingScrollAnchorRef.current;
@@ -929,6 +947,35 @@ function NotebookViewContent({
         } else {
           logger.debug("[cell-nav] No next cell (at end)");
         }
+      };
+
+      const focusRenderedCell = (direction: "previous" | "next") => {
+        const step = direction === "previous" ? -1 : 1;
+        let targetIndex = index + step;
+        while (
+          targetIndex >= 0 &&
+          targetIndex < cellIdsRef.current.length &&
+          !isVisibleCell(cellIdsRef.current[targetIndex])
+        ) {
+          targetIndex += step;
+        }
+        if (targetIndex < 0 || targetIndex >= cellIdsRef.current.length) return;
+
+        const targetCellId = cellIdsRef.current[targetIndex];
+        const targetCell = getCellById(targetCellId);
+        if (targetCell?.cell_type !== "markdown") {
+          focusInteractionTarget({ kind: "editor", cellId: targetCellId });
+          focusCell(targetCellId, direction === "previous" ? "end" : "start");
+          return;
+        }
+
+        focusInteractionTarget({ kind: "cell", cellId: targetCellId });
+        requestAnimationFrame(() => {
+          document
+            .getElementById(targetCellId)
+            ?.querySelector<HTMLElement>('[aria-label="Markdown cell content"]')
+            ?.focus();
+        });
       };
 
       const onNavigateToCell = (target: TracebackCellTarget) => {
@@ -1145,6 +1192,8 @@ function NotebookViewContent({
             }
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
+            onPreviewFocusPrevious={() => focusRenderedCell("previous")}
+            onPreviewFocusNext={() => focusRenderedCell("next")}
             onEnterCommandMode={onEnterCommandMode}
             onInsertCellAfter={canMutateCells ? () => onAddCell("markdown", cell.id) : undefined}
             onChangeCellType={

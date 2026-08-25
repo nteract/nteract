@@ -152,6 +152,9 @@ interface MarkdownCellProps {
   onDelete?: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
+  /** Move between rendered cell surfaces without entering source editing. */
+  onPreviewFocusPrevious?: () => void;
+  onPreviewFocusNext?: () => void;
   /** Escape enters Jupyter-style command mode (in addition to exiting to preview). */
   onEnterCommandMode?: () => void;
   onInsertCellAfter?: () => void;
@@ -184,6 +187,8 @@ export const MarkdownCell = memo(function MarkdownCell({
   onDelete,
   onFocusPrevious,
   onFocusNext,
+  onPreviewFocusPrevious,
+  onPreviewFocusNext,
   onEnterCommandMode,
   onInsertCellAfter,
   onChangeCellType,
@@ -521,9 +526,9 @@ export const MarkdownCell = memo(function MarkdownCell({
   const handleRenderMarkdownMouseDown = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      exitEditingToPreview({ allowEmpty: true });
+      renderMarkdownAndEnterCommandMode();
     },
-    [exitEditingToPreview],
+    [renderMarkdownAndEnterCommandMode],
   );
 
   const releasePreviewFrameInteraction = useCallback(() => {
@@ -854,10 +859,12 @@ export const MarkdownCell = memo(function MarkdownCell({
         onEnterCommandMode?.();
         e.preventDefault();
       } else if (e.key === "ArrowDown") {
-        onFocusNext?.("start");
+        if (onPreviewFocusNext) onPreviewFocusNext();
+        else onFocusNext?.("start");
         e.preventDefault();
       } else if (e.key === "ArrowUp") {
-        onFocusPrevious?.("end");
+        if (onPreviewFocusPrevious) onPreviewFocusPrevious();
+        else onFocusPrevious?.("end");
         e.preventDefault();
       } else if (e.key === "Enter" && e.ctrlKey && !e.metaKey && !e.altKey) {
         setEditing(false);
@@ -880,6 +887,8 @@ export const MarkdownCell = memo(function MarkdownCell({
       onEnterCommandMode,
       onFocusNext,
       onFocusPrevious,
+      onPreviewFocusNext,
+      onPreviewFocusPrevious,
       readOnly,
       requestRenderedSourceComment,
     ],

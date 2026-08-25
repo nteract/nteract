@@ -1,18 +1,25 @@
-import type { CommandId, CommandPayloads } from "@nteract/notebook-host";
 import { useEffect, useRef } from "react";
 import { getActiveInteractionTarget } from "@/components/notebook/state/cell-ui-state";
 
 /** Max gap between the two D presses that delete a cell. */
 const DOUBLE_KEY_WINDOW_MS = 500;
 
-type RunCommand = <K extends CommandId>(id: K, payload: CommandPayloads[K]) => void;
+export type CommandModeCommand =
+  | "insert-above"
+  | "insert-below"
+  | "change-to-markdown"
+  | "change-to-code"
+  | "delete"
+  | "toggle-output";
+
+type RunCommand = (command: CommandModeCommand, cellId: string) => boolean;
 
 interface UseCommandModeOptions {
   /** Enter command mode: blur the active element, select the focused cell (no editor). */
   showCommandMode: () => void;
   /** Leave command mode: focus the source editor of the selected cell. */
-  enterEditMode: () => void;
-  /** Dispatch a command through the host command registry. */
+  enterEditMode: () => boolean;
+  /** Apply a command through the shared notebook surface. */
   runCommand: RunCommand;
   /** Skip attaching the listener entirely (e.g. no notebook loaded). */
   disabled?: boolean;
@@ -22,6 +29,15 @@ function isEditableTarget(el: Element | null): boolean {
   if (!el) return false;
   if (el instanceof HTMLElement && el.isContentEditable) return true;
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT";
+}
+
+function isInteractiveTarget(el: Element | null): boolean {
+  if (isEditableTarget(el)) return true;
+  return Boolean(
+    el?.closest(
+      'button, a[href], summary, [role="button"], [role="link"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="switch"], [role="option"], [role="tab"]',
+    ),
+  );
 }
 
 /**
@@ -35,8 +51,8 @@ function isEditableTarget(el: Element | null): boolean {
  *   Enter  → leave command mode, focus the cell's source editor
  *
  * While in command mode, single letters mirror the most common Jupyter
- * shortcuts: A/B insert a cell above/below, M/Y change cell type, X cuts the
- * cell, O toggles output visibility, and D D (within 500ms) deletes the
+ * shortcuts: A/B insert a cell above/below, M/Y change cell type, O toggles
+ * output visibility, and D D (within 500ms) deletes the
  * cell. Modifier keys and focus inside a native input/textarea/select or
  * contenteditable element are ignored so this never fights browser, dialog,
  * or comment-composer shortcuts.
@@ -67,6 +83,7 @@ export function useCommandMode({
       if (event.defaultPrevented) return;
 
       const target = getActiveInteractionTarget();
+      if (isInteractiveTarget(document.activeElement)) return;
 
       if (event.key === "Escape") {
         // Only act when something other than the cell itself currently owns
@@ -82,12 +99,9 @@ export function useCommandMode({
       // modifiers and that DOM focus isn't inside a native editable control
       // (search box, comment composer, dialog input, etc).
       if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (isEditableTarget(document.activeElement)) return;
-
       if (event.key === "Enter") {
         if (target?.kind === "cell") {
-          event.preventDefault();
-          enterEditModeRef.current();
+          if (enterEditModeRef.current()) event.preventDefault();
         }
         return;
       }
@@ -114,8 +128,9 @@ export function useCommandMode({
           now - pending.at <= DOUBLE_KEY_WINDOW_MS
         ) {
           pendingDeleteRef.current = null;
-          event.preventDefault();
-          runCommandRef.current("notebook.deleteFocusedCell", undefined);
+          if (runCommandRef.current("delete", target.cellId)) {
+            event.preventDefault();
+          }
         } else {
           pendingDeleteRef.current = { at: now, cellId: target.cellId };
         }
@@ -125,28 +140,19 @@ export function useCommandMode({
 
       switch (key) {
         case "a":
-          event.preventDefault();
-          runCommandRef.current("notebook.insertCellAbove", undefined);
+          if (runCommandRef.current("insert-above", target.cellId)) event.preventDefault();
           break;
         case "b":
-          event.preventDefault();
-          runCommandRef.current("notebook.insertCellBelow", undefined);
+          if (runCommandRef.current("insert-below", target.cellId)) event.preventDefault();
           break;
         case "m":
-          event.preventDefault();
-          runCommandRef.current("notebook.changeCellType", { type: "markdown" });
+          if (runCommandRef.current("change-to-markdown", target.cellId)) event.preventDefault();
           break;
         case "y":
-          event.preventDefault();
-          runCommandRef.current("notebook.changeCellType", { type: "code" });
-          break;
-        case "x":
-          event.preventDefault();
-          runCommandRef.current("notebook.cutCell", undefined);
+          if (runCommandRef.current("change-to-code", target.cellId)) event.preventDefault();
           break;
         case "o":
-          event.preventDefault();
-          runCommandRef.current("notebook.toggleOutput", undefined);
+          if (runCommandRef.current("toggle-output", target.cellId)) event.preventDefault();
           break;
         default:
           break;

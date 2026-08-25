@@ -9,6 +9,7 @@ import { usePresenceContext } from "@/components/notebook/presence-context";
 import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import {
+  useIsCellEditorTarget,
   useIsCellFocused,
   useIsNextCellFromFocused,
   useIsPreviousCellFromFocused,
@@ -73,6 +74,7 @@ export const RawCell = memo(function RawCell({
   onActivateCommentThread,
 }: RawCellProps) {
   const isFocused = useIsCellFocused(cell.id);
+  const isEditorTarget = useIsCellEditorTarget(cell.id);
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
   const isNextCellFromFocused = useIsNextCellFromFocused(cell.id);
   const searchQuery = useSearchQuery();
@@ -226,14 +228,16 @@ export const RawCell = memo(function RawCell({
   // Use navigation key bindings directly (Shift+Enter already handled by useCellKeyboardNavigation)
   const keyMap: KeyBinding[] = useMemo(() => navigationKeyMap, [navigationKeyMap]);
 
-  // Focus editor when cell becomes focused
+  // Focus the editor only when interaction state explicitly targets it.
+  // Command mode also focuses the cell, but must keep DOM focus outside the
+  // editor so single-letter shortcuts continue to work.
   useEffect(() => {
-    if (isFocused) {
+    if (isEditorTarget) {
       requestAnimationFrame(() => {
         editorRef.current?.focus();
       });
     }
-  }, [isFocused]);
+  }, [isEditorTarget]);
 
   return (
     <CellContainer
@@ -271,7 +275,7 @@ export const RawCell = memo(function RawCell({
                 extensions={[crdtBridgeExt, ...searchExtensions]}
                 placeholder="Enter raw content..."
                 className="min-h-[2rem]"
-                autoFocus={isFocused}
+                autoFocus={isEditorTarget}
                 readOnly={readOnly}
               />
             </EditorContextMenu>

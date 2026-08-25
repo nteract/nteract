@@ -145,7 +145,6 @@ import {
   startExecutionPerformanceTrace,
 } from "./lib/execution-performance";
 import { getCellById, getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
-import { isCellOutputsHidden } from "./lib/cell-visibility";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
@@ -1608,72 +1607,6 @@ function AppContent() {
     [addCell, shellCapabilities.canEditStructure],
   );
 
-  // NotebookView's `handleDeleteCell` wraps raw `deleteCell` with
-  // scroll-anchor capture so the viewport doesn't jump when the deleted
-  // cell disappears. Command-mode shortcuts (D,D / X) must delete through
-  // that same path — not call `deleteCell` directly — so keyboard-triggered
-  // deletes get the same scroll behavior as the trash-can button.
-  const deleteCellWithScrollAnchorRef = useRef<((cellId: string) => void) | null>(null);
-  const registerDeleteCellHandler = useCallback((fn: (cellId: string) => void) => {
-    deleteCellWithScrollAnchorRef.current = fn;
-  }, []);
-  const deleteFocusedCellWithScrollAnchor = useCallback(
-    (cellId: string) => {
-      (deleteCellWithScrollAnchorRef.current ?? deleteCell)(cellId);
-    },
-    [deleteCell],
-  );
-
-  // Jupyter command-mode shortcuts (A/B/D,D/X/O — see useCommandMode). M/Y
-  // reuse the existing "notebook.changeCellType" handler above.
-  const handleInsertCellAbove = useCallback(() => {
-    if (!shellCapabilities.canEditStructure) return;
-    const focusedCellId = getFocusedCellId();
-    if (!focusedCellId) {
-      handleAddCell("code", null);
-      return;
-    }
-    const cells = getNotebookCellsSnapshot();
-    const index = cells.findIndex((c) => c.id === focusedCellId);
-    const prevCellId = index > 0 ? cells[index - 1].id : null;
-    handleAddCell("code", prevCellId);
-  }, [handleAddCell, shellCapabilities.canEditStructure]);
-
-  const handleInsertCellBelow = useCallback(() => {
-    if (!shellCapabilities.canEditStructure) return;
-    handleAddCell("code", getFocusedCellId());
-  }, [handleAddCell, shellCapabilities.canEditStructure]);
-
-  const handleDeleteFocusedCell = useCallback(() => {
-    if (!shellCapabilities.canEditStructure) return;
-    const focusedCellId = getFocusedCellId();
-    if (!focusedCellId) return;
-    deleteFocusedCellWithScrollAnchor(focusedCellId);
-  }, [deleteFocusedCellWithScrollAnchor, shellCapabilities.canEditStructure]);
-
-  const handleCutCell = useCallback(() => {
-    if (!shellCapabilities.canEditStructure) return;
-    const focusedCellId = getFocusedCellId();
-    if (!focusedCellId) return;
-    const cell = getNotebookCellsSnapshot().find((c) => c.id === focusedCellId);
-    if (!cell) return;
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
-      // Best-effort: still delete the cell even if the clipboard write is
-      // denied (permissions, insecure context) — X should always cut.
-      navigator.clipboard.writeText(cell.source).catch(() => {});
-    }
-    deleteFocusedCellWithScrollAnchor(focusedCellId);
-  }, [deleteFocusedCellWithScrollAnchor, shellCapabilities.canEditStructure]);
-
-  const handleToggleFocusedCellOutput = useCallback(() => {
-    if (!shellCapabilities.canEditStructure) return;
-    const focusedCellId = getFocusedCellId();
-    if (!focusedCellId) return;
-    const cell = getNotebookCellsSnapshot().find((c) => c.id === focusedCellId);
-    if (!cell || cell.cell_type !== "code") return;
-    setCellOutputsHidden(focusedCellId, !isCellOutputsHidden(cell));
-  }, [setCellOutputsHidden, shellCapabilities.canEditStructure]);
-
   // Cmd+S keyboard shortcut. The native menu item is routed through
   // host.commands.run("notebook.save") by the Tauri menu bridge.
   useEffect(() => {
@@ -1824,11 +1757,6 @@ function AppContent() {
     handleRunAllCells,
     handleRestartAndRunAll,
     checkForUpdate,
-    handleInsertCellAbove,
-    handleInsertCellBelow,
-    handleDeleteFocusedCell,
-    handleCutCell,
-    handleToggleFocusedCellOutput,
   });
   commandHandlersRef.current = {
     save,
@@ -1840,11 +1768,6 @@ function AppContent() {
     handleRunAllCells,
     handleRestartAndRunAll,
     checkForUpdate,
-    handleInsertCellAbove,
-    handleInsertCellBelow,
-    handleDeleteFocusedCell,
-    handleCutCell,
-    handleToggleFocusedCellOutput,
   };
 
   useEffect(() => {
@@ -1891,21 +1814,6 @@ function AppContent() {
       }),
       host.commands.register("updater.check", () => {
         commandHandlersRef.current.checkForUpdate();
-      }),
-      host.commands.register("notebook.insertCellAbove", () => {
-        commandHandlersRef.current.handleInsertCellAbove();
-      }),
-      host.commands.register("notebook.insertCellBelow", () => {
-        commandHandlersRef.current.handleInsertCellBelow();
-      }),
-      host.commands.register("notebook.deleteFocusedCell", () => {
-        commandHandlersRef.current.handleDeleteFocusedCell();
-      }),
-      host.commands.register("notebook.cutCell", () => {
-        commandHandlersRef.current.handleCutCell();
-      }),
-      host.commands.register("notebook.toggleOutput", () => {
-        commandHandlersRef.current.handleToggleFocusedCellOutput();
       }),
     ];
     return () => disposables.forEach((d) => d());
@@ -2375,7 +2283,6 @@ function AppContent() {
                   onExecuteCell={handleExecuteCell}
                   onInterruptKernel={interruptKernel}
                   onDeleteCell={deleteCell}
-                  registerDeleteCellHandler={registerDeleteCellHandler}
                   onUpdateCellSource={updateCellSource}
                   onAddCell={handleAddCell}
                   onMoveCell={moveCell}
