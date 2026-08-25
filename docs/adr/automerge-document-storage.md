@@ -36,7 +36,7 @@ network topology and authorization policy.
 
 ## Decision 1: One repository boundary owns durable NotebookDoc bytes
 
-The daemon routes durable `NotebookDoc` persistence through one
+The local `runtimed` daemon routes durable `NotebookDoc` persistence through one
 `AutomergeDocumentStore`, initially behind `RoomDurability`. Moving
 `RuntimeStateDoc`, `CommsDoc`, and `CommentsDoc` to the same boundary is deferred
 until the notebook migration proves the contract. The logical addressing model,
@@ -51,17 +51,19 @@ The first durable write for a document may be a complete Automerge snapshot.
 Subsequent accepted mutations persist only changes not already covered by the
 stored heads. Loading applies snapshots first and incremental chunks second,
 then verifies that the reconstructed document covers the recorded durable
-frontier.
+frontier. Missing dependencies or a frontier mismatch fail closed as a durability
+degradation; the daemon never opens a parsed prefix and calls it recovered.
 
 A transitional backend may commit a complete snapshot for each frontier while
 the store boundary, crash semantics, and migration are proven. Incremental
 chunks and compaction are later optimizations. They must never weaken the
 acknowledgment contract or create two writable authorities.
 
-Compaction writes and commits a full snapshot keyed by its heads before removing
-only source chunks proven to be represented by that snapshot. A crash may leave
-extra chunks, but it must not leave the document without a complete recovery
-path.
+When the adapter has transactions, compaction atomically publishes a full
+snapshot keyed by its heads and removes only source chunks represented by that
+snapshot. An adapter without a shared transaction must commit the new snapshot
+before a separate prune. A crash may leave extra chunks, but it must not leave
+the document without a complete recovery path.
 
 The storage adapter is SQLite initially. `runtimed` already ships SQLite, and a
 transaction gives the daemon one explicit commit boundary for document chunks,
@@ -71,6 +73,12 @@ Stable storage means the SQLite commit completed under durability settings that
 survive process and machine failure; WAL buffering or a later checkpoint is not
 the acknowledgment boundary. Tests inject write, sync, commit, and process
 failures around that boundary.
+
+One logical repository does not require one process-wide connection mutex or
+one physical database. SQLite serializes writers even in WAL mode, so production
+activation must measure acknowledgment tail latency across concurrent rooms and
+choose the connection and sharding unit deliberately. Reads should not inherit a
+global lock merely because the first adapter uses SQLite.
 
 ## Decision 2: nteract keeps a stronger acknowledgment contract
 
@@ -95,6 +103,11 @@ commit.
 
 `await_durable(required_heads)` remains a causal barrier. It does not become a
 debounce, a shutdown-only flush, or a timestamp comparison.
+
+This acknowledgment contract is scoped to the local daemon in this decision.
+The hosted WebAssembly room host has a different storage adapter and lifecycle;
+claiming the same guarantee there requires its own durable-before-fan-out design
+and tests rather than silently treating a local SQLite trait as portable.
 
 ## Decision 3: Storage does not grant authority
 
