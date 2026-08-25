@@ -1731,7 +1731,12 @@ pub(crate) fn commit_file_watcher_changes(
                 revision.canonical_path.clone(),
                 revision.save_sequence,
             ),
-            None => room.durability.commit_peer_changes(changes),
+            None => room
+                .durability
+                .commit_peer_changes(admit_trusted_notebook_changes(
+                    changes,
+                    TrustedNotebookChangeSource::FileWatcher,
+                )),
         };
         let committed_status = match commit {
             Ok(super::durability::DurableCommitOutcome::Committed(status))

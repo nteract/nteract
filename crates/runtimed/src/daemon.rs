@@ -8255,7 +8255,11 @@ mod tests {
                 .into_iter()
                 .collect::<Vec<_>>()
         };
-        room.durability.commit_peer_changes(peer_changes).unwrap();
+        room.durability
+            .commit_peer_changes(
+                crate::notebook_sync_server::AdmittedNotebookChanges::for_test(peer_changes),
+            )
+            .unwrap();
         room.durability.manifest()
     }
 

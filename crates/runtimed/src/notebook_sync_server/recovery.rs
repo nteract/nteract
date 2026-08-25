@@ -48,6 +48,11 @@ impl SourceFingerprint {
         Self(Sha256::digest(bytes).into())
     }
 
+    /// Reconstruct a fingerprint already verified at a persistence boundary.
+    pub(crate) const fn from_digest(digest: [u8; 32]) -> Self {
+        Self(digest)
+    }
+
     pub(crate) fn to_hex(self) -> String {
         hex::encode(self.0)
     }

@@ -6,6 +6,7 @@
 //! an acknowledgement/broadcast. The append-only journal is authoritative;
 //! the watch state makes durable-head barriers and degradation observable.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +21,7 @@ use super::recovery::{
     PendingFileCheckpoint, RecoveredJournalRecord, RecoveryJournal, RecoveryJournalError,
     RecoveryManifest, RecoverySourcePhase, RecoveryUnavailableReason, SourceFingerprint,
 };
+use super::AdmittedNotebookChanges;
 
 /// Structural classification of a room degradation. The kind is lifecycle
 /// policy, not display text: shutdown and reaping consult it through
@@ -1048,9 +1050,10 @@ impl RoomDurability {
     /// every acknowledged peer change.
     pub(crate) fn commit_peer_changes(
         &self,
-        changes: Vec<Change>,
+        changes: AdmittedNotebookChanges,
     ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
         self.ensure_accepting_commits()?;
+        let changes = changes.into_changes();
         if changes.is_empty() {
             return Ok(DurableCommitOutcome::AlreadyDurable(self.status()));
         }
@@ -1058,24 +1061,23 @@ impl RoomDurability {
         let mut state = self.lock_state();
         let mut durable = AutoCommit::load(&state.durable_snapshot)
             .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
-        let missing = changes
-            .into_iter()
-            .filter(|change| durable.get_change_by_hash(&change.hash()).is_none())
-            .collect::<Vec<_>>();
-        if missing.is_empty() {
+        let peer_hashes = apply_retained_change_batch(&mut durable, changes)?;
+        if peer_hashes.is_empty() {
             return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
                 &state,
             )));
         }
-        let peer_hashes = missing
-            .iter()
-            .map(|change| change.hash().0)
+        let peer_hashes = peer_hashes
+            .into_iter()
+            .map(|change_hash| change_hash.0)
             .collect::<Vec<_>>();
-        durable
-            .apply_changes(missing)
-            .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
         let durable_heads = durable.get_heads().iter().map(|head| head.0).collect();
         let snapshot = durable.save();
+        if snapshot.as_slice() == state.durable_snapshot.as_ref() {
+            return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
+                &state,
+            )));
+        }
 
         let mut manifest = state.manifest.clone();
         manifest.sequence = manifest
@@ -1135,17 +1137,14 @@ impl RoomDurability {
 
         let mut durable = AutoCommit::load(&state.durable_snapshot)
             .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+        let mut source_hashes_seen = HashSet::new();
         let source_hashes = changes
             .iter()
-            .map(|change| change.hash().0)
+            .map(Change::hash)
+            .filter(|hash| source_hashes_seen.insert(*hash))
+            .map(|hash| hash.0)
             .collect::<Vec<_>>();
-        let missing = changes
-            .into_iter()
-            .filter(|change| durable.get_change_by_hash(&change.hash()).is_none())
-            .collect::<Vec<_>>();
-        durable
-            .apply_changes(missing)
-            .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+        apply_retained_change_batch(&mut durable, changes)?;
         let durable_heads = durable
             .get_heads()
             .iter()
@@ -1255,6 +1254,29 @@ impl RoomDurability {
             .await
             .map_err(|_| RoomDurabilityError::TimedOut)?
     }
+}
+
+/// Apply a deduplicated batch while retaining causally out-of-order changes.
+///
+/// Automerge queues changes whose dependencies have not arrived yet, and its
+/// default full save retains those raw bytes. Callers save the document in the
+/// same durable transaction, so admitted out-of-order changes survive restart
+/// without advancing the applied causal frontier.
+fn apply_retained_change_batch(
+    document: &mut AutoCommit,
+    changes: Vec<Change>,
+) -> Result<Vec<ChangeHash>, RoomDurabilityError> {
+    let mut seen = HashSet::new();
+    let missing = changes
+        .into_iter()
+        .filter(|change| seen.insert(change.hash()))
+        .filter(|change| document.get_change_by_hash(&change.hash()).is_none())
+        .collect::<Vec<_>>();
+    let hashes = missing.iter().map(Change::hash).collect::<Vec<_>>();
+    document
+        .apply_changes(missing)
+        .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+    Ok(hashes)
 }
 
 fn status_from_state(state: &DurabilityState) -> RoomDurabilityStatus {
@@ -1883,6 +1905,73 @@ mod tests {
     }
 
     #[test]
+    fn mixed_applicable_and_orphan_peer_batch_resolves_after_restart() {
+        let mut seed = AutoCommit::new();
+        seed.put(ROOT, "base", true).unwrap();
+        let base_heads = seed.get_heads();
+        let base_snapshot = seed.save();
+        let durability = RoomDurability::volatile(
+            Uuid::nil(),
+            base_snapshot.clone(),
+            base_heads.iter().map(|head| head.0).collect(),
+        );
+        let status_before = durability.status();
+
+        let mut applicable = AutoCommit::load(&base_snapshot)
+            .unwrap()
+            .with_actor(automerge::ActorId::from(b"applicable".as_slice()));
+        applicable.put(ROOT, "applicable", true).unwrap();
+        let mut mixed = applicable.get_changes(&base_heads);
+
+        let mut incomplete = AutoCommit::load(&base_snapshot)
+            .unwrap()
+            .with_actor(automerge::ActorId::from(b"incomplete".as_slice()));
+        incomplete.put(ROOT, "missing", 1_i64).unwrap();
+        let dependency_changes = incomplete.get_changes(&base_heads);
+        let dependency_heads = incomplete.get_heads();
+        incomplete.put(ROOT, "orphan", 2_i64).unwrap();
+        let orphan_changes = incomplete.get_changes(&dependency_heads);
+        mixed.extend(orphan_changes.clone());
+
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(mixed))
+            .expect("admitted out-of-order peer changes are durable");
+        assert_eq!(
+            durability.status().journal_sequence,
+            status_before.journal_sequence + 1
+        );
+
+        let pending_snapshot = durability.durable_snapshot();
+        let pending = AutoCommit::load(&pending_snapshot).expect("reload retained orphan");
+        assert!(pending
+            .get(ROOT, "applicable")
+            .is_ok_and(|value| value.is_some()));
+        assert!(pending
+            .get(ROOT, "orphan")
+            .is_ok_and(|value| value.is_none()));
+
+        let pending_status = durability.status();
+        let duplicate = durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(orphan_changes))
+            .expect("duplicate retained orphan is a no-op");
+        assert!(matches!(duplicate, DurableCommitOutcome::AlreadyDurable(_)));
+        assert_eq!(durability.status(), pending_status);
+        assert_eq!(
+            durability.durable_snapshot().as_ref(),
+            pending_snapshot.as_ref()
+        );
+
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(dependency_changes))
+            .expect("missing dependency resolves retained peer change");
+        let resolved_snapshot = durability.durable_snapshot();
+        let resolved = AutoCommit::load(&resolved_snapshot).expect("reload resolved peer changes");
+        for key in ["applicable", "missing", "orphan"] {
+            assert!(resolved.get(ROOT, key).is_ok_and(|value| value.is_some()));
+        }
+    }
+
+    #[test]
     fn stale_daemon_snapshot_cannot_regress_a_newer_peer_commit() {
         let mut older = AutoCommit::new();
         older.put(ROOT, "source", 1).unwrap();
@@ -1898,7 +1987,9 @@ mod tests {
         let peer_baseline = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&peer_baseline))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&peer_baseline),
+            ))
             .unwrap();
         let after_peer = durability.status();
 
@@ -1952,7 +2043,9 @@ mod tests {
         let baseline = peer.get_heads();
         peer.put(ROOT, "next", 2).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&baseline))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&baseline),
+            ))
             .unwrap();
 
         assert_eq!(durability.manifest().peer_change_count, 2_252);
@@ -2152,7 +2245,9 @@ mod tests {
         let peer_heads = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         let peer_changes = peer.get_changes(&peer_heads);
-        durability.commit_peer_changes(peer_changes).unwrap();
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(peer_changes))
+            .unwrap();
 
         let mut staged = AutoCommit::load(&genesis_snapshot).unwrap();
         staged.put(ROOT, "source", 3).unwrap();
@@ -2243,7 +2338,9 @@ mod tests {
         let before_peer = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&before_peer))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&before_peer),
+            ))
             .unwrap();
         let before_observed = durability.status();
 
@@ -2340,7 +2437,9 @@ mod tests {
         let before_peer = peer.get_heads();
         peer.put(ROOT, "peer", true).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&before_peer))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&before_peer),
+            ))
             .unwrap();
         let before_conflict = durability.status();
 

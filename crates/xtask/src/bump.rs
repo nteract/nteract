@@ -189,6 +189,11 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "crates/automerge-store/Cargo.toml",
+        format: Format::Toml,
+        matches: 1,
+    },
+    Target {
         path: "crates/runtimed-node/Cargo.toml",
         format: Format::Toml,
         matches: 1,
