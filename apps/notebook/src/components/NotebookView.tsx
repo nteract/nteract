@@ -38,22 +38,28 @@ import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
+import { type CommandId, type CommandPayloads, useNotebookHost } from "@nteract/notebook-host";
 import { usePresenceContext } from "@/components/notebook/presence-context";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
+import { useCommandMode } from "../hooks/useCommandMode";
 import {
   flushCellUIState,
+  getFocusedCellId,
   setActiveInteractionTarget,
   useFocusedCellId,
   useSearchCurrentMatch,
 } from "@/components/notebook/state/cell-ui-state";
 import {
   clearOutputFocusedCellId,
+  getOutputFocusedCellId,
   setOutputFocusedCellId,
   useOutputFocusedCellId,
 } from "@/components/notebook/state/output-focus-store";
 import { logger } from "../lib/logger";
 import { useOutputProjectionFailures } from "@/components/notebook/state/runtime-store-projection";
 import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
+import { getFocusAfterCellDeletion } from "../lib/cell-deletion-focus";
+import { isCellOutputsHidden } from "../lib/cell-visibility";
 import {
   getCellById,
   getNotebookCellsSnapshot,
@@ -95,6 +101,14 @@ export interface NotebookViewProps {
   onRequestExecuteCell?: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
+  /**
+   * Called once with the scroll-anchor-aware delete function so callers
+   * outside the component tree (command-mode keyboard shortcuts in App.tsx)
+   * can delete a cell through the same path as the trash-can button and
+   * Backspace-on-empty-cell, instead of calling `onDeleteCell` directly and
+   * skipping scroll-position preservation.
+   */
+  registerDeleteCellHandler?: (fn: (cellId: string) => void) => void;
   onUpdateCellSource?: (cellId: string, source: string) => void;
   onAddCell: AddCellHandler;
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
@@ -388,6 +402,7 @@ function NotebookViewContent({
   onRequestExecuteCell,
   onInterruptKernel,
   onDeleteCell,
+  registerDeleteCellHandler,
   onUpdateCellSource,
   onAddCell,
   onMoveCell,
@@ -407,6 +422,7 @@ function NotebookViewContent({
   autoFocusFirstCell = true,
 }: NotebookViewProps) {
   const presence = usePresenceContext();
+  const host = useNotebookHost();
   const containerRef = useRef<HTMLDivElement>(null);
   const tailPinnedRef = useRef(false);
   const tailScrollFrameRef = useRef<number | null>(null);
@@ -469,20 +485,33 @@ function NotebookViewContent({
     [onFocusCell, publishInteractionTarget],
   );
 
-  // Document-level Esc listener while a cell is output-focused. Esc events
-  // that originate inside the iframe don't reach the document unless the
-  // iframe lets them through, so this only fires for top-level Esc.
-  useEffect(() => {
-    if (outputFocusedCellId === null) return;
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        clearOutputFocusedCellId();
-        publishInteractionTarget({ kind: "cell", cellId: outputFocusedCellId });
+  // Shared "leave output focus, select the cell without editing" exit,
+  // used by both command mode (Escape) and the click-outside dismissal
+  // below, so the two paths can't drift on what "exit to cell" means.
+  const exitToCellSelection = useCallback(
+    (cellId: string) => {
+      if (getOutputFocusedCellId() === cellId) {
+        clearOutputFocusedCellId(cellId);
       }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [outputFocusedCellId, publishInteractionTarget]);
+      publishInteractionTarget({ kind: "cell", cellId });
+    },
+    [publishInteractionTarget],
+  );
+
+  // Jupyter-style command mode: Escape blurs the editor/output and selects
+  // the cell ({kind:"cell"}); Enter re-focuses the source editor; single
+  // letters (A/B/M/Y/X/O, D,D) run cell-management commands while a cell is
+  // selected but not being edited. This also covers the Esc-while-
+  // output-focused case that used to have its own listener — output focus
+  // and editor focus both funnel into the same {kind:"cell"} exit.
+  const showCommandMode = useCallback(() => {
+    const cellId = getFocusedCellId();
+    if (!cellId) return;
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    exitToCellSelection(cellId);
+  }, [exitToCellSelection]);
 
   // Click-outside-container exit. Clicking another cell's editor already
   // clears focus via the selection-change effect above, but clicking another
@@ -499,13 +528,12 @@ function NotebookViewContent({
         `[data-slot="cell-container"][data-cell-id="${outputFocusedCellId}"]`,
       );
       if (focusedCellEl && !focusedCellEl.contains(target)) {
-        clearOutputFocusedCellId();
-        publishInteractionTarget({ kind: "cell", cellId: outputFocusedCellId });
+        exitToCellSelection(outputFocusedCellId);
       }
     };
     document.addEventListener("mousedown", handleMouseDown, true);
     return () => document.removeEventListener("mousedown", handleMouseDown, true);
-  }, [outputFocusedCellId, publishInteractionTarget]);
+  }, [outputFocusedCellId, exitToCellSelection]);
 
   const handleOutputFocusChange = useCallback(
     (cellId: string, outputFocused: boolean) => {
@@ -526,6 +554,29 @@ function NotebookViewContent({
   const cellIdsRef = useRef(cellIds);
   cellIdsRef.current = cellIds;
   const { focusCell } = useEditorRegistry();
+
+  const enterEditMode = useCallback(() => {
+    const cellId = getFocusedCellId();
+    if (!cellId) return;
+    focusInteractionTarget({ kind: "editor", cellId });
+    focusCell(cellId, "start");
+  }, [focusInteractionTarget, focusCell]);
+
+  const runCommand = useCallback(
+    <K extends CommandId>(id: K, payload: CommandPayloads[K]) => {
+      host.commands.run(id, payload).catch((error) => {
+        logger.error(`[command-mode] ${id} failed:`, error);
+      });
+    },
+    [host],
+  );
+
+  useCommandMode({
+    showCommandMode,
+    enterEditMode,
+    runCommand,
+    disabled: isLoading || cellIds.length === 0,
+  });
 
   // Track full materializations for cross-cell derived state
   const materializeVersion = useMaterializeVersion();
@@ -699,6 +750,7 @@ function NotebookViewContent({
       tailPinnedRef.current = false;
       cancelTailScrollFrame();
       const sourceCellIds = cellIdsRef.current;
+      const focusAfterDelete = getFocusAfterCellDeletion(sourceCellIds, cellId);
       const snapshot = captureCellDeletionScrollAnchor(containerRef.current, sourceCellIds, cellId);
       pendingScrollAnchorRef.current = snapshot
         ? {
@@ -708,9 +760,19 @@ function NotebookViewContent({
           }
         : null;
       onDeleteCell(cellId);
+      if (focusAfterDelete) {
+        // Keep command-mode focus on a surviving neighbor. Prefer the cell
+        // that moved into the deleted cell's position; when deleting the
+        // final cell, fall back to the previous (now last) cell.
+        focusInteractionTarget({ kind: "cell", cellId: focusAfterDelete });
+      }
     },
-    [cancelTailScrollFrame, onDeleteCell],
+    [cancelTailScrollFrame, focusInteractionTarget, onDeleteCell],
   );
+
+  useEffect(() => {
+    registerDeleteCellHandler?.(handleDeleteCell);
+  }, [registerDeleteCellHandler, handleDeleteCell]);
 
   useLayoutEffect(() => {
     const pending = pendingScrollAnchorRef.current;
@@ -876,6 +938,12 @@ function NotebookViewContent({
         focusCell(targetCellId, typeof target.line === "number" ? { line: target.line } : "start");
       };
 
+      // Escape hands off from editing to Jupyter-style command mode: the
+      // cell stays selected but its editor no longer holds DOM focus.
+      const onEnterCommandMode = () => {
+        focusInteractionTarget({ kind: "cell", cellId: cell.id });
+      };
+
       // Build right gutter content — delete button for all cells,
       // plus input toggle for code cells
       const deleteButton = canMutateCells ? (
@@ -894,8 +962,7 @@ function NotebookViewContent({
       if (cell.cell_type === "code") {
         const isSourceHidden =
           (cell.metadata?.jupyter as { source_hidden?: boolean })?.source_hidden === true;
-        const isOutputsHidden =
-          (cell.metadata?.jupyter as { outputs_hidden?: boolean })?.outputs_hidden === true;
+        const isOutputsHidden = isCellOutputsHidden(cell);
         const bothHidden = isSourceHidden && isOutputsHidden;
         const hasSourceText = cell.source.trim().length > 0;
         const sourceToggleButton =
@@ -992,6 +1059,7 @@ function NotebookViewContent({
             onDelete={canMutateCells ? () => handleDeleteCell(cell.id) : undefined}
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
+            onEnterCommandMode={onEnterCommandMode}
             onNavigateToCell={onNavigateToCell}
             onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
             onChangeCellType={
@@ -1063,6 +1131,9 @@ function NotebookViewContent({
           <MarkdownCell
             key={cell.id}
             cell={cell}
+            onSelect={() => {
+              focusInteractionTarget({ kind: "cell", cellId: cell.id });
+            }}
             onFocus={() => {
               focusInteractionTarget({ kind: "editor", cellId: cell.id });
             }}
@@ -1074,6 +1145,7 @@ function NotebookViewContent({
             }
             onFocusPrevious={onFocusPrevious}
             onFocusNext={onFocusNext}
+            onEnterCommandMode={onEnterCommandMode}
             onInsertCellAfter={canMutateCells ? () => onAddCell("markdown", cell.id) : undefined}
             onChangeCellType={
               canMutateCells && onChangeCellType
@@ -1108,6 +1180,7 @@ function NotebookViewContent({
           onDelete={canMutateCells ? () => handleDeleteCell(cell.id) : undefined}
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
+          onEnterCommandMode={onEnterCommandMode}
           onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
           onChangeCellType={
             canMutateCells && onChangeCellType

@@ -35,6 +35,8 @@ interface RawCellProps {
   onDelete?: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
+  /** Escape blurs the editor and enters Jupyter-style command mode. */
+  onEnterCommandMode?: () => void;
   onInsertCellAfter?: () => void;
   onChangeCellType?: (type: "code" | "markdown") => void;
   isLastCell?: boolean;
@@ -59,6 +61,7 @@ export const RawCell = memo(function RawCell({
   onDelete,
   onFocusPrevious,
   onFocusNext,
+  onEnterCommandMode,
   onInsertCellAfter,
   onChangeCellType,
   isLastCell = false,
@@ -216,6 +219,7 @@ export const RawCell = memo(function RawCell({
     onFocusNext: handleFocusNextOrCreate,
     onExecute: () => {}, // No-op for raw cells, enables Shift+Enter navigation
     onDelete,
+    onEnterCommandMode,
     cellId: cell.id,
   });
 

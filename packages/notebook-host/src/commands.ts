@@ -36,6 +36,14 @@ export interface CommandPayloads {
   "notebook.runAll": void;
   "notebook.restartAndRunAll": void;
 
+  // Command-mode shortcuts (Jupyter-style A/B/D,D/X/O) — always act on the
+  // currently focused cell. `notebook.changeCellType` above covers M/Y.
+  "notebook.insertCellAbove": void;
+  "notebook.insertCellBelow": void;
+  "notebook.deleteFocusedCell": void;
+  "notebook.cutCell": void;
+  "notebook.toggleOutput": void;
+
   // Updater — triggers the app's auto-updater check flow.
   "updater.check": void;
 

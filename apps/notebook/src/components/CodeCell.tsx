@@ -73,6 +73,8 @@ interface CodeCellProps {
   onDelete?: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
+  /** Escape blurs the editor and enters Jupyter-style command mode. */
+  onEnterCommandMode?: () => void;
   onNavigateToCell?: (target: TracebackCellTarget) => void;
   onInsertCellAfter?: () => void;
   onChangeCellType?: (type: "code" | "markdown") => void;
@@ -346,6 +348,7 @@ export const CodeCell = memo(function CodeCell({
   onDelete,
   onFocusPrevious,
   onFocusNext,
+  onEnterCommandMode,
   onNavigateToCell,
   onInsertCellAfter,
   onChangeCellType,
@@ -576,6 +579,7 @@ export const CodeCell = memo(function CodeCell({
         : undefined,
     consumeExecutionShortcuts: !readOnly || canExecute || canRequestExecute,
     onDelete,
+    onEnterCommandMode,
     cellId: cell.id,
   });
 
