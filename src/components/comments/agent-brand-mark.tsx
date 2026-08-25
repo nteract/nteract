@@ -72,13 +72,7 @@ function agentBrandId(slug: string | null | undefined): AgentBrandId | null {
 }
 
 /** The agent's mark for React surfaces, falling back to a neutral bot glyph. */
-export function AgentBrandMark({
-  slug,
-  className,
-}: {
-  slug?: string | null;
-  className?: string;
-}) {
+export function AgentBrandMark({ slug, className }: { slug?: string | null; className?: string }) {
   const brand = agentBrandId(slug);
   if (!brand) return <Bot className={className} aria-hidden="true" />;
   return (

@@ -41,6 +41,41 @@ use session_activation::SessionActivation;
 
 const SLOW_MCP_TOOL_CALL: Duration = Duration::from_secs(30);
 
+/// The operator suffix for an MCP client: `agent:<slug>:<session>`.
+///
+/// Every peer that reaches this server is a tool or agent acting for the local
+/// user, and the `agent:` prefix is what tells notebook surfaces so. Without it
+/// the operator reads as an unknown kind and comments render as a person —
+/// initials instead of the client's brand mark, and no "on behalf of" line.
+fn agent_operator(client_name: &str, session: &str) -> String {
+    format!("agent:{}:{session}", agent_slug(client_name))
+}
+
+/// Slugify an MCP client name for the operator suffix (`Claude Code` ->
+/// `claude-code`). Colons and slashes would split the actor label, so this
+/// keeps ASCII alphanumerics and collapses everything else to single dashes.
+fn agent_slug(client_name: &str) -> String {
+    let mut slug = String::with_capacity(client_name.len());
+    for character in client_name.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "mcp".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+fn operator_session_suffix() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+}
+
 /// The nteract MCP server.
 pub struct NteractMcp {
     socket_path: PathBuf,
@@ -70,6 +105,14 @@ pub struct NteractMcp {
     /// Used as the peer label in notebook sessions so the notebook app shows
     /// "Claude Desktop" or "Claude Code" instead of the default "Inkwell".
     peer_label: Arc<RwLock<String>>,
+    /// The operator suffix this peer authors changes under, derived from the
+    /// same handshake as `peer_label`. Notebook surfaces read the `agent:`
+    /// prefix and the brand slug from here, so this is what makes an MCP
+    /// client's comments render as an agent rather than as a person.
+    operator: Arc<RwLock<String>>,
+    /// Per-process suffix keeping this peer's operator distinct from other
+    /// sessions of the same client product.
+    operator_session: String,
     /// When true, the `show_notebook` tool is not registered (headless environments).
     no_show: bool,
     /// Daemon version, if it was reachable during startup. Surfaced to the
@@ -87,6 +130,7 @@ impl NteractMcp {
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
     ) -> Self {
+        let operator_session = operator_session_suffix();
         Self {
             socket_path,
             blob_base_url,
@@ -98,6 +142,11 @@ impl NteractMcp {
             parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
+            operator: Arc::new(RwLock::new(agent_operator(
+                "nteract-mcp",
+                &operator_session,
+            ))),
+            operator_session,
             no_show: false,
             daemon_version: None,
         }
@@ -134,9 +183,17 @@ impl NteractMcp {
         self.peer_label.read().await.clone()
     }
 
-    /// Set the peer label for notebook connections.
+    /// Get the operator suffix this peer authors notebook changes under.
+    pub async fn get_operator(&self) -> String {
+        self.operator.read().await.clone()
+    }
+
+    /// Set the peer label for notebook connections, deriving the matching
+    /// operator suffix so attribution and presence name the same client.
     pub async fn set_peer_label(&self, label: impl Into<String>) {
-        *self.peer_label.write().await = label.into();
+        let label = label.into();
+        *self.operator.write().await = agent_operator(&label, &self.operator_session);
+        *self.peer_label.write().await = label;
     }
 
     /// Get the shared session (for the daemon watcher).
@@ -378,6 +435,12 @@ impl ServerHandler for NteractMcp {
                     ) {
                         *self.peer_label.write().await = label.into_owned();
                     }
+                    // The operator slug comes from the raw implementation name,
+                    // not the display label: notebook surfaces match brand marks
+                    // against the client roster in `mcp-client-branding`, which is
+                    // keyed by that raw name ("claude-code", "codex-mcp-client").
+                    *self.operator.write().await =
+                        agent_operator(&info.client_info.name, &self.operator_session);
                 }
             }
         }
