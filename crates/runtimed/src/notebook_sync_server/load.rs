@@ -1075,11 +1075,13 @@ pub(crate) async fn finalize_recovered_source(
 
     let (cell_count, document_heads) = {
         let mut doc = room.doc.write().await;
-        for raw_hash in &manifest.staged_change_hashes {
+        // A staged frontier proves all of its causal ancestors are present;
+        // version 2 no longer persists every historical staged change hash.
+        for raw_hash in &manifest.exported_heads {
             let hash = automerge::ChangeHash(*raw_hash);
             if doc.doc_mut().get_change_by_hash(&hash).is_none() {
                 return Err(format!(
-                    "source_degraded: recovered document is missing staged change {hash}"
+                    "source_degraded: recovered document is missing staged head {hash}"
                 ));
             }
         }
@@ -1729,7 +1731,12 @@ pub(crate) fn commit_file_watcher_changes(
                 revision.canonical_path.clone(),
                 revision.save_sequence,
             ),
-            None => room.durability.commit_peer_changes(changes),
+            None => room
+                .durability
+                .commit_peer_changes(admit_trusted_notebook_changes(
+                    changes,
+                    TrustedNotebookChangeSource::FileWatcher,
+                )),
         };
         let committed_status = match commit {
             Ok(super::durability::DurableCommitOutcome::Committed(status))

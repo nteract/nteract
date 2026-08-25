@@ -193,6 +193,7 @@ test("cloud notebook mutations route through the shared notebook controller", ()
   assert.match(sourceText, /cloudNotebookController\.addCell\(type, afterCellId\)/);
   assert.match(sourceText, /cloudNotebookController\.deleteCell\(cellId\)/);
   assert.match(sourceText, /cloudNotebookController\.moveCell\(cellId, afterCellId\)/);
+  assert.match(sourceText, /cloudNotebookController\.setCellType\(cellId, type\)/);
   assert.match(sourceText, /cloudNotebookController\.setCellSourceHidden\(cellId, hidden\)/);
   assert.match(sourceText, /cloudNotebookController\.setCellOutputsHidden\(cellId, hidden\)/);
   assert.doesNotMatch(sourceText, /liveRuntime\.handle\.add_cell_after/);
@@ -251,6 +252,7 @@ test("cloud passes shared NotebookView source and output visibility handlers", (
     sourceText,
     /<NotebookView[\s\S]*onSetCellOutputsHidden=\{handleCloudSetCellOutputsHidden\}/,
   );
+  assert.match(sourceText, /<NotebookView[\s\S]*onChangeCellType=\{handleCloudChangeCellType\}/);
   assert.match(
     sourceText,
     /<NotebookView[\s\S]*deferOutputIsolatedFramesUntilVisible=\{!shellCapabilities\.canEditCells\}/,

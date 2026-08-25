@@ -112,7 +112,7 @@ fn classify(manifest: &RecoveryManifest) -> RecoveryCase {
         RecoverySourcePhase::Pending | RecoverySourcePhase::Failed => {
             if manifest.pending_file_checkpoint.is_some() {
                 RecoveryCase::ResolvableIntent
-            } else if manifest.peer_change_hashes.is_empty() {
+            } else if manifest.peer_change_count == 0 {
                 RecoveryCase::Regenerable
             } else {
                 RecoveryCase::NeedsReconciliation
@@ -310,14 +310,19 @@ impl Runner {
     /// the merged heads must equal the live document heads.
     fn apply_peer_merge(&mut self, concurrent: bool) {
         let changes = self.author_peer_edit(concurrent);
-        let outcome = self.durability.commit_peer_changes(changes.clone());
+        let outcome = self
+            .durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(changes.clone()));
         self.expect_committed(outcome);
         self.record_peer_commit();
 
         // Re-sending the already-durable batch dedupes against both the
         // union and the manifest hashes without appending.
         let before = self.durability.manifest();
-        let again = self.durability.commit_peer_changes(changes).unwrap();
+        let again = self
+            .durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(changes))
+            .unwrap();
         assert!(
             matches!(again, DurableCommitOutcome::AlreadyDurable(_)),
             "re-committing durable peer changes must be a no-op, got {again:?}"
@@ -624,7 +629,7 @@ impl Runner {
             );
         }
         if case == RecoveryCase::NeedsReconciliation {
-            assert!(!manifest.peer_change_hashes.is_empty());
+            assert!(manifest.peer_change_count > 0);
             assert_ne!(
                 sorted(&manifest.durable_heads),
                 sorted(&manifest.exported_heads),
@@ -669,10 +674,7 @@ impl Runner {
             manifest.pending_file_checkpoint.is_some(),
             self.model.pending.is_some()
         );
-        assert_eq!(
-            !manifest.peer_change_hashes.is_empty(),
-            self.model.has_peer_changes
-        );
+        assert_eq!(manifest.peer_change_count > 0, self.model.has_peer_changes);
         self.assert_coverage_matches_model(&manifest);
         assert!(!self.durability.status().is_degraded());
     }

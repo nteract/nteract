@@ -21,6 +21,7 @@ use super::recovery::{
     PendingFileCheckpoint, RecoveredJournalRecord, RecoveryJournal, RecoveryJournalError,
     RecoveryManifest, RecoverySourcePhase, RecoveryUnavailableReason, SourceFingerprint,
 };
+use super::AdmittedNotebookChanges;
 
 /// Structural classification of a room degradation. The kind is lifecycle
 /// policy, not display text: shutdown and reaping consult it through
@@ -421,11 +422,8 @@ impl RoomDurability {
                 .checked_add(1)
                 .ok_or(RoomDurabilityError::SequenceExhausted)?;
             promoted_manifest.source_phase = RecoverySourcePhase::Ready;
-            promoted_manifest.staged_change_hashes = durable
-                .get_changes(&[])
-                .iter()
-                .map(|change| change.hash().0)
-                .collect();
+            promoted_manifest.staged_change_count =
+                u64::try_from(durable.get_changes(&[]).len()).unwrap_or(u64::MAX);
         }
 
         if let Err(error) = journal.append(&promoted_manifest, &state.durable_snapshot) {
@@ -1021,7 +1019,8 @@ impl RoomDurability {
             source_generation,
         );
         manifest.source_phase = RecoverySourcePhase::DurablyStaged;
-        manifest.staged_change_hashes = replacement_change_hashes;
+        manifest.staged_change_count =
+            u64::try_from(replacement_change_hashes.len()).unwrap_or(u64::MAX);
         manifest.durable_heads = durable_heads.clone();
         manifest.exported_heads = durable_heads;
         manifest.file_save_sequence = Some(save_sequence);
@@ -1051,9 +1050,10 @@ impl RoomDurability {
     /// every acknowledged peer change.
     pub(crate) fn commit_peer_changes(
         &self,
-        changes: Vec<Change>,
+        changes: AdmittedNotebookChanges,
     ) -> Result<DurableCommitOutcome, RoomDurabilityError> {
         self.ensure_accepting_commits()?;
+        let changes = changes.into_changes();
         if changes.is_empty() {
             return Ok(DurableCommitOutcome::AlreadyDurable(self.status()));
         }
@@ -1061,28 +1061,23 @@ impl RoomDurability {
         let mut state = self.lock_state();
         let mut durable = AutoCommit::load(&state.durable_snapshot)
             .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
-        let peer_hashes = changes
-            .iter()
-            .map(|change| change.hash().0)
-            .collect::<Vec<_>>();
-        let missing = changes
-            .into_iter()
-            .filter(|change| durable.get_change_by_hash(&change.hash()).is_none())
-            .collect::<Vec<_>>();
-        if missing.is_empty()
-            && peer_hashes
-                .iter()
-                .all(|hash| state.manifest.peer_change_hashes.contains(hash))
-        {
+        let peer_hashes = apply_retained_change_batch(&mut durable, changes)?;
+        if peer_hashes.is_empty() {
             return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
                 &state,
             )));
         }
-        durable
-            .apply_changes(missing)
-            .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+        let peer_hashes = peer_hashes
+            .into_iter()
+            .map(|change_hash| change_hash.0)
+            .collect::<Vec<_>>();
         let durable_heads = durable.get_heads().iter().map(|head| head.0).collect();
         let snapshot = durable.save();
+        if snapshot.as_slice() == state.durable_snapshot.as_ref() {
+            return Ok(DurableCommitOutcome::AlreadyDurable(status_from_state(
+                &state,
+            )));
+        }
 
         let mut manifest = state.manifest.clone();
         manifest.sequence = manifest
@@ -1142,17 +1137,14 @@ impl RoomDurability {
 
         let mut durable = AutoCommit::load(&state.durable_snapshot)
             .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+        let mut source_hashes_seen = HashSet::new();
         let source_hashes = changes
             .iter()
-            .map(|change| change.hash().0)
+            .map(Change::hash)
+            .filter(|hash| source_hashes_seen.insert(*hash))
+            .map(|hash| hash.0)
             .collect::<Vec<_>>();
-        let missing = changes
-            .into_iter()
-            .filter(|change| durable.get_change_by_hash(&change.hash()).is_none())
-            .collect::<Vec<_>>();
-        durable
-            .apply_changes(missing)
-            .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+        apply_retained_change_batch(&mut durable, changes)?;
         let durable_heads = durable
             .get_heads()
             .iter()
@@ -1173,7 +1165,7 @@ impl RoomDurability {
         manifest.source_generation = generation;
         manifest.source_phase = RecoverySourcePhase::DurablyStaged;
         manifest.source_fingerprint = observed_source;
-        manifest.staged_change_hashes = source_hashes;
+        manifest.staged_change_count = u64::try_from(source_hashes.len()).unwrap_or(u64::MAX);
         manifest.durable_heads = durable_heads.clone();
         manifest.exported_heads = durable_heads;
         manifest.canonical_path = Some(canonical_path);
@@ -1264,6 +1256,29 @@ impl RoomDurability {
     }
 }
 
+/// Apply a deduplicated batch while retaining causally out-of-order changes.
+///
+/// Automerge queues changes whose dependencies have not arrived yet, and its
+/// default full save retains those raw bytes. Callers save the document in the
+/// same durable transaction, so admitted out-of-order changes survive restart
+/// without advancing the applied causal frontier.
+fn apply_retained_change_batch(
+    document: &mut AutoCommit,
+    changes: Vec<Change>,
+) -> Result<Vec<ChangeHash>, RoomDurabilityError> {
+    let mut seen = HashSet::new();
+    let missing = changes
+        .into_iter()
+        .filter(|change| seen.insert(change.hash()))
+        .filter(|change| document.get_change_by_hash(&change.hash()).is_none())
+        .collect::<Vec<_>>();
+    let hashes = missing.iter().map(Change::hash).collect::<Vec<_>>();
+    document
+        .apply_changes(missing)
+        .map_err(|error| RoomDurabilityError::InvalidSnapshot(error.to_string()))?;
+    Ok(hashes)
+}
+
 fn status_from_state(state: &DurabilityState) -> RoomDurabilityStatus {
     RoomDurabilityStatus {
         has_durable_record: state.has_durable_record,
@@ -1283,7 +1298,7 @@ fn status_from_state(state: &DurabilityState) -> RoomDurabilityStatus {
         source_generation: state.manifest.source_generation,
         source_phase: state.manifest.source_phase,
         source_fingerprint: state.manifest.source_fingerprint,
-        has_peer_changes: !state.manifest.peer_change_hashes.is_empty(),
+        has_peer_changes: state.manifest.peer_change_count > 0,
         degraded: state.degraded.clone(),
     }
 }
@@ -1330,19 +1345,13 @@ fn apply_mutation_to_manifest(manifest: &mut RecoveryManifest, mutation: Durable
             manifest.source_generation = generation;
             manifest.source_fingerprint = fingerprint;
             manifest.source_phase = RecoverySourcePhase::DurablyStaged;
-            manifest.staged_change_hashes = staged_change_hashes;
+            manifest.staged_change_count =
+                u64::try_from(staged_change_hashes.len()).unwrap_or(u64::MAX);
         }
         DurableMutation::Peer { change_hashes } => {
-            let mut seen = manifest
-                .peer_change_hashes
-                .iter()
-                .copied()
-                .collect::<HashSet<_>>();
-            for hash in change_hashes {
-                if seen.insert(hash) {
-                    manifest.peer_change_hashes.push(hash);
-                }
-            }
+            manifest.peer_change_count = manifest
+                .peer_change_count
+                .saturating_add(u64::try_from(change_hashes.len()).unwrap_or(u64::MAX));
         }
         DurableMutation::SourceReady { generation } => {
             manifest.source_generation = generation;
@@ -1378,11 +1387,13 @@ fn mutation_is_already_reflected(manifest: &RecoveryManifest, mutation: &Durable
         } => {
             manifest.source_generation == *generation
                 && manifest.source_fingerprint == *fingerprint
-                && manifest.staged_change_hashes == *staged_change_hashes
+                && manifest.staged_change_count
+                    == u64::try_from(staged_change_hashes.len()).unwrap_or(u64::MAX)
         }
-        DurableMutation::Peer { change_hashes } => change_hashes
-            .iter()
-            .all(|hash| manifest.peer_change_hashes.contains(hash)),
+        // The caller also requires exact durable-head equality. Equal heads
+        // prove these peer changes are already represented by the snapshot;
+        // the persisted count is diagnostic evidence, not a causal index.
+        DurableMutation::Peer { .. } => true,
         DurableMutation::SourceReady { generation } => {
             manifest.source_generation == *generation
                 && manifest.source_phase == RecoverySourcePhase::Ready
@@ -1504,10 +1515,7 @@ mod tests {
             RecoveryLoadOutcome::Match(recovered) => recovered,
             other => panic!("expected matching recovery, got {other:?}"),
         };
-        assert_eq!(
-            recovered.record.manifest.peer_change_hashes,
-            vec![change_hash]
-        );
+        assert_eq!(recovered.record.manifest.peer_change_count, 1);
         assert_eq!(recovered.record.automerge_snapshot, snapshot);
     }
 
@@ -1897,6 +1905,73 @@ mod tests {
     }
 
     #[test]
+    fn mixed_applicable_and_orphan_peer_batch_resolves_after_restart() {
+        let mut seed = AutoCommit::new();
+        seed.put(ROOT, "base", true).unwrap();
+        let base_heads = seed.get_heads();
+        let base_snapshot = seed.save();
+        let durability = RoomDurability::volatile(
+            Uuid::nil(),
+            base_snapshot.clone(),
+            base_heads.iter().map(|head| head.0).collect(),
+        );
+        let status_before = durability.status();
+
+        let mut applicable = AutoCommit::load(&base_snapshot)
+            .unwrap()
+            .with_actor(automerge::ActorId::from(b"applicable".as_slice()));
+        applicable.put(ROOT, "applicable", true).unwrap();
+        let mut mixed = applicable.get_changes(&base_heads);
+
+        let mut incomplete = AutoCommit::load(&base_snapshot)
+            .unwrap()
+            .with_actor(automerge::ActorId::from(b"incomplete".as_slice()));
+        incomplete.put(ROOT, "missing", 1_i64).unwrap();
+        let dependency_changes = incomplete.get_changes(&base_heads);
+        let dependency_heads = incomplete.get_heads();
+        incomplete.put(ROOT, "orphan", 2_i64).unwrap();
+        let orphan_changes = incomplete.get_changes(&dependency_heads);
+        mixed.extend(orphan_changes.clone());
+
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(mixed))
+            .expect("admitted out-of-order peer changes are durable");
+        assert_eq!(
+            durability.status().journal_sequence,
+            status_before.journal_sequence + 1
+        );
+
+        let pending_snapshot = durability.durable_snapshot();
+        let pending = AutoCommit::load(&pending_snapshot).expect("reload retained orphan");
+        assert!(pending
+            .get(ROOT, "applicable")
+            .is_ok_and(|value| value.is_some()));
+        assert!(pending
+            .get(ROOT, "orphan")
+            .is_ok_and(|value| value.is_none()));
+
+        let pending_status = durability.status();
+        let duplicate = durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(orphan_changes))
+            .expect("duplicate retained orphan is a no-op");
+        assert!(matches!(duplicate, DurableCommitOutcome::AlreadyDurable(_)));
+        assert_eq!(durability.status(), pending_status);
+        assert_eq!(
+            durability.durable_snapshot().as_ref(),
+            pending_snapshot.as_ref()
+        );
+
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(dependency_changes))
+            .expect("missing dependency resolves retained peer change");
+        let resolved_snapshot = durability.durable_snapshot();
+        let resolved = AutoCommit::load(&resolved_snapshot).expect("reload resolved peer changes");
+        for key in ["applicable", "missing", "orphan"] {
+            assert!(resolved.get(ROOT, key).is_ok_and(|value| value.is_some()));
+        }
+    }
+
+    #[test]
     fn stale_daemon_snapshot_cannot_regress_a_newer_peer_commit() {
         let mut older = AutoCommit::new();
         older.put(ROOT, "source", 1).unwrap();
@@ -1912,7 +1987,9 @@ mod tests {
         let peer_baseline = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&peer_baseline))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&peer_baseline),
+            ))
             .unwrap();
         let after_peer = durability.status();
 
@@ -1930,6 +2007,57 @@ mod tests {
             Some(2)
         );
         assert_eq!(durability.status().durable_heads, after_peer.durable_heads);
+    }
+
+    #[test]
+    fn recovered_large_peer_count_accepts_the_next_edit() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = RecoveryJournal::new(directory.path().join("room.recovery"));
+        let source = source_fingerprint(b"");
+        let mut document = AutoCommit::new();
+        document.put(ROOT, "existing", 1).unwrap();
+        let durable_heads = document.get_heads();
+        let durable_snapshot = document.save();
+        let mut manifest = RecoveryManifest::new(
+            2_251,
+            Uuid::new_v4(),
+            None,
+            notebook_doc::SCHEMA_VERSION,
+            source,
+            0,
+        );
+        manifest.peer_change_count = 2_251;
+        manifest.durable_heads = durable_heads.iter().map(|head| head.0).collect();
+        let durability = RoomDurability::recovered(
+            journal.clone(),
+            RecoveredJournalRecord {
+                record: super::super::recovery::RecoveryRecord {
+                    manifest,
+                    automerge_snapshot: durable_snapshot.clone(),
+                },
+                ignored_tail: None,
+            },
+        );
+
+        let mut peer = AutoCommit::load(&durable_snapshot).unwrap();
+        let baseline = peer.get_heads();
+        peer.put(ROOT, "next", 2).unwrap();
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&baseline),
+            ))
+            .unwrap();
+
+        assert_eq!(durability.manifest().peer_change_count, 2_252);
+        let latest = match journal.latest_record().unwrap() {
+            super::super::recovery::RecoveryLatestOutcome::Recovered(recovered) => recovered,
+            other => panic!("expected committed recovery record, got {other:?}"),
+        };
+        assert_eq!(latest.record.manifest.peer_change_count, 2_252);
+        assert_eq!(
+            latest.record.manifest.version,
+            super::super::recovery::RECOVERY_MANIFEST_VERSION
+        );
     }
 
     #[test]
@@ -2117,7 +2245,9 @@ mod tests {
         let peer_heads = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         let peer_changes = peer.get_changes(&peer_heads);
-        durability.commit_peer_changes(peer_changes).unwrap();
+        durability
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(peer_changes))
+            .unwrap();
 
         let mut staged = AutoCommit::load(&genesis_snapshot).unwrap();
         staged.put(ROOT, "source", 3).unwrap();
@@ -2208,7 +2338,9 @@ mod tests {
         let before_peer = peer.get_heads();
         peer.put(ROOT, "peer", 2).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&before_peer))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&before_peer),
+            ))
             .unwrap();
         let before_observed = durability.status();
 
@@ -2305,7 +2437,9 @@ mod tests {
         let before_peer = peer.get_heads();
         peer.put(ROOT, "peer", true).unwrap();
         durability
-            .commit_peer_changes(peer.get_changes(&before_peer))
+            .commit_peer_changes(AdmittedNotebookChanges::for_test(
+                peer.get_changes(&before_peer),
+            ))
             .unwrap();
         let before_conflict = durability.status();
 
@@ -2438,10 +2572,10 @@ mod tests {
             other => panic!("expected selected active recovery, got {other:?}"),
         };
         assert_eq!(
-            active.record.manifest.staged_change_hashes,
-            replacement_hashes
+            active.record.manifest.staged_change_count,
+            u64::try_from(replacement_hashes.len()).unwrap()
         );
-        assert!(active.record.manifest.peer_change_hashes.is_empty());
+        assert_eq!(active.record.manifest.peer_change_count, 0);
         assert_eq!(active.record.manifest.durable_heads, selected_heads);
         assert_eq!(active.record.manifest.exported_heads, selected_heads);
         assert_eq!(active.record.manifest.file_save_sequence, Some(12));
@@ -2451,10 +2585,7 @@ mod tests {
             RecoveryLoadOutcome::Match(recovered) => recovered,
             other => panic!("expected preserved archived recovery, got {other:?}"),
         };
-        assert_eq!(
-            archived_record.record.manifest.peer_change_hashes,
-            vec![peer_hash]
-        );
+        assert_eq!(archived_record.record.manifest.peer_change_count, 1);
         assert_eq!(
             archived_record.record.automerge_snapshot,
             recovered_snapshot

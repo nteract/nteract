@@ -632,6 +632,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "automerge-store"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "rusqlite",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "automunge"
 version = "0.5.3"
 dependencies = [

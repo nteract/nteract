@@ -3,6 +3,7 @@ import { Check, Pencil } from "lucide-react";
 import {
   memo,
   type ClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
@@ -40,6 +41,8 @@ import { useCellKeyboardNavigation } from "../hooks/useCellKeyboardNavigation";
 import { useCrdtBridge } from "../hooks/useCrdtBridge";
 import { useBlobResolver } from "../lib/blob-port";
 import {
+  getActiveInteractionTarget,
+  useIsCellEditorTarget,
   useIsCellFocused,
   useIsNextCellFromFocused,
   useIsPreviousCellFromFocused,
@@ -139,10 +142,18 @@ export function estimateMarkdownPreviewHeight(source: string): number {
 
 interface MarkdownCellProps {
   cell: MarkdownCellType;
+  /** Select the rendered cell without entering source-edit mode. */
+  onSelect?: () => void;
+  /** Publish source-editor interaction when edit mode is entered. */
   onFocus: () => void;
   onDelete?: () => void;
   onFocusPrevious?: (cursorPosition: "start" | "end") => void;
   onFocusNext?: (cursorPosition: "start" | "end") => void;
+  /** Move between rendered cell surfaces without entering source editing. */
+  onPreviewFocusPrevious?: () => void;
+  onPreviewFocusNext?: () => void;
+  /** Escape enters Jupyter-style command mode (in addition to exiting to preview). */
+  onEnterCommandMode?: () => void;
   onInsertCellAfter?: () => void;
   onChangeCellType?: (type: "code" | "markdown") => void;
   onUpdateSource?: (source: string) => void;
@@ -164,10 +175,14 @@ interface MarkdownCellProps {
 
 export const MarkdownCell = memo(function MarkdownCell({
   cell,
+  onSelect,
   onFocus,
   onDelete,
   onFocusPrevious,
   onFocusNext,
+  onPreviewFocusPrevious,
+  onPreviewFocusNext,
+  onEnterCommandMode,
   onInsertCellAfter,
   onChangeCellType,
   onUpdateSource,
@@ -186,6 +201,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const isFocused = useIsCellFocused(cell.id);
   const isPreviousCellFromFocused = useIsPreviousCellFromFocused(cell.id);
   const isNextCellFromFocused = useIsNextCellFromFocused(cell.id);
+  const isEditorTarget = useIsCellEditorTarget(cell.id);
   const searchQuery = useSearchQuery();
   const applyInlineFormatting = useCallback(
     (prefix: string, suffix = prefix) =>
@@ -258,6 +274,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const [draftPreviewSource, setDraftPreviewSource] = useState<string | null>(null);
   const [activeSourcePosition, setActiveSourcePosition] = useState<number | undefined>();
   const editorRef = useRef<CodeMirrorEditorRef>(null);
+  const commandModeTransitionRef = useRef(false);
   const previewSourcePositionRef = useRef<number | undefined>(undefined);
   const presence = usePresenceContext();
   const { extension: crdtBridgeExt, bridge } = useCrdtBridge(cell.id);
@@ -272,6 +289,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   const [previewFrameInteractionActive, setPreviewFrameInteractionActive] = useState(false);
   const [previewFrameReadyGeneration, setPreviewFrameReadyGeneration] = useState(0);
   const previewSource = draftPreviewSource ?? cell.source;
+  const selectCell = onSelect ?? onFocus;
 
   useEffect(() => {
     if (draftPreviewSource !== null && cell.source === draftPreviewSource) {
@@ -425,6 +443,36 @@ export const MarkdownCell = memo(function MarkdownCell({
     setEditing(true);
   }, [onFocus, readOnly]);
 
+  // Command-mode "Enter" leaves command mode by setting the interaction
+  // target to {kind:"editor"} directly (see useCommandMode), without going
+  // through enterEditing()/onFocus(). The editor for this cell is always
+  // mounted (just CSS-hidden while not editing), so entering edit mode here
+  // is required before that target's own focus request can land — a hidden
+  // element cannot receive DOM focus.
+  useEffect(() => {
+    if (readOnly) return;
+    if (!isEditorTarget) {
+      // Command mode has propagated through the reactive store. Future
+      // explicit {kind:"editor"} transitions (e.g. pressing Enter while the
+      // cell is selected) may enter editing again.
+      commandModeTransitionRef.current = false;
+      return;
+    }
+    // Hiding CodeMirror can synchronously emit focus/selection work that
+    // republishes the previous editor target before command mode has fully
+    // propagated. Do not let that transient target reopen the editor.
+    if (commandModeTransitionRef.current) return;
+    const currentTarget = getActiveInteractionTarget();
+    if (
+      isEditorTarget &&
+      currentTarget?.kind === "editor" &&
+      currentTarget.cellId === cell.id &&
+      !editing
+    ) {
+      enterEditing();
+    }
+  }, [cell.id, isEditorTarget, editing, enterEditing, readOnly]);
+
   const noteEditorSourcePosition = useCallback((position: number) => {
     previewSourcePositionRef.current = position;
   }, []);
@@ -441,23 +489,39 @@ export const MarkdownCell = memo(function MarkdownCell({
     setActiveSourcePosition(position);
   }, []);
 
+  // Returns whether the transition actually happened. Callers that also
+  // want to hand off to command mode (Escape) must check this — an empty
+  // cell with allowEmpty unset no-ops here and keeps the editor mounted
+  // and focused, so entering command mode in that case would desync the
+  // published interaction target from the still-focused editor.
   const exitEditingToPreview = useCallback(
-    (options?: { allowEmpty?: boolean }) => {
+    (options?: { allowEmpty?: boolean }): boolean => {
       const source = getCurrentEditorSource();
-      if (!source.trim() && !options?.allowEmpty) return;
+      if (!source.trim() && !options?.allowEmpty) return false;
       setDraftPreviewSource(source);
       revealEditorSourcePosition();
       setEditing(false);
+      return true;
     },
     [getCurrentEditorSource, revealEditorSourcePosition],
   );
 
+  const renderMarkdownAndEnterCommandMode = useCallback(() => {
+    commandModeTransitionRef.current = true;
+    exitEditingToPreview({ allowEmpty: true });
+    // Rendering a markdown cell removes its source editor from view. Move
+    // the shared interaction target out of {kind:"editor"} at the same time;
+    // otherwise the editor-target effect below observes editing=false with
+    // an editor target and immediately reopens the source editor.
+    onEnterCommandMode?.();
+  }, [exitEditingToPreview, onEnterCommandMode]);
+
   const handleRenderMarkdownMouseDown = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      exitEditingToPreview({ allowEmpty: true });
+      renderMarkdownAndEnterCommandMode();
     },
-    [exitEditingToPreview],
+    [renderMarkdownAndEnterCommandMode],
   );
 
   const releasePreviewFrameInteraction = useCallback(() => {
@@ -466,8 +530,8 @@ export const MarkdownCell = memo(function MarkdownCell({
 
   const activatePreviewFrameInteraction = useCallback(() => {
     setPreviewFrameInteractionActive(true);
-    onFocus();
-  }, [onFocus]);
+    selectCell();
+  }, [selectCell]);
 
   const handlePreviewWrapperPointerDown = useCallback(() => {
     activatePreviewFrameInteraction();
@@ -778,11 +842,17 @@ export const MarkdownCell = memo(function MarkdownCell({
         }
       }
 
-      if (e.key === "ArrowDown") {
-        onFocusNext?.("start");
+      if (e.key === "Escape") {
+        (e.currentTarget as HTMLElement).blur();
+        onEnterCommandMode?.();
+        e.preventDefault();
+      } else if (e.key === "ArrowDown") {
+        if (onPreviewFocusNext) onPreviewFocusNext();
+        else onFocusNext?.("start");
         e.preventDefault();
       } else if (e.key === "ArrowUp") {
-        onFocusPrevious?.("end");
+        if (onPreviewFocusPrevious) onPreviewFocusPrevious();
+        else onFocusPrevious?.("end");
         e.preventDefault();
       } else if (e.key === "Enter" && e.ctrlKey && !e.metaKey && !e.altKey) {
         setEditing(false);
@@ -800,7 +870,16 @@ export const MarkdownCell = memo(function MarkdownCell({
         e.preventDefault();
       }
     },
-    [enterEditing, onFocusNext, onFocusPrevious, readOnly, requestRenderedSourceComment],
+    [
+      enterEditing,
+      onEnterCommandMode,
+      onFocusNext,
+      onFocusPrevious,
+      onPreviewFocusNext,
+      onPreviewFocusPrevious,
+      readOnly,
+      requestRenderedSourceComment,
+    ],
   );
 
   const handleRenderedMarkdownCopy = useCallback(
@@ -848,6 +927,41 @@ export const MarkdownCell = memo(function MarkdownCell({
       }
     },
     [getCurrentEditorSource, isLastCell, onFocusNext, onInsertCellAfter, readOnly],
+  );
+
+  // Handle markdown lifecycle shortcuts in the capture phase, before
+  // CodeMirror's content DOM can consume them. Code cells can keep all of
+  // their shortcuts in CodeMirror because execution does not unmount/hide
+  // their editor; markdown Escape/execute transitions do, so they need a
+  // reliable owner outside the editor event pipeline.
+  const handleEditorKeyDownCapture = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.defaultPrevented) return;
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        renderMarkdownAndEnterCommandMode();
+        return;
+      }
+
+      if (event.key !== "Enter" || event.altKey) return;
+
+      if (event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        renderMarkdownAndEnterCommandMode();
+        handleFocusNextOrCreate("start");
+        return;
+      }
+
+      if (!event.shiftKey && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        renderMarkdownAndEnterCommandMode();
+      }
+    },
+    [handleFocusNextOrCreate, renderMarkdownAndEnterCommandMode],
   );
 
   // Remote cursors extension (stable, no deps that change)
@@ -910,7 +1024,10 @@ export const MarkdownCell = memo(function MarkdownCell({
   const navigationKeyMap = useCellKeyboardNavigation({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
     onFocusNext: handleFocusNextOrCreate,
-    onExecute: () => {}, // No-op for markdown, enables Shift+Enter navigation
+    // Markdown "execution" means rendering the current editor document.
+    // Shift-Enter renders then advances; Ctrl/Mod-Enter renders in place.
+    onExecute: renderMarkdownAndEnterCommandMode,
+    onExecuteInPlace: renderMarkdownAndEnterCommandMode,
     onDelete,
     cellId: cell.id,
   });
@@ -918,21 +1035,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Combine navigation with markdown-specific keys
   const keyMap: KeyBinding[] = useMemo(
     () => [
-      {
-        key: "Ctrl-Enter",
-        run: () => {
-          exitEditingToPreview({ allowEmpty: true });
-          return true;
-        },
-      },
       ...navigationKeyMap,
-      {
-        key: "Escape",
-        run: () => {
-          exitEditingToPreview();
-          return true;
-        },
-      },
       {
         key: "Mod-b",
         run: applyInlineFormatting("**"),
@@ -958,13 +1061,7 @@ export const MarkdownCell = memo(function MarkdownCell({
         run: applyQuoteFormatting,
       },
     ],
-    [
-      navigationKeyMap,
-      exitEditingToPreview,
-      applyInlineFormatting,
-      applyLinkFormatting,
-      applyQuoteFormatting,
-    ],
+    [navigationKeyMap, applyInlineFormatting, applyLinkFormatting, applyQuoteFormatting],
   );
 
   // Focus editor when entering edit mode (after initial mount)
@@ -1004,7 +1101,7 @@ export const MarkdownCell = memo(function MarkdownCell({
       isFocused={isFocused}
       isPreviousCellFromFocused={isPreviousCellFromFocused}
       isNextCellFromFocused={isNextCellFromFocused}
-      onFocus={onFocus}
+      onFocus={editing ? onFocus : selectCell}
       presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
@@ -1046,28 +1143,30 @@ export const MarkdownCell = memo(function MarkdownCell({
               <span className="text-xs text-muted-foreground font-mono">md</span>
             </div>
             <div>
-              <EditorContextMenu
-                cellId={cell.id}
-                cellType="markdown"
-                readOnly={readOnly}
-                onChangeCellType={onChangeCellType}
-                onCreateSourceComment={onCreateSourceComment}
-              >
-                <CodeMirrorEditor
-                  ref={editorRef}
-                  initialValue={cell.source}
-                  language="markdown"
-                  lineWrapping
-                  onSelectionChange={noteEditorSourcePosition}
-                  keyMap={keyMap}
-                  extensions={editorExtensions}
-                  contentAttributes={MARKDOWN_EDITOR_CONTENT_ATTRIBUTES}
-                  placeholder="Enter markdown..."
-                  className="min-h-[2rem]"
-                  autoFocus={editing}
+              <div onKeyDownCapture={handleEditorKeyDownCapture}>
+                <EditorContextMenu
+                  cellId={cell.id}
+                  cellType="markdown"
                   readOnly={readOnly}
-                />
-              </EditorContextMenu>
+                  onChangeCellType={onChangeCellType}
+                  onCreateSourceComment={onCreateSourceComment}
+                >
+                  <CodeMirrorEditor
+                    ref={editorRef}
+                    initialValue={cell.source}
+                    language="markdown"
+                    lineWrapping
+                    onSelectionChange={noteEditorSourcePosition}
+                    keyMap={keyMap}
+                    extensions={editorExtensions}
+                    contentAttributes={MARKDOWN_EDITOR_CONTENT_ATTRIBUTES}
+                    placeholder="Enter markdown..."
+                    className="min-h-[2rem]"
+                    autoFocus={editing}
+                    readOnly={readOnly}
+                  />
+                </EditorContextMenu>
+              </div>
             </div>
           </div>
 

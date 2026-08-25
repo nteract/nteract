@@ -986,6 +986,12 @@ export function NotebookViewer({
     },
     [cloudNotebookController],
   );
+  const handleCloudChangeCellType = useCallback(
+    (cellId: string, type: "code" | "markdown") => {
+      cloudNotebookController.setCellType(cellId, type);
+    },
+    [cloudNotebookController],
+  );
   const createCloudNotebookClient = useCallback(
     (action: string) => {
       const liveRuntime = liveRuntimeRef.current;
@@ -2002,6 +2008,7 @@ export function NotebookViewer({
                 onDeleteCell={handleCloudDeleteCell}
                 onAddCell={handleCloudAddCell}
                 onMoveCell={handleCloudMoveCell}
+                onChangeCellType={handleCloudChangeCellType}
                 onSetCellSourceHidden={handleCloudSetCellSourceHidden}
                 onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
                 onCreateSourceComment={commentsUiSurface.onCreateSourceComment}

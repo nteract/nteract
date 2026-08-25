@@ -5654,7 +5654,7 @@ impl Daemon {
             source_generation: manifest.source_generation,
             durable_head_count: manifest.durable_heads.len(),
             exported_head_count: manifest.exported_heads.len(),
-            peer_change_count: manifest.peer_change_hashes.len(),
+            peer_change_count: usize::try_from(manifest.peer_change_count).unwrap_or(usize::MAX),
             file_save_sequence: manifest.file_save_sequence,
             full_head_coverage: manifest.file_checkpoint_covers_durable_heads(),
             source_fingerprint_hex: manifest.source_fingerprint.to_hex(),
@@ -8255,7 +8255,11 @@ mod tests {
                 .into_iter()
                 .collect::<Vec<_>>()
         };
-        room.durability.commit_peer_changes(peer_changes).unwrap();
+        room.durability
+            .commit_peer_changes(
+                crate::notebook_sync_server::AdmittedNotebookChanges::for_test(peer_changes),
+            )
+            .unwrap();
         room.durability.manifest()
     }
 

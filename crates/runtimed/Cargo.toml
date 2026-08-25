@@ -115,7 +115,7 @@ jiter = { workspace = true }
 # pyproject.toml parsing for ProjectContext (handles PEP 508 specs with
 # commas inside bracket groups, which the prior line-scanner mangled).
 toml = { workspace = true }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
