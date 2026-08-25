@@ -1617,6 +1617,7 @@ describe("NotebookRoom peer lifecycle", () => {
       status_message: null,
       cpu_count: null,
       memory_bytes: null,
+      accelerators: null,
       working_directory: "/home/ubuntu/codex/nteract",
       runtime_session_id: "job-123",
       updated_at: runtimePeer.connectedAt,

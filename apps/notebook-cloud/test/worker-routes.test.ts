@@ -4250,6 +4250,7 @@ describe("Worker artifact routes", () => {
       status_message: "Waiting for Lab2 to accept the compute request.",
       cpu_count: 8,
       memory_bytes: 16_000_000_000,
+      accelerators: null,
       working_directory: "/home/ubuntu/project",
       updated_at: env.DB.workstationAttachJobs.get(body.job.job_id)?.updated_at,
     });
@@ -4758,6 +4759,7 @@ describe("Worker artifact routes", () => {
             status_message: "spawn failed",
             cpu_count: 8,
             memory_bytes: 16_000_000_000,
+            accelerators: null,
             working_directory: "/home/ubuntu/project",
             updated_at: env.DB.workstationAttachJobs.get("job-fail")?.updated_at,
           },
