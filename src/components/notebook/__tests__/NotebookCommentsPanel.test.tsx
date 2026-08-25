@@ -564,7 +564,7 @@ describe("NotebookCommentsPanel", () => {
 
     expect(screen.getByText("Claude Code")).toBeVisible();
     expect(screen.queryByText("AI")).not.toBeInTheDocument();
-    expect(screen.getByText("· for kylekelley")).toBeVisible();
+    expect(screen.getByText("on behalf of kylekelley")).toBeVisible();
   });
 
   it("falls back to the parsed actor label when no author resolver is given", () => {
@@ -676,7 +676,7 @@ describe("NotebookCommentsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show resolved (1)" }));
     expect(screen.getByTestId("comment-resolution-receipt")).toHaveAttribute(
       "aria-label",
-      expect.stringContaining("Claude Code for Ada marked as resolved"),
+      expect.stringContaining("Claude Code on behalf of Ada marked as resolved"),
     );
   });
 

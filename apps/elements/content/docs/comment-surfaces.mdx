@@ -49,13 +49,14 @@ notebook app wire the same props to live presence and the runtime.
 
 ## AI on behalf of a person
 
-Authorship is legible at a glance and impossible to fake. Each message shows an
-identity-colored avatar (the same color as that author's cursor and edits),
-name, and time. An agent uses the bot avatar plus a quiet `· for <person>` note,
-with a small principal badge on its avatar as the "acting on behalf of" cue. In
-the app, trust is earned: the daemon finalizes a comment against the
-authenticated connection before it's marked trusted, so "Claude Code · for Ada"
-is provable, not asserted.
+Authorship is legible at a glance and impossible to fake. Each message shows one
+avatar — the author's — in that author's identity color (the same color as their
+cursor and edits), name, and time. An agent wears its product's mark on that disc,
+or a neutral bot glyph for a product with no mark, and names the person it acts for
+in the line beside it rather than badging them onto its own avatar. In the app,
+trust is earned: the daemon finalizes a comment against the authenticated
+connection before it's marked trusted, so "Claude Code on behalf of Ada" is
+provable, not asserted.
 
 ## Anchors
 

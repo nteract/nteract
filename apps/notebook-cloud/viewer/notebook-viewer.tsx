@@ -243,8 +243,8 @@ function mapToCommentAuthor(display: ActorDisplay): CommentAuthor {
     color: display.color,
     imageUrl: display.imageUrl,
     isAgent: display.isAgent,
+    agentSlug: display.agentSlug,
     onBehalfOf: display.onBehalfOf,
-    onBehalfOfColor: display.onBehalfOfColor,
   };
 }
 
@@ -1325,8 +1325,8 @@ export function NotebookViewer({
               authorColor: author?.color,
               imageUrl: author?.imageUrl,
               isAgent: author?.isAgent,
+              agentSlug: author?.agentSlug,
               onBehalfOf: author?.onBehalfOf,
-              onBehalfOfColor: author?.onBehalfOfColor,
               body: firstMessage.body,
               replyCount: Math.max(0, thread.messages.length - 1),
             }

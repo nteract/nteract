@@ -1,6 +1,5 @@
 import {
   ArrowUp,
-  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -8,7 +7,7 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import { actorInitials, onBehalfOfText } from "runtimed";
+import { actorInitials, onBehalfOfPhrase } from "runtimed";
 import {
   useEffect,
   useRef,
@@ -28,6 +27,7 @@ import { projectMarkdownPlan } from "../../lib/markdown-projection";
 import { useColorTheme, useDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 import { highlight } from "@/components/editor/static-highlight";
+import { AgentBrandMark } from "@/components/comments/agent-brand-mark";
 import { ProjectedMarkdownView } from "../markdown/ProjectedMarkdownView";
 
 type SourceRangeCommentAnchor = Extract<CommentAnchor, { kind: "source_range" }>;
@@ -47,10 +47,10 @@ export interface CommentAuthor {
   imageUrl?: string | null;
   /** True when the author is an AI agent rather than a person. */
   isAgent?: boolean;
+  /** Brand slug of the agent product (`claude-code`), for its mark. */
+  agentSlug?: string | null;
   /** Principal the agent is acting for, when operating on someone's behalf. */
   onBehalfOf?: string | null;
-  /** Color of the principal the agent acts for (for the on-behalf-of badge). */
-  onBehalfOfColor?: string | null;
 }
 
 export interface NotebookCommentsPanelProps {
@@ -529,7 +529,7 @@ function CommentResolutionReceipt({
   const resolverName = author?.displayName ?? "Someone";
   const resolverIdentity =
     author?.isAgent && author.onBehalfOf
-      ? `${resolverName}${onBehalfOfText(author.onBehalfOf)}`
+      ? `${resolverName} ${onBehalfOfPhrase(author.onBehalfOf)}`
       : resolverName;
   const resolutionLabel = `${resolverIdentity} marked as resolved${resolvedTime ? ` · ${resolvedTime}` : ""}`;
   return (
@@ -587,8 +587,10 @@ function CommentMessage({
             {author?.displayName ?? "Unknown"}
           </span>
           {author?.isAgent && author.onBehalfOf ? (
+            // The agent is the author; the principal it acts for belongs in the name
+            // line, spelled out, so the comment reads as accountable to a person.
             <span className="text-[10px] text-muted-foreground">
-              ·{onBehalfOfText(author.onBehalfOf)}
+              {onBehalfOfPhrase(author.onBehalfOf)}
             </span>
           ) : null}
           <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
@@ -603,41 +605,22 @@ function CommentMessage({
 }
 
 function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
-  const face = (
+  // One avatar per message: the author's. An agent wears its own brand mark, and
+  // the person it acts for is named in the line beside it rather than badged onto
+  // the agent's face, so nothing competes with the author of the comment.
+  return (
     <div
-      className="flex size-5 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold text-white"
+      className="mt-0.5 flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-full text-[9px] font-semibold text-white"
       style={{ backgroundColor: author.color ?? "hsl(var(--muted-foreground))" }}
+      aria-hidden="true"
     >
       {author.imageUrl ? (
         <img className="size-full rounded-full object-cover" src={author.imageUrl} alt="" />
       ) : author.isAgent ? (
-        <Bot className="size-3" />
+        <AgentBrandMark slug={author.agentSlug} className="size-3.5" />
       ) : (
         actorInitials(author.displayName)
       )}
-    </div>
-  );
-
-  // When an agent acts for someone, badge the principal in the corner,
-  // tinted with the principal's own color.
-  if (author.isAgent && author.onBehalfOf) {
-    return (
-      <div className="relative mt-0.5 size-5 shrink-0" aria-hidden="true">
-        {face}
-        <span
-          className="absolute -bottom-1 -right-1 flex size-3 items-center justify-center rounded-full text-[6px] font-bold text-white ring-2 ring-card"
-          style={{ backgroundColor: author.onBehalfOfColor ?? "hsl(var(--muted-foreground))" }}
-          title={`${author.displayName}${onBehalfOfText(author.onBehalfOf)}`}
-        >
-          {actorInitials(author.onBehalfOf).slice(0, 1)}
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-0.5 shrink-0" aria-hidden="true">
-      {face}
     </div>
   );
 }

@@ -595,8 +595,8 @@ function resolveCommentAuthor(actorLabel: string): CommentAuthor {
       color: CLAUDE_COLOR,
       imageUrl: null,
       isAgent: true,
+      agentSlug: "claude-code",
       onBehalfOf: "Ada",
-      onBehalfOfColor: ADA_COLOR,
     };
   }
   return { displayName: "Ada", color: ADA_COLOR, imageUrl: null };

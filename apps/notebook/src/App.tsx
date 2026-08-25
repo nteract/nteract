@@ -847,8 +847,8 @@ function AppContent() {
         color: display.color,
         imageUrl: display.imageUrl,
         isAgent: display.isAgent,
+        agentSlug: display.agentSlug,
         onBehalfOf: display.onBehalfOf,
-        onBehalfOfColor: display.onBehalfOfColor,
       };
     },
     [commentAuthorPeers, connectionScope],
@@ -895,8 +895,8 @@ function AppContent() {
               authorColor: author?.color,
               imageUrl: author?.imageUrl,
               isAgent: author?.isAgent,
+              agentSlug: author?.agentSlug,
               onBehalfOf: author?.onBehalfOf,
-              onBehalfOfColor: author?.onBehalfOfColor,
               body: firstMessage.body,
               replyCount: Math.max(0, thread.messages.length - 1),
             }

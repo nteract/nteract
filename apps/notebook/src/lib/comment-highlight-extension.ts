@@ -6,7 +6,8 @@ import {
   hoverTooltip,
   ViewPlugin,
 } from "@codemirror/view";
-import { actorInitials, onBehalfOfText } from "runtimed";
+import { actorInitials, onBehalfOfPhrase } from "runtimed";
+import { agentBrandMarkSvg } from "@/components/comments/agent-brand-mark";
 import { RAIL_TAKEOVER_MEDIA_QUERY } from "@/components/rail";
 
 /** Compact thread summary shown when hovering a highlighted range. */
@@ -15,8 +16,8 @@ export interface CommentHighlightPreview {
   authorColor?: string;
   imageUrl?: string | null;
   isAgent?: boolean;
+  agentSlug?: string | null;
   onBehalfOf?: string | null;
-  onBehalfOfColor?: string | null;
   body: string;
   replyCount: number;
 }
@@ -127,9 +128,6 @@ function activateThreadAt(
   return true;
 }
 
-const BOT_ICON_SVG =
-  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>';
-
 function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText =
@@ -140,7 +138,7 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
 
   const avatar = document.createElement("span");
   avatar.style.cssText =
-    "position:relative;flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
+    "flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
   avatar.style.backgroundColor = preview.authorColor ?? "var(--muted-foreground, #737373)";
   if (preview.imageUrl) {
     const image = document.createElement("img");
@@ -149,19 +147,12 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
     image.style.cssText = "width:100%;height:100%;border-radius:50%;object-fit:cover;";
     avatar.appendChild(image);
   } else if (preview.isAgent) {
-    avatar.innerHTML = BOT_ICON_SVG;
+    // Same registry as the Discussions panel, so an agent wears one mark in both
+    // places, and the person it acts for is named in the line rather than badged
+    // onto the agent's face.
+    avatar.innerHTML = agentBrandMarkSvg(preview.agentSlug, 12);
   } else {
     avatar.textContent = actorInitials(preview.authorName);
-  }
-
-  if (preview.isAgent && preview.onBehalfOf) {
-    const badge = document.createElement("span");
-    badge.style.cssText =
-      "position:absolute;bottom:-3px;right:-3px;width:11px;height:11px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:6px;font-weight:700;box-shadow:0 0 0 2px var(--popover, #ffffff);";
-    badge.style.backgroundColor =
-      preview.onBehalfOfColor ?? "var(--muted-foreground, #737373)";
-    badge.textContent = actorInitials(preview.onBehalfOf).slice(0, 1);
-    avatar.appendChild(badge);
   }
   head.appendChild(avatar);
 
@@ -171,9 +162,11 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   head.appendChild(name);
 
   if (preview.isAgent) {
+    // Same name line as the Discussions panel: the principal an agent acts for is
+    // spelled out, and bare "AI" only stands in when it acts for itself.
     const meta = document.createElement("span");
     meta.style.cssText = "font-size:10px;color:var(--muted-foreground, #737373);";
-    meta.textContent = `AI${onBehalfOfText(preview.onBehalfOf)}`;
+    meta.textContent = onBehalfOfPhrase(preview.onBehalfOf) || "AI";
     head.appendChild(meta);
   }
   root.appendChild(head);

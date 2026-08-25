@@ -1,9 +1,10 @@
 import {
   notebookActorIdentityFromProjection,
   notebookActorProjectionFromLabel,
+  notebookAgentBrandSlug,
   type NotebookActorKind,
 } from "./notebook-actor-projection";
-import { CURSOR_COLORS, colorForActorIdentity } from "./notebook-actor-color";
+import { colorForActorIdentity } from "./notebook-actor-color";
 
 export interface ActorDisplayPeer {
   participantKey: string;
@@ -22,8 +23,9 @@ export interface ActorDisplay {
   principalId: string;
   kind: NotebookActorKind;
   isAgent: boolean;
+  /** Brand slug of the agent product (`claude-code`, `codex`), for its mark. */
+  agentSlug: string | null;
   onBehalfOf: string | null;
-  onBehalfOfColor: string | null;
   color: string;
   initials: string;
   imageUrl: string | null;
@@ -50,21 +52,12 @@ export function resolveActorDisplay({
     principalId,
     kind: identity.kind,
     isAgent,
+    agentSlug: isAgent ? notebookAgentBrandSlug(projection.operator.id) : null,
     onBehalfOf,
-    onBehalfOfColor: onBehalfOf
-      ? distinctActorColor(colorForActorIdentity(projection.principal.id), color)
-      : null,
     color,
     initials: actorInitials(displayName),
     imageUrl: peer?.imageUrl ?? null,
   };
-}
-
-function distinctActorColor(candidate: string, actorColor: string): string {
-  if (candidate !== actorColor) return candidate;
-  const index = CURSOR_COLORS.findIndex((color) => color === candidate);
-  if (index === -1) return candidate;
-  return CURSOR_COLORS[(index + 1) % CURSOR_COLORS.length];
 }
 
 function peerForPrincipal(
