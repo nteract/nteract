@@ -267,8 +267,8 @@ promotion, and garbage-collection cases cover their recovery responsibilities.
 - The current peer-ingress path durably commits before acknowledgment and rolls
   back document plus sync state on failure.
 - The storage contract has a strict SQLite implementation with immutable,
-  head-addressed snapshots and incrementals, atomic application state, explicit
-  schema admission, and transactional compaction.
+  head-addressed snapshots, content-addressed incrementals, atomic application
+  state, explicit schema admission, and transactional compaction.
 - Network-authored notebook changes cross a typed admission boundary before
   they can reach durability. This changes no room authorization policy; it
   makes the existing policy structurally harder to bypass.

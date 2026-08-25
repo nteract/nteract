@@ -153,6 +153,11 @@ pub enum StoreError {
     },
     #[error("document {0} produced an empty incremental save for new changes")]
     EmptyIncremental(DocumentId),
+    #[error("document {document_id} batch has {unresolved} changes with unresolved dependencies")]
+    UnresolvedChanges {
+        document_id: DocumentId,
+        unresolved: usize,
+    },
     #[error("document {0} commit sequence is exhausted")]
     SequenceExhausted(DocumentId),
     #[error("SQLite refused WAL journal mode and selected {0:?}")]
@@ -187,12 +192,27 @@ impl SqliteDocumentStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    fn load_with_after_metadata<F>(
+        &self,
+        document_id: DocumentId,
+        after_metadata: F,
+    ) -> Result<Option<StoredDocument>, StoreError>
+    where
+        F: FnOnce(),
+    {
+        let mut connection = self.lock_connection();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let loaded = load_document_after_metadata(&transaction, document_id, after_metadata)?
+            .map(LoadedDocument::stored);
+        transaction.commit()?;
+        Ok(loaded)
+    }
 }
 
 impl AutomergeDocumentStore for SqliteDocumentStore {
     fn load(&self, document_id: DocumentId) -> Result<Option<StoredDocument>, StoreError> {
-        let connection = self.lock_connection();
-        load_document(&connection, document_id).map(|loaded| loaded.map(LoadedDocument::stored))
+        self.load_with_after_metadata(document_id, || {})
     }
 
     fn commit(&self, request: CommitRequest) -> Result<CommitReceipt, StoreError> {
@@ -219,7 +239,18 @@ impl AutomergeDocumentStore for SqliteDocumentStore {
         }
 
         if !missing.is_empty() {
+            let missing_hashes = missing.iter().map(Change::hash).collect::<Vec<_>>();
             loaded.document.apply_changes(missing)?;
+            let unresolved = missing_hashes
+                .iter()
+                .filter(|hash| loaded.document.get_change_by_hash(hash).is_none())
+                .count();
+            if unresolved > 0 {
+                return Err(StoreError::UnresolvedChanges {
+                    document_id: request.document_id,
+                    unresolved,
+                });
+            }
             let incremental = loaded.document.save_after(&previous_heads);
             if incremental.is_empty() {
                 return Err(StoreError::EmptyIncremental(request.document_id));
@@ -367,7 +398,8 @@ fn configure_connection(connection: &Connection) -> Result<(), StoreError> {
 }
 
 fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
-    let schema_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let schema_version: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if schema_version > STORE_SCHEMA_VERSION {
         return Err(StoreError::UnsupportedSchemaVersion {
             actual: schema_version,
@@ -375,7 +407,6 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
         });
     }
 
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS documents (
              document_id      BLOB PRIMARY KEY NOT NULL CHECK(length(document_id) = 16),
@@ -406,6 +437,17 @@ fn load_document(
     connection: &Connection,
     document_id: DocumentId,
 ) -> Result<Option<LoadedDocument>, StoreError> {
+    load_document_after_metadata(connection, document_id, || {})
+}
+
+fn load_document_after_metadata<F>(
+    connection: &Connection,
+    document_id: DocumentId,
+    after_metadata: F,
+) -> Result<Option<LoadedDocument>, StoreError>
+where
+    F: FnOnce(),
+{
     let metadata = connection
         .query_row(
             "SELECT sequence, durable_heads, application_state
@@ -423,6 +465,7 @@ fn load_document(
     let Some((sequence, encoded_heads, application_state)) = metadata else {
         return Ok(None);
     };
+    after_metadata();
     let sequence =
         u64::try_from(sequence).map_err(|_| StoreError::SequenceExhausted(document_id))?;
     let durable_heads = decode_heads(document_id, &encoded_heads)?;
@@ -633,7 +676,7 @@ fn hex_hash(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use automerge::{transaction::Transactable, ActorId, ReadDoc, ROOT};
-    use std::sync::{Arc, Barrier};
+    use std::sync::{mpsc, Arc, Barrier};
     use tempfile::TempDir;
 
     struct TestStore {
@@ -893,6 +936,73 @@ mod tests {
     }
 
     #[test]
+    fn load_keeps_metadata_and_chunks_on_one_sqlite_snapshot() {
+        let test = TestStore::new();
+        let second_store = SqliteDocumentStore::open(&test.path)
+            .unwrap_or_else(|error| panic!("open second document store: {error}"));
+        let document_id = DocumentId::new(Uuid::new_v4());
+        let mut seed = seed_document();
+        let base_heads = seed.get_heads();
+        let base_snapshot = seed.save();
+        install(&test.store, document_id, &mut seed, b"base");
+
+        let mut updated = AutoCommit::load(&base_snapshot)
+            .unwrap_or_else(|error| panic!("load writer branch: {error}"))
+            .with_actor(actor(b"writer"));
+        updated
+            .put(ROOT, "writer", true)
+            .unwrap_or_else(|error| panic!("writer change: {error}"));
+        let writer_changes = updated.get_changes(&base_heads);
+        let (metadata_seen_tx, metadata_seen_rx) = mpsc::channel();
+        let (writer_done_tx, writer_done_rx) = mpsc::channel();
+
+        let (loaded, receipt) = std::thread::scope(|scope| {
+            let reader_store = &test.store;
+            let reader = scope.spawn(move || {
+                reader_store.load_with_after_metadata(document_id, move || {
+                    metadata_seen_tx
+                        .send(())
+                        .unwrap_or_else(|error| panic!("signal metadata read: {error}"));
+                    writer_done_rx
+                        .recv()
+                        .unwrap_or_else(|error| panic!("wait for writer: {error}"));
+                })
+            });
+            let writer_store = &second_store;
+            let writer = scope.spawn(move || {
+                metadata_seen_rx
+                    .recv()
+                    .unwrap_or_else(|error| panic!("wait for metadata read: {error}"));
+                let receipt = writer_store.commit(CommitRequest {
+                    document_id,
+                    changes: writer_changes,
+                    application_state: b"updated".to_vec(),
+                });
+                writer_done_tx
+                    .send(())
+                    .unwrap_or_else(|error| panic!("signal writer completion: {error}"));
+                receipt
+            });
+            let loaded = reader
+                .join()
+                .unwrap_or_else(|_| panic!("reader thread panicked"))
+                .unwrap_or_else(|error| panic!("load one SQLite snapshot: {error}"))
+                .unwrap_or_else(|| panic!("document {document_id} should exist"));
+            let receipt = writer
+                .join()
+                .unwrap_or_else(|_| panic!("writer thread panicked"))
+                .unwrap_or_else(|error| panic!("commit concurrent writer: {error}"));
+            (loaded, receipt)
+        });
+
+        assert_eq!(loaded.durable_heads, canonical_heads(&base_heads));
+        assert_eq!(loaded.application_state, b"base");
+        let current = load_doc(&test.store, document_id);
+        assert_eq!(current.durable_heads, receipt.durable_heads);
+        assert_eq!(current.application_state, b"updated");
+    }
+
+    #[test]
     fn invalid_dependent_change_rolls_back_history_and_application_state() {
         let test = TestStore::new();
         let document_id = DocumentId::new(Uuid::new_v4());
@@ -922,6 +1032,56 @@ mod tests {
             result.is_err(),
             "incomplete batch unexpectedly committed: {result:?}"
         );
+
+        let reloaded = load_doc(&test.store, document_id);
+        assert_eq!(reloaded.application_state, b"stable");
+        assert_eq!(reloaded.durable_heads, canonical_heads(&durable_heads));
+        assert_eq!(reloaded.sequence, 1);
+        assert_eq!(test.chunk_count(document_id), chunks_before);
+    }
+
+    #[test]
+    fn mixed_applicable_and_orphan_changes_roll_back_the_whole_batch() {
+        let test = TestStore::new();
+        let document_id = DocumentId::new(Uuid::new_v4());
+        let mut stored = seed_document();
+        let durable_heads = stored.get_heads();
+        let snapshot = stored.save();
+        install(&test.store, document_id, &mut stored, b"stable");
+        let chunks_before = test.chunk_count(document_id);
+
+        let mut applicable = AutoCommit::load(&snapshot)
+            .unwrap_or_else(|error| panic!("load applicable branch: {error}"))
+            .with_actor(actor(b"applicable"));
+        applicable
+            .put(ROOT, "applicable", true)
+            .unwrap_or_else(|error| panic!("applicable change: {error}"));
+        let mut mixed = applicable.get_changes(&durable_heads);
+
+        let mut incomplete = AutoCommit::load(&snapshot)
+            .unwrap_or_else(|error| panic!("load incomplete branch: {error}"))
+            .with_actor(actor(b"incomplete-mixed"));
+        incomplete
+            .put(ROOT, "missing", 1_i64)
+            .unwrap_or_else(|error| panic!("missing dependency change: {error}"));
+        let dependency_heads = incomplete.get_heads();
+        incomplete
+            .put(ROOT, "orphan", 2_i64)
+            .unwrap_or_else(|error| panic!("orphan change: {error}"));
+        mixed.extend(incomplete.get_changes(&dependency_heads));
+
+        let result = test.store.commit(CommitRequest {
+            document_id,
+            changes: mixed,
+            application_state: b"must-not-land".to_vec(),
+        });
+        assert!(matches!(
+            result,
+            Err(StoreError::UnresolvedChanges {
+                document_id: failed_id,
+                unresolved: 1,
+            }) if failed_id == document_id
+        ));
 
         let reloaded = load_doc(&test.store, document_id);
         assert_eq!(reloaded.application_state, b"stable");

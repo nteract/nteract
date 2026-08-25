@@ -19,8 +19,14 @@ use super::recovery::{
 };
 
 const NOTEBOOK_APPLICATION_STATE_FORMAT_VERSION: u16 = 1;
+const NOTEBOOK_APPLICATION_STATE_RECOVERY_MANIFEST_VERSION: u16 = 2;
 const AUTHORITY_EPOCH: u16 = 1;
 pub(crate) const MAX_NOTEBOOK_APPLICATION_STATE_BYTES: usize = 256 * 1024;
+
+// A RecoveryManifest semantic change requires an explicit application-state
+// migration decision instead of silently restamping old bytes on decode.
+const _: () =
+    assert!(NOTEBOOK_APPLICATION_STATE_RECOVERY_MANIFEST_VERSION == RECOVERY_MANIFEST_VERSION);
 
 /// Immutable provenance of the first authoritative repository generation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,7 +243,7 @@ pub(crate) fn decode_notebook_application_state(
         .transpose()?;
 
     let manifest = RecoveryManifest {
-        version: RECOVERY_MANIFEST_VERSION,
+        version: NOTEBOOK_APPLICATION_STATE_RECOVERY_MANIFEST_VERSION,
         sequence: store_sequence,
         notebook_id: encoded.notebook_id,
         canonical_path: encoded.canonical_path,

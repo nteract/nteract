@@ -32,10 +32,16 @@ pub(super) enum TrustedNotebookChangeSource {
     RuntimeAgent,
 }
 
+/// Unchecked stamp for daemon-owned ingress that has no authenticated room
+/// connection. Keep call sites limited to the exhaustive internal sources
+/// below; network ingress must use `RoomConnectionIdentity` admission.
 pub(super) fn admit_trusted_notebook_changes(
     changes: Vec<Change>,
-    _source: TrustedNotebookChangeSource,
+    source: TrustedNotebookChangeSource,
 ) -> AdmittedNotebookChanges {
+    match source {
+        TrustedNotebookChangeSource::FileWatcher | TrustedNotebookChangeSource::RuntimeAgent => {}
+    }
     AdmittedNotebookChanges(changes)
 }
 
