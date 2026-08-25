@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils";
  * Class string for the "comment on selection" affordance, taken straight from the
  * shared badge primitive (`components/ui/badge.tsx`) so the affordance reads as the
  * same badge used everywhere else: `rounded-md`, `text-xs`, `font-medium`, on the
- * primary fill with the standard `focus-visible` ring.
+ * primary fill. The fixed outer affordance button owns the focus-visible ring so
+ * that ring remains usable while this inner visual morphs.
  *
  * Lives in its own module because both planes need it: the React
  * rendered-markdown plane (`CommentSelectionAffordance`) and the CodeMirror source
@@ -14,5 +15,5 @@ import { cn } from "@/lib/utils";
  */
 export const COMMENT_SELECTION_BADGE_CLASS = cn(
   badgeVariants(),
-  "comment-affordance-badge cursor-pointer select-none whitespace-nowrap",
+  "comment-affordance-badge select-none whitespace-nowrap",
 );

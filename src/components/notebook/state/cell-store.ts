@@ -143,6 +143,40 @@ export function useCell(id: string): NotebookStoreCell | undefined {
 }
 
 /**
+ * Subscribe a derived surface to a bounded set of cells without promoting it
+ * to the global source-version stream. The returned counter changes whenever
+ * one of the selected cell snapshots changes; updates to every other cell stay
+ * on their per-entity path.
+ */
+export function useCellProjectionVersion(ids: readonly string[]): number {
+  const idsKey = [...new Set(ids)].sort().join("\u001f");
+  const selectedIds = useMemo(() => (idsKey ? idsKey.split("\u001f") : []), [idsKey]);
+  const subscribe = useMemo(
+    () => (callback: () => void) => {
+      const unsubscribe = selectedIds.map((id) => subscribeCellById(id)(callback));
+      return () => {
+        for (const stop of unsubscribe) stop();
+      };
+    },
+    [selectedIds],
+  );
+  const getSnapshot = useMemo(() => {
+    let version = 0;
+    let snapshots = selectedIds.map((id) => _cellMap.get(id));
+    return () => {
+      const nextSnapshots = selectedIds.map((id) => _cellMap.get(id));
+      if (nextSnapshots.some((cell, index) => cell !== snapshots[index])) {
+        snapshots = nextSnapshots;
+        version += 1;
+      }
+      return version;
+    };
+  }, [selectedIds]);
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+/**
  * Subscribe to the cell chrome version counter. Re-renders on
  * replaceNotebookCells / updateNotebookCells and on per-cell updateCellById
  * when the update changes cell chrome. Useful for cross-cell derived state.

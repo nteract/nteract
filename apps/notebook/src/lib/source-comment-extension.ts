@@ -94,23 +94,23 @@ function sourceCommentTooltips(
       strictSide: false,
       create(view) {
         // Same markup as the rendered-markdown plane's CommentSelectionAffordance:
-        // a wrapper the shared CSS lays out (styles/comment-affordance.css) around a
-        // "Comment" badge. CodeMirror wraps the root in a .cm-tooltip; the shared CSS
-        // strips that wrapper's chrome so only the badge shows.
-        const root = document.createElement("span");
-        root.className = leftward
-          ? "comment-affordance comment-affordance-flip"
-          : "comment-affordance";
+        // a fixed hit-target button around the morphing "Comment" badge. CodeMirror
+        // wraps the root in a .cm-tooltip; the shared CSS strips that chrome.
         const button = document.createElement("button");
         button.type = "button";
-        button.className = COMMENT_SELECTION_BADGE_CLASS;
+        button.className = leftward
+          ? "comment-affordance comment-affordance-flip"
+          : "comment-affordance";
         button.setAttribute("aria-label", "Add comment on selection");
         button.setAttribute("data-testid", "source-comment-button");
+        const badge = document.createElement("span");
+        badge.className = COMMENT_SELECTION_BADGE_CLASS;
+        badge.setAttribute("aria-hidden", "true");
         const label = document.createElement("span");
         label.className = "comment-affordance-label";
         label.textContent = "Comment";
-        button.appendChild(label);
-        root.appendChild(button);
+        badge.appendChild(label);
+        button.appendChild(badge);
         button.addEventListener("mousedown", (event) => {
           event.preventDefault();
         });
@@ -123,9 +123,9 @@ function sourceCommentTooltips(
         // wired once CodeMirror has put the tooltip in the DOM.
         let disposeMotion: (() => void) | null = null;
         return {
-          dom: root,
+          dom: button,
           mount() {
-            disposeMotion = wireCommentAffordanceMotion(button);
+            disposeMotion = wireCommentAffordanceMotion(badge);
           },
           destroy() {
             disposeMotion?.();

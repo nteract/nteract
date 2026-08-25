@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { NotebookCommentsPanel } from "../NotebookCommentsPanel";
 import type { CommentsProjection } from "../comment-types";
@@ -330,9 +331,15 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByText("Check the framing before publishing.")).toBeVisible();
     expect(screen.getByText("alice")).toBeVisible();
     expect(screen.getByText("Cell-scoped comment")).toBeVisible();
-    expect(screen.queryByLabelText("Reply to Document comment 1")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "Reply to Document comment 1" }),
+    ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Document comment 1" }));
+    const selectedThread = screen.getAllByRole("listitem")[0];
+    expect(selectedThread).toHaveAttribute("data-selected", "true");
+    expect(selectedThread.className).toContain("--sev-info");
+    expect(selectedThread.className).not.toContain("bg-info");
     await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
     fireEvent.change(screen.getByLabelText("Reply to Document comment 1"), {
       target: { value: "Looks ready locally" },
@@ -347,7 +354,7 @@ describe("NotebookCommentsPanel", () => {
     expect(onResolveThread).toHaveBeenCalledWith("thread-1");
   });
 
-  it("does not open the reply composer for a focused thread", () => {
+  it("opens a focused thread without stealing focus into its reply composer", async () => {
     render(
       <NotebookCommentsPanel
         projection={projection}
@@ -357,15 +364,15 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    expect(screen.queryByLabelText("Reply to Document comment 1")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Reply" })[0]).toBeVisible();
+    const reply = await screen.findByRole("textbox", { name: "Reply to Document comment 1" });
+    expect(reply).not.toHaveFocus();
   });
 
   it("submits replies with Ctrl Enter", async () => {
     const onReplyThread = vi.fn();
     render(<NotebookCommentsPanel projection={projection} onReplyThread={onReplyThread} />);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Document comment 1" }));
     await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
     const reply = screen.getByLabelText("Reply to Document comment 1");
     fireEvent.change(reply, {
@@ -382,7 +389,7 @@ describe("NotebookCommentsPanel", () => {
     const onReplyThread = vi.fn();
     render(<NotebookCommentsPanel projection={projection} onReplyThread={onReplyThread} />);
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Document comment 1" }));
     await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
     const reply = screen.getByLabelText("Reply to Document comment 1");
     fireEvent.change(reply, {
@@ -392,16 +399,43 @@ describe("NotebookCommentsPanel", () => {
     fireEvent.keyDown(reply, { key: "Escape" });
 
     await waitFor(() =>
-      expect(screen.queryByLabelText("Reply to Document comment 1")).not.toBeInTheDocument(),
+      expect(
+        screen.queryByRole("textbox", { name: "Reply to Document comment 1" }),
+      ).not.toBeInTheDocument(),
     );
     expect(onReplyThread).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Document comment 1" }));
     await waitFor(() => expect(screen.getByLabelText("Reply to Document comment 1")).toHaveFocus());
     expect(screen.getByLabelText("Reply to Document comment 1")).toHaveValue("");
   });
 
-  it("renders source excerpts on source range threads", () => {
+  it("preserves unsent reply drafts independently while switching threads", async () => {
+    render(<NotebookCommentsPanel projection={projection} onReplyThread={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Document comment 1" }));
+    const documentReply = await screen.findByRole("textbox", {
+      name: "Reply to Document comment 1",
+    });
+    fireEvent.change(documentReply, { target: { value: "Document thread draft" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Cell comment 1" }));
+    const cellReply = await screen.findByRole("textbox", { name: "Reply to Cell comment 1" });
+    fireEvent.change(cellReply, { target: { value: "Cell thread draft" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Document comment 1" }));
+    expect(await screen.findByRole("textbox", { name: "Reply to Document comment 1" })).toHaveValue(
+      "Document thread draft",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Cell comment 1" }));
+    expect(await screen.findByRole("textbox", { name: "Reply to Cell comment 1" })).toHaveValue(
+      "Cell thread draft",
+    );
+  });
+
+  it("renders source excerpts and activates their Show cell control from the keyboard", async () => {
+    const user = userEvent.setup();
     const onFocusThreadAnchor = vi.fn();
     const sourceThread = {
       ...projection.threads[0],
@@ -427,7 +461,10 @@ describe("NotebookCommentsPanel", () => {
     );
 
     expect(screen.getByTestId("comment-thread-source-quote")).toHaveTextContent("important_call()");
-    fireEvent.click(screen.getByRole("button", { name: "Show cell for Source comment 1" }));
+    const showCell = screen.getByRole("button", { name: "Show cell for Source comment 1" });
+    showCell.focus();
+    expect(showCell).toHaveFocus();
+    await user.keyboard("{Enter}");
     expect(onFocusThreadAnchor).toHaveBeenCalledWith(sourceThread);
   });
 
@@ -482,7 +519,46 @@ describe("NotebookCommentsPanel", () => {
     expect(rendered).toEqual(["first-cell-line-2", "first-cell-line-9", "second-cell", "document"]);
   });
 
-  it("reveals the referenced cell when a thread card is clicked", () => {
+  it("orders repaired source anchors by their live positions", () => {
+    const sourceThread = (id: string, line: number) => ({
+      ...projection.threads[0],
+      id,
+      anchor: {
+        kind: "source_range" as const,
+        cell_id: "cell-a",
+        start_line: line,
+        start_column: 0,
+        end_line: line,
+        end_column: 4,
+        exact_quote: id,
+      },
+      badge_cell_ids: ["cell-a"],
+      messages: [{ ...projection.threads[0].messages[0], id: `message-${id}`, body: id }],
+    });
+
+    render(
+      <NotebookCommentsPanel
+        projection={{
+          ...projection,
+          threads: [sourceThread("moved-later", 1), sourceThread("moved-earlier", 9)],
+        }}
+        cellIds={["cell-a"]}
+        resolveSourcePosition={(anchor) => ({
+          line: anchor.exact_quote === "moved-earlier" ? 2 : 8,
+          column: 0,
+        })}
+      />,
+    );
+
+    const rendered = screen
+      .getAllByRole("listitem")
+      .map((item) => item.textContent ?? "")
+      .map((text) => ["moved-earlier", "moved-later"].find((id) => text.includes(id)));
+    expect(rendered).toEqual(["moved-earlier", "moved-later"]);
+  });
+
+  it("activates a cell thread's explicit Show cell control from the keyboard", async () => {
+    const user = userEvent.setup();
     const onFocusThreadAnchor = vi.fn();
     const cellThread = projection.threads[1];
     render(
@@ -493,7 +569,39 @@ describe("NotebookCommentsPanel", () => {
     );
 
     fireEvent.click(screen.getByText("Cell-scoped comment"));
+    expect(onFocusThreadAnchor).not.toHaveBeenCalled();
+
+    const showCell = screen.getByRole("button", { name: "Show cell for Cell comment 1" });
+    showCell.focus();
+    expect(showCell).toHaveFocus();
+    await user.keyboard("{Enter}");
     expect(onFocusThreadAnchor).toHaveBeenCalledWith(cellThread);
+  });
+
+  it("offers the same explicit Show cell control for output threads", async () => {
+    const user = userEvent.setup();
+    const onFocusThreadAnchor = vi.fn();
+    const outputThread = {
+      ...projection.threads[1],
+      id: "thread-output",
+      anchor: {
+        kind: "output" as const,
+        cell_id: "cell-1",
+        output_id: "output-1",
+      },
+    };
+    render(
+      <NotebookCommentsPanel
+        projection={{ ...projection, threads: [outputThread] }}
+        onFocusThreadAnchor={onFocusThreadAnchor}
+      />,
+    );
+
+    const showCell = screen.getByRole("button", { name: "Show cell for Output comment 1" });
+    showCell.focus();
+    expect(showCell).toHaveFocus();
+    await user.keyboard(" ");
+    expect(onFocusThreadAnchor).toHaveBeenCalledWith(outputThread);
   });
 
   it("does not reveal the referenced cell when a thread's own control is clicked", () => {
@@ -507,7 +615,7 @@ describe("NotebookCommentsPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reply to Cell comment 1" }));
     expect(onFocusThreadAnchor).not.toHaveBeenCalled();
   });
 
@@ -565,6 +673,25 @@ describe("NotebookCommentsPanel", () => {
     expect(screen.getByText("Claude Code")).toBeVisible();
     expect(screen.queryByText("AI")).not.toBeInTheDocument();
     expect(screen.getByText("on behalf of kylekelley")).toBeVisible();
+  });
+
+  it("shows an agent brand mark instead of the principal profile image", () => {
+    render(
+      <NotebookCommentsPanel
+        projection={projection}
+        resolveCommentAuthor={() => ({
+          displayName: "Claude Code",
+          imageUrl: "https://profiles.example/kyle.png",
+          isAgent: true,
+          agentSlug: "claude-code",
+          onBehalfOf: "Kyle",
+        })}
+      />,
+    );
+
+    const message = screen.getByText("Check the framing before publishing.").closest("article");
+    expect(message?.querySelector("svg")).toBeInTheDocument();
+    expect(message?.querySelector("img")).not.toBeInTheDocument();
   });
 
   it("falls back to the parsed actor label when no author resolver is given", () => {

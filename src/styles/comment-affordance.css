@@ -16,21 +16,38 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   /* Reserve the open badge's height so CodeMirror measures and anchors the tooltip
      once: animating the badge's height inside a box that shrinks with it would
      re-anchor the tooltip mid-morph, an unanimated jump. The padding doubles as hit
      area, so the hover zone stays reachable once the badge is only a dot. */
   height: calc(var(--comment-affordance-pill-height) + 8px);
+  min-width: calc(var(--comment-affordance-pill-height) + 8px);
   padding: 4px;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: var(--comment-author-contrast, var(--primary-foreground, #ffffff));
+  cursor: pointer;
 }
 
 /* The morphing element. The badge look comes from the shared primitive; this adds
    only what the morph needs: a fixed flex size the animation can drive, and the clip
    that hides the label until the pill has room for it. */
 .comment-affordance-badge {
+  display: inline-flex;
+  align-items: center;
   flex: none;
   justify-content: center;
   overflow: hidden;
+}
+
+.comment-affordance:focus-visible {
+  outline: none;
+}
+
+.comment-affordance:focus-visible .comment-affordance-badge {
+  box-shadow: 0 0 0 1px var(--ring, #a3a3a3);
 }
 
 /* Leftward selection (editor plane): the head is at the selection start, so anchor

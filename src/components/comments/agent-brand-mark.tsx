@@ -68,7 +68,9 @@ const BRAND_BY_SLUG: Readonly<Record<string, AgentBrandId>> = {
 
 function agentBrandId(slug: string | null | undefined): AgentBrandId | null {
   const normalized = slug?.trim().toLowerCase();
-  return normalized ? (BRAND_BY_SLUG[normalized] ?? null) : null;
+  return normalized && Object.prototype.hasOwnProperty.call(BRAND_BY_SLUG, normalized)
+    ? BRAND_BY_SLUG[normalized]
+    : null;
 }
 
 /** The agent's mark for React surfaces, falling back to a neutral bot glyph. */

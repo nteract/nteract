@@ -128,7 +128,7 @@ function activateThreadAt(
   return true;
 }
 
-function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
+export function buildCommentHighlightPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText =
     "width:min(300px,80vw);padding:10px 12px;border:1px solid var(--border, #ebebeb);border-radius:10px;background:var(--popover, #ffffff);color:var(--popover-foreground, #1e1e1e);box-shadow:0 8px 24px rgb(0 0 0 / 0.14);font:inherit;";
@@ -140,17 +140,16 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   avatar.style.cssText =
     "flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
   avatar.style.backgroundColor = preview.authorColor ?? "var(--muted-foreground, #737373)";
-  if (preview.imageUrl) {
+  if (preview.isAgent) {
+    // An agent is the author, so its brand wins over the principal's profile
+    // image. The principal remains named in the attribution line.
+    avatar.innerHTML = agentBrandMarkSvg(preview.agentSlug, 12);
+  } else if (preview.imageUrl) {
     const image = document.createElement("img");
     image.src = preview.imageUrl;
     image.alt = "";
     image.style.cssText = "width:100%;height:100%;border-radius:50%;object-fit:cover;";
     avatar.appendChild(image);
-  } else if (preview.isAgent) {
-    // Same registry as the Discussions panel, so an agent wears one mark in both
-    // places, and the person it acts for is named in the line rather than badged
-    // onto the agent's face.
-    avatar.innerHTML = agentBrandMarkSvg(preview.agentSlug, 12);
   } else {
     avatar.textContent = actorInitials(preview.authorName);
   }
@@ -210,7 +209,7 @@ const commentHoverTooltip = hoverTooltip(
       end: match.to,
       above: true,
       create() {
-        return { dom: buildPreviewDom(match.preview as CommentHighlightPreview) };
+        return { dom: buildCommentHighlightPreviewDom(match.preview as CommentHighlightPreview) };
       },
     };
   },

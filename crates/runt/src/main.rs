@@ -750,6 +750,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let session_for_shutdown = session.clone();
     let session_intent_epoch = server.session_intent_epoch().clone();
     let peer_label = server.peer_label_shared().clone();
+    let operator = server.operator_shared().clone();
     let last_session_drop = server.last_session_drop().clone();
     let parked_sessions = server.parked_sessions().clone();
 
@@ -774,6 +775,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             socket_path: watch_socket,
             session,
             peer_label,
+            operator,
             last_session_drop,
             parked_sessions,
             session_intent_epoch,

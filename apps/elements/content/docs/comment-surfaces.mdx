@@ -49,14 +49,15 @@ notebook app wire the same props to live presence and the runtime.
 
 ## AI on behalf of a person
 
-Authorship is legible at a glance and impossible to fake. Each message shows one
-avatar — the author's — in that author's identity color (the same color as their
-cursor and edits), name, and time. An agent wears its product's mark on that disc,
-or a neutral bot glyph for a product with no mark, and names the person it acts for
-in the line beside it rather than badging them onto its own avatar. In the app,
-trust is earned: the daemon finalizes a comment against the authenticated
-connection before it's marked trusted, so "Claude Code on behalf of Ada" is
-provable, not asserted.
+Authorship keeps accountability and branding separate. Each message shows one
+avatar in the author's identity color (the same color as their cursor and edits),
+plus name and time. For an agent, the host-authenticated principal is
+authoritative for who authorized the action and for the "on behalf of" line. The
+agent product name and mark come from a client-declared operator slug: a known
+slug gets its familiar mark and an unknown slug gets the neutral bot, but neither
+is vendor attestation. The daemon can prove that the authenticated connection
+authored the trusted comment; it does not prove that a client claiming "Claude
+Code" was produced by Anthropic.
 
 ## Anchors
 

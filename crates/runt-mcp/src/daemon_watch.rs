@@ -226,6 +226,7 @@ pub struct WatchResources {
     pub socket_path: PathBuf,
     pub session: Arc<RwLock<Option<NotebookSession>>>,
     pub peer_label: Arc<RwLock<String>>,
+    pub operator: Arc<RwLock<String>>,
     pub last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
     pub parked_sessions: Arc<RwLock<HashMap<String, NotebookSession>>>,
     pub session_intent_epoch: Arc<AtomicU64>,
@@ -240,6 +241,7 @@ pub async fn watch(resources: WatchResources) -> i32 {
         socket_path,
         session,
         peer_label,
+        operator,
         last_session_drop,
         parked_sessions,
         session_intent_epoch,
@@ -325,6 +327,7 @@ pub async fn watch(resources: WatchResources) -> i32 {
                 socket_path: &socket_path,
                 session: &session,
                 peer_label: &peer_label,
+                operator: &operator,
                 last_session_drop: &last_session_drop,
                 session_intent_epoch: &session_intent_epoch,
             },
@@ -401,8 +404,25 @@ struct RejoinResources<'a> {
     socket_path: &'a Path,
     session: &'a Arc<RwLock<Option<NotebookSession>>>,
     peer_label: &'a Arc<RwLock<String>>,
+    operator: &'a Arc<RwLock<String>>,
     last_session_drop: &'a Arc<RwLock<Option<SessionDropInfo>>>,
     session_intent_epoch: &'a Arc<AtomicU64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RejoinIdentity {
+    actor_label: String,
+    presence_label: String,
+}
+
+async fn snapshot_rejoin_identity(
+    peer_label: &RwLock<String>,
+    operator: &RwLock<String>,
+) -> RejoinIdentity {
+    RejoinIdentity {
+        actor_label: operator.read().await.clone(),
+        presence_label: peer_label.read().await.clone(),
+    }
 }
 
 async fn rejoin(
@@ -415,6 +435,7 @@ async fn rejoin(
         socket_path,
         session,
         peer_label,
+        operator,
         last_session_drop,
         session_intent_epoch,
     } = resources;
@@ -467,7 +488,7 @@ async fn rejoin(
     // untitled notebook that is recoverable from docs_dir, which is the #2088
     // case. A refusal is handled in the retry loop below as Evicted with no
     // retry.
-    let label = peer_label.read().await.clone();
+    let identity = snapshot_rejoin_identity(peer_label, operator).await;
 
     for attempt in 0..=REJOIN_MAX_RETRIES {
         if session_intent_epoch.load(Ordering::Acquire) != expected_intent_epoch {
@@ -497,7 +518,7 @@ async fn rejoin(
             match notebook_sync::connect::connect_open(
                 socket_path.to_path_buf(),
                 PathBuf::from(path),
-                &label,
+                &identity.actor_label,
             )
             .await
             {
@@ -519,7 +540,7 @@ async fn rejoin(
             match notebook_sync::connect::connect(
                 socket_path.to_path_buf(),
                 notebook_id.clone(),
-                &label,
+                &identity.actor_label,
             )
             .await
             {
@@ -541,7 +562,7 @@ async fn rejoin(
 
         match result {
             Ok((handle, new_cell_count, new_notebook_id)) => {
-                crate::presence::announce(&handle, &label).await;
+                crate::presence::announce(&handle, &identity.presence_label).await;
 
                 // Sample again after the entire connect/readiness operation.
                 // A mismatch leaves no local handle eligible for publication.
@@ -749,6 +770,20 @@ mod tests {
             pid,
             started_at: Utc.timestamp_opt(pid.into(), 0).single().unwrap(),
         }
+    }
+
+    #[tokio::test]
+    async fn local_rejoin_keeps_operator_separate_from_presence_label() {
+        let peer_label = RwLock::new("Codex".to_string());
+        let operator = RwLock::new("agent:codex-mcp-client:deadbeef".to_string());
+
+        assert_eq!(
+            snapshot_rejoin_identity(&peer_label, &operator).await,
+            RejoinIdentity {
+                actor_label: "agent:codex-mcp-client:deadbeef".to_string(),
+                presence_label: "Codex".to_string(),
+            }
+        );
     }
 
     #[derive(Clone, Debug)]

@@ -3,6 +3,7 @@ import { wireCommentAffordanceMotion } from "../comment-affordance-motion";
 
 /** Records what the helper asks of the Animation handles it drives. */
 interface FakeAnimation {
+  target: HTMLElement;
   playbackRate: number;
   currentTime: number | null;
   paused: boolean;
@@ -21,6 +22,7 @@ function stubWebAnimations(): FakeAnimation[] {
     options: { duration?: number } = {},
   ) {
     const animation: FakeAnimation = {
+      target: this,
       playbackRate: 1,
       currentTime: null,
       paused: false,
@@ -45,9 +47,9 @@ function stubWebAnimations(): FakeAnimation[] {
 }
 
 function mountAffordance(): { zone: HTMLElement; badge: HTMLElement } {
-  const zone = document.createElement("span");
+  const zone = document.createElement("button");
   zone.className = "comment-affordance";
-  const badge = document.createElement("button");
+  const badge = document.createElement("span");
   badge.className = "comment-affordance-badge";
   const label = document.createElement("span");
   label.className = "comment-affordance-label";
@@ -69,12 +71,13 @@ describe("wireCommentAffordanceMotion", () => {
   it("parks the badge open, then shrinks it to a dot once the idle delay passes", () => {
     vi.useFakeTimers();
     const animations = stubWebAnimations();
-    const { badge } = mountAffordance();
+    const { zone, badge } = mountAffordance();
 
     const dispose = wireCommentAffordanceMotion(badge, { collapseDelayMs: 1000 });
 
     // Both handles (the badge box and the label reveal) start at the open end.
     expect(animations).toHaveLength(2);
+    expect(animations.every((animation) => animation.target !== zone)).toBe(true);
     for (const animation of animations) {
       expect(animation.currentTime).toBe(260);
       expect(animation.paused).toBe(true);
@@ -108,6 +111,26 @@ describe("wireCommentAffordanceMotion", () => {
     }
 
     zone.dispatchEvent(new Event("pointerleave"));
+    for (const animation of animations) {
+      expect(animation.plays).toEqual([1, -1]);
+    }
+
+    dispose();
+  });
+
+  it("opens from keyboard focus on the fixed outer button", () => {
+    vi.useFakeTimers();
+    const animations = stubWebAnimations();
+    const { zone, badge } = mountAffordance();
+
+    const dispose = wireCommentAffordanceMotion(badge, { collapseDelayMs: 1000 });
+
+    zone.focus();
+    for (const animation of animations) {
+      expect(animation.plays).toEqual([1]);
+    }
+
+    zone.blur();
     for (const animation of animations) {
       expect(animation.plays).toEqual([1, -1]);
     }

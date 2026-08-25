@@ -18,7 +18,7 @@ consumer reinvents the connection.
 `resolveActorDisplay({actorLabel, peers, source})` in
 `packages/runtimed/src/notebook-actor-display.ts` turns an opaque actor label
 into an `ActorDisplay` — `{displayName, principalId, kind, isAgent, onBehalfOf,
-onBehalfOfColor, color, initials, imageUrl}`. It parses the label
+agentSlug, color, initials, imageUrl}`. It parses the label
 (`notebook-actor-projection.ts`), hashes a deterministic color
 (`notebook-actor-color.ts`), computes initials, and overlays a caller-supplied
 `peers: ReadonlyArray<ActorDisplayPeer>` directory (`{participantKey, label,
@@ -27,6 +27,12 @@ no I/O (its projection helpers keep module-level caches, but nothing fetches). I
 is exported from `packages/runtimed/src/index.ts` and is framework agnostic.
 Color is a pure hash of the identity key, so it is globally consistent for free —
 resolution only has to solve **name and avatar**.
+
+The two halves of an actor label have different trust meanings. The host-issued,
+authenticated principal is authoritative for attribution and for the
+"on behalf of" identity. The operator and its `agentSlug` are client-declared
+presentation metadata: they may select a familiar product mark, but the mark is
+not proof that a particular vendor produced or authenticated the client.
 
 **The host source of truth (already durable).** The Worker runs a D1 table
 `principal_profiles` (`apps/notebook-cloud/src/storage.ts`): `principal` (PK),
@@ -124,6 +130,10 @@ render with a different name, and no avatar, depending on which surface is askin
   learn the display of a principal you already share a notebook relationship with.
   There is no endpoint that answers "does principal X exist" for an X the caller
   names. This is not a directory search.
+- **Principal attribution is authoritative; operator branding is not.** Access,
+  accountability, profile resolution, and the on-behalf-of line key on the
+  authenticated principal. A client-declared agent slug only chooses an agent
+  name/mark and must never grant authority or be presented as vendor attestation.
 - **Desktop is unchanged.** The desktop app resolves one local identity from the
   OS username (`App.tsx`); it does not get this store.
 

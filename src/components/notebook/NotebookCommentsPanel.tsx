@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CornerDownRight,
   MessageSquare,
   RotateCcw,
   X,
@@ -14,7 +15,6 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import type {
@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { highlight } from "@/components/editor/static-highlight";
 import { AgentBrandMark } from "@/components/comments/agent-brand-mark";
 import { ProjectedMarkdownView } from "../markdown/ProjectedMarkdownView";
+import { useCellProjectionVersion } from "./state/cell-store";
 
 type SourceRangeCommentAnchor = Extract<CommentAnchor, { kind: "source_range" }>;
 
@@ -82,6 +83,10 @@ export interface NotebookCommentsPanelProps {
    * the live cell projection. Falls back to the anchor's exact quote.
    */
   resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined;
+  /** Live repaired source position for ordering moved source anchors. */
+  resolveSourcePosition?: (
+    anchor: SourceRangeCommentAnchor,
+  ) => { line: number; column: number } | null | undefined;
   /**
    * Ordered notebook cell IDs, used to sort threads by the position of the
    * content they reference. Without it, threads keep their projection order.
@@ -108,13 +113,19 @@ export function NotebookCommentsPanel({
   resolveCommentAuthor,
   resolveSourceLanguage,
   resolveSourceQuote,
+  resolveSourcePosition,
   cellIds,
   focusedThreadId = null,
   focusNonce = 0,
 }: NotebookCommentsPanelProps) {
   const threads = projection?.threads ?? [];
+  useCellProjectionVersion(
+    threads.flatMap((thread) =>
+      thread.anchor.kind === "source_range" ? [thread.anchor.cell_id] : [],
+    ),
+  );
   const labeledThreads = labelCommentThreads(
-    sortCommentThreadsByNotebookPosition(threads, cellIds),
+    sortCommentThreadsByNotebookPosition(threads, cellIds, resolveSourcePosition),
   );
   const openThreads = labeledThreads.filter(({ thread }) => thread.status !== "resolved");
   const resolvedThreads = labeledThreads.filter(({ thread }) => thread.status === "resolved");
@@ -127,6 +138,9 @@ export function NotebookCommentsPanel({
     if (focusedIsResolved) setShowResolved(true);
   }, [focusedIsResolved, focusNonce]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  // Reply composers are only mounted for the selected thread. Keep drafts at
+  // panel scope so moving between threads never throws away unsent work.
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   // Autofocus the reply box only when the reader selects a thread inside the
   // panel. A notebook-driven focus must not pull the caret out of the editor.
   const [autoFocusReplyThreadId, setAutoFocusReplyThreadId] = useState<string | null>(null);
@@ -159,6 +173,15 @@ export function NotebookCommentsPanel({
       onSelect={() => {
         setSelectedThreadId(thread.id);
         setAutoFocusReplyThreadId(thread.id);
+      }}
+      replyDraft={replyDrafts[thread.id] ?? ""}
+      onReplyDraftChange={(body) => {
+        setReplyDrafts((current) => ({ ...current, [thread.id]: body }));
+      }}
+      onCancelReply={() => {
+        setReplyDrafts((current) => ({ ...current, [thread.id]: "" }));
+        setSelectedThreadId((current) => (current === thread.id ? null : current));
+        setAutoFocusReplyThreadId((current) => (current === thread.id ? null : current));
       }}
       resolveCommentAuthor={resolveCommentAuthor}
       resolveSourceLanguage={resolveSourceLanguage}
@@ -326,6 +349,9 @@ function CommentThreadItem({
   onReopenThread,
   onFocusThreadAnchor,
   onSelect,
+  replyDraft,
+  onReplyDraftChange,
+  onCancelReply,
   resolveCommentAuthor,
   resolveSourceLanguage,
   resolveSourceQuote,
@@ -343,6 +369,9 @@ function CommentThreadItem({
   onReopenThread?: (threadId: string) => void | Promise<void>;
   onFocusThreadAnchor?: (thread: CommentThreadSnapshot) => void;
   onSelect?: () => void;
+  replyDraft: string;
+  onReplyDraftChange: (body: string) => void;
+  onCancelReply: () => void;
   resolveCommentAuthor?: (actorLabel: string) => CommentAuthor;
   resolveSourceLanguage?: (cellId: string) => string | undefined;
   resolveSourceQuote?: (anchor: SourceRangeCommentAnchor) => string | null | undefined;
@@ -415,45 +444,18 @@ function CommentThreadItem({
       color={threadAuthor?.color}
     />
   ) : null;
-  const sourceQuoteBlock =
-    sourceQuote && canShowCell ? (
-      <button
-        type="button"
-        onClick={() => onFocusThreadAnchor?.(thread)}
-        aria-label={`Show cell for ${threadLabel}`}
-        title="Show cell"
-        className="block w-full rounded-sm py-0.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-      >
-        {sourceQuote}
-      </button>
-    ) : (
-      sourceQuote
-    );
-
-  // Clicking the card reveals the referenced cell, but clicks that land on the
-  // thread's own controls or on selected text must not also navigate.
-  const handleCardClick = (event: ReactMouseEvent<HTMLLIElement>) => {
-    if (event.target instanceof Element && event.target.closest("button, a, textarea, input")) {
-      return;
-    }
-    if (itemRef.current?.ownerDocument.getSelection()?.isCollapsed === false) return;
-    onSelect?.();
-    if (!canShowCell) return;
-    onFocusThreadAnchor?.(thread);
-  };
-
   return (
     <li
       ref={itemRef}
-      onClick={handleCardClick}
       aria-current={selected ? "true" : undefined}
       data-selected={selected ? "true" : undefined}
       className={cn(
-        "group relative rounded-md bg-card px-2 py-1.5 transition-all duration-200 hover:border-border hover:bg-muted/40",
+        "group relative rounded-md bg-card px-2 py-1.5 transition-all duration-200 hover:border-border",
         thread.status === "resolved" && "border-dashed bg-muted/20 opacity-80",
-        selected && "bg-info opacity-100 hover:bg-info/90",
+        !selected && "hover:bg-muted/40",
+        selected &&
+          "bg-[color-mix(in_srgb,var(--sev-info,var(--ring))_8%,transparent)] opacity-100 hover:bg-[color-mix(in_srgb,var(--sev-info,var(--ring))_12%,transparent)]",
         flashing && "bg-primary/5 hover:bg-muted/40",
-        selected ? "cursor-default" : "cursor-pointer",
       )}
     >
       <button
@@ -478,13 +480,39 @@ function CommentThreadItem({
               message={message}
               isReply={index > 0}
               resolveCommentAuthor={resolveCommentAuthor}
-              beforeBody={index === 0 ? sourceQuoteBlock : null}
+              beforeBody={index === 0 ? sourceQuote : null}
             />
           ))}
           {thread.status === "resolved" ? (
             <CommentResolutionReceipt thread={thread} resolveCommentAuthor={resolveCommentAuthor} />
           ) : null}
         </div>
+
+        {canShowCell || (canReply && !selected) ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {canShowCell ? (
+              <button
+                type="button"
+                onClick={() => onFocusThreadAnchor?.(thread)}
+                aria-label={`Show cell for ${threadLabel}`}
+                className="inline-flex items-center text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                Show cell
+              </button>
+            ) : null}
+            {canReply && !selected ? (
+              <button
+                type="button"
+                onClick={onSelect}
+                aria-label={`Reply to ${threadLabel}`}
+                className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <CornerDownRight className="size-3.5" aria-hidden="true" />
+                Reply
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {canReply && selected ? (
@@ -496,6 +524,9 @@ function CommentThreadItem({
             autoFocusKey={autoFocusReply ? `${thread.id}:reply` : null}
             placeholder={thread.status === "resolved" ? "Reply to reopen…" : "Reply…"}
             compact
+            value={replyDraft}
+            onValueChange={onReplyDraftChange}
+            onEscape={onCancelReply}
             onSubmit={onReplyThread ? (body) => onReplyThread(thread.id, body) : undefined}
           />
         </div>
@@ -614,10 +645,10 @@ function CommentAuthorAvatar({ author }: { author: CommentAuthor }) {
       style={{ backgroundColor: author.color ?? "hsl(var(--muted-foreground))" }}
       aria-hidden="true"
     >
-      {author.imageUrl ? (
-        <img className="size-full rounded-full object-cover" src={author.imageUrl} alt="" />
-      ) : author.isAgent ? (
+      {author.isAgent ? (
         <AgentBrandMark slug={author.agentSlug} className="size-3.5" />
+      ) : author.imageUrl ? (
+        <img className="size-full rounded-full object-cover" src={author.imageUrl} alt="" />
       ) : (
         actorInitials(author.displayName)
       )}
@@ -668,6 +699,9 @@ function CommentComposer({
   autoFocusKey = null,
   placeholder,
   compact = false,
+  value,
+  onValueChange,
+  onEscape,
   onSubmit,
 }: {
   ariaLabel: string;
@@ -677,9 +711,14 @@ function CommentComposer({
   placeholder: string;
   /** Collapse to a single line until focused or non-empty (used for replies). */
   compact?: boolean;
+  value?: string;
+  onValueChange?: (body: string) => void;
+  onEscape?: () => void;
   onSubmit?: (body: string) => void | Promise<void>;
 }) {
-  const [body, setBody] = useState("");
+  const [internalBody, setInternalBody] = useState("");
+  const body = value ?? internalBody;
+  const setBody = onValueChange ?? setInternalBody;
   const [submitting, setSubmitting] = useState(false);
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -735,6 +774,7 @@ function CommentComposer({
       setBody("");
       setFocused(false);
       textareaRef.current?.blur();
+      onEscape?.();
       return;
     }
 
@@ -844,6 +884,9 @@ function commentThreadTargetCellId(thread: CommentThreadSnapshot): string | null
 export function sortCommentThreadsByNotebookPosition(
   threads: readonly CommentThreadSnapshot[],
   cellIds?: readonly string[],
+  resolveSourcePosition?: (
+    anchor: SourceRangeCommentAnchor,
+  ) => { line: number; column: number } | null | undefined,
 ): CommentThreadSnapshot[] {
   if (!cellIds || cellIds.length === 0) return [...threads];
 
@@ -851,7 +894,7 @@ export function sortCommentThreadsByNotebookPosition(
   const keyed = threads.map((thread, index) => ({
     thread,
     index,
-    key: commentThreadOrderKey(thread, cellIndexById),
+    key: commentThreadOrderKey(thread, cellIndexById, resolveSourcePosition),
   }));
 
   keyed.sort((left, right) => {
@@ -868,6 +911,9 @@ export function sortCommentThreadsByNotebookPosition(
 function commentThreadOrderKey(
   thread: CommentThreadSnapshot,
   cellIndexById: ReadonlyMap<string, number>,
+  resolveSourcePosition?: (
+    anchor: SourceRangeCommentAnchor,
+  ) => { line: number; column: number } | null | undefined,
 ): number[] {
   const { anchor } = thread;
   if (anchor.kind === "notebook") return [2, 0, 0, 0, 0];
@@ -877,8 +923,9 @@ function commentThreadOrderKey(
   if (cellIndex === undefined) return [1, 0, 0, 0, 0];
 
   const withinCell = anchor.kind === "output" ? 2 : anchor.kind === "source_range" ? 1 : 0;
-  const line = anchor.kind === "source_range" ? anchor.start_line : 0;
-  const column = anchor.kind === "source_range" ? anchor.start_column : 0;
+  const livePosition = anchor.kind === "source_range" ? resolveSourcePosition?.(anchor) : undefined;
+  const line = anchor.kind === "source_range" ? (livePosition?.line ?? anchor.start_line) : 0;
+  const column = anchor.kind === "source_range" ? (livePosition?.column ?? anchor.start_column) : 0;
   return [0, cellIndex, withinCell, line, column];
 }
 

@@ -37,10 +37,11 @@ export interface CommentAffordanceMotionOptions {
 }
 
 /**
- * Wire the collapse-to-dot motion onto an affordance badge. The badge must contain a
- * `.comment-affordance-label` element and normally sits inside a
- * `.comment-affordance` wrapper, which becomes the hover zone so the padding around
- * a collapsed dot still opens it.
+ * Wire the collapse-to-dot motion onto the inner affordance badge. The badge must
+ * contain a `.comment-affordance-label` element and normally sits inside a
+ * `.comment-affordance` button with a stable minimum hit area. Only this inner visual
+ * morphs; the outer button remains a reliable pointer and keyboard target while
+ * collapsed.
  *
  * Returns a disposer that removes the listeners, clears the timer, and cancels the
  * animations (leaving the badge at its CSS open state). Safe to call where WAAPI is
@@ -160,16 +161,16 @@ export function wireCommentAffordanceMotion(
   // scroll or gesture) fires no pointerleave, so close here too or the badge would
   // stay open.
   zone.addEventListener("pointercancel", close);
-  badge.addEventListener("focus", open);
-  badge.addEventListener("blur", close);
+  zone.addEventListener("focus", open);
+  zone.addEventListener("blur", close);
 
   return () => {
     clearCollapseTimer();
     zone.removeEventListener("pointerenter", open);
     zone.removeEventListener("pointerleave", close);
     zone.removeEventListener("pointercancel", close);
-    badge.removeEventListener("focus", open);
-    badge.removeEventListener("blur", close);
+    zone.removeEventListener("focus", open);
+    zone.removeEventListener("blur", close);
     badgeAnim.cancel();
     labelAnim.cancel();
   };

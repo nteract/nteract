@@ -79,6 +79,7 @@ import { GlobalFindBar } from "@/components/search";
 import { setSourceCommentThreads, type SourceCommentThread } from "./lib/comment-highlights";
 import {
   resolveSourceRangeAnchor,
+  sourcePointFromStringOffset,
   type OutputCommentAnchor,
   type SourceRangeCommentAnchor,
 } from "./lib/comment-source-anchor";
@@ -131,6 +132,10 @@ import {
   toggleNotebookRailPanel,
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
+import {
+  navigateNotebookOutlineFromRail,
+  navigateToNotebookStageFromRail,
+} from "@/components/notebook/rail-stage-navigation";
 import { desktopNotebookShellCapabilities } from "./lib/desktop-shell-capabilities";
 import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kernel-status";
 import { useNotebookActionPolicy } from "./lib/notebook-action-policy";
@@ -875,6 +880,13 @@ function AppContent() {
     return renderedTextForSourceRange(plan, range.from, range.to) ?? anchor.exact_quote ?? null;
   }, []);
 
+  const resolveSourcePosition = useCallback((anchor: SourceRangeCommentAnchor) => {
+    const cell = getCellById(anchor.cell_id);
+    if (!cell) return null;
+    const range = resolveSourceRangeAnchor(cell.source, anchor);
+    return range ? sourcePointFromStringOffset(cell.source, range.from) : null;
+  }, []);
+
   const sourceCommentThreadsByCell = useMemo(() => {
     const map = new Map<string, SourceCommentThread[]>();
     for (const thread of commentsProjection?.threads ?? []) {
@@ -1023,16 +1035,26 @@ function AppContent() {
     demoteThreadToNotebook: handleDemoteDetachedOutputCommentThread,
   });
 
-  const handleFocusCommentThreadAnchor = useCallback((thread: CommentThreadSnapshot) => {
-    const cellId = thread.badge_cell_ids[0];
-    if (!cellId) return;
-    setFocusedCellId(cellId);
-    flushCellUIState();
-    const target = document.getElementById(notebookCellAnchorId(cellId));
-    if (target) {
-      scrollElementIntoView(target, { block: "center", behavior: "smooth" });
-    }
-  }, []);
+  const handleFocusCommentThreadAnchor = useCallback(
+    (thread: CommentThreadSnapshot) => {
+      const cellId = thread.badge_cell_ids[0];
+      if (!cellId) return;
+
+      navigateToNotebookStageFromRail({
+        railCollapsed,
+        collapseRail: () => setNotebookRailCollapsed(true),
+        navigate: () => {
+          setFocusedCellId(cellId);
+          flushCellUIState();
+          const target = document.getElementById(notebookCellAnchorId(cellId));
+          if (target) {
+            scrollElementIntoView(target, { block: "center", behavior: "smooth" });
+          }
+        },
+      });
+    },
+    [railCollapsed],
+  );
 
   const pendingSourceCommentAnchor =
     commentsUiEnabled && commentDraftTarget?.anchor.kind === "source_range"
@@ -1057,6 +1079,7 @@ function AppContent() {
       focusNonce={commentFocus?.nonce ?? 0}
       resolveSourceLanguage={resolveSourceLanguage}
       resolveSourceQuote={resolveSourceQuote}
+      resolveSourcePosition={resolveSourcePosition}
     />
   );
   const commentsUiSurface = resolveCommentsUiSurface({
@@ -1385,12 +1408,17 @@ function AppContent() {
 
   const handleNavigateOutlineItem = useCallback(
     (item: NotebookOutlineItem, href: string) => {
-      return navigateNotebookOutlineItem(item, href, {
-        documentAnchors,
-        headingHashTarget: "cell",
+      return navigateNotebookOutlineFromRail({
+        railCollapsed,
+        collapseRail: () => setNotebookRailCollapsed(true),
+        navigate: () =>
+          navigateNotebookOutlineItem(item, href, {
+            documentAnchors,
+            headingHashTarget: "cell",
+          }),
       });
     },
-    [documentAnchors],
+    [documentAnchors, railCollapsed],
   );
 
   const getObservedHeads = useCallback(() => getHandle()?.get_heads_hex() ?? [], [getHandle]);

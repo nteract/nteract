@@ -28,7 +28,7 @@ export function CommentSelectionAffordance({
   label = "Add comment",
   testId,
 }: CommentSelectionAffordanceProps) {
-  const badgeRef = useRef<HTMLButtonElement>(null);
+  const badgeRef = useRef<HTMLSpanElement>(null);
 
   // Re-arm on every new selection. React reuses the same DOM node when the
   // affordance moves, so without keying on the position the badge would stay
@@ -47,23 +47,23 @@ export function CommentSelectionAffordance({
   };
 
   return (
-    <span className={cn("comment-affordance", className)} style={style}>
-      <button
-        ref={badgeRef}
-        type="button"
-        aria-label={label}
-        data-testid={testId}
-        className={COMMENT_SELECTION_BADGE_CLASS}
-        onPointerDown={keepSelection}
-        onMouseDown={keepSelection}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onActivate(event);
-        }}
-      >
+    <button
+      type="button"
+      aria-label={label}
+      data-testid={testId}
+      className={cn("comment-affordance", className)}
+      style={style}
+      onPointerDown={keepSelection}
+      onMouseDown={keepSelection}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onActivate(event);
+      }}
+    >
+      <span ref={badgeRef} className={COMMENT_SELECTION_BADGE_CLASS} aria-hidden="true">
         <span className="comment-affordance-label">Comment</span>
-      </button>
-    </span>
+      </span>
+    </button>
   );
 }

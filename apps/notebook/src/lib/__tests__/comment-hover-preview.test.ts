@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { RAIL_TAKEOVER_MEDIA_QUERY } from "@/components/rail";
-import { commentHoverPreviewsEnabled } from "../comment-highlight-extension";
+import {
+  buildCommentHighlightPreviewDom,
+  commentHoverPreviewsEnabled,
+} from "../comment-highlight-extension";
 
 const originalMatchMedia = window.matchMedia;
 
@@ -32,5 +35,24 @@ describe("commentHoverPreviewsEnabled", () => {
   it("stays off when media queries are unavailable", () => {
     (window as { matchMedia?: typeof window.matchMedia }).matchMedia = undefined;
     expect(commentHoverPreviewsEnabled()).toBe(false);
+  });
+});
+
+describe("comment highlight preview author", () => {
+  it("shows an agent brand mark instead of the principal profile image", () => {
+    const preview = buildCommentHighlightPreviewDom({
+      authorName: "Claude Code",
+      authorColor: "#2563eb",
+      imageUrl: "https://profiles.example/kyle.png",
+      isAgent: true,
+      agentSlug: "claude-code",
+      onBehalfOf: "Kyle",
+      body: "Review this line",
+      replyCount: 0,
+    });
+
+    expect(preview.querySelector("svg")).toBeTruthy();
+    expect(preview.querySelector("img")).toBeNull();
+    expect(preview.textContent).toContain("on behalf of Kyle");
   });
 });

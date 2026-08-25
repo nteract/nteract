@@ -80,6 +80,10 @@ import {
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
 import {
+  navigateNotebookOutlineFromRail,
+  navigateToNotebookStageFromRail,
+} from "@/components/notebook/rail-stage-navigation";
+import {
   outputCommentAnchorMatchesLiveState,
   useDemoteDetachedOutputCommentThreads,
 } from "@/components/notebook/output-comment-demotion";
@@ -119,6 +123,7 @@ import {
 } from "../../notebook/src/lib/comment-highlights";
 import {
   resolveSourceRangeAnchor,
+  sourcePointFromStringOffset,
   type OutputCommentAnchor,
   type SourceRangeCommentAnchor,
 } from "../../notebook/src/lib/comment-source-anchor";
@@ -666,13 +671,19 @@ export function NotebookViewer({
   }, [documentAnchors, handleSelectOutlineItem, outlineItems]);
   const handleNavigateOutlineItem = useCallback(
     (item: NotebookOutlineItem, href: string) => {
-      handleSelectOutlineItem(item);
-      return navigateNotebookOutlineItem(item, href, {
-        documentAnchors,
-        headingHashTarget: "cell",
+      return navigateNotebookOutlineFromRail({
+        railCollapsed,
+        collapseRail: () => setNotebookRailCollapsed(true),
+        navigate: () => {
+          handleSelectOutlineItem(item);
+          return navigateNotebookOutlineItem(item, href, {
+            documentAnchors,
+            headingHashTarget: "cell",
+          });
+        },
       });
     },
-    [documentAnchors, handleSelectOutlineItem],
+    [documentAnchors, handleSelectOutlineItem, railCollapsed],
   );
   const handleTogglePackagesRail = useCallback(() => {
     if (activeRailPanel === "packages" && !railCollapsed) {
@@ -1212,13 +1223,15 @@ export function NotebookViewer({
   const handleCreateAnchoredCommentThread = useCallback(
     async (anchor: CommentAnchor, body: string) => {
       if (!canWriteComments) {
-        setCommentsError("Comments are read-only.");
-        return;
+        const error = new Error("Comments are read-only.");
+        setCommentsError(error.message);
+        throw error;
       }
       const liveRuntime = liveRuntimeRef.current;
       if (!liveRuntime || typeof liveRuntime.handle.create_comment_thread !== "function") {
-        setCommentsError("Comments are not ready.");
-        return;
+        const error = new Error("Comments are not ready.");
+        setCommentsError(error.message);
+        throw error;
       }
       try {
         const projection = refreshCloudCommentsProjection() ?? commentsProjection;
@@ -1235,9 +1248,13 @@ export function NotebookViewer({
           afterThreadId,
           new Date().toISOString(),
         );
-        applyLocalCommentEvent(event);
+        if (!applyLocalCommentEvent(event)) {
+          throw new Error("Unable to update comments.");
+        }
       } catch (error) {
-        setCommentsError(error instanceof Error ? error.message : String(error));
+        const submissionError = error instanceof Error ? error : new Error(String(error));
+        setCommentsError(submissionError.message);
+        throw submissionError;
       }
     },
     [
@@ -1266,15 +1283,19 @@ export function NotebookViewer({
         commentDraftTarget.anchor.kind === "source_range" &&
         !sourceRangeAnchorMatchesCurrentCell(commentDraftTarget.anchor)
       ) {
-        setCommentsError("Selected source changed. Select the text again before commenting.");
-        return;
+        const error = new Error(
+          "Selected source changed. Select the text again before commenting.",
+        );
+        setCommentsError(error.message);
+        throw error;
       }
       if (
         commentDraftTarget.anchor.kind === "output" &&
         !outputCommentAnchorMatchesLiveState(commentDraftTarget.anchor)
       ) {
-        setCommentsError(OUTPUT_COMMENT_STALE_MESSAGE);
-        return;
+        const error = new Error(OUTPUT_COMMENT_STALE_MESSAGE);
+        setCommentsError(error.message);
+        throw error;
       }
       await handleCreateAnchoredCommentThread(commentDraftTarget.anchor, body);
       setCommentDraftTarget(null);
@@ -1355,11 +1376,16 @@ export function NotebookViewer({
 
   const handleReplyCommentThread = useCallback(
     async (threadId: string, body: string) => {
-      if (!canWriteComments) return;
+      if (!canWriteComments) {
+        const error = new Error("Comments are read-only.");
+        setCommentsError(error.message);
+        throw error;
+      }
       const liveRuntime = liveRuntimeRef.current;
       if (!liveRuntime || typeof liveRuntime.handle.reply_comment_thread !== "function") {
-        setCommentsError("Comments are not ready.");
-        return;
+        const error = new Error("Comments are not ready.");
+        setCommentsError(error.message);
+        throw error;
       }
       try {
         const projection = refreshCloudCommentsProjection() ?? commentsProjection;
@@ -1372,9 +1398,13 @@ export function NotebookViewer({
           afterMessageId,
           new Date().toISOString(),
         );
-        applyLocalCommentEvent(event);
+        if (!applyLocalCommentEvent(event)) {
+          throw new Error("Unable to update comments.");
+        }
       } catch (error) {
-        setCommentsError(error instanceof Error ? error.message : String(error));
+        const submissionError = error instanceof Error ? error : new Error(String(error));
+        setCommentsError(submissionError.message);
+        throw submissionError;
       }
     },
     [
@@ -1454,13 +1484,20 @@ export function NotebookViewer({
     (thread: CommentThreadSnapshot) => {
       const cellId = thread.badge_cell_ids[0];
       if (!cellId) return;
-      focusCellInStore(cellId);
-      const target = document.getElementById(notebookCellAnchorId(cellId));
-      if (target) {
-        scrollElementIntoView(target, { block: "center", behavior: "smooth" });
-      }
+
+      navigateToNotebookStageFromRail({
+        railCollapsed,
+        collapseRail: () => setNotebookRailCollapsed(true),
+        navigate: () => {
+          focusCellInStore(cellId);
+          const target = document.getElementById(notebookCellAnchorId(cellId));
+          if (target) {
+            scrollElementIntoView(target, { block: "center", behavior: "smooth" });
+          }
+        },
+      });
     },
-    [focusCellInStore],
+    [focusCellInStore, railCollapsed],
   );
   const resetPrototypeAuth = useCallback(() => {
     void clearCloudAppSession().catch((error: unknown) => {
@@ -1547,6 +1584,12 @@ export function NotebookViewer({
     }
     return renderedTextForSourceRange(plan, range.from, range.to) ?? anchor.exact_quote ?? null;
   }, []);
+  const resolveSourcePosition = useCallback((anchor: SourceRangeCommentAnchor) => {
+    const cell = getCellById(anchor.cell_id);
+    if (!cell) return null;
+    const range = resolveSourceRangeAnchor(cell.source, anchor);
+    return range ? sourcePointFromStringOffset(cell.source, range.from) : null;
+  }, []);
   const pendingSourceCommentAnchor =
     commentsUiEnabled && commentDraftTarget?.anchor.kind === "source_range"
       ? commentDraftTarget.anchor
@@ -1570,6 +1613,7 @@ export function NotebookViewer({
       focusNonce={commentFocus?.nonce ?? 0}
       resolveSourceLanguage={resolveCommentSourceLanguage}
       resolveSourceQuote={resolveSourceQuote}
+      resolveSourcePosition={resolveSourcePosition}
     />
   );
   const commentsUiSurface = resolveCommentsUiSurface({
