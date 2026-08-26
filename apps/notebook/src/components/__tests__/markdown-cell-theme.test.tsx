@@ -993,6 +993,28 @@ describe("MarkdownCell theme sync", () => {
     expect(onFocusPrevious).not.toHaveBeenCalled();
   });
 
+  it("lets command-mode arrows bubble to notebook selection navigation", () => {
+    const cell = makeCell();
+    mockActiveInteractionTarget = { kind: "cell", cellId: cell.id };
+    const onPreviewFocusNext = vi.fn();
+    const onPreviewFocusPrevious = vi.fn();
+
+    const { getByLabelText } = render(
+      <MarkdownCell
+        cell={cell}
+        onFocus={() => {}}
+        onPreviewFocusNext={onPreviewFocusNext}
+        onPreviewFocusPrevious={onPreviewFocusPrevious}
+      />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    expect(fireEvent.keyDown(preview, { key: "ArrowDown" })).toBe(true);
+    expect(fireEvent.keyDown(preview, { key: "ArrowUp" })).toBe(true);
+    expect(onPreviewFocusNext).not.toHaveBeenCalled();
+    expect(onPreviewFocusPrevious).not.toHaveBeenCalled();
+  });
+
   it("updates markdown task markers from projected task checkboxes", () => {
     const onUpdateSource = vi.fn();
 

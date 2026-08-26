@@ -847,10 +847,12 @@ export const MarkdownCell = memo(function MarkdownCell({
         onEnterCommandMode?.();
         e.preventDefault();
       } else if (e.key === "ArrowDown") {
+        if (getActiveInteractionTarget()?.kind === "cell") return;
         if (onPreviewFocusNext) onPreviewFocusNext();
         else onFocusNext?.("start");
         e.preventDefault();
       } else if (e.key === "ArrowUp") {
+        if (getActiveInteractionTarget()?.kind === "cell") return;
         if (onPreviewFocusPrevious) onPreviewFocusPrevious();
         else onFocusPrevious?.("end");
         e.preventDefault();

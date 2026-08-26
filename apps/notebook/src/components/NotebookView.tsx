@@ -41,6 +41,7 @@ import type { TracebackCellTarget } from "@/components/outputs/traceback-output"
 import { usePresenceContext } from "@/components/notebook/presence-context";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import { type CommandModeCommand, useCommandMode } from "../hooks/useCommandMode";
+import { findAdjacentVisibleCellId, type CellNavigationDirection } from "../lib/cell-navigation";
 import {
   flushCellUIState,
   getFocusedCellId,
@@ -777,9 +778,38 @@ function NotebookViewContent({
     [canMutateCells, handleDeleteCell, onAddCell, onChangeCellType, onSetCellOutputsHidden],
   );
 
+  const isVisibleCell = useCallback((cellId: string) => {
+    const group = hiddenGroupsRef.current.get(cellId);
+    return !group || group.isFirst;
+  }, []);
+
+  const navigateCommandModeSelection = useCallback(
+    (direction: CellNavigationDirection, cellId: string): boolean => {
+      const targetCellId = findAdjacentVisibleCellId(
+        cellIdsRef.current,
+        cellId,
+        direction,
+        isVisibleCell,
+      );
+      if (!targetCellId) return false;
+
+      focusInteractionTarget({ kind: "cell", cellId: targetCellId });
+      window.requestAnimationFrame(() => {
+        containerRef.current
+          ?.querySelector<HTMLElement>(
+            `[data-slot="cell-container"][data-cell-id="${CSS.escape(targetCellId)}"]`,
+          )
+          ?.scrollIntoView({ block: "nearest" });
+      });
+      return true;
+    },
+    [focusInteractionTarget, isVisibleCell],
+  );
+
   useCommandMode({
     showCommandMode,
     enterEditMode,
+    navigateSelection: navigateCommandModeSelection,
     runCommand: runCommandModeAction,
     disabled: isLoading || cellIds.length === 0,
   });
@@ -896,22 +926,17 @@ function NotebookViewContent({
       dragHandleProps?: Record<string, unknown>,
       isDragging?: boolean,
     ) => {
-      // Navigation callbacks — skip cells that are collapsed into a hidden group
-      const isVisibleCell = (id: string) => {
-        const g = hiddenGroupsRef.current.get(id);
-        return !g || g.isFirst;
-      };
-
       const onFocusPrevious = (cursorPosition: "start" | "end") => {
         logger.debug(
           `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
-        let prevIndex = index - 1;
-        while (prevIndex >= 0 && !isVisibleCell(cellIdsRef.current[prevIndex])) {
-          prevIndex--;
-        }
-        if (prevIndex >= 0) {
-          const prevCellId = cellIdsRef.current[prevIndex];
+        const prevCellId = findAdjacentVisibleCellId(
+          cellIdsRef.current,
+          cell.id,
+          "previous",
+          isVisibleCell,
+        );
+        if (prevCellId) {
           logger.debug(`[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`);
           focusInteractionTarget({ kind: "editor", cellId: prevCellId });
           focusCell(prevCellId, cursorPosition);
@@ -924,15 +949,13 @@ function NotebookViewContent({
         logger.debug(
           `[cell-nav] onFocusNext called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
-        let nextIndex = index + 1;
-        while (
-          nextIndex < cellIdsRef.current.length &&
-          !isVisibleCell(cellIdsRef.current[nextIndex])
-        ) {
-          nextIndex++;
-        }
-        if (nextIndex < cellIdsRef.current.length) {
-          const nextCellId = cellIdsRef.current[nextIndex];
+        const nextCellId = findAdjacentVisibleCellId(
+          cellIdsRef.current,
+          cell.id,
+          "next",
+          isVisibleCell,
+        );
+        if (nextCellId) {
           logger.debug(`[cell-nav] Focusing next: ${nextCellId.slice(0, 8)}`);
           focusInteractionTarget({ kind: "editor", cellId: nextCellId });
           focusCell(nextCellId, cursorPosition);
@@ -942,18 +965,13 @@ function NotebookViewContent({
       };
 
       const focusRenderedCell = (direction: "previous" | "next") => {
-        const step = direction === "previous" ? -1 : 1;
-        let targetIndex = index + step;
-        while (
-          targetIndex >= 0 &&
-          targetIndex < cellIdsRef.current.length &&
-          !isVisibleCell(cellIdsRef.current[targetIndex])
-        ) {
-          targetIndex += step;
-        }
-        if (targetIndex < 0 || targetIndex >= cellIdsRef.current.length) return;
-
-        const targetCellId = cellIdsRef.current[targetIndex];
+        const targetCellId = findAdjacentVisibleCellId(
+          cellIdsRef.current,
+          cell.id,
+          direction,
+          isVisibleCell,
+        );
+        if (!targetCellId) return;
         const targetCell = getCellById(targetCellId);
         if (targetCell?.cell_type !== "markdown") {
           focusInteractionTarget({ kind: "editor", cellId: targetCellId });
@@ -1241,6 +1259,7 @@ function NotebookViewContent({
     [
       runtime,
       focusInteractionTarget,
+      isVisibleCell,
       suppressTailFollowForInPlaceExecution,
       onExecuteCell,
       onInterruptKernel,

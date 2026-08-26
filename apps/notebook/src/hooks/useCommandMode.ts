@@ -13,12 +13,15 @@ export type CommandModeCommand =
   | "toggle-output";
 
 type RunCommand = (command: CommandModeCommand, cellId: string) => boolean;
+type NavigateSelection = (direction: "previous" | "next", cellId: string) => boolean;
 
 interface UseCommandModeOptions {
   /** Enter command mode: blur the active element, select the focused cell (no editor). */
   showCommandMode: () => void;
   /** Leave command mode: focus the source editor of the selected cell. */
   enterEditMode: () => boolean;
+  /** Select an adjacent visible cell without entering its editor. */
+  navigateSelection?: NavigateSelection;
   /** Apply a command through the shared notebook surface. */
   runCommand: RunCommand;
   /** Skip attaching the listener entirely (e.g. no notebook loaded). */
@@ -49,6 +52,7 @@ function isInteractiveTarget(el: Element | null): boolean {
  *
  *   Escape → blur the editor/output, enter command mode (`{kind:"cell"}`)
  *   Enter  → leave command mode, focus the cell's source editor
+ *   Up/Down → select the previous/next visible cell without editing
  *
  * While in command mode, single letters mirror the most common Jupyter
  * shortcuts: A/B insert a cell above/below, M/Y change cell type, O toggles
@@ -60,14 +64,17 @@ function isInteractiveTarget(el: Element | null): boolean {
 export function useCommandMode({
   showCommandMode,
   enterEditMode,
+  navigateSelection,
   runCommand,
   disabled = false,
 }: UseCommandModeOptions): void {
   const showCommandModeRef = useRef(showCommandMode);
   const enterEditModeRef = useRef(enterEditMode);
+  const navigateSelectionRef = useRef(navigateSelection);
   const runCommandRef = useRef(runCommand);
   showCommandModeRef.current = showCommandMode;
   enterEditModeRef.current = enterEditMode;
+  navigateSelectionRef.current = navigateSelection;
   runCommandRef.current = runCommand;
 
   // Timestamp + cell id of the last bare "d" press, for the D,D delete
@@ -108,6 +115,14 @@ export function useCommandMode({
 
       if (target?.kind !== "cell") {
         pendingDeleteRef.current = null;
+        return;
+      }
+
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        pendingDeleteRef.current = null;
+        if (event.shiftKey) return;
+        const direction = event.key === "ArrowUp" ? "previous" : "next";
+        if (navigateSelectionRef.current?.(direction, target.cellId)) event.preventDefault();
         return;
       }
 

@@ -219,6 +219,45 @@ test.describe("markdown parity", () => {
     await expect(secondMarkdown.getByLabel("Markdown cell content")).toBeFocused();
   });
 
+  test("navigates mixed cells with arrows while staying in command mode", async ({ page }) => {
+    const notebookId = crypto.randomUUID();
+    await openNotebookRoom(page, notebookId);
+
+    mcp = await McpPeer.start();
+    await mcp.connectNotebook(notebookId);
+    const firstCodeId = await mcp.createCell("# command navigation first", "code");
+    const markdownId = await mcp.createCell("# Command navigation middle", "markdown");
+    const secondCodeId = await mcp.createCell("# command navigation last", "code");
+    await waitForCellCount(page, 4);
+
+    const firstCode = page.locator(`[data-cell-id="${firstCodeId}"]`);
+    const markdown = page.locator(`[data-cell-id="${markdownId}"]`);
+    const secondCode = page.locator(`[data-cell-id="${secondCodeId}"]`);
+    const firstEditor = firstCode.locator('.cm-content[contenteditable="true"]');
+    const secondEditor = secondCode.locator('.cm-content[contenteditable="true"]');
+    const markdownPreview = markdown.getByLabel("Markdown cell content");
+
+    await firstEditor.focus();
+    await page.keyboard.press("Escape");
+    await expect(firstEditor).not.toBeFocused();
+
+    await page.keyboard.press("ArrowDown");
+    await expect(markdownPreview).toBeFocused();
+
+    // The Markdown preview retains DOM focus when selection moves to code.
+    // A subsequent arrow must use the live command-mode target, not this
+    // preview's stale cell closure.
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowUp");
+    await expect(markdownPreview).toBeFocused();
+
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(secondEditor).toBeFocused();
+    await expect(firstEditor).not.toBeFocused();
+    await expect(secondCode).toBeInViewport();
+  });
+
   test("renders selectable markdown outputs without changing output routing semantics", async ({
     page,
   }) => {
