@@ -49,9 +49,7 @@ impl CommandOutputExt for tokio::process::Command {
             windows,
         };
         #[cfg(windows)]
-        if let Err(error) = process_tree.windows.resume() {
-            return Err(error);
-        }
+        process_tree.windows.resume()?;
         match child.wait_with_output().await {
             Ok(output) => {
                 process_tree.armed = false;
@@ -332,37 +330,39 @@ impl WindowsProcessTree {
         // additionally fences every descendant before launch completion can
         // reopen the generation gate.
         let deadline = std::time::Instant::now() + TERMINATION_FENCE_TIMEOUT;
-        while self.job != 0 {
-            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
-            let query_ok = unsafe {
-                QueryInformationJobObject(
-                    self.job,
-                    JobObjectBasicAccountingInformation,
-                    &mut accounting as *mut _ as *mut _,
-                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                    std::ptr::null_mut(),
-                )
-            };
-            if query_ok == 0 {
-                log::warn!(
-                    "failed to query cancelled package-manager job completion: {}",
-                    unsafe { GetLastError() }
-                );
-                break;
+        if self.job != 0 {
+            loop {
+                let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+                let query_ok = unsafe {
+                    QueryInformationJobObject(
+                        self.job,
+                        JobObjectBasicAccountingInformation,
+                        &mut accounting as *mut _ as *mut _,
+                        size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if query_ok == 0 {
+                    log::warn!(
+                        "failed to query cancelled package-manager job completion: {}",
+                        unsafe { GetLastError() }
+                    );
+                    break;
+                }
+                if accounting.ActiveProcesses == 0 {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    log::warn!(
+                        "cancelled package-manager job for process {} retained {} process(es) after {:?}",
+                        self.pid,
+                        accounting.ActiveProcesses,
+                        TERMINATION_FENCE_TIMEOUT
+                    );
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            if accounting.ActiveProcesses == 0 {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                log::warn!(
-                    "cancelled package-manager job for process {} retained {} process(es) after {:?}",
-                    self.pid,
-                    accounting.ActiveProcesses,
-                    TERMINATION_FENCE_TIMEOUT
-                );
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 }
