@@ -52,7 +52,6 @@ from test_daemon_integration import (  # noqa: E402, F401, F811
     _set_python_kernelspec,
     async_create_cell_and_wait_for_sync,
     async_shutdown_and_start_kernel,
-    async_start_kernel_with_retry,
     client,
     daemon_health_check,
     daemon_process,
@@ -60,9 +59,31 @@ from test_daemon_integration import (  # noqa: E402, F401, F811
 )
 
 _BOOTSTRAP = "import dx\ndx.install()\n"
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 ARROW_STREAM_MIME = "application/vnd.apache.arrow.stream"
 ARROW_STREAM_MANIFEST_MIME = "application/vnd.nteract.arrow-stream-manifest+json"
 BLOB_REF_MIME = "application/vnd.nteract.blob-ref+json"
+
+
+async def _start_workspace_kernel(notebook_session):
+    """Launch from the repo project without permitting dependency promotion."""
+    uv_dependencies = await notebook_session.get_uv_dependencies()
+    assert not uv_dependencies, (
+        "workspace dx sessions must not carry inline dependencies; "
+        "uv:pyproject would promote them into the repository pyproject.toml"
+    )
+    await async_shutdown_and_start_kernel(
+        notebook_session,
+        kernel_type="python",
+        env_source="uv:pyproject",
+        notebook_path=str(_WORKSPACE_ROOT),
+    )
+
+
+async def _install_dx(notebook_session):
+    bootstrap_id = await async_create_cell_and_wait_for_sync(notebook_session, _BOOTSTRAP)
+    result = await notebook_session.execute_cell(bootstrap_id)
+    assert result.success, f"dx bootstrap failed: {result.error}"
 
 
 def _read_arrow_table(data: bytes):
@@ -84,13 +105,11 @@ async def test_dx_display_emits_blob_ref_with_buffers(session):  # noqa: F811
     """`dx.display(df)` produces a display_data whose Arrow stream resolves
     to content matching the Python-side SHA-256 — proof the bytes rode the
     IOPub buffer frame and the agent stored them in the blob store."""
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await _start_workspace_kernel(session)
 
     # Bootstrap dx in the kernel — install formatters and open the session
-    # helpers. No notebook dependency on dx (it's added to sys.path at runtime).
-    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
-    bootstrap_result = await session.execute_cell(bootstrap_id)
-    assert bootstrap_result.success, f"dx bootstrap failed: {bootstrap_result.error}"
+    # helpers. dx resolves from the workspace project environment.
+    await _install_dx(session)
 
     # Emit a DataFrame. Bare `df` on the last line triggers dx's
     # `ipython_display_formatter` — it serializes, hashes, and publishes a
@@ -165,10 +184,9 @@ async def test_dx_display_large_df_emits_chunked_arrow_manifest(session):  # noq
     """When the serialized payload would exceed the per-message ceiling,
     dx emits a multi-chunk Arrow stream manifest whose chunks ride attached
     IOPub buffers and are stored as blob refs."""
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await _start_workspace_kernel(session)
 
-    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
-    assert (await session.execute_cell(bootstrap_id)).success
+    await _install_dx(session)
 
     # Force chunking via a low DX_MAX_PAYLOAD_BYTES. The payload is large
     # enough to split, but small enough to keep the integration test quick.
@@ -218,10 +236,9 @@ async def test_dx_polars_display_emits_blob_ref_with_buffers(session):  # noqa: 
     extra (`dx[polars]`), and minimal environments may not have it.
     """
     pytest.importorskip("polars")
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await _start_workspace_kernel(session)
 
-    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
-    assert (await session.execute_cell(bootstrap_id)).success
+    await _install_dx(session)
 
     display_id = await async_create_cell_and_wait_for_sync(
         session,
@@ -319,10 +336,9 @@ async def test_dx_polars_last_expression_uses_arrow_stream_protocol(session):  #
     """Belt-and-suspenders for the polars path: confirm the payload is an
     Arrow stream and the manifest keeps the schema/row metadata."""
     pytest.importorskip("polars")
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await _start_workspace_kernel(session)
 
-    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
-    assert (await session.execute_cell(bootstrap_id)).success
+    await _install_dx(session)
 
     display_id = await async_create_cell_and_wait_for_sync(
         session,
@@ -378,10 +394,9 @@ async def test_dx_last_expression_emits_display_data_not_execute_result(session)
     only. This test pins the actual ``output_type`` so a regression is
     visible.
     """
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await _start_workspace_kernel(session)
 
-    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
-    assert (await session.execute_cell(bootstrap_id)).success
+    await _install_dx(session)
 
     display_id = await async_create_cell_and_wait_for_sync(
         session,
@@ -423,10 +438,9 @@ async def test_dx_non_dataframe_last_expression_still_emits_execute_result(sessi
     ``text/plain`` repr. If our handler ever started intercepting non-df
     types, every cell with a bare last expression would lose its ``Out[N]:``
     prompt and become a ``display_data``."""
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await _start_workspace_kernel(session)
 
-    bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
-    assert (await session.execute_cell(bootstrap_id)).success
+    await _install_dx(session)
 
     display_id = await async_create_cell_and_wait_for_sync(session, "42 + 8\n")
     result = await session.execute_cell(display_id)
