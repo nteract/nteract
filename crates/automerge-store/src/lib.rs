@@ -125,10 +125,12 @@ pub trait AutomergeDocumentStore: Send + Sync {
 pub enum StoreError {
     #[error("SQLite document store failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error(
-        "Automerge document data is invalid; no repair was attempted and stored bytes were left unchanged: {0}"
-    )]
+    #[error("Automerge operation failed: {0}")]
     Automerge(#[from] automerge::AutomergeError),
+    #[error(
+        "stored Automerge document data is invalid; no repair was attempted and stored bytes were left unchanged: {0}"
+    )]
+    InvalidStoredDocument(#[source] automerge::AutomergeError),
     #[error("document {0} is not installed")]
     DocumentNotFound(DocumentId),
     #[error("document {0} has metadata but no chunks")]
@@ -498,7 +500,8 @@ where
         }
         match kind {
             CHUNK_KIND_SNAPSHOT => {
-                let mut snapshot = AutoCommit::load(&bytes)?;
+                let mut snapshot =
+                    AutoCommit::load(&bytes).map_err(StoreError::InvalidStoredDocument)?;
                 let snapshot_key = heads_hash(&canonical_heads(&snapshot.get_heads()));
                 if key.as_slice() != snapshot_key {
                     return Err(StoreError::ChunkKeyMismatch {
@@ -521,7 +524,9 @@ where
                 });
             }
         }
-        document.load_incremental(&bytes)?;
+        document
+            .load_incremental(&bytes)
+            .map_err(StoreError::InvalidStoredDocument)?;
         source_chunks.push(ChunkIdentity { kind, key });
     }
     drop(rows);
@@ -1262,7 +1267,7 @@ mod tests {
             assert!(
                 matches!(
                     error,
-                    StoreError::Automerge(automerge::AutomergeError::Load(_))
+                    StoreError::InvalidStoredDocument(automerge::AutomergeError::Load(_))
                 ),
                 "attempt {attempt} must return the typed Automerge load error, got {error:?}",
             );
