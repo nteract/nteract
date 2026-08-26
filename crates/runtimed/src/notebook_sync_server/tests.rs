@@ -230,6 +230,11 @@ where
         )
         .await
         .expect("daemon should send a NotebookDoc sync reply");
+        if decode_sync_status(&frame).is_some_and(|status| {
+            status.notebook_doc == notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
+        }) {
+            panic!("daemon advertised NotebookDoc Interactive before its sync reply");
+        }
         if frame.frame_type == NotebookFrameType::AutomergeSync {
             return frame.payload;
         }
@@ -360,40 +365,71 @@ async fn notebook_doc_interactive_waits_for_initial_sync_convergence() {
     .await
     .unwrap();
 
-    let changes_reply = recv_notebook_sync_reply(&mut client_reader).await;
-    let mut premature_interactive = false;
-    while let Some(frame) = recv_typed_frame_or_timeout(
-        &mut client_reader,
-        std::time::Duration::from_millis(150),
-        "post-reply drain",
-    )
-    .await
-    {
-        if decode_sync_status(&frame).is_some_and(|status| {
-            status.notebook_doc == notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
-        }) {
-            premature_interactive = true;
+    let mut final_ack = None;
+    // Automerge's `have` Bloom filter may produce a false positive for an
+    // ancestor of the requested head. The receiver queues that orphan and
+    // requests the missing dependency on the next round, so drive the real
+    // handshake to convergence instead of requiring a particular packet to
+    // contain the room cells. Upstream Automerge uses the same 10-round bound.
+    for round in 0..10 {
+        let sync_reply = recv_notebook_sync_reply(&mut client_reader).await;
+        let mut premature_interactive = false;
+        while let Some(frame) = recv_typed_frame_or_timeout(
+            &mut client_reader,
+            std::time::Duration::from_millis(150),
+            "post-reply drain",
+        )
+        .await
+        {
+            if decode_sync_status(&frame).is_some_and(|status| {
+                status.notebook_doc
+                    == notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
+            }) {
+                premature_interactive = true;
+                break;
+            }
+            assert_ne!(
+                frame.frame_type,
+                NotebookFrameType::AutomergeSync,
+                "daemon sent another NotebookDoc sync reply before the client acknowledged round {round}"
+            );
+        }
+        assert!(
+            !premature_interactive,
+            "daemon advertised NotebookDoc Interactive before the joiner acknowledged sync round {round}"
+        );
+
+        let sync_message = sync::Message::decode(&sync_reply).expect("valid sync reply");
+        client_doc
+            .receive_sync_message_recovering(
+                &mut client_state,
+                sync_message,
+                "test-initial-sync-round",
+            )
+            .unwrap();
+        let client_reply = client_doc
+            .generate_sync_message_recovering(&mut client_state, "test-initial-sync-reply")
+            .unwrap()
+            .expect("client should continue the initial sync handshake");
+
+        if client_doc.cell_count() == 2 {
+            final_ack = Some(client_reply);
             break;
         }
-    }
-    assert!(
-        !premature_interactive,
-        "daemon advertised NotebookDoc Interactive before the joiner acknowledged the changes-bearing initial sync reply"
-    );
+        assert!(
+            !client_reply.need.is_empty(),
+            "extra initial sync round {round} must request a missing dependency"
+        );
 
-    let changes_message = sync::Message::decode(&changes_reply).expect("valid changes reply");
-    client_doc
-        .receive_sync_message_recovering(&mut client_state, changes_message, "test-changes-sync")
+        connection::send_typed_frame(
+            &mut client_writer,
+            NotebookFrameType::AutomergeSync,
+            &client_reply.encode(),
+        )
+        .await
         .unwrap();
-    assert_eq!(
-        client_doc.cell_count(),
-        2,
-        "the changes-bearing reply must deliver the existing room cells"
-    );
-    let final_ack = client_doc
-        .generate_sync_message_recovering(&mut client_state, "test-final-ack")
-        .unwrap()
-        .expect("client should acknowledge the changes-bearing reply");
+    }
+    let final_ack = final_ack.expect("initial sync must deliver the existing room cells");
     connection::send_typed_frame(
         &mut client_writer,
         NotebookFrameType::AutomergeSync,
