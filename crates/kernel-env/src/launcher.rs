@@ -40,6 +40,12 @@ pub const LAUNCHER_FILES: &[(&str, &str)] = &[
         include_str!("../../../python/nteract-kernel-launcher/nteract_kernel_launcher/app.py"),
     ),
     (
+        "transport.py",
+        include_str!(
+            "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/transport.py"
+        ),
+    ),
+    (
         "_bootstrap.py",
         include_str!(
             "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/_bootstrap.py"
@@ -260,6 +266,13 @@ mod tests {
             LAUNCHER_FILES.iter().map(|(name, _)| *name).collect();
         assert!(names.contains("_bokeh_session.py"));
         assert!(names.contains("_panel.py"));
+    }
+
+    #[test]
+    fn launcher_ships_reliable_transport_policy() {
+        let names: std::collections::HashSet<&str> =
+            LAUNCHER_FILES.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains("transport.py"));
     }
 
     #[tokio::test]
