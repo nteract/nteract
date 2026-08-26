@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 
+use crate::CommandOutputExt;
+
 /// Canonical name of the launcher package directory inside site-packages.
 pub const LAUNCHER_PKG: &str = "nteract_kernel_launcher";
 
@@ -116,7 +118,7 @@ pub async fn purelib_for(python: &Path) -> Result<PathBuf> {
             "-c",
             "import sysconfig; print(sysconfig.get_path('purelib'))",
         ])
-        .output()
+        .output_owned()
         .await
         .with_context(|| format!("failed to spawn {python:?} for sysconfig lookup"))?;
     if !output.status.success() {

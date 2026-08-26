@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use kernel_env::CommandOutputExt;
 use kernel_env::{EnvProgressPhase, ProgressHandler};
 use tokio::process::Command;
 use tracing::{info, warn};
@@ -231,7 +232,7 @@ async fn run_prepare_probe(
     if bootstrap_dx {
         apply_bootstrap_pythonpath(&mut cmd).await?;
     }
-    cmd.output().await.with_context(|| {
+    cmd.output_owned().await.with_context(|| {
         format!(
             "failed to run uv project prepare probe in {}",
             cwd.display()

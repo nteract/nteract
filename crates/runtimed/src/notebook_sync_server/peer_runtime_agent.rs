@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use automerge::SaveOptions;
+use notebook_doc::presence;
 use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFrameType};
 use notebook_protocol::protocol::{NotebookBroadcast, RuntimeAgentResponse};
 use tracing::{debug, info, warn};
@@ -11,8 +12,8 @@ use crate::async_outcome::{flatten_joined_result, JoinedResult};
 use super::peer_runtime_sync::{persist_terminal_execution_records, runtime_file_save_fingerprint};
 use super::peer_writer::spawn_peer_writer;
 use super::{
-    admit_trusted_notebook_changes, NotebookRoom, RuntimeAgentMessage, TrustedNotebookChangeSource,
-    STATE_SYNC_COMPACT_THRESHOLD,
+    admit_trusted_notebook_changes, update_kernel_presence_locked, NotebookRoom,
+    RuntimeAgentMessage, TrustedNotebookChangeSource, STATE_SYNC_COMPACT_THRESHOLD,
 };
 
 /// Apply one NotebookDoc sync frame from the runtime agent.
@@ -313,6 +314,13 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let (ra_tx, mut ra_rx) = tokio::sync::mpsc::channel::<RuntimeAgentMessage>(16);
     {
         let mut tx_guard = room.runtime_agent_request_tx.lock().await;
+        if !room.mark_runtime_agent_connected(&runtime_agent_id) {
+            warn!(
+                "[notebook-sync] Rejecting runtime agent {} after initial sync (launch provenance changed)",
+                runtime_agent_id
+            );
+            return;
+        }
         *tx_guard = Some(ra_tx);
     }
 
@@ -677,16 +685,55 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     // A stale runtime agent disconnecting after a new one connected must not
     // clobber the new runtime agent's channel.
     //
-    // Scope the id read guard so it drops before acquiring other locks
-    // (deadlock prevention: no lock held across `.await`).
+    cleanup_runtime_agent_disconnect(&room, &runtime_agent_id).await;
+    info!(
+        "[notebook-sync] Runtime agent sync connection closed: {}",
+        runtime_agent_id
+    );
+}
+
+async fn cleanup_runtime_agent_disconnect(room: &NotebookRoom, runtime_agent_id: &str) -> bool {
+    let disconnect_generation = room
+        .runtime_agent_generation
+        .load(std::sync::atomic::Ordering::Acquire);
+    let env_source = room
+        .active_kernel_launch()
+        .map(|launch| launch.env_source.as_str().to_string())
+        .unwrap_or_default();
     let is_current = {
-        let expected = room.current_runtime_agent_id.read().await;
-        expected.as_deref() == Some(&runtime_agent_id)
+        let (mut presence_state, mut request_tx) = tokio::join!(
+            room.broadcasts.presence.write(),
+            room.runtime_agent_request_tx.lock()
+        );
+        let disconnected = room.disconnect_runtime_agent_and_commit_terminal(
+            runtime_agent_id,
+            || {
+                update_kernel_presence_locked(
+                    &mut presence_state,
+                    &room.broadcasts.presence_tx,
+                    presence::KernelStatus::Errored,
+                    &env_source,
+                );
+            },
+            |sd| {
+                sd.set_lifecycle_with_error_details(
+                    &runtime_doc::RuntimeLifecycle::Error,
+                    None,
+                    Some("Runtime agent disconnected"),
+                )
+            },
+        );
+        if disconnected {
+            *request_tx = None;
+        }
+        disconnected
     };
     if is_current {
         {
-            let mut tx_guard = room.runtime_agent_request_tx.lock().await;
-            *tx_guard = None;
+            let mut current = room.current_runtime_agent_id.write().await;
+            if current.as_deref() == Some(runtime_agent_id) {
+                *current = None;
+            }
         }
         // No need to signal "disconnected" — the oneshot was consumed on
         // connect. If the runtime agent dies before connecting, the oneshot
@@ -695,12 +742,15 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         //
         // Clear runtime_agent_handle so LaunchKernel spawns a new runtime agent
         let mut guard = room.runtime_agent_handle.lock().await;
-        *guard = None;
+        if room
+            .runtime_agent_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+            == disconnect_generation
+        {
+            *guard = None;
+        }
     }
-    info!(
-        "[notebook-sync] Runtime agent sync connection closed: {}",
-        runtime_agent_id
-    );
+    is_current
 }
 
 fn forward_runtime_agent_broadcast(
@@ -757,6 +807,7 @@ mod tests {
     use automerge::{transaction::Transactable, ReadDoc, ROOT};
 
     use crate::blob_store::BlobStore;
+    use crate::notebook_sync_server::KernelLaunchCommitRejection;
 
     fn test_file_backed_room(tmp: &tempfile::TempDir) -> (uuid::Uuid, PathBuf, Arc<NotebookRoom>) {
         let notebook_id = uuid::Uuid::new_v4();
@@ -811,6 +862,68 @@ mod tests {
             version: automerge::sync::MessageVersion::V1,
         }
         .encode()
+    }
+
+    #[tokio::test]
+    async fn current_runtime_agent_disconnect_fences_in_flight_success_projection() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let (_, _, room) = test_file_backed_room(&tmp);
+        *room.current_runtime_agent_id.write().await = Some("agent-1".to_string());
+        room.expect_runtime_agent("agent-1");
+        assert!(room.mark_runtime_agent_connected("agent-1"));
+        let (request_tx, _request_rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(request_tx);
+        let attempt = match room.try_begin_auto_launch() {
+            crate::notebook_sync_server::AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("launch should be admitted"),
+        };
+
+        assert!(cleanup_runtime_agent_disconnect(&room, "agent-1").await);
+        assert!(room.current_runtime_agent_id.read().await.is_none());
+        assert!(room.runtime_agent_request_tx.lock().await.is_none());
+
+        let projection_ran = std::cell::Cell::new(false);
+        let cancelled_attempt =
+            match attempt.succeed_with_agent("agent-1", || projection_ran.set(true)) {
+                Err((attempt, KernelLaunchCommitRejection::Cancelled)) => attempt,
+                Err((_, rejection)) => panic!("expected cancellation, got {rejection:?}"),
+                Ok(()) => panic!("disconnect must fence launch success"),
+            };
+        assert!(!projection_ran.get());
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            runtime_doc::RuntimeLifecycle::Error
+        );
+        let presence_state = room.broadcasts.presence.read().await;
+        let daemon = presence_state.peers().get("daemon").unwrap();
+        match daemon.channels.get(&presence::Channel::KernelState) {
+            Some(presence::ChannelData::KernelState(data)) => {
+                assert_eq!(data.status, presence::KernelStatus::Errored)
+            }
+            other => panic!("expected errored kernel presence, got {other:?}"),
+        }
+        drop(presence_state);
+        cancelled_attempt.finish_cancelled();
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_agent_disconnect_preserves_replacement_channel() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let (_, _, room) = test_file_backed_room(&tmp);
+        *room.current_runtime_agent_id.write().await = Some("replacement".to_string());
+        room.expect_runtime_agent("replacement");
+        assert!(room.mark_runtime_agent_connected("replacement"));
+        let (request_tx, _request_rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(request_tx);
+
+        assert!(!cleanup_runtime_agent_disconnect(&room, "stale").await);
+        assert_eq!(
+            room.current_runtime_agent_id.read().await.as_deref(),
+            Some("replacement")
+        );
+        assert!(room.runtime_agent_request_tx.lock().await.is_some());
     }
 
     #[tokio::test]

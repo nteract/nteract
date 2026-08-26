@@ -41,6 +41,150 @@ impl PeerConnectionContext {
     }
 }
 
+fn spawn_auto_launch_attempt(
+    room: Arc<NotebookRoom>,
+    notebook_id: String,
+    default_runtime: crate::runtime::Runtime,
+    default_python_env: crate::settings_doc::PythonEnvType,
+    daemon: Arc<crate::daemon::Daemon>,
+    attempt: KernelLaunchAttempt,
+) {
+    if let Some(Err(error)) = room.commit_unless_launch_cancelled(|| {
+        room.state
+            .with_doc(|state| state.set_lifecycle(&RuntimeLifecycle::Resolving))
+    }) {
+        warn!("[runtime-state] {error}");
+    }
+    let generation = attempt.generation();
+    let launch_room = Arc::clone(&room);
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+    let task = spawn_supervised(
+        "auto-launch-kernel",
+        async move {
+            if start_rx.await.is_err() {
+                return;
+            }
+            auto_launch_kernel(
+                &launch_room,
+                &notebook_id,
+                default_runtime,
+                default_python_env,
+                daemon,
+                attempt,
+            )
+            .await;
+        },
+        move |panic| {
+            tracing::error!(
+                "[notebook-sync] {} panicked; launch-token cleanup owns terminalization: {}",
+                panic.label,
+                panic.message
+            );
+        },
+    );
+    if !room.register_launch_abort_handle(generation, task.abort_handle()) {
+        task.abort();
+        return;
+    }
+    let _ = start_tx.send(());
+}
+
+async fn wait_for_retryable_auto_launch(
+    room: &Arc<NotebookRoom>,
+    generation: u64,
+) -> Option<KernelLaunchAttempt> {
+    const TEARDOWN_LATCH_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + TEARDOWN_LATCH_WAIT_TIMEOUT;
+    while room
+        .connections
+        .kernel_teardown_destructive
+        .load(Ordering::Acquire)
+    {
+        if tokio::time::Instant::now() >= deadline {
+            warn!(
+                "[notebook-sync] Auto-launch retry for generation {} timed out after {:?} waiting for teardown",
+                generation,
+                TEARDOWN_LATCH_WAIT_TIMEOUT
+            );
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    if room.connections.active_peers.load(Ordering::Acquire) == 0
+        || room.is_hosted()
+        || room.has_kernel().await
+    {
+        return None;
+    }
+    let trust_status = room.trust_state.read().await.status.clone();
+    if !matches!(
+        trust_status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+    ) {
+        return None;
+    }
+
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(attempt) => Some(attempt),
+        AutoLaunchAdmission::InFlight { .. } | AutoLaunchAdmission::CoolingDown { .. } => None,
+    }
+}
+
+fn spawn_auto_launch_retry(
+    room: Arc<NotebookRoom>,
+    notebook_id: String,
+    default_runtime: crate::runtime::Runtime,
+    default_python_env: crate::settings_doc::PythonEnvType,
+    daemon: Arc<crate::daemon::Daemon>,
+    generation: u64,
+) {
+    if !room.connections.try_claim_auto_launch_retry(generation) {
+        debug!(
+            "[notebook-sync] Auto-launch retry for generation {} already has a follower",
+            generation
+        );
+        return;
+    }
+
+    struct RetryClaim {
+        room: Arc<NotebookRoom>,
+        generation: u64,
+    }
+    impl Drop for RetryClaim {
+        fn drop(&mut self) {
+            self.room
+                .connections
+                .release_auto_launch_retry(self.generation);
+        }
+    }
+
+    spawn_best_effort("auto-launch-after-in-flight", async move {
+        let _claim = RetryClaim {
+            room: Arc::clone(&room),
+            generation,
+        };
+        while room.launch_completion(generation).is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let Some(attempt) = wait_for_retryable_auto_launch(&room, generation).await else {
+            return;
+        };
+        info!(
+            "[notebook-sync] Retrying auto-launch for {} after generation {} completed",
+            notebook_id, generation
+        );
+        spawn_auto_launch_attempt(
+            room,
+            notebook_id,
+            default_runtime,
+            default_python_env,
+            daemon,
+            attempt,
+        );
+    });
+}
+
 /// Handle a single notebook sync client connection.
 ///
 /// The caller has already consumed the handshake frame and resolved the room.
@@ -250,55 +394,27 @@ where
                         "[notebook-sync] Auto-launching kernel for notebook {} (trust: {:?}, new: {})",
                         notebook_id, trust_status, is_new_notebook
                     );
-                    // Write Resolving immediately so clients never see stale NotStarted
-                    if let Err(e) = room
-                        .state
-                        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Resolving))
-                    {
-                        warn!("[runtime-state] {}", e);
-                    }
-                    // Spawn auto-launch in background so we don't block sync
-                    let room_clone = room.clone();
-                    let panic_room = room.clone();
-                    let notebook_id_clone = notebook_id.to_string();
-                    let daemon_clone = ctx.daemon.clone();
-                    let default_runtime = ctx.default_runtime.clone();
-                    let default_python_env = ctx.default_python_env.clone();
-                    spawn_supervised(
-                        "auto-launch-kernel",
-                        async move {
-                            auto_launch_kernel(
-                                &room_clone,
-                                &notebook_id_clone,
-                                default_runtime,
-                                default_python_env,
-                                daemon_clone,
-                                attempt,
-                            )
-                            .await;
-                        },
-                        move |_| {
-                            let r = panic_room;
-                            // with_doc is sync (std::sync::Mutex), so no need for tokio::spawn
-                            // to acquire the lock. But spawn_supervised's panic handler runs
-                            // outside async context, so we still need spawn for the closure.
-                            tokio::spawn(async move {
-                                // Auto-launch panic, no specific typed reason. Clear
-                                // any stale error_reason so the frontend prompt isn't
-                                // stuck on an earlier missing_ipykernel, etc.
-                                if let Err(e) = r.state.with_doc(|sd| {
-                                    sd.set_lifecycle_with_error(&RuntimeLifecycle::Error, None)
-                                }) {
-                                    tracing::warn!("[runtime-state] {}", e);
-                                }
-                            });
-                        },
+                    spawn_auto_launch_attempt(
+                        Arc::clone(room),
+                        notebook_id.to_string(),
+                        ctx.default_runtime.clone(),
+                        ctx.default_python_env.clone(),
+                        Arc::clone(&ctx.daemon),
+                        attempt,
                     );
                 }
-                super::room::AutoLaunchAdmission::InFlight => {
+                super::room::AutoLaunchAdmission::InFlight { generation } => {
                     debug!(
-                        "[notebook-sync] Auto-launch skipped for {}: attempt already in flight",
-                        notebook_id
+                        "[notebook-sync] Auto-launch for {} is following in-flight generation {}",
+                        notebook_id, generation
+                    );
+                    spawn_auto_launch_retry(
+                        Arc::clone(room),
+                        notebook_id.to_string(),
+                        ctx.default_runtime.clone(),
+                        ctx.default_python_env.clone(),
+                        Arc::clone(&ctx.daemon),
+                        generation,
                     );
                 }
                 super::room::AutoLaunchAdmission::CoolingDown { remaining } => {
@@ -380,4 +496,102 @@ where
     .await;
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blob_store::BlobStore;
+
+    #[tokio::test]
+    async fn reconnect_retry_follower_is_single_flight_per_generation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        );
+
+        assert!(room.connections.try_claim_auto_launch_retry(7));
+        assert!(!room.connections.try_claim_auto_launch_retry(7));
+        assert!(!room.connections.try_claim_auto_launch_retry(8));
+        room.connections.release_auto_launch_retry(7);
+        assert!(room.connections.try_claim_auto_launch_retry(8));
+        room.connections.release_auto_launch_retry(8);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_retries_after_teardown_cancels_in_flight_generation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        room.connections.active_peers.store(1, Ordering::Release);
+        room.connections
+            .kernel_teardown_destructive
+            .store(true, Ordering::Release);
+        let owner = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("first launch should be admitted"),
+        };
+        let retry = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { wait_for_retryable_auto_launch(&room, 1).await }
+        });
+
+        assert_eq!(room.cancel_launch_and_mark_teardown_with(|| {}), Some(1));
+        owner.finish_cancelled();
+        tokio::task::yield_now().await;
+        assert!(
+            !retry.is_finished(),
+            "replacement must wait until destructive teardown releases its latch"
+        );
+
+        room.connections
+            .kernel_teardown_destructive
+            .store(false, Ordering::Release);
+        tokio::time::advance(std::time::Duration::from_millis(26)).await;
+        let replacement = retry
+            .await
+            .unwrap()
+            .expect("connected peer should own the replacement generation");
+        replacement.release_without_cooldown();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_retry_stops_after_bounded_teardown_wait() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        room.connections.active_peers.store(1, Ordering::Release);
+        room.connections
+            .kernel_teardown_destructive
+            .store(true, Ordering::Release);
+
+        let retry = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { wait_for_retryable_auto_launch(&room, 9).await }
+        });
+        tokio::time::advance(std::time::Duration::from_secs(11)).await;
+
+        assert!(retry.await.unwrap().is_none());
+        assert!(
+            room.kernel_launch_gate
+                .lock_state()
+                .in_flight_generation
+                .is_none(),
+            "timed-out follower must not admit a replacement generation"
+        );
+    }
 }

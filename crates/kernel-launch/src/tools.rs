@@ -17,6 +17,8 @@ use std::sync::{
 use tokio::sync::OnceCell;
 use zip::ZipArchive;
 
+use crate::CommandOutputExt;
+
 /// Target Deno version for GitHub download.
 pub const DENO_TARGET_VERSION: &str = "2.7.1";
 
@@ -485,7 +487,7 @@ pub async fn get_ruff_path() -> Result<PathBuf> {
             // First, check if ruff is on PATH
             if let Ok(output) = tokio::process::Command::new("ruff")
                 .arg("--version")
-                .output()
+                .output_owned()
                 .await
             {
                 if output.status.success() {
@@ -530,7 +532,7 @@ pub async fn check_deno_available_without_bootstrap() -> bool {
     // Check for acceptable system deno (2.x+)
     if let Ok(output) = tokio::process::Command::new("deno")
         .arg("--version")
-        .output()
+        .output_owned()
         .await
     {
         if output.status.success() {
@@ -566,7 +568,7 @@ fn parse_deno_major_version(version_output: &str) -> Option<u32> {
 async fn check_system_deno_acceptable() -> Option<PathBuf> {
     let output = tokio::process::Command::new("deno")
         .arg("--version")
-        .output()
+        .output_owned()
         .await
         .ok()?;
 
@@ -947,7 +949,7 @@ pub async fn get_uv_path() -> Result<PathBuf> {
             //    (which may be overridden by per-launch env_vars).
             if let Ok(output) = tokio::process::Command::new("uv")
                 .arg("--version")
-                .output()
+                .output_owned()
                 .await
             {
                 if output.status.success() {
@@ -1090,7 +1092,7 @@ pub async fn get_pixi_path() -> Result<PathBuf> {
             //    PATH (see `get_uv_path` for rationale).
             if let Ok(output) = tokio::process::Command::new("pixi")
                 .arg("--version")
-                .output()
+                .output_owned()
                 .await
             {
                 if output.status.success() {
@@ -1242,7 +1244,7 @@ pub async fn get_nono_path() -> Result<PathBuf> {
         .get_or_init(|| async {
             if let Ok(output) = tokio::process::Command::new("nono")
                 .arg("--version")
-                .output()
+                .output_owned()
                 .await
             {
                 if output.status.success() {
@@ -1346,7 +1348,7 @@ pub async fn pixi_info(manifest_path: &std::path::Path) -> Result<PixiInfoResult
     let output = tokio::process::Command::new(&pixi_path)
         .args(["info", "--json", "--manifest-path"])
         .arg(manifest_path)
-        .output()
+        .output_owned()
         .await
         .map_err(|e| anyhow!("failed to run pixi info: {}", e))?;
 
@@ -1385,7 +1387,7 @@ pub async fn pixi_shell_hook(
     }
 
     let output = cmd
-        .output()
+        .output_owned()
         .await
         .map_err(|e| anyhow!("failed to run pixi shell-hook: {}", e))?;
 
@@ -2002,7 +2004,7 @@ mod tests {
                 // Sanity: running `nono --version` should succeed.
                 let output = tokio::process::Command::new(&tool.binary_path)
                     .arg("--version")
-                    .output()
+                    .output_owned()
                     .await
                     .expect("should be able to run nono --version");
                 assert!(

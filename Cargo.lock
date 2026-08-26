@@ -4056,6 +4056,7 @@ dependencies = [
  "flate2",
  "hex",
  "log",
+ "nix 0.31.2",
  "reqwest 0.12.28",
  "runt-workspace",
  "serde",
@@ -4064,6 +4065,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "windows-sys 0.52.0",
  "zip 8.5.1",
 ]
 

@@ -33,12 +33,15 @@ mod channels;
 pub mod conda;
 #[cfg(feature = "runtime")]
 pub mod gc;
+#[cfg(feature = "runtime")]
 pub mod launcher;
 #[cfg(feature = "runtime")]
 pub mod lock;
 #[cfg(feature = "runtime")]
 pub mod pixi;
 pub mod progress;
+#[cfg(feature = "runtime")]
+pub use kernel_launch::CommandOutputExt;
 #[cfg(feature = "runtime")]
 pub mod repodata;
 #[cfg(feature = "runtime")]
@@ -169,7 +172,26 @@ struct IpykernelProbe {
 ///
 #[cfg(feature = "runtime")]
 pub fn diagnose_ipykernel(python_path: &std::path::Path) -> IpykernelDiagnostic {
-    let probe = match probe_ipykernel(python_path) {
+    diagnose_ipykernel_from_probe(python_path, probe_ipykernel(python_path))
+}
+
+/// Async, cancellation-safe form of [`diagnose_ipykernel`] for launch paths.
+///
+/// The interpreter is owned as a process tree and bounded independently of
+/// the caller. Dropping this future kills and reaps that tree before returning,
+/// so a cancelled launch cannot leave an import probe holding its generation
+/// gate or mutating the environment behind a replacement kernel.
+#[cfg(feature = "runtime")]
+pub async fn diagnose_ipykernel_async(python_path: &std::path::Path) -> IpykernelDiagnostic {
+    diagnose_ipykernel_from_probe(python_path, probe_ipykernel_async(python_path).await)
+}
+
+#[cfg(feature = "runtime")]
+fn diagnose_ipykernel_from_probe(
+    python_path: &std::path::Path,
+    probe: Result<IpykernelProbe, String>,
+) -> IpykernelDiagnostic {
+    let probe = match probe {
         Ok(probe) => probe,
         Err(message) => {
             return IpykernelDiagnostic::InterpreterProbeFailed {
@@ -213,9 +235,27 @@ pub fn venv_has_ipykernel(python_path: &std::path::Path) -> bool {
 #[cfg(feature = "runtime")]
 fn probe_ipykernel(python_path: &std::path::Path) -> Result<IpykernelProbe, String> {
     let output = std::process::Command::new(python_path)
-        .args([
-            "-c",
-            r#"import json, sysconfig
+        .args(["-c", IPYKERNEL_PROBE_SCRIPT])
+        .output()
+        .map_err(|e| e.to_string())?;
+    parse_ipykernel_probe_output(output)
+}
+
+#[cfg(feature = "runtime")]
+async fn probe_ipykernel_async(python_path: &std::path::Path) -> Result<IpykernelProbe, String> {
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let mut command = tokio::process::Command::new(python_path);
+    command.args(["-c", IPYKERNEL_PROBE_SCRIPT]);
+    let output = tokio::time::timeout(PROBE_TIMEOUT, command.output_owned())
+        .await
+        .map_err(|_| format!("interpreter probe timed out after {PROBE_TIMEOUT:?}"))?
+        .map_err(|e| e.to_string())?;
+    parse_ipykernel_probe_output(output)
+}
+
+#[cfg(feature = "runtime")]
+const IPYKERNEL_PROBE_SCRIPT: &str = r#"import json, sysconfig
 try:
     import ipykernel  # noqa: F401
     import_ok = True
@@ -227,10 +267,10 @@ print(json.dumps({
     "purelib": sysconfig.get_paths().get("purelib", ""),
     "import_ok": import_ok,
     "error": error,
-}))"#,
-        ])
-        .output()
-        .map_err(|e| e.to_string())?;
+}))"#;
+
+#[cfg(feature = "runtime")]
+fn parse_ipykernel_probe_output(output: std::process::Output) -> Result<IpykernelProbe, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
@@ -446,6 +486,40 @@ mod site_packages_has_ipykernel_tests {
         assert!(!venv_has_ipykernel(std::path::Path::new(
             "/definitely/not/a/python/interpreter"
         )));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_async_probe_prevents_late_interpreter_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let interpreter = tmp.path().join("hanging-python");
+        let late_mutation = tmp.path().join("late-mutation");
+        std::fs::write(
+            &interpreter,
+            format!(
+                "#!/bin/sh\nsleep 0.2\ntouch '{}'\n",
+                late_mutation.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&interpreter, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            diagnose_ipykernel_async(&interpreter),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "probe fixture should reach outer cancellation"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !late_mutation.exists(),
+            "cancelled interpreter survived long enough to mutate state"
+        );
     }
 
     #[test]

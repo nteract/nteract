@@ -51,6 +51,7 @@ pub struct PreparedEnv {
 pub struct RuntimeDocProgressHandler {
     state: RuntimeStateHandle,
     crdt_write_state: Mutex<CrdtProgressWriteState>,
+    launch_cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl RuntimeDocProgressHandler {
@@ -58,6 +59,18 @@ impl RuntimeDocProgressHandler {
         Self {
             state,
             crdt_write_state: Mutex::default(),
+            launch_cancel_rx: None,
+        }
+    }
+
+    pub fn new_for_launch(
+        state: RuntimeStateHandle,
+        launch_cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> Self {
+        Self {
+            state,
+            crdt_write_state: Mutex::default(),
+            launch_cancel_rx,
         }
     }
 
@@ -95,6 +108,14 @@ impl ProgressHandler for RuntimeDocProgressHandler {
         // Log all phases
         kernel_env::LogHandler.on_progress(env_type, phase.clone());
 
+        if self
+            .launch_cancel_rx
+            .as_ref()
+            .is_some_and(|cancel_rx| *cancel_rx.borrow())
+        {
+            return;
+        }
+
         let should_write = self.should_write_crdt_progress(&phase)
             || self
                 .state
@@ -106,10 +127,20 @@ impl ProgressHandler for RuntimeDocProgressHandler {
 
         match serde_json::to_value(&phase) {
             Ok(value) => {
-                if let Err(e) = self
-                    .state
-                    .with_doc(|sd| sd.set_env_progress(env_type, &value))
-                {
+                if let Err(e) = self.state.with_doc(|sd| {
+                    // Re-check while holding the RuntimeStateDoc lock. If
+                    // cancellation raced the optimistic check above, the
+                    // terminal shutdown commit either clears progress
+                    // after this write or has already made this check true.
+                    if self
+                        .launch_cancel_rx
+                        .as_ref()
+                        .is_some_and(|cancel_rx| *cancel_rx.borrow())
+                    {
+                        return Ok(());
+                    }
+                    sd.set_env_progress(env_type, &value)
+                }) {
                     tracing::warn!("[runtime-state] failed to write env progress: {}", e);
                 }
             }
@@ -753,6 +784,21 @@ mod tests {
                 "phase": "offline_hit",
             }))
         );
+    }
+
+    #[test]
+    fn cancelled_launch_progress_handler_cannot_repopulate_progress() {
+        let state = runtime_state_handle();
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let handler = RuntimeDocProgressHandler::new_for_launch(state.clone(), Some(cancel_rx));
+        cancel_tx.send(true).unwrap();
+
+        handler.on_progress("uv", EnvProgressPhase::OfflineHit);
+
+        assert!(state
+            .read(|doc| doc.read_state().env.progress)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

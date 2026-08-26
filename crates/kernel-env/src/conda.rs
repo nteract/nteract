@@ -22,6 +22,7 @@ use std::time::Instant;
 use crate::{
     channels::parse_channels,
     progress::{EnvProgressPhase, ProgressHandler, RattlerReporter},
+    CommandOutputExt,
 };
 
 /// Conda dependency specification.
@@ -877,7 +878,7 @@ pub async fn warmup_environment(env: &CondaEnvironment) -> Result<()> {
 
     let output = tokio::process::Command::new(&env.python_path)
         .args(["-c", &warmup_script])
-        .output()
+        .output_owned()
         .await?;
 
     if !output.status.success() {

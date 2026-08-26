@@ -32,13 +32,170 @@ use crate::notebook_sync_server::{
     get_inline_conda_channels, get_inline_conda_deps, get_inline_conda_python, get_inline_uv_deps,
     get_inline_uv_prerelease, get_inline_uv_requires_python, missing_conda_env_yml_decision,
     project_environment_build_approved, promote_inline_deps_to_project,
-    publish_environment_launch_error, publish_kernel_state_presence, reset_starting_state,
-    reset_starting_state_with_outcome, resolve_metadata_snapshot,
-    send_runtime_agent_request_with_captured_env_repair, try_conda_pool_for_inline_deps,
-    try_uv_pool_for_inline_deps, CapturedEnvRuntime, NotebookRoom, ResetOutcome,
+    publish_environment_launch_error, reset_starting_state, reset_starting_state_with_outcome,
+    resolve_metadata_snapshot, send_runtime_agent_request_with_captured_env_repair,
+    try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps, update_kernel_presence_locked,
+    CapturedEnvRuntime, KernelLaunchAttempt, KernelLaunchCommitRejection, KernelLaunchCompletion,
+    ManualLaunchAdmission, NotebookRoom, ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
+
+async fn wait_for_launch_generation(
+    room: &NotebookRoom,
+    generation: u64,
+) -> KernelLaunchCompletion {
+    let mut generation = generation;
+    loop {
+        if let Some(completion) = room.launch_completion(generation) {
+            match completion {
+                KernelLaunchCompletion::Released => {
+                    if let Some(successor) = room.launch_successor_generation(generation) {
+                        generation = successor;
+                        continue;
+                    }
+                    return KernelLaunchCompletion::Released;
+                }
+                terminal => return terminal,
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_joined_launch(
+    room: &NotebookRoom,
+    generation: u64,
+    cancel_rx: tokio::sync::watch::Receiver<bool>,
+) -> Result<KernelLaunchCompletion, ()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    let completion = wait_for_launch_generation(room, generation);
+    tokio::pin!(completion);
+    tokio::select! {
+        biased;
+        result = &mut completion => Ok(result),
+        _ = crate::notebook_sync_server::wait_for_kernel_launch_cancellation(cancel_rx) => {
+            // The owner remains independently fenced until its cancellation-
+            // safe checkpoint, but a joined request must retain its transport
+            // budget. Wait only for the remainder of the original deadline.
+            tokio::time::timeout_at(deadline, completion)
+                .await
+                .map_err(|_| ())
+        }
+        _ = tokio::time::sleep_until(deadline) => Err(()),
+    }
+}
+
+async fn existing_kernel_response(room: &NotebookRoom) -> Option<NotebookResponse> {
+    let active = room.active_kernel_launch()?;
+    let lifecycle = room
+        .state
+        .read(|sd| sd.read_state().kernel.lifecycle)
+        .unwrap_or(RuntimeLifecycle::NotStarted);
+    if !matches!(
+        lifecycle,
+        RuntimeLifecycle::Running(_)
+            | RuntimeLifecycle::Resolving
+            | RuntimeLifecycle::PreparingEnv
+            | RuntimeLifecycle::Launching
+            | RuntimeLifecycle::Connecting
+    ) {
+        return None;
+    }
+
+    let current_agent_id = room.current_runtime_agent_id.read().await.clone();
+    if current_agent_id.as_deref() != Some(&active.runtime_agent_id)
+        || room.runtime_agent_request_tx.lock().await.is_none()
+    {
+        room.clear_active_kernel_launch_if_agent(&active.runtime_agent_id);
+        return None;
+    }
+    let launched_config = room.runtime_agent_launched_config.read().await.clone()?;
+
+    Some(NotebookResponse::KernelAlreadyRunning {
+        kernel_type: active.kernel_type,
+        env_source: active.env_source,
+        launched_config,
+    })
+}
+
+async fn complete_manual_launch(
+    room: &NotebookRoom,
+    launch_attempt: &mut Option<KernelLaunchAttempt>,
+    runtime_agent_id: &str,
+    kernel_type: &str,
+    env_source: &EnvSource,
+    launched_config: &notebook_protocol::protocol::LaunchedEnvConfig,
+) -> Result<(), NotebookResponse> {
+    let Some(attempt) = launch_attempt.take() else {
+        return Err(NotebookResponse::Error {
+            error: "Kernel launch lost its manual launch ownership".to_string(),
+        });
+    };
+    let env_source_label = env_source.as_str().to_string();
+    let commit_result = {
+        let (mut config, mut presence_state) = tokio::join!(
+            room.runtime_agent_launched_config.write(),
+            room.broadcasts.presence.write()
+        );
+        attempt.succeed_with_agent(runtime_agent_id, || {
+            *config = Some(launched_config.clone());
+            update_kernel_presence_locked(
+                &mut presence_state,
+                &room.broadcasts.presence_tx,
+                presence::KernelStatus::Idle,
+                &env_source_label,
+            );
+            if let Err(e) = room.state.with_doc(|sd| {
+                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
+                sd.set_kernel_info(kernel_type, kernel_type, &env_source_label)?;
+                sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
+                sd.set_runtime_agent_id(runtime_agent_id)?;
+                Ok(())
+            }) {
+                warn!("[runtime-state] {}", e);
+            }
+            room.set_active_kernel_launch(
+                runtime_agent_id.to_string(),
+                kernel_type.to_string(),
+                env_source.clone(),
+            );
+        })
+    };
+
+    match commit_result {
+        Ok(()) => {
+            check_and_broadcast_sync_state(room).await;
+            Ok(())
+        }
+        Err((cancelled_attempt, KernelLaunchCommitRejection::Cancelled)) => {
+            // Shutdown won the gate before success was linearized. Keep the
+            // token until cleanup finishes so no successor can launch beside
+            // the kernel or agent we are stopping.
+            let _ = crate::requests::shutdown_kernel::handle(room).await;
+            cancelled_attempt.finish_cancelled();
+            Err(NotebookResponse::Error {
+                error: "Kernel launch cancelled by ShutdownKernel".to_string(),
+            })
+        }
+        Err((superseded_attempt, KernelLaunchCommitRejection::AgentUnavailable)) => {
+            drop(superseded_attempt);
+            let details = "Kernel launch was superseded by a newer runtime agent";
+            reset_starting_state_with_outcome(
+                room,
+                Some(runtime_agent_id),
+                ResetOutcome::Error {
+                    reason: None,
+                    details,
+                },
+            )
+            .await;
+            Err(NotebookResponse::Error {
+                error: details.to_string(),
+            })
+        }
+    }
+}
 
 pub(crate) async fn handle(
     room: &Arc<NotebookRoom>,
@@ -50,6 +207,48 @@ pub(crate) async fn handle(
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
+
+    let mut launch_attempt = Some(loop {
+        match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => {
+                // The active kernel can finish between admission and this
+                // check. Owning the gate makes a progress-phase projection
+                // safe here: no different launch can be in flight.
+                if let Some(response) = existing_kernel_response(room).await {
+                    attempt.release_without_cooldown();
+                    return response;
+                }
+                break attempt;
+            }
+            ManualLaunchAdmission::InFlight {
+                generation,
+                cancel_rx,
+            } => {
+                let completion = wait_for_joined_launch(room, generation, cancel_rx).await;
+                match completion {
+                    Ok(KernelLaunchCompletion::Succeeded) => {
+                        return existing_kernel_response(room).await.unwrap_or_else(|| {
+                            NotebookResponse::Error {
+                                error: "Kernel launch completed without an active launch identity"
+                                    .to_string(),
+                            }
+                        });
+                    }
+                    Ok(KernelLaunchCompletion::Released) => continue,
+                    Ok(KernelLaunchCompletion::Cancelled) => {
+                        return NotebookResponse::Error {
+                            error: "Kernel launch was cancelled by shutdown".to_string(),
+                        };
+                    }
+                    Ok(KernelLaunchCompletion::Failed) | Err(_) => {
+                        return NotebookResponse::Error {
+                            error: "Kernel launch timed out or failed".to_string(),
+                        };
+                    }
+                }
+            }
+        }
+    });
 
     // Fall back to the room's on-disk path when the caller doesn't
     // supply one. The frontend typically launches with
@@ -65,99 +264,23 @@ pub(crate) async fn handle(
             .await
             .map(|p| p.to_string_lossy().into_owned()),
     };
-    // Check RuntimeStateDoc for launch serialization.
-    // Uses write lock so we can atomically check + set "starting"
-    // to prevent two concurrent LaunchKernel requests from both
-    // proceeding past this gate.
-    //
-    // Scope the write guard so it drops before any async work
-    // (deadlock prevention: no lock held across `.await`).
-    let prior_lifecycle = room
-        .state
-        .with_doc(|sd| {
-            let prior = sd.read_state().kernel.lifecycle;
-            let already_progressing = matches!(
-                prior,
-                RuntimeLifecycle::Running(_)
-                    | RuntimeLifecycle::Resolving
-                    | RuntimeLifecycle::PreparingEnv
-                    | RuntimeLifecycle::Launching
-                    | RuntimeLifecycle::Connecting
-            );
-            if !already_progressing {
-                // Atomically claim the launch by moving into Resolving
-                // while we hold the sync mutex. Prevents a concurrent
-                // LaunchKernel from also proceeding past this gate.
-                sd.clear_env_progress().ok();
-                sd.set_trust("trusted", false).ok();
-                sd.set_lifecycle(&RuntimeLifecycle::Resolving).ok();
-            }
-            Ok(prior)
+    // The room-local launch gate above owns serialization. RuntimeStateDoc is
+    // the client-facing projection, not a lock: concurrent Automerge lifecycle
+    // writes can legitimately resolve to an intermediate phase.
+    if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+        room.state.with_doc(|sd| {
+            sd.clear_env_progress().ok();
+            sd.set_trust("trusted", false).ok();
+            sd.set_lifecycle(&RuntimeLifecycle::Resolving)
         })
-        .unwrap_or_else(|e| {
-            warn!("[runtime-state] {}", e);
-            RuntimeLifecycle::NotStarted
-        });
-    if !matches!(
-        prior_lifecycle,
-        RuntimeLifecycle::Running(_)
-            | RuntimeLifecycle::Resolving
-            | RuntimeLifecycle::PreparingEnv
-            | RuntimeLifecycle::Launching
-            | RuntimeLifecycle::Connecting
-    ) {
-        if let Err(e) = room.comms.with_doc(|cd| cd.clear_comms()) {
-            warn!("[comms-doc] {}", e);
-        }
-        if let Err(e) = room.state.with_doc(|sd| sd.clear_comms()) {
-            warn!("[runtime-state] {}", e);
-        }
+    }) {
+        warn!("[runtime-state] {}", e);
     }
-    match prior_lifecycle {
-        RuntimeLifecycle::Running(_) => {
-            // Agent already has a running kernel — check for restart path below.
-        }
-        RuntimeLifecycle::Resolving
-        | RuntimeLifecycle::PreparingEnv
-        | RuntimeLifecycle::Launching
-        | RuntimeLifecycle::Connecting => {
-            // Another launch in progress — wait for it to complete.
-            let wait_result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
-                loop {
-                    let lc = room
-                        .state
-                        .read(|sd| sd.read_state().kernel.lifecycle)
-                        .unwrap_or(RuntimeLifecycle::NotStarted);
-                    if matches!(
-                        lc,
-                        RuntimeLifecycle::Running(_)
-                            | RuntimeLifecycle::Error
-                            | RuntimeLifecycle::Shutdown
-                            | RuntimeLifecycle::NotStarted
-                            | RuntimeLifecycle::AwaitingEnvBuild
-                    ) {
-                        return lc;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-            })
-            .await;
-
-            match wait_result {
-                Ok(RuntimeLifecycle::Running(_)) => {
-                    // Launch completed — fall through to restart check below.
-                }
-                Ok(_) | Err(_) => {
-                    return NotebookResponse::Error {
-                        error: "Kernel launch timed out or failed".to_string(),
-                    };
-                }
-            }
-        }
-        _ => {
-            // NotStarted / Error / Shutdown / AwaitingTrust / AwaitingEnvBuild — already
-            // claimed above by writing Resolving; fall through.
-        }
+    if let Err(e) = room.comms.with_doc(|cd| cd.clear_comms()) {
+        warn!("[comms-doc] {}", e);
+    }
+    if let Err(e) = room.state.with_doc(|sd| sd.clear_comms()) {
+        warn!("[runtime-state] {}", e);
     }
 
     let notebook_path = notebook_path.map(std::path::PathBuf::from);
@@ -437,13 +560,15 @@ pub(crate) async fn handle(
                 // Error write lands, giving a concurrent retry a window to
                 // claim Resolving that we'd then clobber back to Error.
                 let env_source_label = parsed_resolved.as_str().to_string();
-                if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error(
-                        &RuntimeLifecycle::Error,
-                        Some(KernelErrorReason::MissingIpykernel),
-                    )?;
-                    sd.set_kernel_info("python", "python", &env_source_label)?;
-                    Ok(())
+                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+                    room.state.with_doc(|sd| {
+                        sd.set_lifecycle_with_error(
+                            &RuntimeLifecycle::Error,
+                            Some(KernelErrorReason::MissingIpykernel),
+                        )?;
+                        sd.set_kernel_info("python", "python", &env_source_label)?;
+                        Ok(())
+                    })
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
@@ -546,10 +671,10 @@ pub(crate) async fn handle(
     }
 
     // Transition to "preparing_env" phase
-    if let Err(e) = room
-        .state
-        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::PreparingEnv))
-    {
+    if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::PreparingEnv))
+    }) {
         warn!("[runtime-state] {}", e);
     }
 
@@ -669,9 +794,12 @@ pub(crate) async fn handle(
 
     // For inline deps, prepare a cached environment with rich progress
     let launch_progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-        std::sync::Arc::new(crate::inline_env::RuntimeDocProgressHandler::new(
-            room.state.clone(),
-        ));
+        std::sync::Arc::new(
+            crate::inline_env::RuntimeDocProgressHandler::new_for_launch(
+                room.state.clone(),
+                room.current_launch_cancellation_receiver(),
+            ),
+        );
 
     // Fetch feature flags up front so inline cache hits can refresh vendored
     // launcher files when bootstrap_dx is active.
@@ -993,12 +1121,14 @@ pub(crate) async fn handle(
                         } else {
                             let details = format_conda_env_yml_build_details(&decision);
                             warn!("[notebook-sync] {}", details);
-                            if let Err(e) = room.state.with_doc(|sd| {
-                                sd.set_lifecycle_with_error_details(
-                                    &RuntimeLifecycle::AwaitingEnvBuild,
-                                    Some(KernelErrorReason::CondaEnvYmlMissing),
-                                    Some(&details),
-                                )
+                            if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+                                room.state.with_doc(|sd| {
+                                    sd.set_lifecycle_with_error_details(
+                                        &RuntimeLifecycle::AwaitingEnvBuild,
+                                        Some(KernelErrorReason::CondaEnvYmlMissing),
+                                        Some(&details),
+                                    )
+                                })
                             }) {
                                 warn!("[runtime-state] {}", e);
                             }
@@ -1409,7 +1539,7 @@ pub(crate) async fn handle(
             | EnvSource::Pep723(PackageManager::Uv)
     ) {
         if let Some(ref env) = pooled_env {
-            let diagnostic = kernel_env::diagnose_ipykernel(&env.python_path);
+            let diagnostic = kernel_env::diagnose_ipykernel_async(&env.python_path).await;
             if !diagnostic.is_present() {
                 warn!(
                     "[launch-kernel] prepared env at {:?} ({}) cannot import ipykernel: {:?}",
@@ -1440,14 +1570,16 @@ pub(crate) async fn handle(
                 // will simply start a fresh launch.
                 reset_starting_state(room, None).await;
                 let env_source_label = parsed_resolved.as_str().to_string();
-                if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error_details(
-                        &RuntimeLifecycle::Error,
-                        Some(reason),
-                        Some(&details),
-                    )?;
-                    sd.set_kernel_info("python", "python", &env_source_label)?;
-                    Ok(())
+                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+                    room.state.with_doc(|sd| {
+                        sd.set_lifecycle_with_error_details(
+                            &RuntimeLifecycle::Error,
+                            Some(reason),
+                            Some(&details),
+                        )?;
+                        sd.set_kernel_info("python", "python", &env_source_label)?;
+                        Ok(())
+                    })
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
@@ -1511,11 +1643,20 @@ pub(crate) async fn handle(
         captured_env_for_config.as_ref(),
     );
 
-    // Transition to "launching" phase before starting the kernel process
-    if let Err(e) = room
-        .state
-        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+    if launch_attempt
+        .as_ref()
+        .is_some_and(KernelLaunchAttempt::is_cancelled)
     {
+        return NotebookResponse::Error {
+            error: "Kernel launch cancelled by ShutdownKernel".to_string(),
+        };
+    }
+
+    // Transition to "launching" phase before starting the kernel process
+    if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+    }) {
         warn!("[runtime-state] {}", e);
     }
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
@@ -1527,6 +1668,7 @@ pub(crate) async fn handle(
     // The overlay is re-evaluated per launch so the toggle takes effect on
     // the next restart without respawning the runtime-agent process.
     {
+        let existing_runtime_agent_id = room.current_runtime_agent_id.read().await.clone();
         let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
         if has_runtime_agent {
             info!("[notebook-sync] Agent connected — sending RestartKernel");
@@ -1560,34 +1702,50 @@ pub(crate) async fn handle(
                 Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelRestarted {
                     env_source: es,
                 }) => {
-                    // Store launched config for env sync drift detection
-                    {
-                        let mut lc = room.runtime_agent_launched_config.write().await;
-                        *lc = Some(launched_config.clone());
-                    }
-
-                    let es_label = es.as_str().to_string();
-                    publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es_label)
+                    let Some(runtime_agent_id) = existing_runtime_agent_id else {
+                        let details = "Kernel restarted without a current runtime agent";
+                        if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+                            room.state.with_doc(|sd| {
+                                sd.set_lifecycle_with_error_details(
+                                    &RuntimeLifecycle::Error,
+                                    None,
+                                    Some(details),
+                                )
+                            })
+                        }) {
+                            warn!("[runtime-state] {}", e);
+                        }
+                        return NotebookResponse::Error {
+                            error: details.to_string(),
+                        };
+                    };
+                    if !room.is_current_runtime_agent(&runtime_agent_id).await {
+                        let details = "Kernel restart was superseded by a newer runtime agent";
+                        reset_starting_state_with_outcome(
+                            room,
+                            Some(&runtime_agent_id),
+                            ResetOutcome::Error {
+                                reason: None,
+                                details,
+                            },
+                        )
                         .await;
-                    if let Err(e) = room.state.with_doc(|sd| {
-                        sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-                        sd.set_kernel_info(
-                            &resolved_kernel_type,
-                            &resolved_kernel_type,
-                            &es_label,
-                        )?;
-                        sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
-                        // runtime_agent_id doesn't change on restart — same runtime agent
-                        Ok(())
-                    }) {
-                        warn!("[runtime-state] {}", e);
+                        return NotebookResponse::Error {
+                            error: details.to_string(),
+                        };
                     }
-
-                    // Compute env sync state against the freshly
-                    // stored launched_config (updated above).
-                    // Covers both inline-dep drift and the
-                    // prewarmed-with-added-inline-deps case.
-                    check_and_broadcast_sync_state(room).await;
+                    if let Err(response) = complete_manual_launch(
+                        room,
+                        &mut launch_attempt,
+                        &runtime_agent_id,
+                        &resolved_kernel_type,
+                        &es,
+                        &launched_config,
+                    )
+                    .await
+                    {
+                        return response;
+                    }
 
                     return NotebookResponse::KernelLaunched {
                         kernel_type: resolved_kernel_type,
@@ -1602,13 +1760,13 @@ pub(crate) async fn handle(
                         ..
                     },
                 ) => {
-                    reset_starting_state(room, None).await;
+                    reset_starting_state(room, existing_runtime_agent_id.as_deref()).await;
                     return NotebookResponse::Error {
                         error: format!("Agent restart failed: {}", error),
                     };
                 }
                 Ok(_) => {
-                    reset_starting_state(room, None).await;
+                    reset_starting_state(room, existing_runtime_agent_id.as_deref()).await;
                     return NotebookResponse::Error {
                         error: "Unexpected runtime agent response to RestartKernel".to_string(),
                     };
@@ -1636,9 +1794,27 @@ pub(crate) async fn handle(
 
         // Set provenance + bump generation + create oneshot BEFORE spawn
         // (see auto_launch_kernel for ordering rationale).
-        {
+        let agent_expected = {
             let mut id = room.current_runtime_agent_id.write().await;
-            *id = Some(runtime_agent_id.clone());
+            if launch_attempt
+                .as_ref()
+                .is_some_and(|attempt| attempt.expect_runtime_agent(&runtime_agent_id))
+            {
+                *id = Some(runtime_agent_id.clone());
+                true
+            } else {
+                false
+            }
+        };
+        if !agent_expected
+            || launch_attempt
+                .as_ref()
+                .is_some_and(KernelLaunchAttempt::is_cancelled)
+        {
+            reset_starting_state(room, None).await;
+            return NotebookResponse::Error {
+                error: "Kernel launch cancelled before runtime agent spawn".to_string(),
+            };
         }
         room.runtime_agent_generation
             .fetch_add(1, Ordering::Release);
@@ -1648,37 +1824,100 @@ pub(crate) async fn handle(
             *guard = Some(tx);
             rx
         };
+        let Some(spawn_cancel_rx) = launch_attempt
+            .as_ref()
+            .map(KernelLaunchAttempt::cancellation_receiver)
+        else {
+            reset_starting_state(room, Some(&runtime_agent_id)).await;
+            return NotebookResponse::Error {
+                error: "Kernel launch lost its manual launch ownership before agent spawn"
+                    .to_string(),
+            };
+        };
 
-        match crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
-            notebook_id,
-            runtime_agent_id.clone(),
-            room.blob_store.root().to_path_buf(),
-            socket_path,
-            daemon.config.runtime_agent_exe.clone(),
-        )
-        .await
-        {
+        let spawn_result = tokio::select! {
+            biased;
+            _ = crate::notebook_sync_server::wait_for_kernel_launch_cancellation(
+                spawn_cancel_rx,
+            ) => {
+                if let Some(attempt) = launch_attempt.as_ref() {
+                    attempt
+                        .discard_cancelled_runtime_agent(&runtime_agent_id)
+                        .await;
+                }
+                return NotebookResponse::Error {
+                    error: "Kernel launch cancelled while spawning runtime agent".to_string(),
+                };
+            }
+            result = crate::runtime_agent_handle::RuntimeAgentHandle::spawn(
+                notebook_id,
+                runtime_agent_id.clone(),
+                room.blob_store.root().to_path_buf(),
+                socket_path,
+                daemon.config.runtime_agent_exe.clone(),
+            ) => result,
+        };
+
+        match spawn_result {
             Ok(ra) => {
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
                     *ra_guard = Some(ra);
                 }
+                if launch_attempt
+                    .as_ref()
+                    .is_some_and(KernelLaunchAttempt::is_cancelled)
+                {
+                    if let Some(attempt) = launch_attempt.as_ref() {
+                        attempt
+                            .discard_cancelled_runtime_agent(&runtime_agent_id)
+                            .await;
+                    }
+                    return NotebookResponse::Error {
+                        error: "Kernel launch cancelled after runtime agent spawn".to_string(),
+                    };
+                }
 
                 // Connecting lifecycle — fills the gap between spawn and connect
-                if let Err(e) = room
-                    .state
-                    .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
-                {
+                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
+                    room.state
+                        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Connecting))
+                }) {
                     warn!("[runtime-state] {}", e);
                 }
 
                 // Wait for THIS runtime agent to connect back via socket
-                match recv_oneshot_with_timeout(
-                    runtime_agent_connect_rx,
-                    std::time::Duration::from_secs(30),
-                )
-                .await
-                {
+                let Some(connect_cancel_rx) = launch_attempt
+                    .as_ref()
+                    .map(KernelLaunchAttempt::cancellation_receiver)
+                else {
+                    reset_starting_state(room, Some(&runtime_agent_id)).await;
+                    return NotebookResponse::Error {
+                        error:
+                            "Kernel launch lost its manual launch ownership before agent connection"
+                                .to_string(),
+                    };
+                };
+                let connect_result = tokio::select! {
+                    biased;
+                    _ = crate::notebook_sync_server::wait_for_kernel_launch_cancellation(
+                        connect_cancel_rx,
+                    ) => {
+                        if let Some(attempt) = launch_attempt.as_ref() {
+                            attempt
+                                .discard_cancelled_runtime_agent(&runtime_agent_id)
+                                .await;
+                        }
+                        return NotebookResponse::Error {
+                            error: "Kernel launch cancelled while waiting for runtime agent connection".to_string(),
+                        };
+                    }
+                    result = recv_oneshot_with_timeout(
+                        runtime_agent_connect_rx,
+                        std::time::Duration::from_secs(30),
+                    ) => result,
+                };
+                match connect_result {
                     TimedOneShot::Received(()) => {}
                     TimedOneShot::SenderDropped => {
                         reset_starting_state(room, Some(&runtime_agent_id)).await;
@@ -1693,6 +1932,20 @@ pub(crate) async fn handle(
                             error: "Agent failed to connect within 30s".to_string(),
                         };
                     }
+                }
+
+                if launch_attempt
+                    .as_ref()
+                    .is_some_and(KernelLaunchAttempt::is_cancelled)
+                {
+                    if let Some(attempt) = launch_attempt.as_ref() {
+                        attempt
+                            .discard_cancelled_runtime_agent(&runtime_agent_id)
+                            .await;
+                    }
+                    return NotebookResponse::Error {
+                        error: "Kernel launch cancelled before LaunchKernel RPC".to_string(),
+                    };
                 }
 
                 // Send LaunchKernel RPC. Same precedence as the restart path
@@ -1726,46 +1979,33 @@ pub(crate) async fn handle(
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {
-                        // Store launched config for env sync drift detection
-                        {
-                            let mut lc = room.runtime_agent_launched_config.write().await;
-                            *lc = Some(launched_config.clone());
+                        if !room.is_current_runtime_agent(&runtime_agent_id).await {
+                            let details = "Kernel launch was superseded by a newer runtime agent";
+                            reset_starting_state_with_outcome(
+                                room,
+                                Some(&runtime_agent_id),
+                                ResetOutcome::Error {
+                                    reason: None,
+                                    details,
+                                },
+                            )
+                            .await;
+                            return NotebookResponse::Error {
+                                error: details.to_string(),
+                            };
                         }
-
-                        let es_label = es.as_str().to_string();
-                        publish_kernel_state_presence(
+                        if let Err(response) = complete_manual_launch(
                             room,
-                            presence::KernelStatus::Idle,
-                            &es_label,
+                            &mut launch_attempt,
+                            &runtime_agent_id,
+                            &resolved_kernel_type,
+                            &es,
+                            &launched_config,
                         )
-                        .await;
-
-                        // Write kernel status + info + prewarmed packages
-                        // to RuntimeStateDoc
+                        .await
                         {
-                            // Read agent ID before the sync mutex to
-                            // avoid holding two locks.
-                            let agent_id = room.current_runtime_agent_id.read().await.clone();
-                            if let Err(e) = room.state.with_doc(|sd| {
-                                sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-                                sd.set_kernel_info(
-                                    &resolved_kernel_type,
-                                    &resolved_kernel_type,
-                                    &es_label,
-                                )?;
-                                sd.set_prewarmed_packages(&launched_config.prewarmed_packages)?;
-                                if let Some(ref aid) = agent_id {
-                                    sd.set_runtime_agent_id(aid)?;
-                                }
-                                Ok(())
-                            }) {
-                                warn!("[runtime-state] {}", e);
-                            }
+                            return response;
                         }
-
-                        // Compute env sync state against the freshly
-                        // stored launched_config (updated above).
-                        check_and_broadcast_sync_state(room).await;
 
                         NotebookResponse::KernelLaunched {
                             kernel_type: resolved_kernel_type,
@@ -1840,5 +2080,529 @@ pub(crate) async fn handle(
                 NotebookResponse::Error { error: details }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blob_store::BlobStore;
+    use crate::notebook_sync_server::{AutoLaunchAdmission, ManualLaunchAdmission, NotebookRoom};
+
+    fn test_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        (tmp, room)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn auto_launch_gate_completion_unblocks_stale_lifecycle_projection() {
+        let (_tmp, room) = test_room();
+        let attempt = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("auto-launch should be admitted"),
+        };
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+            .unwrap();
+
+        let waiter = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { wait_for_launch_generation(&room, 1).await }
+        });
+        tokio::task::yield_now().await;
+
+        assert!(attempt.succeed().is_ok());
+        let later_attempt = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("later auto-launch should be admitted"),
+        };
+        later_attempt.release_without_cooldown();
+        tokio::time::advance(std::time::Duration::from_millis(101)).await;
+
+        assert_eq!(waiter.await.unwrap(), KernelLaunchCompletion::Succeeded);
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Launching,
+            "the regression requires completion to be independent of the CRDT projection"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn joined_waiter_follows_successor_after_benign_release() {
+        let (_tmp, room) = test_room();
+        let first = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("first auto-launch should be admitted"),
+        };
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+            .unwrap();
+        let waiter = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { wait_for_launch_generation(&room, 1).await }
+        });
+        tokio::task::yield_now().await;
+
+        first.release_without_cooldown();
+        let successor = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("successor auto-launch should be admitted"),
+        };
+        assert!(successor.succeed().is_ok());
+        tokio::time::advance(std::time::Duration::from_millis(101)).await;
+
+        assert_eq!(waiter.await.unwrap(), KernelLaunchCompletion::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn existing_kernel_response_reuses_active_launch() {
+        let (_tmp, room) = test_room();
+        let launched_config = notebook_protocol::protocol::LaunchedEnvConfig {
+            launch_id: Some("launch-1".to_string()),
+            ..Default::default()
+        };
+        *room.runtime_agent_launched_config.write().await = Some(launched_config.clone());
+        *room.current_runtime_agent_id.write().await = Some("agent-1".to_string());
+        assert!(
+            room.record_active_kernel_launch_if_current(
+                "agent-1".to_string(),
+                "python".to_string(),
+                EnvSource::Prewarmed(PackageManager::Uv),
+            )
+            .await
+        );
+
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle)))
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let response = existing_kernel_response(&room).await.unwrap();
+        match response {
+            NotebookResponse::KernelAlreadyRunning {
+                kernel_type,
+                env_source,
+                launched_config: actual_config,
+            } => {
+                assert_eq!(kernel_type, "python");
+                assert_eq!(env_source, EnvSource::Prewarmed(PackageManager::Uv));
+                assert_eq!(actual_config, launched_config);
+            }
+            other => panic!("expected existing-kernel response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_lifecycle_rejects_response_without_projection_driven_clear() {
+        let (_tmp, room) = test_room();
+        *room.current_runtime_agent_id.write().await = Some("agent-1".to_string());
+        assert!(
+            room.record_active_kernel_launch_if_current(
+                "agent-1".to_string(),
+                "python".to_string(),
+                EnvSource::Prewarmed(PackageManager::Uv),
+            )
+            .await
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Error))
+            .unwrap();
+
+        assert!(existing_kernel_response(&room).await.is_none());
+        assert!(room.active_kernel_launch().is_some());
+    }
+
+    #[tokio::test]
+    async fn stale_agent_cleanup_preserves_replacement_launch() {
+        let (_tmp, room) = test_room();
+        *room.current_runtime_agent_id.write().await = Some("replacement-agent".to_string());
+        assert!(
+            room.record_active_kernel_launch_if_current(
+                "replacement-agent".to_string(),
+                "python".to_string(),
+                EnvSource::Prewarmed(PackageManager::Uv),
+            )
+            .await
+        );
+
+        assert!(
+            !room
+                .record_active_kernel_launch_if_current(
+                    "stale-agent".to_string(),
+                    "deno".to_string(),
+                    EnvSource::Deno,
+                )
+                .await
+        );
+
+        room.clear_active_kernel_launch_if_agent("stale-agent");
+
+        assert_eq!(
+            room.active_kernel_launch()
+                .map(|active| active.runtime_agent_id),
+            Some("replacement-agent".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_launch_joins_exact_auto_launch_generation() {
+        let (_tmp, room) = test_room();
+        let auto_attempt = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("auto-launch should be admitted"),
+        };
+
+        assert_eq!(
+            match room.try_begin_manual_launch() {
+                ManualLaunchAdmission::InFlight { generation, .. } => generation,
+                ManualLaunchAdmission::Admitted(_) => {
+                    panic!("manual launch must join the auto-launch")
+                }
+            },
+            1
+        );
+        auto_attempt.release_without_cooldown();
+    }
+
+    #[tokio::test]
+    async fn concurrent_manual_launches_share_one_generation() {
+        let (_tmp, room) = test_room();
+        let first = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => {
+                panic!("first manual launch should be admitted")
+            }
+        };
+
+        assert_eq!(
+            match room.try_begin_manual_launch() {
+                ManualLaunchAdmission::InFlight { generation, .. } => generation,
+                ManualLaunchAdmission::Admitted(_) => {
+                    panic!("second manual launch must join the first")
+                }
+            },
+            1
+        );
+        first.release_without_cooldown();
+    }
+
+    #[tokio::test]
+    async fn failed_manual_launch_does_not_arm_auto_launch_cooldown() {
+        let (_tmp, room) = test_room();
+        let attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => {
+                panic!("first manual launch should be admitted")
+            }
+        };
+        drop(attempt);
+        while room.launch_completion(1).is_none() {
+            tokio::task::yield_now().await;
+        }
+
+        match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt.release_without_cooldown(),
+            AutoLaunchAdmission::InFlight { .. } => {
+                panic!("manual failure must release the gate")
+            }
+            AutoLaunchAdmission::CoolingDown { .. } => {
+                panic!("manual failure must not throttle reconnect-driven launch")
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn manual_retry_preserves_existing_auto_launch_cooldown() {
+        let (_tmp, room) = test_room();
+        let auto_attempt = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("auto launch should be admitted"),
+        };
+        drop(auto_attempt);
+        while room.launch_completion(1).is_none() {
+            tokio::task::yield_now().await;
+        }
+
+        let manual_attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => {
+                panic!("manual launch must bypass reconnect cooldown")
+            }
+        };
+        drop(manual_attempt);
+        while room.launch_completion(2).is_none() {
+            tokio::task::yield_now().await;
+        }
+        assert!(matches!(
+            room.try_begin_auto_launch(),
+            AutoLaunchAdmission::CoolingDown { .. }
+        ));
+
+        tokio::time::advance(crate::notebook_sync_server::AUTO_LAUNCH_FAILURE_COOLDOWN).await;
+        match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt.release_without_cooldown(),
+            _ => panic!("original cooldown should expire normally"),
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancellation_wins_manual_success_linearization() {
+        let (_tmp, room) = test_room();
+        let attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => {
+                panic!("first manual launch should be admitted")
+            }
+        };
+        assert_eq!(room.cancel_in_flight_launch(), Some(1));
+
+        let cancelled_attempt = attempt
+            .succeed()
+            .expect_err("shutdown must prevent launch success from linearizing");
+        assert!(matches!(
+            room.try_begin_manual_launch(),
+            ManualLaunchAdmission::InFlight { generation: 1, .. }
+        ));
+        cancelled_attempt.finish_cancelled();
+
+        assert_eq!(
+            room.launch_completion(1),
+            Some(KernelLaunchCompletion::Cancelled)
+        );
+        match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt.release_without_cooldown(),
+            ManualLaunchAdmission::InFlight { .. } => {
+                panic!("cancelled owner must release after cleanup")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_manual_success_does_not_publish_launched_config() {
+        let (_tmp, room) = test_room();
+        let attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+        };
+        *room.current_runtime_agent_id.write().await = Some("agent-1".to_string());
+        room.expect_runtime_agent("agent-1");
+        assert!(room.mark_runtime_agent_connected("agent-1"));
+        assert_eq!(room.cancel_in_flight_launch(), Some(1));
+        let mut launch_attempt = Some(attempt);
+        let launched_config = notebook_protocol::protocol::LaunchedEnvConfig {
+            launch_id: Some("cancelled-launch".to_string()),
+            ..Default::default()
+        };
+
+        assert!(complete_manual_launch(
+            &room,
+            &mut launch_attempt,
+            "agent-1",
+            "python",
+            &EnvSource::Prewarmed(PackageManager::Uv),
+            &launched_config,
+        )
+        .await
+        .is_err());
+        assert!(room.runtime_agent_launched_config.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn abandoned_manual_launch_cleans_agent_slots_before_releasing_gate() {
+        let (_tmp, room) = test_room();
+        let attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+        };
+        *room.current_runtime_agent_id.write().await = Some("agent-1".to_string());
+        assert!(attempt.expect_runtime_agent("agent-1"));
+        let (request_tx, _request_rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(request_tx);
+        let (connect_tx, _connect_rx) = tokio::sync::oneshot::channel();
+        *room.pending_runtime_agent_connect_tx.lock().await = Some(connect_tx);
+        room.state
+            .with_doc(|doc| doc.set_lifecycle(&RuntimeLifecycle::Launching))
+            .unwrap();
+
+        drop(attempt);
+        for _ in 0..20 {
+            if room.launch_completion(1).is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            room.launch_completion(1),
+            Some(KernelLaunchCompletion::Failed)
+        );
+        assert!(room.current_runtime_agent_id.read().await.is_none());
+        assert!(room.runtime_agent_request_tx.lock().await.is_none());
+        assert!(room.pending_runtime_agent_connect_tx.lock().await.is_none());
+        assert_eq!(
+            room.state
+                .read(|doc| doc.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Error
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_attempt_drop_preserves_runtime_agent_disconnect_error() {
+        let (_tmp, room) = test_room();
+        let attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+        };
+        *room.current_runtime_agent_id.write().await = Some("agent-1".to_string());
+        assert!(attempt.expect_runtime_agent("agent-1"));
+        assert!(room.mark_runtime_agent_connected("agent-1"));
+        assert!(room.disconnect_runtime_agent_and_commit_terminal(
+            "agent-1",
+            || {},
+            |doc| doc.set_lifecycle_with_error_details(
+                &RuntimeLifecycle::Error,
+                None,
+                Some("Runtime agent disconnected"),
+            ),
+        ));
+
+        drop(attempt);
+        for _ in 0..20 {
+            if room.launch_completion(1).is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            room.launch_completion(1),
+            Some(KernelLaunchCompletion::Cancelled)
+        );
+        let state = room.state.read(|doc| doc.read_state()).unwrap();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Error);
+        assert_eq!(
+            state.kernel.error_details.as_deref(),
+            Some("Runtime agent disconnected")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_launch_cannot_regress_shutdown_projection() {
+        let (_tmp, room) = test_room();
+        let attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+        };
+        assert_eq!(room.cancel_in_flight_launch(), Some(1));
+        room.state
+            .with_doc(|doc| doc.set_lifecycle(&RuntimeLifecycle::Shutdown))
+            .unwrap();
+
+        let committed = room.commit_unless_launch_cancelled(|| {
+            room.state
+                .with_doc(|doc| doc.set_lifecycle(&RuntimeLifecycle::PreparingEnv))
+        });
+        assert!(committed.is_none());
+        assert_eq!(
+            room.state
+                .read(|doc| doc.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Shutdown
+        );
+        attempt.finish_cancelled();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_join_retains_launch_timeout_while_owner_cleanup_continues() {
+        let (_tmp, room) = test_room();
+        let owner = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("auto-launch should be admitted"),
+        };
+        let (generation, cancel_rx) = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::InFlight {
+                generation,
+                cancel_rx,
+            } => (generation, cancel_rx),
+            ManualLaunchAdmission::Admitted(_) => {
+                panic!("manual request must join the auto-launch")
+            }
+        };
+        let waiter = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { wait_for_joined_launch(&room, generation, cancel_rx).await }
+        });
+
+        assert_eq!(room.cancel_in_flight_launch(), Some(generation));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(waiter.await.unwrap(), Err(()));
+        assert!(
+            matches!(
+                room.try_begin_manual_launch(),
+                ManualLaunchAdmission::InFlight { generation: 1, .. }
+            ),
+            "timing out a joined request must not release the owner's safety fence"
+        );
+        owner.finish_cancelled();
+    }
+
+    #[tokio::test]
+    async fn manual_launch_can_take_over_after_benign_release_without_successor() {
+        let (_tmp, room) = test_room();
+        let auto_attempt = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("auto-launch should be admitted"),
+        };
+        auto_attempt.release_without_cooldown();
+
+        match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt.release_without_cooldown(),
+            ManualLaunchAdmission::InFlight { .. } => {
+                panic!("manual launch should take ownership after release")
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_auto_launch_cannot_reuse_stale_active_response() {
+        let (_tmp, room) = test_room();
+        *room.current_runtime_agent_id.write().await = Some("agent-1".to_string());
+        assert!(
+            room.record_active_kernel_launch_if_current(
+                "agent-1".to_string(),
+                "python".to_string(),
+                EnvSource::Prewarmed(PackageManager::Uv),
+            )
+            .await
+        );
+        let attempt = match room.try_begin_auto_launch() {
+            AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("auto-launch should be admitted"),
+        };
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+            .unwrap();
+        room.clear_active_kernel_launch();
+        drop(attempt);
+
+        assert_eq!(
+            wait_for_launch_generation(&room, 1).await,
+            KernelLaunchCompletion::Failed
+        );
+        assert!(existing_kernel_response(&room).await.is_none());
     }
 }

@@ -26,7 +26,10 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod process;
 pub mod tools;
+
+pub use process::CommandOutputExt;
 
 // Re-export commonly used items
 pub use tools::{get_deno_path, get_ruff_path, get_uv_path, BootstrappedTool};
