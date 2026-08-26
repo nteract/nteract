@@ -42,6 +42,7 @@ from nteract_kernel_launcher._bokeh_session import (
     StaleBokehRevisionError,
     session_registry,
 )
+from nteract_kernel_launcher.transport import ReliableIOPubMixin
 
 _BOKEH_PATCH_REQUEST = "nteract_bokeh_patch_request"
 _BOKEH_PATCH_REPLY = "nteract_bokeh_patch_reply"
@@ -440,7 +441,7 @@ class NteractKernel(IPythonKernel):
         _send_bokeh_reply(self, stream, ident, _BOKEH_CLOSE_REPLY, reply)
 
 
-class NteractKernelApp(IPKernelApp):
+class NteractKernelApp(ReliableIOPubMixin, IPKernelApp):
     """Kernel-app subclass. Activates the full ``Nteract*`` cascade and
     auto-loads the bootstrap extension before any user code runs.
 
