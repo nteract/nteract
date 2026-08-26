@@ -602,6 +602,29 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "automerge"
+version = "0.10.0"
+source = "git+https://github.com/nteract/automerge?rev=3fb6af5cc3af23b79f27cebfa339c8c98987e7b7#3fb6af5cc3af23b79f27cebfa339c8c98987e7b7"
+dependencies = [
+ "cfg-if",
+ "flate2",
+ "getrandom 0.4.2",
+ "hex",
+ "hexane 1.0.0-alpha.2",
+ "itertools 0.14.0",
+ "leb128",
+ "rand 0.10.1",
+ "rustc-hash",
+ "serde",
+ "sha2 0.11.0",
+ "smol_str",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tracing",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "automerge"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1b59cbd9e7685a1ac6bf6046ddcd8acb550fa5bf03c09f6c1056728a742b40d"
@@ -610,7 +633,7 @@ dependencies = [
  "flate2",
  "getrandom 0.4.2",
  "hex",
- "hexane",
+ "hexane 1.0.0-alpha.5",
  "itertools 0.15.0",
  "leb128",
  "rand 0.10.1",
@@ -628,7 +651,7 @@ dependencies = [
 name = "automerge-recovery"
 version = "0.3.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "thiserror 2.0.18",
 ]
 
@@ -636,7 +659,9 @@ dependencies = [
 name = "automerge-store"
 version = "0.1.0"
 dependencies = [
- "automerge",
+ "automerge 0.10.0",
+ "automerge 0.11.0",
+ "base64 0.22.1",
  "rusqlite",
  "sha2 0.11.0",
  "tempfile",
@@ -648,7 +673,7 @@ dependencies = [
 name = "automunge"
 version = "0.5.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "serde_json",
 ]
 
@@ -1327,7 +1352,7 @@ dependencies = [
 name = "comments-doc"
 version = "0.3.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "automerge-recovery",
  "automunge",
  "hex",
@@ -3279,6 +3304,15 @@ dependencies = [
 
 [[package]]
 name = "hexane"
+version = "1.0.0-alpha.2"
+source = "git+https://github.com/nteract/automerge?rev=3fb6af5cc3af23b79f27cebfa339c8c98987e7b7#3fb6af5cc3af23b79f27cebfa339c8c98987e7b7"
+dependencies = [
+ "leb128",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "hexane"
 version = "1.0.0-alpha.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81df830f11babb0eee9a082e09135ef0a7d8791f3fe9b279bb9485bf7eaf23e0"
@@ -4850,7 +4884,7 @@ dependencies = [
 name = "notebook-doc"
 version = "0.6.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "automerge-recovery",
  "automunge",
  "ciborium",
@@ -4884,7 +4918,7 @@ dependencies = [
 name = "notebook-sync"
 version = "0.6.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "automerge-recovery",
  "chrono",
  "comments-doc",
@@ -7487,7 +7521,7 @@ name = "runt-publish"
 version = "0.3.3"
 dependencies = [
  "anyhow",
- "automerge",
+ "automerge 0.11.0",
  "clap",
  "hex",
  "notebook-doc",
@@ -7531,7 +7565,7 @@ dependencies = [
 name = "runtime-doc"
 version = "0.5.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "automerge-recovery",
  "automunge",
  "serde",
@@ -7549,7 +7583,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "async-rust-lsp",
- "automerge",
+ "automerge 0.11.0",
  "automerge-recovery",
  "base64 0.22.1",
  "build-metadata",
@@ -7622,7 +7656,7 @@ dependencies = [
 name = "runtimed-client"
 version = "2.7.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "automerge-recovery",
  "build-metadata",
  "chrono",
@@ -7722,7 +7756,7 @@ dependencies = [
 name = "runtimed-settings-sync"
 version = "2.7.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "log",
  "notebook-protocol",
  "runt-workspace",
@@ -7736,7 +7770,7 @@ dependencies = [
 name = "runtimed-wasm"
 version = "0.6.3"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "comments-doc",
  "console_error_panic_hook",
  "getrandom 0.2.17",
