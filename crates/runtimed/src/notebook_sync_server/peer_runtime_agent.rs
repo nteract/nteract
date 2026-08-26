@@ -776,63 +776,41 @@ mod tests {
         (notebook_id, room.identity.persist_path.clone(), room)
     }
 
-    async fn runtime_agent_change_frame(
-        room: &NotebookRoom,
-        server_state: &mut automerge::sync::State,
-    ) -> Vec<u8> {
-        let snapshot = {
+    async fn runtime_agent_change_frame(room: &NotebookRoom) -> Vec<u8> {
+        let (snapshot, initial_heads) = {
             let mut doc = room.doc.write().await;
             let snapshot = doc.save();
-            if let Some(initial) = doc
-                .generate_sync_message_recovering(server_state, "runtime-agent-test-init")
-                .expect("generate initial server sync")
-            {
-                let mut agent =
-                    notebook_doc::NotebookDoc::load_with_actor(&snapshot, "runtime-agent:test")
-                        .expect("load runtime-agent test document");
-                let mut agent_state = automerge::sync::State::new();
-                agent
-                    .receive_sync_message_recovering(
-                        &mut agent_state,
-                        initial,
-                        "runtime-agent-test-receive-init",
-                    )
-                    .expect("receive initial server sync");
-                agent
-                    .add_cell(0, "runtime-agent-cell", "code")
-                    .expect("add runtime-agent cell");
-                agent
-                    .append_source("runtime-agent-cell", "answer = 42")
-                    .expect("set runtime-agent cell source");
-                return agent
-                    .generate_sync_message_recovering(&mut agent_state, "runtime-agent-test-change")
-                    .expect("generate runtime-agent change sync")
-                    .expect("runtime-agent change message")
-                    .encode();
-            }
-            snapshot
+            let initial_heads = doc.get_heads();
+            (snapshot, initial_heads)
         };
-
-        // Automerge currently produces an initial message for a fresh sync
-        // state. Keep a fallback so the fixture remains valid if that protocol
-        // optimization changes.
         let mut agent = notebook_doc::NotebookDoc::load_with_actor(&snapshot, "runtime-agent:test")
             .expect("load runtime-agent test document");
-        let mut agent_state = automerge::sync::State::new();
         agent
             .add_cell(0, "runtime-agent-cell", "code")
             .expect("add runtime-agent cell");
         agent
             .append_source("runtime-agent-cell", "answer = 42")
             .expect("set runtime-agent cell source");
-        agent
-            .generate_sync_message_recovering(
-                &mut agent_state,
-                "runtime-agent-test-change-fallback",
-            )
-            .expect("generate runtime-agent fallback sync")
-            .expect("runtime-agent fallback message")
-            .encode()
+        let heads = agent.get_heads();
+        let changes = agent
+            .doc_mut()
+            .get_changes(&initial_heads)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert!(!changes.is_empty(), "fixture must author notebook changes");
+        automerge::sync::Message {
+            heads,
+            need: Vec::new(),
+            have: Vec::new(),
+            changes: changes
+                .iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>()
+                .into(),
+            flags: None,
+            version: automerge::sync::MessageVersion::V1,
+        }
+        .encode()
     }
 
     #[tokio::test]
@@ -843,7 +821,7 @@ mod tests {
         std::fs::create_dir(&journal_path).expect("install journal write fault");
 
         let mut server_state = automerge::sync::State::new();
-        let frame = runtime_agent_change_frame(&room, &mut server_state).await;
+        let frame = runtime_agent_change_frame(&room).await;
         let decoded = automerge::sync::Message::decode(&frame).expect("decode test frame");
         assert!(
             !decoded.changes.is_empty(),
@@ -928,40 +906,33 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn runtime_agent_frame_cannot_activate_a_previously_parked_change() {
+    async fn assert_runtime_agent_frame_cannot_activate_a_previously_parked_change(
+        version: automerge::sync::MessageVersion,
+    ) {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let (_, _, room) = test_file_backed_room(&tmp);
         let mut server_state = automerge::sync::State::new();
 
-        let (snapshot, initial) = {
+        let (snapshot, initial_heads) = {
             let mut doc = room.doc.write().await;
             let snapshot = doc.save();
-            let initial = doc
-                .generate_sync_message_recovering(
-                    &mut server_state,
-                    "runtime-agent-orphan-test-init",
-                )
-                .expect("generate initial server sync")
-                .expect("fresh sync state should produce an initial message");
-            (snapshot, initial)
+            let initial_heads = doc.get_heads();
+            (snapshot, initial_heads)
         };
         let mut agent = notebook_doc::NotebookDoc::load_with_actor(&snapshot, "runtime-agent:test")
             .expect("load runtime-agent test document");
-        let mut agent_state = automerge::sync::State::new();
-        agent
-            .receive_sync_message_recovering(
-                &mut agent_state,
-                initial,
-                "runtime-agent-orphan-test-receive-init",
-            )
-            .expect("receive initial server sync");
 
         agent
             .doc_mut()
             .put(ROOT, "runtime-dependency", true)
             .expect("author dependency change");
         let dependency_heads = agent.get_heads();
+        let dependency_changes = agent
+            .doc_mut()
+            .get_changes(&initial_heads)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(dependency_changes.len(), 1);
         let agent_with_dependency = agent.save();
         let mut attacker =
             notebook_doc::NotebookDoc::load_with_actor(&agent_with_dependency, "untrusted:parked")
@@ -1009,14 +980,26 @@ mod tests {
             assert_eq!(doc.get_heads(), heads, "parked change is not yet applied");
             heads
         };
-        let frame = agent
-            .generate_sync_message_recovering(
-                &mut agent_state,
-                "runtime-agent-orphan-test-dependency",
-            )
-            .expect("generate dependency sync")
-            .expect("dependency should produce a sync message")
-            .encode();
+        // Construct the exact dependency frame. Generating it through the normal
+        // sync exchange would use a Bloom filter, whose intentional false-positive
+        // rate can omit this change and make the security regression probabilistic.
+        let changes = match &version {
+            automerge::sync::MessageVersion::V1 => dependency_changes
+                .iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>()
+                .into(),
+            automerge::sync::MessageVersion::V2 => agent_with_dependency.into(),
+        };
+        let frame = automerge::sync::Message {
+            heads: dependency_heads,
+            need: Vec::new(),
+            have: Vec::new(),
+            changes,
+            flags: None,
+            version,
+        }
+        .encode();
 
         let error = apply_runtime_agent_notebook_doc_frame(&room, &mut server_state, &frame)
             .await
@@ -1034,6 +1017,22 @@ mod tests {
             .get(ROOT, "parked-change")
             .expect("read parked change")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn runtime_agent_v1_frame_cannot_activate_a_previously_parked_change() {
+        assert_runtime_agent_frame_cannot_activate_a_previously_parked_change(
+            automerge::sync::MessageVersion::V1,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn runtime_agent_v2_frame_cannot_activate_a_previously_parked_change() {
+        assert_runtime_agent_frame_cannot_activate_a_previously_parked_change(
+            automerge::sync::MessageVersion::V2,
+        )
+        .await;
     }
 
     #[tokio::test]
