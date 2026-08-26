@@ -20,7 +20,7 @@ use notebook_sync::RelayHandle;
 
 use log::{debug, info, warn};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 
 /// Shared notebook sync handle for cross-window state synchronization.
@@ -1310,11 +1310,13 @@ async fn setup_sync_receivers(
 #[cfg(test)]
 mod tests {
     use super::{
-        create_window_context_for_daemon, hosted_notebook_window_label,
+        create_window_context_for_daemon, daemon_upgrade_failure, hosted_notebook_window_label,
         is_reusable_startup_placeholder, next_available_sample_path, normalize_font_families,
         normalize_hosted_notebook_locator, pathless_file_open_policy, reopen_action,
-        require_current_sync_generation, reserve_window_context, PathlessFileOpenPolicy,
-        ReopenAction, Runtime, SyncReadyState, WindowContextReservation, WindowNotebookRegistry,
+        require_current_sync_generation, reserve_window_context, BoundedStderrTail,
+        PathlessFileOpenPolicy, ReopenAction, Runtime, SyncReadyState, WindowContextReservation,
+        WindowNotebookRegistry, DAEMON_UPGRADE_STDERR_MAX_DETAIL_CHARS,
+        DAEMON_UPGRADE_STDERR_MAX_LINES,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier};
@@ -1582,6 +1584,113 @@ mod tests {
             "a reused deterministic label must start with a fresh readiness gate"
         );
     }
+
+    #[test]
+    fn daemon_upgrade_failure_includes_last_nonempty_stderr_detail() {
+        let mut stderr = BoundedStderrTail::default();
+        stderr.push(b"preparing upgrade\n\n");
+        stderr
+            .push(b"clean shutdown blocked\nrepair stopped to preserve notebook recovery state\n");
+
+        assert_eq!(
+            daemon_upgrade_failure(Some(1), &stderr),
+            "Daemon upgrade failed (exit code 1): repair stopped to preserve notebook recovery state"
+        );
+    }
+
+    #[test]
+    fn daemon_upgrade_failure_keeps_stderr_collection_bounded() {
+        let mut stderr = BoundedStderrTail::default();
+        for index in 0..(DAEMON_UPGRADE_STDERR_MAX_LINES + 3) {
+            stderr.push(format!("detail {index}").as_bytes());
+        }
+
+        assert_eq!(stderr.lines.len(), DAEMON_UPGRADE_STDERR_MAX_LINES);
+        assert_eq!(stderr.lines.front().map(String::as_str), Some("detail 3"));
+        assert_eq!(stderr.last_detail(), Some("detail 10"));
+    }
+
+    #[test]
+    fn daemon_upgrade_failure_truncates_an_oversized_detail_on_a_char_boundary() {
+        let mut stderr = BoundedStderrTail::default();
+        let actionable_tail = "repair stopped to preserve notebook recovery state";
+        let detail = format!(
+            "{}{}",
+            "é".repeat(DAEMON_UPGRADE_STDERR_MAX_DETAIL_CHARS + 20),
+            actionable_tail
+        );
+        stderr.push(detail.as_bytes());
+
+        let detail = stderr.last_detail().expect("stderr detail");
+        assert_eq!(
+            detail.chars().count(),
+            DAEMON_UPGRADE_STDERR_MAX_DETAIL_CHARS
+        );
+        assert!(detail.starts_with('…'));
+        assert!(detail.ends_with(actionable_tail));
+    }
+
+    #[test]
+    fn daemon_upgrade_failure_falls_back_to_exit_status_without_stderr() {
+        assert_eq!(
+            daemon_upgrade_failure(None, &BoundedStderrTail::default()),
+            "Daemon upgrade failed (signal)"
+        );
+    }
+}
+
+const DAEMON_UPGRADE_STDERR_MAX_LINES: usize = 8;
+const DAEMON_UPGRADE_STDERR_MAX_DETAIL_CHARS: usize = 512;
+
+/// Small, user-displayable tail of sidecar stderr.
+///
+/// Full sidecar output remains in the application log for diagnostics. This
+/// collector deliberately retains only a few single-line, size-capped details
+/// so a failed subprocess cannot inject unbounded output into progress events.
+#[derive(Default)]
+struct BoundedStderrTail {
+    lines: VecDeque<String>,
+}
+
+impl BoundedStderrTail {
+    fn push(&mut self, chunk: &[u8]) {
+        let text = String::from_utf8_lossy(chunk);
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let detail = truncate_stderr_detail(line);
+            if self.lines.len() == DAEMON_UPGRADE_STDERR_MAX_LINES {
+                self.lines.pop_front();
+            }
+            self.lines.push_back(detail);
+        }
+    }
+
+    fn last_detail(&self) -> Option<&str> {
+        self.lines.back().map(String::as_str)
+    }
+}
+
+fn truncate_stderr_detail(detail: &str) -> String {
+    let char_count = detail.chars().count();
+    if char_count <= DAEMON_UPGRADE_STDERR_MAX_DETAIL_CHARS {
+        return detail.to_string();
+    }
+    let tail_chars = DAEMON_UPGRADE_STDERR_MAX_DETAIL_CHARS.saturating_sub(1);
+    let tail = detail
+        .chars()
+        .skip(char_count - tail_chars)
+        .collect::<String>();
+    format!("…{tail}")
+}
+
+fn daemon_upgrade_failure(exit_code: Option<i32>, stderr: &BoundedStderrTail) -> String {
+    let status = match exit_code {
+        Some(code) => format!("exit code {code}"),
+        None => "signal".to_string(),
+    };
+    match stderr.last_detail() {
+        Some(detail) => format!("Daemon upgrade failed ({status}): {detail}"),
+        None => format!("Daemon upgrade failed ({status})"),
+    }
 }
 
 /// Get the version string of the bundled daemon.
@@ -1627,6 +1736,7 @@ where
 
     // Collect output for logging
     let mut exit_code = None;
+    let mut stderr_tail = BoundedStderrTail::default();
     while let Some(event) = rx.recv().await {
         match event {
             CommandEvent::Stdout(line) => {
@@ -1636,6 +1746,7 @@ where
                 );
             }
             CommandEvent::Stderr(line) => {
+                stderr_tail.push(&line);
                 log::warn!(
                     "[runtimed upgrade] {}",
                     String::from_utf8_lossy(&line).trim()
@@ -1649,11 +1760,7 @@ where
     }
 
     if exit_code != Some(0) {
-        let code_str = match exit_code {
-            Some(code) => format!("exit code {code}"),
-            None => "signal".to_string(),
-        };
-        let error = format!("Daemon upgrade failed ({code_str})");
+        let error = daemon_upgrade_failure(exit_code, &stderr_tail);
         log::error!("[startup] {}", error);
         on_progress(DaemonProgress::Failed {
             error: error.clone(),

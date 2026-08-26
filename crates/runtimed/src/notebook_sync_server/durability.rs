@@ -2034,6 +2034,7 @@ mod tests {
                 record: super::super::recovery::RecoveryRecord {
                     manifest,
                     automerge_snapshot: durable_snapshot.clone(),
+                    source_manifest_version: super::super::recovery::RECOVERY_MANIFEST_VERSION,
                 },
                 ignored_tail: None,
             },
