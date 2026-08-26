@@ -87,6 +87,19 @@ impl KernelState {
         self.status = KernelStatus::Idle;
     }
 
+    /// Clear execution state for an intentional kernel shutdown.
+    ///
+    /// Returns the running and queued execution IDs so callers can project
+    /// terminal states into RuntimeStateDoc before releasing the kernel.
+    pub fn shutdown(&mut self) -> (Option<String>, Vec<QueueEntry>) {
+        let executing = self.executing.take();
+        let queued = self.clear_queue();
+        self.execution_had_error = false;
+        self.interrupt_pending = None;
+        self.status = KernelStatus::ShuttingDown;
+        (executing, queued)
+    }
+
     // ── Queue operations ───────────────────────────────────────────────
 
     /// Queue code for execution.
@@ -278,9 +291,11 @@ impl KernelState {
     /// Idempotent — multiple calls (e.g., from both process watcher and
     /// heartbeat monitor) are safe.
     pub fn kernel_died(&mut self) -> (Option<String>, Vec<QueueEntry>) {
-        // Idempotent: if already dead, don't re-broadcast
-        if self.status == KernelStatus::Dead {
-            debug!("[kernel-state] kernel_died called but already dead, ignoring");
+        // Idempotent: if already dead, don't re-broadcast. A process exit is
+        // also expected after an intentional shutdown and must not overwrite
+        // the durable Shutdown projection with Error.
+        if matches!(self.status, KernelStatus::Dead | KernelStatus::ShuttingDown) {
+            debug!("[kernel-state] kernel_died called after terminal kernel transition, ignoring");
             return (None, vec![]);
         }
 
@@ -607,5 +622,38 @@ mod tests {
 
         assert!(state.executing_cell().is_none());
         assert!(state.queued_entries().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_returns_and_clears_inflight_executions() {
+        let (mut state, _handle) = test_state();
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        state
+            .queue_cell("e1".into(), None, "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("e2".into(), None, "x=2".into(), &mut mock)
+            .await
+            .unwrap();
+
+        assert_eq!(state.executing_cell().map(String::as_str), Some("e1"));
+        assert_eq!(state.queued_entries()[0].execution_id, "e2");
+
+        let (executing, queued) = state.shutdown();
+
+        assert_eq!(executing.as_deref(), Some("e1"));
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].execution_id, "e2");
+        assert!(state.executing_cell().is_none());
+        assert!(state.queued_entries().is_empty());
+        assert_eq!(state.status(), KernelStatus::ShuttingDown);
+
+        let (late_interrupted, late_queued) = state.kernel_died();
+        assert!(late_interrupted.is_none());
+        assert!(late_queued.is_empty());
+        assert_eq!(state.status(), KernelStatus::ShuttingDown);
     }
 }

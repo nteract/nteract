@@ -51,7 +51,7 @@ use crate::kernel_dispatch::Kernel;
 use crate::kernel_state::KernelState;
 use crate::output_blob_publisher::OutputBlobPublisher;
 use crate::output_prep::{
-    LifecycleSignal, QueueCommandReceivers, VisualizationStateCommand, WorkCommand,
+    KernelStatus, LifecycleSignal, QueueCommandReceivers, VisualizationStateCommand, WorkCommand,
 };
 use crate::protocol::QueueEntry;
 
@@ -460,13 +460,13 @@ fn classify_stream_error<T: FrameTransport>(
 /// CRDT-synced executions (`seen_execution_ids`), the control/work channel
 /// receivers, and the out-of-band interrupt handle.
 ///
-/// `kernel_state` and `seen_execution_ids` outlive any single kernel process:
-/// both survive transport reconnects and kernel death, and
-/// `seen_execution_ids` clears only in the RestartKernel arm. They live in the
-/// session anyway because every consumer — the RPC dispatcher, sync-driven
+/// `kernel_state` and `seen_execution_ids` survive transport reconnects, but
+/// the seen-ID set is scoped to one kernel generation. Launch, restart, kernel
+/// death, and shutdown invalidate it so durable queued work can be admitted to
+/// a replacement kernel without allowing same-generation replay. They live in
+/// the session because every consumer — the RPC dispatcher, sync-driven
 /// queueing, and queue release on launch — threads them together with the
-/// kernel slot; grouping them removes the parallel parameter lists without
-/// implying they share a kernel's lifetime.
+/// kernel slot.
 ///
 /// After construction, the channel slots (`lifecycle_rx`, `work_rx`,
 /// `interrupt_handle`) are written only through
@@ -1398,11 +1398,12 @@ where
                     None => std::future::pending().await,
                 }
             } => {
-                if let Err(e) = handle_lifecycle_signal(
+                if let Err(e) = handle_session_lifecycle_signal(
                     signal,
                     &ctx,
                     &mut session.kernel,
                     &mut session.kernel_state,
+                    &mut session.seen_execution_ids,
                 ).await {
                     warn!("[runtime-agent] Error handling lifecycle signal: {}", e);
                 }
@@ -1422,6 +1423,7 @@ where
                         &ctx,
                         &mut session.kernel,
                         &mut session.kernel_state,
+                        &mut session.seen_execution_ids,
                     ).await {
                         warn!("[runtime-agent] Error draining lifecycle commands: {error}");
                     }
@@ -1452,6 +1454,7 @@ where
                         &ctx,
                         &mut session.kernel,
                         &mut session.kernel_state,
+                        &mut session.seen_execution_ids,
                     ).await {
                         warn!("[runtime-agent] Error draining lifecycle commands: {}", e);
                     }
@@ -1822,6 +1825,11 @@ async fn queue_synced_executions<K: KernelConnection>(
 
     let mut queued_count = 0;
     for (eid, exec) in queued {
+        // This is a per-kernel-generation submission guard. Local queue state
+        // can be cleared before a terminal RuntimeStateDoc write succeeds, so
+        // re-admitting a seen ID merely because it is absent locally could run
+        // side-effecting code twice. Generation transitions explicitly clear
+        // the set before durable queued work is reconciled to a new kernel.
         if seen_execution_ids.contains(&eid) {
             continue;
         }
@@ -1988,6 +1996,7 @@ async fn handle_runtime_agent_request(
                 Ok((k, rx)) => {
                     let es = k.env_source().to_string();
                     *kernel = Some(k);
+                    seen_execution_ids.clear();
                     state.reset();
                     state.set_idle();
                     if let Err(e) = record_kernel_launched_state(ctx, &launch_kernel_type, &es) {
@@ -2248,6 +2257,22 @@ async fn handle_runtime_agent_request(
                 k.shutdown().await.ok();
             }
             *kernel = None;
+            let (interrupted, cleared) = state.shutdown();
+            seen_execution_ids.clear();
+            if let Err(error) = ctx.state.with_doc(|state_doc| {
+                if let Some(ref execution_id) = interrupted {
+                    state_doc.set_execution_done(execution_id, false)?;
+                }
+                for entry in &cleared {
+                    state_doc.set_execution_cancelled(&entry.execution_id)?;
+                }
+                state_doc.abort_inflight_executions()?;
+                state_doc.set_queue(None, &[])?;
+                state_doc.set_lifecycle(&RuntimeLifecycle::Shutdown)?;
+                Ok(())
+            }) {
+                warn!("[runtime-state] Failed to terminalize shutdown executions: {error}");
+            }
             if let Some(kernel_id) = shutdown_kernel_id {
                 if let Err(error) = ctx.state.with_doc(|state_doc| {
                     state_doc.disconnect_bokeh_sessions_for_kernel(&kernel_id)?;
@@ -2632,6 +2657,10 @@ async fn handle_lifecycle_signal(
         }
 
         LifecycleSignal::KernelDied => {
+            if state.status() == KernelStatus::ShuttingDown {
+                debug!("[runtime-agent] Ignoring expected kernel exit after intentional shutdown");
+                return Ok(());
+            }
             warn!("[runtime-agent] Kernel died");
             let dead_kernel_id = kernel.as_ref().map(|kernel| kernel.kernel_id().to_string());
             if let Some(ref mut k) = kernel {
@@ -2640,6 +2669,10 @@ async fn handle_lifecycle_signal(
             *kernel = None;
             let (interrupted, cleared) = state.kernel_died();
             if let Err(e) = ctx.state.with_doc(|sd| {
+                // Sweep first so an exact-entry update error cannot leave
+                // durable inflight work behind after the generation guard is
+                // cleared. Local knowledge below then refines classification.
+                sd.abort_inflight_executions()?;
                 // The executing cell died mid-run: error. Queued cells never
                 // ran: cancelled.
                 if let Some(ref eid) = interrupted {
@@ -2664,6 +2697,21 @@ async fn handle_lifecycle_signal(
         }
     }
 
+    Ok(())
+}
+
+async fn handle_session_lifecycle_signal(
+    signal: LifecycleSignal,
+    ctx: &RuntimeAgentContext,
+    kernel: &mut Option<Kernel>,
+    state: &mut KernelState,
+    seen_execution_ids: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    let invalidates_kernel_generation = matches!(signal, LifecycleSignal::KernelDied);
+    handle_lifecycle_signal(signal, ctx, kernel, state).await?;
+    if invalidates_kernel_generation {
+        seen_execution_ids.clear();
+    }
     Ok(())
 }
 
@@ -2790,12 +2838,13 @@ async fn drain_lifecycle_commands(
     ctx: &RuntimeAgentContext,
     kernel: &mut Option<Kernel>,
     state: &mut KernelState,
+    seen_execution_ids: &mut HashSet<String>,
 ) -> anyhow::Result<usize> {
     let mut drained = 0;
     // Channel type guarantees only lifecycle signals arrive here. The previous
     // runtime debug_assert!(command.is_lifecycle()) is now structural.
     while let Ok(signal) = rx.try_recv() {
-        handle_lifecycle_signal(signal, ctx, kernel, state).await?;
+        handle_session_lifecycle_signal(signal, ctx, kernel, state, seen_execution_ids).await?;
         drained += 1;
     }
     Ok(drained)
@@ -4128,15 +4177,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_generation_seen_execution_is_not_readmitted() {
+        let (_ctx, mut state, handle) = test_fixtures();
+        let mut seen_execution_ids = HashSet::from(["e-stale".to_string()]);
+
+        handle
+            .with_doc(|state_doc| {
+                state_doc.create_execution_with_source("e-stale", "print('ready')", 0)
+            })
+            .unwrap();
+        state.set_idle();
+
+        let queued = handle
+            .read(|state_doc| state_doc.get_queued_executions())
+            .unwrap();
+        let mut kernel = MockKernel;
+        let queued_count = queue_synced_executions(
+            queued,
+            &mut seen_execution_ids,
+            &mut state,
+            Some(&mut kernel),
+        )
+        .await;
+
+        assert_eq!(queued_count, 0);
+        assert!(seen_execution_ids.contains("e-stale"));
+        assert!(state.executing_cell().is_none());
+        assert_eq!(
+            handle
+                .read(|state_doc| state_doc.get_execution("e-stale").unwrap().status)
+                .unwrap(),
+            "queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_queue_replay_is_idempotent_against_local_kernel_state() {
+        let (_ctx, mut state, handle) = test_fixtures();
+        let mut seen_execution_ids = HashSet::new();
+        handle
+            .with_doc(|state_doc| {
+                state_doc.create_execution_with_source("e1", "one()", 0)?;
+                state_doc.create_execution_with_source("e2", "two()", 1)?;
+                Ok(())
+            })
+            .unwrap();
+        state.set_idle();
+        let mut kernel = MockKernel;
+
+        let queued = handle
+            .read(|state_doc| state_doc.get_queued_executions())
+            .unwrap();
+        assert_eq!(
+            queue_synced_executions(
+                queued,
+                &mut seen_execution_ids,
+                &mut state,
+                Some(&mut kernel),
+            )
+            .await,
+            2
+        );
+        assert_eq!(state.executing_cell().map(String::as_str), Some("e1"));
+        assert_eq!(state.queued_entries().len(), 1);
+
+        let replay = handle
+            .read(|state_doc| state_doc.get_queued_executions())
+            .unwrap();
+        assert_eq!(
+            queue_synced_executions(
+                replay,
+                &mut seen_execution_ids,
+                &mut state,
+                Some(&mut kernel),
+            )
+            .await,
+            0
+        );
+        assert_eq!(state.executing_cell().map(String::as_str), Some("e1"));
+        assert_eq!(state.queued_entries().len(), 1);
+        assert_eq!(state.queued_entries()[0].execution_id, "e2");
+    }
+
+    #[tokio::test]
+    async fn kernel_generation_reset_re_admits_durable_queued_execution() {
+        let (_ctx, mut state, handle) = test_fixtures();
+        let mut seen_execution_ids = HashSet::new();
+        handle
+            .with_doc(|state_doc| {
+                state_doc.create_execution_with_source("e1", "one()", 0)?;
+                state_doc.create_execution_with_source("e2", "two()", 1)?;
+                Ok(())
+            })
+            .unwrap();
+        state.set_idle();
+        let mut old_kernel = MockKernel;
+        let queued = handle
+            .read(|state_doc| state_doc.get_queued_executions())
+            .unwrap();
+        queue_synced_executions(
+            queued,
+            &mut seen_execution_ids,
+            &mut state,
+            Some(&mut old_kernel),
+        )
+        .await;
+        assert!(seen_execution_ids.contains("e2"));
+
+        // Successful kernel launch invalidates the per-generation submission
+        // guard before resetting local queue state and reconciling durable work.
+        seen_execution_ids.clear();
+        state.reset();
+        state.set_idle();
+        let mut replacement_kernel = MockKernel;
+        let durable_queue = handle
+            .read(|state_doc| state_doc.get_queued_executions())
+            .unwrap();
+        assert_eq!(
+            queue_synced_executions(
+                durable_queue,
+                &mut seen_execution_ids,
+                &mut state,
+                Some(&mut replacement_kernel),
+            )
+            .await,
+            1
+        );
+        assert_eq!(state.executing_cell().map(String::as_str), Some("e2"));
+    }
+
+    #[tokio::test]
     async fn kernel_died_resolves_inflight_executions_in_state_doc() {
         let (ctx, mut state, handle) = test_fixtures();
         let mut mock = MockKernel;
+        let mut seen_execution_ids =
+            HashSet::from(["e1".to_string(), "e2".to_string(), "e3".to_string()]);
         state.set_idle();
 
         // Queue two cells: c1 starts executing, c2 stays queued
         state
             .queue_cell("e1".into(), None, "x=1".into(), &mut mock)
             .await
+            .unwrap();
+        // A durable queued execution can arrive by sync before the runtime
+        // agent admits it to local KernelState.
+        handle
+            .with_doc(|state_doc| state_doc.create_execution_with_source("e3", "x=3", 2))
             .unwrap();
         state
             .queue_cell("e2".into(), None, "x=2".into(), &mut mock)
@@ -4152,14 +4338,16 @@ mod tests {
         }
 
         // Simulate kernel death
-        handle_lifecycle_signal(
+        handle_session_lifecycle_signal(
             LifecycleSignal::KernelDied,
             &ctx,
             &mut None::<Kernel>,
             &mut state,
+            &mut seen_execution_ids,
         )
         .await
         .unwrap();
+        assert!(seen_execution_ids.is_empty());
 
         // The executing cell died mid-run: error. The queued cell never ran:
         // cancelled, with success absent.
@@ -4171,6 +4359,10 @@ mod tests {
         assert_eq!(e2.status, "cancelled");
         assert_eq!(e2.success, None);
 
+        let e3 = handle.read(|sd| sd.get_execution("e3").unwrap()).unwrap();
+        assert_eq!(e3.status, "cancelled");
+        assert_eq!(e3.success, None);
+
         // Queue should be cleared
         let queue = handle.read(|sd| sd.read_state()).unwrap();
         assert!(queue.queue.executing.is_none());
@@ -4178,6 +4370,57 @@ mod tests {
 
         // Kernel lifecycle should be Error
         assert_eq!(queue.kernel.lifecycle, RuntimeLifecycle::Error);
+    }
+
+    #[tokio::test]
+    async fn shutdown_invalidates_seen_cache_and_terminalizes_local_queue() {
+        let (ctx, mut state, handle) = test_fixtures();
+        let mut mock = MockKernel;
+        state.set_idle();
+        state
+            .queue_cell("e1".into(), None, "one()".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("e2".into(), None, "two()".into(), &mut mock)
+            .await
+            .unwrap();
+        let mut seen_execution_ids = HashSet::from(["e1".to_string(), "e2".to_string()]);
+        let mut kernel = None;
+
+        let (response, channels) = handle_runtime_agent_request(
+            RuntimeAgentRequest::ShutdownKernel,
+            &ctx,
+            &mut kernel,
+            &mut state,
+            &mut seen_execution_ids,
+        )
+        .await;
+
+        assert!(matches!(response, RuntimeAgentResponse::Ok));
+        assert!(channels.is_none());
+        assert!(seen_execution_ids.is_empty());
+        assert!(state.executing_cell().is_none());
+        assert!(state.queued_entries().is_empty());
+        handle_session_lifecycle_signal(
+            LifecycleSignal::KernelDied,
+            &ctx,
+            &mut kernel,
+            &mut state,
+            &mut seen_execution_ids,
+        )
+        .await
+        .unwrap();
+        handle
+            .read(|state_doc| {
+                let runtime_state = state_doc.read_state();
+                assert_eq!(runtime_state.kernel.lifecycle, RuntimeLifecycle::Shutdown);
+                assert_eq!(runtime_state.executions["e1"].status, "error");
+                assert_eq!(runtime_state.executions["e2"].status, "cancelled");
+                assert!(runtime_state.queue.executing.is_none());
+                assert!(runtime_state.queue.queued.is_empty());
+            })
+            .unwrap();
     }
 
     #[tokio::test]
@@ -4219,11 +4462,13 @@ mod tests {
             .send(LifecycleSignal::KernelDied)
             .expect("lifecycle channel should be open");
 
+        let mut seen_execution_ids = HashSet::from(["stale".to_string()]);
         let drained = drain_lifecycle_commands(
             &mut receivers.lifecycle_rx,
             &ctx,
             &mut None::<Kernel>,
             &mut state,
+            &mut seen_execution_ids,
         )
         .await
         .expect("lifecycle drain should succeed");
@@ -4231,6 +4476,7 @@ mod tests {
         assert_eq!(drained, 1);
         let rs = handle.read(|sd| sd.read_state()).unwrap();
         assert_eq!(rs.kernel.lifecycle, RuntimeLifecycle::Error);
+        assert!(seen_execution_ids.is_empty());
         assert!(receivers.work_rx.try_recv().is_ok());
     }
 
