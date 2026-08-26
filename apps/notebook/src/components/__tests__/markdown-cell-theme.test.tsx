@@ -896,6 +896,23 @@ describe("MarkdownCell theme sync", () => {
     });
   });
 
+  it("does not let a stale preview reclaim focus from another selected cell", () => {
+    const cell = makeCell();
+    const onFocus = vi.fn();
+    mockActiveInteractionTarget = { kind: "cell", cellId: "new-code-cell" };
+
+    const { getByLabelText } = render(
+      <MarkdownCell cell={cell} onFocus={onFocus} onDelete={() => {}} />,
+    );
+
+    const preview = getByLabelText("Markdown cell content");
+    const handled = fireEvent.keyDown(preview, { key: "Enter" });
+
+    expect(handled).toBe(true);
+    expect(onFocus).not.toHaveBeenCalled();
+    expect(preview.className).not.toContain("hidden");
+  });
+
   it("stays editable when an empty cell loses notebook focus", async () => {
     // Empty cells begin in edit mode and must not be forced into an
     // uneditable preview when notebook focus moves away.
