@@ -1178,6 +1178,7 @@ mod tests {
         client_doc
             .receive_sync_message_recovering(&mut client_state, initial, "test-failed-load-client")
             .unwrap();
+        let mut initial_sync_converged = false;
         for round in 0..32 {
             let from_client = client_doc
                 .generate_sync_message_recovering(
@@ -1195,6 +1196,7 @@ mod tests {
                 )
                 .unwrap();
             if from_client.is_none() && from_room.is_none() {
+                initial_sync_converged = true;
                 break;
             }
             if let Some(message) = from_client {
@@ -1218,6 +1220,10 @@ mod tests {
                     .unwrap();
             }
         }
+        assert!(
+            initial_sync_converged,
+            "initial sync must converge before authoring the deferred change"
+        );
 
         client_doc
             .update_source("progressive-cell", "edited before source failure")
