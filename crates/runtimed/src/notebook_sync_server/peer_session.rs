@@ -1225,17 +1225,28 @@ mod tests {
             "initial sync must converge before authoring the deferred change"
         );
 
+        let before_edit_heads = client_doc.get_heads();
         client_doc
             .update_source("progressive-cell", "edited before source failure")
             .unwrap();
-        let peer_edit = client_doc
-            .generate_sync_message_recovering(&mut client_state, "test-failed-load-edit")
-            .unwrap()
-            .expect("client edit should produce a sync message");
-        assert!(
-            !peer_edit.changes.is_empty(),
-            "regression requires a change-bearing frame deferred by bootstrap"
-        );
+        let edit_heads = client_doc.get_heads();
+        let edit_changes = client_doc.doc_mut().get_changes(&before_edit_heads);
+        assert!(!edit_changes.is_empty(), "fixture must author a peer edit");
+        // This regression requires an edit-bearing frame followed by a
+        // causally-later empty ACK. Normal sync generation uses an approximate
+        // `have` Bloom filter and may legally produce a heads-only edit frame.
+        let peer_edit = sync::Message {
+            heads: edit_heads,
+            need: Vec::new(),
+            have: Vec::new(),
+            changes: edit_changes
+                .iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>()
+                .into(),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        };
         let empty_ack = sync::Message {
             heads: peer_edit.heads.clone(),
             need: peer_edit.need.clone(),
