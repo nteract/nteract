@@ -127,9 +127,11 @@ async fn complete_manual_launch(
     env_source: &EnvSource,
     launched_config: &notebook_protocol::protocol::LaunchedEnvConfig,
 ) -> Result<(), NotebookResponse> {
-    let attempt = launch_attempt
-        .take()
-        .expect("manual launch attempt must be owned");
+    let Some(attempt) = launch_attempt.take() else {
+        return Err(NotebookResponse::Error {
+            error: "Kernel launch lost its manual launch ownership".to_string(),
+        });
+    };
     let env_source_label = env_source.as_str().to_string();
     let commit_result = {
         let (mut config, mut presence_state) = tokio::join!(
@@ -1822,20 +1824,27 @@ pub(crate) async fn handle(
             *guard = Some(tx);
             rx
         };
+        let Some(spawn_cancel_rx) = launch_attempt
+            .as_ref()
+            .map(KernelLaunchAttempt::cancellation_receiver)
+        else {
+            reset_starting_state(room, Some(&runtime_agent_id)).await;
+            return NotebookResponse::Error {
+                error: "Kernel launch lost its manual launch ownership before agent spawn"
+                    .to_string(),
+            };
+        };
 
         let spawn_result = tokio::select! {
             biased;
             _ = crate::notebook_sync_server::wait_for_kernel_launch_cancellation(
-                launch_attempt
-                    .as_ref()
-                    .expect("manual launch attempt must be owned")
-                    .cancellation_receiver(),
+                spawn_cancel_rx,
             ) => {
-                launch_attempt
-                    .as_ref()
-                    .expect("manual launch attempt must be owned")
-                    .discard_cancelled_runtime_agent(&runtime_agent_id)
-                    .await;
+                if let Some(attempt) = launch_attempt.as_ref() {
+                    attempt
+                        .discard_cancelled_runtime_agent(&runtime_agent_id)
+                        .await;
+                }
                 return NotebookResponse::Error {
                     error: "Kernel launch cancelled while spawning runtime agent".to_string(),
                 };
@@ -1859,11 +1868,11 @@ pub(crate) async fn handle(
                     .as_ref()
                     .is_some_and(KernelLaunchAttempt::is_cancelled)
                 {
-                    launch_attempt
-                        .as_ref()
-                        .expect("manual launch attempt must be owned")
-                        .discard_cancelled_runtime_agent(&runtime_agent_id)
-                        .await;
+                    if let Some(attempt) = launch_attempt.as_ref() {
+                        attempt
+                            .discard_cancelled_runtime_agent(&runtime_agent_id)
+                            .await;
+                    }
                     return NotebookResponse::Error {
                         error: "Kernel launch cancelled after runtime agent spawn".to_string(),
                     };
@@ -1878,19 +1887,27 @@ pub(crate) async fn handle(
                 }
 
                 // Wait for THIS runtime agent to connect back via socket
+                let Some(connect_cancel_rx) = launch_attempt
+                    .as_ref()
+                    .map(KernelLaunchAttempt::cancellation_receiver)
+                else {
+                    reset_starting_state(room, Some(&runtime_agent_id)).await;
+                    return NotebookResponse::Error {
+                        error:
+                            "Kernel launch lost its manual launch ownership before agent connection"
+                                .to_string(),
+                    };
+                };
                 let connect_result = tokio::select! {
                     biased;
                     _ = crate::notebook_sync_server::wait_for_kernel_launch_cancellation(
-                        launch_attempt
-                            .as_ref()
-                            .expect("manual launch attempt must be owned")
-                            .cancellation_receiver(),
+                        connect_cancel_rx,
                     ) => {
-                        launch_attempt
-                            .as_ref()
-                            .expect("manual launch attempt must be owned")
-                            .discard_cancelled_runtime_agent(&runtime_agent_id)
-                            .await;
+                        if let Some(attempt) = launch_attempt.as_ref() {
+                            attempt
+                                .discard_cancelled_runtime_agent(&runtime_agent_id)
+                                .await;
+                        }
                         return NotebookResponse::Error {
                             error: "Kernel launch cancelled while waiting for runtime agent connection".to_string(),
                         };
@@ -1921,11 +1938,11 @@ pub(crate) async fn handle(
                     .as_ref()
                     .is_some_and(KernelLaunchAttempt::is_cancelled)
                 {
-                    launch_attempt
-                        .as_ref()
-                        .expect("manual launch attempt must be owned")
-                        .discard_cancelled_runtime_agent(&runtime_agent_id)
-                        .await;
+                    if let Some(attempt) = launch_attempt.as_ref() {
+                        attempt
+                            .discard_cancelled_runtime_agent(&runtime_agent_id)
+                            .await;
+                    }
                     return NotebookResponse::Error {
                         error: "Kernel launch cancelled before LaunchKernel RPC".to_string(),
                     };

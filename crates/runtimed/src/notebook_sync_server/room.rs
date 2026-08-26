@@ -2311,15 +2311,18 @@ impl NotebookRoom {
     pub(crate) fn try_begin_manual_launch(self: &Arc<Self>) -> ManualLaunchAdmission {
         let mut state = self.kernel_launch_gate.lock_state();
         if let Some(generation) = state.in_flight_generation {
-            let cancel_rx = state
-                .in_flight_cancel_tx
-                .as_ref()
-                .expect("in-flight launch must own a cancellation sender")
-                .subscribe();
-            return ManualLaunchAdmission::InFlight {
+            if let Some(cancel_tx) = state.in_flight_cancel_tx.as_ref() {
+                return ManualLaunchAdmission::InFlight {
+                    generation,
+                    cancel_rx: cancel_tx.subscribe(),
+                };
+            }
+            warn!(
                 generation,
-                cancel_rx,
-            };
+                "clearing inconsistent in-flight launch without cancellation sender"
+            );
+            state.in_flight_generation = None;
+            state.in_flight_abort_handle = None;
         }
         // Explicit user requests may retry immediately after an auto-launch
         // failure, but do not erase the reconnect-only cooldown. A successful
