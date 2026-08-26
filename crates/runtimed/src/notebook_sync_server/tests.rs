@@ -2734,8 +2734,6 @@ async fn notebook_change_frame(
 ) -> (Vec<u8>, sync::State) {
     let server_snapshot = room.doc.write().await.save();
     let mut client = NotebookDoc::load_with_actor(&server_snapshot, actor_label).unwrap();
-    client.add_cell(0, cell_id, "code").unwrap();
-    client.update_source(cell_id, "peer_value = 1").unwrap();
     let mut client_state = sync::State::new();
     let mut server_peer_state = sync::State::new();
     let initial_server_message = room
@@ -2752,15 +2750,28 @@ async fn notebook_change_frame(
             "test-peer-initial-receive",
         )
         .unwrap();
-    let payload = client
-        .generate_sync_message_recovering(&mut client_state, "test-peer-change")
-        .unwrap()
-        .expect("peer should produce a changes-bearing message")
-        .encode();
-    assert!(
-        !sync::Message::decode(&payload).unwrap().changes.is_empty(),
-        "the test frame must carry peer changes"
-    );
+    let initial_heads = client.get_heads();
+    client.add_cell(0, cell_id, "code").unwrap();
+    client.update_source(cell_id, "peer_value = 1").unwrap();
+    let heads = client.get_heads();
+    let changes = client.doc_mut().get_changes(&initial_heads);
+    assert!(!changes.is_empty(), "the fixture must author peer changes");
+    // The normal sync exchange uses an approximate `have` Bloom filter, which
+    // can legally omit a newly authored change. This fixture must exercise a
+    // changes-bearing admission frame on every platform.
+    let payload = sync::Message {
+        heads,
+        need: Vec::new(),
+        have: Vec::new(),
+        changes: changes
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect::<Vec<_>>()
+            .into(),
+        flags: None,
+        version: sync::MessageVersion::V1,
+    }
+    .encode();
     (payload, server_peer_state)
 }
 

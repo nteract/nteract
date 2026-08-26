@@ -242,18 +242,31 @@ mod tests {
             .generate_sync_message_recovering(room_peer_state, "comments-test-initial")
             .unwrap()
             .expect("initial comments sync message");
+        let room_heads = initial_message.heads.clone();
         sender
             .receive_sync_message_with_changes(sender_state, initial_message)
             .expect("client receives initial comments sync");
         create_sender_thread(sender, body);
-        let message = sender
-            .generate_sync_message(sender_state)
-            .expect("sender sync message");
-        assert!(
-            !message.changes.is_empty(),
-            "client payload should carry comment changes"
-        );
-        message.encode()
+        let heads = sender.get_heads();
+        // Include the sender's actor-authored schema branch as well as the new
+        // thread; the room heads are the exact history the receiver already has.
+        let changes = sender.doc_mut().get_changes(&room_heads);
+        assert!(!changes.is_empty(), "fixture must author comment changes");
+        // Avoid the normal sync exchange's approximate `have` Bloom filter:
+        // these authorization tests require an exact changes-bearing frame.
+        sync::Message {
+            heads,
+            need: Vec::new(),
+            have: Vec::new(),
+            changes: changes
+                .iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>()
+                .into(),
+            flags: None,
+            version: sync::MessageVersion::V1,
+        }
+        .encode()
     }
 
     async fn read_comments_frame<R>(reader: &mut R) -> Vec<u8>
