@@ -7,9 +7,11 @@
 #![allow(clippy::expect_used)] // Test construction should fail at the exact incompatible operation.
 
 use automerge::{
+    marks::{ExpandMark as CurrentExpandMark, Mark as CurrentMark},
     sync::{Message as CurrentMessage, State as CurrentSyncState, SyncDoc as _},
     transaction::Transactable as _,
-    ActorId as CurrentActorId, AutoCommit as CurrentDoc, ReadDoc as _, ROOT as CURRENT_ROOT,
+    ActorId as CurrentActorId, AutoCommit as CurrentDoc, ObjType as CurrentObjType, ReadDoc as _,
+    ROOT as CURRENT_ROOT,
 };
 use automerge_legacy::{
     marks::{ExpandMark as LegacyExpandMark, Mark as LegacyMark},
@@ -163,18 +165,53 @@ fn assert_current_shape(document: &CurrentDoc) {
     }
 }
 
+fn add_current_rich_text(document: &mut CurrentDoc) {
+    let text = document
+        .put_object(CURRENT_ROOT, "current_text", CurrentObjType::Text)
+        .expect("create current rich text");
+    document
+        .splice_text(&text, 0, 0, "Current rich text")
+        .expect("write current rich text");
+    document
+        .mark(
+            &text,
+            CurrentMark::new("emphasis".to_string(), "current", 0, 7),
+            CurrentExpandMark::Both,
+        )
+        .expect("mark current rich text");
+}
+
 fn assert_legacy_shape(document: &LegacyDoc) {
     for key in ["notebook", "runtime", "comms", "comments"] {
         assert!(
             document
                 .get(LEGACY_ROOT, key)
-                .is_ok_and(|value| value.is_some()),
+                .expect("read structure")
+                .is_some(),
             "missing {key} structure"
         );
     }
     assert!(document
         .get(LEGACY_ROOT, "current_mutation")
-        .is_ok_and(|value| value.is_some()));
+        .expect("read current mutation")
+        .is_some());
+    let (text_value, text) = document
+        .get(LEGACY_ROOT, "current_text")
+        .expect("read current rich text")
+        .expect("current rich text exists");
+    assert!(text_value.is_object(), "current rich text is text");
+    assert_eq!(
+        document
+            .text(&text)
+            .expect("read current rich text content"),
+        "Current rich text"
+    );
+    let marks = document.marks(&text).expect("read current rich text marks");
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks[0].name(), "emphasis");
+    assert_eq!(marks[0].start, 0);
+    assert_eq!(marks[0].end, 7);
+    assert_eq!(marks[0].value().to_str(), Some("current"));
 }
 
 fn legacy_to_current(
@@ -254,6 +291,7 @@ fn legacy_and_current_snapshots_round_trip_both_directions() {
     current
         .put(CURRENT_ROOT, "current_mutation", "preserved by legacy")
         .expect("mutate with Automerge 0.11");
+    add_current_rich_text(&mut current);
     let current_snapshot = current.save();
 
     let mut legacy_reloaded = LegacyDoc::load(&current_snapshot)
@@ -290,6 +328,10 @@ fn legacy_and_current_encoded_sync_messages_converge_bidirectionally() {
     current
         .put(CURRENT_ROOT, "from_current", "0.11")
         .expect("write current peer mutation");
+    current
+        .put(CURRENT_ROOT, "current_mutation", "preserved by legacy")
+        .expect("write current compatibility marker");
+    add_current_rich_text(&mut current);
     legacy
         .put(LEGACY_ROOT, "from_legacy", "2.7")
         .expect("write legacy peer mutation");
@@ -306,4 +348,5 @@ fn legacy_and_current_encoded_sync_messages_converge_bidirectionally() {
     assert!(legacy
         .get(LEGACY_ROOT, "from_current")
         .is_ok_and(|value| value.is_some()));
+    assert_legacy_shape(&legacy);
 }
