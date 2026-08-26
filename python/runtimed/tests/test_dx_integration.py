@@ -52,7 +52,6 @@ from test_daemon_integration import (  # noqa: E402, F401, F811
     _set_python_kernelspec,
     async_create_cell_and_wait_for_sync,
     async_shutdown_and_start_kernel,
-    async_start_kernel_with_retry,
     client,
     daemon_health_check,
     daemon_process,
@@ -84,7 +83,7 @@ async def test_dx_display_emits_blob_ref_with_buffers(session):  # noqa: F811
     """`dx.display(df)` produces a display_data whose Arrow stream resolves
     to content matching the Python-side SHA-256 — proof the bytes rode the
     IOPub buffer frame and the agent stored them in the blob store."""
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await async_shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:pyproject")
 
     # Bootstrap dx in the kernel — install formatters and open the session
     # helpers. No notebook dependency on dx (it's added to sys.path at runtime).
@@ -165,7 +164,7 @@ async def test_dx_display_large_df_emits_chunked_arrow_manifest(session):  # noq
     """When the serialized payload would exceed the per-message ceiling,
     dx emits a multi-chunk Arrow stream manifest whose chunks ride attached
     IOPub buffers and are stored as blob refs."""
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await async_shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:pyproject")
 
     bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
     assert (await session.execute_cell(bootstrap_id)).success
@@ -218,7 +217,7 @@ async def test_dx_polars_display_emits_blob_ref_with_buffers(session):  # noqa: 
     extra (`dx[polars]`), and minimal environments may not have it.
     """
     pytest.importorskip("polars")
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await async_shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:pyproject")
 
     bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
     assert (await session.execute_cell(bootstrap_id)).success
@@ -319,7 +318,7 @@ async def test_dx_polars_last_expression_uses_arrow_stream_protocol(session):  #
     """Belt-and-suspenders for the polars path: confirm the payload is an
     Arrow stream and the manifest keeps the schema/row metadata."""
     pytest.importorskip("polars")
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await async_shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:pyproject")
 
     bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
     assert (await session.execute_cell(bootstrap_id)).success
@@ -378,7 +377,7 @@ async def test_dx_last_expression_emits_display_data_not_execute_result(session)
     only. This test pins the actual ``output_type`` so a regression is
     visible.
     """
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await async_shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:pyproject")
 
     bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
     assert (await session.execute_cell(bootstrap_id)).success
@@ -423,7 +422,7 @@ async def test_dx_non_dataframe_last_expression_still_emits_execute_result(sessi
     ``text/plain`` repr. If our handler ever started intercepting non-df
     types, every cell with a bare last expression would lose its ``Out[N]:``
     prompt and become a ``display_data``."""
-    await async_start_kernel_with_retry(session, env_source="uv:pyproject")
+    await async_shutdown_and_start_kernel(session, kernel_type="python", env_source="uv:pyproject")
 
     bootstrap_id = await async_create_cell_and_wait_for_sync(session, _BOOTSTRAP)
     assert (await session.execute_cell(bootstrap_id)).success
