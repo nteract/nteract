@@ -553,7 +553,19 @@ export function useNotebookActionPolicy({
       );
       return;
     }
-    const response = await launchKernel("python", "uv:pyproject");
+    // LaunchKernel is idempotent by protocol: an already-running kernel is
+    // returned unchanged. This action explicitly switches environments, so
+    // preserve that intent with the same shutdown-then-launch sequence used
+    // by Restart Kernel.
+    await shutdownKernel();
+    let response = await launchKernel("python", "uv:pyproject");
+    // If an auto-launch was already preparing an environment, the first call
+    // joins it rather than starting duplicate work. Once that launch finishes,
+    // replace it if it was not the requested project environment.
+    if (response.result === "kernel_already_running" && response.env_source !== "uv:pyproject") {
+      await shutdownKernel();
+      response = await launchKernel("python", "uv:pyproject");
+    }
     if (response.result === "error") {
       logger.error(
         "[notebook-action-policy] handleStartKernelWithPyproject: daemon error",
@@ -562,7 +574,7 @@ export function useNotebookActionPolicy({
     } else if (response.result === "guard_rejected") {
       setTrustActionNotice(response.reason);
     }
-  }, [canExecute, launchKernel, sessionReady]);
+  }, [canExecute, launchKernel, sessionReady, shutdownKernel]);
 
   const handleExecuteCell = useCallback(
     async (cellId: string) => {

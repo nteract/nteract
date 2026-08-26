@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+
+use crate::CommandOutputExt;
 use std::sync::Arc;
 
 use crate::progress::{EnvProgressPhase, ProgressHandler};
@@ -269,7 +271,7 @@ pub async fn prepare_environment_in(
     let venv_output = venv_cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     if !venv_output.status.success() {
@@ -321,7 +323,7 @@ pub async fn prepare_environment_in(
         .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     if offline_output.status.success() {
@@ -359,7 +361,7 @@ pub async fn prepare_environment_in(
         .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     // If install failed, retry once with --refresh to bypass stale index cache.
@@ -379,7 +381,7 @@ pub async fn prepare_environment_in(
             .current_dir(cache_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .output_owned()
             .await?
     } else {
         install_output
@@ -529,7 +531,7 @@ async fn prepare_environment_unified_inner(
     let venv_output = venv_cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     if !venv_output.status.success() {
@@ -579,7 +581,7 @@ async fn prepare_environment_unified_inner(
         .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     if offline_output.status.success() {
@@ -615,7 +617,7 @@ async fn prepare_environment_unified_inner(
         .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     let install_output = if !install_output.status.success() {
@@ -631,7 +633,7 @@ async fn prepare_environment_unified_inner(
             .current_dir(cache_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .output_owned()
             .await?
     } else {
         install_output
@@ -715,7 +717,7 @@ pub async fn sync_dependencies(
     let offline_output = tokio::process::Command::new(&uv_path)
         .args(&offline_args)
         .current_dir(cwd)
-        .output()
+        .output_owned()
         .await?;
 
     if offline_output.status.success() {
@@ -739,7 +741,7 @@ pub async fn sync_dependencies(
     let output = tokio::process::Command::new(&uv_path)
         .args(&install_args)
         .current_dir(cwd)
-        .output()
+        .output_owned()
         .await?;
 
     if !output.status.success() {
@@ -802,7 +804,7 @@ pub async fn create_prewarmed_environment_in(
         .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     if !venv_output.status.success() {
@@ -847,7 +849,7 @@ pub async fn create_prewarmed_environment_in(
         .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     if offline_output.status.success() {
@@ -889,7 +891,7 @@ pub async fn create_prewarmed_environment_in(
         .current_dir(cache_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .output_owned()
         .await?;
 
     if !install_output.status.success() {
@@ -1060,7 +1062,7 @@ pub async fn warmup_environment(env: &UvEnvironment) -> Result<()> {
 
     let output = tokio::process::Command::new(&env.python_path)
         .args(["-c", &warmup_script])
-        .output()
+        .output_owned()
         .await?;
 
     if !output.status.success() {

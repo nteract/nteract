@@ -27,6 +27,7 @@ use std::time::Instant;
 use crate::{
     channels::parse_channels,
     progress::{EnvProgressPhase, ProgressHandler, RattlerReporter},
+    CommandOutputExt,
 };
 
 /// A resolved pixi environment on disk.
@@ -358,7 +359,7 @@ pub async fn warmup_environment(env: &PixiEnvironment, extra_modules: &[String])
 
     let output = tokio::process::Command::new(&env.python_path)
         .args(["-c", &warmup_script])
-        .output()
+        .output_owned()
         .await?;
 
     if !output.status.success() {

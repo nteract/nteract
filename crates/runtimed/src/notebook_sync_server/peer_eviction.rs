@@ -18,6 +18,27 @@ use super::{
 /// materialization itself: a large but progressing load remains room-owned.
 const LAST_PEER_NOTEBOOK_WRITE_SETTLE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(120);
+const CANCELLED_LAUNCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const ABORTED_LAUNCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn begin_last_peer_kernel_teardown(room: &NotebookRoom) -> Option<u64> {
+    let cancelled_launch = crate::requests::shutdown_kernel::begin_teardown(room).await;
+    // Last-peer teardown owns the room's runtime generation. Clear provenance
+    // before dropping the handle so the ensuing socket disconnect is stale and
+    // cannot replace Shutdown with Error.
+    *room.current_runtime_agent_id.write().await = None;
+    cancelled_launch
+}
+
+async fn wait_for_cancelled_launch_completion(room: &NotebookRoom, generation: u64) -> bool {
+    tokio::time::timeout(CANCELLED_LAUNCH_SETTLE_TIMEOUT, async {
+        while room.launch_completion(generation).is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
 
 async fn wait_for_initial_load_before_notebook_writes(
     initial_load: &RoomInitialLoad,
@@ -311,6 +332,7 @@ pub(super) async fn handle_peer_disconnect(
                 );
                 return;
             }
+            let cancelled_launch = begin_last_peer_kernel_teardown(&room_for_teardown).await;
             {
                 let has_runtime_agent = room_for_teardown
                     .runtime_agent_request_tx
@@ -346,6 +368,40 @@ pub(super) async fn handle_peer_disconnect(
                     {
                         let mut tx = room_for_teardown.runtime_agent_request_tx.lock().await;
                         *tx = None;
+                    }
+                }
+            }
+            if let Some(generation) = cancelled_launch {
+                // The cancelled owner keeps the gate fenced until it reaches
+                // a cancellation-safe checkpoint and finishes agent cleanup.
+                // Do not clear the destructive latch or touch its environment
+                // while that owner can still be preparing or launching.
+                if !wait_for_cancelled_launch_completion(&room_for_teardown, generation).await {
+                    warn!(
+                        "[notebook-sync] Cancelled launch generation {} did not settle within {:?} for {}; aborting the room-owned launch task",
+                        generation,
+                        CANCELLED_LAUNCH_SETTLE_TIMEOUT,
+                        notebook_id_for_teardown
+                    );
+                    let aborted = room_for_teardown.abort_launch_owner(generation);
+                    let settled_after_abort =
+                        tokio::time::timeout(ABORTED_LAUNCH_SETTLE_TIMEOUT, async {
+                            while room_for_teardown.launch_completion(generation).is_none() {
+                                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                            }
+                        })
+                        .await
+                        .is_ok();
+                    if !settled_after_abort {
+                        warn!(
+                            "[notebook-sync] Launch generation {} for {} remained unsettled after abort attempt (registered owner: {}); retaining teardown ownership until cleanup completes",
+                            generation,
+                            notebook_id_for_teardown,
+                            aborted
+                        );
+                        while room_for_teardown.launch_completion(generation).is_none() {
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        }
                     }
                 }
             }
@@ -637,6 +693,7 @@ pub(super) async fn handle_peer_disconnect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blob_store::BlobStore;
 
     fn empty_projection(generation: u64) -> Arc<runtimed_client::protocol::NotebookProjection> {
         Arc::new(runtimed_client::protocol::NotebookProjection {
@@ -671,6 +728,135 @@ mod tests {
             runtime_state_heads: Vec::new(),
             captured_at: chrono::Utc::now(),
         })
+    }
+
+    #[tokio::test]
+    async fn last_peer_teardown_atomically_cancels_launch_and_fences_agent_disconnect() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        *room.current_runtime_agent_id.write().await = Some("agent-pre-spawn".to_string());
+        room.expect_runtime_agent("agent-pre-spawn");
+        assert!(room.mark_runtime_agent_connected("agent-pre-spawn"));
+        let (request_tx, _request_rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(request_tx);
+        let attempt = match room.try_begin_manual_launch() {
+            crate::notebook_sync_server::ManualLaunchAdmission::Admitted(attempt) => attempt,
+            crate::notebook_sync_server::ManualLaunchAdmission::InFlight { .. } => {
+                panic!("launch should be admitted")
+            }
+        };
+
+        assert_eq!(begin_last_peer_kernel_teardown(&room).await, Some(1));
+        assert!(attempt.is_cancelled());
+        assert!(room.current_runtime_agent_id.read().await.is_none());
+        assert!(room.runtime_agent_request_tx.lock().await.is_some());
+        assert!(
+            !room.disconnect_runtime_agent_and_commit_terminal(
+                "agent-pre-spawn",
+                || panic!("teardown must fence the disconnect presence projection"),
+                |_| panic!("teardown must fence the disconnect lifecycle projection"),
+            ),
+            "the ensuing socket disconnect must already be stale"
+        );
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            runtime_doc::RuntimeLifecycle::Shutdown
+        );
+        let presence_state = room.broadcasts.presence.read().await;
+        let daemon = presence_state.peers().get("daemon").unwrap();
+        match daemon
+            .channels
+            .get(&notebook_doc::presence::Channel::KernelState)
+        {
+            Some(notebook_doc::presence::ChannelData::KernelState(data)) => {
+                assert_eq!(data.status, notebook_doc::presence::KernelStatus::Shutdown)
+            }
+            other => panic!("expected shutdown kernel presence, got {other:?}"),
+        }
+        drop(presence_state);
+        attempt.finish_cancelled();
+        assert_eq!(
+            room.launch_completion(1),
+            Some(crate::notebook_sync_server::KernelLaunchCompletion::Cancelled)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_launch_settle_wait_is_bounded() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        let attempt = match room.try_begin_auto_launch() {
+            crate::notebook_sync_server::AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("launch should be admitted"),
+        };
+        assert_eq!(room.cancel_in_flight_launch(), Some(1));
+
+        let settled = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { wait_for_cancelled_launch_completion(&room, 1).await }
+        });
+        tokio::time::advance(CANCELLED_LAUNCH_SETTLE_TIMEOUT).await;
+        tokio::task::yield_now().await;
+        assert!(!settled.await.unwrap());
+
+        attempt.finish_cancelled();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_room_owned_launch_is_aborted_after_settle_deadline() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let room = Arc::new(NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            tmp.path(),
+            Arc::new(BlobStore::new(tmp.path().join("blobs"))),
+            false,
+        ));
+        let attempt = match room.try_begin_auto_launch() {
+            crate::notebook_sync_server::AutoLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("launch should be admitted"),
+        };
+        let generation = attempt.generation();
+        let owner = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop(attempt);
+        });
+        assert!(room.register_launch_abort_handle(generation, owner.abort_handle()));
+        assert_eq!(room.cancel_in_flight_launch(), Some(generation));
+
+        let settled = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { wait_for_cancelled_launch_completion(&room, generation).await }
+        });
+        tokio::time::advance(CANCELLED_LAUNCH_SETTLE_TIMEOUT).await;
+        tokio::task::yield_now().await;
+        assert!(!settled.await.unwrap());
+
+        assert!(room.abort_launch_owner(generation));
+        for _ in 0..20 {
+            if room.launch_completion(generation).is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            room.launch_completion(generation),
+            Some(crate::notebook_sync_server::KernelLaunchCompletion::Cancelled)
+        );
     }
 
     #[tokio::test]

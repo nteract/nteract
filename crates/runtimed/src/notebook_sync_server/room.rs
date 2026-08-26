@@ -843,6 +843,11 @@ pub struct RoomConnections {
     pub had_peers: AtomicBool,
     pub last_kernel_torn_down_at: AtomicU64,
     pub connection_generation: AtomicU64,
+    /// Exact launch generation currently followed by the reconnect-driven
+    /// auto-launch retry task. Zero means no follower. This keeps rapid
+    /// disconnect/reconnect churn from accumulating detached pollers for the
+    /// same stuck owner generation.
+    pub auto_launch_retry_generation: AtomicU64,
     /// `true` while the kernel-teardown task is in the destructive
     /// section (ShutdownKernel RPC plus handle/request-tx clear). A
     /// peer that joined during this window saw `has_kernel = true` but
@@ -867,6 +872,7 @@ impl Default for RoomConnections {
             had_peers: AtomicBool::new(false),
             last_kernel_torn_down_at: AtomicU64::new(0),
             connection_generation: AtomicU64::new(0),
+            auto_launch_retry_generation: AtomicU64::new(0),
             kernel_teardown_destructive: AtomicBool::new(false),
             reservations: AtomicUsize::new(0),
         }
@@ -874,6 +880,23 @@ impl Default for RoomConnections {
 }
 
 impl RoomConnections {
+    pub(crate) fn try_claim_auto_launch_retry(&self, generation: u64) -> bool {
+        generation != 0
+            && self
+                .auto_launch_retry_generation
+                .compare_exchange(0, generation, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+
+    pub(crate) fn release_auto_launch_retry(&self, generation: u64) {
+        let _ = self.auto_launch_retry_generation.compare_exchange(
+            generation,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
     /// Unix-epoch seconds when the room last finished kernel teardown with
     /// no peers, or `None` if the room is currently active or has never had
     /// kernel teardown.
@@ -1060,6 +1083,19 @@ pub(crate) struct SourceReconciliationClaim {
     room: Arc<NotebookRoom>,
 }
 
+/// Daemon-local description of the kernel that currently owns this room.
+///
+/// RuntimeStateDoc remains the client-facing projection, but concurrent
+/// Automerge lifecycle values cannot safely answer the daemon's idempotent
+/// `LaunchKernel` RPC. This record is written only after launch succeeds and
+/// is cleared when that kernel is shut down or its launch state is reset.
+#[derive(Clone)]
+pub(crate) struct ActiveKernelLaunch {
+    pub runtime_agent_id: String,
+    pub kernel_type: String,
+    pub env_source: notebook_protocol::connection::EnvSource,
+}
+
 impl Drop for SourceReconciliationClaim {
     fn drop(&mut self) {
         self.room
@@ -1074,34 +1110,39 @@ impl Drop for SourceReconciliationClaim {
 pub(crate) const AUTO_LAUNCH_FAILURE_COOLDOWN: std::time::Duration =
     std::time::Duration::from_secs(5);
 
-/// Per-room single-flight gate for kernel auto-launch.
+/// Per-room single-flight gate for all kernel launches.
 ///
-/// At most one auto-launch attempt runs per room at a time; connects that
-/// arrive while an attempt is in flight observe that attempt through
-/// RuntimeStateDoc instead of spawning another agent. A failed attempt closes
-/// the gate for [`AUTO_LAUNCH_FAILURE_COOLDOWN`] so a reconnect loop cannot
-/// turn connect frequency into agent spawn frequency.
+/// Auto-launch and explicit `LaunchKernel` requests share this authority.
+/// Callers that lose admission join the exact daemon-local generation instead
+/// of inferring completion from RuntimeStateDoc. A failed attempt closes the
+/// auto-launch gate for [`AUTO_LAUNCH_FAILURE_COOLDOWN`] so a reconnect loop
+/// cannot turn connect frequency into agent spawn frequency; explicit requests
+/// may retry immediately.
 ///
 /// Sync-only state behind `std::sync::Mutex`; never hold the lock across an
 /// `.await`.
 #[derive(Default)]
-pub(crate) struct AutoLaunchGate {
-    state: std::sync::Mutex<AutoLaunchGateState>,
+pub(crate) struct KernelLaunchGate {
+    state: std::sync::Mutex<KernelLaunchGateState>,
 }
 
 #[derive(Default)]
-struct AutoLaunchGateState {
-    in_flight: bool,
+pub(super) struct KernelLaunchGateState {
+    pub(super) in_flight_generation: Option<u64>,
+    in_flight_cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
+    in_flight_abort_handle: Option<tokio::task::AbortHandle>,
     cooldown_until: Option<tokio::time::Instant>,
     admitted_count: u64,
+    completed_outcomes: std::collections::BTreeMap<u64, KernelLaunchCompletion>,
+    pub(super) cancelled_generations: std::collections::BTreeSet<u64>,
+    expected_runtime_agent_id: Option<String>,
+    connected_runtime_agent_id: Option<String>,
 }
 
-impl AutoLaunchGate {
-    fn lock_state(&self) -> std::sync::MutexGuard<'_, AutoLaunchGateState> {
-        // Recover from poisoning: the guarded state is two plain fields and
-        // every critical section is trivially panic-free, so a poisoned lock
-        // carries no torn invariant. Recovering also keeps the token's Drop
-        // from double-panicking during unwind.
+impl KernelLaunchGate {
+    pub(super) fn lock_state(&self) -> std::sync::MutexGuard<'_, KernelLaunchGateState> {
+        // Critical sections only mutate plain in-memory bookkeeping. Recovering
+        // also keeps the token's Drop from double-panicking during unwind.
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1111,16 +1152,26 @@ impl AutoLaunchGate {
 /// Outcome of asking the gate for permission to auto-launch.
 pub(crate) enum AutoLaunchAdmission {
     /// Caller owns the attempt; the gate stays closed until the token drops.
-    Admitted(AutoLaunchAttempt),
-    /// Another attempt is in flight; observe it via RuntimeStateDoc.
-    InFlight,
+    Admitted(KernelLaunchAttempt),
+    /// Another attempt is in flight; observe its exact daemon-local
+    /// generation so a reconnect can retry after teardown releases it.
+    InFlight { generation: u64 },
     /// A recent attempt failed; the gate reopens after `remaining`.
     CoolingDown { remaining: std::time::Duration },
 }
 
-enum AutoLaunchOutcome {
+pub(crate) enum ManualLaunchAdmission {
+    Admitted(KernelLaunchAttempt),
+    InFlight {
+        generation: u64,
+        cancel_rx: tokio::sync::watch::Receiver<bool>,
+    },
+}
+
+enum KernelLaunchOutcome {
     /// Default: any drop without an explicit outcome (early return, panic
-    /// unwind, launch error) counts as a failure and arms the cooldown.
+    /// unwind, launch error) counts as a failure. Auto-launch failures arm
+    /// the reconnect cooldown; explicit launch failures do not.
     Failed,
     /// Kernel launched; reopen the gate immediately.
     Succeeded,
@@ -1129,31 +1180,311 @@ enum AutoLaunchOutcome {
     Released,
 }
 
-/// Owned token for one auto-launch attempt. Dropping it reopens the gate;
-/// the drop path is where the failure cooldown is armed, so every early
-/// return and panic in the launch flow is covered without per-site calls.
-pub(crate) struct AutoLaunchAttempt {
-    room: Arc<NotebookRoom>,
-    outcome: AutoLaunchOutcome,
+#[derive(Clone, Copy)]
+enum KernelLaunchSource {
+    Auto,
+    Manual,
 }
 
-impl AutoLaunchAttempt {
-    /// Mark the attempt successful: reopen the gate with no cooldown.
-    pub(crate) fn succeed(mut self) {
-        self.outcome = AutoLaunchOutcome::Succeeded;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KernelLaunchCompletion {
+    Failed,
+    Succeeded,
+    Released,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KernelLaunchCommitRejection {
+    Cancelled,
+    AgentUnavailable,
+}
+
+pub(crate) async fn wait_for_kernel_launch_cancellation(
+    mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    if *cancel_rx.borrow() {
+        return;
+    }
+    loop {
+        match cancel_rx.changed().await {
+            Ok(()) if *cancel_rx.borrow() => return,
+            Ok(()) => continue,
+            Err(_) => std::future::pending::<()>().await,
+        }
+    }
+}
+
+/// Owned token for one auto or manual launch attempt. Dropping it reopens the
+/// gate and records an exact-generation completion. The drop path arms the
+/// cooldown only for auto-launch failures, so every early return and panic in
+/// that flow is covered without throttling explicit requests.
+pub(crate) struct KernelLaunchAttempt {
+    room: Arc<NotebookRoom>,
+    generation: u64,
+    outcome: KernelLaunchOutcome,
+    source: KernelLaunchSource,
+    finished: bool,
+    cancel_rx: tokio::sync::watch::Receiver<bool>,
+}
+
+impl KernelLaunchAttempt {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Whether `ShutdownKernel` cancelled this generation while it was
+    /// running. Owners check this before starting a subprocess and again at
+    /// the success linearization point.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        *self.cancel_rx.borrow()
+    }
+
+    /// Install the runtime-agent identity only while this exact generation
+    /// still owns the gate. Teardown can therefore cancel the generation or
+    /// install its identity, never land between two independent authorities.
+    pub(crate) fn expect_runtime_agent(&self, runtime_agent_id: &str) -> bool {
+        let mut state = self.room.kernel_launch_gate.lock_state();
+        if state.in_flight_generation != Some(self.generation)
+            || state.cancelled_generations.contains(&self.generation)
+        {
+            return false;
+        }
+        state.expected_runtime_agent_id = Some(runtime_agent_id.to_string());
+        state.connected_runtime_agent_id = None;
+        true
+    }
+
+    pub(crate) fn cancellation_receiver(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.cancel_rx.clone()
+    }
+
+    /// Remove subprocess and connection state installed by this launch after
+    /// teardown cancelled its generation. The launch token still owns the
+    /// single-flight gate, so no successor can install newer agent resources
+    /// while these fields are cleared. Unlike the general reset helper, this
+    /// deliberately does not require provenance to remain installed: teardown
+    /// clears provenance first, and may otherwise race between subprocess
+    /// spawn and handle publication.
+    pub(crate) async fn discard_cancelled_runtime_agent(&self, runtime_agent_id: &str) {
+        {
+            let mut current = self.room.current_runtime_agent_id.write().await;
+            if current.as_deref() == Some(runtime_agent_id) {
+                *current = None;
+            }
+        }
+        {
+            let mut state = self.room.kernel_launch_gate.lock_state();
+            if state.expected_runtime_agent_id.as_deref() == Some(runtime_agent_id) {
+                state.expected_runtime_agent_id = None;
+            }
+            if state.connected_runtime_agent_id.as_deref() == Some(runtime_agent_id) {
+                state.connected_runtime_agent_id = None;
+            }
+        }
+        self.room
+            .clear_active_kernel_launch_if_agent(runtime_agent_id);
+        *self.room.runtime_agent_handle.lock().await = None;
+        *self.room.runtime_agent_request_tx.lock().await = None;
+        *self.room.pending_runtime_agent_connect_tx.lock().await = None;
+    }
+
+    /// Atomically publish success and release the gate. A concurrent
+    /// `ShutdownKernel` wins if it marked this generation first; the token is
+    /// returned so the owner can tear down any kernel that just started before
+    /// recording the cancelled completion.
+    #[cfg(test)]
+    pub(crate) fn succeed(self) -> Result<(), Self> {
+        self.succeed_with(|| {})
+    }
+
+    /// Commit the daemon-local identity and client-facing success projection
+    /// at the same linearization point as gate completion. The closure must be
+    /// synchronous and follow the gate -> projection lock order.
+    #[cfg(test)]
+    pub(crate) fn succeed_with(mut self, commit: impl FnOnce()) -> Result<(), Self> {
+        let cancelled = {
+            let mut st = self.room.kernel_launch_gate.lock_state();
+            if st.cancelled_generations.contains(&self.generation) {
+                true
+            } else {
+                self.outcome = KernelLaunchOutcome::Succeeded;
+                commit();
+                st.completed_outcomes
+                    .insert(self.generation, KernelLaunchCompletion::Succeeded);
+                if self.generation > 1024 {
+                    st.completed_outcomes.remove(&(self.generation - 1024));
+                }
+                if st.in_flight_generation == Some(self.generation) {
+                    st.in_flight_generation = None;
+                    st.in_flight_cancel_tx = None;
+                    st.in_flight_abort_handle = None;
+                }
+                self.finished = true;
+                false
+            }
+        };
+        if cancelled {
+            Err(self)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn succeed_with_agent(
+        mut self,
+        runtime_agent_id: &str,
+        commit: impl FnOnce(),
+    ) -> Result<(), (Self, KernelLaunchCommitRejection)> {
+        let rejection = {
+            let mut state = self.room.kernel_launch_gate.lock_state();
+            if state.cancelled_generations.contains(&self.generation) {
+                Some(KernelLaunchCommitRejection::Cancelled)
+            } else if state.connected_runtime_agent_id.as_deref() != Some(runtime_agent_id) {
+                Some(KernelLaunchCommitRejection::AgentUnavailable)
+            } else {
+                self.outcome = KernelLaunchOutcome::Succeeded;
+                commit();
+                state
+                    .completed_outcomes
+                    .insert(self.generation, KernelLaunchCompletion::Succeeded);
+                if self.generation > 1024 {
+                    state.completed_outcomes.remove(&(self.generation - 1024));
+                }
+                if state.in_flight_generation == Some(self.generation) {
+                    state.in_flight_generation = None;
+                    state.in_flight_cancel_tx = None;
+                    state.in_flight_abort_handle = None;
+                }
+                self.finished = true;
+                None
+            }
+        };
+        match rejection {
+            Some(rejection) => Err((self, rejection)),
+            None => Ok(()),
+        }
     }
 
     /// Mark the attempt a benign no-op: reopen the gate with no cooldown.
     pub(crate) fn release_without_cooldown(mut self) {
-        self.outcome = AutoLaunchOutcome::Released;
+        self.outcome = KernelLaunchOutcome::Released;
+    }
+
+    /// Atomically finish a pre-spawn no-peer abort and, if a reconnect raced
+    /// it, admit the successor on that peer's behalf. Shutdown cancellation
+    /// and readmission contend on the same gate lock, eliminating the gap
+    /// between token release and the successor decision.
+    pub(crate) fn release_and_readmit_auto_if_peer_waiting(mut self) -> Option<Self> {
+        let next = {
+            let mut state = self.room.kernel_launch_gate.lock_state();
+            let owner_abort_handle = state.in_flight_abort_handle.take();
+            let cancelled = state.cancelled_generations.remove(&self.generation);
+            state.completed_outcomes.insert(
+                self.generation,
+                if cancelled {
+                    KernelLaunchCompletion::Cancelled
+                } else {
+                    KernelLaunchCompletion::Released
+                },
+            );
+            if self.generation > 1024 {
+                state.completed_outcomes.remove(&(self.generation - 1024));
+            }
+            if state.in_flight_generation == Some(self.generation) {
+                state.in_flight_generation = None;
+                state.in_flight_cancel_tx = None;
+            }
+
+            if cancelled
+                || self
+                    .room
+                    .connections
+                    .active_peers
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == 0
+            {
+                None
+            } else {
+                state.admitted_count = state.admitted_count.saturating_add(1);
+                let generation = state.admitted_count;
+                let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+                state.in_flight_generation = Some(generation);
+                state.in_flight_cancel_tx = Some(cancel_tx);
+                state.in_flight_abort_handle = owner_abort_handle;
+                Some((generation, cancel_rx))
+            }
+        };
+        self.finished = true;
+        next.map(|(generation, cancel_rx)| Self {
+            room: Arc::clone(&self.room),
+            generation,
+            outcome: KernelLaunchOutcome::Failed,
+            source: KernelLaunchSource::Auto,
+            finished: false,
+            cancel_rx,
+        })
+    }
+
+    /// Complete a cancelled generation after its owner has finished async
+    /// kernel/agent cleanup.
+    pub(crate) fn finish_cancelled(mut self) {
+        self.room.finish_cancelled_launch(self.generation);
+        self.finished = true;
     }
 }
 
-impl Drop for AutoLaunchAttempt {
+impl Drop for KernelLaunchAttempt {
     fn drop(&mut self) {
-        let mut st = self.room.auto_launch_gate.lock_state();
-        st.in_flight = false;
-        if matches!(self.outcome, AutoLaunchOutcome::Failed) {
+        if self.finished {
+            return;
+        }
+        if self.is_cancelled() || matches!(self.outcome, KernelLaunchOutcome::Failed) {
+            // A request worker can be aborted at any await when its peer
+            // disconnects, including after agent provenance, a subprocess, or
+            // connect channels have been installed. Keep the generation
+            // fenced and clear those room-owned resources before recording
+            // either cancellation or failure. Terminal projections are left
+            // alone: Shutdown and agent-disconnect Error were already
+            // committed by the authority that cancelled the generation.
+            self.finished = true;
+            let room = Arc::clone(&self.room);
+            let generation = self.generation;
+            let source = self.source;
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    room.cleanup_abandoned_launch(generation, source).await;
+                });
+                return;
+            }
+            // Launch attempts are runtime-owned in production. Preserve gate
+            // liveness in the defensive no-runtime case; no async-installed
+            // Tokio resources can be live here.
+            self.room
+                .finish_abandoned_launch(self.generation, self.source);
+            return;
+        }
+        let mut st = self.room.kernel_launch_gate.lock_state();
+        let completion = match self.outcome {
+            KernelLaunchOutcome::Failed => KernelLaunchCompletion::Failed,
+            KernelLaunchOutcome::Succeeded => KernelLaunchCompletion::Succeeded,
+            KernelLaunchOutcome::Released => KernelLaunchCompletion::Released,
+        };
+        st.completed_outcomes.insert(self.generation, completion);
+        // Waiters time out after 60 seconds and failed attempts have a
+        // five-second cooldown. Retaining a generous fixed window keeps exact
+        // generation results available without growing with room lifetime.
+        if self.generation > 1024 {
+            st.completed_outcomes.remove(&(self.generation - 1024));
+        }
+        if st.in_flight_generation == Some(self.generation) {
+            st.in_flight_generation = None;
+            st.in_flight_cancel_tx = None;
+            st.in_flight_abort_handle = None;
+        }
+        if completion == KernelLaunchCompletion::Failed
+            && matches!(self.source, KernelLaunchSource::Auto)
+        {
             st.cooldown_until = Some(tokio::time::Instant::now() + AUTO_LAUNCH_FAILURE_COOLDOWN);
         }
     }
@@ -1232,6 +1563,8 @@ pub struct NotebookRoom {
     /// check_and_broadcast_sync_state can detect dependency drift
     /// without accessing the runtime agent's kernel directly.
     pub runtime_agent_launched_config: Arc<RwLock<Option<LaunchedEnvConfig>>>,
+    /// Daemon-local authority for idempotent `LaunchKernel` responses.
+    pub(crate) active_kernel_launch: std::sync::Mutex<Option<ActiveKernelLaunch>>,
     /// Channel for sending RPC requests (LaunchKernel, Interrupt, etc.) to the
     /// runtime agent's sync connection. Set when runtime agent connects via
     /// socket, cleared on disconnect.
@@ -1255,12 +1588,137 @@ pub struct NotebookRoom {
     /// sync handler to validate connections and prevent stale cleanup from
     /// clobbering state.
     pub current_runtime_agent_id: Arc<RwLock<Option<String>>>,
-    /// Single-flight gate for kernel auto-launch. All auto-launch admission
-    /// goes through [`NotebookRoom::try_begin_auto_launch`].
-    pub(crate) auto_launch_gate: AutoLaunchGate,
+    /// Single-flight authority shared by reconnect-driven and explicit kernel
+    /// launches, plus shutdown cancellation.
+    pub(crate) kernel_launch_gate: KernelLaunchGate,
 }
 
 impl NotebookRoom {
+    /// Linearize a client-facing launch projection with shutdown and agent
+    /// disconnect cancellation. The launch token remains owned by the caller,
+    /// so a different generation cannot legitimately publish from that task;
+    /// this guard prevents the current cancelled generation from regressing a
+    /// terminal Shutdown/Error state after an await.
+    pub(crate) fn commit_unless_launch_cancelled<R>(
+        &self,
+        commit: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let state = self.kernel_launch_gate.lock_state();
+        if state
+            .in_flight_generation
+            .is_some_and(|generation| state.cancelled_generations.contains(&generation))
+        {
+            return None;
+        }
+        Some(commit())
+    }
+
+    pub(crate) fn register_launch_abort_handle(
+        &self,
+        generation: u64,
+        abort_handle: tokio::task::AbortHandle,
+    ) -> bool {
+        let mut state = self.kernel_launch_gate.lock_state();
+        if state.in_flight_generation != Some(generation) {
+            return false;
+        }
+        state.in_flight_abort_handle = Some(abort_handle);
+        true
+    }
+
+    pub(crate) fn abort_launch_owner(&self, generation: u64) -> bool {
+        let abort_handle = {
+            let state = self.kernel_launch_gate.lock_state();
+            if state.in_flight_generation != Some(generation) {
+                return false;
+            }
+            state.in_flight_abort_handle.clone()
+        };
+        if let Some(abort_handle) = abort_handle {
+            abort_handle.abort();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn current_launch_cancellation_receiver(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.kernel_launch_gate
+            .lock_state()
+            .in_flight_cancel_tx
+            .as_ref()
+            .map(tokio::sync::watch::Sender::subscribe)
+    }
+
+    async fn cleanup_abandoned_launch(&self, generation: u64, source: KernelLaunchSource) {
+        {
+            let mut state = self.kernel_launch_gate.lock_state();
+            if state.in_flight_generation != Some(generation) {
+                return;
+            }
+            state.expected_runtime_agent_id = None;
+            state.connected_runtime_agent_id = None;
+        }
+        *self.current_runtime_agent_id.write().await = None;
+        self.clear_active_kernel_launch();
+        *self.runtime_agent_handle.lock().await = None;
+        *self.runtime_agent_request_tx.lock().await = None;
+        *self.pending_runtime_agent_connect_tx.lock().await = None;
+        self.finish_abandoned_launch(generation, source);
+    }
+
+    fn finish_abandoned_launch(&self, generation: u64, source: KernelLaunchSource) {
+        let mut state = self.kernel_launch_gate.lock_state();
+        if state.in_flight_generation != Some(generation) {
+            return;
+        }
+        let cancelled = state.cancelled_generations.remove(&generation);
+        let completion = if cancelled {
+            KernelLaunchCompletion::Cancelled
+        } else {
+            KernelLaunchCompletion::Failed
+        };
+
+        // Only an unprojected abrupt failure gets a generic Error. Normal
+        // failure paths have already moved to Error or NotStarted; cancelled
+        // paths have already committed Shutdown or disconnect Error.
+        if !cancelled {
+            if let Err(error) = self.state.with_doc(|doc| {
+                if matches!(
+                    doc.read_state().kernel.lifecycle,
+                    runtime_doc::RuntimeLifecycle::Resolving
+                        | runtime_doc::RuntimeLifecycle::PreparingEnv
+                        | runtime_doc::RuntimeLifecycle::Launching
+                        | runtime_doc::RuntimeLifecycle::Connecting
+                ) {
+                    doc.set_lifecycle_with_error_details(
+                        &runtime_doc::RuntimeLifecycle::Error,
+                        None,
+                        Some("Kernel launch stopped before completion"),
+                    )?;
+                }
+                Ok(())
+            }) {
+                tracing::warn!("[runtime-state] {error}");
+            }
+        }
+
+        state.completed_outcomes.insert(generation, completion);
+        if generation > 1024 {
+            state.completed_outcomes.remove(&(generation - 1024));
+        }
+        state.in_flight_generation = None;
+        state.in_flight_cancel_tx = None;
+        state.in_flight_abort_handle = None;
+        if completion == KernelLaunchCompletion::Failed
+            && matches!(source, KernelLaunchSource::Auto)
+        {
+            state.cooldown_until = Some(tokio::time::Instant::now() + AUTO_LAUNCH_FAILURE_COOLDOWN);
+        }
+    }
+
     pub(crate) fn try_claim_source_reconciliation(
         self: &Arc<Self>,
     ) -> Option<SourceReconciliationClaim> {
@@ -1802,12 +2260,13 @@ impl NotebookRoom {
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
+            active_kernel_launch: std::sync::Mutex::new(None),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
             pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
             runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
-            auto_launch_gate: AutoLaunchGate::default(),
+            kernel_launch_gate: KernelLaunchGate::default(),
         })
     }
 
@@ -1816,14 +2275,14 @@ impl NotebookRoom {
     /// Returns `Admitted` with an owned token when no attempt is in flight
     /// and no failure cooldown is active. The token must accompany the
     /// attempt end to end: dropping it without calling
-    /// [`AutoLaunchAttempt::succeed`] or
-    /// [`AutoLaunchAttempt::release_without_cooldown`] counts as a failure
+    /// [`KernelLaunchAttempt::succeed`] or
+    /// [`KernelLaunchAttempt::release_without_cooldown`] counts as a failure
     /// and arms [`AUTO_LAUNCH_FAILURE_COOLDOWN`].
     pub(crate) fn try_begin_auto_launch(self: &Arc<Self>) -> AutoLaunchAdmission {
         let now = tokio::time::Instant::now();
-        let mut st = self.auto_launch_gate.lock_state();
-        if st.in_flight {
-            return AutoLaunchAdmission::InFlight;
+        let mut st = self.kernel_launch_gate.lock_state();
+        if let Some(generation) = st.in_flight_generation {
+            return AutoLaunchAdmission::InFlight { generation };
         }
         if let Some(until) = st.cooldown_until {
             if now < until {
@@ -1832,19 +2291,294 @@ impl NotebookRoom {
                 };
             }
         }
-        st.in_flight = true;
         st.cooldown_until = None;
         st.admitted_count = st.admitted_count.saturating_add(1);
-        AutoLaunchAdmission::Admitted(AutoLaunchAttempt {
+        let generation = st.admitted_count;
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        st.in_flight_generation = Some(generation);
+        st.in_flight_cancel_tx = Some(cancel_tx);
+        st.in_flight_abort_handle = None;
+        AutoLaunchAdmission::Admitted(KernelLaunchAttempt {
             room: Arc::clone(self),
-            outcome: AutoLaunchOutcome::Failed,
+            generation,
+            outcome: KernelLaunchOutcome::Failed,
+            source: KernelLaunchSource::Auto,
+            finished: false,
+            cancel_rx,
         })
+    }
+
+    pub(crate) fn try_begin_manual_launch(self: &Arc<Self>) -> ManualLaunchAdmission {
+        let mut state = self.kernel_launch_gate.lock_state();
+        if let Some(generation) = state.in_flight_generation {
+            let cancel_rx = state
+                .in_flight_cancel_tx
+                .as_ref()
+                .expect("in-flight launch must own a cancellation sender")
+                .subscribe();
+            return ManualLaunchAdmission::InFlight {
+                generation,
+                cancel_rx,
+            };
+        }
+        // Explicit user requests may retry immediately after an auto-launch
+        // failure, but do not erase the reconnect-only cooldown. A successful
+        // manual launch makes it irrelevant while the kernel is present; if
+        // that request also fails, reconnects remain throttled for the
+        // original auto-launch window.
+        state.admitted_count = state.admitted_count.saturating_add(1);
+        let generation = state.admitted_count;
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        state.in_flight_generation = Some(generation);
+        state.in_flight_cancel_tx = Some(cancel_tx);
+        state.in_flight_abort_handle = None;
+        ManualLaunchAdmission::Admitted(KernelLaunchAttempt {
+            room: Arc::clone(self),
+            generation,
+            outcome: KernelLaunchOutcome::Failed,
+            source: KernelLaunchSource::Manual,
+            finished: false,
+            cancel_rx,
+        })
+    }
+
+    /// Cancel the currently admitted generation, if any. The owner retains
+    /// the gate until it has stopped any subprocess or kernel it started, so
+    /// a successor cannot race the cleanup.
+    #[cfg(test)]
+    pub(crate) fn cancel_in_flight_launch(&self) -> Option<u64> {
+        let mut state = self.kernel_launch_gate.lock_state();
+        let generation = state.in_flight_generation?;
+        state.cancelled_generations.insert(generation);
+        if let Some(cancel_tx) = state.in_flight_cancel_tx.as_ref() {
+            let _ = cancel_tx.send(true);
+        }
+        Some(generation)
+    }
+
+    /// Atomically cancel the admitted generation and publish the terminal
+    /// RuntimeStateDoc projection. Reset paths take the same gate lock before
+    /// mutating that projection, so an accepted shutdown cannot be overwritten
+    /// by a late launch error or abort.
+    pub(crate) fn cancel_launch_and_mark_shutdown_with(
+        &self,
+        commit_presence: impl FnOnce(),
+    ) -> Option<u64> {
+        self.cancel_launch_and_commit_terminal(false, commit_presence, |sd| {
+            sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::Shutdown)
+        })
+    }
+
+    /// Last-peer teardown owns the runtime-agent generation as well as the
+    /// kernel. Revoke the agent identity in the same gate transaction as the
+    /// Shutdown projection so its socket cleanup cannot replace Shutdown with
+    /// Error in between two otherwise-correct commits.
+    pub(crate) fn cancel_launch_and_mark_teardown_with(
+        &self,
+        commit_presence: impl FnOnce(),
+    ) -> Option<u64> {
+        self.cancel_launch_and_commit_terminal(true, commit_presence, |sd| {
+            sd.set_lifecycle(&runtime_doc::RuntimeLifecycle::Shutdown)
+        })
+    }
+
+    pub(crate) fn cancel_launch_and_commit_terminal(
+        &self,
+        invalidate_runtime_agent: bool,
+        commit_presence: impl FnOnce(),
+        commit_state: impl FnOnce(
+            &mut runtime_doc::RuntimeStateDoc,
+        ) -> Result<(), runtime_doc::RuntimeStateError>,
+    ) -> Option<u64> {
+        let mut state = self.kernel_launch_gate.lock_state();
+        let cancelled = state.in_flight_generation.inspect(|generation| {
+            state.cancelled_generations.insert(*generation);
+            if let Some(cancel_tx) = state.in_flight_cancel_tx.as_ref() {
+                let _ = cancel_tx.send(true);
+            }
+        });
+        if invalidate_runtime_agent {
+            state.expected_runtime_agent_id = None;
+            state.connected_runtime_agent_id = None;
+        }
+        self.clear_active_kernel_launch();
+        commit_presence();
+        if let Err(e) = self.state.with_doc(|sd| {
+            commit_state(sd)?;
+            sd.clear_env_progress()?;
+            sd.abort_inflight_executions()?;
+            sd.set_queue(None, &[])?;
+            Ok(())
+        }) {
+            tracing::warn!("[runtime-state] {}", e);
+        }
+        cancelled
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expect_runtime_agent(&self, runtime_agent_id: &str) {
+        let mut state = self.kernel_launch_gate.lock_state();
+        state.expected_runtime_agent_id = Some(runtime_agent_id.to_string());
+        state.connected_runtime_agent_id = None;
+    }
+
+    pub(crate) fn mark_runtime_agent_connected(&self, runtime_agent_id: &str) -> bool {
+        let mut state = self.kernel_launch_gate.lock_state();
+        if state.expected_runtime_agent_id.as_deref() != Some(runtime_agent_id) {
+            return false;
+        }
+        state.connected_runtime_agent_id = Some(runtime_agent_id.to_string());
+        true
+    }
+
+    pub(crate) fn invalidate_runtime_agent_connection(&self) {
+        let mut state = self.kernel_launch_gate.lock_state();
+        state.expected_runtime_agent_id = None;
+        state.connected_runtime_agent_id = None;
+    }
+
+    pub(crate) fn disconnect_runtime_agent_and_commit_terminal(
+        &self,
+        runtime_agent_id: &str,
+        commit_presence: impl FnOnce(),
+        commit_state: impl FnOnce(
+            &mut runtime_doc::RuntimeStateDoc,
+        ) -> Result<(), runtime_doc::RuntimeStateError>,
+    ) -> bool {
+        let mut state = self.kernel_launch_gate.lock_state();
+        if state.connected_runtime_agent_id.as_deref() != Some(runtime_agent_id) {
+            return false;
+        }
+        state.expected_runtime_agent_id = None;
+        state.connected_runtime_agent_id = None;
+        if let Some(generation) = state.in_flight_generation {
+            state.cancelled_generations.insert(generation);
+            if let Some(cancel_tx) = state.in_flight_cancel_tx.as_ref() {
+                let _ = cancel_tx.send(true);
+            }
+        }
+        self.clear_active_kernel_launch();
+        commit_presence();
+        if let Err(e) = self.state.with_doc(|sd| {
+            commit_state(sd)?;
+            sd.clear_env_progress()?;
+            sd.abort_inflight_executions()?;
+            sd.set_queue(None, &[])?;
+            Ok(())
+        }) {
+            tracing::warn!("[runtime-state] {}", e);
+        }
+        true
+    }
+
+    fn finish_cancelled_launch(&self, generation: u64) {
+        let mut state = self.kernel_launch_gate.lock_state();
+        state.cancelled_generations.remove(&generation);
+        state
+            .completed_outcomes
+            .insert(generation, KernelLaunchCompletion::Cancelled);
+        if generation > 1024 {
+            state.completed_outcomes.remove(&(generation - 1024));
+        }
+        if state.in_flight_generation == Some(generation) {
+            state.in_flight_generation = None;
+            state.in_flight_cancel_tx = None;
+            state.in_flight_abort_handle = None;
+        }
+    }
+
+    /// Whether the requested auto-launch attempt launched a kernel.
+    /// Completion is generation-scoped so a later attempt cannot overwrite
+    /// the result a manual launch request is joining.
+    pub(crate) fn launch_completion(&self, generation: u64) -> Option<KernelLaunchCompletion> {
+        self.kernel_launch_gate
+            .lock_state()
+            .completed_outcomes
+            .get(&generation)
+            .copied()
+    }
+
+    pub(crate) fn launch_successor_generation(&self, generation: u64) -> Option<u64> {
+        let state = self.kernel_launch_gate.lock_state();
+        (state.admitted_count > generation).then_some(generation.saturating_add(1))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn record_active_kernel_launch_if_current(
+        &self,
+        runtime_agent_id: String,
+        kernel_type: String,
+        env_source: notebook_protocol::connection::EnvSource,
+    ) -> bool {
+        let current = self.current_runtime_agent_id.read().await;
+        if current.as_deref() != Some(runtime_agent_id.as_str()) {
+            return false;
+        }
+        let mut active = self
+            .active_kernel_launch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active = Some(ActiveKernelLaunch {
+            runtime_agent_id,
+            kernel_type,
+            env_source,
+        });
+        true
+    }
+
+    pub(crate) async fn is_current_runtime_agent(&self, runtime_agent_id: &str) -> bool {
+        self.current_runtime_agent_id.read().await.as_deref() == Some(runtime_agent_id)
+    }
+
+    pub(crate) fn active_kernel_launch(&self) -> Option<ActiveKernelLaunch> {
+        self.active_kernel_launch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn clear_active_kernel_launch(&self) {
+        let mut active = self
+            .active_kernel_launch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active = None;
+    }
+
+    pub(crate) fn set_active_kernel_launch(
+        &self,
+        runtime_agent_id: String,
+        kernel_type: String,
+        env_source: notebook_protocol::connection::EnvSource,
+    ) {
+        let mut active = self
+            .active_kernel_launch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active = Some(ActiveKernelLaunch {
+            runtime_agent_id,
+            kernel_type,
+            env_source,
+        });
+    }
+
+    pub(crate) fn clear_active_kernel_launch_if_agent(&self, runtime_agent_id: &str) {
+        let mut active = self
+            .active_kernel_launch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .as_ref()
+            .is_some_and(|launch| launch.runtime_agent_id == runtime_agent_id)
+        {
+            *active = None;
+        }
     }
 
     /// Test helper for integration coverage of the connection path.
     #[doc(hidden)]
     pub fn test_auto_launch_admissions(&self) -> u64 {
-        self.auto_launch_gate.lock_state().admitted_count
+        self.kernel_launch_gate.lock_state().admitted_count
     }
 
     /// Check if this room has an active kernel.

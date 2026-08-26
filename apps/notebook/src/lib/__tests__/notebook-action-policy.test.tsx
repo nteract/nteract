@@ -182,4 +182,58 @@ describe("useNotebookActionPolicy", () => {
     expect(events.slice(0, 2)).toEqual(["reset-dismissed", "approve-environment"]);
     expect(options.showEnvBuildDialog).not.toHaveBeenCalled();
   });
+
+  it("shuts down before switching a running kernel to the project environment", async () => {
+    const events: string[] = [];
+    const options = createPolicyOptions({
+      shutdownKernel: vi.fn(async () => {
+        events.push("shutdown");
+        return response("kernel_shutting_down");
+      }),
+      launchKernel: vi.fn(async () => {
+        events.push("launch-project");
+        return response("kernel_launched");
+      }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleStartKernelWithPyproject();
+    });
+
+    expect(events).toEqual(["shutdown", "launch-project"]);
+    expect(options.launchKernel).toHaveBeenCalledWith("python", "uv:pyproject");
+  });
+
+  it("retries the project switch when it first joins a different auto-launched environment", async () => {
+    const events: string[] = [];
+    const options = createPolicyOptions({
+      shutdownKernel: vi.fn(async () => {
+        events.push("shutdown");
+        return response("kernel_shutting_down");
+      }),
+      launchKernel: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          events.push("join-auto");
+          return {
+            result: "kernel_already_running",
+            kernel_type: "python",
+            env_source: "uv:prewarmed",
+            launched_config: {},
+          } as NotebookResponse;
+        })
+        .mockImplementationOnce(async () => {
+          events.push("launch-project");
+          return response("kernel_launched");
+        }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleStartKernelWithPyproject();
+    });
+
+    expect(events).toEqual(["shutdown", "join-auto", "shutdown", "launch-project"]);
+  });
 });

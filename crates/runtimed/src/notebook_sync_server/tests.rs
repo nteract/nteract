@@ -2575,12 +2575,13 @@ fn test_room_with_path_and_store(
         runtime_agent_handle: Arc::new(Mutex::new(None)),
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
         runtime_agent_launched_config: Arc::new(RwLock::new(None)),
+        active_kernel_launch: std::sync::Mutex::new(None),
         runtime_agent_request_tx: Arc::new(Mutex::new(None)),
         pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
         runtime_agent_generation: Arc::new(AtomicU64::new(0)),
         next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         current_runtime_agent_id: Arc::new(RwLock::new(None)),
-        auto_launch_gate: AutoLaunchGate::default(),
+        kernel_launch_gate: KernelLaunchGate::default(),
     };
 
     (room, notebook_path)
@@ -13304,11 +13305,14 @@ async fn auto_launch_gate_second_request_joins_in_flight_attempt() {
         _ => panic!("first request must be admitted"),
     };
     assert!(
-        matches!(room.try_begin_auto_launch(), AutoLaunchAdmission::InFlight),
+        matches!(
+            room.try_begin_auto_launch(),
+            AutoLaunchAdmission::InFlight { generation: 1 }
+        ),
         "second request must observe the in-flight attempt"
     );
 
-    attempt.succeed();
+    assert!(attempt.succeed().is_ok());
 }
 
 /// A failed attempt closes the gate for the cooldown window, then a retry is
@@ -13324,6 +13328,9 @@ async fn auto_launch_gate_failure_arms_cooldown_then_readmits() {
     // Dropping without an explicit outcome is the failure path (covers early
     // returns and panics in auto_launch_kernel).
     drop(attempt);
+    while room.launch_completion(1).is_none() {
+        tokio::task::yield_now().await;
+    }
 
     match room.try_begin_auto_launch() {
         AutoLaunchAdmission::CoolingDown { remaining } => {
@@ -13343,7 +13350,7 @@ async fn auto_launch_gate_failure_arms_cooldown_then_readmits() {
     // Past the deadline the next attempt is admitted.
     tokio::time::advance(std::time::Duration::from_millis(2)).await;
     match room.try_begin_auto_launch() {
-        AutoLaunchAdmission::Admitted(a) => a.succeed(),
+        AutoLaunchAdmission::Admitted(a) => assert!(a.succeed().is_ok()),
         _ => panic!("retry after the cooldown must be admitted"),
     }
 }
@@ -13355,7 +13362,7 @@ async fn auto_launch_gate_success_reopens_without_cooldown() {
     let (_tmp, room) = gate_test_room();
 
     match room.try_begin_auto_launch() {
-        AutoLaunchAdmission::Admitted(a) => a.succeed(),
+        AutoLaunchAdmission::Admitted(a) => assert!(a.succeed().is_ok()),
         _ => panic!("first request must be admitted"),
     }
     assert!(matches!(
@@ -13390,9 +13397,12 @@ async fn auto_launch_gate_admission_clears_stale_cooldown() {
         AutoLaunchAdmission::Admitted(a) => drop(a),
         _ => panic!("first request must be admitted"),
     }
+    while room.launch_completion(1).is_none() {
+        tokio::task::yield_now().await;
+    }
     tokio::time::advance(AUTO_LAUNCH_FAILURE_COOLDOWN + std::time::Duration::from_millis(1)).await;
     match room.try_begin_auto_launch() {
-        AutoLaunchAdmission::Admitted(a) => a.succeed(),
+        AutoLaunchAdmission::Admitted(a) => assert!(a.succeed().is_ok()),
         _ => panic!("post-cooldown request must be admitted"),
     }
     assert!(
@@ -13402,6 +13412,28 @@ async fn auto_launch_gate_admission_clears_stale_cooldown() {
         ),
         "success must not inherit the earlier failure's cooldown"
     );
+}
+
+#[tokio::test]
+async fn same_task_auto_readmission_transfers_abort_ownership() {
+    let (_tmp, room) = gate_test_room();
+    room.connections
+        .active_peers
+        .store(1, std::sync::atomic::Ordering::Release);
+    let first = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("first request must be admitted"),
+    };
+    let owner = tokio::spawn(std::future::pending::<()>());
+    assert!(room.register_launch_abort_handle(1, owner.abort_handle()));
+
+    let successor = first
+        .release_and_readmit_auto_if_peer_waiting()
+        .expect("connected peer should be readmitted in the same owner task");
+    assert_eq!(successor.generation(), 2);
+    assert!(room.abort_launch_owner(2));
+    assert!(owner.await.unwrap_err().is_cancelled());
+    successor.release_without_cooldown();
 }
 
 /// A launch attempt with zero peers aborts benignly through the real
@@ -13453,7 +13485,7 @@ async fn auto_launch_no_peers_abort_resets_lifecycle_and_reopens_gate() {
     // with no failure cooldown from the benign abort.
     match room.try_begin_auto_launch() {
         AutoLaunchAdmission::Admitted(a) => a.release_without_cooldown(),
-        AutoLaunchAdmission::InFlight => panic!("benign abort must release the gate"),
+        AutoLaunchAdmission::InFlight { .. } => panic!("benign abort must release the gate"),
         AutoLaunchAdmission::CoolingDown { .. } => {
             panic!("benign abort must not arm the failure cooldown")
         }
@@ -13481,7 +13513,10 @@ async fn auto_launch_no_peers_abort_readmits_reconnect_that_raced_the_abort() {
         .active_peers
         .store(1, std::sync::atomic::Ordering::Relaxed);
     assert!(
-        matches!(room.try_begin_auto_launch(), AutoLaunchAdmission::InFlight),
+        matches!(
+            room.try_begin_auto_launch(),
+            AutoLaunchAdmission::InFlight { .. }
+        ),
         "the racing connect is refused while the abort is in progress"
     );
 
@@ -13491,10 +13526,71 @@ async fn auto_launch_no_peers_abort_readmits_reconnect_that_raced_the_abort() {
 
     // The re-admitted token holds the gate for the retry.
     assert!(
-        matches!(room.try_begin_auto_launch(), AutoLaunchAdmission::InFlight),
+        matches!(
+            room.try_begin_auto_launch(),
+            AutoLaunchAdmission::InFlight { .. }
+        ),
         "the retry token must hold the gate"
     );
     next.release_without_cooldown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_launch_no_peers_abort_does_not_readmit_after_shutdown_during_reset() {
+    let (_tmp, room) = gate_test_room();
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("first request must be admitted"),
+    };
+    room.connections
+        .active_peers
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+
+    // Hold the handle lock that reset_starting_state awaits after updating its
+    // projection. This opens the exact interleaving where Shutdown arrives
+    // during the abort's awaited reset rather than before its first check.
+    let abort = {
+        let _handle_guard = room.runtime_agent_handle.try_lock().unwrap();
+        let abort = tokio::spawn({
+            let room = Arc::clone(&room);
+            async move { release_attempt_and_readmit_if_peer_waiting(&room, attempt).await }
+        });
+        let mut reached_blocked_reset = false;
+        for _ in 0..10_000 {
+            if room
+                .state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap()
+                == RuntimeLifecycle::NotStarted
+            {
+                reached_blocked_reset = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            reached_blocked_reset,
+            "abort must reach the handle-clear await before cancellation"
+        );
+        assert_eq!(room.cancel_in_flight_launch(), Some(1));
+        abort
+    };
+
+    assert!(
+        abort.await.unwrap().is_none(),
+        "accepted shutdown must suppress the reconnect-driven successor"
+    );
+    for _ in 0..20 {
+        if room.launch_completion(1).is_some() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(room.test_auto_launch_admissions(), 1);
+    assert_eq!(
+        room.launch_completion(1),
+        Some(KernelLaunchCompletion::Cancelled)
+    );
 }
 
 /// When no peer raced the abort, the no-peers release stands: no retry
@@ -13528,6 +13624,9 @@ async fn auto_launch_success_disposition_reopens_gate_immediately() {
         AutoLaunchAdmission::Admitted(a) => a,
         _ => panic!("first request must be admitted"),
     };
+    *room.current_runtime_agent_id.write().await = Some("runtime-agent:test".to_string());
+    room.expect_runtime_agent("runtime-agent:test");
+    assert!(room.mark_runtime_agent_connected("runtime-agent:test"));
 
     finish_auto_launch_success(
         &room,
@@ -13538,6 +13637,8 @@ async fn auto_launch_success_disposition_reopens_gate_immediately() {
         attempt,
     )
     .await;
+
+    assert!(room.runtime_agent_launched_config.read().await.is_some());
 
     let lifecycle = room
         .state
@@ -13550,9 +13651,54 @@ async fn auto_launch_success_disposition_reopens_gate_immediately() {
     );
     match room.try_begin_auto_launch() {
         AutoLaunchAdmission::Admitted(a) => a.release_without_cooldown(),
-        AutoLaunchAdmission::InFlight => panic!("success must release the gate"),
+        AutoLaunchAdmission::InFlight { .. } => panic!("success must release the gate"),
         AutoLaunchAdmission::CoolingDown { .. } => {
             panic!("success must not arm the failure cooldown")
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelled_auto_launch_success_is_stopped_before_gate_reopens() {
+    let (_tmp, room) = gate_test_room();
+    let attempt = match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(attempt) => attempt,
+        _ => panic!("first request must be admitted"),
+    };
+    *room.current_runtime_agent_id.write().await = Some("runtime-agent:test".to_string());
+    assert_eq!(room.cancel_in_flight_launch(), Some(1));
+
+    finish_auto_launch_success(
+        &room,
+        "python",
+        "uv",
+        "runtime-agent:test",
+        LaunchedEnvConfig::default(),
+        attempt,
+    )
+    .await;
+
+    assert!(
+        room.runtime_agent_launched_config.read().await.is_none(),
+        "a cancelled launch must not publish configuration for a kernel that never committed"
+    );
+
+    assert_eq!(
+        room.state
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap(),
+        RuntimeLifecycle::Shutdown
+    );
+    assert!(room.active_kernel_launch().is_none());
+    assert_eq!(
+        room.launch_completion(1),
+        Some(KernelLaunchCompletion::Cancelled)
+    );
+    match room.try_begin_auto_launch() {
+        AutoLaunchAdmission::Admitted(attempt) => attempt.release_without_cooldown(),
+        AutoLaunchAdmission::InFlight { .. } => panic!("cancel cleanup must release the gate"),
+        AutoLaunchAdmission::CoolingDown { .. } => {
+            panic!("cancelled auto-launch must not arm the failure cooldown")
         }
     }
 }
