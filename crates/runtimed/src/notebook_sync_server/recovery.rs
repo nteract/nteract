@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -244,7 +245,10 @@ struct RecoveryManifestHeader {
 }
 
 enum DecodedRecoveryManifest {
-    Supported(Box<RecoveryManifest>),
+    Supported {
+        manifest: Box<RecoveryManifest>,
+        source_version: u16,
+    },
     Unsupported(u16),
 }
 
@@ -254,10 +258,16 @@ fn decode_manifest(bytes: &[u8]) -> Result<DecodedRecoveryManifest, serde_json::
         LEGACY_RECOVERY_MANIFEST_VERSION => serde_json::from_slice(bytes)
             .map(LegacyRecoveryManifestV1::into)
             .map(Box::new)
-            .map(DecodedRecoveryManifest::Supported),
-        RECOVERY_MANIFEST_VERSION => serde_json::from_slice(bytes)
-            .map(Box::new)
-            .map(DecodedRecoveryManifest::Supported),
+            .map(|manifest| DecodedRecoveryManifest::Supported {
+                manifest,
+                source_version: LEGACY_RECOVERY_MANIFEST_VERSION,
+            }),
+        RECOVERY_MANIFEST_VERSION => serde_json::from_slice(bytes).map(Box::new).map(|manifest| {
+            DecodedRecoveryManifest::Supported {
+                manifest,
+                source_version: RECOVERY_MANIFEST_VERSION,
+            }
+        }),
         version => Ok(DecodedRecoveryManifest::Unsupported(version)),
     }
 }
@@ -267,6 +277,10 @@ fn decode_manifest(bytes: &[u8]) -> Result<DecodedRecoveryManifest, serde_json::
 pub(crate) struct RecoveryRecord {
     pub(crate) manifest: RecoveryManifest,
     pub(crate) automerge_snapshot: Vec<u8>,
+    /// Manifest schema encoded in the source record before any in-memory
+    /// migration. Upgrade repair uses this to distinguish the affected v1
+    /// format from an unrelated durability failure.
+    pub(crate) source_manifest_version: u16,
 }
 
 /// A corrupt or incomplete suffix ignored after the newest valid record.
@@ -424,6 +438,17 @@ pub(crate) struct RecoveryArchiveReplacement {
     pub(crate) durability_warning: Option<String>,
 }
 
+/// A legacy journal that has passed the narrow updater-takeover preflight and
+/// whose original bytes have already been durably archived.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedLegacyOverflowJournal {
+    pub(crate) notebook_id: Uuid,
+    journal: RecoveryJournal,
+    archive: RecoveryArchivePaths,
+    manifest: RecoveryManifest,
+    automerge_snapshot: Vec<u8>,
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum RecoveryJournalError {
     #[error("recovery journal I/O failed: {0}")]
@@ -454,6 +479,12 @@ pub(crate) enum RecoveryJournalError {
         #[source]
         source: io::Error,
     },
+    #[error("recovery snapshot could not be loaded: {0}")]
+    InvalidSnapshot(String),
+    #[error("recovery snapshot heads do not match the durable manifest heads")]
+    SnapshotHeadsMismatch,
+    #[error("recovery journal changed after its takeover archive was published")]
+    ChangedAfterArchive,
 }
 
 /// Filesystem-backed append-only journal.
@@ -778,6 +809,31 @@ impl RecoveryJournal {
         self.archive_and_replace_with(manifest, automerge_snapshot, replace_file_atomically)
     }
 
+    /// Atomically replace an active journal only when it still exactly matches
+    /// a previously published archive. This is the offline half of the narrow
+    /// legacy-overflow takeover: validation and archiving happen while the old
+    /// daemon is responsive, then replacement happens only after that exact
+    /// daemon incarnation has exited.
+    fn replace_after_verified_archive(
+        &self,
+        archive: &RecoveryArchivePaths,
+        manifest: &RecoveryManifest,
+        automerge_snapshot: &[u8],
+    ) -> Result<(), RecoveryJournalError> {
+        let active_bytes = std::fs::read(&self.path)?;
+        let archived_bytes = std::fs::read(&archive.journal)?;
+        if active_bytes != archived_bytes {
+            return Err(RecoveryJournalError::ChangedAfterArchive);
+        }
+
+        let encoded = encode_record(manifest, automerge_snapshot)?;
+        replace_file_atomically(&self.path, &encoded.bytes)?;
+        if let Ok(manifest_bytes) = serde_json::to_vec(manifest) {
+            let _ = replace_file_atomically(&self.manifest_path(), &manifest_bytes);
+        }
+        Ok(())
+    }
+
     fn archive_and_replace_with<ReplaceActive>(
         &self,
         manifest: &RecoveryManifest,
@@ -833,6 +889,111 @@ impl RecoveryJournal {
             durability_warning,
         })
     }
+}
+
+/// Validate and durably archive one version-1 journal before an updater takes
+/// over a daemon blocked by the historical manifest-size bug.
+pub(crate) fn prepare_legacy_overflow_journal(
+    docs_dir: &Path,
+    notebook_id: Uuid,
+) -> Result<PreparedLegacyOverflowJournal, RecoveryJournalError> {
+    let journal_path = docs_dir
+        .join(notebook_doc_filename(&notebook_id.to_string()))
+        .with_extension("recovery");
+    let journal = RecoveryJournal::new(journal_path);
+    // Publish one immutable byte image first, then derive every validation and
+    // migration input from that archive. Scanning the active file before the
+    // copy would allow a newer acknowledged record to land between the scan
+    // and archive and later be replaced by the older cached snapshot.
+    let archive = journal.publish_archive_copy()?;
+    let archived_journal = RecoveryJournal::new(archive.journal.clone());
+    let record = verified_recovery_record(
+        &archived_journal,
+        notebook_id,
+        Some(LEGACY_RECOVERY_MANIFEST_VERSION),
+    )?;
+
+    Ok(PreparedLegacyOverflowJournal {
+        notebook_id,
+        journal,
+        archive,
+        manifest: record.manifest,
+        automerge_snapshot: record.automerge_snapshot,
+    })
+}
+
+fn verified_recovery_record(
+    journal: &RecoveryJournal,
+    notebook_id: Uuid,
+    required_source_version: Option<u16>,
+) -> Result<RecoveryRecord, RecoveryJournalError> {
+    let recovered = match journal.latest_record()? {
+        RecoveryLatestOutcome::Recovered(recovered) => *recovered,
+        RecoveryLatestOutcome::Unavailable {
+            reason: RecoveryUnavailableReason::NoValidRecord { tail },
+        } => return Err(RecoveryJournalError::NoValidRecord { tail }),
+        RecoveryLatestOutcome::Unavailable { reason } => {
+            return Err(RecoveryJournalError::InvalidSnapshot(format!(
+                "recovery journal is unavailable: {reason:?}"
+            )));
+        }
+    };
+    if recovered.ignored_tail.is_some() {
+        return Err(RecoveryJournalError::InvalidSnapshot(
+            "recovery journal has a non-empty tail".to_string(),
+        ));
+    }
+    if let Some(required_source_version) = required_source_version {
+        if recovered.record.source_manifest_version != required_source_version {
+            return Err(RecoveryJournalError::UnsupportedManifestVersion {
+                version: recovered.record.source_manifest_version,
+            });
+        }
+    }
+    if recovered.record.manifest.notebook_id != notebook_id {
+        return Err(RecoveryJournalError::InvalidSnapshot(format!(
+            "journal claims notebook {}, expected {notebook_id}",
+            recovered.record.manifest.notebook_id
+        )));
+    }
+
+    let mut document = AutoCommit::load(&recovered.record.automerge_snapshot)
+        .map_err(|error| RecoveryJournalError::InvalidSnapshot(error.to_string()))?;
+    let mut actual_heads = document
+        .get_heads()
+        .into_iter()
+        .map(|head| head.0)
+        .collect::<Vec<_>>();
+    let mut durable_heads = recovered.record.manifest.durable_heads.clone();
+    actual_heads.sort_unstable();
+    durable_heads.sort_unstable();
+    if actual_heads != durable_heads {
+        return Err(RecoveryJournalError::SnapshotHeadsMismatch);
+    }
+    notebook_doc::NotebookDoc::load(&recovered.record.automerge_snapshot)
+        .map_err(|error| RecoveryJournalError::InvalidSnapshot(error.to_string()))?;
+    Ok(recovered.record)
+}
+
+/// Commit the bounded version-2 representation after the archived legacy
+/// journal's daemon has exited. The Automerge snapshot and causal heads remain
+/// unchanged.
+pub(crate) fn migrate_prepared_legacy_overflow_journal(
+    prepared: &PreparedLegacyOverflowJournal,
+) -> Result<(), RecoveryJournalError> {
+    prepared.journal.replace_after_verified_archive(
+        &prepared.archive,
+        &prepared.manifest,
+        &prepared.automerge_snapshot,
+    )
+}
+
+/// Re-prove that the now-offline active journal is independently safe for the
+/// replacement daemon to consume after an optional v2 rewrite failed.
+pub(crate) fn verify_prepared_legacy_overflow_fallback(
+    prepared: &PreparedLegacyOverflowJournal,
+) -> Result<(), RecoveryJournalError> {
+    verified_recovery_record(&prepared.journal, prepared.notebook_id, None).map(|_| ())
 }
 
 /// Find the UUID-owned recovery journal whose latest checksummed manifest
@@ -1109,8 +1270,11 @@ fn scan_file(file: &mut File) -> Result<JournalScan, RecoveryJournalError> {
             break;
         }
 
-        let manifest = match decode_manifest(&manifest_bytes) {
-            Ok(DecodedRecoveryManifest::Supported(manifest)) => *manifest,
+        let (manifest, source_manifest_version) = match decode_manifest(&manifest_bytes) {
+            Ok(DecodedRecoveryManifest::Supported {
+                manifest,
+                source_version,
+            }) => (*manifest, source_version),
             Ok(DecodedRecoveryManifest::Unsupported(version)) => {
                 ignored_tail =
                     Some(JournalTailIssue::UnsupportedManifestVersion { offset, version });
@@ -1130,6 +1294,7 @@ fn scan_file(file: &mut File) -> Result<JournalScan, RecoveryJournalError> {
         latest = Some(RecoveryRecord {
             manifest,
             automerge_snapshot,
+            source_manifest_version,
         });
         valid_record_count = valid_record_count.saturating_add(1);
     }
@@ -1492,6 +1657,10 @@ mod tests {
             RecoveryLatestOutcome::Recovered(recovered) => *recovered,
             other => panic!("expected migrated recovery record, got {other:?}"),
         };
+        assert_eq!(
+            recovered.record.source_manifest_version,
+            LEGACY_RECOVERY_MANIFEST_VERSION
+        );
         assert_eq!(recovered.record.manifest.version, RECOVERY_MANIFEST_VERSION);
         assert_eq!(
             recovered.record.manifest.peer_change_count,
@@ -1516,6 +1685,152 @@ mod tests {
         };
         assert_eq!(latest.record.manifest, next);
         assert!(latest.ignored_tail.is_none());
+    }
+
+    #[test]
+    fn updater_takeover_archives_and_replaces_exact_legacy_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let notebook_id = Uuid::new_v4();
+        let journal_path = directory
+            .path()
+            .join(notebook_doc_filename(&notebook_id.to_string()))
+            .with_extension("recovery");
+        let mut document =
+            notebook_doc::NotebookDoc::new_with_actor(&notebook_id.to_string(), "upgrade-test");
+        let heads = document.get_heads().iter().map(|head| head.0).collect();
+        let snapshot = document.save();
+        let legacy = LegacyRecoveryManifestV1 {
+            version: LEGACY_RECOVERY_MANIFEST_VERSION,
+            sequence: 2_355,
+            notebook_id,
+            canonical_path: None,
+            notebook_schema_version: notebook_doc::SCHEMA_VERSION,
+            source_fingerprint: source_fingerprint(b""),
+            source_generation: 0,
+            source_phase: RecoverySourcePhase::Pending,
+            staged_change_hashes: Vec::new(),
+            peer_change_hashes: vec![[7; 32]; 2_251],
+            durable_heads: heads,
+            exported_heads: Vec::new(),
+            file_save_sequence: None,
+            pending_file_checkpoint: None,
+        };
+        std::fs::write(&journal_path, encode_legacy_record(&legacy, &snapshot)).unwrap();
+        std::fs::write(
+            journal_path.with_file_name(format!(
+                "{}.manifest.json",
+                journal_path.file_name().unwrap().to_string_lossy()
+            )),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let prepared = prepare_legacy_overflow_journal(directory.path(), notebook_id).unwrap();
+        assert!(prepared.archive.directory.is_dir());
+        assert_eq!(
+            std::fs::read(&prepared.archive.journal).unwrap(),
+            std::fs::read(&journal_path).unwrap()
+        );
+
+        migrate_prepared_legacy_overflow_journal(&prepared).unwrap();
+        let migrated = match RecoveryJournal::new(&journal_path).latest_record().unwrap() {
+            RecoveryLatestOutcome::Recovered(recovered) => *recovered,
+            other => panic!("expected migrated active journal, got {other:?}"),
+        };
+        assert_eq!(
+            migrated.record.source_manifest_version,
+            RECOVERY_MANIFEST_VERSION
+        );
+        assert_eq!(migrated.record.manifest.peer_change_count, 2_251);
+        assert_eq!(migrated.record.automerge_snapshot, snapshot);
+    }
+
+    #[test]
+    fn updater_takeover_refuses_active_bytes_changed_after_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let notebook_id = Uuid::new_v4();
+        let journal_path = directory
+            .path()
+            .join(notebook_doc_filename(&notebook_id.to_string()))
+            .with_extension("recovery");
+        let mut document =
+            notebook_doc::NotebookDoc::new_with_actor(&notebook_id.to_string(), "upgrade-test");
+        let heads = document.get_heads().iter().map(|head| head.0).collect();
+        let snapshot = document.save();
+        let legacy = LegacyRecoveryManifestV1 {
+            version: LEGACY_RECOVERY_MANIFEST_VERSION,
+            sequence: 1,
+            notebook_id,
+            canonical_path: None,
+            notebook_schema_version: notebook_doc::SCHEMA_VERSION,
+            source_fingerprint: source_fingerprint(b""),
+            source_generation: 0,
+            source_phase: RecoverySourcePhase::Pending,
+            staged_change_hashes: Vec::new(),
+            peer_change_hashes: vec![[9; 32]],
+            durable_heads: heads,
+            exported_heads: Vec::new(),
+            file_save_sequence: None,
+            pending_file_checkpoint: None,
+        };
+        std::fs::write(&journal_path, encode_legacy_record(&legacy, &snapshot)).unwrap();
+
+        let prepared = prepare_legacy_overflow_journal(directory.path(), notebook_id).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&journal_path)
+            .unwrap()
+            .write_all(b"changed")
+            .unwrap();
+
+        let error = migrate_prepared_legacy_overflow_journal(&prepared).unwrap_err();
+        assert!(matches!(error, RecoveryJournalError::ChangedAfterArchive));
+        assert!(verify_prepared_legacy_overflow_fallback(&prepared).is_err());
+    }
+
+    #[test]
+    fn updater_takeover_accepts_a_newer_valid_offline_fallback_after_rewrite_race() {
+        let directory = tempfile::tempdir().unwrap();
+        let notebook_id = Uuid::new_v4();
+        let journal_path = directory
+            .path()
+            .join(notebook_doc_filename(&notebook_id.to_string()))
+            .with_extension("recovery");
+        let mut document =
+            notebook_doc::NotebookDoc::new_with_actor(&notebook_id.to_string(), "upgrade-test");
+        let heads = document.get_heads().iter().map(|head| head.0).collect();
+        let snapshot = document.save();
+        let mut legacy = LegacyRecoveryManifestV1 {
+            version: LEGACY_RECOVERY_MANIFEST_VERSION,
+            sequence: 1,
+            notebook_id,
+            canonical_path: None,
+            notebook_schema_version: notebook_doc::SCHEMA_VERSION,
+            source_fingerprint: source_fingerprint(b""),
+            source_generation: 0,
+            source_phase: RecoverySourcePhase::Pending,
+            staged_change_hashes: Vec::new(),
+            peer_change_hashes: vec![[9; 32]],
+            durable_heads: heads,
+            exported_heads: Vec::new(),
+            file_save_sequence: None,
+            pending_file_checkpoint: None,
+        };
+        std::fs::write(&journal_path, encode_legacy_record(&legacy, &snapshot)).unwrap();
+
+        let prepared = prepare_legacy_overflow_journal(directory.path(), notebook_id).unwrap();
+        legacy.sequence = 2;
+        legacy.peer_change_hashes.push([8; 32]);
+        OpenOptions::new()
+            .append(true)
+            .open(&journal_path)
+            .unwrap()
+            .write_all(&encode_legacy_record(&legacy, &snapshot))
+            .unwrap();
+
+        let error = migrate_prepared_legacy_overflow_journal(&prepared).unwrap_err();
+        assert!(matches!(error, RecoveryJournalError::ChangedAfterArchive));
+        verify_prepared_legacy_overflow_fallback(&prepared).unwrap();
     }
 
     #[test]
