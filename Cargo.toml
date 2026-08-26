@@ -54,7 +54,7 @@ arrow = { version = "54", default-features = false }
 arrow-cast = { version = "54", default-features = false }
 arrow-ord = { version = "54", default-features = false }
 arrow-select = { version = "54", default-features = false }
-automerge = { git = "https://github.com/nteract/automerge", rev = "3fb6af5cc3af23b79f27cebfa339c8c98987e7b7" }
+automerge = "=0.11.0"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false }

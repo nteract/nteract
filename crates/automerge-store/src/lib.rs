@@ -125,8 +125,18 @@ pub trait AutomergeDocumentStore: Send + Sync {
 pub enum StoreError {
     #[error("SQLite document store failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("Automerge document data is invalid: {0}")]
+    #[error("Automerge operation failed: {0}")]
     Automerge(#[from] automerge::AutomergeError),
+    #[error("supplied Automerge snapshot is invalid: {0}")]
+    InvalidSuppliedSnapshot(#[source] automerge::AutomergeError),
+    #[error(
+        "stored Automerge document data is invalid; no repair was attempted and stored bytes were left unchanged: {0}"
+    )]
+    InvalidStoredDocument(#[source] automerge::AutomergeError),
+    #[error(
+        "stored Automerge change data is invalid; no repair was attempted and stored bytes were left unchanged: {0}"
+    )]
+    InvalidStoredChange(#[source] automerge::LoadChangeError),
     #[error("document {0} is not installed")]
     DocumentNotFound(DocumentId),
     #[error("document {0} has metadata but no chunks")]
@@ -279,7 +289,8 @@ impl AutomergeDocumentStore for SqliteDocumentStore {
         heads: &[ChangeHash],
         application_state: &[u8],
     ) -> Result<CommitReceipt, StoreError> {
-        let mut candidate = AutoCommit::load(snapshot)?;
+        let mut candidate =
+            AutoCommit::load(snapshot).map_err(StoreError::InvalidSuppliedSnapshot)?;
         let actual_heads = canonical_heads(&candidate.get_heads());
         let declared_heads = canonical_heads(heads);
         if actual_heads != declared_heads {
@@ -494,9 +505,10 @@ where
                 chunk_key: hex_hash(&key),
             });
         }
-        match kind {
+        let incremental_change = match kind {
             CHUNK_KIND_SNAPSHOT => {
-                let mut snapshot = AutoCommit::load(&bytes)?;
+                let mut snapshot =
+                    AutoCommit::load(&bytes).map_err(StoreError::InvalidStoredDocument)?;
                 let snapshot_key = heads_hash(&canonical_heads(&snapshot.get_heads()));
                 if key.as_slice() != snapshot_key {
                     return Err(StoreError::ChunkKeyMismatch {
@@ -504,6 +516,7 @@ where
                         chunk_key: hex_hash(&key),
                     });
                 }
+                None
             }
             CHUNK_KIND_INCREMENTAL if key.as_slice() != content_hash => {
                 return Err(StoreError::ChunkKeyMismatch {
@@ -511,15 +524,26 @@ where
                     chunk_key: hex_hash(&key),
                 });
             }
-            CHUNK_KIND_INCREMENTAL => {}
+            CHUNK_KIND_INCREMENTAL => Some(
+                automerge::Change::try_from(bytes.as_slice())
+                    .map_err(StoreError::InvalidStoredChange)?,
+            ),
             _ => {
                 return Err(StoreError::ChunkKeyMismatch {
                     document_id,
                     chunk_key: hex_hash(&key),
                 });
             }
+        };
+        if let Some(change) = incremental_change {
+            document
+                .apply_changes([change])
+                .map_err(StoreError::InvalidStoredDocument)?;
+        } else {
+            document
+                .load_incremental(&bytes)
+                .map_err(StoreError::InvalidStoredDocument)?;
         }
-        document.load_incremental(&bytes)?;
         source_chunks.push(ChunkIdentity { kind, key });
     }
     drop(rows);
@@ -680,6 +704,7 @@ fn hex_hash(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use automerge::{transaction::Transactable, ActorId, ReadDoc, ROOT};
+    use base64::Engine as _;
     use std::sync::{mpsc, Arc, Barrier};
     use tempfile::TempDir;
 
@@ -1204,6 +1229,210 @@ mod tests {
             result,
             Err(StoreError::ChunkChecksumMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn malformed_legacy_rich_text_is_rejected_without_rewriting_stored_bytes() {
+        let test = TestStore::new();
+        let document_id = DocumentId::new(Uuid::new_v4());
+        // The broken_zero_width_mark.automerge fixture shared by the legacy
+        // fork and upstream Automerge 0.11.
+        let malformed = base64::engine::general_purpose::STANDARD
+            .decode(include_str!("../tests/fixtures/broken_zero_width_mark.automerge.b64").trim())
+            .unwrap_or_else(|error| panic!("decode malformed upstream fixture: {error}"));
+        let declared_heads = vec![ChangeHash([1_u8; HASH_BYTES])];
+        let snapshot_key = heads_hash(&declared_heads);
+        let checksum = sha256(&malformed);
+
+        let install_error = match test.store.install_snapshot(
+            document_id,
+            &malformed,
+            &declared_heads,
+            b"legacy-source",
+        ) {
+            Err(error) => error,
+            Ok(receipt) => panic!("malformed migration unexpectedly installed: {receipt:?}"),
+        };
+        assert!(matches!(
+            install_error,
+            StoreError::InvalidSuppliedSnapshot(automerge::AutomergeError::Load(_))
+        ));
+        assert!(
+            test.store
+                .load(document_id)
+                .unwrap_or_else(|error| panic!("read store after rejected install: {error}"))
+                .is_none(),
+            "rejected install must not create document metadata",
+        );
+
+        // Simulate bytes written by a pre-validation producer. The public
+        // install path correctly rejects them, so this setup writes the exact
+        // legacy artifact directly into the production SQLite schema.
+        {
+            let connection = test.store.lock_connection();
+            connection
+                .execute(
+                    "INSERT INTO documents(document_id, sequence, durable_heads, application_state)
+                     VALUES (?1, 1, ?2, ?3)",
+                    params![
+                        document_id_bytes(document_id),
+                        encode_heads(&declared_heads),
+                        b"legacy-source".as_slice(),
+                    ],
+                )
+                .unwrap_or_else(|error| panic!("insert legacy document metadata: {error}"));
+            connection
+                .execute(
+                    "INSERT INTO chunks(document_id, kind, chunk_key, checksum, bytes)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        document_id_bytes(document_id),
+                        CHUNK_KIND_SNAPSHOT,
+                        snapshot_key,
+                        checksum,
+                        malformed,
+                    ],
+                )
+                .unwrap_or_else(|error| panic!("insert malformed legacy snapshot: {error}"));
+        }
+
+        for attempt in 1..=2 {
+            let error = match test.store.load(document_id) {
+                Err(error) => error,
+                Ok(result) => {
+                    panic!("malformed rich-text history must not materialize, got {result:?}")
+                }
+            };
+            assert!(
+                matches!(
+                    error,
+                    StoreError::InvalidStoredDocument(automerge::AutomergeError::Load(_))
+                ),
+                "attempt {attempt} must return the typed Automerge load error, got {error:?}",
+            );
+            assert!(
+                error.to_string().contains("invalid mark operation order"),
+                "failure must explain why the legacy document was rejected: {error}",
+            );
+            assert!(
+                error.to_string().contains("no repair was attempted")
+                    && error
+                        .to_string()
+                        .contains("stored bytes were left unchanged"),
+                "failure must explain the containment policy: {error}",
+            );
+        }
+
+        let (sequence, application_state, retained): (i64, Vec<u8>, Vec<u8>) = {
+            let connection = test.store.lock_connection();
+            connection
+                .query_row(
+                    "SELECT d.sequence, d.application_state, c.bytes
+                     FROM documents d JOIN chunks c USING(document_id)
+                     WHERE d.document_id = ?1",
+                    [document_id_bytes(document_id)],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap_or_else(|error| panic!("read retained malformed snapshot: {error}"))
+        };
+        assert_eq!(sequence, 1, "load failure must not advance durable state");
+        assert_eq!(application_state, b"legacy-source");
+        assert_eq!(
+            retained, malformed,
+            "load failure must retain original bytes"
+        );
+        assert_eq!(
+            test.chunk_count(document_id),
+            1,
+            "load must not rescue or rewrite"
+        );
+    }
+
+    #[test]
+    fn partially_loadable_incremental_change_is_quarantined_before_compaction() {
+        let test = TestStore::new();
+        let document_id = DocumentId::new(Uuid::new_v4());
+        let mut document = seed_document();
+        let base_heads = document.get_heads();
+        install(&test.store, document_id, &mut document, b"base");
+
+        document
+            .put(ROOT, "incremental", "must not be partially accepted")
+            .unwrap_or_else(|error| panic!("create incremental change: {error}"));
+        let change = document
+            .get_changes(&base_heads)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("incremental change must exist"));
+        let mut malformed = change.raw_bytes().to_vec();
+        malformed.extend_from_slice(b"not-an-automerge-chunk");
+        let malformed_hash = sha256(&malformed);
+        let durable_heads = canonical_heads(&document.get_heads());
+
+        {
+            let connection = test.store.lock_connection();
+            connection
+                .execute(
+                    "UPDATE documents SET durable_heads = ?2 WHERE document_id = ?1",
+                    params![document_id_bytes(document_id), encode_heads(&durable_heads)],
+                )
+                .unwrap_or_else(|error| {
+                    panic!("publish durable heads for malformed incremental: {error}")
+                });
+            connection
+                .execute(
+                    "INSERT INTO chunks(document_id, kind, chunk_key, checksum, bytes)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        document_id_bytes(document_id),
+                        CHUNK_KIND_INCREMENTAL,
+                        malformed_hash,
+                        malformed_hash,
+                        malformed,
+                    ],
+                )
+                .unwrap_or_else(|error| {
+                    panic!("insert partially loadable incremental change: {error}")
+                });
+        }
+
+        for attempt in 1..=2 {
+            let error = match test.store.load(document_id) {
+                Err(error) => error,
+                Ok(result) => {
+                    panic!("partial incremental load unexpectedly succeeded: {result:?}")
+                }
+            };
+            assert!(
+                matches!(error, StoreError::InvalidStoredChange(_)),
+                "attempt {attempt} must return the typed stored-change error: {error:?}",
+            );
+            assert!(
+                error.to_string().contains("leftover data after parsing"),
+                "failure must identify the rejected trailing bytes: {error}",
+            );
+        }
+
+        assert!(
+            matches!(
+                test.store.compact(document_id),
+                Err(StoreError::InvalidStoredChange(_))
+            ),
+            "compaction must not materialize or delete a partially loaded change",
+        );
+        let retained: Vec<u8> = {
+            let connection = test.store.lock_connection();
+            connection
+                .query_row(
+                    "SELECT bytes FROM chunks
+                     WHERE document_id = ?1 AND kind = ?2",
+                    params![document_id_bytes(document_id), CHUNK_KIND_INCREMENTAL],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("read retained malformed incremental: {error}"))
+        };
+        assert_eq!(retained, malformed, "quarantine must preserve exact bytes");
+        assert_eq!(test.chunk_count(document_id), 2);
     }
 
     #[test]

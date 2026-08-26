@@ -1,6 +1,6 @@
 # Automerge Fork Patches
 
-**Status:** Memo / active register, 2026-05-21; fork baseline updated 2026-07-13.
+**Status:** Memo / active register, 2026-05-21; dependency baseline updated 2026-08-26.
 
 ## Fork baseline update (2026-07-13)
 
@@ -12,15 +12,24 @@ Upstream already includes the stale-orphan sync correction and its
 `queued_orphan_need_does_not_block_unrelated_sync_response` regression test.
 The downstream stale-orphan PR was therefore closed as superseded rather than
 rebased: the minimal nteract-only patch set for that behavior is empty. The
-nteract workspace pins the tested mirror commit exactly and can drop the fork
-URL once the corresponding upstream release is available.
+nteract workspace now pins crates.io Automerge 0.11 exactly. The mirror
+revision remains as a dev-only compatibility peer in `automerge-store`, where
+tests prove bidirectional snapshot loading and encoded sync convergence with
+the version shipped by nteract 2.7.
 
 This memo tracks possible Automerge fork patches. It is not an accepted nteract
 architecture decision until a patch becomes part of the workspace contract.
 
 ## Context
 
-We already maintain a fork of Automerge at `nteract/automerge`, pinned in this workspace's `Cargo.toml`. The identity-and-trust ADR (`docs/adr/identity-and-trust.md`) defers per-frame actor-label validation because doing it cleanly requires either an upstream Automerge contribution, a fork patch, or a throwaway-peer hack per frame. The first two are real options; the third is not. This ADR proposes the patches we want on our fork and how they relate to upstream.
+We retain `nteract/automerge` as a compatibility reference and possible home
+for narrowly scoped future patches, but production workspace code uses the
+crates.io release. The identity-and-trust ADR
+(`docs/adr/identity-and-trust.md`) defers per-frame actor-label validation
+because doing it cleanly requires either an upstream Automerge contribution, a
+fresh fork patch, or a throwaway-peer hack per frame. The first two are real
+options; the third is not. This memo proposes possible patches and how they
+relate to upstream.
 
 Sister concern: before adding new patches we want to pull the latest upstream into our fork. Rebasing on current upstream is its own little exercise (the `filters` branch and other in-flight work shift the surface around), but it's cheap and one-time. Tracked as a sibling task, not a patch.
 
