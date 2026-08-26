@@ -66,6 +66,12 @@ BLOB_REF_MIME = "application/vnd.nteract.blob-ref+json"
 
 
 async def _start_workspace_kernel(notebook_session):
+    """Launch from the repo project without permitting dependency promotion."""
+    uv_dependencies = await notebook_session.get_uv_dependencies()
+    assert not uv_dependencies, (
+        "workspace dx sessions must not carry inline dependencies; "
+        "uv:pyproject would promote them into the repository pyproject.toml"
+    )
     await async_shutdown_and_start_kernel(
         notebook_session,
         kernel_type="python",
@@ -102,7 +108,7 @@ async def test_dx_display_emits_blob_ref_with_buffers(session):  # noqa: F811
     await _start_workspace_kernel(session)
 
     # Bootstrap dx in the kernel — install formatters and open the session
-    # helpers. No notebook dependency on dx (it's added to sys.path at runtime).
+    # helpers. dx resolves from the workspace project environment.
     await _install_dx(session)
 
     # Emit a DataFrame. Bare `df` on the last line triggers dx's
