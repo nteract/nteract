@@ -40,6 +40,75 @@ use session::{
 use session_activation::SessionActivation;
 
 const SLOW_MCP_TOOL_CALL: Duration = Duration::from_secs(30);
+/// Client names are untrusted handshake input. Keep the derived operator slug
+/// compact enough for actor labels, logs, and UI while retaining useful brand
+/// names in full.
+const MAX_AGENT_SLUG_LENGTH: usize = 64;
+
+/// Identity seeded by `runt-mcp-proxy` before a child starts. These values let
+/// daemon-watch use the upstream client's durable operator even if automatic
+/// rejoin wins the race with the child's first forwarded tool call.
+pub const OPERATOR_CLIENT_ENV_VAR: &str = "NTERACT_MCP_OPERATOR_CLIENT";
+pub const OPERATOR_SESSION_ENV_VAR: &str = "NTERACT_MCP_OPERATOR_SESSION";
+
+/// The operator suffix for an MCP client: `agent:<slug>:<session>`.
+///
+/// Every peer that reaches this server is a tool or agent acting for the local
+/// user, and the `agent:` prefix is what tells notebook surfaces so. Without it
+/// the operator reads as an unknown kind and comments render as a person —
+/// initials instead of the client's brand mark, and no "on behalf of" line.
+fn agent_operator(client_name: &str, session: &str) -> String {
+    format!("agent:{}:{session}", agent_slug(client_name))
+}
+
+/// Slugify an MCP client name for the operator suffix (`Claude Code` ->
+/// `claude-code`). Colons and slashes would split the actor label, so this
+/// keeps ASCII alphanumerics and collapses everything else to single dashes.
+fn agent_slug(client_name: &str) -> String {
+    let mut slug = String::with_capacity(client_name.len().min(MAX_AGENT_SLUG_LENGTH));
+    for character in client_name.chars() {
+        if slug.len() == MAX_AGENT_SLUG_LENGTH {
+            break;
+        }
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') && slug.len() < MAX_AGENT_SLUG_LENGTH {
+            slug.push('-');
+        }
+    }
+
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "mcp".to_string()
+    } else {
+        slug.to_string()
+    }
+}
+
+fn operator_session_suffix() -> String {
+    validated_operator_session(std::env::var(OPERATOR_SESSION_ENV_VAR).ok())
+}
+
+fn validated_operator_session(configured: Option<String>) -> String {
+    configured
+        .filter(|session| {
+            session.len() == 8
+                && session
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+        })
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..8].to_string())
+}
+
+fn initial_operator_client() -> String {
+    configured_operator_client(std::env::var(OPERATOR_CLIENT_ENV_VAR).ok())
+}
+
+fn configured_operator_client(configured: Option<String>) -> String {
+    configured
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "nteract-mcp".to_string())
+}
 
 /// The nteract MCP server.
 pub struct NteractMcp {
@@ -70,6 +139,14 @@ pub struct NteractMcp {
     /// Used as the peer label in notebook sessions so the notebook app shows
     /// "Claude Desktop" or "Claude Code" instead of the default "Inkwell".
     peer_label: Arc<RwLock<String>>,
+    /// The operator suffix this peer authors changes under, derived from the
+    /// same handshake as `peer_label`. Notebook surfaces read the `agent:`
+    /// prefix and the brand slug from here, so this is what makes an MCP
+    /// client's comments render as an agent rather than as a person.
+    operator: Arc<RwLock<String>>,
+    /// Per-process suffix keeping this peer's operator distinct from other
+    /// sessions of the same client product.
+    operator_session: String,
     /// When true, the `show_notebook` tool is not registered (headless environments).
     no_show: bool,
     /// Daemon version, if it was reachable during startup. Surfaced to the
@@ -87,6 +164,8 @@ impl NteractMcp {
         blob_base_url: Option<String>,
         blob_store_path: Option<PathBuf>,
     ) -> Self {
+        let operator_session = operator_session_suffix();
+        let operator_client = initial_operator_client();
         Self {
             socket_path,
             blob_base_url,
@@ -98,6 +177,11 @@ impl NteractMcp {
             parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
+            operator: Arc::new(RwLock::new(agent_operator(
+                &operator_client,
+                &operator_session,
+            ))),
+            operator_session,
             no_show: false,
             daemon_version: None,
         }
@@ -134,9 +218,17 @@ impl NteractMcp {
         self.peer_label.read().await.clone()
     }
 
-    /// Set the peer label for notebook connections.
+    /// Get the operator suffix this peer authors notebook changes under.
+    pub async fn get_operator(&self) -> String {
+        self.operator.read().await.clone()
+    }
+
+    /// Set the peer label for notebook connections, deriving the matching
+    /// operator suffix so attribution and presence name the same client.
     pub async fn set_peer_label(&self, label: impl Into<String>) {
-        *self.peer_label.write().await = label.into();
+        let label = label.into();
+        *self.operator.write().await = agent_operator(&label, &self.operator_session);
+        *self.peer_label.write().await = label;
     }
 
     /// Get the shared session (for the daemon watcher).
@@ -166,6 +258,11 @@ impl NteractMcp {
     /// Get the shared peer label (for the daemon watcher).
     pub fn peer_label_shared(&self) -> &Arc<RwLock<String>> {
         &self.peer_label
+    }
+
+    /// Get the shared operator identity (for the daemon watcher).
+    pub fn operator_shared(&self) -> &Arc<RwLock<String>> {
+        &self.operator
     }
 
     /// Get the shared session drop info (for the daemon watcher).
@@ -378,6 +475,12 @@ impl ServerHandler for NteractMcp {
                     ) {
                         *self.peer_label.write().await = label.into_owned();
                     }
+                    // The operator slug comes from the raw implementation name,
+                    // not the display label: notebook surfaces match brand marks
+                    // against the client roster in `mcp-client-branding`, which is
+                    // keyed by that raw name ("claude-code", "codex-mcp-client").
+                    *self.operator.write().await =
+                        agent_operator(&info.client_info.name, &self.operator_session);
                 }
             }
         }
@@ -520,6 +623,55 @@ fn log_mcp_response(tool_name: &str, elapsed: Duration, result: &Result<CallTool
 mod tests {
     use super::*;
     use rmcp::model::{CallToolResult, Content};
+
+    #[test]
+    fn seeded_operator_identity_matches_handshake_identity() {
+        let client = configured_operator_client(Some("Codex MCP Client".to_string()));
+        let session = validated_operator_session(Some("deadbeef".to_string()));
+
+        assert_eq!(
+            agent_operator(&client, &session),
+            "agent:codex-mcp-client:deadbeef"
+        );
+    }
+
+    #[test]
+    fn agent_slug_is_bounded_to_sixty_four_ascii_characters() {
+        let client_name = "A".repeat(MAX_AGENT_SLUG_LENGTH + 32);
+
+        let slug = agent_slug(&client_name);
+
+        assert_eq!(slug, "a".repeat(MAX_AGENT_SLUG_LENGTH));
+        assert_eq!(slug.len(), MAX_AGENT_SLUG_LENGTH);
+    }
+
+    #[test]
+    fn agent_slug_truncation_never_leaves_a_separator() {
+        let client_name = format!("{} trailing", "a".repeat(MAX_AGENT_SLUG_LENGTH - 1));
+
+        let slug = agent_slug(&client_name);
+
+        assert_eq!(slug, "a".repeat(MAX_AGENT_SLUG_LENGTH - 1));
+        assert!(!slug.ends_with('-'));
+    }
+
+    #[test]
+    fn agent_slug_collapses_separators_and_keeps_empty_fallback() {
+        assert_eq!(agent_slug(" Claude///Code "), "claude-code");
+        assert_eq!(agent_slug(" 🤖 / — "), "mcp");
+    }
+
+    #[test]
+    fn invalid_seeded_operator_session_is_replaced() {
+        for invalid in ["bad:suffix", "abcdefghi", "nothexzz"] {
+            let session = validated_operator_session(Some(invalid.to_string()));
+
+            assert_eq!(session.len(), 8);
+            assert!(session
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()));
+        }
+    }
 
     #[test]
     fn server_info_advertises_tools_resources_and_cell_resource_instructions() {

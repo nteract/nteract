@@ -80,6 +80,7 @@ describe("hosted notebook sharing prototype", () => {
         validInvite,
       ],
       login: oidcLogin(),
+      now: "2026-05-24T12:00:00.000Z",
     });
 
     assert.deepEqual(
@@ -104,6 +105,7 @@ describe("hosted notebook sharing prototype", () => {
     const resolution = resolvePendingInvitesForLogin({
       invites: [invite],
       login: oidcLogin({ provider: "oidc" }),
+      now: "2026-05-24T12:00:00.000Z",
     });
 
     assert.equal(resolution.aclGrants.length, 1);

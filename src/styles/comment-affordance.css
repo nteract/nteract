@@ -1,99 +1,65 @@
-/* The "comment on selection" affordance, shared across the CodeMirror editor
-   plane and the rendered-markdown plane. One definition so both surfaces match
-   and the look is tunable in one place (cataloged in Elements).
-
-   Resting state is a small, flat, author-colored dot, sitting quietly out of the
-   way while a reader selects and copies text. It never opens on its own: most
-   selection is for editing code, not commenting. On hover or keyboard focus it
-   morphs into a labeled "Comment" pill, a staged grow -> spread -> reveal driven
-   by the Web Animations API (comment-affordance-motion.ts) so it reads as one
-   motion and reverses cleanly. CSS owns the resting look; the helper owns the
-   open. No icon: the pill shape and label are the cue. */
+/* Layout for the "comment on selection" affordance, shared by the CodeMirror source
+   plane and the rendered-markdown plane. The badge itself is the shared badge
+   primitive (components/ui/badge.tsx, applied through
+   components/comments/comment-selection-badge.ts), and the collapse-to-dot morph
+   lives in components/comments/comment-affordance-motion.ts. Only positioning, the
+   sizes both sides share, and the CodeMirror tooltip reset live here. */
 .comment-affordance {
-  /* Tinted with the author's canonical color (the same color as their cursor and
-     edits), set on an ancestor as --comment-author-color. Falls back to the
-     theme accent only if no author color is in scope. --primary is a near-black
-     neutral in the default theme, so it is the fallback, not the default. */
-  --comment-affordance-color: var(--comment-author-color, var(--primary, #2563eb));
-  /* Per-stage easing for the open, read by comment-affordance-motion.ts. One
-     decelerating curve, no overshoot: a spring here read as thrashy. */
-  --comment-affordance-ease: cubic-bezier(0.16, 1, 0.3, 1);
-  /* Sizes are tokens so CSS and the motion helper share one source of truth;
-     the helper reads these to build the open keyframes. */
+  /* Motion tokens, read back by comment-affordance-motion.ts so the CSS and the
+     morph keyframes have one source of truth. Diameter of the resting dot, and one
+     decelerating curve per stage (a spring here read as thrashy). */
   --comment-affordance-dot-size: 8px;
-  --comment-affordance-pill-height: 20px;
-  box-sizing: border-box;
+  --comment-affordance-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Natural height of the open badge: a text-xs line box, py-0.5, and a 1px border.
+     Only a fallback for the motion helper, which measures the real box. */
+  --comment-affordance-pill-height: 22px;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* Content-sized width with padding for the hit area. A fixed width would cap
-     the dot's growth: on WebKit/iOS Safari a flex child cannot exceed a
-     fixed-width flex parent, which clipped the open pill to one glyph on mobile.
-     Height is fixed to the open pill, though: it reserves the tooltip box so
-     CodeMirror measures and positions it once. Without it, growing the dot taller
-     re-anchors the tooltip above the line in an unanimated upward jump. The dot
-     is centered in the reserved height, so the open grows from the dot's center. */
-  padding: 6px;
-  height: calc(var(--comment-affordance-pill-height) + 12px);
+  /* Reserve the open badge's height so CodeMirror measures and anchors the tooltip
+     once: animating the badge's height inside a box that shrinks with it would
+     re-anchor the tooltip mid-morph, an unanimated jump. The padding doubles as hit
+     area, so the hover zone stays reachable once the badge is only a dot. */
+  height: calc(var(--comment-affordance-pill-height) + 8px);
+  min-width: calc(var(--comment-affordance-pill-height) + 8px);
+  padding: 4px;
   margin: 0;
   border: none;
   background: transparent;
-  /* The open pill paints the label on the author color, so the label needs the
-     author's legible foreground (set with --comment-author-contrast), not a flat
-     white that fails contrast on light author colors. */
   color: var(--comment-author-contrast, var(--primary-foreground, #ffffff));
   cursor: pointer;
 }
 
-/* Resting dot and the box the open animates. The helper measures the label's
-   natural width and grows max-width to it, so the pill fits its content and the
-   word never clips (the overflow clip hides it until there is room). */
-.comment-affordance-dot {
+/* The morphing element. The badge look comes from the shared primitive; this adds
+   only what the morph needs: a fixed flex size the animation can drive, and the clip
+   that hides the label until the pill has room for it. */
+.comment-affordance-badge {
   display: inline-flex;
-  flex: none;
   align-items: center;
+  flex: none;
   justify-content: center;
-  height: 8px;
-  max-width: 8px;
-  padding: 0;
   overflow: hidden;
-  border-radius: 999px; /* stadium: a circle at rest, a pill when open */
-  background-color: var(--comment-affordance-color);
-  color: inherit;
-  /* Flat at rest. No shadow, no breathe: a dot that pulses next to code is
-     noise, and the resting dot should read as barely there. */
-}
-
-.comment-affordance-label {
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1;
-  opacity: 0; /* revealed in the back half of the open animation */
-}
-
-/* Leftward selection (editor plane): the head is at the selection start, so
-   anchor the button's right edge at the head and let it grow leftward, keeping
-   the dot on the cursor's outer side and off the selected text. translateX is a
-   percentage of the button's own width, so it re-anchors as the pill grows. */
-.comment-affordance-flip {
-  transform: translateX(-100%);
 }
 
 .comment-affordance:focus-visible {
   outline: none;
 }
-.comment-affordance:focus-visible .comment-affordance-dot {
-  outline: 2px solid var(--ring, #a3a3a3);
-  outline-offset: 2px;
+
+.comment-affordance:focus-visible .comment-affordance-badge {
+  box-shadow: 0 0 0 1px var(--ring, #a3a3a3);
 }
 
-/* CodeMirror merges its tooltip classes onto the affordance button itself (the
-   element is both .comment-affordance and .cm-tooltip), so the tooltip chrome
-   paints a box around the dot. Strip that chrome on the shared element. The
-   theme sets it with editor-scoped specificity, so !important wins the cascade.
-   The hit-area padding from .comment-affordance is intentionally left intact. */
+/* Leftward selection (editor plane): the head is at the selection start, so anchor
+   the wrapper's right edge at the head and let it grow leftward, keeping the badge on
+   the cursor's outer side and off the selected text. translateX is a percentage of
+   the wrapper's own width, so it re-anchors as the badge morphs. */
+.comment-affordance-flip {
+  transform: translateX(-100%);
+}
+
+/* CodeMirror merges .cm-tooltip onto this element and themes it with
+   editor-scoped specificity, so !important is needed to strip that chrome. */
 .cm-tooltip.comment-affordance {
   border: none !important;
   background: transparent !important;

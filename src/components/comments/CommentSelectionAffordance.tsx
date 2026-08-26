@@ -2,69 +2,66 @@ import { useEffect, useRef } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { cn } from "@/lib/utils";
 import { wireCommentAffordanceMotion } from "./comment-affordance-motion";
+import { COMMENT_SELECTION_BADGE_CLASS } from "./comment-selection-badge";
 
 export interface CommentSelectionAffordanceProps {
-  /** Fires on click or keyboard activation. Receives the button event so the
-   *  host can fall back to the button rect when there is no selection rect. */
   onActivate: (event: ReactMouseEvent<HTMLButtonElement>) => void;
-  /** Positioning and any extra classes from the host plane. */
   className?: string;
   style?: CSSProperties;
-  /** Accessible name (aria-label/title). The bubble always reads "Comment". */
   label?: string;
   testId?: string;
 }
 
 /**
- * The "comment on selection" affordance: an author-colored dot that breathes at
- * rest and springs into a labeled "Comment" speech bubble on hover or focus. No
- * icon: the bubble shape is the cue. It never folds out on its own, so dragging a
- * selection (almost always to edit code, not to comment) stays quiet. Shared by
- * the code-editor and rendered-markdown planes; the visual lives in
- * styles/comment-affordance.css so both surfaces match and stay tunable in
- * Elements.
+ * The "comment on selection" affordance: a "Comment" badge beside the selection,
+ * styled with the shared badge primitive so it matches every other badge in the app.
+ * It mounts open, shrinks to a dot after a beat of no interaction, and springs back
+ * open on hover or focus (comment-affordance-motion.ts). The CodeMirror source plane
+ * builds the same markup and wires the same motion in
+ * `apps/notebook/src/lib/source-comment-extension.ts`; the wrapper's layout lives in
+ * `styles/comment-affordance.css`, so both planes stay in step.
  */
 export function CommentSelectionAffordance({
   onActivate,
   className,
   style,
-  label = "Comment",
+  label = "Add comment",
   testId,
 }: CommentSelectionAffordanceProps) {
-  const buttonRef = useRef<HTMLButtonElement>(null);
+  const badgeRef = useRef<HTMLSpanElement>(null);
 
-  // Stage the hover/focus open through the shared Web Animations helper, the same
-  // one the editor plane uses, so both surfaces morph identically.
+  // Re-arm on every new selection. React reuses the same DOM node when the
+  // affordance moves, so without keying on the position the badge would stay
+  // collapsed from the previous selection instead of opening for the new one.
+  const left = style?.left;
+  const top = style?.top;
   useEffect(() => {
-    const el = buttonRef.current;
-    if (!el) return;
-    return wireCommentAffordanceMotion(el);
-  }, []);
+    const badge = badgeRef.current;
+    if (!badge) return;
+    return wireCommentAffordanceMotion(badge);
+  }, [left, top]);
+
+  const keepSelection = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
 
   return (
     <button
-      ref={buttonRef}
       type="button"
       aria-label={label}
       data-testid={testId}
       className={cn("comment-affordance", className)}
       style={style}
-      onPointerDown={(event) => {
-        // Keep the active text selection while the affordance is pressed.
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-      onMouseDown={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
+      onPointerDown={keepSelection}
+      onMouseDown={keepSelection}
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
         onActivate(event);
       }}
     >
-      <span className="comment-affordance-dot" aria-hidden="true">
+      <span ref={badgeRef} className={COMMENT_SELECTION_BADGE_CLASS} aria-hidden="true">
         <span className="comment-affordance-label">Comment</span>
       </span>
     </button>

@@ -69,6 +69,7 @@ test.describe("cell visibility toggles", () => {
       );
 
       await clickCellButton(cell, "Hide input");
+      await expect(cell.locator('.cm-content[contenteditable="true"]')).toHaveCount(0);
       await clickCellButton(cell, "Hide outputs");
       const hiddenCell = cell.locator('button[title="Show cell"]').first();
       await expect(hiddenCell).toContainText("Cell hidden");

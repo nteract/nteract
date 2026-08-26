@@ -1,17 +1,15 @@
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, keymap, showTooltip, type Tooltip } from "@codemirror/view";
 import { wireCommentAffordanceMotion } from "@/components/comments/comment-affordance-motion";
+import { COMMENT_SELECTION_BADGE_CLASS } from "@/components/comments/comment-selection-badge";
 import {
   MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES,
-  selectionRectFromView,
   sourceRangeAnchorFromSelection,
-  type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "./comment-source-anchor";
 
 export type SourceCommentRequestHandler = (
   anchor: SourceRangeCommentAnchor,
-  rect: SourceCommentSelectionRect | null,
   quote?: string | null,
 ) => void;
 
@@ -85,8 +83,8 @@ function sourceCommentTooltips(
   if (utf8Encoder.encode(selectedText).length > MAX_SOURCE_COMMENT_EXACT_QUOTE_BYTES) return [];
 
   // The tooltip anchors at the head, the moving end of the selection. When the
-  // selection runs leftward the head is at its start, so flip the dot to the left
-  // of the head instead of letting it sit on the right, over the selected text.
+  // selection runs leftward the head is at its start, so flip the toolbar to the
+  // left of the head instead of letting it sit over the selected text.
   const leftward = selection.head < selection.anchor;
 
   return [
@@ -95,29 +93,24 @@ function sourceCommentTooltips(
       above: true,
       strictSide: false,
       create(view) {
-        // Shared dot affordance (styles/comment-affordance.css), matching the
-        // rendered-markdown plane. CodeMirror wraps this in a .cm-tooltip; the
-        // shared CSS strips that wrapper's chrome so only the dot shows. It stays
-        // a quiet dot while you select and folds out to a "Comment" pill only on
-        // hover or keyboard focus, so dragging a selection never flashes the pill.
+        // Same markup as the rendered-markdown plane's CommentSelectionAffordance:
+        // a fixed hit-target button around the morphing "Comment" badge. CodeMirror
+        // wraps the root in a .cm-tooltip; the shared CSS strips that chrome.
         const button = document.createElement("button");
         button.type = "button";
         button.className = leftward
           ? "comment-affordance comment-affordance-flip"
           : "comment-affordance";
-        // No title attribute: the native browser tooltip duplicates the bubble's
-        // own "Comment" label. aria-label keeps it accessible.
-        button.setAttribute("aria-label", "Comment on selection");
+        button.setAttribute("aria-label", "Add comment on selection");
         button.setAttribute("data-testid", "source-comment-button");
-        const dot = document.createElement("span");
-        dot.className = "comment-affordance-dot";
-        dot.setAttribute("aria-hidden", "true");
+        const badge = document.createElement("span");
+        badge.className = COMMENT_SELECTION_BADGE_CLASS;
+        badge.setAttribute("aria-hidden", "true");
         const label = document.createElement("span");
         label.className = "comment-affordance-label";
         label.textContent = "Comment";
-        dot.appendChild(label);
-        button.appendChild(dot);
-        const disposeMotion = wireCommentAffordanceMotion(button);
+        badge.appendChild(label);
+        button.appendChild(badge);
         button.addEventListener("mousedown", (event) => {
           event.preventDefault();
         });
@@ -125,10 +118,18 @@ function sourceCommentTooltips(
           event.preventDefault();
           requestSourceComment(cellId, view, onCreateSourceComment);
         });
+
+        // The collapse-to-dot motion measures the open badge, so it can only be
+        // wired once CodeMirror has put the tooltip in the DOM.
+        let disposeMotion: (() => void) | null = null;
         return {
           dom: button,
+          mount() {
+            disposeMotion = wireCommentAffordanceMotion(badge);
+          },
           destroy() {
-            disposeMotion();
+            disposeMotion?.();
+            disposeMotion = null;
           },
         };
       },
@@ -144,6 +145,6 @@ function requestSourceComment(
   const anchor = sourceRangeAnchorFromSelection(cellId, view);
   if (!anchor) return false;
 
-  onCreateSourceComment(anchor, selectionRectFromView(view));
+  onCreateSourceComment(anchor);
   return true;
 }

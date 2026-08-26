@@ -28,6 +28,9 @@ use crate::version::ReconnectionEvent;
 /// Env var name passed to a freshly respawned child to seed its rejoin
 /// target. Must match `runt_mcp::daemon_watch::REJOIN_ENV_VAR`.
 const REJOIN_ENV_VAR: &str = "NTERACT_MCP_REJOIN_NOTEBOOK";
+/// Identity env vars consumed by `runt-mcp` before daemon-watch starts.
+const OPERATOR_CLIENT_ENV_VAR: &str = "NTERACT_MCP_OPERATOR_CLIENT";
+const OPERATOR_SESSION_ENV_VAR: &str = "NTERACT_MCP_OPERATOR_SESSION";
 const SLOW_CHILD_CALL: Duration = Duration::from_secs(30);
 const EX_TEMPFAIL: i32 = 75;
 
@@ -174,6 +177,9 @@ pub struct McpProxy {
     pub exit_signal: Arc<Notify>,
     /// Flag to prevent concurrent restarts (monitor + tool call racing).
     restart_in_progress: Arc<Mutex<bool>>,
+    /// Stable across child generations so automatic rejoin retains the exact
+    /// operator used by the explicit connect in the previous child.
+    operator_session: String,
 }
 
 impl McpProxy {
@@ -214,7 +220,21 @@ impl McpProxy {
             child_ready: Arc::new(Notify::new()),
             exit_signal: Arc::new(Notify::new()),
             restart_in_progress: Arc::new(Mutex::new(false)),
+            operator_session: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
         }
+    }
+
+    fn child_env(&self, upstream_name: &str) -> HashMap<String, String> {
+        let mut child_env = self.config.child_env.clone();
+        child_env.insert(
+            OPERATOR_CLIENT_ENV_VAR.to_string(),
+            upstream_name.to_string(),
+        );
+        child_env.insert(
+            OPERATOR_SESSION_ENV_VAR.to_string(),
+            self.operator_session.clone(),
+        );
+        child_env
     }
 
     /// Set the upstream client identity (from MCP initialize handshake).
@@ -242,10 +262,11 @@ impl McpProxy {
             "Spawning child process"
         );
 
+        let child_env = self.child_env(&upstream_name);
         let spawned = child::spawn_child(
             &child_command,
             &self.config.child_args,
-            &self.config.child_env,
+            &child_env,
             &upstream_name,
             upstream_title.as_deref(),
         )
@@ -403,7 +424,7 @@ impl McpProxy {
         // its `daemon_watch` loop rejoins on the first `Connected` event
         // without us having to call `connect_notebook` over the child MCP
         // channel.
-        let mut child_env = self.config.child_env.clone();
+        let mut child_env = self.child_env(&upstream_name);
         if let Some(ref target) = rejoin_target {
             child_env.insert(REJOIN_ENV_VAR.to_string(), target.clone());
         }
@@ -1365,6 +1386,36 @@ mod tests {
         let state = proxy.state.read().await;
         assert_eq!(state.upstream_name, "zed");
         assert!(state.upstream_title.is_none());
+    }
+
+    #[test]
+    fn child_identity_env_is_stable_and_overrides_stale_config() {
+        let mut config = test_config();
+        config.child_env.insert(
+            OPERATOR_CLIENT_ENV_VAR.to_string(),
+            "stale-client".to_string(),
+        );
+        config.child_env.insert(
+            OPERATOR_SESSION_ENV_VAR.to_string(),
+            "stalesession".to_string(),
+        );
+        let proxy = McpProxy::new(config, None);
+
+        let initial = proxy.child_env("codex-mcp-client");
+        let restarted = proxy.child_env("codex-mcp-client");
+
+        assert_eq!(
+            initial.get(OPERATOR_CLIENT_ENV_VAR).map(String::as_str),
+            Some("codex-mcp-client")
+        );
+        assert_eq!(
+            initial.get(OPERATOR_SESSION_ENV_VAR),
+            restarted.get(OPERATOR_SESSION_ENV_VAR)
+        );
+        assert_eq!(
+            initial.get(OPERATOR_SESSION_ENV_VAR).map(String::len),
+            Some(8)
+        );
     }
 
     // ── Tool cache loading at startup ─────────────────────────────────

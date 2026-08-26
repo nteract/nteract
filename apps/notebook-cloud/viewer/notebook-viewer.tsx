@@ -49,6 +49,7 @@ import {
   WorkstationPairingDialog,
   KernelLaunchErrorBanner,
   projectNotebookCommandRuntimeStatusFromRuntimeState,
+  scrollElementIntoView,
   shouldShowKernelLaunchErrorBanner,
   shouldShowNotebookDocumentCommandToolbar,
   useActiveOutlineItemId,
@@ -79,6 +80,10 @@ import {
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
 import {
+  navigateNotebookOutlineFromRail,
+  navigateToNotebookStageFromRail,
+} from "@/components/notebook/rail-stage-navigation";
+import {
   outputCommentAnchorMatchesLiveState,
   useDemoteDetachedOutputCommentThreads,
 } from "@/components/notebook/output-comment-demotion";
@@ -89,6 +94,7 @@ import { EnvironmentSummary } from "@/components/environment";
 import {
   colorForActorIdentity,
   contrastColorForActorIdentity,
+  notebookCellAnchorId,
   NotebookClient,
   workstationAttachmentCanExecute,
   workstationAttachmentIsConnected,
@@ -111,15 +117,14 @@ import type { ConnectionScope } from "../src/auth-shared";
 
 import { useCloudViewerSession } from "./cloud-viewer-session";
 import { NotebookView } from "../../notebook/src/notebook-surface";
-import { InlineCommentComposer } from "../../notebook/src/components/InlineCommentComposer";
 import {
   setSourceCommentThreads,
   type SourceCommentThread,
 } from "../../notebook/src/lib/comment-highlights";
 import {
   resolveSourceRangeAnchor,
+  sourcePointFromStringOffset,
   type OutputCommentAnchor,
-  type SourceCommentSelectionRect,
   type SourceRangeCommentAnchor,
 } from "../../notebook/src/lib/comment-source-anchor";
 import {
@@ -243,8 +248,8 @@ function mapToCommentAuthor(display: ActorDisplay): CommentAuthor {
     color: display.color,
     imageUrl: display.imageUrl,
     isAgent: display.isAgent,
+    agentSlug: display.agentSlug,
     onBehalfOf: display.onBehalfOf,
-    onBehalfOfColor: display.onBehalfOfColor,
   };
 }
 
@@ -333,11 +338,6 @@ export function NotebookViewer({
   const [commentDraftTarget, setCommentDraftTarget] = useState<NotebookCommentDraftTarget | null>(
     null,
   );
-  const [sourceCommentRequest, setSourceCommentRequest] = useState<{
-    anchor: SourceRangeCommentAnchor;
-    rect: SourceCommentSelectionRect;
-    quote?: string | null;
-  } | null>(null);
   const [commentFocus, setCommentFocus] = useState<{ threadId: string; nonce: number } | null>(
     null,
   );
@@ -671,13 +671,19 @@ export function NotebookViewer({
   }, [documentAnchors, handleSelectOutlineItem, outlineItems]);
   const handleNavigateOutlineItem = useCallback(
     (item: NotebookOutlineItem, href: string) => {
-      handleSelectOutlineItem(item);
-      return navigateNotebookOutlineItem(item, href, {
-        documentAnchors,
-        headingHashTarget: "cell",
+      return navigateNotebookOutlineFromRail({
+        railCollapsed,
+        collapseRail: () => setNotebookRailCollapsed(true),
+        navigate: () => {
+          handleSelectOutlineItem(item);
+          return navigateNotebookOutlineItem(item, href, {
+            documentAnchors,
+            headingHashTarget: "cell",
+          });
+        },
       });
     },
-    [documentAnchors, handleSelectOutlineItem],
+    [documentAnchors, handleSelectOutlineItem, railCollapsed],
   );
   const handleTogglePackagesRail = useCallback(() => {
     if (activeRailPanel === "packages" && !railCollapsed) {
@@ -1186,7 +1192,6 @@ export function NotebookViewer({
   useEffect(() => {
     if (!canWriteComments) {
       setCommentDraftTarget(null);
-      setSourceCommentRequest(null);
     }
   }, [canWriteComments]);
 
@@ -1224,13 +1229,15 @@ export function NotebookViewer({
   const handleCreateAnchoredCommentThread = useCallback(
     async (anchor: CommentAnchor, body: string) => {
       if (!canWriteComments) {
-        setCommentsError("Comments are read-only.");
-        return;
+        const error = new Error("Comments are read-only.");
+        setCommentsError(error.message);
+        throw error;
       }
       const liveRuntime = liveRuntimeRef.current;
       if (!liveRuntime || typeof liveRuntime.handle.create_comment_thread !== "function") {
-        setCommentsError("Comments are not ready.");
-        return;
+        const error = new Error("Comments are not ready.");
+        setCommentsError(error.message);
+        throw error;
       }
       try {
         const projection = refreshCloudCommentsProjection() ?? commentsProjection;
@@ -1247,9 +1254,13 @@ export function NotebookViewer({
           afterThreadId,
           new Date().toISOString(),
         );
-        applyLocalCommentEvent(event);
+        if (!applyLocalCommentEvent(event)) {
+          throw new Error("Unable to update comments.");
+        }
       } catch (error) {
-        setCommentsError(error instanceof Error ? error.message : String(error));
+        const submissionError = error instanceof Error ? error : new Error(String(error));
+        setCommentsError(submissionError.message);
+        throw submissionError;
       }
     },
     [
@@ -1278,15 +1289,19 @@ export function NotebookViewer({
         commentDraftTarget.anchor.kind === "source_range" &&
         !sourceRangeAnchorMatchesCurrentCell(commentDraftTarget.anchor)
       ) {
-        setCommentsError("Selected source changed. Select the text again before commenting.");
-        return;
+        const error = new Error(
+          "Selected source changed. Select the text again before commenting.",
+        );
+        setCommentsError(error.message);
+        throw error;
       }
       if (
         commentDraftTarget.anchor.kind === "output" &&
         !outputCommentAnchorMatchesLiveState(commentDraftTarget.anchor)
       ) {
-        setCommentsError(OUTPUT_COMMENT_STALE_MESSAGE);
-        return;
+        const error = new Error(OUTPUT_COMMENT_STALE_MESSAGE);
+        setCommentsError(error.message);
+        throw error;
       }
       await handleCreateAnchoredCommentThread(commentDraftTarget.anchor, body);
       setCommentDraftTarget(null);
@@ -1295,17 +1310,8 @@ export function NotebookViewer({
   );
 
   const handleRequestSourceComment = useCallback(
-    (
-      anchor: SourceRangeCommentAnchor,
-      rect: SourceCommentSelectionRect | null,
-      quote?: string | null,
-    ) => {
+    (anchor: SourceRangeCommentAnchor, quote?: string | null) => {
       setCommentsError(null);
-      if (rect) {
-        setSourceCommentRequest({ anchor, rect, quote });
-        return;
-      }
-      setSourceCommentRequest(null);
       setCommentDraftTarget({ anchor, quote: quote ?? anchor.exact_quote ?? null });
       openNotebookRailPanel("comments");
     },
@@ -1318,27 +1324,8 @@ export function NotebookViewer({
       setCommentsError(OUTPUT_COMMENT_STALE_MESSAGE);
       return;
     }
-    setSourceCommentRequest(null);
     setCommentDraftTarget({ anchor, quote: null });
     openNotebookRailPanel("comments");
-  }, []);
-
-  const handleSubmitSourceComment = useCallback(
-    async (body: string) => {
-      if (!sourceCommentRequest) return;
-      if (!sourceRangeAnchorMatchesCurrentCell(sourceCommentRequest.anchor)) {
-        setSourceCommentRequest(null);
-        setCommentsError("Selected source changed. Select the text again before commenting.");
-        return;
-      }
-      await handleCreateAnchoredCommentThread(sourceCommentRequest.anchor, body);
-      setSourceCommentRequest(null);
-    },
-    [handleCreateAnchoredCommentThread, sourceCommentRequest],
-  );
-
-  const handleCancelSourceComment = useCallback(() => {
-    setSourceCommentRequest(null);
   }, []);
 
   const handleClearCommentDraftTarget = useCallback(() => {
@@ -1365,8 +1352,8 @@ export function NotebookViewer({
               authorColor: author?.color,
               imageUrl: author?.imageUrl,
               isAgent: author?.isAgent,
+              agentSlug: author?.agentSlug,
               onBehalfOf: author?.onBehalfOf,
-              onBehalfOfColor: author?.onBehalfOfColor,
               body: firstMessage.body,
               replyCount: Math.max(0, thread.messages.length - 1),
             }
@@ -1395,11 +1382,16 @@ export function NotebookViewer({
 
   const handleReplyCommentThread = useCallback(
     async (threadId: string, body: string) => {
-      if (!canWriteComments) return;
+      if (!canWriteComments) {
+        const error = new Error("Comments are read-only.");
+        setCommentsError(error.message);
+        throw error;
+      }
       const liveRuntime = liveRuntimeRef.current;
       if (!liveRuntime || typeof liveRuntime.handle.reply_comment_thread !== "function") {
-        setCommentsError("Comments are not ready.");
-        return;
+        const error = new Error("Comments are not ready.");
+        setCommentsError(error.message);
+        throw error;
       }
       try {
         const projection = refreshCloudCommentsProjection() ?? commentsProjection;
@@ -1412,9 +1404,13 @@ export function NotebookViewer({
           afterMessageId,
           new Date().toISOString(),
         );
-        applyLocalCommentEvent(event);
+        if (!applyLocalCommentEvent(event)) {
+          throw new Error("Unable to update comments.");
+        }
       } catch (error) {
-        setCommentsError(error instanceof Error ? error.message : String(error));
+        const submissionError = error instanceof Error ? error : new Error(String(error));
+        setCommentsError(submissionError.message);
+        throw submissionError;
       }
     },
     [
@@ -1493,11 +1489,21 @@ export function NotebookViewer({
   const handleFocusCommentAnchor = useCallback(
     (thread: CommentThreadSnapshot) => {
       const cellId = thread.badge_cell_ids[0];
-      if (cellId) {
-        focusCellInStore(cellId);
-      }
+      if (!cellId) return;
+
+      navigateToNotebookStageFromRail({
+        railCollapsed,
+        collapseRail: () => setNotebookRailCollapsed(true),
+        navigate: () => {
+          focusCellInStore(cellId);
+          const target = document.getElementById(notebookCellAnchorId(cellId));
+          if (target) {
+            scrollElementIntoView(target, { block: "center", behavior: "smooth" });
+          }
+        },
+      });
     },
-    [focusCellInStore],
+    [focusCellInStore, railCollapsed],
   );
   const resetPrototypeAuth = useCallback(() => {
     void clearCloudAppSession().catch((error: unknown) => {
@@ -1584,6 +1590,16 @@ export function NotebookViewer({
     }
     return renderedTextForSourceRange(plan, range.from, range.to) ?? anchor.exact_quote ?? null;
   }, []);
+  const resolveSourcePosition = useCallback((anchor: SourceRangeCommentAnchor) => {
+    const cell = getCellById(anchor.cell_id);
+    if (!cell) return null;
+    const range = resolveSourceRangeAnchor(cell.source, anchor);
+    return range ? sourcePointFromStringOffset(cell.source, range.from) : null;
+  }, []);
+  const pendingSourceCommentAnchor =
+    commentsUiEnabled && commentDraftTarget?.anchor.kind === "source_range"
+      ? commentDraftTarget.anchor
+      : null;
   const commentsPanel = (
     <NotebookCommentsPanel
       projection={commentsProjection}
@@ -1597,11 +1613,13 @@ export function NotebookViewer({
       onResolveThread={canWriteComments ? handleResolveCommentThread : undefined}
       onReopenThread={canWriteComments ? handleReopenCommentThread : undefined}
       onFocusThreadAnchor={handleFocusCommentAnchor}
+      cellIds={notebookCellIds}
       resolveCommentAuthor={resolveCloudCommentAuthor}
       focusedThreadId={commentFocus?.threadId ?? null}
       focusNonce={commentFocus?.nonce ?? 0}
       resolveSourceLanguage={resolveCommentSourceLanguage}
       resolveSourceQuote={resolveSourceQuote}
+      resolveSourcePosition={resolveSourcePosition}
     />
   );
   const commentsUiSurface = resolveCommentsUiSurface({
@@ -1997,7 +2015,7 @@ export function NotebookViewer({
                 onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
                 onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
                 commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
-                pendingCommentAnchor={sourceCommentRequest?.anchor ?? null}
+                pendingCommentAnchor={pendingSourceCommentAnchor}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
                 outputHostContext={outputHostContext}
                 deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
@@ -2008,15 +2026,6 @@ export function NotebookViewer({
           </CrdtBridgeProvider>
         </PresenceValueProvider>
       </NotebookDocumentShell>
-      {commentsUiEnabled && sourceCommentRequest ? (
-        <InlineCommentComposer
-          rect={sourceCommentRequest.rect}
-          quote={sourceCommentRequest.quote ?? sourceCommentRequest.anchor.exact_quote}
-          disabled={!canWriteComments}
-          onSubmit={handleSubmitSourceComment}
-          onCancel={handleCancelSourceComment}
-        />
-      ) : null}
       <NotebookSettingsDrawer
         open={settingsOpen}
         onOpenChange={setSettingsOpen}

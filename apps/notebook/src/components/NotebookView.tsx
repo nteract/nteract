@@ -75,11 +75,7 @@ import { CodeCell, type HiddenGroupCellSummary } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 import type { SourceCommentThread } from "../lib/comment-highlights";
-import type {
-  OutputCommentAnchor,
-  SourceCommentSelectionRect,
-  SourceRangeCommentAnchor,
-} from "../lib/comment-source-anchor";
+import type { OutputCommentAnchor, SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 
 type AddCellResult = NotebookCell | null;
 type AddCellHandler = (type: CellInsertionType, afterCellId?: string | null) => AddCellResult;
@@ -107,11 +103,7 @@ export interface NotebookViewProps {
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
   onSetCellOutputsHidden?: (cellId: string, hidden: boolean) => void;
-  onCreateSourceComment?: (
-    anchor: SourceRangeCommentAnchor,
-    rect: SourceCommentSelectionRect | null,
-    quote?: string | null,
-  ) => void;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   onCreateOutputComment?: (anchor: OutputCommentAnchor) => void;
   onActivateCommentThread?: (threadId: string) => void;
   commentThreadsByCell?: ReadonlyMap<string, readonly SourceCommentThread[]>;

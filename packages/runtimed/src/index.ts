@@ -319,6 +319,7 @@ export {
   notebookActorProjectionFromLabel,
   notebookActorProjectionFromRuntime,
   notebookActorProjectionWithPrincipalImage,
+  notebookAgentBrandSlug,
   parseNotebookActorLabel,
   parseNotebookOperatorLabel,
   splitNotebookActorPrincipalOperator,
@@ -344,7 +345,7 @@ export {
 } from "./notebook-actor-color";
 
 // Notebook actor display
-export { onBehalfOfText } from "./notebook-actor-attribution";
+export { onBehalfOfPhrase, onBehalfOfText } from "./notebook-actor-attribution";
 export {
   actorInitials,
   resolveActorDisplay,

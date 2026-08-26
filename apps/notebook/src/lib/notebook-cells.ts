@@ -10,6 +10,7 @@ export {
   updateNotebookCells,
   useCell,
   useCellIds,
+  useCellProjectionVersion,
   useMaterializeVersion,
   useSourceVersion,
   type NotebookCellMetadata,

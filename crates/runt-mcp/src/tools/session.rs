@@ -1340,7 +1340,7 @@ async fn connect_local_path_progressive(
     let result = match notebook_sync::connect::connect_open(
         server.socket_path.clone(),
         abs_path.clone(),
-        &server.get_peer_label().await,
+        &server.get_operator().await,
     )
     .await
     {
@@ -1413,7 +1413,7 @@ async fn connect_local_id_progressive(
     let result = match notebook_sync::connect::connect(
         server.socket_path.clone(),
         notebook_id.clone(),
-        &server.get_peer_label().await,
+        &server.get_operator().await,
     )
     .await
     {
@@ -1635,7 +1635,7 @@ pub async fn create_notebook(
             server.socket_path.clone(),
             notebook_sync::connect::CreateNotebookSpec {
                 working_dir,
-                actor_label: server.get_peer_label().await,
+                actor_label: server.get_operator().await,
                 ephemeral,
                 package_manager: explicit_pkg_manager.clone(),
                 dependencies: deps.clone(),

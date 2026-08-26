@@ -6,7 +6,9 @@ import {
   hoverTooltip,
   ViewPlugin,
 } from "@codemirror/view";
-import { actorInitials, onBehalfOfText } from "runtimed";
+import { actorInitials, onBehalfOfPhrase } from "runtimed";
+import { agentBrandMarkSvg } from "@/components/comments/agent-brand-mark";
+import { RAIL_TAKEOVER_MEDIA_QUERY } from "@/components/rail";
 
 /** Compact thread summary shown when hovering a highlighted range. */
 export interface CommentHighlightPreview {
@@ -14,8 +16,8 @@ export interface CommentHighlightPreview {
   authorColor?: string;
   imageUrl?: string | null;
   isAgent?: boolean;
+  agentSlug?: string | null;
   onBehalfOf?: string | null;
-  onBehalfOfColor?: string | null;
   body: string;
   replyCount: number;
 }
@@ -126,10 +128,7 @@ function activateThreadAt(
   return true;
 }
 
-const BOT_ICON_SVG =
-  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>';
-
-function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
+export function buildCommentHighlightPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   const root = document.createElement("div");
   root.style.cssText =
     "width:min(300px,80vw);padding:10px 12px;border:1px solid var(--border, #ebebeb);border-radius:10px;background:var(--popover, #ffffff);color:var(--popover-foreground, #1e1e1e);box-shadow:0 8px 24px rgb(0 0 0 / 0.14);font:inherit;";
@@ -139,28 +138,20 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
 
   const avatar = document.createElement("span");
   avatar.style.cssText =
-    "position:relative;flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
+    "flex:none;width:18px;height:18px;border-radius:50%;color:#fff;font-size:9px;font-weight:600;display:grid;place-items:center;";
   avatar.style.backgroundColor = preview.authorColor ?? "var(--muted-foreground, #737373)";
-  if (preview.imageUrl) {
+  if (preview.isAgent) {
+    // An agent is the author, so its brand wins over the principal's profile
+    // image. The principal remains named in the attribution line.
+    avatar.innerHTML = agentBrandMarkSvg(preview.agentSlug, 12);
+  } else if (preview.imageUrl) {
     const image = document.createElement("img");
     image.src = preview.imageUrl;
     image.alt = "";
     image.style.cssText = "width:100%;height:100%;border-radius:50%;object-fit:cover;";
     avatar.appendChild(image);
-  } else if (preview.isAgent) {
-    avatar.innerHTML = BOT_ICON_SVG;
   } else {
     avatar.textContent = actorInitials(preview.authorName);
-  }
-
-  if (preview.isAgent && preview.onBehalfOf) {
-    const badge = document.createElement("span");
-    badge.style.cssText =
-      "position:absolute;bottom:-3px;right:-3px;width:11px;height:11px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:6px;font-weight:700;box-shadow:0 0 0 2px var(--popover, #ffffff);";
-    badge.style.backgroundColor =
-      preview.onBehalfOfColor ?? "var(--muted-foreground, #737373)";
-    badge.textContent = actorInitials(preview.onBehalfOf).slice(0, 1);
-    avatar.appendChild(badge);
   }
   head.appendChild(avatar);
 
@@ -170,9 +161,11 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   head.appendChild(name);
 
   if (preview.isAgent) {
+    // Same name line as the Discussions panel: the principal an agent acts for is
+    // spelled out, and bare "AI" only stands in when it acts for itself.
     const meta = document.createElement("span");
     meta.style.cssText = "font-size:10px;color:var(--muted-foreground, #737373);";
-    meta.textContent = `AI${onBehalfOfText(preview.onBehalfOf)}`;
+    meta.textContent = onBehalfOfPhrase(preview.onBehalfOf) || "AI";
     head.appendChild(meta);
   }
   root.appendChild(head);
@@ -194,8 +187,21 @@ function buildPreviewDom(preview: CommentHighlightPreview): HTMLElement {
   return root;
 }
 
+/**
+ * Hover previews repeat what the Discussions panel already shows, so they only earn
+ * their keep when the panel cannot sit beside the notebook. Below the rail takeover
+ * width the panel covers the stage, so hovering a highlight is the only way to read
+ * its thread without leaving the notebook. Read per hover rather than captured when
+ * the extension is built, so resizing the window takes effect immediately.
+ */
+export function commentHoverPreviewsEnabled(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia(RAIL_TAKEOVER_MEDIA_QUERY).matches;
+}
+
 const commentHoverTooltip = hoverTooltip(
   (view, pos) => {
+    if (!commentHoverPreviewsEnabled()) return null;
     const match = highlightAt(view, pos);
     if (!match?.preview) return null;
     return {
@@ -203,7 +209,7 @@ const commentHoverTooltip = hoverTooltip(
       end: match.to,
       above: true,
       create() {
-        return { dom: buildPreviewDom(match.preview as CommentHighlightPreview) };
+        return { dom: buildCommentHighlightPreviewDom(match.preview as CommentHighlightPreview) };
       },
     };
   },

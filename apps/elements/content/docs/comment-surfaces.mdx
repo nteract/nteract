@@ -16,10 +16,13 @@ kernel, so the surface and its rationale stand on their own.
 
 ## Commenting on a selection
 
-Selecting text is for reading and copying first, so the entry point to a comment
-stays quiet: a small dot near the selection that grows in place into a comment
-button on hover or keyboard focus. The same affordance appears in the CodeMirror
-editor and in rendered markdown.
+Selecting text raises a "Comment" badge beside the selection, styled with the
+shared badge primitive so it reads like every other badge. It arrives open, then
+shrinks to a dot after a second untouched and springs back open on hover or
+focus, so the offer is legible when it appears without parking a pill next to the
+text. Clicking it opens the Discussions panel with the selection staged as the
+draft target, so comments are always composed in the panel and land in notebook
+order. The same badge appears in the CodeMirror editor and in rendered markdown.
 
 <CommentSelectionAffordanceExample />
 
@@ -46,13 +49,15 @@ notebook app wire the same props to live presence and the runtime.
 
 ## AI on behalf of a person
 
-Authorship is legible at a glance and impossible to fake. Each message shows an
-identity-colored avatar (the same color as that author's cursor and edits),
-name, and time. An agent uses the bot avatar plus a quiet `· for <person>` note,
-with a small principal badge on its avatar as the "acting on behalf of" cue. In
-the app, trust is earned: the daemon finalizes a comment against the
-authenticated connection before it's marked trusted, so "Claude Code · for Ada"
-is provable, not asserted.
+Authorship keeps accountability and branding separate. Each message shows one
+avatar in the author's identity color (the same color as their cursor and edits),
+plus name and time. For an agent, the host-authenticated principal is
+authoritative for who authorized the action and for the "on behalf of" line. The
+agent product name and mark come from a client-declared operator slug: a known
+slug gets its familiar mark and an unknown slug gets the neutral bot, but neither
+is vendor attestation. The daemon can prove that the authenticated connection
+authored the trusted comment; it does not prove that a client claiming "Claude
+Code" was produced by Anthropic.
 
 ## Anchors
 

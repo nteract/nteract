@@ -166,6 +166,30 @@ export function parseNotebookOperatorLabel(
   return null;
 }
 
+/**
+ * Brand slug for an agent operator: `agent:claude-code:s1` -> `claude-code`.
+ *
+ * The slug names the product that connected, not the session, so avatars and
+ * icons can key on it. Accepts a full actor label or a bare operator suffix,
+ * and tolerates legacy `agent:<slug>/on-behalf-of:<principal>` labels. Returns
+ * null for anything that is not an agent operator.
+ */
+export function notebookAgentBrandSlug(
+  actorOrOperatorLabel: string | null | undefined,
+): string | null {
+  const trimmed = actorOrOperatorLabel?.trim().toLowerCase();
+  if (!trimmed) return null;
+
+  const [, operator] = splitNotebookActorPrincipalOperator(trimmed);
+  for (const candidate of [trimmed, operator ?? ""]) {
+    if (!candidate.startsWith("agent:")) continue;
+    const slug = candidate.slice("agent:".length).split(/[:/]/)[0];
+    if (slug) return slug;
+  }
+
+  return null;
+}
+
 export function splitNotebookActorPrincipalOperator(
   actorLabel: string,
 ): [principal: string, operator: string | null] {

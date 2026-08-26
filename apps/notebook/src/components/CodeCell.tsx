@@ -45,11 +45,7 @@ import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
 import { commentHighlightExtension } from "../lib/comment-highlight-extension";
 import { refreshCellCommentHighlights } from "../lib/comment-highlights";
-import type {
-  OutputCommentAnchor,
-  SourceCommentSelectionRect,
-  SourceRangeCommentAnchor,
-} from "../lib/comment-source-anchor";
+import type { OutputCommentAnchor, SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 import { sourceCommentExtension } from "../lib/source-comment-extension";
 import { tabCompletionKeymap } from "../lib/tab-completion";
 import type { CodeCell as CodeCellType, JupyterOutput } from "../types";
@@ -110,11 +106,7 @@ interface CodeCellProps {
   rightGutterContent?: ReactNode;
   readOnly?: boolean;
   canExecute?: boolean;
-  onCreateSourceComment?: (
-    anchor: SourceRangeCommentAnchor,
-    rect: SourceCommentSelectionRect | null,
-    quote?: string | null,
-  ) => void;
+  onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   onCreateOutputComment?: (anchor: OutputCommentAnchor) => void;
   onActivateCommentThread?: (threadId: string) => void;
   outputHostContext?: NteractEmbedHostContextPatch;

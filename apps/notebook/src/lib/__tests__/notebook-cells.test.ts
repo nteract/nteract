@@ -13,6 +13,7 @@ import {
   updateNotebookCells,
   useCell,
   useCellIds,
+  useCellProjectionVersion,
   useMaterializeVersion,
   useSourceVersion,
 } from "../notebook-cells";
@@ -338,6 +339,28 @@ describe("getNotebookCellsSnapshot", () => {
 });
 
 describe("subscriber notifications", () => {
+  it("rerenders a bounded projection only when one of its selected cells changes", () => {
+    replaceNotebookCells([codeCell("selected", "old"), codeCell("other", "old")]);
+    const renderCount = { current: 0 };
+    const { result } = renderHook(() => {
+      renderCount.current += 1;
+      return useCellProjectionVersion(["selected"]);
+    });
+    const initialVersion = result.current;
+
+    act(() => {
+      updateCellSourceById("other", "new");
+    });
+    expect(result.current).toBe(initialVersion);
+    expect(renderCount.current).toBe(1);
+
+    act(() => {
+      updateCellSourceById("selected", "new");
+    });
+    expect(result.current).toBe(initialVersion + 1);
+    expect(renderCount.current).toBe(2);
+  });
+
   it("replace produces distinct content each call", () => {
     const ids = new Set<string>();
     for (let i = 0; i < 5; i++) {

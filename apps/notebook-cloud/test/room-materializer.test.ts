@@ -516,18 +516,14 @@ describe("RoomHostHandle", () => {
     const runtime = new RuntimeStatePeerHandle(runtimeActor);
     const peerId = "peer-runtime";
 
-    const initial = host.sync_peer(peerId, "runtime_peer") as {
-      outbound: Array<{ peer_id: string; frame_type: FrameTypeValue; payload: number[] }>;
+    syncRuntimeHostWithRuntimePeer(host, peerId, runtimePrincipal, "runtime_peer", false, runtime);
+    const receivedState = runtime.get_runtime_state() as {
+      kernel: { lifecycle: { lifecycle: string } };
     };
-    for (const frame of initial.outbound) {
-      if (frame.peer_id !== peerId || frame.frame_type !== FrameType.RUNTIME_STATE_SYNC) {
-        continue;
-      }
-      runtime.receive_frame(encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)));
-    }
+    assert.deepEqual(receivedState.kernel.lifecycle, { lifecycle: "Error" });
 
     runtime.set_kernel_running("python", "python", "uv:current_python", "runtime-agent-1");
-    const reply = runtime.generate_runtime_state_sync_reply();
+    const reply = runtime.flush_runtime_state_sync();
     assert.ok(reply);
 
     const result = host.receive_peer_frame(
