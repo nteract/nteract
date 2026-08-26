@@ -340,13 +340,17 @@ describe("createLocalOidcIssuer", () => {
   });
 
   it("honors a per-call ttl override in mintToken", async () => {
+    const overrideTtlSeconds = 60;
     const issuer = makeIssuer({ defaultTokenTtlSeconds: 3600 });
-    const token = await issuer.mintToken({ sub: "svc", email: "svc@localhost" }, { ttlSeconds: 1 });
+    const token = await issuer.mintToken(
+      { sub: "svc", email: "svc@localhost" },
+      { ttlSeconds: overrideTtlSeconds },
+    );
     const { payload } = await jose.jwtVerify(token, await verifierFor(issuer), {
       issuer: ISSUER_URL,
       audience: CLIENT_ID,
     });
-    expect((payload.exp ?? 0) - (payload.iat ?? 0)).toBe(1);
+    expect((payload.exp ?? 0) - (payload.iat ?? 0)).toBe(overrideTtlSeconds);
   });
 
   it("mintToken signs a token that verifies against the published JWKS", async () => {
