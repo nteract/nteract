@@ -865,6 +865,14 @@ export const MarkdownCell = memo(function MarkdownCell({
         if (readOnly) {
           return;
         }
+        const interactionTarget = getActiveInteractionTarget();
+        // Cell insertion updates the notebook interaction target synchronously,
+        // but the previously selected Markdown preview may retain DOM focus.
+        // Let the document-level command-mode handler process Enter for the
+        // newly selected cell instead of reclaiming focus for this stale view.
+        if (interactionTarget && interactionTarget.cellId !== cell.id) {
+          return;
+        }
         // Enter: enter edit mode
         enterEditing();
         e.preventDefault();
@@ -872,6 +880,7 @@ export const MarkdownCell = memo(function MarkdownCell({
     },
     [
       enterEditing,
+      cell.id,
       onEnterCommandMode,
       onFocusNext,
       onFocusPrevious,
