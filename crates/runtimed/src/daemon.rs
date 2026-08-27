@@ -3803,17 +3803,16 @@ impl Daemon {
     /// source, or degraded durability), or a post-disconnect teardown that
     /// has not completed (`last_kernel_torn_down_at` unset). The teardown
     /// gate matters: the disconnect teardown performs one final `.ipynb`
-    /// save that re-claims the on-disk autosave owner marker, so releasing
-    /// the path before it completes would let that late save wedge a
-    /// successor daemon behind our live-pid marker.
+    /// save, so releasing the path before it completes would let that late
+    /// save race a successor daemon.
     ///
     /// Wanted claims are acquired if missing and renewed while our own
     /// record ages past `FILE_CLAIM_RENEW_AFTER`. A live foreign
     /// claim is never overwritten: the registry states facts, and stealing
     /// another daemon's lease would silently split-brain the file. A clean
-    /// idle room releases its claim (and the autosave owner marker) once
-    /// the idle-grace window elapses, handing the path to other daemon
-    /// processes while the room stays resident for fast rejoin.
+    /// idle room releases its claim once the idle-grace window elapses,
+    /// handing the path to other daemon processes while the room stays
+    /// resident for fast rejoin. Legacy markers are cleaned up along the way.
     ///
     /// `pub` so integration tests can drive the reconciler synchronously
     /// instead of waiting on `FILE_CLAIM_RECONCILE_INTERVAL`.
@@ -3853,7 +3852,8 @@ impl Daemon {
                     room.file_claim_hold.note_wanted();
                     continue;
                 }
-                crate::notebook_sync_server::release_autosave_owner_marker_for_path(&path).await;
+                crate::notebook_sync_server::cleanup_legacy_autosave_owner_marker_for_path(&path)
+                    .await;
                 if let Err(error) = self.file_claims.release(&path, &owner) {
                     debug!(
                         "[runtimed] file-claim release failed for {:?}: {}",
@@ -5309,11 +5309,10 @@ impl Daemon {
                     // daemon's writers are gone, mirroring the reaper's eviction
                     // ordering: journal barrier for the exact live heads, stop
                     // the autosave task (it owns a room Arc and flushes one
-                    // final save), stop the file watchers, drop the on-disk
-                    // autosave owner marker, then release the cross-daemon
-                    // file claim. Releasing the claim any earlier invites a
-                    // successor daemon that cannot save past our live-pid marker
-                    // and could race a late autosave flush over its writes.
+                    // final save), stop the file watchers, clean up any legacy
+                    // autosave marker, then release the cross-daemon file claim.
+                    // Releasing the claim any earlier could race a late
+                    // autosave flush over a successor's writes.
                     //
                     // Unlike the reaper, barrier failure cannot keep the room
                     // resident (it is already out of the registry on an
@@ -5370,16 +5369,18 @@ impl Daemon {
                     )
                     .await;
                     // Latch eviction between our final save (the autosave
-                    // shutdown above) and the marker release below: from here
+                    // shutdown above) and the claim release below: from here
                     // on, any straggler save on this room Arc (a pending
                     // disconnect-teardown, a lingering peer session) refuses
-                    // instead of re-claiming the marker after the handoff.
+                    // instead of writing after the handoff.
                     room.mark_evicted();
                     room.file_binding.shutdown_notebook_watcher().await;
                     room.file_binding.shutdown_project_file_watcher().await;
                     if let Some(path) = room.file_binding.path().await {
-                        crate::notebook_sync_server::release_autosave_owner_marker_for_path(&path)
-                            .await;
+                        crate::notebook_sync_server::cleanup_legacy_autosave_owner_marker_for_path(
+                            &path,
+                        )
+                        .await;
                         let _ = self.file_claims.release(&path, &self.file_claim_owner());
                     }
                     // Take the persist debouncer so its senders drop and the task
@@ -6042,9 +6043,9 @@ impl Daemon {
             )
             .await;
 
-            // Latch eviction between the final save above and the marker
-            // release below, so a straggler save on this room Arc cannot
-            // re-claim the marker after the path is handed off.
+            // Latch eviction between the final save above and claim release
+            // below, so a straggler save on this room Arc cannot write after
+            // the path is handed off.
             room.mark_evicted();
 
             // Step 5: fire-and-forget watcher shutdowns. Each task
@@ -6053,7 +6054,8 @@ impl Daemon {
             room.file_binding.shutdown_notebook_watcher().await;
             room.file_binding.shutdown_project_file_watcher().await;
             if let Some(path) = path.as_ref() {
-                crate::notebook_sync_server::release_autosave_owner_marker_for_path(path).await;
+                crate::notebook_sync_server::cleanup_legacy_autosave_owner_marker_for_path(path)
+                    .await;
                 let _ = self.file_claims.release(path, &self.file_claim_owner());
             }
 

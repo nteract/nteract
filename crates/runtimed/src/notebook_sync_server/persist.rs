@@ -1,13 +1,12 @@
 use super::*;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
 
 pub(crate) const JUPYTER_WIDGET_TARGET: &str = "jupyter.widget";
 pub(crate) const WIDGET_STATE_MIME: &str = "application/vnd.jupyter.widget-state+json";
 const WIDGET_STATE_VERSION_MAJOR: i64 = 2;
 const WIDGET_STATE_VERSION_MINOR: i64 = 0;
-const AUTOSAVE_OWNER_SCHEMA_VERSION: u32 = 1;
+const LEGACY_AUTOSAVE_OWNER_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug)]
 pub(crate) enum SaveError {
@@ -370,7 +369,7 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
                 ))
             })?;
         }
-        claim_autosave_owner(&notebook_path).await?;
+        guard_and_cleanup_legacy_autosave_owner(&notebook_path).await?;
     }
 
     // Read cells, metadata, and per-cell execution_ids from the doc.
@@ -905,7 +904,7 @@ fn checkpoint_blocked_reason(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct AutosaveOwnerMarker {
+pub(crate) struct LegacyAutosaveOwnerMarker {
     pub(crate) schema_version: u32,
     pub(crate) daemon_id: String,
     pub(crate) pid: u32,
@@ -913,27 +912,13 @@ pub(crate) struct AutosaveOwnerMarker {
     pub(crate) claimed_at_unix_ms: u64,
 }
 
-impl AutosaveOwnerMarker {
-    fn current(notebook_path: &Path) -> Self {
-        Self {
-            schema_version: AUTOSAVE_OWNER_SCHEMA_VERSION,
-            daemon_id: current_autosave_owner_id().to_string(),
-            pid: std::process::id(),
-            notebook_path: notebook_path.to_path_buf(),
-            claimed_at_unix_ms: unix_now_ms(),
-        }
-    }
-
-    fn is_current_daemon(&self) -> bool {
-        self.pid == std::process::id() && self.daemon_id == current_autosave_owner_id()
+impl LegacyAutosaveOwnerMarker {
+    fn belongs_to_current_process(&self) -> bool {
+        self.pid == std::process::id()
     }
 }
 
-fn current_autosave_owner_id() -> &'static str {
-    static OWNER_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    OWNER_ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
-}
-
+#[cfg(test)]
 fn unix_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -941,7 +926,7 @@ fn unix_now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn autosave_owner_marker_path(notebook_path: &Path) -> PathBuf {
+fn legacy_autosave_owner_marker_path(notebook_path: &Path) -> PathBuf {
     let file_name = notebook_path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -949,133 +934,82 @@ fn autosave_owner_marker_path(notebook_path: &Path) -> PathBuf {
     notebook_path.with_file_name(format!("{file_name}.runtlock"))
 }
 
-async fn claim_autosave_owner(notebook_path: &Path) -> Result<(), SaveError> {
-    let marker_path = autosave_owner_marker_path(notebook_path);
-    loop {
-        let marker = AutosaveOwnerMarker::current(notebook_path);
-        let marker_bytes = serde_json::to_vec_pretty(&marker).map_err(|e| {
-            SaveError::Retryable(format!("failed to serialize autosave owner: {e}"))
-        })?;
-
-        match tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker_path)
-            .await
-        {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(&marker_bytes).await {
-                    let _ = tokio::fs::remove_file(&marker_path).await;
-                    return Err(save_error_for_owner_io(
-                        "write autosave owner marker",
-                        &marker_path,
-                        e,
-                    ));
-                }
-                if let Err(e) = file.write_all(b"\n").await {
-                    let _ = tokio::fs::remove_file(&marker_path).await;
-                    return Err(save_error_for_owner_io(
-                        "write autosave owner marker",
-                        &marker_path,
-                        e,
-                    ));
-                }
-                return Ok(());
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => {
-                return Err(save_error_for_owner_io(
-                    "create autosave owner marker",
-                    &marker_path,
-                    e,
-                ));
-            }
-        }
-
-        let existing = match read_autosave_owner_marker(&marker_path).await {
-            Ok(marker) => marker,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                warn!(
-                    "[notebook-sync] Reclaiming unreadable autosave owner marker {:?}: {}",
-                    marker_path, e
-                );
-                remove_stale_autosave_owner_marker(&marker_path).await?;
-                continue;
-            }
-        };
-
-        if existing.is_current_daemon() {
-            write_autosave_owner_marker(&marker_path, notebook_path).await?;
+/// Honor markers written by older nteract daemons without creating any new
+/// sidecar beside the user's notebook. Cross-daemon ownership now lives in
+/// `runt_workspace::file_claims`; the file-checkpoint fingerprint remains the
+/// final guard against an external write that raced that best-effort lease.
+async fn guard_and_cleanup_legacy_autosave_owner(notebook_path: &Path) -> Result<(), SaveError> {
+    let marker_path = legacy_autosave_owner_marker_path(notebook_path);
+    let existing = match read_legacy_autosave_owner_marker(&marker_path).await {
+        Ok(marker) => marker,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            warn!(
+                "[notebook-sync] Removing unreadable legacy autosave owner marker {:?}: {}",
+                marker_path, e
+            );
+            remove_legacy_autosave_owner_marker(&marker_path).await?;
             return Ok(());
         }
+    };
 
-        if autosave_owner_process_is_live(existing.pid) {
-            error!(
-                "[notebook-sync] Refusing to save {:?}: autosave owner marker {:?} belongs to live daemon pid={} daemon_id={}. Stop that daemon or reconnect through it before saving this path.",
-                notebook_path,
-                marker_path,
-                existing.pid,
-                existing.daemon_id
-            );
-            return Err(SaveError::Unrecoverable(format!(
-                "notebook '{}' is owned by live daemon pid {} (marker '{}')",
-                notebook_path.display(),
-                existing.pid,
-                marker_path.display()
-            )));
-        }
-
+    if existing.schema_version != LEGACY_AUTOSAVE_OWNER_SCHEMA_VERSION
+        || existing.notebook_path != notebook_path
+    {
         warn!(
-            "[notebook-sync] Taking over stale autosave owner marker {:?} for {:?} from pid={} daemon_id={}",
-            marker_path, notebook_path, existing.pid, existing.daemon_id
+            "[notebook-sync] Removing invalid legacy autosave owner marker {:?}",
+            marker_path
         );
-        remove_stale_autosave_owner_marker(&marker_path).await?;
+        remove_legacy_autosave_owner_marker(&marker_path).await?;
+        return Ok(());
     }
+
+    if !existing.belongs_to_current_process() && autosave_owner_process_is_live(existing.pid) {
+        error!(
+            "[notebook-sync] Refusing to save {:?}: legacy autosave owner marker {:?} belongs to live daemon pid={} daemon_id={}. Stop that daemon or reconnect through it before saving this path.",
+            notebook_path,
+            marker_path,
+            existing.pid,
+            existing.daemon_id
+        );
+        return Err(SaveError::Unrecoverable(format!(
+            "notebook '{}' is owned by live legacy daemon pid {} (marker '{}')",
+            notebook_path.display(),
+            existing.pid,
+            marker_path.display()
+        )));
+    }
+
+    warn!(
+        "[notebook-sync] Removing legacy autosave owner marker {:?} for {:?} from pid={} daemon_id={}",
+        marker_path, notebook_path, existing.pid, existing.daemon_id
+    );
+    remove_legacy_autosave_owner_marker(&marker_path).await
 }
 
-async fn read_autosave_owner_marker(path: &Path) -> std::io::Result<AutosaveOwnerMarker> {
+async fn read_legacy_autosave_owner_marker(
+    path: &Path,
+) -> std::io::Result<LegacyAutosaveOwnerMarker> {
     let bytes = tokio::fs::read(path).await?;
     serde_json::from_slice(&bytes)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
-pub(crate) async fn release_autosave_owner_marker_for_path(notebook_path: &Path) {
-    let marker_path = autosave_owner_marker_path(notebook_path);
-    match read_autosave_owner_marker(&marker_path).await {
-        Ok(marker) if marker.is_current_daemon() => {
-            if let Err(e) = tokio::fs::remove_file(&marker_path).await {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    warn!(
-                        "[notebook-sync] Failed to release autosave owner marker {:?}: {}",
-                        marker_path, e
-                    );
-                }
-            }
-        }
-        Ok(_) | Err(_) => {}
+pub(crate) async fn cleanup_legacy_autosave_owner_marker_for_path(notebook_path: &Path) {
+    if let Err(error) = guard_and_cleanup_legacy_autosave_owner(notebook_path).await {
+        debug!(
+            "[notebook-sync] Leaving live legacy autosave owner marker for {:?}: {}",
+            notebook_path, error
+        );
     }
 }
 
-async fn write_autosave_owner_marker(
-    marker_path: &Path,
-    notebook_path: &Path,
-) -> Result<(), SaveError> {
-    let marker = AutosaveOwnerMarker::current(notebook_path);
-    let mut bytes = serde_json::to_vec_pretty(&marker)
-        .map_err(|e| SaveError::Retryable(format!("failed to serialize autosave owner: {e}")))?;
-    bytes.push(b'\n');
-    write_file_atomic(marker_path, &bytes)
-        .await
-        .map_err(|e| save_error_for_owner_io("refresh autosave owner marker", marker_path, e))
-}
-
-async fn remove_stale_autosave_owner_marker(marker_path: &Path) -> Result<(), SaveError> {
+async fn remove_legacy_autosave_owner_marker(marker_path: &Path) -> Result<(), SaveError> {
     match tokio::fs::remove_file(marker_path).await {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(save_error_for_owner_io(
-            "remove stale autosave owner marker",
+            "remove legacy autosave owner marker",
             marker_path,
             e,
         )),
@@ -1093,36 +1027,27 @@ fn save_error_for_owner_io(action: &str, path: &Path, e: std::io::Error) -> Save
 }
 
 #[cfg(test)]
-pub(crate) async fn write_autosave_owner_marker_for_test(
+pub(crate) async fn write_legacy_autosave_owner_marker_for_test(
     notebook_path: &Path,
     daemon_id: &str,
     pid: u32,
 ) {
-    let marker = AutosaveOwnerMarker {
-        schema_version: AUTOSAVE_OWNER_SCHEMA_VERSION,
+    let marker = LegacyAutosaveOwnerMarker {
+        schema_version: LEGACY_AUTOSAVE_OWNER_SCHEMA_VERSION,
         daemon_id: daemon_id.to_string(),
         pid,
         notebook_path: notebook_path.to_path_buf(),
         claimed_at_unix_ms: unix_now_ms(),
     };
-    let marker_path = autosave_owner_marker_path(notebook_path);
+    let marker_path = legacy_autosave_owner_marker_path(notebook_path);
     let mut bytes = serde_json::to_vec_pretty(&marker).unwrap();
     bytes.push(b'\n');
     tokio::fs::write(marker_path, bytes).await.unwrap();
 }
 
 #[cfg(test)]
-pub(crate) async fn read_autosave_owner_marker_for_test(
-    notebook_path: &Path,
-) -> AutosaveOwnerMarker {
-    read_autosave_owner_marker(&autosave_owner_marker_path(notebook_path))
-        .await
-        .unwrap()
-}
-
-#[cfg(test)]
-pub(crate) fn current_autosave_owner_id_for_test() -> String {
-    current_autosave_owner_id().to_string()
+pub(crate) fn legacy_autosave_owner_marker_path_for_test(notebook_path: &Path) -> PathBuf {
+    legacy_autosave_owner_marker_path(notebook_path)
 }
 
 #[cfg(test)]
@@ -2138,8 +2063,8 @@ fn sibling_temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{file_name}.{}-{n}.tmp", std::process::id()))
 }
 
-/// Atomic-write core for the non-durable convenience tier (persisted
-/// notebook doc mirrors, autosave owner markers, comments sidecar docs).
+/// Atomic-write core for the non-durable convenience tier (persisted notebook
+/// doc mirrors and comments sidecar docs).
 ///
 /// Creates the parent directory, writes `bytes` to a same-directory temp
 /// file, preserves the destination's permissions when it already exists,
@@ -2171,16 +2096,6 @@ pub(crate) fn write_file_atomic_sync(path: &Path, bytes: &[u8]) -> std::io::Resu
             Err(e)
         }
     }
-}
-
-/// Async adapter over [`write_file_atomic_sync`] for callers already on the
-/// async save path; the blocking file I/O runs on the blocking pool.
-async fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let path = path.to_path_buf();
-    let bytes = bytes.to_vec();
-    tokio::task::spawn_blocking(move || write_file_atomic_sync(&path, &bytes))
-        .await
-        .map_err(std::io::Error::other)?
 }
 
 // =============================================================================
