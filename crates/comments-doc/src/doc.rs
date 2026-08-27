@@ -227,13 +227,13 @@ impl CommentsDoc {
         if !self.comments_doc_id.is_empty() {
             return Ok(false);
         }
-        let Some(raw) = self.raw_comments_doc_id() else {
+        let Some(raw) = self.unambiguous_raw_comments_doc_id()? else {
             return Ok(false);
         };
         if raw.is_empty() {
             return Ok(false);
         }
-        self.ensure_raw_comments_doc_id_matches_value(&raw)?;
+        validate_comments_doc_id(&raw)?;
         self.comments_doc_id = raw;
         Ok(true)
     }
@@ -247,6 +247,20 @@ impl CommentsDoc {
         expected_comments_doc_id: &str,
     ) -> Result<(), CommentsDocError> {
         validate_comments_doc_id(expected_comments_doc_id)?;
+        let actual = self
+            .unambiguous_raw_comments_doc_id()?
+            .ok_or(CommentsDocError::MissingCommentsDocId)?;
+        validate_comments_doc_id(&actual)?;
+        if actual != expected_comments_doc_id {
+            return Err(CommentsDocError::CommentsDocIdMismatch {
+                expected: expected_comments_doc_id.to_string(),
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    fn unambiguous_raw_comments_doc_id(&self) -> Result<Option<String>, CommentsDocError> {
         let conflicts = self
             .doc
             .get_all(&ROOT, "comments_doc_id")
@@ -261,18 +275,7 @@ impl CommentsDoc {
         if values.len() > 1 {
             return Err(CommentsDocError::CommentsDocIdConflict);
         }
-        let actual = values
-            .into_iter()
-            .next()
-            .ok_or(CommentsDocError::MissingCommentsDocId)?;
-        validate_comments_doc_id(&actual)?;
-        if actual != expected_comments_doc_id {
-            return Err(CommentsDocError::CommentsDocIdMismatch {
-                expected: expected_comments_doc_id.to_string(),
-                actual,
-            });
-        }
-        Ok(())
+        Ok(values.into_iter().next())
     }
 
     fn set_notebook_ref(
@@ -1280,6 +1283,33 @@ mod tests {
             .adopt_synced_identity()
             .expect_err("non-empty invalid identity must not be tolerated");
         assert!(matches!(err, CommentsDocError::InvalidCommentsDocId(_)));
+    }
+
+    #[test]
+    fn identity_adoption_rejects_conflict_with_empty_placeholder() {
+        let mut baseline = CommentsDoc::new_with_actor(DOC_ID, &notebook_ref(), "client:base");
+        let bytes = baseline.save();
+        let mut empty_branch =
+            CommentsDoc::load_with_actor(&bytes, DOC_ID, "client:empty").unwrap();
+        let mut other_branch =
+            CommentsDoc::load_with_actor(&bytes, DOC_ID, "client:other").unwrap();
+        empty_branch
+            .doc_mut()
+            .put(&ROOT, "comments_doc_id", "")
+            .unwrap();
+        other_branch
+            .doc_mut()
+            .put(&ROOT, "comments_doc_id", "comments:other")
+            .unwrap();
+
+        let mut receiver = CommentsDoc::new_empty_for_sync();
+        sync_pair_without_projection_check(&mut empty_branch, &mut receiver);
+        sync_pair_without_projection_check(&mut other_branch, &mut receiver);
+
+        let err = receiver
+            .adopt_synced_identity()
+            .expect_err("empty and materialized identities must remain a conflict");
+        assert!(matches!(err, CommentsDocError::CommentsDocIdConflict));
     }
 
     #[test]
