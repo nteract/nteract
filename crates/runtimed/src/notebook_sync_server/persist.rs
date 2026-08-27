@@ -953,17 +953,6 @@ async fn guard_and_cleanup_legacy_autosave_owner(notebook_path: &Path) -> Result
         }
     };
 
-    if existing.schema_version != LEGACY_AUTOSAVE_OWNER_SCHEMA_VERSION
-        || existing.notebook_path != notebook_path
-    {
-        warn!(
-            "[notebook-sync] Removing invalid legacy autosave owner marker {:?}",
-            marker_path
-        );
-        remove_legacy_autosave_owner_marker(&marker_path).await?;
-        return Ok(());
-    }
-
     if !existing.belongs_to_current_process() && autosave_owner_process_is_live(existing.pid) {
         error!(
             "[notebook-sync] Refusing to save {:?}: legacy autosave owner marker {:?} belongs to live daemon pid={} daemon_id={}. Stop that daemon or reconnect through it before saving this path.",
@@ -978,6 +967,17 @@ async fn guard_and_cleanup_legacy_autosave_owner(notebook_path: &Path) -> Result
             existing.pid,
             marker_path.display()
         )));
+    }
+
+    if existing.schema_version != LEGACY_AUTOSAVE_OWNER_SCHEMA_VERSION
+        || existing.notebook_path != notebook_path
+    {
+        warn!(
+            "[notebook-sync] Removing invalid legacy autosave owner marker {:?}",
+            marker_path
+        );
+        remove_legacy_autosave_owner_marker(&marker_path).await?;
+        return Ok(());
     }
 
     warn!(
@@ -1032,11 +1032,27 @@ pub(crate) async fn write_legacy_autosave_owner_marker_for_test(
     daemon_id: &str,
     pid: u32,
 ) {
+    write_legacy_autosave_owner_marker_with_recorded_path_for_test(
+        notebook_path,
+        notebook_path,
+        daemon_id,
+        pid,
+    )
+    .await;
+}
+
+#[cfg(test)]
+pub(crate) async fn write_legacy_autosave_owner_marker_with_recorded_path_for_test(
+    notebook_path: &Path,
+    recorded_path: &Path,
+    daemon_id: &str,
+    pid: u32,
+) {
     let marker = LegacyAutosaveOwnerMarker {
         schema_version: LEGACY_AUTOSAVE_OWNER_SCHEMA_VERSION,
         daemon_id: daemon_id.to_string(),
         pid,
-        notebook_path: notebook_path.to_path_buf(),
+        notebook_path: recorded_path.to_path_buf(),
         claimed_at_unix_ms: unix_now_ms(),
     };
     let marker_path = legacy_autosave_owner_marker_path(notebook_path);

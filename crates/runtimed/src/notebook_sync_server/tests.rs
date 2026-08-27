@@ -7308,6 +7308,38 @@ async fn autosave_refuses_live_legacy_owner_marker() {
     );
 }
 
+/// A live marker remains authoritative even when its recorded path is from an
+/// older daemon's non-canonical spelling. Validate shape only after liveness so
+/// a path-normalization skew cannot delete another process's active guard.
+#[tokio::test]
+async fn autosave_refuses_live_legacy_owner_marker_with_path_mismatch() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "live-owner-path-skew.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+
+    let foreign_pid = 424_243;
+    let _live = override_autosave_owner_liveness_for_test(foreign_pid, true);
+    write_legacy_autosave_owner_marker_with_recorded_path_for_test(
+        &notebook_path,
+        &tmp.path().join("different-spelling.ipynb"),
+        "foreign-daemon",
+        foreign_pid,
+    )
+    .await;
+
+    let err = save_notebook_to_disk(&room, None).await.unwrap_err();
+    assert!(matches!(err, SaveError::Unrecoverable(_)));
+    assert!(
+        legacy_autosave_owner_marker_path_for_test(&notebook_path).exists(),
+        "path validation must not remove a live older daemon's marker"
+    );
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        2,
+        "path normalization skew must not permit a conflicting save"
+    );
+}
+
 /// A dead daemon's old marker is removed rather than adopted. The shared claim
 /// registry now carries ownership, so successful migration leaves no sibling
 /// coordination file in the user's directory.
