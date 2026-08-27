@@ -219,8 +219,10 @@ impl CommentsDoc {
     /// (`new_empty_for_sync`); the daemon-authoritative id reaches the
     /// document through the first sync round. Returns `true` if an identity
     /// was adopted, `false` if the cache was already set or the document
-    /// carries no id yet. Errors if the document's id is invalid or
-    /// conflicted.
+    /// carries no materialized id yet. The shared schema genesis stores an
+    /// empty placeholder, so both a missing value and an empty value are
+    /// normal while the initial sync handshake is still in progress. Errors
+    /// if a non-empty document id is invalid or conflicted.
     pub fn adopt_synced_identity(&mut self) -> Result<bool, CommentsDocError> {
         if !self.comments_doc_id.is_empty() {
             return Ok(false);
@@ -228,6 +230,9 @@ impl CommentsDoc {
         let Some(raw) = self.raw_comments_doc_id() else {
             return Ok(false);
         };
+        if raw.is_empty() {
+            return Ok(false);
+        }
         self.ensure_raw_comments_doc_id_matches_value(&raw)?;
         self.comments_doc_id = raw;
         Ok(true)
@@ -1251,6 +1256,30 @@ mod tests {
             .expect_err("seed without id must not project")
             .to_string()
             .contains("comments_doc_id is required"));
+    }
+
+    #[test]
+    fn schema_seed_identity_adoption_waits_for_materialized_identity() {
+        let mut seed = CommentsDoc::new_empty_for_sync();
+
+        assert_eq!(seed.raw_comments_doc_id().as_deref(), Some(""));
+        assert!(!seed
+            .adopt_synced_identity()
+            .expect("empty schema identity is a pending sync state"));
+        assert_eq!(seed.comments_doc_id().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn identity_adoption_still_rejects_non_empty_invalid_identity() {
+        let mut seed = CommentsDoc::new_empty_for_sync();
+        seed.doc_mut()
+            .put(&ROOT, "comments_doc_id", "not-a-comments-doc-id")
+            .unwrap();
+
+        let err = seed
+            .adopt_synced_identity()
+            .expect_err("non-empty invalid identity must not be tolerated");
+        assert!(matches!(err, CommentsDocError::InvalidCommentsDocId(_)));
     }
 
     #[test]
