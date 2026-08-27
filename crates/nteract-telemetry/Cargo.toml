@@ -1,6 +1,6 @@
 [package]
 name = "nteract-telemetry"
-version = "2.7.4"
+version = "2.7.5"
 edition.workspace = true
 description = "Anonymous phone-home telemetry for nteract Rust binaries"
 repository.workspace = true

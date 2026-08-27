@@ -1,6 +1,6 @@
 [package]
 name = "mcp-client-branding"
-version = "0.3.4"
+version = "0.3.5"
 edition.workspace = true
 description = "Canonical display names for known MCP clients"
 repository.workspace = true
