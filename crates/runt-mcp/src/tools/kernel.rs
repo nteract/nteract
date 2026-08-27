@@ -54,7 +54,7 @@ pub async fn restart_kernel(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let access = require_session_access!(server, Execute);
+    let access = require_session_access!(server, KernelControl);
     let handle = access.handle.clone();
     let notebook_id = access.notebook_id.clone();
 
@@ -105,7 +105,7 @@ pub async fn restart_kernel(
     // a daemon restart during the shutdown sequence). If the session was
     // replaced by daemon_watch's rejoin, we pick up the new one.
     let refreshed_access = match server
-        .session_access(crate::session::SessionRequirement::Execute)
+        .session_access(crate::session::SessionRequirement::KernelControl)
         .await
     {
         Ok(Some(access)) => access,
@@ -114,7 +114,7 @@ pub async fn restart_kernel(
             // Session dropped — wait for daemon_watch to rejoin.
             tokio::time::sleep(std::time::Duration::from_secs(8)).await;
             match server
-                .session_access(crate::session::SessionRequirement::Execute)
+                .session_access(crate::session::SessionRequirement::KernelControl)
                 .await
             {
                 Ok(Some(access)) => access,
@@ -225,7 +225,7 @@ pub async fn restart_kernel(
             }
             match restart_retry_access(
                 server
-                    .session_access(crate::session::SessionRequirement::Execute)
+                    .session_access(crate::session::SessionRequirement::KernelControl)
                     .await,
             ) {
                 Ok(access) => {
