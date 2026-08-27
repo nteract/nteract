@@ -1,6 +1,6 @@
 [package]
 name = "automerge-recovery"
-version = "0.3.4"
+version = "0.3.5"
 edition.workspace = true
 description = "Small panic recovery helpers for Automerge operations"
 repository.workspace = true
