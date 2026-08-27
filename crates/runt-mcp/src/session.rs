@@ -141,6 +141,10 @@ pub enum SessionRequirement {
     ProjectionRead,
     DocumentRead,
     DocumentMutation,
+    /// Kernel lifecycle operations require a healthy interactive notebook,
+    /// but must remain available while the runtime is intentionally absent
+    /// between shutdown and launch.
+    KernelControl,
     RuntimeRead,
     Execute,
 }
@@ -483,19 +487,10 @@ impl NotebookSession {
         requirement: SessionRequirement,
     ) -> Result<SessionAccess, SessionAccessError> {
         let readiness = self.readiness();
-        let allowed = match requirement {
-            SessionRequirement::ProjectionRead => {
-                readiness.projection_ready || readiness.interactive
-            }
-            SessionRequirement::DocumentRead => readiness.interactive,
-            SessionRequirement::DocumentMutation => readiness.capabilities.mutate,
-            SessionRequirement::RuntimeRead => {
-                let status = self.handle.status();
-                status.connection == ConnectionState::Connected
-                    && status.runtime_state == RuntimeStatePhase::Ready
-            }
-            SessionRequirement::Execute => readiness.capabilities.execute,
-        };
+        let status = self.handle.status();
+        let runtime_connected_and_ready = status.connection == ConnectionState::Connected
+            && status.runtime_state == RuntimeStatePhase::Ready;
+        let allowed = requirement_allowed(requirement, &readiness, runtime_connected_and_ready);
         if !allowed {
             let (code, message) = if self.handle.status().connection
                 == ConnectionState::Disconnected
@@ -590,9 +585,25 @@ impl SessionRequirement {
             Self::ProjectionRead => "projection reads",
             Self::DocumentRead => "document reads",
             Self::DocumentMutation => "document mutations",
+            Self::KernelControl => "kernel control",
             Self::RuntimeRead => "runtime reads",
             Self::Execute => "execution",
         }
+    }
+}
+
+fn requirement_allowed(
+    requirement: SessionRequirement,
+    readiness: &SessionReadiness,
+    runtime_connected_and_ready: bool,
+) -> bool {
+    match requirement {
+        SessionRequirement::ProjectionRead => readiness.projection_ready || readiness.interactive,
+        SessionRequirement::DocumentRead => readiness.interactive,
+        SessionRequirement::DocumentMutation => readiness.capabilities.mutate,
+        SessionRequirement::KernelControl => readiness.interactive,
+        SessionRequirement::RuntimeRead => runtime_connected_and_ready,
+        SessionRequirement::Execute => readiness.capabilities.execute,
     }
 }
 
@@ -659,6 +670,26 @@ pub struct SessionDropInfo {
 mod tests {
     use super::*;
 
+    fn readiness(interactive: bool, runtime_ready: bool) -> SessionReadiness {
+        SessionReadiness {
+            session_generation: 1,
+            target: "notebook:test".to_string(),
+            source_state: serde_json::json!({ "phase": "ready" }),
+            projection_ready: true,
+            document_ready: true,
+            runtime_ready,
+            interactive,
+            projection_heads: vec!["notebook-head".to_string()],
+            runtime_state_heads: vec!["runtime-head".to_string()],
+            projection_completeness: Some("complete".to_string()),
+            capabilities: SessionCapabilities {
+                read: true,
+                mutate: interactive,
+                execute: interactive && runtime_ready,
+            },
+        }
+    }
+
     #[tokio::test]
     async fn daemon_incarnation_sample_retries_transient_unavailability() {
         let expected = DaemonIncarnation {
@@ -701,5 +732,28 @@ mod tests {
             retained_readiness_axes(true, true, true, false, true, true),
             (true, false, true)
         );
+    }
+
+    #[test]
+    fn kernel_control_stays_available_between_shutdown_and_launch() {
+        let runtime_absent = readiness(true, false);
+
+        assert!(requirement_allowed(
+            SessionRequirement::KernelControl,
+            &runtime_absent,
+            false,
+        ));
+        assert!(!requirement_allowed(
+            SessionRequirement::Execute,
+            &runtime_absent,
+            false,
+        ));
+
+        let notebook_not_interactive = readiness(false, false);
+        assert!(!requirement_allowed(
+            SessionRequirement::KernelControl,
+            &notebook_not_interactive,
+            false,
+        ));
     }
 }
