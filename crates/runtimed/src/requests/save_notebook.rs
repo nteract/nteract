@@ -7,9 +7,9 @@ use tracing::warn;
 
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
-    canonical_target_path, finalize_untitled_promotion, format_notebook_cells,
-    persist_notebook_bytes, refresh_primary_baseline_from_checkpoint,
-    release_autosave_owner_marker_for_path, save_notebook_to_disk_with_claim_and_intent,
+    canonical_target_path, cleanup_legacy_autosave_owner_marker_for_path,
+    finalize_untitled_promotion, format_notebook_cells, persist_notebook_bytes,
+    refresh_primary_baseline_from_checkpoint, save_notebook_to_disk_with_claim_and_intent,
     FileSaveIntent, FileSaveOutcome, NotebookFileBinding, NotebookRoom, SaveError,
 };
 use crate::protocol::NotebookResponse;
@@ -284,7 +284,7 @@ async fn handle_with_intent(
             // Move the persistent binding with the room: the old path is now a
             // different (or absent) file and must not resolve to this id.
             daemon.notebook_registry.forget(old);
-            release_autosave_owner_marker_for_path(old).await;
+            cleanup_legacy_autosave_owner_marker_for_path(old).await;
             // Move the cross-daemon file claim with the room too: this
             // daemon no longer serves the old path.
             let _ = daemon.file_claims.release(old, &daemon.file_claim_owner());

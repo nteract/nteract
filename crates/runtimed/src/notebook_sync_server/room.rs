@@ -1523,11 +1523,11 @@ pub struct NotebookRoom {
     /// Read via `is_hosted()`; set once via `mark_hosted()` before peers attach.
     pub(crate) hosted: AtomicBool,
     /// Latched by eviction (reaper or ShutdownNotebook) after the final
-    /// autosave flush, right before the autosave owner marker and file
-    /// claim release hand the path to other daemon processes. Once set,
+    /// autosave flush, right before legacy sidecar cleanup and file-claim
+    /// release hand the path to other daemon processes. Once set,
     /// primary-path saves refuse and late disconnect-teardown work
-    /// aborts, so no straggler task can re-claim the marker or rewrite
-    /// the file after the handoff. Monotonic: an evicted room Arc is
+    /// aborts, so no straggler task can rewrite the file after the handoff.
+    /// Monotonic: an evicted room Arc is
     /// never re-registered (reconnects mint a fresh room instance).
     pub(crate) evicted: AtomicBool,
     /// Blob store for output manifests.
@@ -1751,7 +1751,7 @@ impl NotebookRoom {
     }
 
     /// Latch eviction. Call after the eviction path's final autosave
-    /// flush and before releasing the autosave owner marker; see the
+    /// flush and before releasing the cache-scoped file claim; see the
     /// `evicted` field docs for what the latch suppresses.
     pub fn mark_evicted(&self) {
         self.evicted.store(true, Ordering::Release);

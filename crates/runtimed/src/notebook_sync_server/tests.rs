@@ -7268,18 +7268,19 @@ async fn autosave_refuses_to_overwrite_externally_changed_file() {
     );
 }
 
-/// Cross-daemon ownership guard (#2285): if another live daemon has claimed
-/// this autosave path, this daemon must make the collision loud and leave the
-/// existing file untouched.
+/// Mixed-version guard: a live pre-fix daemon's sibling marker still blocks a
+/// save, so upgrading one of two concurrently running channels cannot silently
+/// clobber the older daemon's notebook.
 #[tokio::test]
-async fn autosave_refuses_live_foreign_owner_marker() {
+async fn autosave_refuses_live_legacy_owner_marker() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, notebook_path) = test_room_with_path(&tmp, "live-owner.ipynb");
     write_two_cell_notebook(&notebook_path).await;
 
     let foreign_pid = 424_242;
     let _live = override_autosave_owner_liveness_for_test(foreign_pid, true);
-    write_autosave_owner_marker_for_test(&notebook_path, "foreign-daemon", foreign_pid).await;
+    write_legacy_autosave_owner_marker_for_test(&notebook_path, "foreign-daemon", foreign_pid)
+        .await;
 
     {
         let mut doc = room.doc.write().await;
@@ -7292,7 +7293,7 @@ async fn autosave_refuses_live_foreign_owner_marker() {
         panic!("live foreign owner must be unrecoverable, got {err:?}");
     };
     assert!(
-        message.contains("owned by live daemon pid 424242"),
+        message.contains("owned by live legacy daemon pid 424242"),
         "error should name the live owner pid; got {message}"
     );
     assert_eq!(
@@ -7301,22 +7302,56 @@ async fn autosave_refuses_live_foreign_owner_marker() {
         "live owner refusal must not clobber the existing notebook"
     );
 
-    let marker = read_autosave_owner_marker_for_test(&notebook_path).await;
-    assert_eq!(marker.daemon_id, "foreign-daemon");
-    assert_eq!(marker.pid, foreign_pid);
+    assert!(
+        legacy_autosave_owner_marker_path_for_test(&notebook_path).exists(),
+        "a live older daemon's marker must be left alone"
+    );
 }
 
-/// A dead daemon's marker is safe to adopt. This keeps crash recovery working:
-/// a new daemon can autosave the path once the recorded owner process is gone.
+/// A live marker remains authoritative even when its recorded path is from an
+/// older daemon's non-canonical spelling. Validate shape only after liveness so
+/// a path-normalization skew cannot delete another process's active guard.
 #[tokio::test]
-async fn autosave_takes_over_dead_foreign_owner_marker() {
+async fn autosave_refuses_live_legacy_owner_marker_with_path_mismatch() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "live-owner-path-skew.ipynb");
+    write_two_cell_notebook(&notebook_path).await;
+
+    let foreign_pid = 424_243;
+    let _live = override_autosave_owner_liveness_for_test(foreign_pid, true);
+    write_legacy_autosave_owner_marker_with_recorded_path_for_test(
+        &notebook_path,
+        &tmp.path().join("different-spelling.ipynb"),
+        "foreign-daemon",
+        foreign_pid,
+    )
+    .await;
+
+    let err = save_notebook_to_disk(&room, None).await.unwrap_err();
+    assert!(matches!(err, SaveError::Unrecoverable(_)));
+    assert!(
+        legacy_autosave_owner_marker_path_for_test(&notebook_path).exists(),
+        "path validation must not remove a live older daemon's marker"
+    );
+    assert_eq!(
+        disk_cell_count(&notebook_path),
+        2,
+        "path normalization skew must not permit a conflicting save"
+    );
+}
+
+/// A dead daemon's old marker is removed rather than adopted. The shared claim
+/// registry now carries ownership, so successful migration leaves no sibling
+/// coordination file in the user's directory.
+#[tokio::test]
+async fn autosave_removes_dead_legacy_owner_marker() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, notebook_path) = test_room_with_path(&tmp, "dead-owner.ipynb");
     write_two_cell_notebook(&notebook_path).await;
 
     let dead_pid = 515_151;
     let _dead = override_autosave_owner_liveness_for_test(dead_pid, false);
-    write_autosave_owner_marker_for_test(&notebook_path, "dead-daemon", dead_pid).await;
+    write_legacy_autosave_owner_marker_for_test(&notebook_path, "dead-daemon", dead_pid).await;
 
     {
         let mut doc = room.doc.write().await;
@@ -7326,16 +7361,39 @@ async fn autosave_takes_over_dead_foreign_owner_marker() {
 
     save_notebook_to_disk(&room, None)
         .await
-        .expect("dead owner marker should be adopted");
+        .expect("dead legacy owner marker should be removed");
 
     let on_disk = tokio::fs::read_to_string(&notebook_path).await.unwrap();
     assert!(
         on_disk.contains("takeover = 1"),
         "takeover save should write the local room state"
     );
-    let marker = read_autosave_owner_marker_for_test(&notebook_path).await;
-    assert_eq!(marker.pid, std::process::id());
-    assert_eq!(marker.daemon_id, current_autosave_owner_id_for_test());
+    assert!(
+        !legacy_autosave_owner_marker_path_for_test(&notebook_path).exists(),
+        "a successful save must not replace the legacy marker with new sidecar state"
+    );
+}
+
+/// A normal primary-path save never creates a `.runtlock` sibling. Ownership
+/// belongs to the cache-scoped file-claim registry, not the user's project.
+#[tokio::test]
+async fn autosave_does_not_create_notebook_sidecar() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "clean-directory.ipynb");
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "clean = true").unwrap();
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    assert!(notebook_path.exists());
+    assert!(
+        !legacy_autosave_owner_marker_path_for_test(&notebook_path).exists(),
+        "saving must not pollute the notebook directory with a .runtlock file"
+    );
 }
 
 /// Saves to a non-primary path (Save As) are not staleness-guarded:

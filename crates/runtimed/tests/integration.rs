@@ -5212,11 +5212,9 @@ async fn test_open_notebook_same_daemon_reopen_refreshes_claim() {
     stop_claiming_daemon(&socket_a, handle_a).await;
 }
 
-/// Evicting the room via ShutdownNotebook releases both the cross-daemon
-/// claim and the on-disk autosave owner marker, so a second daemon can not
-/// only open the path but also save to it. A claim release without the
-/// marker release would advertise a handoff the successor cannot use: its
-/// first save would refuse against the first daemon's live-pid marker.
+/// Evicting the room via ShutdownNotebook releases the cache-scoped
+/// cross-daemon claim, so a second daemon can open and save the path without
+/// any coordination files appearing beside the notebook.
 #[tokio::test]
 async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
     let claims_root = TempDir::new().unwrap();
@@ -5234,8 +5232,7 @@ async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
         .expect("daemon A should open the notebook");
     let notebook_id = opened.info.notebook_id.clone();
 
-    // An explicit save stamps the autosave owner marker next to the file
-    // with daemon A's identity, exactly like any autosave would.
+    // An explicit save must not stamp coordination state next to user data.
     let save = opened
         .handle
         .send_request(NotebookRequest::SaveNotebook {
@@ -5253,16 +5250,15 @@ async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
         "unexpected save response: {save:?}"
     );
     assert!(
-        marker_path.exists(),
-        "save must stamp the autosave owner marker"
+        !marker_path.exists(),
+        "save must not create an autosave owner marker beside the notebook"
     );
     drop(opened);
 
     let registry = runt_workspace::file_claims::FileClaimRegistry::at_dir(claims_dir.clone());
     assert!(registry.read(&canonical).is_some());
 
-    // Close the room on daemon A; the claim and the marker must be
-    // released with it.
+    // Close the room on daemon A; the shared claim must be released with it.
     let pool_client_a = PoolClient::new(socket_a.clone());
     assert!(pool_client_a
         .shutdown_notebook(&notebook_id)
@@ -5274,7 +5270,7 @@ async fn test_notebook_shutdown_releases_claim_for_other_daemons() {
     );
     assert!(
         !marker_path.exists(),
-        "room eviction must release the autosave owner marker along with the claim"
+        "room eviction must leave the notebook directory free of lock sidecars"
     );
 
     // Daemon B can now open the path and save to it.
@@ -5408,9 +5404,9 @@ async fn test_claim_reconciler_never_overwrites_live_foreign_claim() {
     stop_claiming_daemon(&socket_a, handle_a).await;
 }
 
-/// Claims follow activity, not room residency: a clean idle room
-/// releases its claim (and the autosave owner marker) after the grace
-/// window, another daemon can then take the path, and reconnecting
+/// Claims follow activity, not room residency: a clean idle room releases its
+/// cache-scoped claim after the grace window, another daemon can then take the
+/// path, and reconnecting
 /// through the first daemon's still-resident room is refused with the
 /// structured error while the foreign claim is live.
 #[tokio::test]
@@ -5453,7 +5449,7 @@ async fn test_idle_clean_room_releases_claim_and_hands_off() {
     }
     assert!(
         !marker_path.exists(),
-        "idle release must drop the autosave owner marker with the claim"
+        "idle release must leave the notebook directory free of lock sidecars"
     );
 
     // Daemon B takes the freed path.
