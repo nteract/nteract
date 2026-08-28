@@ -1,6 +1,6 @@
 [package]
 name = "comments-doc"
-version = "0.3.5"
+version = "0.3.6"
 edition.workspace = true
 description = "CommentsDoc — durable per-notebook Automerge document for comments"
 repository.workspace = true

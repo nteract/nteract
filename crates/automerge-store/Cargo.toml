@@ -1,6 +1,6 @@
 [package]
 name = "automerge-store"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 description = "Durable, content-addressed storage for Automerge documents"
 repository.workspace = true
