@@ -1,6 +1,6 @@
 [package]
 name = "nteract-markdown-wasm"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 publish = false
 
