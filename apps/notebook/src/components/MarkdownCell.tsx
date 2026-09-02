@@ -834,6 +834,8 @@ export const MarkdownCell = memo(function MarkdownCell({
   // Handle keyboard navigation in view mode (when not editing)
   const handleViewKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      const interactionTarget = getActiveInteractionTarget();
+      if (interactionTarget && interactionTarget.cellId !== cell.id) return;
       const key = e.key.toLowerCase();
       if (key === "m" && e.altKey && (e.metaKey || e.ctrlKey)) {
         if (requestRenderedSourceComment()) {
@@ -865,14 +867,6 @@ export const MarkdownCell = memo(function MarkdownCell({
         e.preventDefault();
       } else if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (readOnly) {
-          return;
-        }
-        const interactionTarget = getActiveInteractionTarget();
-        // Cell insertion updates the notebook interaction target synchronously,
-        // but the previously selected Markdown preview may retain DOM focus.
-        // Let the document-level command-mode handler process Enter for the
-        // newly selected cell instead of reclaiming focus for this stale view.
-        if (interactionTarget && interactionTarget.cellId !== cell.id) {
           return;
         }
         // Enter: enter edit mode
@@ -1095,15 +1089,6 @@ export const MarkdownCell = memo(function MarkdownCell({
       frameRef.current.search(searchQuery || "");
     }
   }, [searchQuery, editing, canRenderProjectionInHost]);
-
-  // Focus view section when cell becomes focused but not editing
-  useEffect(() => {
-    if (isFocused && !editing) {
-      requestAnimationFrame(() => {
-        viewRef.current?.focus({ preventScroll: true });
-      });
-    }
-  }, [isFocused, editing]);
 
   return (
     <CellContainer

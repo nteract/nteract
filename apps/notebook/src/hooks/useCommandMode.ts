@@ -106,7 +106,9 @@ export function useCommandMode({
       // modifiers and that DOM focus isn't inside a native editable control
       // (search box, comment composer, dialog input, etc).
       if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (event.key === "Enter") {
+      // Bare Enter enters edit mode. Shift+Enter is an execution/advance
+      // command and is intentionally outside this hook's current contract.
+      if (event.key === "Enter" && !event.shiftKey) {
         if (target?.kind === "cell") {
           if (enterEditModeRef.current()) event.preventDefault();
         }
@@ -118,15 +120,14 @@ export function useCommandMode({
         return;
       }
 
-      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      const key = event.key.toLowerCase();
+      if (key === "arrowup" || key === "arrowdown" || key === "j" || key === "k") {
         pendingDeleteRef.current = null;
         if (event.shiftKey) return;
-        const direction = event.key === "ArrowUp" ? "previous" : "next";
+        const direction = key === "arrowup" || key === "k" ? "previous" : "next";
         if (navigateSelectionRef.current?.(direction, target.cellId)) event.preventDefault();
         return;
       }
-
-      const key = event.key.toLowerCase();
 
       if (key === "d") {
         // OS/browser keyboard auto-repeat fires additional keydown events

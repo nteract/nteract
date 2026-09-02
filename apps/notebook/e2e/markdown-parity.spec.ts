@@ -216,7 +216,8 @@ test.describe("markdown parity", () => {
     await firstPreview.focus();
     await page.keyboard.press("ArrowDown");
     await expect.poll(() => activeCellId(page)).toBe(secondCellId);
-    await expect(secondMarkdown.getByLabel("Markdown cell content")).toBeFocused();
+    await expect(page.locator(`[data-cell-command-focus="${secondCellId}"]`)).toBeFocused();
+    await expect(secondMarkdown.getByLabel("Markdown cell content")).not.toBeFocused();
   });
 
   test("navigates mixed cells with arrows while staying in command mode", async ({ page }) => {
@@ -241,21 +242,30 @@ test.describe("markdown parity", () => {
     await page.keyboard.press("Escape");
     await expect(firstEditor).not.toBeFocused();
 
+    const markdownCommandFocus = page.locator(`[data-cell-command-focus="${markdownId}"]`);
+    const codeCommandFocus = page.locator(`[data-cell-command-focus="${secondCodeId}"]`);
     await page.keyboard.press("ArrowDown");
-    await expect(markdownPreview).toBeFocused();
+    await expect(markdownCommandFocus).toBeFocused();
+    await expect(markdownPreview).not.toBeFocused();
 
-    // The Markdown preview retains DOM focus when selection moves to code.
-    // A subsequent arrow must use the live command-mode target, not this
-    // preview's stale cell closure.
+    await markdownPreview.focus();
     await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("ArrowUp");
-    await expect(markdownPreview).toBeFocused();
-
-    await page.keyboard.press("ArrowDown");
+    await expect(codeCommandFocus).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(codeCommandFocus).toBeFocused();
+    await expect.poll(() => activeCellId(page)).toBe(secondCodeId);
     await page.keyboard.press("Enter");
     await expect(secondEditor).toBeFocused();
     await expect(firstEditor).not.toBeFocused();
     await expect(secondCode).toBeInViewport();
+
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("k");
+    await expect(markdownCommandFocus).toBeFocused();
+    await page.keyboard.press("j");
+    await expect(codeCommandFocus).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(secondEditor).toBeFocused();
   });
 
   test("renders selectable markdown outputs without changing output routing semantics", async ({
@@ -456,7 +466,11 @@ async function activeCellId(page: Page): Promise<string | null> {
   return await page.evaluate(() => {
     const activeElement = document.activeElement;
     return (
-      activeElement?.closest('[data-slot="cell-container"]')?.getAttribute("data-cell-id") ?? null
+      activeElement
+        ?.closest("[data-cell-command-focus]")
+        ?.getAttribute("data-cell-command-focus") ??
+      activeElement?.closest('[data-slot="cell-container"]')?.getAttribute("data-cell-id") ??
+      null
     );
   });
 }

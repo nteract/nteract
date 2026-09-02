@@ -445,7 +445,7 @@ describe("MarkdownCell theme sync", () => {
     expect(frameProps?.minHeight).toBeGreaterThan(24);
   });
 
-  it("focuses the markdown preview without scrolling when the cell becomes focused", async () => {
+  it("does not focus the markdown preview merely because the cell becomes selected", async () => {
     const focusSpy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(() => undefined);
 
     const { rerender } = render(
@@ -457,9 +457,8 @@ describe("MarkdownCell theme sync", () => {
     mockIsFocused = true;
     rerender(<MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />);
 
-    await waitFor(() => {
-      expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
-    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(focusSpy).not.toHaveBeenCalled();
   });
 
   it("selects a rendered markdown cell without publishing editor focus", () => {
@@ -896,20 +895,43 @@ describe("MarkdownCell theme sync", () => {
     });
   });
 
-  it("does not let a stale preview reclaim focus from another selected cell", () => {
+  it.each([
+    { key: "Enter" },
+    { key: "Enter", shiftKey: true },
+    { key: "Enter", ctrlKey: true },
+    { key: "Escape" },
+    { key: "ArrowDown" },
+    { key: "ArrowUp" },
+    { key: "j" },
+    { key: "k" },
+    { key: "m", ctrlKey: true, altKey: true },
+  ])("does not let a stale preview handle $key for another selected cell", (event) => {
     const cell = makeCell();
     const onFocus = vi.fn();
+    const onEnterCommandMode = vi.fn();
+    const onFocusNext = vi.fn();
+    const onFocusPrevious = vi.fn();
+    const onCreateSourceComment = vi.fn();
     mockActiveInteractionTarget = { kind: "cell", cellId: "new-code-cell" };
 
     const { getByLabelText } = render(
-      <MarkdownCell cell={cell} onFocus={onFocus} onDelete={() => {}} />,
+      <MarkdownCell
+        cell={cell}
+        onFocus={onFocus}
+        onEnterCommandMode={onEnterCommandMode}
+        onFocusNext={onFocusNext}
+        onFocusPrevious={onFocusPrevious}
+        onCreateSourceComment={onCreateSourceComment}
+      />,
     );
 
     const preview = getByLabelText("Markdown cell content");
-    const handled = fireEvent.keyDown(preview, { key: "Enter" });
-
-    expect(handled).toBe(true);
+    expect(fireEvent.keyDown(preview, event)).toBe(true);
     expect(onFocus).not.toHaveBeenCalled();
+    expect(onEnterCommandMode).not.toHaveBeenCalled();
+    expect(onFocusNext).not.toHaveBeenCalled();
+    expect(onFocusPrevious).not.toHaveBeenCalled();
+    expect(onCreateSourceComment).not.toHaveBeenCalled();
     expect(preview.className).not.toContain("hidden");
   });
 
