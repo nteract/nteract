@@ -13,12 +13,15 @@ export type CommandModeCommand =
   | "toggle-output";
 
 type RunCommand = (command: CommandModeCommand, cellId: string) => boolean;
+type NavigateSelection = (direction: "previous" | "next", cellId: string) => boolean;
 
 interface UseCommandModeOptions {
   /** Enter command mode: blur the active element, select the focused cell (no editor). */
   showCommandMode: () => void;
   /** Leave command mode: focus the source editor of the selected cell. */
   enterEditMode: () => boolean;
+  /** Select an adjacent visible cell without entering its editor. */
+  navigateSelection?: NavigateSelection;
   /** Apply a command through the shared notebook surface. */
   runCommand: RunCommand;
   /** Skip attaching the listener entirely (e.g. no notebook loaded). */
@@ -49,6 +52,7 @@ function isInteractiveTarget(el: Element | null): boolean {
  *
  *   Escape → blur the editor/output, enter command mode (`{kind:"cell"}`)
  *   Enter  → leave command mode, focus the cell's source editor
+ *   Up/Down → select the previous/next visible cell without editing
  *
  * While in command mode, single letters mirror the most common Jupyter
  * shortcuts: A/B insert a cell above/below, M/Y change cell type, O toggles
@@ -60,14 +64,17 @@ function isInteractiveTarget(el: Element | null): boolean {
 export function useCommandMode({
   showCommandMode,
   enterEditMode,
+  navigateSelection,
   runCommand,
   disabled = false,
 }: UseCommandModeOptions): void {
   const showCommandModeRef = useRef(showCommandMode);
   const enterEditModeRef = useRef(enterEditMode);
+  const navigateSelectionRef = useRef(navigateSelection);
   const runCommandRef = useRef(runCommand);
   showCommandModeRef.current = showCommandMode;
   enterEditModeRef.current = enterEditMode;
+  navigateSelectionRef.current = navigateSelection;
   runCommandRef.current = runCommand;
 
   // Timestamp + cell id of the last bare "d" press, for the D,D delete
@@ -99,7 +106,9 @@ export function useCommandMode({
       // modifiers and that DOM focus isn't inside a native editable control
       // (search box, comment composer, dialog input, etc).
       if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (event.key === "Enter") {
+      // Bare Enter enters edit mode. Shift+Enter is an execution/advance
+      // command and is intentionally outside this hook's current contract.
+      if (event.key === "Enter" && !event.shiftKey) {
         if (target?.kind === "cell") {
           if (enterEditModeRef.current()) event.preventDefault();
         }
@@ -112,6 +121,13 @@ export function useCommandMode({
       }
 
       const key = event.key.toLowerCase();
+      if (key === "arrowup" || key === "arrowdown" || key === "j" || key === "k") {
+        pendingDeleteRef.current = null;
+        if (event.shiftKey) return;
+        const direction = key === "arrowup" || key === "k" ? "previous" : "next";
+        if (navigateSelectionRef.current?.(direction, target.cellId)) event.preventDefault();
+        return;
+      }
 
       if (key === "d") {
         // OS/browser keyboard auto-repeat fires additional keydown events

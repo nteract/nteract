@@ -114,6 +114,127 @@ describe("useCommandMode", () => {
     expect(enterEditMode).not.toHaveBeenCalled();
   });
 
+  it("does not treat Shift+Enter as bare Enter", () => {
+    mockTarget = { kind: "cell", cellId: "cell-1" };
+    const enterEditMode = vi.fn(() => true);
+
+    renderHook(() =>
+      useCommandMode({ showCommandMode: vi.fn(), enterEditMode, runCommand: vi.fn() }),
+    );
+
+    expect(dispatchKeyDown({ key: "Enter", shiftKey: true })).toBe(true);
+    expect(enterEditMode).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["ArrowUp", "previous"],
+    ["ArrowDown", "next"],
+    ["k", "previous"],
+    ["j", "next"],
+    ["K", "previous"],
+    ["J", "next"],
+  ] as const)("routes %s to command-mode %s selection", (key, direction) => {
+    mockTarget = { kind: "cell", cellId: "cell-1" };
+    const navigateSelection = vi.fn(() => true);
+
+    renderHook(() =>
+      useCommandMode({
+        showCommandMode: vi.fn(),
+        enterEditMode: vi.fn(),
+        navigateSelection,
+        runCommand: vi.fn(),
+      }),
+    );
+
+    expect(dispatchKeyDown({ key })).toBe(false);
+    expect(navigateSelection).toHaveBeenCalledWith(direction, "cell-1");
+  });
+
+  it("leaves an arrow unhandled when selection cannot move", () => {
+    mockTarget = { kind: "cell", cellId: "cell-1" };
+    const navigateSelection = vi.fn(() => false);
+
+    renderHook(() =>
+      useCommandMode({
+        showCommandMode: vi.fn(),
+        enterEditMode: vi.fn(),
+        navigateSelection,
+        runCommand: vi.fn(),
+      }),
+    );
+
+    expect(dispatchKeyDown({ key: "ArrowUp" })).toBe(true);
+    expect(navigateSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ArrowDown", "ArrowUp", "j", "k"])(
+    "ignores %s outside command mode or with modifiers",
+    (key) => {
+      mockTarget = { kind: "editor", cellId: "cell-1" };
+      const navigateSelection = vi.fn(() => true);
+
+      renderHook(() =>
+        useCommandMode({
+          showCommandMode: vi.fn(),
+          enterEditMode: vi.fn(),
+          navigateSelection,
+          runCommand: vi.fn(),
+        }),
+      );
+
+      dispatchKeyDown({ key });
+      mockTarget = { kind: "cell", cellId: "cell-1" };
+      dispatchKeyDown({ key, shiftKey: true });
+      dispatchKeyDown({ key, metaKey: true });
+      dispatchKeyDown({ key, ctrlKey: true });
+      dispatchKeyDown({ key, altKey: true });
+
+      expect(navigateSelection).not.toHaveBeenCalled();
+    },
+  );
+
+  it("uses the latest arrow navigation callback after rerender", () => {
+    mockTarget = { kind: "cell", cellId: "cell-1" };
+    const firstNavigate = vi.fn(() => true);
+    const secondNavigate = vi.fn(() => true);
+    const { rerender } = renderHook(
+      ({ navigateSelection }) =>
+        useCommandMode({
+          showCommandMode: vi.fn(),
+          enterEditMode: vi.fn(),
+          navigateSelection,
+          runCommand: vi.fn(),
+        }),
+      { initialProps: { navigateSelection: firstNavigate } },
+    );
+
+    rerender({ navigateSelection: secondNavigate });
+    dispatchKeyDown({ key: "ArrowDown" });
+
+    expect(firstNavigate).not.toHaveBeenCalled();
+    expect(secondNavigate).toHaveBeenCalledWith("next", "cell-1");
+  });
+
+  it.each(["ArrowDown", "ArrowUp", "j", "k"])("does not complete D,D after %s", (key) => {
+    mockTarget = { kind: "cell", cellId: "cell-1" };
+    const runCommand = vi.fn();
+
+    renderHook(() =>
+      useCommandMode({
+        showCommandMode: vi.fn(),
+        enterEditMode: vi.fn(),
+        navigateSelection: vi.fn(() => true),
+        runCommand,
+      }),
+    );
+
+    dispatchKeyDown({ key: "d" });
+    dispatchKeyDown({ key });
+    dispatchKeyDown({ key: "d" });
+
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["a", "insert-above"],
     ["b", "insert-below"],
@@ -192,23 +313,28 @@ describe("useCommandMode", () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
-  it("does not hijack Enter, Escape, or letter keys from a focused button", () => {
+  it("does not hijack Enter, Escape, arrows, or letter keys from a focused button", () => {
     mockTarget = { kind: "cell", cellId: "cell-1" };
     const showCommandMode = vi.fn();
     const enterEditMode = vi.fn();
+    const navigateSelection = vi.fn(() => true);
     const runCommand = vi.fn();
     const button = document.createElement("button");
     document.body.appendChild(button);
     button.focus();
 
-    renderHook(() => useCommandMode({ showCommandMode, enterEditMode, runCommand }));
+    renderHook(() =>
+      useCommandMode({ showCommandMode, enterEditMode, navigateSelection, runCommand }),
+    );
 
     dispatchKeyDown({ key: "Enter" });
     dispatchKeyDown({ key: "Escape" });
+    dispatchKeyDown({ key: "ArrowDown" });
     dispatchKeyDown({ key: "a" });
 
     expect(showCommandMode).not.toHaveBeenCalled();
     expect(enterEditMode).not.toHaveBeenCalled();
+    expect(navigateSelection).not.toHaveBeenCalled();
     expect(runCommand).not.toHaveBeenCalled();
   });
 
@@ -286,21 +412,25 @@ describe("useCommandMode", () => {
     expect(runCommand).toHaveBeenCalledWith("delete", "cell-2");
   });
 
-  it("does nothing for letter shortcuts when disabled", () => {
+  it("does nothing for command-mode shortcuts when disabled", () => {
     mockTarget = { kind: "cell", cellId: "cell-1" };
+    const navigateSelection = vi.fn(() => true);
     const runCommand = vi.fn();
 
     renderHook(() =>
       useCommandMode({
         showCommandMode: vi.fn(),
         enterEditMode: vi.fn(),
+        navigateSelection,
         runCommand,
         disabled: true,
       }),
     );
 
     dispatchKeyDown({ key: "a" });
+    dispatchKeyDown({ key: "ArrowDown" });
 
+    expect(navigateSelection).not.toHaveBeenCalled();
     expect(runCommand).not.toHaveBeenCalled();
   });
 });

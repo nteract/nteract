@@ -41,10 +41,13 @@ import type { TracebackCellTarget } from "@/components/outputs/traceback-output"
 import { usePresenceContext } from "@/components/notebook/presence-context";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import { type CommandModeCommand, useCommandMode } from "../hooks/useCommandMode";
+import { findAdjacentVisibleCellId, type CellNavigationDirection } from "../lib/cell-navigation";
 import {
   flushCellUIState,
+  getActiveInteractionTarget,
   getFocusedCellId,
   setActiveInteractionTarget,
+  useActiveInteractionTarget,
   useFocusedCellId,
   useSearchCurrentMatch,
 } from "@/components/notebook/state/cell-ui-state";
@@ -304,6 +307,8 @@ function SortableCell({
   onDeleteCell,
   isLastCell,
   isHiddenInGroup,
+  isCommandTarget,
+  onCommandFocus,
   canMutateCells,
 }: {
   cellId: string;
@@ -318,6 +323,8 @@ function SortableCell({
   onDeleteCell: (cellId: string) => void;
   isLastCell?: boolean;
   isHiddenInGroup?: boolean;
+  isCommandTarget: boolean;
+  onCommandFocus: (cellId: string) => void;
   canMutateCells: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -346,7 +353,22 @@ function SortableCell({
   }
 
   return (
-    <div id={anchorId} ref={setNodeRef} style={style}>
+    <div
+      id={anchorId}
+      ref={setNodeRef}
+      style={style}
+      role="group"
+      aria-label={`Cell ${index + 1}`}
+      tabIndex={isCommandTarget ? 0 : -1}
+      data-cell-command-focus={cellId}
+      className="outline-none"
+      onFocus={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const target = getActiveInteractionTarget();
+        if (target?.kind === "cell" && target.cellId === cellId) return;
+        onCommandFocus(cellId);
+      }}
+    >
       {canMutateCells && index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
@@ -416,6 +438,28 @@ function NotebookViewContent({
 
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
+  const activeInteractionTarget = useActiveInteractionTarget();
+  const focusCommandCell = useCallback((cellId: string) => {
+    containerRef.current
+      ?.querySelector<HTMLElement>(`[data-cell-command-focus="${CSS.escape(cellId)}"]`)
+      ?.focus({ preventScroll: true });
+  }, []);
+
+  const commandFocusCellId =
+    activeInteractionTarget?.kind === "cell" && cellIds.includes(activeInteractionTarget.cellId)
+      ? activeInteractionTarget.cellId
+      : null;
+
+  useLayoutEffect(() => {
+    if (!commandFocusCellId) return;
+    const target = containerRef.current?.querySelector<HTMLElement>(
+      `[data-cell-command-focus="${CSS.escape(commandFocusCellId)}"]`,
+    );
+    const active = document.activeElement;
+    if (active && target?.contains(active) && !active.closest(".cm-editor")) return;
+    target?.focus({ preventScroll: true });
+  }, [commandFocusCellId]);
+
   const searchCurrentMatch = useSearchCurrentMatch();
   const outputFocusedCellId = useOutputFocusedCellId();
   // FSB-1 failure surface: outputs whose projection failed after retries.
@@ -466,6 +510,11 @@ function NotebookViewContent({
     [onFocusCell, publishInteractionTarget],
   );
 
+  const handleCommandCellFocus = useCallback(
+    (cellId: string) => focusInteractionTarget({ kind: "cell", cellId }),
+    [focusInteractionTarget],
+  );
+
   // Shared "leave output focus, select the cell without editing" exit,
   // used by both command mode (Escape) and the click-outside dismissal
   // below, so the two paths can't drift on what "exit to cell" means.
@@ -492,7 +541,8 @@ function NotebookViewContent({
       document.activeElement.blur();
     }
     exitToCellSelection(cellId);
-  }, [exitToCellSelection]);
+    focusCommandCell(cellId);
+  }, [exitToCellSelection, focusCommandCell]);
 
   // Click-outside-container exit. Clicking another cell's editor already
   // clears focus via the selection-change effect above, but clicking another
@@ -777,9 +827,39 @@ function NotebookViewContent({
     [canMutateCells, handleDeleteCell, onAddCell, onChangeCellType, onSetCellOutputsHidden],
   );
 
+  const isVisibleCell = useCallback((cellId: string) => {
+    const group = hiddenGroupsRef.current.get(cellId);
+    return !group || group.isFirst;
+  }, []);
+
+  const navigateCommandModeSelection = useCallback(
+    (direction: CellNavigationDirection, cellId: string): boolean => {
+      const targetCellId = findAdjacentVisibleCellId(
+        cellIdsRef.current,
+        cellId,
+        direction,
+        isVisibleCell,
+      );
+      if (!targetCellId) return false;
+
+      focusInteractionTarget({ kind: "cell", cellId: targetCellId });
+      focusCommandCell(targetCellId);
+      window.requestAnimationFrame(() => {
+        containerRef.current
+          ?.querySelector<HTMLElement>(
+            `[data-slot="cell-container"][data-cell-id="${CSS.escape(targetCellId)}"]`,
+          )
+          ?.scrollIntoView({ block: "nearest" });
+      });
+      return true;
+    },
+    [focusCommandCell, focusInteractionTarget, isVisibleCell],
+  );
+
   useCommandMode({
     showCommandMode,
     enterEditMode,
+    navigateSelection: navigateCommandModeSelection,
     runCommand: runCommandModeAction,
     disabled: isLoading || cellIds.length === 0,
   });
@@ -896,22 +976,17 @@ function NotebookViewContent({
       dragHandleProps?: Record<string, unknown>,
       isDragging?: boolean,
     ) => {
-      // Navigation callbacks — skip cells that are collapsed into a hidden group
-      const isVisibleCell = (id: string) => {
-        const g = hiddenGroupsRef.current.get(id);
-        return !g || g.isFirst;
-      };
-
       const onFocusPrevious = (cursorPosition: "start" | "end") => {
         logger.debug(
           `[cell-nav] onFocusPrevious called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
-        let prevIndex = index - 1;
-        while (prevIndex >= 0 && !isVisibleCell(cellIdsRef.current[prevIndex])) {
-          prevIndex--;
-        }
-        if (prevIndex >= 0) {
-          const prevCellId = cellIdsRef.current[prevIndex];
+        const prevCellId = findAdjacentVisibleCellId(
+          cellIdsRef.current,
+          cell.id,
+          "previous",
+          isVisibleCell,
+        );
+        if (prevCellId) {
           logger.debug(`[cell-nav] Focusing previous: ${prevCellId.slice(0, 8)}`);
           focusInteractionTarget({ kind: "editor", cellId: prevCellId });
           focusCell(prevCellId, cursorPosition);
@@ -924,15 +999,13 @@ function NotebookViewContent({
         logger.debug(
           `[cell-nav] onFocusNext called: cell=${cell.id.slice(0, 8)} index=${index} cellIds=${cellIdsRef.current.map((id) => id.slice(0, 8)).join(",")}`,
         );
-        let nextIndex = index + 1;
-        while (
-          nextIndex < cellIdsRef.current.length &&
-          !isVisibleCell(cellIdsRef.current[nextIndex])
-        ) {
-          nextIndex++;
-        }
-        if (nextIndex < cellIdsRef.current.length) {
-          const nextCellId = cellIdsRef.current[nextIndex];
+        const nextCellId = findAdjacentVisibleCellId(
+          cellIdsRef.current,
+          cell.id,
+          "next",
+          isVisibleCell,
+        );
+        if (nextCellId) {
           logger.debug(`[cell-nav] Focusing next: ${nextCellId.slice(0, 8)}`);
           focusInteractionTarget({ kind: "editor", cellId: nextCellId });
           focusCell(nextCellId, cursorPosition);
@@ -942,18 +1015,13 @@ function NotebookViewContent({
       };
 
       const focusRenderedCell = (direction: "previous" | "next") => {
-        const step = direction === "previous" ? -1 : 1;
-        let targetIndex = index + step;
-        while (
-          targetIndex >= 0 &&
-          targetIndex < cellIdsRef.current.length &&
-          !isVisibleCell(cellIdsRef.current[targetIndex])
-        ) {
-          targetIndex += step;
-        }
-        if (targetIndex < 0 || targetIndex >= cellIdsRef.current.length) return;
-
-        const targetCellId = cellIdsRef.current[targetIndex];
+        const targetCellId = findAdjacentVisibleCellId(
+          cellIdsRef.current,
+          cell.id,
+          direction,
+          isVisibleCell,
+        );
+        if (!targetCellId) return;
         const targetCell = getCellById(targetCellId);
         if (targetCell?.cell_type !== "markdown") {
           focusInteractionTarget({ kind: "editor", cellId: targetCellId });
@@ -963,6 +1031,8 @@ function NotebookViewContent({
 
         focusInteractionTarget({ kind: "cell", cellId: targetCellId });
         requestAnimationFrame(() => {
+          const target = getActiveInteractionTarget();
+          if (target?.kind !== "cell" || target.cellId !== targetCellId) return;
           document
             .getElementById(targetCellId)
             ?.querySelector<HTMLElement>('[aria-label="Markdown cell content"]')
@@ -981,6 +1051,7 @@ function NotebookViewContent({
       // cell stays selected but its editor no longer holds DOM focus.
       const onEnterCommandMode = () => {
         focusInteractionTarget({ kind: "cell", cellId: cell.id });
+        focusCommandCell(cell.id);
       };
 
       // Build right gutter content — delete button for all cells,
@@ -1240,7 +1311,9 @@ function NotebookViewContent({
     },
     [
       runtime,
+      focusCommandCell,
       focusInteractionTarget,
+      isVisibleCell,
       suppressTailFollowForInPlaceExecution,
       onExecuteCell,
       onInterruptKernel,
@@ -1386,6 +1459,8 @@ function NotebookViewContent({
                     onDeleteCell={handleDeleteCell}
                     isLastCell={index === cellIds.length - 1}
                     isHiddenInGroup={group != null && !group.isFirst}
+                    isCommandTarget={commandFocusCellId === cellId}
+                    onCommandFocus={handleCommandCellFocus}
                     canMutateCells={canMutateCells}
                   />
                 );
