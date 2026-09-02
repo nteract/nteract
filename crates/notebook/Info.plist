@@ -7,5 +7,7 @@
   <false/>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Notebook code needs microphone access to record or stream audio.</string>
 </dict>
 </plist>
