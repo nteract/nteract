@@ -871,9 +871,20 @@ impl DocHandle {
 
         {
             let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
-            state
+            let after_message_id = state
                 .comments_doc
-                .reply(thread_id, &message_id, &body, None, &created_at)?;
+                .read_projection(None)?
+                .threads
+                .into_iter()
+                .find(|thread| thread.id == thread_id)
+                .and_then(|thread| thread.messages.last().map(|message| message.id.clone()));
+            state.comments_doc.reply(
+                thread_id,
+                &message_id,
+                &body,
+                after_message_id.as_deref(),
+                &created_at,
+            )?;
         }
 
         // Notify sync task that CommentsDoc changed
@@ -1342,19 +1353,43 @@ mod tests {
             "thread creator should match set actor"
         );
 
-        // Reply to thread
-        let _message_id = handle.reply_to_comment(&thread_id, "reply".into()).unwrap();
+        // Replies from different participants append to the conversation in
+        // creation order rather than repeatedly inserting before the root.
+        handle.set_actor("agent:bob").unwrap();
+        handle
+            .reply_to_comment(&thread_id, "first reply".into())
+            .unwrap();
+        handle.set_actor("human:quill").unwrap();
+        handle
+            .reply_to_comment(&thread_id, "follow-up".into())
+            .unwrap();
+        handle.set_actor("agent:test").unwrap();
+        handle
+            .reply_to_comment(&thread_id, "latest reply".into())
+            .unwrap();
 
         let projection = handle.get_comments_projection().unwrap();
-        assert_eq!(projection.threads[0].messages.len(), 2);
-        // Messages may be in any order depending on position calculation
-        let bodies: Vec<&str> = projection.threads[0]
-            .messages
+        let messages = &projection.threads[0].messages;
+        let bodies: Vec<&str> = messages
             .iter()
-            .map(|m| m.body.as_str())
+            .map(|message| message.body.as_str())
             .collect();
-        assert!(bodies.contains(&"test comment"));
-        assert!(bodies.contains(&"reply"));
+        assert_eq!(
+            bodies,
+            vec!["test comment", "first reply", "follow-up", "latest reply"]
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.created_by_actor_label.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("agent:test"),
+                Some("agent:bob"),
+                Some("human:quill"),
+                Some("agent:test"),
+            ]
+        );
 
         // Resolve thread
         handle.resolve_comment_thread(&thread_id).unwrap();
