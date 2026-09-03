@@ -88,6 +88,12 @@ const baseProps = {
 };
 
 describe("NotebookToolbar", () => {
+  it("shows the nteract brand at the leading edge", () => {
+    render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);
+
+    expect(screen.getByRole("img", { name: "nteract" })).toBeVisible();
+  });
+
   describe("start button visibility", () => {
     it("hides start button when kernel is idle", () => {
       render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);

@@ -2,6 +2,7 @@ import { Copy, Info } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
+  NotebookBrandMark,
   NotebookCommandToolbar,
   NotebookNotice,
   NotebookNoticeAction,
@@ -249,6 +250,7 @@ export function NotebookToolbar({
     <NotebookToolbarFrame notices={notices}>
       <NotebookCommandToolbar
         capabilities={capabilities}
+        leadingControls={<NotebookBrandMark />}
         runtime={runtime}
         environmentManager={envManager}
         environmentPanelOpen={isDepsOpen}

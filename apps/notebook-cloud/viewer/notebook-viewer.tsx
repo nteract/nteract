@@ -37,6 +37,7 @@ import {
   NotebookSettingsDrawer,
   notebookToolbarActors,
   NotebookCommentsPanel,
+  NotebookBrandMark,
   NotebookCommandToolbar,
   NotebookDocumentToolbar,
   NotebookToolbarFrame,
@@ -1744,14 +1745,17 @@ export function NotebookViewer({
       frameClassName="z-20"
       headerClassName="cloud-room-toolbar"
       presence={
-        <CloudNotebookTitle
-          title={notebookStageGated ? gatedNotebookTitle : notebookTitle}
-          renameTitle={catalogNotebookTitle?.trim() ?? ""}
-          canRename={catalogAccessResolved && catalogGrantsDocumentEdit}
-          renameSaving={notebookTitleSaving}
-          renameError={notebookTitleError}
-          onRename={saveCloudNotebookTitle}
-        />
+        <div className="flex min-w-0 items-center gap-2">
+          <NotebookBrandMark className="size-8" />
+          <CloudNotebookTitle
+            title={notebookStageGated ? gatedNotebookTitle : notebookTitle}
+            renameTitle={catalogNotebookTitle?.trim() ?? ""}
+            canRename={catalogAccessResolved && catalogGrantsDocumentEdit}
+            renameSaving={notebookTitleSaving}
+            renameError={notebookTitleError}
+            onRename={saveCloudNotebookTitle}
+          />
+        </div>
       }
       utilityControls={
         notebookHeaderChrome.showPresenceStatus ? (
