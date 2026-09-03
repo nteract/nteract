@@ -170,6 +170,7 @@ export {
   type NotebookCommandToolbarWorkstationAction,
   type NotebookEnvironmentManager,
 } from "./NotebookCommandToolbar";
+export { NotebookBrandMark, type NotebookBrandMarkProps } from "./NotebookBrandMark";
 export {
   NotebookDocumentToolbar,
   shouldShowNotebookDocumentCommandToolbar,
