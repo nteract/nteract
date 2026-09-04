@@ -84,13 +84,13 @@ export function NotebookRail({
       ? [{ id: "workstations" as const, label: "Workstations", icon: Server }]
       : []),
   ];
-  const title = activePanelId === "workstations" ? "Workstations" : null;
+  const title = railButtons.find((item) => item.id === activePanelId)?.label;
   return (
     <Rail
       activePanelId={activePanelId}
       collapsed={collapsed}
       items={railButtons}
-      panelTitle={title ?? undefined}
+      panelTitle={title}
       panelAction={activePanelId === "workstations" ? workstationsPanelAction : undefined}
       leadingSlot={leadingSlot}
       trailingSlot={trailingSlot}

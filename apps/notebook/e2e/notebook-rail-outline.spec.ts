@@ -36,6 +36,48 @@ test.describe("notebook rail outline", () => {
     mcp = null;
   });
 
+  test("keeps the logo fixed and panel titles level with notebook commands", async ({ page }) => {
+    const { dir, notebookPath } = copyOutlineFixture();
+    try {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await openNotebookPath(page, notebookPath, { environmentMode: "notebook" });
+      await waitForCellCount(page, 3);
+      const logo = page.getByRole("img", { name: "nteract", exact: true });
+      const toolbar = page.getByTestId("notebook-toolbar");
+      const initialLogo = await logo.boundingBox();
+      expect(initialLogo).not.toBeNull();
+      await expect(page.locator('[data-slot="rail-leading-slot"]').getByRole("img")).toBeVisible();
+      await expect(toolbar.getByRole("img", { name: "nteract" })).toHaveCount(0);
+
+      for (const panel of ["Outline", "Packages"]) {
+        await page.getByRole("button", { name: panel, exact: true }).click();
+        await expect(page.getByRole("heading", { name: panel, exact: true })).toBeVisible();
+        expect(await logo.boundingBox()).toEqual(initialLogo);
+        const headerBox = await page.locator('[data-slot="rail-panel-header"]').boundingBox();
+        const toolbarBox = await toolbar.boundingBox();
+        expect(headerBox).not.toBeNull();
+        expect(toolbarBox).not.toBeNull();
+        expect(headerBox!.y).toBe(toolbarBox!.y);
+        expect(headerBox!.height).toBe(toolbarBox!.height);
+      }
+
+      await page.getByTestId("add-code-cell-button").focus();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(toolbar).toBeHidden();
+      await expect(page.getByRole("heading", { name: "Packages", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Packages", exact: true })).toBeFocused();
+      await expect(logo).toBeVisible();
+      await page.getByRole("button", { name: "Packages", exact: true }).click();
+      await expect(toolbar).toBeVisible();
+
+      await page.getByTestId("deps-toggle").click();
+      await expect(toolbar).toBeHidden();
+      await expect(page.getByRole("button", { name: "Packages", exact: true })).toBeFocused();
+    } finally {
+      cleanupOutlineFixture(dir);
+    }
+  });
+
   test("renders every heading from the outline fixture", async ({ page }) => {
     const { dir, notebookPath } = copyOutlineFixture();
     try {

@@ -42,7 +42,7 @@ describe("NotebookDocumentRail", () => {
     expect(screen.getByText("Package details")).toBeVisible();
   });
 
-  it("omits redundant package header chrome and view-model summaries", () => {
+  it("names the packages panel without duplicating view-model summaries", () => {
     render(
       <NotebookDocumentRail
         viewModel={viewModel}
@@ -54,7 +54,7 @@ describe("NotebookDocumentRail", () => {
       />,
     );
 
-    expect(screen.queryByRole("heading", { name: "Packages" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Packages" })).toBeVisible();
     expect(screen.queryByText("uv · 2 packages")).not.toBeInTheDocument();
     expect(screen.getByText("Package details")).toBeVisible();
   });

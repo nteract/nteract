@@ -10,12 +10,6 @@ export interface NotebookDocumentShellProps {
    */
   rootElement?: "div" | "main";
   rail?: ReactNode;
-  /**
-   * `rail` keeps an expanded rail panel inside the rail column, level with the
-   * toolbar chrome. `stage` hosts it in the stage instead, so the panel slides
-   * out below the utility bar and beside the notebook content while the rail's
-   * icon strip stays at the far left of the page content.
-   */
   railPanelPlacement?: "rail" | "stage";
   toolbar?: ReactNode;
   /**
@@ -137,16 +131,9 @@ export function NotebookDocumentShell({
                   ) : null}
                 </div>
               ) : null}
-              {/* Portal target for the expanded rail panel: it slides out here,
-                  beneath the notebook command row, while the rail strip stays
-                  on the left. Its width also anchors the command row and the
-                  notebook content to the same live stage edge. */}
               <div
                 ref={setRailPanelSlotNode}
-                className={cn(
-                  "col-start-1 flex min-h-0 shrink-0",
-                  hasStageContentToolbar ? "row-start-2" : "row-start-1",
-                )}
+                className="col-start-1 row-start-1 row-end-[-1] flex min-h-0 shrink-0"
                 data-slot="notebook-document-rail-panel-host"
               />
               <div

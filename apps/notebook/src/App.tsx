@@ -62,6 +62,7 @@ import {
   ComputeDisconnectedNotice,
   KernelLaunchErrorBanner,
   isRuntimePeerDisconnectedErrorDetails,
+  NotebookBrandMark,
   NotebookCommentsPanel,
   NotebookConnectionIdentity,
   NotebookDocumentRail,
@@ -133,6 +134,7 @@ import {
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
 import {
+  isNotebookStageTarget,
   navigateNotebookOutlineFromRail,
   navigateToNotebookStageFromRail,
 } from "@/components/notebook/rail-stage-navigation";
@@ -177,8 +179,7 @@ function focusActiveRailButtonWhenStageIsHidden(
   const activeElement = document.activeElement;
   if (!(activeElement instanceof HTMLElement)) return;
 
-  const stage = document.querySelector('[data-slot="notebook-document-stage-content"]');
-  const focusWasInStage = stage?.contains(activeElement);
+  const focusWasInStage = isNotebookStageTarget(activeElement);
   const focusWasClearedFromHiddenStage =
     stageHadFocusBeforeTakeover && activeElement === document.body;
   if (!focusWasInStage && !focusWasClearedFromHiddenStage) return;
@@ -452,10 +453,7 @@ function AppContent() {
     if (typeof document === "undefined") return;
 
     const handleFocusIn = (event: FocusEvent) => {
-      const stage = document.querySelector('[data-slot="notebook-document-stage-content"]');
-      stageHadFocusBeforeRailTakeoverRef.current = Boolean(
-        event.target instanceof Node && stage?.contains(event.target),
-      );
+      stageHadFocusBeforeRailTakeoverRef.current = isNotebookStageTarget(event.target);
     };
 
     document.addEventListener("focusin", handleFocusIn);
@@ -2077,7 +2075,10 @@ function AppContent() {
             ) : null
           }
           toolbarPlacement="stage-content"
-          toolbarClassName="shrink-0 bg-background"
+          toolbarClassName={cn(
+            "shrink-0 bg-background",
+            !railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+          )}
           toolbarLabel="Notebook execution and runtime controls"
           toolbar={
             <NotebookToolbar
@@ -2117,6 +2118,7 @@ function AppContent() {
           stageContentClassName={cn(!railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME)}
           rail={
             <NotebookDocumentRail
+              leadingSlot={<NotebookBrandMark />}
               trailingSlot={
                 <NotebookConnectionIdentity
                   capabilities={shellCapabilities}

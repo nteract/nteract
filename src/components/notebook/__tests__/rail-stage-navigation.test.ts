@@ -1,11 +1,35 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY } from "@/components/notebook-rail";
 import {
+  isNotebookStageTarget,
   navigateNotebookOutlineFromRail,
   navigateToNotebookStageFromRail,
 } from "@/components/notebook/rail-stage-navigation";
 
 describe("notebook rail stage navigation", () => {
+  it.each(["notebook-document-stage-content", "notebook-document-stage-content-toolbar"])(
+    "recognizes focus in %s before a rail takeover",
+    (slot) => {
+      const stage = document.createElement("div");
+      stage.dataset.slot = slot;
+      const control = document.createElement("button");
+      stage.append(control);
+      expect(isNotebookStageTarget(control)).toBe(true);
+    },
+  );
+
+  it.each(["notebook-document-rail-panel-host", "notebook-document-toolbar", "rail-leading-slot"])(
+    "does not move focus out of visible %s chrome during takeover",
+    (slot) => {
+      const chrome = document.createElement("div");
+      chrome.dataset.slot = slot;
+      const control = document.createElement("button");
+      chrome.append(control);
+      expect(isNotebookStageTarget(control)).toBe(false);
+      expect(isNotebookStageTarget(null)).toBe(false);
+    },
+  );
+
   it("collapses a narrow takeover rail before scheduling focus and scroll", () => {
     const events: string[] = [];
     let scheduledNavigation: (() => void) | null = null;

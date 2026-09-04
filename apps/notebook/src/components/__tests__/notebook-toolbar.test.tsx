@@ -88,10 +88,12 @@ const baseProps = {
 };
 
 describe("NotebookToolbar", () => {
-  it("shows the nteract brand at the leading edge", () => {
+  it("leaves branding to the fixed rail instead of the notebook command row", () => {
     render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);
 
-    expect(screen.getByRole("img", { name: "nteract" })).toBeVisible();
+    expect(screen.queryByRole("img", { name: "nteract" })).not.toBeInTheDocument();
+    const appSource = readFileSync(resolve(process.cwd(), "apps/notebook/src/App.tsx"), "utf8");
+    expect(appSource).toMatch(/<NotebookDocumentRail\s+leadingSlot=\{<NotebookBrandMark \/>\}/);
   });
 
   describe("start button visibility", () => {

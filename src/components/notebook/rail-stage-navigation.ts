@@ -9,6 +9,16 @@ interface NotebookRailStageNavigationOptions<Result> {
   scheduleAfterCollapse?: (callback: () => void) => void;
 }
 
+export function isNotebookStageTarget(target: EventTarget | null): boolean {
+  return (
+    typeof Element !== "undefined" &&
+    target instanceof Element &&
+    target.closest(
+      '[data-slot="notebook-document-stage-content"], [data-slot="notebook-document-stage-content-toolbar"]',
+    ) !== null
+  );
+}
+
 function browserMatchMedia(query: string): Pick<MediaQueryList, "matches"> {
   if (typeof window === "undefined") return { matches: false };
   return { matches: window.matchMedia?.(query).matches === true };
