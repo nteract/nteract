@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Meta, Tool, ToolAnnotations};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ContentBlock, MetaObject, Tool, ToolAnnotations,
+};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -39,27 +41,27 @@ const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
 
 /// Build `_meta` for tools that produce structured content for the MCP Apps widget.
 /// Wire format: `{ "ui": { "resourceUri": "ui://nteract/output.html" } }`
-fn app_tool_meta() -> Meta {
+fn app_tool_meta() -> MetaObject {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "ui".to_string(),
         serde_json::json!({ "resourceUri": OUTPUT_RESOURCE_URI }),
     );
-    Meta(meta)
+    MetaObject(meta)
 }
 
 /// Build `_meta` that opts a tool out of deferred-tool lists in Claude clients.
 /// Claude Code / Desktop / Cowork defer all MCP tools by default; setting
 /// `"anthropic/alwaysLoad": true` makes the tool immediately available
 /// without requiring a ToolSearch round-trip.
-fn always_load_meta() -> Meta {
+fn always_load_meta() -> MetaObject {
     let mut meta = serde_json::Map::new();
     meta.insert("anthropic/alwaysLoad".to_string(), serde_json::json!(true));
-    Meta(meta)
+    MetaObject(meta)
 }
 
-fn cell_resource_content(notebook_id: &str, cell_id: &str) -> Content {
-    Content::resource_link(crate::resources::notebook_cell_resource_link(
+fn cell_resource_content(notebook_id: &str, cell_id: &str) -> ContentBlock {
+    ContentBlock::resource_link(crate::resources::notebook_cell_resource_link(
         notebook_id,
         cell_id,
     ))
@@ -783,6 +785,28 @@ mod tests {
     }
 
     #[test]
+    fn tool_descriptors_round_trip_app_and_discovery_metadata() {
+        for (name, expected_meta) in [
+            (
+                "execute_cell",
+                serde_json::json!({ "ui": { "resourceUri": OUTPUT_RESOURCE_URI } }),
+            ),
+            (
+                "connect_notebook",
+                serde_json::json!({ "anthropic/alwaysLoad": true }),
+            ),
+        ] {
+            let tool = registered_tool(name);
+            let wire = serde_json::to_value(&tool).expect("serialize tool descriptor");
+            assert_eq!(wire.get("_meta"), Some(&expected_meta));
+            assert!(wire.get("inputSchema").is_some());
+            assert!(wire.get("meta").is_none());
+            let decoded: Tool = serde_json::from_value(wire).expect("deserialize tool descriptor");
+            assert_eq!(decoded, tool);
+        }
+    }
+
+    #[test]
     fn registered_tools_advertise_mcp_icons() {
         for tool in all_tools() {
             assert_light_dark_icons(&tool);
@@ -971,7 +995,7 @@ mod tests {
         );
         assert!(value.get("mime_type").is_none());
 
-        let decoded: Content = serde_json::from_value(value).expect("deserialize content");
+        let decoded: ContentBlock = serde_json::from_value(value).expect("deserialize content");
         let link = decoded.as_resource_link().expect("resource link");
         assert_eq!(link.uri, expected_uri);
         assert_eq!(link.mime_type.as_deref(), Some("application/json"));
@@ -983,13 +1007,27 @@ mod tests {
         // annotation lets renderers drop it from human views.
         let ok = tool_success("done").unwrap();
         assert_eq!(
-            ok.content[0].audience(),
+            ok.content[0]
+                .as_text()
+                .unwrap()
+                .annotations
+                .as_ref()
+                .unwrap()
+                .audience
+                .as_ref(),
             Some(&vec![rmcp::model::Role::Assistant])
         );
 
         let err = tool_error("boom").unwrap();
         assert_eq!(
-            err.content[0].audience(),
+            err.content[0]
+                .as_text()
+                .unwrap()
+                .annotations
+                .as_ref()
+                .unwrap()
+                .audience
+                .as_ref(),
             Some(&vec![rmcp::model::Role::Assistant])
         );
     }
@@ -997,7 +1035,7 @@ mod tests {
     #[test]
     fn resource_links_stay_unannotated_for_both_audiences() {
         let content = cell_resource_content("nb", "cell");
-        assert!(content.annotations.is_none());
+        assert!(content.as_resource_link().unwrap().annotations.is_none());
     }
 
     #[test]

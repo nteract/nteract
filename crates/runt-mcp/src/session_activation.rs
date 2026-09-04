@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use tokio::sync::watch;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -348,7 +348,7 @@ pub fn activation_error(
             "target": target.as_str(),
         }
     });
-    let mut result = CallToolResult::error(vec![Content::text(details.to_string())]);
+    let mut result = CallToolResult::error(vec![ContentBlock::text(details.to_string())]);
     result.structured_content = Some(details);
     result
 }
@@ -384,7 +384,7 @@ mod tests {
     }
 
     fn success(value: &str) -> CallToolResult {
-        CallToolResult::success(vec![Content::text(value.to_string())])
+        CallToolResult::success(vec![ContentBlock::text(value.to_string())])
     }
 
     #[tokio::test]

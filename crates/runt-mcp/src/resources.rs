@@ -1,8 +1,9 @@
 //! MCP resource serving (output.html, notebook cells, status).
 
 use rmcp::model::{
-    Annotated, ListResourceTemplatesResult, ListResourcesResult, Meta, RawResource,
-    RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, ResourceContents, Role,
+    Annotations, ListResourceTemplatesResult, ListResourcesResult, MetaObject,
+    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+    Role,
 };
 use rmcp::ErrorData as McpError;
 
@@ -46,7 +47,7 @@ const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
 /// Claude Desktop; advertising this metadata is only the host permission layer.
 ///
 /// Claude Desktop requires `localhost` (not `127.0.0.1`) for domain allowlists.
-fn resource_ui_meta(blob_base_url: &Option<String>) -> Meta {
+fn resource_ui_meta(blob_base_url: &Option<String>) -> MetaObject {
     let mut ui = serde_json::Map::new();
     ui.insert("prefersBorder".to_string(), serde_json::json!(false));
 
@@ -63,7 +64,7 @@ fn resource_ui_meta(blob_base_url: &Option<String>) -> Meta {
 
     let mut meta = serde_json::Map::new();
     meta.insert("ui".to_string(), serde_json::Value::Object(ui));
-    Meta(meta)
+    MetaObject(meta)
 }
 
 /// List available MCP resources.
@@ -97,11 +98,7 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
         ));
     }
 
-    Ok(ListResourcesResult {
-        resources,
-        next_cursor: None,
-        meta: None,
-    })
+    Ok(ListResourcesResult::with_all_items(resources))
 }
 
 /// List available dynamic MCP resource templates.
@@ -133,11 +130,7 @@ pub fn list_resource_templates() -> ListResourceTemplatesResult {
         ),
     ];
 
-    ListResourceTemplatesResult {
-        resource_templates: templates,
-        next_cursor: None,
-        meta: None,
-    }
+    ListResourceTemplatesResult::with_all_items(templates)
 }
 
 /// Read an MCP resource by URI.
@@ -199,17 +192,14 @@ fn resource(
     description: impl Into<String>,
     mime_type: impl Into<String>,
     icon: IconKind,
-    meta: Option<Meta>,
-) -> Annotated<RawResource> {
-    let mut raw = RawResource::new(uri, name);
+    meta: Option<MetaObject>,
+) -> Resource {
+    let mut raw = Resource::new(uri, name);
     raw.description = Some(description.into());
     raw.mime_type = Some(mime_type.into());
     raw.icons = Some(icons::icons(icon));
     raw.meta = meta;
-    Annotated {
-        raw,
-        annotations: None,
-    }
+    raw
 }
 
 fn assistant_resource(
@@ -219,10 +209,12 @@ fn assistant_resource(
     mime_type: impl Into<String>,
     icon: IconKind,
     priority: f32,
-) -> Annotated<RawResource> {
-    resource(uri, name, description, mime_type, icon, None)
-        .with_audience(vec![Role::Assistant])
-        .with_priority(priority)
+) -> Resource {
+    resource(uri, name, description, mime_type, icon, None).with_annotations(
+        Annotations::default()
+            .with_audience(vec![Role::Assistant])
+            .with_priority(priority),
+    )
 }
 
 fn resource_template(
@@ -231,15 +223,12 @@ fn resource_template(
     description: impl Into<String>,
     mime_type: impl Into<String>,
     icon: IconKind,
-) -> Annotated<RawResourceTemplate> {
-    let mut raw = RawResourceTemplate::new(uri_template, name);
+) -> ResourceTemplate {
+    let mut raw = ResourceTemplate::new(uri_template, name);
     raw.description = Some(description.into());
     raw.mime_type = Some(mime_type.into());
     raw.icons = Some(icons::icons(icon));
-    Annotated {
-        raw,
-        annotations: None,
-    }
+    raw
 }
 
 fn assistant_resource_template(
@@ -249,10 +238,12 @@ fn assistant_resource_template(
     mime_type: impl Into<String>,
     icon: IconKind,
     priority: f32,
-) -> Annotated<RawResourceTemplate> {
-    resource_template(uri_template, name, description, mime_type, icon)
-        .with_audience(vec![Role::Assistant])
-        .with_priority(priority)
+) -> ResourceTemplate {
+    resource_template(uri_template, name, description, mime_type, icon).with_annotations(
+        Annotations::default()
+            .with_audience(vec![Role::Assistant])
+            .with_priority(priority),
+    )
 }
 
 async fn active_notebooks_json(server: &NteractMcp) -> Result<String, McpError> {
@@ -513,8 +504,8 @@ pub(crate) fn notebook_resources_json(notebook_id: &str) -> serde_json::Value {
     })
 }
 
-pub(crate) fn notebook_cells_resource_link(notebook_id: &str) -> RawResource {
-    let mut resource = RawResource::new(
+pub(crate) fn notebook_cells_resource_link(notebook_id: &str) -> Resource {
+    let mut resource = Resource::new(
         notebook_cells_uri(notebook_id),
         format!("nteract cells {notebook_id}"),
     );
@@ -524,8 +515,8 @@ pub(crate) fn notebook_cells_resource_link(notebook_id: &str) -> RawResource {
     resource
 }
 
-pub(crate) fn notebook_cell_resource_link(notebook_id: &str, cell_id: &str) -> RawResource {
-    let mut resource = RawResource::new(
+pub(crate) fn notebook_cell_resource_link(notebook_id: &str, cell_id: &str) -> Resource {
+    let mut resource = Resource::new(
         notebook_cell_uri(notebook_id, cell_id),
         format!("nteract cell {cell_id}"),
     );
@@ -581,13 +572,13 @@ mod tests {
     use std::path::PathBuf;
 
     use rmcp::model::{
-        Annotations, CallToolResult, Content, Meta, ReadResourceRequestParams, Role,
+        Annotations, CallToolResult, ContentBlock, MetaObject, ReadResourceRequestParams, Role,
     };
 
     use super::*;
     use crate::NteractMcp;
 
-    fn ui_meta(meta: &Meta) -> &serde_json::Value {
+    fn ui_meta(meta: &MetaObject) -> &serde_json::Value {
         meta.0.get("ui").expect("ui metadata")
     }
 
@@ -658,14 +649,40 @@ mod tests {
 
         let result = list_resources(&server).await.expect("list resources");
         let resource = result.resources.first().expect("output resource");
-        let meta = resource.raw.meta.as_ref().expect("resource metadata");
+        let meta = resource.meta.as_ref().expect("resource metadata");
         let ui = ui_meta(meta);
 
-        assert_eq!(resource.raw.uri, OUTPUT_RESOURCE_URI);
+        assert_eq!(resource.uri, OUTPUT_RESOURCE_URI);
         assert!(resource.annotations.is_none());
-        assert_light_dark_icons(resource.raw.icons.as_deref().expect("resource icons"));
+        assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
         assert_eq!(ui.get("prefersBorder"), Some(&serde_json::json!(false)));
         assert!(ui.get("csp").is_some());
+    }
+
+    #[tokio::test]
+    async fn resource_list_round_trips_flat_descriptors() {
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+        let result = list_resources(&server).await.expect("list resources");
+        let wire = serde_json::to_value(&result).expect("serialize resource list");
+        assert!(wire.get("nextCursor").is_none());
+        assert!(wire.get("ttlMs").is_none());
+        assert!(wire.get("cacheScope").is_none());
+        assert_eq!(
+            wire.pointer("/resources/0/_meta/ui/prefersBorder"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            wire.pointer("/resources/1/annotations/audience"),
+            Some(&serde_json::json!(["assistant"]))
+        );
+        assert_eq!(
+            wire.pointer("/resources/1/annotations/priority"),
+            Some(&serde_json::json!(NOTEBOOK_CONTEXT_PRIORITY))
+        );
+        assert!(wire.pointer("/resources/0/raw").is_none());
+        let decoded: ListResourcesResult =
+            serde_json::from_value(wire).expect("deserialize resource list");
+        assert_eq!(decoded, result);
     }
 
     #[tokio::test]
@@ -682,7 +699,11 @@ mod tests {
         )
         .await
         .expect("read output resource");
-        let wire = serde_json::to_value(result).expect("serialize resource result");
+        let expected = serde_json::to_value(&result).expect("serialize resource result");
+        let response: rmcp::model::ReadResourceResponse = result.into();
+        let wire = serde_json::to_value(rmcp::model::ServerResult::from(response))
+            .expect("serialize resource response");
+        assert_eq!(wire, expected);
         let content = wire
             .pointer("/contents/0")
             .expect("serialized output resource content");
@@ -718,7 +739,7 @@ mod tests {
         let resource = result
             .resources
             .iter()
-            .find(|resource| resource.raw.uri == NOTEBOOKS_RESOURCE_URI)
+            .find(|resource| resource.uri == NOTEBOOKS_RESOURCE_URI)
             .expect("notebook collection resource");
 
         assert_assistant_context_annotations(
@@ -727,7 +748,7 @@ mod tests {
                 .as_ref()
                 .expect("notebook resource annotations"),
         );
-        assert_light_dark_icons(resource.raw.icons.as_deref().expect("resource icons"));
+        assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
     }
 
     #[test]
@@ -737,7 +758,7 @@ mod tests {
         let templates: Vec<_> = result
             .resource_templates
             .iter()
-            .map(|template| template.raw.uri_template.as_str())
+            .map(|template| template.uri_template.as_str())
             .collect();
 
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells"));
@@ -750,7 +771,7 @@ mod tests {
                     .as_ref()
                     .expect("notebook resource template annotations"),
             );
-            assert_light_dark_icons(template.raw.icons.as_deref().expect("template icons"));
+            assert_light_dark_icons(template.icons.as_deref().expect("template icons"));
         }
     }
 
@@ -837,7 +858,7 @@ mod tests {
     #[test]
     fn notebook_resource_link_content_round_trips_mcp_wire_format() {
         let expected_uri = "nteract://notebooks/nb%201/cells/cell%2Fwith%2Fslash";
-        let result = CallToolResult::success(vec![Content::resource_link(
+        let result = CallToolResult::success(vec![ContentBlock::resource_link(
             notebook_cell_resource_link("nb 1", "cell/with/slash"),
         )]);
         let value = serde_json::to_value(&result).expect("serialize resource link");

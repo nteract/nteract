@@ -5,8 +5,8 @@ use std::future::Future;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 
-use rmcp::model::Implementation;
-use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::model::{Implementation, ProtocolVersion};
+use rmcp::service::{ClientCacheConfig, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::{async_rw::AsyncRwTransport, Transport};
 use rmcp::{ClientHandler, ServiceExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -30,6 +30,7 @@ impl ClientHandler for ChildClientHandler {
         let mut impl_info = Implementation::new(&self.upstream_name, env!("CARGO_PKG_VERSION"));
         impl_info.title = self.upstream_title.clone();
         rmcp::model::ClientInfo::new(Default::default(), impl_info)
+            .with_protocol_version(ProtocolVersion::V_2025_11_25)
     }
 }
 
@@ -236,6 +237,10 @@ pub async fn spawn_child(
         .serve(transport)
         .await
         .map_err(|e| format!("Failed to initialize child MCP client: {e}"))?;
+    client
+        .peer()
+        .set_response_cache_config(ClientCacheConfig::disabled())
+        .await;
 
     Ok(SpawnedChild {
         client,
@@ -262,6 +267,23 @@ mod tests {
     use super::*;
     use rmcp::{ServerHandler, ServiceExt};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn child_info_preserves_identity_with_legacy_version_and_empty_capabilities() {
+        let handler = ChildClientHandler {
+            upstream_name: "codex-mcp-client".to_string(),
+            upstream_title: Some("Codex".to_string()),
+        };
+        let info = handler.get_info();
+        assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
+        assert_eq!(info.client_info.name, "codex-mcp-client");
+        assert_eq!(info.client_info.title.as_deref(), Some("Codex"));
+        assert_eq!(info.client_info.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            serde_json::to_value(info.capabilities).unwrap(),
+            serde_json::json!({})
+        );
+    }
 
     /// Minimal `ServerHandler` — all methods use rmcp's defaults.
     struct NoopServer;

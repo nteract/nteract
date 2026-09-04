@@ -87,7 +87,7 @@ rattler_virtual_packages = "2.3"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
 reqwest-middleware = "0.4"
-rmcp = "1.4"
+rmcp = "3.2.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"

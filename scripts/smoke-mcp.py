@@ -674,7 +674,15 @@ async def smoke(
     opencode_model: str | None,
     opencode_timeout_secs: float,
 ) -> None:
-    params = StdioServerParameters(command=str(runt_exe), args=["mcp"])
+    params = StdioServerParameters(
+        command=str(runt_exe),
+        args=["mcp"],
+        env={
+            key: os.environ[key]
+            for key in ("RUNTIMED_DEV", "RUNTIMED_WORKSPACE_PATH", "RUNTIMED_SOCKET_PATH")
+            if key in os.environ
+        },
+    )
 
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()

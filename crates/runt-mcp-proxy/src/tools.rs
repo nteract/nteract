@@ -289,6 +289,25 @@ mod tests {
     }
 
     #[test]
+    fn tool_cache_preserves_mcp_apps_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cached = tool("notebook");
+        let mut meta = rmcp::model::MetaObject::new();
+        meta.insert(
+            "ui".to_string(),
+            serde_json::json!({"resourceUri": "ui://notebook", "visibility": ["model", "app"]}),
+        );
+        cached.meta = Some(meta);
+        let expected = serde_json::to_value(&cached).unwrap();
+
+        save_tool_cache(dir.path(), &[cached]);
+        let loaded = load_cached_tools(dir.path()).unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(serde_json::to_value(&loaded[0]).unwrap(), expected);
+    }
+
+    #[test]
     fn load_falls_back_to_builtin_when_no_cache_file() {
         let dir = tempfile::tempdir().unwrap();
         // With no cache file on disk, should fall back to built-in cache

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -800,7 +800,7 @@ fn add_created_notebook_recovery(mut result: CallToolResult, notebook_id: &str) 
         "tool": "connect_notebook",
         "notebook_id": notebook_id,
     });
-    result.content = vec![Content::text(details.to_string())];
+    result.content = vec![ContentBlock::text(details.to_string())];
     result.structured_content = Some(details);
     result
 }
@@ -808,13 +808,13 @@ fn add_created_notebook_recovery(mut result: CallToolResult, notebook_id: &str) 
 fn notebook_session_response(mut response: serde_json::Value, notebook_id: &str) -> CallToolResult {
     response["resources"] = crate::resources::notebook_resources_json(notebook_id);
     CallToolResult::success(vec![
-        Content::text(serde_json::to_string_pretty(&response).unwrap_or_default()),
-        Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+        ContentBlock::text(serde_json::to_string_pretty(&response).unwrap_or_default()),
+        ContentBlock::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
     ])
 }
 
 fn notebook_json_response(response: serde_json::Value) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(
+    CallToolResult::success(vec![ContentBlock::text(
         serde_json::to_string_pretty(&response).unwrap_or_default(),
     )])
 }

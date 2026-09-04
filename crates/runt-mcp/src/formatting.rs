@@ -15,7 +15,7 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-use rmcp::model::{Content, Role};
+use rmcp::model::{Annotations, ContentBlock, Role, TextContent};
 use runtimed_outputs::output_resolver::{content_ref_meta, CONTENT_PRIORITY};
 use runtimed_outputs::resolved_output::{DataValue, Output};
 
@@ -27,8 +27,11 @@ use runtimed_outputs::resolved_output::{DataValue, Output};
 /// token-optimized. Annotating agent-channel text with the assistant audience
 /// lets renderers drop it from human views without guessing. Resource-link
 /// content items stay unannotated — both audiences navigate by them.
-pub fn assistant_text(text: impl Into<String>) -> Content {
-    Content::text(text.into()).with_audience(vec![Role::Assistant])
+pub fn assistant_text(text: impl Into<String>) -> ContentBlock {
+    ContentBlock::Text(
+        TextContent::new(text)
+            .with_annotations(Annotations::default().with_audience(vec![Role::Assistant])),
+    )
 }
 
 /// ANSI escape code regex — matches color codes, cursor movement, OSC sequences.
@@ -143,8 +146,8 @@ pub fn format_outputs_text(outputs: &[Output]) -> String {
 /// so agents know execution produced output they can't see.
 ///
 /// All text items are agent-channel content, annotated `audience: [assistant]`.
-pub fn outputs_to_content_items(outputs: &[Output]) -> Vec<rmcp::model::Content> {
-    let mut items: Vec<rmcp::model::Content> = Vec::new();
+pub fn outputs_to_content_items(outputs: &[Output]) -> Vec<ContentBlock> {
+    let mut items: Vec<ContentBlock> = Vec::new();
     let mut omitted_count = 0usize;
     let mut omitted_mimes: Vec<String> = Vec::new();
 
@@ -718,8 +721,33 @@ mod tests {
     #[test]
     fn assistant_text_sets_assistant_audience() {
         let item = assistant_text("hello");
-        assert_eq!(item.audience(), Some(&vec![Role::Assistant]));
+        assert_eq!(
+            item.as_text()
+                .expect("text content")
+                .annotations
+                .as_ref()
+                .expect("text annotations")
+                .audience
+                .as_ref(),
+            Some(&vec![Role::Assistant])
+        );
         assert_eq!(item.as_text().expect("text content").text, "hello");
+    }
+
+    #[test]
+    fn assistant_text_round_trips_flat_mcp_content() {
+        let item = assistant_text("hello\nnotebook");
+        let wire = serde_json::to_value(&item).expect("serialize text content");
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "type": "text",
+                "text": "hello\nnotebook",
+                "annotations": { "audience": ["assistant"] }
+            })
+        );
+        let decoded: ContentBlock = serde_json::from_value(wire).expect("deserialize text content");
+        assert_eq!(decoded, item);
     }
 
     #[test]
@@ -733,7 +761,16 @@ mod tests {
         let items = outputs_to_content_items(&outputs);
         assert_eq!(items.len(), 2);
         for item in &items {
-            assert_eq!(item.audience(), Some(&vec![Role::Assistant]));
+            assert_eq!(
+                item.as_text()
+                    .expect("text content")
+                    .annotations
+                    .as_ref()
+                    .expect("text annotations")
+                    .audience
+                    .as_ref(),
+                Some(&vec![Role::Assistant])
+            );
         }
     }
 
