@@ -1,6 +1,6 @@
 # Notebook Identity and Environment Surfaces
 
-**Status:** Implemented product contract — acceptance criteria met. Remaining
+**Status:** Implemented product contract; acceptance criteria met. Remaining
 work in "Suggested Work Slices."
 
 **Owners:** nteract notebook UI, Cloud/Auth, Desktop runtime.
@@ -28,10 +28,10 @@ Shared component surfaces and projections:
 - `src/components/notebook/NotebookToolbarIdentity.tsx`
 - `src/components/notebook/NotebookEnvironmentSummary.tsx`
 - `src/components/notebook/interaction-mode.ts`
-- `packages/runtimed/src/notebook-shell-capabilities.ts` — exported shared
+- `packages/runtimed/src/notebook-shell-capabilities.ts`: exported shared
   projections for actor attribution, runtime authorship, access facts, runtime
   state, and environment capabilities
-- `apps/elements/components/notebook-scenarios.ts` — shipped scenario ids
+- `apps/elements/components/notebook-scenarios.ts`: shipped scenario ids
   including `cloud-public-viewer`, `agent-on-behalf`, `mixed-idp-authorship`,
   `runtime-peer`, `runtime-unavailable`, `untrusted-dependencies`
 
@@ -63,9 +63,8 @@ execution output.
    shared components the same projection shape used by cloud.
 4. Make Elements the runtime-free visual inventory for these surfaces using
    fixture-backed scenarios, not schematic replacements.
-5. Give short-term work enough guidance to ship compatible adapter props while
-   preserving space for later ADRs when low-level identity or runtime contracts
-   need to harden.
+5. Define compatible adapter props for current work. Leave unresolved low-level
+   identity and runtime contracts for later ADRs.
 
 ## Non-Goals
 
@@ -221,7 +220,7 @@ Elements and production host adapters should cover these states first:
 
 ## Shared Surface Projection
 
-This is a product contract. The current shared implementation already exposes
+The shared implementation exposes
 `NotebookActorProjection`, `NotebookInteractionModeProjection`, and
 `NotebookEnvironmentSurface`; host adapters should move facts into those shapes
 instead of adding page-local strings.
@@ -366,9 +365,8 @@ notebook UI sees provider `anaconda`.
    `NotebookEnvironmentSummary` or a sibling shared component only where the
    product intentionally shows environment/access/runtime/trust summary facts.
 6. Connect execution/cell attribution to the shared actor projection.
-7. Revisit this PRD and split out an ADR only when a durable code-level boundary
-   needs acceptance, such as the final TypeScript projection API or a runtime
-   peer capability extension.
+7. Write an ADR only when a durable code-level boundary needs acceptance, such
+   as the final TypeScript projection API or a runtime peer capability extension.
 
 ## Open Questions
 

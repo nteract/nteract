@@ -1,14 +1,11 @@
 # Documentation
 
-This directory separates thinking, decisions, product requirements, execution
-plans, evidence, and operations so product, design, engineering, research, and
-AI collaborators can use the same vocabulary.
+This directory contains design discussions, technical decisions, product
+requirements, implementation plans, evidence, and operational guides.
 
 ## Start Here
 
-Use these entry points when you need the current durable framing for a subsystem.
-They are not a complete inventory; they route to the docs most likely to anchor
-new product, engineering, or agent work.
+Start here to understand a subsystem. This is not a complete inventory.
 
 | Topic | Start with |
 |-------|------------|

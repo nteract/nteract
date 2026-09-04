@@ -46,7 +46,7 @@ AutoCommit { doc: Automerge, transaction: Option<(PatchLog, TransactionInner)>,
 
 - **save()** serializes OpSet columns + ChangeGraph metadata + optional DEFLATE. Columnar format is canonical.
 - **load()** rebuilds OpSet from columns, reconstructs ChangeGraph, verifies heads.
-- **save/load round-trip clears corrupted indices** — the basis of nteract's `rebuild_from_save()` recovery.
+- **save/load round-trip clears corrupted indices.** This is the basis of nteract's `rebuild_from_save()` recovery.
 - **load_incremental()** adds changes to existing doc. This is what `receive_sync_message` calls internally.
 - **save_after(heads)** emits only changes after given heads (incremental saves).
 
@@ -85,7 +85,7 @@ Message { heads, need, have: Vec<Have>, changes: ChunkList, flags, version }
 - `changes`: actual change data
 - Sender sends a change only if all peer bloom filters say they lack it
 
-### sync::State — Per-Peer Session
+### sync::State: Per-Peer Session
 
 | Field | Persists across encode/decode? | Purpose |
 |-------|-------------------------------|---------|
@@ -96,7 +96,7 @@ Message { heads, need, have: Vec<Have>, changes: ChunkList, flags, version }
 | `in_flight` | No | Suppresses duplicate sends while awaiting ack |
 | `have_responded` | No | True after first message sent |
 
-**Critical:** `encode()` only serializes `shared_heads`. All else is session-ephemeral. `sync::State::new()` is always safe for reconnection — you lose optimization (may resend) but keep correctness.
+**Critical:** `encode()` only serializes `shared_heads`. All else is session-ephemeral. `sync::State::new()` is always safe for reconnection: you lose optimization (may resend) but keep correctness.
 
 ### In-Flight Suppression
 
@@ -131,7 +131,7 @@ For CommentsDoc, see `crates/comments-doc`, daemon persistence at
 WASM (`runtimed-wasm`) both hold CommentsDoc replicas. Optimistic client
 mutations apply via Automerge; the daemon validates change actor labels against
 the connection principal (clone-preview) and strips writes from scopes without
-comment authority. There is no daemon finalization step — attribution
+comment authority. There is no daemon finalization step. Attribution
 (`resolved_by_actor_label`, `resolved_at`) is projected from admitted change
 actors.
 
@@ -176,7 +176,7 @@ Principle: **reset transport state, preserve document truth.**
 |----------|-----|
 | Execute / run-all | `required_heads` via `send_request_after_heads` |
 | Client-initiated save | `confirm_sync` before `SaveNotebook` request |
-| Daemon-internal autosave | Neither — daemon reads its own doc directly |
+| Daemon-internal autosave | Neither; daemon reads its own doc directly |
 
 ### RuntimeStateDoc Output Pressure
 
@@ -243,7 +243,7 @@ If reconnect latency becomes a problem, preserving `shared_heads` (automerge-rep
 |----------|--------|
 | Synchronous batch mutation | `fork_and_merge(\|fork\| { ... })` |
 | Async write from captured heads | `transact_at_heads_recovering(&baseline_heads, actor, label, \|doc\| { ... })` |
-| Concurrent async fork | `fork_with_actor("runtimed:iopub:kernel-abc")` — unique actor per fork |
+| Concurrent async fork | `fork_with_actor("runtimed:iopub:kernel-abc")` (unique actor per fork) |
 | Per-cell O(1) reads (WASM) | Direct map lookups via `ObjIndex` |
 | Recovery from corrupted indices | `save()` → `load()` round-trip |
 
@@ -260,18 +260,18 @@ Concurrent sync can trigger `PatchLog::migrate_actors()` mismatch when actor tab
 3. **Add document-owned recovery helpers** (receive + generate with panic capture, rebuild, peer state reset)
 4. **Add rebuild function** (save→load→reset pattern)
 5. **Update biased select loop** or relevant frame handler
-6. **Consider subscription scope** — every peer or specific consumers?
-7. **Test with concurrent mutation** — actor/heads bugs only manifest under concurrent sync
+6. **Consider subscription scope:** Every peer or specific consumers?
+7. **Test with concurrent mutation:** Actor/heads bugs only manifest under concurrent sync
 
 ## Invariants
 
-- Each remote peer gets its own `sync::State` — sharing causes duplicate/missing sends
+- Each remote peer gets its own `sync::State`. Sharing causes duplicate/missing sends.
 - `generate_sync_message()` returning `None` after local mutations is correct (in-flight suppression)
-- Keep the frame reader draining — use waiters, not blocking waits
-- Lock scope drops before `.await` — compute inside lock, send outside
+- Keep the frame reader draining: use waiters, not blocking waits
+- Lock scope drops before `.await`: compute inside lock, send outside
 - Reset sync state on transport breaks (reconnect, panic), not on local mutations
 - Cell-count guard prevents silent cell loss during rebuild
-- Actor table is sorted lexicographically — disagreement corrupts OpIds
+- Actor table is sorted lexicographically. Disagreement corrupts OpIds.
 
 ## Decision Framework
 
@@ -280,8 +280,8 @@ Concurrent sync can trigger `PatchLog::migrate_actors()` mismatch when actor tab
 | Transport disconnect | Reset `sync::State` (new or encode/decode) |
 | Automerge panic caught | Rebuild doc (save/load), reset sync::State |
 | Local mutation | Let next `generate_sync_message` handle it |
-| Check if peer has changes | `change_graph.has_change(&hash)` — O(1) |
-| Document at earlier point | `fork_at(heads)` — expensive, views only |
+| Check if peer has changes | `change_graph.has_change(&hash)` (O(1)) |
+| Document at earlier point | `fork_at(heads)` (expensive, views only) |
 | Async notebook write at captured heads | `transact_at_heads_recovering()` |
 | Concurrent async fork | `fork_with_actor()` with unique actor |
 | Shrink document bytes | `save()` compacts; no history GC available |

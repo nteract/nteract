@@ -14,10 +14,10 @@ the dashboard did not, so it leaks the identifier.
 The parts to fix this already exist. They are just not connected, and each
 consumer reinvents the connection.
 
-**The pure display layer (already shared, already correct).**
+**The shared display layer.**
 `resolveActorDisplay({actorLabel, peers, source})` in
 `packages/runtimed/src/notebook-actor-display.ts` turns an opaque actor label
-into an `ActorDisplay` — `{displayName, principalId, kind, isAgent, onBehalfOf,
+into an `ActorDisplay`: `{displayName, principalId, kind, isAgent, onBehalfOf,
 agentSlug, color, initials, imageUrl}`. It parses the label
 (`notebook-actor-projection.ts`), hashes a deterministic color
 (`notebook-actor-color.ts`), computes initials, and overlays a caller-supplied
@@ -25,8 +25,8 @@ agentSlug, color, initials, imageUrl}`. It parses the label
 imageUrl}`) to replace the parsed fallback with a real name and avatar. It does
 no I/O (its projection helpers keep module-level caches, but nothing fetches). It
 is exported from `packages/runtimed/src/index.ts` and is framework agnostic.
-Color is a pure hash of the identity key, so it is globally consistent for free —
-resolution only has to solve **name and avatar**.
+Color is a pure hash of the identity key, so it is globally consistent.
+Resolution only has to solve **name and avatar**.
 
 The two halves of an actor label have different trust meanings. The host-issued,
 authenticated principal is authoritative for attribution and for the
@@ -34,7 +34,7 @@ authenticated principal is authoritative for attribution and for the
 presentation metadata: they may select a familiar product mark, but the mark is
 not proof that a particular vendor produced or authenticated the client.
 
-**The host source of truth (already durable).** The Worker runs a D1 table
+**The host source of truth.** The Worker runs a D1 table
 `principal_profiles` (`apps/notebook-cloud/src/storage.ts`): `principal` (PK),
 `provider`, `provider_subject`, `email_normalized`, `email_verified`,
 `display_name`, `avatar_url`, `first_seen_at`, `last_seen_at`, `raw_claims_json`.
@@ -43,7 +43,7 @@ canonical `account:<ns>:email:<sha256>` principal on verified email, so the same
 human arriving through different providers converges on one row. Rows are read in
 batch through `getPrincipalProfiles(env, principals[])`
 (`apps/notebook-cloud/src/sharing-storage.ts`, `PRINCIPAL_PROFILE_LOOKUP_BATCH_SIZE
-= 50` per query). Rows are written on authenticated OIDC / Anaconda requests — at
+= 50` per query). Rows are written on authenticated OIDC / Anaconda requests at
 login and on app-session re-sync, through `syncAuthenticatedProfile` /
 `syncStoredAppSessionProfile` → `resolveNotebookInvitesForLogin` →
 `upsertPrincipalProfileWithAccount`, gated to `provider === 'oidc' ||
@@ -61,8 +61,8 @@ login and on app-session re-sync, through `syncAuthenticatedProfile` /
    (`cloudNotebookOwnerLabel` / `cloudNotebookOwnerInitials` in
    `apps/notebook-cloud/viewer/notebook-dashboard.ts`, rendered by
    `cloud-notebook-dashboard-view.tsx`) then derives a label from the raw
-   principal — trim, take an email local-part, else split on `:` and use the tail
-   or the whole string — which for an opaque subject like `b0204af7084b` yields
+   principal: trim, take an email local-part, else split on `:` and use the tail
+   or the whole string. For an opaque subject like `b0204af7084b`, this yields
    the identifier itself, shown as both name and initials.
 
 **"Never show a raw principal" is not yet a property any surface has.** The
@@ -73,11 +73,11 @@ principal, and the shared `NotebookCommentsPanel` with no resolver injected fall
 back to the raw actor label. So the never-raw guarantee is new work this store
 centralizes, not something to copy.
 
-**Everything else is duplicated.** The same principal is resolved several
-different ways server-side — `owner_display` and `current_user_display` strings on
+**Resolution is duplicated.** The same principal is resolved several
+different ways server-side: `owner_display` and `current_user_display` strings on
 `/api/n`, the `ShareTargetDisplay` union on `/acl` and `/access-requests`,
 `{principal, label, image_url}` on `/api/n/:notebookId/author-profiles`, and
-`display_name` on presence control frames — and assembled client-side per surface:
+`display_name` on presence control frames. Clients assemble these per surface:
 comments merge a fetched author-profiles batch with live presence peers; presence
 (`cloud-presence-status.tsx`) shows initials-only avatars because the room roster
 protocol carries no image; self-identity flows through a separate `identityLabel`
@@ -90,15 +90,15 @@ render with a different name, and no avatar, depending on which surface is askin
 
 ### Neighbors
 
-- `docs/adr/frontend-sync-bridge.md` — the store/projection discipline this store
+- `docs/adr/frontend-sync-bridge.md`: the store/projection discipline this store
   follows: engine streams into `useSyncExternalStore`-backed stores, React never
   owns the source of truth, stale async writes are invalidated not just cleared.
-- `docs/adr/identity-and-trust.md` — actor label grammar (`<principal>/<operator>`)
+- `docs/adr/identity-and-trust.md`: actor label grammar (`<principal>/<operator>`)
   and the principal namespaces this store keys on.
-- `docs/adr/notebook-comments-document.md` — the first consumer of actor display.
-- `docs/adr/hosted-room-authorization.md` — the relationship gate the resolver
+- `docs/adr/notebook-comments-document.md`: the first consumer of actor display.
+- `docs/adr/hosted-room-authorization.md`: the relationship gate the resolver
   must honor.
-- `.claude/skills/frontend-dev` — App-Shell Latency, Projection Discipline, and
+- `.claude/skills/frontend-dev`: App-Shell Latency, Projection Discipline, and
   State Boundary rules this store is built to satisfy.
 
 ### Goals
@@ -141,22 +141,22 @@ render with a different name, and no avatar, depending on which surface is askin
 
 `resolveActorDisplay` and its projection/color helpers stay exactly as they are.
 They are the leaf: given an actor label and a peer directory, they produce an
-`ActorDisplay`. The problem was never the compute — it was that every consumer
-built the peer directory itself, from whatever inputs it happened to have.
+`ActorDisplay`. The problem is directory assembly: every consumer builds the
+peer directory itself, from whatever inputs it has.
 
 The store's job is to *be* that peer directory: one canonical, cached,
 subscribable `principal → {label, avatar}` map that feeds `peers` into
 `resolveActorDisplay`. Consumers stop assembling peers and instead ask the store
-to resolve a label. This keeps all the already-correct behavior (kind detection,
-on-behalf-of, deterministic color, initials) and replaces only the ad hoc
-directory assembly — and it is where the single never-raw fallback policy lives.
+to resolve a label. This keeps kind detection, on-behalf-of, deterministic color,
+and initials, and replaces only the ad hoc directory assembly. The single
+never-raw fallback policy lives in the store.
 
-## Decision 2: `CloudUserStore` — a Cloud-viewer source store, read through `useSyncExternalStore`
+## Decision 2: `CloudUserStore`, a Cloud-viewer source store read through `useSyncExternalStore`
 
 A new module `apps/notebook-cloud/viewer/cloud-user-store.ts`. Mirror the
-structure of `cloud-auth-store.ts` exactly — a private source, a synchronous
-snapshot, a named domain hook — rather than exporting a naked subject. Follow the
-RxJS Shape rules in the frontend-dev skill.
+structure of `cloud-auth-store.ts` exactly: a private source, a synchronous
+snapshot, and a named domain hook rather than an exported naked subject. Follow
+the RxJS Shape rules in the frontend-dev skill.
 
 **Shape.**
 
@@ -165,12 +165,12 @@ RxJS Shape rules in the frontend-dev skill.
   `.asObservable()` and a synchronous `getSnapshot()`. `ResolvedProfile` is
   `{principal, displayName?, avatarUrl?, source: 'self' | 'presence' | 'profile'
   | 'unresolved'}`.
-- Consumers subscribe to the **narrowest** projection —
-  `select(m => m.get(principal), Object.is)` with `distinctUntilChanged` — so a
+- Consumers subscribe to the **narrowest** projection:
+  `select(m => m.get(principal), Object.is)` with `distinctUntilChanged`. A
   backfill for one principal does not re-render every avatar. The
   `useSyncExternalStore` adapter emits synchronously on subscribe (the
   `BehaviorSubject` seeds the first value).
-- The public read is `resolve(actorLabel): ActorDisplay` — it parses the label to
+- The public read is `resolve(actorLabel): ActorDisplay`. It parses the label to
   a principal, looks up the cached `ResolvedProfile`, builds the single-entry
   `peers` array, and calls `resolveActorDisplay`. A React hook
   `useResolvedActor(actorLabel)` wraps it so any surface can name a label and
@@ -178,20 +178,20 @@ RxJS Shape rules in the frontend-dev skill.
 
 **Seeding, in precedence order.**
 
-1. **Self** — seed from the OIDC claims / dev auth already in `CloudPrototypeAuthState`
+1. **Self:** seed from the OIDC claims / dev auth already in `CloudPrototypeAuthState`
    (name + `picture` avatar). This retires the `identityLabel` / `identityImageUrl`
    side channel: the viewer's own badge resolves through the same cache as everyone
    else.
-2. **Presence** — subscribe to the existing `CloudViewerPresenceStore` roster
+2. **Presence:** subscribe to the existing `CloudViewerPresenceStore` roster
    (itself a `useSyncExternalStore` store) and seed `{principal → label}` as peers
    join. Presence carries a name today and an avatar once Decision 4 lands.
-3. **Backfill** — for any principal requested but not yet cached, enqueue a batched
+3. **Backfill:** for any principal requested but not yet cached, enqueue a batched
    fetch to the notebook-scoped resolver (Decision 3). Batch and dedupe (reuse the
    50-per-query size); coalesce concurrent misses into one request.
 
 **Fallback policy (single owner).** Resolution prefers `profile` > `presence` >
 `unresolved`. An `unresolved` principal produces the generic kind label from
-`resolveActorDisplay` — **never the raw principal**. The dashboard's
+`resolveActorDisplay`, **never the raw principal**. The dashboard's
 `cloudNotebookOwnerLabel` raw-string derive is deleted.
 
 **Async-write discipline.** The backfill writes into the store after `await`.
@@ -199,7 +199,7 @@ Follow the frontend-sync-bridge stale-write rule and the reconnect-empty-store
 rule: carry an activation epoch (bumped on sign-out / viewer teardown), and after
 the fetch resolves, merge only if the epoch still matches. A profile row that
 arrives after teardown or an identity change is dropped, not written. Never demote
-a cached `profile`/`presence` entry to `unresolved` on a failed or empty fetch —
+a cached `profile`/`presence` entry to `unresolved` on a failed or empty fetch:
 absence of a fresh answer is not evidence the name is gone.
 
 **Tests.** Virtual-time tests (`rxjs/testing`) for batch coalescing, dedupe,
@@ -208,28 +208,28 @@ tests for synchronous seeding and the never-raw fallback.
 
 ## Decision 3: Resolve within a notebook relationship, not a global directory
 
-The tempting shape — a global `GET /api/users?principals=…` — is an enumeration
-oracle: it would answer "this principal has a profile" for any principal the
-caller can associate with any visible notebook. Do not build it. Keep resolution
-scoped to a relationship the caller already holds.
+A global `GET /api/users?principals=…` is an enumeration oracle: it would answer
+"this principal has a profile" for any principal the caller can associate with
+any visible notebook. Do not build it. Keep resolution scoped to a relationship
+the caller already holds.
 
 - **`/n` owners resolve server-side in the list response.** The list handler
   already runs with the caller's visibility and already batch-resolves owners
   (`listNotebookPrincipalDisplays`). Fix them there: add `avatar_url`, and stop
-  dropping unknowns — return a `resolved` flag so the client shows a kind-label
+  dropping unknowns: return a `resolved` flag so the client shows a kind-label
   fallback instead of the hex. `/n` then needs no client resolver at all.
 - **In-notebook surfaces use a notebook-scoped endpoint.** Generalize today's
   `/api/n/:notebookId/author-profiles` (do not replace it with a global surface)
   to resolve the owner + ACL + comment-author + live-presence principals **of a
   notebook the caller can already see**. The endpoint only ever resolves
-  principals that appear in that notebook's own sets — never an arbitrary
+  principals that appear in that notebook's own sets, never an arbitrary
   principal the caller names.
 - **No oracle, no leak.** Cap batch size; return only positive display payloads
   (no "no such principal" signal, no reason codes); rate-limit and audit misses.
   Never reveal a canonical account link: resolving a transport principal must not
   expose its linked `account:<email-hash>` principal unless that canonical
-  principal is itself in the allowed set. `email` is never returned — display name
-  and avatar only.
+  principal is itself in the allowed set. Only display name and avatar are
+  returned, never `email`.
 - **One server-side projector.** A single `principal → {displayName, avatarUrl,
   resolved}` mapper is reused by the list projection, the notebook-scoped
   resolver, `/acl`, `/access-requests`, and `/author-profiles`, retiring the
@@ -242,7 +242,7 @@ Honor `docs/adr/hosted-room-authorization.md` and `identity-and-trust.md`. This
 gate gets an explicit human security review before it ships; it is the one part
 of this ADR that is summoned, not self-merged.
 
-## Decision 4: Populate `avatar_url` — the prerequisite that makes avatars appear at all
+## Decision 4: Populate `avatar_url`
 
 The avatar write path exists but is never fed, so the viewer's own badge is the
 only avatar that ever renders. Two changes unblock avatars everywhere:
@@ -263,28 +263,28 @@ being permanently initials-only. This is a protocol change; it can lag the rest.
 
 Once the store and endpoint exist, every *display* surface reads the store:
 
-- **Comments** — `resolveCloudCommentAuthor` (`notebook-viewer.tsx`) becomes
+- **Comments:** `resolveCloudCommentAuthor` (`notebook-viewer.tsx`) becomes
   `useResolvedActor`; delete the bespoke fetch-and-merge in
   `comment-author-profiles.ts` (keep its batch-URL helpers if the store reuses
   them).
-- **Presence** — `cloud-presence-status.tsx` resolves peer labels through the
-  store, gaining avatars for free once Decision 4 lands.
-- **Self-identity** — `NotebookIdentity` / `NotebookToolbarIdentity` /
+- **Presence:** `cloud-presence-status.tsx` resolves peer labels through the
+  store, gaining avatars once Decision 4 lands.
+- **Self-identity:** `NotebookIdentity` / `NotebookToolbarIdentity` /
   `shell-capabilities.ts` read self from the store, including
   `current_user_display` and the dashboard's self avatar; retire the
   `identityLabel` / `identityImageUrl` side channel.
-- **`/n` owners and live peers** — `cloud-notebook-dashboard-view.tsx` resolves
+- **`/n` owners and live peers:** `cloud-notebook-dashboard-view.tsx` resolves
   owners (server-projected per Decision 3) and any dashboard live-peer avatars
   from room summaries through the store; delete `cloudNotebookOwnerLabel` /
   `cloudNotebookOwnerInitials`.
-- **Sharing UI** — the ACL / access-request label/detail/title fallbacks in
+- **Sharing UI:** the ACL / access-request label/detail/title fallbacks in
   `sharing-client.ts` resolve through the store instead of hand-formatting the
   `ShareTargetDisplay` union where a display is all that is needed.
 
-**Not display consumers — leave them.** Auth diagnostics and collaborator-debug
+**Not display consumers: leave them.** Auth diagnostics and collaborator-debug
 surfaces intentionally show the raw principal / provider subject; do not converge
 them. Instant-paint and persistence principal *matching* are security keys, not
-display, and must keep comparing raw principals — never route them through the
+display, and must keep comparing raw principals. Never route them through the
 store.
 
 The competing fallback formatters collapse to one policy in the store; the server
@@ -298,25 +298,24 @@ ordered commits so review can follow the progression. Cross-model review
 (implementer and reviewer from different model families); the Decision 3 auth gate
 gets a human security review before merge, not self-merge.
 
-- **Stage 0 — stop the leak.** First commit, so the visible symptom dies early.
-  No visible raw-principal fallback *anywhere*: the dashboard owner fallback
-  (`notebook-dashboard.ts`) and the sharing ACL / access-request fallback labels
-  (`sharing-client.ts`) adopt the never-raw policy — an unresolved principal shows
-  a generic kind label, never the raw id. No store, no endpoint. Contained fix for
-  the visible symptom.
-- **Stage 1 — server.** One shared projector for owner / current-user / ACL /
+- **Stage 0: stop the leak.** The first commit removes visible raw-principal
+  fallback *anywhere*: the dashboard owner fallback (`notebook-dashboard.ts`) and
+  the sharing ACL / access-request fallback labels (`sharing-client.ts`) adopt
+  the never-raw policy. An unresolved principal shows a generic kind label, never
+  the raw id. No store, no endpoint.
+- **Stage 1: server.** One shared projector for owner / current-user / ACL /
   access-request / author-profile displays; OIDC `picture` avatar capture
   (Decision 4); `avatar_url` and a `resolved` flag on the list projection; the
   generalized notebook-scoped resolver with its relationship gate (Decision 3).
   Ships with the auth-gate review.
-- **Stage 2 — the store.** `cloud-user-store.ts` with `useSyncExternalStore`
+- **Stage 2: the store.** `cloud-user-store.ts` with `useSyncExternalStore`
   binding, self + presence seeding, batched backfill, epoch stale-write guard, and
   virtual-time tests (Decision 2). No consumer changes yet; land it green behind
   the existing paths.
-- **Stage 3 — converge.** Move consumers onto the store one surface at a time
+- **Stage 3: converge.** Move consumers onto the store one surface at a time
   (comments, presence, self, `/n` owners, sharing UI), deleting the duplicated
-  fetch-merge-fallback code — including `sharing-client.ts` and the comment-author
-  fetch/merge — as each moves (Decision 5).
+  fetch-merge-fallback code (including `sharing-client.ts` and the comment-author
+  fetch/merge) as each moves (Decision 5).
 
 ## Boundaries and non-goals
 

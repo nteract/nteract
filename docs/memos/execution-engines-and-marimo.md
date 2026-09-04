@@ -6,13 +6,13 @@ yet. Tracked by [issue #4002](https://github.com/nteract/nteract/issues/4002).
 
 Neighbors:
 
-- [execution-pipeline.md](../adr/execution-pipeline.md) — durable execution and
+- [execution-pipeline.md](../adr/execution-pipeline.md): durable execution and
   output-ordering invariants.
-- [document-split.md](../adr/document-split.md) — NotebookDoc,
+- [document-split.md](../adr/document-split.md): NotebookDoc,
   RuntimeStateDoc, and CommsDoc ownership.
-- [captured-environment-lifecycle.md](../adr/captured-environment-lifecycle.md)
-  — environment capture and kernel-launch behavior.
-- [deployment-topology.md](../adr/deployment-topology.md) — local and hosted
+- [captured-environment-lifecycle.md](../adr/captured-environment-lifecycle.md):
+  environment capture and kernel-launch behavior.
+- [deployment-topology.md](../adr/deployment-topology.md): local and hosted
   runtime placement.
 
 ## Summary
@@ -29,11 +29,9 @@ This memo specifies marimo support as the product and architecture boundary.
 The shipped integration must use a supported marimo surface or establish the
 smallest appropriate surface upstream.
 
-This is a memo rather than an ADR because several choices still need spike
-evidence: the supported marimo embedding boundary, the exact engine/executor
-API, the representation of reactive plans, restart semantics, and interactive
-UI-value transport. Once those are proven, the durable compatibility and
-authority rules can graduate into an ADR.
+Several choices still need spike evidence: the supported marimo embedding
+boundary, the exact engine/executor API, the representation of reactive plans,
+restart semantics, and interactive UI-value transport.
 
 ## Why execution engines
 
@@ -46,12 +44,11 @@ Jupyter kernel:
   RuntimeStateDoc, CommsDoc, and blob writes;
 - launch code selects a Python or Deno environment and constructs the process.
 
-That path is intentionally nteract-specific. It provides stronger lifecycle,
-provenance, output durability, and programmatic waiting semantics than a raw
-Jupyter connection. It is also not a suitable definition of all notebook
-execution. `KernelConnection` requires Jupyter ports, comms, completion, and
-history, while a reactive runtime needs the complete notebook graph and may
-turn one user intent into several cell executions.
+That combination of FIFO scheduling, Jupyter I/O, runtime projection, and
+environment selection does not define all notebook execution.
+`KernelConnection` requires Jupyter ports, comms, completion, and history,
+while a reactive runtime needs the complete notebook graph and may turn one
+user intent into several cell executions.
 
 marimo makes the mismatch concrete. Its documented contract is reactive: when
 a cell runs or a UI value changes, dependent cells run or become stale;
@@ -427,9 +424,8 @@ cadence, retention, and authority rather than convenience alone.
   keeping captured-environment mutation daemon-owned.
 - Define cold start, restart, reconnect, and explicit replay semantics.
 
-Raw Jupyter kernels and Pluto should be separate follow-up issues. They are
-valuable validation targets for the abstraction, but neither should enlarge the
-first marimo milestone.
+Raw Jupyter kernels and Pluto should be separate follow-up issues. They can
+validate the abstraction, but neither should enlarge the first marimo milestone.
 
 ## Non-goals
 

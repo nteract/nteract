@@ -310,8 +310,7 @@ An administrator installs an authenticated nteract extension in the
 single-user environment. The extension runs beside the kernel managers and can
 offer a narrower runtime attachment API than a generic user-server credential.
 
-This keeps the adapter close to kernels and can support richer, longer-lived
-sessions. It requires deployment cooperation, explicit handler authorization,
+This option requires deployment cooperation, explicit handler authorization,
 and a server image rollout or restart.
 
 #### C. Hub-proxied nteract service
@@ -322,9 +321,9 @@ desktop or nteract host -> /services/nteract -> Hub API -> user server
 
 A Hub-managed or externally managed service authenticates the user through Hub
 OAuth, selects or starts a default or named server, follows spawn progress, and
-brokers attachment. It is a good place for deployment policy and version
-normalization, but it still needs either standard Jupyter APIs or an extension
-inside the user server.
+brokers attachment. It can handle deployment policy and version normalization,
+but it still needs either standard Jupyter APIs or an extension inside the user
+server.
 
 Prefer delegated user credentials for user-server actions. A central service
 credential with broad cross-user server access has a much larger blast radius.

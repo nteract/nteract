@@ -30,7 +30,7 @@ apps/elements/          Elements design system catalog
 packages/               Shared JS/TS packages
 plugins/nteract/        Agent plugin distribution (Codex)
 crates/                 Rust workspace
-  runtimed/             Daemon — owns kernels and document state
+  runtimed/             Daemon (owns kernels and document state)
   notebook/             Tauri application shell
   runt-mcp/             MCP server
   notebook-doc/         CRDT document model (Automerge)
@@ -90,7 +90,7 @@ cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python
 cargo xtask notebook
 ```
 
-This opens the GUI and blocks until quit — run it from your own terminal.
+This opens the GUI and blocks until you quit. Run it from your own terminal.
 
 ## 4. Testing
 
@@ -144,10 +144,10 @@ docs: update contributing guide
 
 ### CI-enforced invariants
 
-**Tokio mutex guards** — Hold a `tokio::sync::Mutex` or `RwLock` guard only within a synchronous block; release before any `.await`. Use block scoping, not `drop()`.
+**Tokio mutex guards:** Hold a `tokio::sync::Mutex` or `RwLock` guard only within a synchronous block; release before any `.await`. Use block scoping, not `drop()`.
 
-**Cell rendering order** — In `NotebookView.tsx`, always iterate `stableDomOrder`, never `cellIds` directly. Visual order is controlled by CSS `order`; iterating `cellIds` directly causes React to call `insertBefore` on reorder, destroying iframes and losing widget state.
+**Cell rendering order:** In `NotebookView.tsx`, always iterate `stableDomOrder`, never `cellIds` directly. Visual order is controlled by CSS `order`; iterating `cellIds` directly causes React to call `insertBefore` on reorder, destroying iframes and losing widget state.
 
-**Execution references synced cell IDs** — Execution requests must reference a `cell_id` from the Automerge document, not a side-channel code string.
+**Execution references synced cell IDs:** Execution requests must reference a `cell_id` from the Automerge document, not a side-channel code string.
 
-**Control-plane signals use a separate transport** — Kernel lifecycle signals (`KernelIdle`, `ExecutionDone`, `CellError`) must not share the bounded output transport with stdout or display data.
+**Control-plane signals use a separate transport:** Kernel lifecycle signals (`KernelIdle`, `ExecutionDone`, `CellError`) must not share the bounded output transport with stdout or display data.

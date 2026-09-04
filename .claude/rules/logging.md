@@ -8,7 +8,7 @@ paths:
 
 Logging conventions for the daemon (Rust, `tracing`), the Tauri notebook crate (Rust, `log`), and the frontend (TypeScript, `logger` util).
 
-## Rust — daemon (`crates/runtimed`)
+## Rust: daemon (`crates/runtimed`)
 
 Use `tracing`:
 
@@ -18,7 +18,7 @@ use tracing::{debug, info, warn, error};
 
 `tracing-subscriber` runs layered subscribers (stderr + file). Dependencies that use the `log` crate (jupyter-zmq-client, automerge, …) bridge into `tracing` automatically via `tracing-log`.
 
-## Rust — Tauri notebook crate
+## Rust: Tauri notebook crate
 
 Use `log` with `tauri-plugin-log`:
 
@@ -61,19 +61,19 @@ Send these to `debug` rather than `info`:
 ## Prefixes
 
 Rust (daemon):
-- `[runtimed]` — daemon core operations
-- `[notebook-sync]` — Automerge sync server
-- `[kernel-manager]` — kernel lifecycle and execution
-- `[doc-handle]` — CRDT document mutations and requests
-- `[comm_*]` — widget communication
+- `[runtimed]`: daemon core operations
+- `[notebook-sync]`: Automerge sync server
+- `[kernel-manager]`: kernel lifecycle and execution
+- `[doc-handle]`: CRDT document mutations and requests
+- `[comm_*]`: widget communication
 
 TypeScript (frontend):
-- `[automerge-notebook]` — WASM handle, bootstrap, materialization
-- `[sync-engine]` — frame processing, sync state, coalescing
-- `[crdt-bridge]` — CodeMirror ↔ CRDT character-level sync
-- `[frame-pipeline]` — changeset materialization, cache behavior
-- `[daemon-kernel]` — kernel execution, broadcasts, comms
-- `[flushSync]` — outbound sync flush
+- `[automerge-notebook]`: WASM handle, bootstrap, materialization
+- `[sync-engine]`: frame processing, sync state, coalescing
+- `[crdt-bridge]`: CodeMirror ↔ CRDT character-level sync
+- `[frame-pipeline]`: changeset materialization, cache behavior
+- `[daemon-kernel]`: kernel execution, broadcasts, comms
+- `[flushSync]`: outbound sync flush
 
 ## Channel defaults
 
@@ -82,7 +82,7 @@ TypeScript (frontend):
 | Nightly | `info` (with `debug` for `notebook_sync` and `notebook_sync_server`) | `Debug` |
 | Stable  | `warn` | `Info` |
 
-Nightly is intentionally chatty for field diagnosis. No configuration needed — the defaults are channel-aware.
+Nightly is intentionally chatty for field diagnosis. No configuration is needed because the defaults are channel-aware.
 
 ## Overrides
 
@@ -97,7 +97,7 @@ RUST_LOG=runtimed::notebook_sync_server=debug cargo xtask dev-daemon
 runtimed --log-level debug
 ```
 
-Daemon logs rotate on startup — each session gets a clean file, with the previous preserved as `runtimed.log.1`. That keeps `runt daemon logs -f` focused on the current session.
+Daemon logs rotate on startup. Each session gets a clean file, with the previous preserved as `runtimed.log.1`. That keeps `runt daemon logs -f` focused on the current session.
 
 ## Before adding a log statement
 

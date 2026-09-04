@@ -25,8 +25,8 @@ version files.
 
 Two independent version numbers (incrementing integers, not semver):
 
-- **Protocol version** (`PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection/handshake.rs`, re-exported by `connection.rs`) — Wire compatibility. Validated by magic bytes preamble at connection time.
-- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`) — Automerge document compatibility. Stored in doc root.
+- **Protocol version** (`PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection/handshake.rs`, re-exported by `connection.rs`): Wire compatibility. Validated by magic bytes preamble at connection time.
+- **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`): Automerge document compatibility. Stored in doc root.
 
 These evolve independently from each other and from the artifact version.
 
@@ -103,13 +103,13 @@ Magic bytes preamble rejects mismatched protocol versions at wire level, before 
 2. Add migration logic in daemon's doc loading path (detect old schema, convert in-place)
 3. Update document schema comment in `notebook-doc/src/lib.rs`
 
-Schema changes don't require a protocol bump — wire format for sync frames stays the same.
+Schema changes don't require a protocol bump because the wire format for sync frames stays the same.
 
 ## CI Internals
 
 `release-common.yml` accepts inputs:
-- `github_release_prerelease: true` — applies PEP 440 alpha stamp to Python version
-- `github_release_prerelease: false` — stamps Python version from `crates/runt/Cargo.toml`
+- `github_release_prerelease: true`: applies PEP 440 alpha stamp to Python version
+- `github_release_prerelease: false`: stamps Python version from `crates/runt/Cargo.toml`
 
 Python wheels are always built (macOS arm64, macOS x64, Linux x64, Windows x64) and published.
 

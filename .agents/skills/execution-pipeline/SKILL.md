@@ -30,10 +30,10 @@ let required_heads = handle.current_heads_hex()?;
 These heads are attached to the request envelope. The daemon's
 `wait_for_required_heads()` defers processing until all listed change
 hashes exist in its copy of the notebook document (checked via
-`get_change_by_hash` — a ChangeGraph containment check).
+`get_change_by_hash`, a ChangeGraph containment check).
 
 **Why this matters:** Without `required_heads`, the daemon might
-execute against stale cell source — the client wrote "x = 1" but the
+execute against stale cell source: the client wrote "x = 1" but the
 daemon hasn't received that sync frame yet, so it executes the old
 "x = 0".
 
@@ -114,13 +114,13 @@ The client polls RuntimeStateDoc for execution completion:
 await_execution_terminal(handle, &execution_id, timeout, None).await
 ```
 
-**Phase 1 — Terminal status poll:**
+**Phase 1: Terminal status poll:**
 - Polls every 50ms
 - Checks `executions[eid].status` for `"done"` or `"error"`
 - Also watches for kernel-level failure (`kernel.lifecycle == Error|Shutdown`)
 - Returns `KernelFailed` if the kernel dies while execution is pending
 
-**Phase 2 — Output-sync grace:**
+**Phase 2: Output-sync grace:**
 - After terminal status is reached, the output list might still be
   empty on the client's replica (sync lag)
 - Polls every 10ms for up to 500ms (the grace period)
@@ -129,7 +129,7 @@ await_execution_terminal(handle, &execution_id, timeout, None).await
 **Why RuntimeStateDoc, not broadcasts:** The `ExecutionDone` broadcast
 arrives over a separate channel and the client's Automerge replica may
 not have caught up on the final stream writes. The RuntimeStateDoc is
-authoritative — once status is `"done"`, outputs are guaranteed to be
+authoritative: once status is `"done"`, outputs are guaranteed to be
 in the same document.
 
 ### Stage 5: Output Resolution
@@ -150,7 +150,7 @@ Resolution depends on MIME type:
   References comm topology/output routing in RuntimeStateDoc; mutable widget
   values live in the paired CommsDoc
 
-MCP execution paths use **preview mode** — output is truncated for
+MCP execution paths use **preview mode**: output is truncated for
 LLM consumption. Agents that need full output call
 `get_cell(full_output=true)` separately.
 
@@ -178,7 +178,7 @@ outputs.
 
 1. Captures `required_heads` once
 2. Sends `RunAllCells` request with all cell IDs
-3. Daemon returns `AllCellsQueued { cell_execution_ids }` — a map of
+3. Daemon returns `AllCellsQueued { cell_execution_ids }`: a map of
    `cell_id → execution_id` for every queued cell
 4. Client polls each `execution_id` in parallel with a shared deadline
 5. Returns per-cell results
@@ -211,7 +211,7 @@ If one cell takes 90% of the budget, remaining cells get less time.
 ### "Execution timed out"
 
 1. **Long-running cell:** The cell genuinely takes longer than the
-   timeout (default varies by caller — MCP uses 120s).
+   timeout (default varies by caller; MCP uses 120s).
 2. **Kernel hung:** The kernel process is alive but not responding.
    Check `kernel.lifecycle` in RuntimeStateDoc.
 3. **Sync stall:** Terminal status was written by the daemon but the
@@ -222,7 +222,7 @@ If one cell takes 90% of the budget, remaining cells get less time.
 
 The execution completed but the outputs visible belong to an earlier
 run. This happens when:
-1. Reading cell outputs without using the `execution_id` — the cell's
+1. Reading cell outputs without using the `execution_id`: the cell's
    "current" pointer may not have been updated yet
 2. The RuntimeStateDoc sync hasn't delivered the latest writes
 
