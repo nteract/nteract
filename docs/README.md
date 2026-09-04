@@ -17,6 +17,7 @@ Start here to understand a subsystem. This is not a complete inventory.
 | Identity, trust, and hosted rooms | [`adr/identity-and-trust.md`](adr/identity-and-trust.md), [`adr/hosted-room-authorization.md`](adr/hosted-room-authorization.md), [`adr/deployment-topology.md`](adr/deployment-topology.md) |
 | Remote compute and workstations | [`adr/remote-workstation-doc-agents.md`](adr/remote-workstation-doc-agents.md), [`adr/runtime-principal-promotion.md`](adr/runtime-principal-promotion.md), [`runbooks/remote-workstation.md`](runbooks/remote-workstation.md) |
 | Product requirements | [`prd/notebook-identity-environment-surfaces.md`](prd/notebook-identity-environment-surfaces.md), [`prd/hosted-sharing-invites.md`](prd/hosted-sharing-invites.md) |
+| MCP, cloud embedding, and Automerge audit | [`audits/mcp-cloud-automerge-audit.md`](audits/mcp-cloud-automerge-audit.md) |
 | Evidence and measurements | [`audits/`](audits/), [`measurements/`](measurements/) |
 | Operational setup | [`runbooks/macos-setup.md`](runbooks/macos-setup.md), [`runbooks/hosted-direct-oidc-demo-runbook.md`](runbooks/hosted-direct-oidc-demo-runbook.md) |
 

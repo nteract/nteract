@@ -134,11 +134,13 @@ References:
 
 ## Decision 1: Cloudflare is the hosted document engine
 
-This decision records the current Cloudflare prototype and remains useful for
-understanding the shipped `preview.runt.run` path. For the next
-production-oriented hosted target, it is partially superseded by
-`../memos/aws-rust-room-host.md`, which moves live room authority to a native Rust room
-host on AWS while preserving the typed-frame protocol and document model.
+This decision records the current Cloudflare prototype and the shipped
+`preview.runt.run` path. `../memos/aws-rust-room-host.md` explores a native Rust
+room host on AWS as a possible future hosted target while preserving the
+typed-frame protocol and document model. As of 2026-09-04, that memo remains a
+proposal, not a superseding deployment decision or an implemented hosting
+alternative. The current hosted implementation still depends on Cloudflare
+Workers, Durable Objects, D1, and R2.
 
 The primary hosted topology is a Cloudflare Worker routing room requests to one
 Durable Object per notebook room. The Durable Object is the live room host:
@@ -240,10 +242,12 @@ Supported client-to-room patterns:
 - **Native direct.** Desktop, CLI, TUI, and agents connect directly to the room
   WebSocket with an `Authorization` header or equivalent native credential
   transport.
-- **Local daemon bridge.** A desktop daemon stores credentials in the OS
-  keychain, connects to the hosted room, and exposes local Tauri/Unix-socket
-  clients to that remote room. This is a convenience and credential-management
-  topology, not the security primitive.
+- **Local daemon bridge.** A desktop daemon resolves environment-backed
+  credential references from the machine-local `cloud-domains.toml`, connects
+  to the hosted room, and exposes local Tauri/Unix-socket clients to that remote
+  room. Keychain storage and device-flow acquisition remain future work. This
+  is a convenience and credential-management topology, not the security
+  primitive. Workstation pairing credentials are a separate credential path.
 - **Mixed local and hosted rooms.** One process may hold a `local:*` connection
   to a local daemon room and a `user:anaconda:*` hosted-room connection at the
   same time. The two rooms have separate actor spaces and ACLs.
@@ -333,9 +337,20 @@ The room should surface the active runtime peer, its provider, and its
 connection state as room metadata. Interrupt, restart, shutdown, and execution
 requests target the active runtime peer through scoped room requests; the room
 host creates the accepted execution entry and the runtime peer reports progress
-through `RuntimeStateDoc` transitions. If no runtime peer is attached, execution
-requests fail with a typed "no runtime attached" response rather than trying to
-infer compute from the document host.
+through `RuntimeStateDoc` transitions. Missing compute must not cause the room
+to infer a runtime from its document host or URL.
+
+**Current implementation, 2026-09-04:** hosted attachment and execution
+requests are owner-only. With no active runtime peer, owner execution can
+queue work while the selected attachment is already connecting, or create a
+resume attach job for a previously selected registered workstation whose
+attachment is `ready`, `disconnected`, or `idle`. Resume requires that
+workstation to belong to the notebook owner and pass the room's
+online/lease/heartbeat checks. If there
+is no eligible attachment to connect or resume, the room rejects execution
+with a no-runtime-peer reason. This uses explicit attachment state, not a
+fallback to unrelated compute. See `ensureRuntimeForHostedExecution` in
+`apps/notebook-cloud/src/notebook-room.ts`.
 
 ## Non-Goals
 
@@ -355,8 +370,10 @@ infer compute from the document host.
 1. **Runtime principal shape.** Should a JupyterHub runtime sidecar authenticate
    as `hub:<hub-host>:<user-server>` directly, or should the Cloudflare room
    mint a room-scoped runtime principal after Hub verification?
-2. **Runtime attachment grant UX.** Is attaching compute an owner-only action,
-   an editor action, or a separate capability?
+2. **Runtime attachment grant UX.** Attaching compute and requesting execution
+   are currently owner-only. Should a future explicit capability delegate either
+   action without granting owner authority? Editor access alone must not grant
+   execution authority.
 3. **Token exchange.** Do we need a first-party brokered token from Cloudflare
    to the Hub sidecar, or is direct Hub token validation by the Worker enough
    for v1?

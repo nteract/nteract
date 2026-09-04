@@ -8,7 +8,68 @@ for [issue #3907](https://github.com/nteract/nteract/issues/3907).
 This memo preserves the investigation, benchmark, and original API sketch. The
 ADRs are authoritative where the original recommendation assumed a disposable
 file-backed Automerge mirror, rollback after partial loading, or one combined
-readiness state.
+readiness state. The design sections below preserve the original recommendation;
+they are not an exact description of today's response schema or a claim that
+every proposed diagnostic and acceptance scenario has shipped.
+
+## Implementation checkpoint: 2026-09-04
+
+At source baseline `6bff3e7b`, progressive local `connect_notebook` and
+same-target coalescing are implemented. The path and UUID branches attach the
+peer, fetch the room projection over an independent `PoolClient` control
+connection, retain it, and publish through an activation lease. They no longer
+wait for full local NotebookDoc/RuntimeStateDoc readiness before returning.
+See `crates/runt-mcp/src/tools/session.rs:620`, `:1332`, and `:1406`.
+
+The actual connect response has:
+
+| Field | Current shape |
+|-------|---------------|
+| `cells` | Formatted summary string containing stable cell IDs, not the proposed array |
+| `session_generation` | Installed activation generation |
+| `source_state` | Source state, using `phase` rather than the sketch's `state` |
+| `readiness` | Booleans `projection`, `document`, `runtime`, `interactive` |
+| `projection` | `heads`, `runtime_state_heads`, `completeness` |
+| `capabilities` | Booleans `read`, `mutate`, `execute` |
+| `runtime`, `dependencies`, `project_context` | Initial context derived from the daemon projection |
+
+Success is JSON text plus a notebook resource link, not structured connect
+content. The sketch's `sync` object and top-level `availability` are not the
+current connect response. See `add_progressive_session_fields` and
+`notebook_session_response` at `tools/session.rs:583`, `:808`.
+
+Readiness remains operation-specific. `get_all_cells` can return retained,
+bounded projection data before interactivity; full NotebookDoc/resource reads
+and mutations require an interactive document. Runtime reads require a
+connected, ready RuntimeStateDoc; execution additionally requires an
+interactive document and ready runtime. Kernel control need not wait for an
+already running kernel. Retained projection data never authorizes cached-source
+mutation or execution. See `crates/runt-mcp/src/session.rs:485`, `:595`,
+`crates/runt-mcp/src/tools/cell_read.rs:229`, and
+`crates/runt-mcp/src/resources.rs:285`.
+
+Same-target callers share the current activation result. A different target
+supersedes pending work, while a failed replacement leaves the installed session
+usable. Publication and later active-session access are generation-guarded;
+this is not transaction isolation for arbitrary concurrent tool calls. See
+`crates/runt-mcp/src/session_activation.rs:76`, `:225`, `:442` and
+`crates/runt-mcp/src/lib.rs:273`.
+
+Do not extend the early-return contract to `create_notebook` or background
+local rejoin: both still await session readiness (`tools/session.rs:1648`,
+`crates/runt-mcp/src/daemon_watch.rs:517`). Hosted readiness also remains a
+separate path, not the local retained-projection contract (`session.rs:415`).
+Readiness failures use codes such as `notebook_not_ready`, `runtime_not_ready`,
+and `sync_failed`; other connection failures can still be text tool errors.
+
+The current harness includes shared-generation/projection and peer-count checks
+at `scripts/mcp-connect-harness.py:1099` and a stalled-peer scenario at `:1367`.
+These source-backed capabilities do not update the measurements below. The
+2026-07-10 timings and two-peer observation remain historical, not a new
+benchmark or current concurrency result. Protocol compatibility is separately
+covered by the [lifecycle ADR](../adr/mcp-session-lifecycle.md#mcp-protocol-checkpoint)
+and [source audit](../audits/mcp-cloud-automerge-audit.md); this checkpoint does
+not claim conformance with upstream MCP `2026-07-28`.
 
 ## Summary
 
@@ -34,13 +95,13 @@ room and can produce the projection under one short document read. A cache
 would add identity aliases and invalidation rules without removing the initial
 file-load boundary.
 
-## Current coupling
+## Coupling observed on 2026-07-10
 
-The local path and UUID branches in
-`crates/runt-mcp/src/tools/session.rs` call
+At the time of the investigation, the local path and UUID branches in
+`crates/runt-mcp/src/tools/session.rs` called
 `await_session_ready_timeout(120s)` before installing the session or formatting
 the response. `SyncStatus::session_ready()` in
-`crates/notebook-sync/src/status.rs` requires all of the following:
+`crates/notebook-sync/src/status.rs` required all of the following:
 
 - `NotebookDocPhase::Interactive`;
 - `RuntimeStatePhase::Ready`;
@@ -85,7 +146,8 @@ for room or peer readiness.
 `connect_notebook` should return after **Projection ready**. It should include
 the later milestones in a `sync` object rather than waiting for both.
 
-An example response shape is:
+The original proposed response shape follows. It is preserved as an API sketch,
+not the implemented schema; see the dated checkpoint above for current fields:
 
 ```json
 {
@@ -236,11 +298,13 @@ local replica.
 
 ## Duplicate connects
 
-The current path installs its session only after the readiness wait. Concurrent
-connects can therefore create multiple peer sync tasks before any caller sees
-an active session.
+In the 2026-07-10 baseline, the path installed its session only after the
+readiness wait. Concurrent connects could therefore create multiple peer sync
+tasks before any caller saw an active session. The coalescing recommendation
+below is now implemented through `SessionActivation`; it is not an outstanding
+feature request.
 
-Coalesce connects by normalized target:
+The recommendation was to coalesce connects by normalized target:
 
 - canonical absolute path for local files;
 - notebook UUID for local resident or ephemeral rooms;
@@ -255,8 +319,10 @@ same file-backed room use the same coalescing key.
 
 ## Failure semantics and diagnostics
 
-The current 120-second generic error loses the distinction between file load,
-projection, NotebookDoc convergence, and RuntimeState convergence.
+The baseline's 120-second generic error lost the distinction between file load,
+projection, NotebookDoc convergence, and RuntimeState convergence. The following
+was the diagnostic recommendation, not a list of fields all guaranteed in the
+current MCP response.
 
 Record and surface:
 
@@ -309,18 +375,18 @@ produced:
 | Warm path open 1 | 541.0 ms | 5.0 ms | 64 of 64 |
 | Warm path open 2 | 535.3 ms | 4.8 ms | 64 of 64 |
 
-The ordinary path is correct, and this run did not reproduce `MissingOps`.
-The roughly 100x difference between the connect and immediate-read timings is
+The ordinary path was correct in this run, which did not reproduce `MissingOps`.
+The roughly 100x difference between the connect and immediate-read timings was
 consistent with connect waiting on broader peer readiness rather than the cost
 of formatting the initial projection.
 
 With two concurrent same-path connects in one MCP process, the harness observed
 `active_peers = 2` for the target room before the calls completed and the room
 settled back to one peer. Both calls returned the same notebook ID and all 64
-cell IDs. This confirms that duplicate connects currently multiply peer and
-sync-bootstrap work even when the final session state looks correct.
+cell IDs. In that baseline, duplicate connects multiplied peer and
+sync-bootstrap work even though the final session state looked correct.
 
-An implementation is ready to ship when:
+The original acceptance criteria were:
 
 1. cold path, resident path, resident UUID, and ephemeral UUID connects return
    the authoritative stable IDs in one call;
@@ -334,6 +400,10 @@ An implementation is ready to ship when:
    has been superseded.
 
 ## Adopted implementation sequence
+
+This preserves the original sequencing rationale, not a current list of
+unfinished work. The checkpoint above records the implemented MCP behavior;
+source and recovery guarantees remain owned by the linked ADRs.
 
 1. Land room-owned source state, task leases, staged immutable imports, and
    bounded projections while preserving existing MCP waiting behavior.

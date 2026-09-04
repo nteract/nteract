@@ -121,7 +121,12 @@ Rules:
 
 ## Blob store
 
-Content-addressed storage lives under `runt_workspace::daemon_base_dir()/blobs` (stable expands to `~/.cache/runt/blobs/`; source builds normally use the nightly namespace). Entries are sharded by first 2 hex chars. Each blob has a `.meta` sidecar with `{media_type, size, created_at}`. Blobs are ephemeral — regenerated from `.ipynb` on daemon restart.
+Content-addressed storage lives under `runt_workspace::daemon_base_dir()/blobs` (stable expands to `~/.cache/runt/blobs/`; source builds normally use the nightly namespace). Entries are sharded by first 2 hex chars. Each blob has a `.meta` sidecar with `{media_type, size, created_at}`.
+
+Blobs are disk-backed and survive daemon restarts. Background mark-and-sweep
+removes unreferenced blobs older than the configured grace period (default
+30 days). Blobs explicitly marked ephemeral can be deleted when superseded.
+See `src/blob_store.rs` and `blob_gc_grace` in `src/daemon.rs`.
 
 Manifests are inline Automerge Maps in RuntimeStateDoc. Each contains `ContentRef` entries per MIME type: `{"inline": "<data>"}` for ≤1KB text, `{"blob": "<hash>", "size": N}` for content >1KB or any binary. MIME types and sizes are readable directly from the CRDT — no blob fetch needed for metadata.
 
@@ -131,9 +136,20 @@ HTTP server at `127.0.0.1:<dynamic-port>` serves `GET /blob/{hash}` with correct
 
 - **Autosave:** 2s quiet period, 10s max interval. Daemon writes `RuntimeStateDoc.last_saved`; frontend computes dirty as `local_edit_at > last_saved`.
 - **UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates `path_index` and writes `RuntimeStateDoc.path`. The UUID never changes.
-- **Crash recovery:** Untitled notebooks persist to `notebook-docs/{hash}.automerge`. Snapshots go to `notebook-docs/snapshots/`. Outputs are ephemeral.
+- **Crash recovery:** Persistent rooms, including untitled notebooks, recover
+  NotebookDoc from append-only `.recovery` journals in `notebook-docs/`.
+  Legacy `.automerge` files are an untitled migration fallback; explicitly
+  ephemeral rooms use volatile durability. Execution results have a separate
+  durable store. See `src/notebook_sync_server/room.rs` and
+  `build_execution_result` in `src/daemon.rs`.
 - **Multi-window:** Multiple windows join the same room as separate Automerge peers.
-- **Eviction:** After all peers disconnect, delayed eviction (default 30s) shuts down the kernel and removes the room.
+- **Kernel teardown:** After all peers disconnect, a delayed check (default 30s)
+  can shut down the kernel. The room, file binding, autosave, and watchers remain
+  resident; a reconnect invalidates the pending teardown.
+- **Room reaping:** A separate five-minute sweep removes eligible peerless,
+  kernel-less rooms after 24 hours, or earlier under the 32-room soft cap. It
+  checks durability before removal. See `src/notebook_sync_server/peer_eviction.rs`
+  and the resident-room reaper in `src/daemon.rs`.
 
 ## Settings sync
 

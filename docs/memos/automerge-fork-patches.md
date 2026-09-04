@@ -1,21 +1,36 @@
 # Automerge Fork Patches
 
-**Status:** Memo / active register, 2026-05-21; dependency baseline updated 2026-08-26.
+**Status:** Memo / active register, 2026-05-21; dependency and validator status checked 2026-09-04.
 
-## Fork baseline update (2026-07-13)
+## Current dependency baseline (2026-09-04)
 
-`nteract/automerge:main` is a tested mirror of upstream Automerge commit
-`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7`. The previous fork main is
-preserved at `archive/main-pre-upstream-sync-20260713`.
+Production Rust and `runtimed-wasm` use crates.io Automerge exactly `0.11.0`
+(`Cargo.toml:57`, `Cargo.lock:627`), adopted by `ae6aef0f` on 2026-08-26.
+The frontend does not depend on the JS `@automerge/automerge` package. There is
+no workspace Automerge patch override.
 
-Upstream already includes the stale-orphan sync correction and its
-`queued_orphan_need_does_not_block_unrelated_sync_response` regression test.
-The downstream stale-orphan PR was therefore closed as superseded rather than
-rebased: the minimal nteract-only patch set for that behavior is empty. The
-nteract workspace now pins crates.io Automerge 0.11 exactly. The mirror
-revision remains as a dev-only compatibility peer in `automerge-store`, where
-tests prove bidirectional snapshot loading and encoded sync convergence with
-the version shipped by nteract 2.7.
+`automerge-store` retains `nteract/automerge` revision
+`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) only as the
+`automerge-legacy` dev-dependency (`crates/automerge-store/Cargo.toml:17`).
+No branch is selected by that dependency. Its tests cover bidirectional
+snapshot loading and encoded sync with representative legacy data
+(`crates/automerge-store/tests/version_compat.rs:282–352`), not every deployed
+document or every historical patch.
+
+## Historical fork baseline (2026-07-13)
+
+The July record described `nteract/automerge:main` as a tested mirror of
+upstream commit `3fb6af5cc3af23b79f27cebfa339c8c98987e7b7`, with the previous
+main preserved at `archive/main-pre-upstream-sync-20260713`. These are
+historical branch observations, not current remote-ref checks.
+
+The stale-orphan sync correction and its
+`queued_orphan_need_does_not_block_unrelated_sync_response` regression are
+present in the locally cached crates.io `0.11.0` source (`src/sync.rs:170–182`,
+`tests/test.rs:3689`). The July record says the downstream stale-orphan PR was
+closed as superseded. This supports no remaining downstream patch for that
+behavior; it does not establish that all 21 patches recorded in the earlier
+`b3502d42` rebase were merged upstream.
 
 This memo tracks possible Automerge fork patches. It is not an accepted nteract
 architecture decision until a patch becomes part of the workspace contract.
@@ -23,15 +38,20 @@ architecture decision until a patch becomes part of the workspace contract.
 ## Context
 
 We retain `nteract/automerge` as a compatibility reference and possible home
-for narrowly scoped future patches, but production workspace code uses the
-crates.io release. The identity-and-trust ADR
-(`docs/adr/identity-and-trust.md`) defers per-frame actor-label validation
-because doing it cleanly requires either an upstream Automerge contribution, a
-fresh fork patch, or a throwaway-peer hack per frame. The first two are real
-options; the third is not. This memo proposes possible patches and how they
-relate to upstream.
+for narrowly scoped future patches, not as a production requirement.
 
-Sister concern: before adding new patches we want to pull the latest upstream into our fork. Rebasing on current upstream is its own little exercise (the `filters` branch and other in-flight work shift the surface around), but it's cheap and one-time. Tracked as a sibling task, not a patch.
+Actor-label validation is implemented with clone-preview: apply a non-empty
+frame to a cloned document and peer state, validate the newly applied changes,
+then mutate the real document only after admission succeeds. See
+`crates/runtimed/src/notebook_sync_server/peer_notebook_sync.rs:58–95` and
+`crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs:95`.
+The deferred work in the identity-and-trust ADR is
+reducing clone and duplicate-apply cost, not introducing validation.
+
+`sync_message_new_changes` remains a proposed API. It is absent from the
+checked crates.io `0.11.0` source and is not called by production code. Before
+implementing a new patch, recheck upstream APIs and the historical research
+below; switching production back to a fork is a separate dependency decision.
 
 ## Patches we want
 
@@ -58,7 +78,8 @@ impl Automerge {
 }
 ```
 
-Internal implementation shape:
+Historical implementation sketch; internal signatures have not been reverified
+against `0.11.0`:
 
 ```rust
 impl Automerge {
@@ -86,7 +107,7 @@ impl Automerge {
 }
 ```
 
-`ReadSyncMessageChangesError` is a public error type in `automerge::sync`. It can be constructed from the crate-private load errors internally, but it must not expose crate-private types in its public variants.
+In this proposal, `ReadSyncMessageChangesError` would be a public error type in `automerge::sync`. It could be constructed from crate-private load errors internally, but must not expose crate-private types in its public variants.
 
 Cost on the hot path: parse twice (once here, once in `receive_sync_message`). The doubled work is bounded by message size and acceptable for our scale. The method must be read-only: it cannot advance sync state, mutate the document, or accept partially parsed data. The room-host validator should fail closed if this parser errors.
 
@@ -100,9 +121,16 @@ Required fork tests:
 
 Upstream story: this is an additive public method with no behavior change to existing callers. Reasonable PR to submit upstream after we've got it working on our fork. If accepted, we drop our patch later.
 
-### 2. (Tentative) Pull the `filters` branch in
+### 2. (Historical research, tentative) Pull the `filters` branch in
 
-Upstream `origin/filters` is post-peer-review but not yet in `main`. It introduces `Filter { default, authors, actors }` with rules `Allow / AllowUpTo { heads } / Deny`. Subduction semantics: rejected changes still ingest and sync, just stop rendering. That's the right primitive for runtime revocation and post-hoc audit hiding (see the identity ADR's revocation follow-up).
+The 2026-05-21 research described upstream `origin/filters` as post-peer-review
+but not yet in `main`. Its current status was not reverified in the
+2026-09-04 local audit; the options below are historical, not a recommendation
+to cherry-pick today. The described API was
+`Filter { default, authors, actors }` with rules
+`Allow / AllowUpTo { heads } / Deny`. Subduction would retain changes for
+storage and sync while hiding them from rendering, a possible primitive for
+runtime revocation and post-hoc audit hiding.
 
 Two paths:
 
@@ -133,18 +161,18 @@ When keyhive's surface stabilizes, signed changes would let us verify cross-spac
 
 Maintaining a long-lived fork is a known cost; the patches are deliberately small and additive to keep rebases boring.
 
-## Implementation order
+## Proposed implementation order
 
-1. Pull latest upstream into our fork. Keep that as a fork-only maintenance PR unless the workspace pin changes.
-2. Implement patch 1 on a `nteract/automerge` branch with the tests above. Submit it upstream once the fork patch passes locally.
-3. Update this workspace's `Cargo.toml` and `Cargo.lock` to the fork commit. Verify at least `cargo test -p automerge-recovery`, `cargo test -p notebook-doc`, `cargo test -p runtime-doc`, and `cargo test -p notebook-sync`.
-4. Wire the pre-apply actor-label validator in the room-host extraction using `Automerge::sync_message_new_changes(&message)` before `receive_sync_message_recovering`. Identity ADR's deferred limitation closes only after this step lands.
-5. Watch the upstream filters PR. Revisit cherry-picking when revocation work begins.
+1. Recheck upstream for a suitable parser before creating a new fork patch.
+2. If still needed, prototype patch 1 with the tests above and submit it upstream.
+3. Decide separately whether a temporary production fork is justified. Any dependency change must retain legacy compatibility checks and verify at least `automerge-store`, `automerge-recovery`, `notebook-doc`, `runtime-doc`, `notebook-sync`, and WASM tests.
+4. Replace the implemented clone-preview validator with the parser only after verifying equivalent admission and rejection behavior. This addresses deferred performance work, not a missing v1 authorization boundary.
+5. Recheck the historical filters research when revocation work becomes a requirement.
 
 ## Out of scope here
 
 - The room-host crate extraction itself (separate ADR).
-- Pre-existing fork patches (whatever's on `nteract/automerge` today vs upstream `main`). The history is in the fork; this ADR is about what we want to add.
+- An exhaustive disposition of historical fork patches. The current production pin is upstream; this memo does not establish that every earlier patch was merged.
 - Whether we should switch to `automerge-repo` for any part of the sync transport (separate question, separate ADR if it ever becomes one).
 
 ## Acceptance Criteria

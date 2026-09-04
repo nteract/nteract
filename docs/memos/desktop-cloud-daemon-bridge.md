@@ -60,10 +60,20 @@ Bridged docs (V1): `NotebookDoc` (read/write) and `RuntimeStateDoc`
 `CommsDoc`/`CommentsDoc` bridging and local-runtime-peer policy are deferred
 (#3861 slice 5).
 
-Execution (V1): hosted rooms do not launch local kernels. `execute_cell`
-requests from local peers are forwarded to the cloud room as hosted `Request`
-frames (`crates/runtimed/src/requests/mod.rs:217-267`); the resulting
-queue/output state arrives back via RuntimeStateDoc sync.
+Execution plumbing (V1): hosted-bridged rooms do not launch local kernels.
+Handlers in `crates/runtimed/src/requests/mod.rs` can forward `execute_cell`
+requests as hosted `Request` frames; cloud queue/output state arrives through
+RuntimeStateDoc sync. This is not an operational execution guarantee through
+the current hosted opener.
+
+**Current implementation, 2026-09-04:** `daemon.rs` requests `editor` for the
+cloud connection and assigns `editor` to local bridge peers. The request gate
+in `notebook_sync_server/peer_writer.rs` rejects editor execution before it
+reaches the forwarding handler; hosted execution also requires owner scope.
+Requested/effective scope propagation and authorized execution through the
+bridge remain open. Attaching a workstation does not grant an editor execution
+authority. See the scope contract in
+`docs/adr/cloud-connected-local-mcp.md`.
 
 Persistence (V1): none (ephemeral room). Local-first persistence for hosted
 sessions is #3600.
@@ -115,17 +125,27 @@ New connection handshake channel (`crates/notebook-protocol/src/connection/hands
 The daemon resolves the URL against the registry, creates or joins the
 hosted-bridged room, spawns the bridge if needed, and serves the connection
 like a normal `notebook_sync` peer (typed bootstrap, `NotebookConnectionInfo`
-with the daemon-local room id). Reconnect/status composition in the desktop UI
-is #3599.
+with the daemon-local room id).
+
+**Current implementation, 2026-09-04:** the bridge publishes connecting,
+connected, reconnecting, authentication-failed, and terminal-error status.
+`apps/notebook/src/lib/desktop-connection-status.ts` composes this with the
+local daemon connection, so an online first hop cannot hide an unavailable
+cloud room. This two-hop status composition is implemented and unit-tested;
+richer presence/status UX remains #3599. Status reporting does not itself
+provide credential renewal or effective-scope propagation.
 
 ## Remaining Work (see #3861)
 
 - Account-aware discovery and Notebook Home use the federation memo above; they
   are not additional responsibilities of the per-room bridge.
 - OAuth/device-flow credential acquisition and keychain storage.
+- Requested/effective hosted scope propagation and authorized execution through
+  the currently editor-only opener.
 - CommsDoc/CommentsDoc bridging; widget replay across the bridge.
 - Offering local daemon compute to the hosted room (workstation attach is a
   separate, existing flow).
 - Offline edits with later cloud rejection UX.
 - Local-first persistence of hosted sessions (#3600).
-- Richer status/presence composition in desktop UI (#3599).
+- Richer presence/status UX in desktop UI (#3599), beyond the implemented
+  daemon/bridge connection-status composition.
