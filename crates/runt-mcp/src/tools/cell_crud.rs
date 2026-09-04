@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -404,7 +404,7 @@ fn cell_resource_success(
 ) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![
         crate::formatting::assistant_text(message),
-        Content::resource_link(crate::resources::notebook_cell_resource_link(
+        ContentBlock::resource_link(crate::resources::notebook_cell_resource_link(
             notebook_id,
             cell_id,
         )),
@@ -420,7 +420,7 @@ fn cell_resource_json_success(
         crate::formatting::assistant_text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
         ),
-        Content::resource_link(crate::resources::notebook_cell_resource_link(
+        ContentBlock::resource_link(crate::resources::notebook_cell_resource_link(
             notebook_id,
             cell_id,
         )),
@@ -435,7 +435,7 @@ fn cells_resource_json_success(
         crate::formatting::assistant_text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
         ),
-        Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+        ContentBlock::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
     ]))
 }
 

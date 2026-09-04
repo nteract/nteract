@@ -3,7 +3,7 @@
 //! can seed the new child's `NTERACT_MCP_REJOIN_NOTEBOOK` env var and let the
 //! child's `daemon_watch` loop re-join on its first `Connected` event.
 
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use serde_json::Value;
 
 /// Track a durable notebook target from session-establishing or persistence calls.
@@ -94,7 +94,7 @@ pub fn extract_session_id(
 /// file-backed connect/create responses).
 fn extract_notebook_path_from_result(result: &CallToolResult) -> Option<String> {
     for content in &result.content {
-        if let Some(text) = content.raw.as_text() {
+        if let ContentBlock::Text(text) = content {
             if let Ok(json) = serde_json::from_str::<Value>(&text.text) {
                 if let Some(path) = json.get("notebook_path").and_then(Value::as_str) {
                     return Some(path.to_string());
@@ -108,7 +108,7 @@ fn extract_notebook_path_from_result(result: &CallToolResult) -> Option<String> 
 /// Parse the canonical `path` returned by `save_notebook`.
 fn extract_path_from_result(result: &CallToolResult) -> Option<String> {
     for content in &result.content {
-        if let Some(text) = content.raw.as_text() {
+        if let ContentBlock::Text(text) = content {
             if let Ok(json) = serde_json::from_str::<Value>(&text.text) {
                 if let Some(path) = json.get("path").and_then(Value::as_str) {
                     return Some(path.to_string());
@@ -128,7 +128,7 @@ pub(crate) fn is_hosted_session_target(target: &str) -> bool {
 /// Parse notebook_id from a tool result's text content (JSON response body).
 pub(crate) fn extract_notebook_id_from_result(result: &CallToolResult) -> Option<String> {
     for content in &result.content {
-        if let Some(text) = content.raw.as_text() {
+        if let ContentBlock::Text(text) = content {
             if let Ok(json) = serde_json::from_str::<Value>(&text.text) {
                 if let Some(id) = json.get("notebook_id").and_then(Value::as_str) {
                     return Some(id.to_string());
@@ -161,7 +161,6 @@ fn hosted_notebook_target(domain: &str, notebook_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::Content;
 
     fn make_params(name: &str, args: serde_json::Value) -> CallToolRequestParams {
         serde_json::from_value(serde_json::json!({
@@ -172,11 +171,11 @@ mod tests {
     }
 
     fn success_result() -> CallToolResult {
-        CallToolResult::success(vec![Content::text("ok")])
+        CallToolResult::success(vec![ContentBlock::text("ok")])
     }
 
     fn error_result() -> CallToolResult {
-        let mut result = CallToolResult::success(vec![Content::text("error")]);
+        let mut result = CallToolResult::success(vec![ContentBlock::text("error")]);
         result.is_error = Some(true);
         result
     }
@@ -278,7 +277,7 @@ mod tests {
             "connect_notebook",
             serde_json::json!({"notebook_id": "550e8400-e29b-41d4-a716-446655440000"}),
         );
-        let result = CallToolResult::success(vec![Content::text(
+        let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"notebook_id": "550e8400-e29b-41d4-a716-446655440000", "notebook_path": "/Users/me/fasty.ipynb", "connected": true}"#,
         )]);
         assert_eq!(
@@ -295,7 +294,7 @@ mod tests {
             "connect_notebook",
             serde_json::json!({"notebook_id": "550e8400-e29b-41d4-a716-446655440000"}),
         );
-        let result = CallToolResult::success(vec![Content::text(
+        let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"notebook_id": "550e8400-e29b-41d4-a716-446655440000", "connected": true}"#,
         )]);
         assert_eq!(
@@ -315,7 +314,7 @@ mod tests {
                 "domain": "https://preview.runt.run/"
             }),
         );
-        let result = CallToolResult::success(vec![Content::text(
+        let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"notebook_id": "01KTZA152886TK1WAHYA48G7HJ", "notebook_path": "/Users/me/local.ipynb"}"#,
         )]);
         assert_eq!(
@@ -332,7 +331,7 @@ mod tests {
             "connect_notebook",
             serde_json::json!({"target": "550e8400-e29b-41d4-a716-446655440000"}),
         );
-        let result = CallToolResult::success(vec![Content::text(
+        let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"notebook_id": "550e8400-e29b-41d4-a716-446655440000", "notebook_path": "/Users/me/fasty.ipynb"}"#,
         )]);
         assert_eq!(
@@ -363,7 +362,7 @@ mod tests {
             "connect_notebook",
             serde_json::json!({"path": "~/fasty.ipynb"}),
         );
-        let result = CallToolResult::success(vec![Content::text(
+        let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"notebook_id": "550e8400-e29b-41d4-a716-446655440000", "path": "/Users/me/fasty.ipynb", "notebook_path": "/Users/me/fasty.ipynb"}"#,
         )]);
         assert_eq!(
@@ -401,7 +400,7 @@ mod tests {
     #[test]
     fn tracks_create_notebook_from_response() {
         let params = make_params("create_notebook", serde_json::json!({}));
-        let result = CallToolResult::success(vec![Content::text(
+        let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"notebook_id": "8540eb53-8609-471d-88f4-5c3e92c3b396", "runtime": {"language": "python"}}"#,
         )]);
         assert_eq!(
@@ -411,12 +410,38 @@ mod tests {
     }
 
     #[test]
+    fn session_tracking_skips_non_text_blocks_and_preserves_annotated_text() {
+        let params = make_params("create_notebook", serde_json::json!({}));
+        let text: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type": "text",
+            "text": "{\"notebook_id\":\"notebook-id\",\"notebook_path\":\"/tmp/analysis.ipynb\"}",
+            "annotations": {"audience": ["assistant"]},
+            "_meta": {"source": "child"}
+        }))
+        .unwrap();
+        let result = CallToolResult::success(vec![
+            ContentBlock::image("aW1hZ2U=", "image/png"),
+            ContentBlock::text("[nteract] Child restarted"),
+            text,
+        ]);
+
+        assert_eq!(
+            extract_session_id(&params, &result).as_deref(),
+            Some("/tmp/analysis.ipynb")
+        );
+        assert_eq!(
+            extract_notebook_id_from_result(&result).as_deref(),
+            Some("notebook-id")
+        );
+    }
+
+    #[test]
     fn tracks_create_notebook_with_deps_from_response() {
         let params = make_params(
             "create_notebook",
             serde_json::json!({"dependencies": ["numpy", "pandas"]}),
         );
-        let result = CallToolResult::success(vec![Content::text(
+        let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"notebook_id": "abc-123", "runtime": {"language": "python"}, "dependencies": ["numpy", "pandas"], "package_manager": "uv"}"#,
         )]);
         assert_eq!(
@@ -439,7 +464,7 @@ mod tests {
             "save_notebook",
             serde_json::json!({"path": "/tmp/test.ipynb"}),
         );
-        let result = CallToolResult::success(vec![Content::text(
+        let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"path": "/private/tmp/test.ipynb", "notebook_id": "abc-123"}"#,
         )]);
         assert_eq!(
@@ -496,7 +521,7 @@ mod tests {
             "connect_notebook",
             serde_json::json!({"path": "/tmp/test.ipynb"}),
         );
-        let mut result = CallToolResult::success(vec![Content::text("ok")]);
+        let mut result = CallToolResult::success(vec![ContentBlock::text("ok")]);
         result.is_error = None;
         assert_eq!(
             extract_session_id(&params, &result),

@@ -19,6 +19,7 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -29,9 +30,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, Implementation, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, ReadResourceRequestParams, ReadResourceResult,
-    ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverRequestMethod,
+    DiscoverResult, Implementation, ListResourceTemplatesResult, ListResourcesResult,
+    ListToolsResult, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::schemars;
 use rmcp::service::{RequestContext, RoleServer};
@@ -41,6 +43,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::{error, info, warn};
+
+const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2024_11_05,
+    ProtocolVersion::V_2025_03_26,
+    ProtocolVersion::V_2025_06_18,
+    ProtocolVersion::V_2025_11_25,
+];
+
+fn require_legacy_handshake(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
+    if context.peer.peer_info().is_none() {
+        return Err(McpError::invalid_request(
+            "initialize is required before application requests",
+            None,
+        ));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Daemon management
@@ -818,7 +837,7 @@ impl Supervisor {
 
     async fn reject_in_attach_mode(&self, operation: &str) -> Option<CallToolResult> {
         if self.current_mode().await == DevMode::Attach {
-            Some(CallToolResult::success(vec![Content::text(format!(
+            Some(CallToolResult::success(vec![ContentBlock::text(format!(
                 "{operation} is disabled in nteract-dev attach mode. Attach mode never starts, stops, rebuilds, or restarts the shared worktree daemon; use an owner-mode nteract-dev session for daemon lifecycle changes."
             ))]))
         } else {
@@ -1133,7 +1152,7 @@ impl Supervisor {
             "notebook",
         );
         if !binary.exists() {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "No notebook binary found. Run `cargo build -p notebook --no-default-features` first.",
             )]));
         }
@@ -1148,7 +1167,7 @@ impl Supervisor {
         let path = match notebook_id {
             Some(id) => {
                 if !std::path::Path::new(id).is_absolute() {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Notebook '{id}' is untitled (not saved to disk). \
                          Use save_notebook(path) first, then call show_notebook()."
                     ))]));
@@ -1192,11 +1211,11 @@ impl Supervisor {
                 state
                     .managed
                     .insert("notebook-app".into(), ManagedProcess { child, port: None });
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "Opened notebook in nteract (dev, Vite port {vite_port}): {path}"
                 ))]))
             }
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "Failed to launch notebook app: {e}"
             ))])),
         }
@@ -1394,7 +1413,7 @@ impl Supervisor {
                 "release" => true,
                 "debug" => false,
                 other => {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "up: unknown mode '{other}'. Use 'debug' or 'release'."
                     ))]));
                 }
@@ -1445,7 +1464,7 @@ impl Supervisor {
         if params.rebuild {
             info!("[supervisor] up: rebuild requested");
             if !run_cargo_build_daemon(&project_root) {
-                return Ok(CallToolResult::success(vec![Content::text(
+                return Ok(CallToolResult::success(vec![ContentBlock::text(
                     "up: cargo build -p runtimed failed. See the supervisor logs for details.",
                 )]));
             }
@@ -1470,7 +1489,7 @@ impl Supervisor {
                         report.push("rebuild: python bindings fresh".into());
                     }
                     MaturinDevelopStatus::Failed => {
-                        return Ok(CallToolResult::success(vec![Content::text(
+                        return Ok(CallToolResult::success(vec![ContentBlock::text(
                             "up: maturin develop failed. Daemon binary was rebuilt; \
                              Python bindings were not. See the supervisor logs.",
                         )]));
@@ -1487,7 +1506,7 @@ impl Supervisor {
             // automerge rejects on receive. Stale wasm leaves the frontend
             // stuck on "Initializing" with no surfaced error.
             if !run_xtask_wasm_ensure(&project_root) {
-                return Ok(CallToolResult::success(vec![Content::text(
+                return Ok(CallToolResult::success(vec![ContentBlock::text(
                     "up: cargo xtask wasm-ensure-runtime failed. Daemon was rebuilt; \
                      the frontend wasm bundle may be stale. See the supervisor logs.",
                 )]));
@@ -1577,7 +1596,7 @@ impl Supervisor {
                 &daemon_workspace_path,
                 Duration::from_secs(30),
             ) {
-                return Ok(CallToolResult::success(vec![Content::text(format!(
+                return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "up: daemon did not become ready within 30s.\n\n{}",
                     report.join("\n")
                 ))]));
@@ -1634,7 +1653,7 @@ impl Supervisor {
             report.push("child: healthy".into());
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             report.join("\n"),
         )]))
     }
@@ -1693,7 +1712,7 @@ impl Supervisor {
             report.push("daemon: left running (pass daemon=true to stop)".into());
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             report.join("\n"),
         )]))
     }
@@ -1854,6 +1873,38 @@ struct DownParams {
 
 /// MCP ServerHandler that proxies to the nteract child + injects supervisor tools.
 impl ServerHandler for Supervisor {
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, McpError> {
+        if context.peer.peer_info().as_deref() != Some(&request) {
+            return Err(McpError::invalid_request(
+                "initialize cannot change an existing connection or follow application requests",
+                None,
+            ));
+        }
+        let mut info = self.get_info();
+        if self
+            .supported_protocol_versions()
+            .contains(&request.protocol_version)
+        {
+            info.protocol_version = request.protocol_version;
+        }
+        Ok(info)
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(LEGACY_PROTOCOL_VERSIONS)
+    }
+
+    async fn discover(
+        &self,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, McpError> {
+        Err(McpError::method_not_found::<DiscoverRequestMethod>())
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()
@@ -1864,6 +1915,7 @@ impl ServerHandler for Supervisor {
                 .enable_extensions_with(mcp_apps_extension_capabilities())
                 .build(),
         )
+        .with_protocol_version(ProtocolVersion::V_2025_11_25)
         .with_server_info(Implementation::new(
             "nteract-dev",
             env!("CARGO_PKG_VERSION"),
@@ -1878,11 +1930,30 @@ impl ServerHandler for Supervisor {
         )
     }
 
+    async fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListPromptsResult, McpError> {
+        require_legacy_handshake(&context)?;
+        Ok(rmcp::model::ListPromptsResult::default())
+    }
+
+    async fn complete(
+        &self,
+        _request: rmcp::model::CompleteRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CompleteResult, McpError> {
+        require_legacy_handshake(&context)?;
+        Ok(rmcp::model::CompleteResult::default())
+    }
+
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        require_legacy_handshake(&context)?;
         let mut tools = Vec::new();
 
         // Supervisor's own tools. Schema generation is fallible in principle
@@ -1952,18 +2023,15 @@ impl ServerHandler for Supervisor {
             }
         }
 
-        Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn list_resources(
         &self,
         request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
+        require_legacy_handshake(&context)?;
         let state = self.state.read().await;
         if let Some(ref proxy) = state.proxy {
             Ok(proxy.child_resources(request).await)
@@ -1975,8 +2043,9 @@ impl ServerHandler for Supervisor {
     async fn list_resource_templates(
         &self,
         request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
+        require_legacy_handshake(&context)?;
         let state = self.state.read().await;
         if let Some(ref proxy) = state.proxy {
             Ok(proxy.child_resource_templates(request).await)
@@ -1988,15 +2057,30 @@ impl ServerHandler for Supervisor {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        self.forward_read_resource(request).await
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        require_legacy_handshake(&context)?;
+        self.forward_read_resource(request)
+            .await
+            .map(ReadResourceResponse::Complete)
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        require_legacy_handshake(&context)?;
+        self.handle_tool_call(request)
+            .await
+            .map(CallToolResponse::Complete)
+    }
+}
+
+impl Supervisor {
+    async fn handle_tool_call(
+        &self,
+        request: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
         match request.name.as_ref() {
             "up" => self.handle_up(&request).await,
@@ -2007,7 +2091,7 @@ impl ServerHandler for Supervisor {
                 let status = self.status().await;
                 let json = serde_json::to_string_pretty(&status)
                     .unwrap_or_else(|e| format!("Failed to serialize status: {e}"));
-                Ok(CallToolResult::success(vec![Content::text(json)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
             }
             "supervisor_restart" => {
                 let target = request
@@ -2065,18 +2149,18 @@ impl ServerHandler for Supervisor {
                             &daemon_workspace_path,
                             Duration::from_secs(30),
                         ) {
-                            return Ok(CallToolResult::success(vec![Content::text(
+                            return Ok(CallToolResult::success(vec![ContentBlock::text(
                                 "Daemon restart failed — daemon did not become ready within 30s",
                             )]));
                         }
 
                         match self.restart_child().await {
-                            Ok(()) => Ok(CallToolResult::success(vec![Content::text(
+                            Ok(()) => Ok(CallToolResult::success(vec![ContentBlock::text(
                                 "Daemon and MCP server restarted successfully",
                             )])),
-                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                                "Daemon restarted but MCP server failed: {e}"
-                            ))])),
+                            Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                                format!("Daemon restarted but MCP server failed: {e}"),
+                            )])),
                         }
                     }
                     _ => {
@@ -2089,12 +2173,12 @@ impl ServerHandler for Supervisor {
                             }
                         }
                         match self.restart_child().await {
-                            Ok(()) => Ok(CallToolResult::success(vec![Content::text(
+                            Ok(()) => Ok(CallToolResult::success(vec![ContentBlock::text(
                                 "nteract MCP server restarted successfully",
                             )])),
-                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                                "Restart failed: {e}"
-                            ))])),
+                            Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                                format!("Restart failed: {e}"),
+                            )])),
                         }
                     }
                 }
@@ -2124,7 +2208,7 @@ impl ServerHandler for Supervisor {
                         // (uses bundled build or installed app) and hint that
                         // Vite is available via the supervisor
                         let mut result = self.forward_tool_call(request).await?;
-                        result.content.push(Content::text(
+                        result.content.push(ContentBlock::text(
                             "\n\nTip: Use supervisor_start_vite to start a Vite \
                              dev server for hot-reload, then show_notebook will \
                              launch with live frontend changes."
@@ -2139,10 +2223,10 @@ impl ServerHandler for Supervisor {
                     return Ok(result);
                 }
                 match self.start_vite().await {
-                    Ok(port) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    Ok(port) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Vite dev server running on http://localhost:{port}"
                     ))])),
-                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Failed to start Vite: {e}"
                     ))])),
                 }
@@ -2158,15 +2242,15 @@ impl ServerHandler for Supervisor {
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if name.is_empty() {
-                    return Ok(CallToolResult::success(vec![Content::text(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
                         "Missing required 'name' argument (e.g. \"vite\")",
                     )]));
                 }
                 match self.stop_managed(name).await {
-                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    Ok(()) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Stopped '{name}'"
                     ))])),
-                    Err(e) => Ok(CallToolResult::success(vec![Content::text(e)])),
+                    Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(e)])),
                 }
             }
             "supervisor_rebuild" => {
@@ -2185,7 +2269,7 @@ impl ServerHandler for Supervisor {
 
                 // 1. Rebuild daemon binary and CLI (cargo build -p runtimed -p runt)
                 if !run_cargo_build_daemon(&project_root) {
-                    return Ok(CallToolResult::success(vec![Content::text(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
                         "cargo build -p runtimed failed — check the supervisor logs for details",
                     )]));
                 }
@@ -2194,7 +2278,7 @@ impl ServerHandler for Supervisor {
                 // SKIP_MATURIN=1 is set (speeds up Rust-only iteration).
                 if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
                     if !run_maturin_develop(&project_root).success() {
-                        return Ok(CallToolResult::success(vec![Content::text(
+                        return Ok(CallToolResult::success(vec![ContentBlock::text(
                             "maturin develop failed — check the supervisor logs for details\n\
                              (daemon binary was rebuilt successfully)",
                         )]));
@@ -2208,7 +2292,7 @@ impl ServerHandler for Supervisor {
                 // stale wasm here ends in stuck "Initializing" via
                 // duplicate-seq-1.
                 if !run_xtask_wasm_ensure(&project_root) {
-                    return Ok(CallToolResult::success(vec![Content::text(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
                         "cargo xtask wasm-ensure-runtime failed — check the supervisor logs for details\n\
                          (daemon binary was rebuilt successfully; the frontend wasm bundle may be stale)",
                     )]));
@@ -2248,7 +2332,7 @@ impl ServerHandler for Supervisor {
                     &daemon_workspace_path,
                     Duration::from_secs(30),
                 ) {
-                    return Ok(CallToolResult::success(vec![Content::text(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(
                         "Rebuild succeeded but daemon did not become ready within 30s",
                     )]));
                 }
@@ -2288,10 +2372,10 @@ impl ServerHandler for Supervisor {
                     ""
                 };
                 match self.restart_child().await {
-                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    Ok(()) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Rebuilt daemon + Python bindings and restarted everything successfully{version_warning}",
                     ))])),
-                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    Err(e) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Rebuild and daemon restart succeeded but MCP server restart failed: {e}{version_warning}"
                     ))])),
                 }
@@ -2310,9 +2394,9 @@ impl ServerHandler for Supervisor {
                 match log_path {
                     Some(path) if path.exists() => {
                         let text = tail_file(&path, lines);
-                        Ok(CallToolResult::success(vec![Content::text(text)]))
+                        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
-                    _ => Ok(CallToolResult::success(vec![Content::text(
+                    _ => Ok(CallToolResult::success(vec![ContentBlock::text(
                         "No Vite log found. Start Vite first with supervisor_start_vite.",
                     )])),
                 }
@@ -2335,13 +2419,13 @@ impl ServerHandler for Supervisor {
                 match log_path {
                     Some(path) if path.exists() => {
                         let text = tail_file(&path, lines);
-                        Ok(CallToolResult::success(vec![Content::text(text)]))
+                        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
-                    Some(path) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    Some(path) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Daemon log not found at {}",
                         path.display()
                     ))])),
-                    None => Ok(CallToolResult::success(vec![Content::text(
+                    None => Ok(CallToolResult::success(vec![ContentBlock::text(
                         "Could not determine daemon log path",
                     )])),
                 }
@@ -2361,7 +2445,7 @@ impl ServerHandler for Supervisor {
                     "release" => true,
                     "debug" => false,
                     other => {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
+                        return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                             "Unknown mode '{other}'. Use 'debug' or 'release'."
                         ))]));
                     }
@@ -2369,7 +2453,7 @@ impl ServerHandler for Supervisor {
 
                 let old_release = RELEASE_MODE.load(Ordering::Relaxed);
                 if old_release == new_release {
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Already in {mode} mode, no change needed."
                     ))]));
                 }
@@ -2404,7 +2488,7 @@ impl ServerHandler for Supervisor {
                     if !target_runt.exists() {
                         missing.push(format!("runt: {}", target_runt.display()));
                     }
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Cannot switch to {mode} mode — missing binaries:\n  {}\n\
                          Build them first with: cargo build {}-p runtimed -p runt",
                         missing.join("\n  "),
@@ -2456,7 +2540,7 @@ impl ServerHandler for Supervisor {
                 ) {
                     // Roll back on failure
                     RELEASE_MODE.store(old_release, Ordering::Relaxed);
-                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Failed to switch to {mode} mode — daemon did not become ready within 30s. \
                          Rolled back to {} mode.",
                         if old_release { "release" } else { "debug" }
@@ -2465,13 +2549,13 @@ impl ServerHandler for Supervisor {
 
                 // Restart the MCP child so it reconnects to the new daemon
                 match self.restart_child().await {
-                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                    Ok(()) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "Switched to {mode} mode. Daemon and MCP server restarted."
                     ))])),
                     Err(e) => {
                         // Daemon is running in new mode but child failed — don't roll back
                         // the daemon, just report the child failure
-                        Ok(CallToolResult::success(vec![Content::text(format!(
+                        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                             "Switched to {mode} mode. Daemon restarted but MCP server failed: {e}"
                         ))]))
                     }
@@ -2922,6 +3006,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let transport = rmcp::transport::io::stdio();
     let server = supervisor.serve(transport).await?;
+    if server.peer().peer_info().is_none() {
+        server.cancellation_token().cancel();
+        return Err("The initialize handshake is required".into());
+    }
     info!("MCP server initialized on stdio (supervisor tools available)");
 
     // Extract upstream client identity from the MCP initialize handshake.
@@ -3278,6 +3366,181 @@ mod tests {
         PathBuf::from("/repo")
     }
 
+    async fn supervisor_responses(requests: Vec<Value>) -> Vec<Value> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(
+            dir.path().to_path_buf(),
+            DevMode::Attach,
+            dir.path().to_path_buf(),
+            None,
+            tx,
+        );
+        let (server_side, client_side) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            if let Ok(service) = supervisor.serve(server_side).await {
+                let _ = service.waiting().await;
+            }
+        });
+        let mut client = BufReader::new(client_side);
+        let mut responses = Vec::new();
+        for request in requests {
+            let mut encoded = serde_json::to_vec(&request).unwrap();
+            encoded.push(b'\n');
+            client.get_mut().write_all(&encoded).await.unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(Duration::from_secs(5), client.read_line(&mut response))
+                .await
+                .expect("request should receive a response")
+                .unwrap();
+            responses.push(serde_json::from_str(&response).unwrap());
+        }
+        server.abort();
+        responses
+    }
+
+    #[tokio::test]
+    async fn supervisor_preserves_legacy_handshakes_and_tool_response_shape() {
+        for version in LEGACY_PROTOCOL_VERSIONS {
+            let responses = supervisor_responses(vec![
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": version,
+                        "capabilities": {},
+                        "clientInfo": { "name": "test-client", "version": "1" }
+                    }
+                }),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": { "name": "up", "arguments": {} }
+                }),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "prompts/list"
+                }),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "completion/complete",
+                    "params": {
+                        "ref": { "type": "ref/prompt", "name": "test" },
+                        "argument": { "name": "test", "value": "" }
+                    }
+                }),
+            ])
+            .await;
+            assert_eq!(responses[0]["result"]["protocolVersion"], version.as_str());
+            assert_eq!(responses[0]["result"]["serverInfo"]["name"], "nteract-dev");
+            let result = &responses[1]["result"];
+            assert_eq!(result["content"][0]["type"], "text");
+            assert!(result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("disabled in nteract-dev attach mode"));
+            assert!(result.get("resultType").is_none(), "{result}");
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_repeated_initialize_cannot_change_protocol_or_identity() {
+        for version in LEGACY_PROTOCOL_VERSIONS {
+            let initialize = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": version, "capabilities": {},
+                    "clientInfo": {"name": "test-client", "version": "1"}
+                }
+            });
+            for patch in [
+                serde_json::json!({"protocolVersion": "2026-07-28"}),
+                serde_json::json!({"clientInfo": {"name": "replacement-client", "version": "1"}}),
+                serde_json::json!({"capabilities": {"roots": {"listChanged": true}}}),
+            ] {
+                let mut changed = initialize.clone();
+                changed["id"] = serde_json::json!(2);
+                changed["params"]
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(patch.as_object().unwrap().clone());
+                let responses = supervisor_responses(vec![
+                    initialize.clone(), changed,
+                    serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "up", "arguments": {}}}),
+                    initialize.clone(),
+                ]).await;
+                assert_eq!(responses[1]["error"]["code"], -32600);
+                assert!(responses[2]["result"]["content"].is_array());
+                assert!(responses[2]["result"].get("resultType").is_none());
+                assert_eq!(responses[3]["result"]["protocolVersion"], version.as_str());
+            }
+        }
+    }
+
+    fn request_without_handshake(method: &str, version: &str) -> Value {
+        let mut params = serde_json::json!({
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": version,
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        });
+        match method {
+            "tools/call" => params["name"] = serde_json::json!("up"),
+            "resources/read" => params["uri"] = serde_json::json!("test://resource"),
+            "completion/complete" => {
+                params["ref"] = serde_json::json!({ "type": "ref/prompt", "name": "test" });
+                params["argument"] = serde_json::json!({ "name": "test", "value": "" });
+            }
+            _ => {}
+        }
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        })
+    }
+
+    #[tokio::test]
+    async fn supervisor_rejects_modern_requests_without_a_handshake() {
+        for method in [
+            "server/discover",
+            "tools/list",
+            "tools/call",
+            "resources/read",
+        ] {
+            let responses =
+                supervisor_responses(vec![request_without_handshake(method, "2026-07-28")]).await;
+            assert_eq!(responses[0]["error"]["code"], -32022, "{}", responses[0]);
+            assert!(responses[0].get("result").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_requires_handshake_even_with_legacy_request_metadata() {
+        for method in [
+            "server/discover",
+            "tools/list",
+            "tools/call",
+            "resources/list",
+            "resources/templates/list",
+            "resources/read",
+            "prompts/list",
+            "completion/complete",
+        ] {
+            let responses =
+                supervisor_responses(vec![request_without_handshake(method, "2025-11-25")]).await;
+            assert!(responses[0].get("error").is_some(), "{}", responses[0]);
+            assert!(responses[0].get("result").is_none());
+        }
+    }
+
     #[test]
     fn supervisor_server_info_advertises_mcp_apps_extension() {
         let (tool_list_changed_tx, _tool_list_changed_rx) = mpsc::channel(1);
@@ -3285,6 +3548,11 @@ mod tests {
             Supervisor::new_empty(root(), DevMode::Attach, root(), None, tool_list_changed_tx);
         let info = supervisor.get_info();
 
+        assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
+        assert_eq!(
+            supervisor.supported_protocol_versions().as_ref(),
+            LEGACY_PROTOCOL_VERSIONS
+        );
         assert!(info.capabilities.extensions.as_ref().is_some_and(
             |extensions| extensions.contains_key(runt_mcp_proxy::MCP_APPS_EXTENSION_ID)
         ));

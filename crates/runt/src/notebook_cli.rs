@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
-use rmcp::model::{CallToolRequestParams, CallToolResult, RawContent, ResourceContents};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, ResourceContents};
 use serde_json::{Map, Value};
 
 #[derive(Subcommand)]
@@ -310,22 +310,23 @@ fn print_result(result: &CallToolResult, json: bool) -> Result<()> {
 
     let mut printed = false;
     for content in &result.content {
-        match &content.raw {
-            RawContent::Text(text) => {
+        match content {
+            ContentBlock::Text(text) => {
                 print_block(&text.text, &mut printed);
             }
-            RawContent::ResourceLink(resource) => {
+            ContentBlock::ResourceLink(resource) => {
                 print_block(&format!("Resource: {}", resource.uri), &mut printed);
             }
-            RawContent::Resource(resource) => match &resource.resource {
+            ContentBlock::Resource(resource) => match &resource.resource {
                 ResourceContents::TextResourceContents { uri, text, .. } => {
                     print_block(&format!("Resource: {uri}\n{text}"), &mut printed);
                 }
                 ResourceContents::BlobResourceContents { uri, .. } => {
                     print_block(&format!("Resource: {uri}"), &mut printed);
                 }
+                _ => print_block(&serde_json::to_string(&resource.resource)?, &mut printed),
             },
-            RawContent::Image(image) => {
+            ContentBlock::Image(image) => {
                 print_block(
                     &format!(
                         "[image {}: {} base64 bytes]",
@@ -335,7 +336,7 @@ fn print_result(result: &CallToolResult, json: bool) -> Result<()> {
                     &mut printed,
                 );
             }
-            RawContent::Audio(audio) => {
+            ContentBlock::Audio(audio) => {
                 print_block(
                     &format!(
                         "[audio {}: {} base64 bytes]",
@@ -345,6 +346,7 @@ fn print_result(result: &CallToolResult, json: bool) -> Result<()> {
                     &mut printed,
                 );
             }
+            _ => print_block(&serde_json::to_string(content)?, &mut printed),
         }
     }
 
@@ -371,19 +373,23 @@ fn print_block(text: &str, printed: &mut bool) {
 fn result_text(result: &CallToolResult) -> String {
     let mut parts = Vec::new();
     for content in &result.content {
-        match &content.raw {
-            RawContent::Text(text) => parts.push(text.text.clone()),
-            RawContent::ResourceLink(resource) => parts.push(format!("Resource: {}", resource.uri)),
-            RawContent::Resource(resource) => match &resource.resource {
+        match content {
+            ContentBlock::Text(text) => parts.push(text.text.clone()),
+            ContentBlock::ResourceLink(resource) => {
+                parts.push(format!("Resource: {}", resource.uri))
+            }
+            ContentBlock::Resource(resource) => match &resource.resource {
                 ResourceContents::TextResourceContents { uri, text, .. } => {
                     parts.push(format!("Resource: {uri}\n{text}"));
                 }
                 ResourceContents::BlobResourceContents { uri, .. } => {
                     parts.push(format!("Resource: {uri}"));
                 }
+                _ => parts.push(serde_json::to_string(&resource.resource).unwrap_or_default()),
             },
-            RawContent::Image(image) => parts.push(format!("[image {}]", image.mime_type)),
-            RawContent::Audio(audio) => parts.push(format!("[audio {}]", audio.mime_type)),
+            ContentBlock::Image(image) => parts.push(format!("[image {}]", image.mime_type)),
+            ContentBlock::Audio(audio) => parts.push(format!("[audio {}]", audio.mime_type)),
+            _ => parts.push(serde_json::to_string(content).unwrap_or_default()),
         }
     }
     parts.join("\n")
@@ -400,7 +406,7 @@ fn result_notebook_id(result: &CallToolResult) -> Option<String> {
     }
 
     for content in &result.content {
-        let RawContent::Text(text) = &content.raw else {
+        let ContentBlock::Text(text) = content else {
             continue;
         };
         let Ok(value) = serde_json::from_str::<Value>(&text.text) else {
@@ -412,4 +418,49 @@ fn result_notebook_id(result: &CallToolResult) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_result_content_preserves_cli_text_and_notebook_identity() -> Result<()> {
+        let wire = serde_json::json!({
+            "content": [
+                { "type": "text", "text": "{\"notebook_id\":\"nb-1\"}",
+                  "annotations": { "audience": ["assistant"] } },
+                { "type": "resource_link", "uri": "nteract://notebooks/nb-1/cells",
+                  "name": "notebook cells", "mimeType": "application/json" },
+                { "type": "resource", "resource": {
+                    "uri": "nteract://notebooks/nb-1/cells/cell-1", "text": "cell snapshot" } },
+                { "type": "resource", "resource": {
+                    "uri": "nteract://blob/output", "blob": "AA==" } },
+                { "type": "image", "data": "AA==", "mimeType": "image/png" },
+                { "type": "audio", "data": "AA==", "mimeType": "audio/wav" }
+            ],
+            "isError": false
+        });
+        let result: CallToolResult = serde_json::from_value(wire.clone())?;
+        assert_eq!(result_notebook_id(&result).as_deref(), Some("nb-1"));
+        assert_eq!(
+            result_text(&result),
+            "{\"notebook_id\":\"nb-1\"}\nResource: nteract://notebooks/nb-1/cells\nResource: nteract://notebooks/nb-1/cells/cell-1\ncell snapshot\nResource: nteract://blob/output\n[image image/png]\n[audio audio/wav]"
+        );
+        assert_eq!(serde_json::to_value(result)?, wire);
+        Ok(())
+    }
+
+    #[test]
+    fn structured_notebook_identity_takes_precedence_over_text() {
+        let mut result = CallToolResult::success(vec![ContentBlock::text(
+            "{\"notebook_id\":\"text-notebook\"}",
+        )]);
+        result.structured_content =
+            Some(serde_json::json!({ "notebook_id": "structured-notebook" }));
+        assert_eq!(
+            result_notebook_id(&result).as_deref(),
+            Some("structured-notebook")
+        );
+    }
 }

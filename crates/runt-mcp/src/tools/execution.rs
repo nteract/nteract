@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::ErrorData as McpError;
 use runtimed_outputs::output_resolver;
 use schemars::JsonSchema;
@@ -17,7 +17,7 @@ use super::{arg_bool, arg_str, assert_cell_exists, tool_error};
 fn cells_resource_result(message: String, notebook_id: &str) -> CallToolResult {
     CallToolResult::success(vec![
         formatting::assistant_text(message),
-        Content::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+        ContentBlock::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
     ])
 }
 
@@ -241,7 +241,7 @@ pub async fn run_all_cells(
     let comms = runtime_state.as_ref().map(|rs| &rs.comms);
     let mut content_items = vec![
         formatting::assistant_text(header.clone()),
-        rmcp::model::Content::resource_link(crate::resources::notebook_cells_resource_link(
+        rmcp::model::ContentBlock::resource_link(crate::resources::notebook_cells_resource_link(
             handle.notebook_id(),
         )),
     ];
