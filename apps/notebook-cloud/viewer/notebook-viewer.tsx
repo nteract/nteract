@@ -24,7 +24,7 @@ import {
   useHasIsolatedOutputs,
   useIsolatedRenderer,
 } from "@/components/isolated/isolated-renderer-context";
-import { NotebookRailHomeButton, type NotebookRailPanelId } from "@/components/notebook-rail";
+import type { NotebookRailPanelId } from "@/components/notebook-rail";
 import { NotebookNotice } from "@/components/notebook/NotebookNotice";
 import {
   markdownProjectionMatchesSource,
@@ -1653,7 +1653,6 @@ export function NotebookViewer({
     );
   const rail = (
     <NotebookDocumentRail
-      leadingSlot={<NotebookRailHomeButton href="/n" />}
       trailingSlot={identityControls}
       viewModel={notebookViewModel}
       activePanelId={renderedActiveRailPanel}
@@ -1745,8 +1744,10 @@ export function NotebookViewer({
       frameClassName="z-20"
       headerClassName="cloud-room-toolbar"
       presence={
-        <div className="flex min-w-0 items-center gap-2">
-          <NotebookBrandMark className="size-8" />
+        <>
+          <a className="cloud-app-home" href="/n" aria-label="Notebook home" title="Notebook home">
+            <NotebookBrandMark className="size-8" />
+          </a>
           <CloudNotebookTitle
             title={notebookStageGated ? gatedNotebookTitle : notebookTitle}
             renameTitle={catalogNotebookTitle?.trim() ?? ""}
@@ -1755,7 +1756,7 @@ export function NotebookViewer({
             renameError={notebookTitleError}
             onRename={saveCloudNotebookTitle}
           />
-        </div>
+        </>
       }
       utilityControls={
         notebookHeaderChrome.showPresenceStatus ? (

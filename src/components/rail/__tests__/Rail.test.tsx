@@ -43,7 +43,12 @@ describe("Rail", () => {
       ...RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
     );
     expect(container.querySelector('[data-slot="example-rail-panel"]')).toHaveClass("border-r");
-    expect(container.querySelector('[data-slot="example-rail-panel"]')).toHaveClass("bg-muted/20");
+    expect(container.querySelector('[data-slot="example-rail-panel"]')).toHaveClass("bg-muted/60");
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toHaveClass(
+      "min-h-10",
+      "shrink-0",
+    );
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).not.toHaveClass("border-b");
     expect(container.querySelector('[data-slot="example-rail-title-row"]')).toHaveClass(
       "flex-wrap",
     );

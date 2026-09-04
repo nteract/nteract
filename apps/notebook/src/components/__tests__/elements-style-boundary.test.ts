@@ -44,6 +44,17 @@ describe("Elements visual style boundary", () => {
     ).toEqual([]);
   });
 
+  it("lets the production notebook viewport own full-shell spacing and scrolling", () => {
+    const source = readFileSync(
+      join(elementsComponentsDir, "full-shell-composition-example.tsx"),
+      "utf8",
+    );
+    expect(source).toMatch(
+      /<section\s+aria-label="Notebook document"\s+className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background"\s+data-slot="full-shell-notebook-stage"\s*>\s*\{fixturesSeeded \? \(\s*<NotebookView/,
+    );
+    expect(source).not.toMatch(/max-w-5xl|overflow-y-auto|mx-auto/);
+  });
+
   it("keeps catalog-only labels out of production cell gutters", () => {
     expect(matchingLines(/rightGutterContent=\{\s*<span/)).toEqual([]);
   });

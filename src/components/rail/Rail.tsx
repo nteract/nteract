@@ -21,7 +21,6 @@ export interface RailProps<PanelId extends string = string> {
   activePanelId: PanelId;
   collapsed: boolean;
   items: readonly RailItem<PanelId>[];
-  /** Omit when the active rail control already names the panel. */
   panelTitle?: string;
   children: ReactNode;
   onActivePanelChange: (panelId: PanelId) => void;
@@ -59,24 +58,25 @@ export function Rail<PanelId extends string = string>({
   const panel = collapsed ? null : (
     <div
       className={cn(
-        "flex min-h-0 max-w-[calc(100vw-3.5rem)] flex-col border-r bg-muted/20",
+        "flex min-h-0 max-w-[calc(100vw-3.5rem)] flex-col border-r bg-muted/60",
         panelClassName,
         RAIL_TAKEOVER_PANEL_CLASS_NAMES,
       )}
       data-slot={panelSlot}
     >
       {showPanelHeader ? (
-        <div className="border-b px-4 py-3" data-slot="rail-panel-header">
-          <div className="flex flex-col gap-1.5">
-            <div
-              className="flex min-w-0 flex-wrap items-center justify-between gap-2"
-              data-slot={panelTitleRowSlot}
-            >
-              {panelTitle != null ? (
-                <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
-              ) : null}
-              {panelAction}
-            </div>
+        <div
+          className="flex min-h-10 shrink-0 items-center px-4 py-1.5"
+          data-slot="rail-panel-header"
+        >
+          <div
+            className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2"
+            data-slot={panelTitleRowSlot}
+          >
+            {panelTitle != null ? (
+              <h2 className="text-sm font-semibold text-foreground">{panelTitle}</h2>
+            ) : null}
+            {panelAction}
           </div>
         </div>
       ) : null}

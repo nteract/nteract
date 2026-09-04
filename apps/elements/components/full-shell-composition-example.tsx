@@ -1,7 +1,8 @@
 "use client";
 
 import { NotebookHostProvider } from "@nteract/notebook-host";
-import { Share2 } from "lucide-react";
+import { PanelLeftOpen, Share2 } from "lucide-react";
+import Image from "next/image";
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { resolveNotebookOutlineSelection } from "runtimed";
 import {
@@ -28,6 +29,7 @@ import {
 } from "@/components/notebook";
 import type { CommentsProjection } from "@/components/notebook/comment-types";
 import {
+  NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY,
   NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
   type NotebookRailPanelId,
 } from "@/components/notebook-rail";
@@ -50,6 +52,8 @@ import {
 } from "@/components/notebook/state/execution-store";
 import { resetNotebookOutputs, setOutput } from "@/components/notebook/state/output-store";
 import { cn } from "@/lib/utils";
+import logoDarkUrl from "../../../logo-dark.svg";
+import logoLightUrl from "../../../logo.svg";
 import { NotebookView } from "../../notebook/src/notebook-surface";
 import { createFixtureNotebookHost } from "./fixture-notebook-host";
 import {
@@ -218,6 +222,7 @@ const workstationSelection = projectNotebookWorkstationSelection({
 });
 
 export function FullShellCompositionExample() {
+  const [host, setHost] = useState<"cloud" | "desktop">("cloud");
   const [activePanel, setActivePanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [mode, setMode] = useState<NotebookInteractionMode>("edit");
@@ -253,6 +258,10 @@ export function FullShellCompositionExample() {
   useEffect(() => setMounted(true), []);
 
   useLayoutEffect(() => {
+    setHost(
+      new URLSearchParams(window.location.search).get("host") === "desktop" ? "desktop" : "cloud",
+    );
+    setRailCollapsed(window.matchMedia(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY).matches);
     seedFullShellFixtures(scenario);
     setFixturesSeeded(true);
   }, []);
@@ -277,38 +286,51 @@ export function FullShellCompositionExample() {
     });
   };
 
+  const togglePanel = (panel: NotebookRailPanelId) => {
+    setActivePanel(panel);
+    setRailCollapsed(activePanel === panel && !railCollapsed);
+  };
+  const commandToolbar = (
+    <FullShellCommandToolbar
+      capabilities={capabilities}
+      activePanel={activePanel}
+      railCollapsed={railCollapsed}
+      onOpenPanels={host === "cloud" ? () => setRailCollapsed(false) : undefined}
+      onTogglePackages={() => togglePanel("packages")}
+      onToggleWorkstations={host === "cloud" ? () => togglePanel("workstations") : undefined}
+    />
+  );
+
   return (
     <NotebookHostProvider host={notebookHost}>
       <NotebookDocumentShell
         rootElement="main"
         className="h-dvh bg-background text-foreground"
         toolbarClassName="bg-background/95"
-        toolbarLabel="Full shell composition toolbar"
-        toolbarPlacement="stage"
-        stageClassName="bg-muted/20"
-        stageLabel="Full notebook composition"
+        toolbarLabel={host === "cloud" ? "Cloud notebook session" : "Notebook commands"}
+        toolbarPlacement={host === "cloud" ? "shell" : "stage-content"}
+        stageClassName="bg-background"
+        stageLabel={`Full ${host} notebook composition`}
         railPanelPlacement="stage"
         capabilities={capabilities}
         toolbar={
-          <FullShellHeader
-            capabilities={capabilities}
-            interaction={interaction}
-            mode={mode}
-            onModeChange={setMode}
-          />
+          host === "cloud" ? (
+            <FullShellHeader
+              capabilities={capabilities}
+              interaction={interaction}
+              mode={mode}
+              onModeChange={setMode}
+            />
+          ) : (
+            commandToolbar
+          )
         }
-        stageToolbar={
-          <FullShellCommandToolbar
-            capabilities={capabilities}
-            activePanel={activePanel}
-            onTogglePackages={() => setActivePanel("packages")}
-            onToggleWorkstations={() => setActivePanel("workstations")}
-          />
-        }
+        stageToolbar={host === "cloud" ? commandToolbar : undefined}
         stageToolbarPlacement="stage-content"
-        stageContentClassName={NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME}
+        stageContentClassName={cn(!railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME)}
         rail={
           <NotebookDocumentRail
+            leadingSlot={host === "desktop" ? <FullShellBrandMark /> : undefined}
             viewModel={scenario.viewModel}
             activePanelId={activePanel}
             collapsed={railCollapsed}
@@ -321,10 +343,12 @@ export function FullShellCompositionExample() {
             }
             commentsPanel={commentsPanel}
             workstationsPanel={
-              <NotebookWorkstationsPanel
-                capabilities={capabilities}
-                selection={workstationSelection}
-              />
+              host === "cloud" ? (
+                <NotebookWorkstationsPanel
+                  capabilities={capabilities}
+                  selection={workstationSelection}
+                />
+              ) : undefined
             }
             onActivePanelChange={setActivePanel}
             onCollapsedChange={setRailCollapsed}
@@ -337,67 +361,67 @@ export function FullShellCompositionExample() {
               setSelectedOutlineItemId(item.id);
               setFocusedCellId(item.cellId);
               focusFullShellCell(item.cellId);
+              if (window.matchMedia(NOTEBOOK_RAIL_TAKEOVER_MEDIA_QUERY).matches) {
+                setRailCollapsed(true);
+              }
             }}
-            className="bg-background"
+            className={cn(
+              "bg-background",
+              host === "cloud" && railCollapsed && "max-[599.98px]:hidden",
+            )}
           />
         }
       >
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <CrdtBridgeProvider {...crdtAdapter}>
-            <section
-              aria-label="Notebook document"
-              className="min-h-0 overflow-y-auto bg-background"
-              data-slot="full-shell-notebook-stage"
-            >
-              <div className="mx-auto min-h-full w-full max-w-5xl px-5 py-5 sm:px-7 lg:px-10">
-                {fixturesSeeded ? (
-                  <NotebookView
-                    cellIds={notebookViewCellIds}
-                    capabilities={capabilities}
-                    canAcceptCellMutations={false}
-                    readOnly={!capabilities.canEditCells}
-                    runtime="python"
-                    sessionRuntimeState={capabilities.canExecute ? "ready" : "unavailable"}
-                    onFocusCell={(cellId) => {
-                      setFocusedCellId(cellId);
-                      setSelectedOutlineItemId(null);
-                      focusFullShellCell(cellId);
-                    }}
-                    onExecuteCell={noop}
-                    onInterruptKernel={noop}
-                    onDeleteCell={noop}
-                    onAddCell={() => null}
-                    onMoveCell={moveNotebookViewCell}
-                    onSetCellSourceHidden={noop}
-                    onSetCellOutputsHidden={noop}
-                    onCreateSourceComment={(anchor) => {
-                      setFocusedCellId(anchor.cell_id);
-                      focusFullShellCell(anchor.cell_id);
-                    }}
-                    onActivateCommentThread={(threadId) => {
-                      const thread = commentsProjection.threads.find(
-                        (item) => item.id === threadId,
-                      );
-                      const cellId =
-                        thread?.anchor.kind === "source_range" || thread?.anchor.kind === "cell"
-                          ? thread.anchor.cell_id
-                          : null;
-                      if (cellId) {
-                        setFocusedCellId(cellId);
-                        focusFullShellCell(cellId);
-                      }
-                    }}
-                    autoFocusFirstCell={false}
-                  />
-                ) : (
-                  <div className="px-4 py-6 text-sm text-muted-foreground">
-                    Loading notebook fixture...
-                  </div>
-                )}
+        <CrdtBridgeProvider {...crdtAdapter}>
+          <section
+            aria-label="Notebook document"
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background"
+            data-slot="full-shell-notebook-stage"
+          >
+            {fixturesSeeded ? (
+              <NotebookView
+                cellIds={notebookViewCellIds}
+                capabilities={capabilities}
+                canAcceptCellMutations={false}
+                readOnly={!capabilities.canEditCells}
+                runtime="python"
+                sessionRuntimeState={capabilities.canExecute ? "ready" : "unavailable"}
+                onFocusCell={(cellId) => {
+                  setFocusedCellId(cellId);
+                  setSelectedOutlineItemId(null);
+                  focusFullShellCell(cellId);
+                }}
+                onExecuteCell={noop}
+                onInterruptKernel={noop}
+                onDeleteCell={noop}
+                onAddCell={() => null}
+                onMoveCell={moveNotebookViewCell}
+                onSetCellSourceHidden={noop}
+                onSetCellOutputsHidden={noop}
+                onCreateSourceComment={(anchor) => {
+                  setFocusedCellId(anchor.cell_id);
+                  focusFullShellCell(anchor.cell_id);
+                }}
+                onActivateCommentThread={(threadId) => {
+                  const thread = commentsProjection.threads.find((item) => item.id === threadId);
+                  const cellId =
+                    thread?.anchor.kind === "source_range" || thread?.anchor.kind === "cell"
+                      ? thread.anchor.cell_id
+                      : null;
+                  if (cellId) {
+                    setFocusedCellId(cellId);
+                    focusFullShellCell(cellId);
+                  }
+                }}
+                autoFocusFirstCell={false}
+              />
+            ) : (
+              <div className="px-4 py-6 text-sm text-muted-foreground">
+                Loading notebook fixture...
               </div>
-            </section>
-          </CrdtBridgeProvider>
-        </div>
+            )}
+          </section>
+        </CrdtBridgeProvider>
       </NotebookDocumentShell>
     </NotebookHostProvider>
   );
@@ -416,46 +440,61 @@ function FullShellHeader({
 }) {
   return (
     <NotebookToolbarFrame className="static top-auto z-auto bg-background/95">
-      <NotebookDocumentHeader
-        capabilities={capabilities}
-        className={cn(
-          "min-h-14 border-b border-border/70 px-3 py-2 sm:px-4",
-          "[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_min(28rem,48vw)]",
-          "[&_[data-slot=notebook-document-header-controls]]:flex-none",
-          "max-[920px]:min-h-[4.75rem] max-[920px]:flex-wrap max-[920px]:items-center max-[920px]:justify-start",
-          "max-[920px]:[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_100%]",
-          "max-[920px]:[&_[data-slot=notebook-document-header-controls]]:flex-[1_1_100%]",
-          "max-[920px]:[&_[data-slot=notebook-document-header-controls]]:justify-start",
-        )}
-        presence={<FullShellTitle />}
-        utilityControls={
-          <>
-            <NotebookIdentityGroup
-              actors={hostedPeople}
-              maxVisible={2}
-              label="Hosted participants"
-              className="hidden sm:inline-flex"
-            />
-            <NotebookEditModeButton
-              mode={mode}
-              state={interaction.state}
-              onModeChange={onModeChange}
-              variant="segmented"
-              className="bg-muted/35"
-            />
-          </>
-        }
-        sharingControls={
-          <button
-            type="button"
-            className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-            title="Share notebook"
-          >
-            <Share2 className="size-3.5" aria-hidden="true" />
-            <span className="hidden sm:inline">Share</span>
-          </button>
-        }
-      />
+      <div className="flex min-w-0" data-slot="full-shell-cloud-header">
+        <NotebookDocumentHeader
+          capabilities={capabilities}
+          className={cn(
+            "min-h-15 border-b pl-0 pr-[clamp(0.5rem,2vw,1rem)]",
+            "[&_[data-slot=notebook-document-header-presence]]:flex [&_[data-slot=notebook-document-header-presence]]:items-center [&_[data-slot=notebook-document-header-presence]]:gap-2",
+            "[&_[data-slot=notebook-document-header-presence]]:flex-[1_1_min(24rem,44vw)] [&_[data-slot=notebook-document-header-presence]]:max-w-[min(38rem,48vw)]",
+            "[&_[data-slot=notebook-document-header-controls]]:flex-none [&_[data-slot=notebook-document-header-controls]]:min-w-max [&_[data-slot=notebook-document-header-controls]]:gap-[clamp(0.375rem,1vw,0.75rem)]",
+            "max-[900px]:flex-nowrap max-[900px]:content-center max-[900px]:gap-1.5 max-[900px]:py-1.5",
+            "max-[900px]:[&_[data-slot=notebook-document-header-presence]]:flex-auto max-[900px]:[&_[data-slot=notebook-document-header-presence]]:max-w-none",
+            "max-[900px]:[&_[data-slot=notebook-document-header-controls]]:min-w-0 max-[900px]:[&_[data-slot=notebook-document-header-controls]]:gap-x-2.5 max-[900px]:[&_[data-slot=notebook-document-header-controls]]:gap-y-1",
+            "max-[520px]:[&_[data-slot=notebook-document-header-controls]]:gap-x-1.5 max-[520px]:[&_[data-slot=notebook-document-header-controls]]:gap-y-0.5",
+          )}
+          presence={
+            <>
+              <a
+                href="/n"
+                aria-label="Notebook home"
+                title="Notebook home"
+                className="flex h-11 w-14 shrink-0 items-center justify-center rounded-md hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
+              >
+                <FullShellBrandMark className="size-8" />
+              </a>
+              <FullShellTitle />
+            </>
+          }
+          utilityControls={
+            <>
+              <NotebookIdentityGroup
+                actors={hostedPeople}
+                maxVisible={2}
+                label="Hosted participants"
+              />
+              <NotebookEditModeButton
+                mode={mode}
+                state={interaction.state}
+                onModeChange={onModeChange}
+                variant="segmented"
+                className="bg-muted/35"
+              />
+            </>
+          }
+          sharingControls={
+            <button
+              type="button"
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Share notebook"
+              title="Share notebook"
+            >
+              <Share2 className="size-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Share</span>
+            </button>
+          }
+        />
+      </div>
     </NotebookToolbarFrame>
   );
 }
@@ -463,13 +502,17 @@ function FullShellHeader({
 function FullShellCommandToolbar({
   activePanel,
   capabilities,
+  railCollapsed,
+  onOpenPanels,
   onTogglePackages,
   onToggleWorkstations,
 }: {
   activePanel: NotebookRailPanelId;
   capabilities: NotebookShellCapabilities;
+  railCollapsed: boolean;
+  onOpenPanels?: () => void;
   onTogglePackages: () => void;
-  onToggleWorkstations: () => void;
+  onToggleWorkstations?: () => void;
 }) {
   const runtimeStatus: NotebookCommandToolbarStatus = {
     state: capabilities.canExecute ? "idle" : "unknown",
@@ -479,14 +522,33 @@ function FullShellCommandToolbar({
   };
 
   return (
-    <NotebookToolbarFrame className="static top-auto z-auto bg-background/95">
+    <NotebookToolbarFrame
+      className={cn(
+        "static top-auto z-auto bg-background/95",
+        !railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+      )}
+    >
       <div className="min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <NotebookCommandToolbar
           capabilities={capabilities}
+          leadingControls={
+            onOpenPanels ? (
+              <button
+                type="button"
+                className="hidden size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-[599.98px]:inline-flex"
+                aria-label="Open notebook panels"
+                aria-expanded={!railCollapsed}
+                title="Notebook panels"
+                onClick={onOpenPanels}
+              >
+                <PanelLeftOpen className="size-4" aria-hidden="true" />
+              </button>
+            ) : undefined
+          }
           runtime="python"
           runtimeTarget={capabilities.runtime.target ?? null}
           environmentManager={null}
-          environmentPanelOpen={activePanel === "packages"}
+          environmentPanelOpen={activePanel === "packages" && !railCollapsed}
           runtimeStatus={runtimeStatus}
           addAfterCellId={initialFocusedCellId}
           onAddCell={noop}
@@ -496,15 +558,53 @@ function FullShellCommandToolbar({
           onRunAllCells={noop}
           onRestartAndRunAll={noop}
           onTogglePackages={onTogglePackages}
-          workstationAction={{
-            label: "Workstation",
-            title: "Open workstation panel",
-            onClick: onToggleWorkstations,
-          }}
-          className="w-max min-w-full border-b-0"
+          workstationAction={
+            onToggleWorkstations
+              ? {
+                  label: "Workstation",
+                  title: "Open workstation panel",
+                  onClick: onToggleWorkstations,
+                }
+              : undefined
+          }
+          className={cn(
+            "w-max min-w-full border-b-0",
+            onOpenPanels &&
+              "max-[599.98px]:h-11 max-[599.98px]:[&_button]:min-h-8 max-[599.98px]:[&_button]:min-w-8",
+          )}
         />
       </div>
     </NotebookToolbarFrame>
+  );
+}
+
+function FullShellBrandMark({ className }: { className?: string }) {
+  return (
+    <span
+      role="img"
+      aria-label="nteract"
+      className={cn("block size-6 shrink-0 select-none", className)}
+      data-slot="full-shell-brand-mark"
+    >
+      <Image
+        src={logoLightUrl}
+        alt=""
+        aria-hidden="true"
+        width={24}
+        height={24}
+        draggable={false}
+        className="block size-full dark:hidden"
+      />
+      <Image
+        src={logoDarkUrl}
+        alt=""
+        aria-hidden="true"
+        width={24}
+        height={24}
+        draggable={false}
+        className="hidden size-full dark:block"
+      />
+    </span>
   );
 }
 
@@ -514,7 +614,7 @@ function FullShellTitle() {
       <span className="truncate text-sm font-semibold text-foreground">
         MathNet topic visualization
       </span>
-      <span className="hidden truncate text-[11px] leading-4 text-muted-foreground sm:block">
+      <span className="truncate text-[11px] leading-4 text-muted-foreground max-[900px]:hidden">
         Hosted preview - preview.runt.run/n/topic-viz/topic-viz
       </span>
     </div>

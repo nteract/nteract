@@ -4,6 +4,8 @@ import { ListTree } from "lucide-react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { Rail } from "@/components/rail";
+import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail";
+import { NotebookBrandMark } from "../NotebookBrandMark";
 import { NotebookDocumentShell } from "../NotebookDocumentShell";
 import type { NotebookShellCapabilities } from "../capabilities";
 
@@ -92,7 +94,7 @@ describe("NotebookDocumentShell", () => {
     expect(contentToolbar).toHaveClass("col-start-2", "row-start-1");
     expect(contentToolbar).toContainElement(screen.getByRole("button", { name: "Run" }));
     expect(contentToolbar).toContainElement(screen.getByRole("button", { name: "Restart" }));
-    expect(panelHost).toHaveClass("col-start-1", "row-start-2");
+    expect(panelHost).toHaveClass("col-start-1", "row-start-1", "row-end-[-1]");
     expect(panelHost).toContainElement(screen.getByTestId("outline-content"));
     expect(stageContent).toHaveClass("col-start-2", "row-start-2");
     expect(stageContent).toContainElement(screen.getByLabelText("Notebook cells"));
@@ -118,6 +120,36 @@ describe("NotebookDocumentShell", () => {
     await user.click(screen.getByRole("button", { name: "Place panel in stage" }));
     expect(panelHost()).toContainElement(screen.getByTestId("outline-content"));
   });
+
+  it.each([false, true])(
+    "keeps branding fixed while panels toggle (hosted: %s)",
+    async (hosted) => {
+      const user = userEvent.setup();
+      const { container } = render(<BrandedShellHarness hosted={hosted} />);
+      const brand = screen.getByRole("img", { name: "nteract" });
+      const brandSlot = brand.closest(
+        hosted ? '[data-slot="notebook-document-toolbar"]' : '[data-slot="rail-leading-slot"]',
+      );
+      expect(brandSlot).not.toBeNull();
+
+      await user.click(screen.getByRole("button", { name: "Outline" }));
+      const panelHost = container.querySelector('[data-slot="notebook-document-rail-panel-host"]');
+      expect(panelHost).toContainElement(screen.getByRole("heading", { name: "Outline" }));
+      expect(panelHost).toHaveClass("row-start-1", "row-end-[-1]");
+      expect(brandSlot).toContainElement(brand);
+      expect(panelHost).not.toContainElement(brand);
+
+      await user.click(screen.getByRole("button", { name: "Packages" }));
+      expect(panelHost).toContainElement(screen.getByRole("heading", { name: "Packages" }));
+      expect(screen.queryByRole("heading", { name: "Outline" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Packages" }));
+      expect(screen.queryByRole("heading", { name: "Packages" })).not.toBeInTheDocument();
+      expect(brandSlot).toContainElement(brand);
+      expect(screen.getAllByRole("img", { name: "nteract" })).toHaveLength(1);
+      expect(screen.getByRole("button", { name: "Run" })).toBeVisible();
+      if (hosted) expect(screen.getByRole("button", { name: "Share" })).toBeVisible();
+    },
+  );
 
   it("exposes host capabilities for adapters and smoke tests", () => {
     const capabilities: NotebookShellCapabilities = {
@@ -170,6 +202,41 @@ describe("NotebookDocumentShell", () => {
     expect(shell).toHaveAttribute("data-can-write-runtime-state", "false");
   });
 });
+
+function BrandedShellHarness({ hosted }: { hosted: boolean }) {
+  const [collapsed, setCollapsed] = useState(true);
+  const [activePanelId, setActivePanelId] = useState<NotebookRailPanelId>("outline");
+
+  return (
+    <NotebookDocumentShell
+      railPanelPlacement="stage"
+      toolbar={
+        hosted ? (
+          <>
+            <NotebookBrandMark />
+            <span>Notebook title</span>
+            <button type="button">Share</button>
+          </>
+        ) : null
+      }
+      stageToolbar={<button type="button">Run</button>}
+      stageToolbarPlacement="stage-content"
+      rail={
+        <NotebookRail
+          activePanelId={activePanelId}
+          collapsed={collapsed}
+          leadingSlot={hosted ? null : <NotebookBrandMark />}
+          outlineItems={[]}
+          packagesPanel={<p>Package details</p>}
+          onActivePanelChange={setActivePanelId}
+          onCollapsedChange={setCollapsed}
+        />
+      }
+    >
+      <section aria-label="Notebook cells">cells</section>
+    </NotebookDocumentShell>
+  );
+}
 
 function StageHostedRailHarness() {
   const [collapsed, setCollapsed] = useState(true);

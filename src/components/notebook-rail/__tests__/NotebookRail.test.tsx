@@ -149,7 +149,7 @@ describe("NotebookRail", () => {
     );
 
     expect(screen.getByRole("button", { name: "Discussions" })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "Discussions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Discussions" })).toBeVisible();
     expect(screen.getByText("Thread list")).toBeVisible();
   });
 
@@ -211,7 +211,7 @@ describe("NotebookRail", () => {
     );
   });
 
-  it("omits redundant package panel header chrome", () => {
+  it("names the packages panel without duplicating package metadata", () => {
     const { container } = render(
       <NotebookRail
         activePanelId="packages"
@@ -223,8 +223,10 @@ describe("NotebookRail", () => {
       />,
     );
 
-    expect(screen.queryByRole("heading", { name: "Packages" })).not.toBeInTheDocument();
-    expect(container.querySelector('[data-slot="rail-panel-header"]')).toBeNull();
+    expect(screen.getByRole("heading", { name: "Packages" })).toBeVisible();
+    expect(container.querySelector('[data-slot="rail-panel-header"]')).toContainElement(
+      screen.getByRole("heading", { name: "Packages" }),
+    );
     expect(screen.queryByText("../pyproject.toml · 25 packages")).not.toBeInTheDocument();
   });
 

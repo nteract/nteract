@@ -33,7 +33,7 @@ body {
   justify-content: space-between;
   gap: 0.5rem;
   border-bottom: 1px solid var(--border);
-  padding-inline: 0.5rem clamp(0.5rem, 2vw, 1rem);
+  padding-inline: 0 clamp(0.5rem, 2vw, 1rem);
 }
 
 .cloud-startup-toolbar > .cloud-notebook-title-group {
@@ -94,6 +94,15 @@ body {
   flex: 1;
 }
 
+.cloud-startup-command-row {
+  display: flex;
+  min-height: 2.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding-inline: 0.5rem;
+}
+
 .cloud-startup-main {
   display: flex;
   min-width: 0;
@@ -110,7 +119,7 @@ body {
   align-items: center;
   gap: 0.25rem;
   border-right: 1px solid var(--border);
-  padding: 0.75rem 0.5rem;
+  padding: 3.25rem 0.5rem 0.75rem;
   color: color-mix(in srgb, var(--foreground) 48%, transparent);
   background: var(--background);
 }
@@ -131,25 +140,13 @@ body {
   box-sizing: content-box;
 }
 
-.cloud-startup-rail > span:not(.cloud-startup-rail-home)::after {
+.cloud-startup-rail > span::after {
   width: 1rem;
   height: 1rem;
   border-radius: 4px;
   background: currentColor;
   opacity: 0.24;
   content: "";
-}
-
-.cloud-startup-rail-home {
-  margin-bottom: 1rem;
-  color: var(--background);
-  background: var(--foreground);
-}
-
-.cloud-startup-rail-home svg {
-  width: 1rem;
-  height: 1rem;
-  stroke-width: 2.25;
 }
 
 .cloud-startup-stage {
@@ -249,7 +246,6 @@ body {
   min-width: 0;
   flex: 1;
   grid-template-columns: auto minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -303,10 +299,29 @@ body {
   }
 }
 
+.cloud-app-home {
+  display: flex;
+  width: 3.5rem;
+  height: 2.75rem;
+  flex: 0 0 3.5rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+}
+
+.cloud-app-home:hover {
+  background: var(--muted);
+}
+
+.cloud-app-home:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
 .cloud-room-toolbar {
   min-height: 3.75rem;
   border-bottom: 1px solid var(--border);
-  padding-inline: 0.5rem clamp(0.5rem, 2vw, 1rem);
+  padding-inline: 0 clamp(0.5rem, 2vw, 1rem);
 }
 
 .cloud-room-toolbar [data-slot="notebook-document-header-presence"] {
@@ -315,6 +330,7 @@ body {
   min-width: 0;
   max-width: min(38rem, 48vw);
   align-items: center;
+  gap: 0.5rem;
 }
 
 .cloud-room-toolbar [data-slot="notebook-document-header-controls"] {
@@ -695,8 +711,11 @@ body {
   }
 
   .cloud-notebook-stage
-    [data-slot="notebook-document-rail-panel-host"]:has([data-slot="notebook-rail-panel"])
-    + [data-slot="notebook-document-stage-content"] {
+    [data-slot="notebook-document-stage-body"]:has([data-slot="notebook-rail-panel"])
+    > :is(
+      [data-slot="notebook-document-stage-content-toolbar"],
+      [data-slot="notebook-document-stage-content"]
+    ) {
     display: none;
   }
 }

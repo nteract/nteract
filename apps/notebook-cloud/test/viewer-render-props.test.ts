@@ -144,6 +144,17 @@ test("cloud notebook startup loading uses route-shaped shell chrome", () => {
   assert.match(loadingSource, /className="cloud-startup-workspace"/);
   assert.match(loadingSource, /className="cloud-startup-rail"/);
   assert.match(loadingSource, /className="cloud-startup-stage"/);
+  assert.match(
+    loadingSource,
+    /<header className="cloud-startup-toolbar">[\s\S]*<\/header>\s*<div className="cloud-startup-workspace">/,
+  );
+  assert.match(
+    loadingSource,
+    /className="cloud-startup-main">\s*<div className="cloud-startup-command-row" aria-hidden="true">/,
+  );
+  assert.doesNotMatch(loadingSource, /cloud-startup-rail-home|<House/);
+  assert.match(cssText, /\.cloud-startup-command-row \{[^}]*min-height: 2\.5rem;/);
+  assert.match(cssText, /\.cloud-startup-rail \{[^}]*padding: 3\.25rem 0\.5rem 0\.75rem;/);
   assert.match(viewerCorpus, /cloudNotebookRouteTitleFromPathname\(window\.location\.pathname\)/);
   assert.match(loadingSource, /Opening notebook/);
   assert.doesNotMatch(loadingSource, /className="flex min-h-screen/);
@@ -155,6 +166,42 @@ test("cloud notebook startup loading uses route-shaped shell chrome", () => {
     cssText,
     /@media \(max-width: 599\.98px\) \{[\s\S]*\.cloud-startup-rail,[\s\S]*\.cloud-notebook-rail\[data-collapsed="true"\]\s*\{[\s\S]*display: none;/,
   );
+});
+
+test("cloud app header owns one accessible home brand above the notebook rail", () => {
+  const notebookSource = viewerFunctionSource("NotebookViewer");
+  const toolbarSource = notebookSource.slice(
+    notebookSource.indexOf("const toolbar ="),
+    notebookSource.indexOf("const stageToolbar ="),
+  );
+  const loadingSource = viewerFunctionSource("ViewerStartupLoading");
+  const cssText = readFileSync(new URL("../viewer/index.css", import.meta.url), "utf8");
+
+  for (const source of [toolbarSource, loadingSource]) {
+    assert.equal(source.match(/<NotebookBrandMark\b/g)?.length, 1);
+    assert.match(
+      source,
+      /<a className="cloud-app-home" href="\/n" aria-label="Notebook home" title="Notebook home">\s*<NotebookBrandMark className="size-8" \/>\s*<\/a>/,
+    );
+  }
+  assert.equal(notebookSource.match(/<NotebookBrandMark\b/g)?.length, 1);
+  assert.match(toolbarSource, /presence=\{\s*<>\s*<a[\s\S]*<\/a>\s*<CloudNotebookTitle/);
+  assert.doesNotMatch(notebookSource, /NotebookRailHomeButton|leadingSlot=/);
+  assert.doesNotMatch(toolbarSource, /<NotebookCommandToolbar/);
+  assert.match(notebookSource, /toolbarPlacement="shell"/);
+  assert.match(notebookSource, /stageToolbarPlacement="stage-content"/);
+  assert.match(
+    cssText,
+    /\.cloud-app-home \{[^}]*width: 3\.5rem;[^}]*height: 2\.75rem;[^}]*flex: 0 0 3\.5rem;[^}]*justify-content: center;/,
+  );
+  assert.match(cssText, /\.cloud-app-home:focus-visible \{[^}]*outline: 2px solid var\(--ring\);/);
+  for (const headerClass of ["cloud-room-toolbar", "cloud-startup-toolbar"]) {
+    assert.match(
+      cssText,
+      new RegExp(`\\.${headerClass} \\{[^}]*padding-inline: 0 clamp\\(0\\.5rem, 2vw, 1rem\\);`),
+    );
+  }
+  assert.doesNotMatch(cssText, /\.cloud-app-home[^}]*display: none/);
 });
 
 test("cloud viewer keeps pending access-request polling quiet", () => {
@@ -604,7 +651,17 @@ test("cloud rail takes over constrained widths instead of pushing the stage offs
   );
   assert.match(
     sourceText,
-    /\[data-slot="notebook-document-rail-panel-host"\]:has\(\[data-slot="notebook-rail-panel"\]\)\s*\+ \[data-slot="notebook-document-stage-content"\]\s*\{[\s\S]*display: none;/,
+    /\[data-slot="notebook-document-stage-body"\]:has\(\[data-slot="notebook-rail-panel"\]\)\s*> :is\(\s*\[data-slot="notebook-document-stage-content-toolbar"\],\s*\[data-slot="notebook-document-stage-content"\]\s*\)\s*\{\s*display: none;/,
+  );
+  assert.doesNotMatch(
+    sourceText,
+    /\[data-slot="(?:notebook-rail-panel-title-row|rail-panel-header)"\][^}]*display: none;/,
+  );
+  assert.doesNotMatch(
+    sourceText.match(
+      /\.cloud-notebook-stage > \[data-slot="notebook-document-stage-body"\]\s*\{[^}]*\}/,
+    )?.[0] ?? "",
+    /grid-template-rows:/,
   );
 });
 
