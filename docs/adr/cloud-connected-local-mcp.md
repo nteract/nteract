@@ -168,15 +168,17 @@ The following properties are load-bearing:
 - a missing file or empty registry means no cloud hosts are configured;
 - the stable Desktop/MCP registry starts empty and those clients synthesize no
   host or default, specifically not an implicit `preview.runt.run` entry;
-- configured non-loopback origins use `https`; cleartext `http` is accepted only
-  for explicitly recognized loopback/local-development origins and never as a
-  silent fallback, because catalog and room connections carry credentials;
+- configured non-loopback origins must use `https`; cleartext `http` must be
+  restricted to explicitly recognized loopback/local-development origins and
+  never used as a silent fallback, because catalog and room connections carry
+  credentials; enforcement is still incomplete as noted below;
 - `default_domain` is optional, must name an existing registry entry, and may
   be consulted only after the caller has explicitly chosen a cloud operation;
   it never reinterprets a bare notebook id as remote;
 - non-secret routing and domain data may live in the registry;
-- bearer values are read from environment variables, OS keychain, or a future
-  secret helper, not persisted as plaintext by `runt config`;
+- bearer values are currently read from environment references; OS keychain
+  and secret-helper integration remain future work, and `runt config` must not
+  persist bearer values as plaintext;
 - the registry is machine-local and may differ between Desktop, agent
   clients/harnesses, CI, workstation hosts, and user laptops;
 - the low-level registry is shared by daemon bridges and standalone MCP/CLI
@@ -186,6 +188,13 @@ The following properties are load-bearing:
   host metadata and catalog results, not bearer values;
 - `runt config` remains for synced daemon preferences unless we intentionally
   add a separate `runt cloud ...` or `runt remote ...` command group.
+
+**Current implementation, 2026-09-04:**
+`notebook-cloud-transport::registry::normalize_url_domain` accepts `http` and
+`https` without restricting HTTP to loopback. This is an unmet safety
+requirement, not approval to configure cleartext remote hosts. Use HTTPS for
+non-loopback origins; the explicit enforcement follow-up below must close the
+gap before the registry can claim that guarantee.
 
 The configured credential is the root credential for the hosted principal, not
 necessarily the credential sent on every sync frame or WebSocket. A hosted
@@ -242,8 +251,11 @@ desktop notebook use. The daemon dials the hosted room over
 ephemeral `NotebookRoom` (`hosted_bridge.rs`). Desktop windows and MCP sessions
 connect to that daemon-local room exactly like any daemon-local notebook. Echo
 suppression is structural (one `NotebookDoc`, one `sync::State` per peer). The
-hosted room is authoritative for `RuntimeStateDoc`; execution requests forward
-as hosted `Request` frames.
+hosted room is authoritative for `RuntimeStateDoc`. Execution forwarding
+handlers exist, but the current editor-only opener does not authorize execution:
+the local request gate rejects editor execution before it reaches those
+handlers, and the hosted room also requires owner scope. Forwarding plumbing
+must not be described as working execution through this opener.
 
 The shipped bridge is currently a hidden editor-oriented primitive, not yet a
 general hosted-catalog open contract. It requests `editor` for the hosted
@@ -453,10 +465,14 @@ change: old values keep meaning local notebook ids.
   open, propagate the server-authorized effective scope from
   `cloud_room_ready`, and restore/project that scope without treating every
   hosted window as an editor. Cover viewer downgrade and owner capability.
+- **Registry transport safety:** Enforce the HTTPS requirement during domain
+  normalization and target resolution before attaching credentials. The current
+  normalizer accepts non-loopback HTTP; add rejection tests and tests for the
+  explicit loopback development exception. This is required independently of
+  registry management UI.
 - **Machine-local registry management:** Add normalized, atomic list/upsert/
   remove/default operations and a headless CLI or equivalent native management
-  surface before exposing stable host-configuration UI. Reject non-loopback
-  cleartext origins and cover the explicit loopback development exception.
+  surface before exposing stable host-configuration UI.
 - **Per-connection operator precedence:** Ensure an explicit Desktop or MCP
   operator descriptor wins over the registry fallback, define one generic
   propagation contract across daemon-mediated and direct paths, and cover

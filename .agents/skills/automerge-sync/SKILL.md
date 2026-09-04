@@ -11,6 +11,19 @@ description: >
 
 # Automerge Sync & Document Model
 
+## Dependency baseline (2026-09-04)
+
+Production Rust and `runtimed-wasm` use crates.io Automerge exactly `0.11.0`
+(`Cargo.toml:57`, `Cargo.lock:627`). Commit `ae6aef0f` adopted it on 2026-08-26.
+The frontend uses these Rust WASM bindings, not `@automerge/automerge`.
+
+The only remaining Automerge git dependency is `automerge-legacy`, a dev-dependency of
+`automerge-store` pinned to `nteract/automerge` revision
+`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`). It is a test peer
+for snapshot and encoded-sync compatibility, not a production patch override.
+See `crates/automerge-store/Cargo.toml:17` and
+`crates/automerge-store/tests/version_compat.rs:282`.
+
 ## Document Model Essentials
 
 ### Core Types
@@ -46,7 +59,7 @@ AutoCommit { doc: Automerge, transaction: Option<(PatchLog, TransactionInner)>,
 
 - **save()** serializes OpSet columns + ChangeGraph metadata + optional DEFLATE. Columnar format is canonical.
 - **load()** rebuilds OpSet from columns, reconstructs ChangeGraph, verifies heads.
-- **save/load round-trip clears corrupted indices.** This is the basis of nteract's `rebuild_from_save()` recovery.
+- **save/load round-trip rebuilds indices from serialized state.** nteract's `rebuild_from_save()` can fail or reject cell loss; it is containment, not a guarantee that arbitrary corruption is repaired.
 - **load_incremental()** adds changes to existing doc. This is what `receive_sync_message` calls internally.
 - **save_after(heads)** emits only changes after given heads (incremental saves).
 
@@ -143,24 +156,36 @@ Mutex is `std::sync::Mutex`, never held across `.await`. Poison recovery: `unwra
 
 ### Document-Level Recovery
 
-Automerge is treated as a fallible boundary. Recovery lives inside the document owner while the guard is held.
+Automerge is treated as a fallible boundary. Policy belongs to the document
+owner; sync and mutation helpers do not handle panics the same way.
 
-```rust
-state.receive_sync_message_recovering(msg, "notebook-sync-receive");
-let bytes = state.generate_sync_message_recovering("notebook-sync-outbound");
-```
+**Sync policy (2026-09-04):**
 
-**Rebuild procedure (notebook doc):**
-1. `save()` → `AutoCommit::load()` (clears corrupted indices)
-2. Cell-count guard: skip rebuild if fewer cells (prevents silent loss)
-3. Preserve actor ID
-4. `peer_state = sync::State::new()`
+- `recoverable_automerge_operation` rebuilds and retries once only for a
+  caller-marked operation error. It returns a caught panic immediately, without
+  rebuild or retry (`crates/automerge-recovery/src/lib.rs:163–201`).
+- `NotebookDoc::receive_sync_message_recovering` marks only
+  `AutomergeError::PatchLogMismatch(_)` recoverable. It resets the peer's
+  `sync::State`, rebuilds the document, then retries the original frame once
+  (`crates/notebook-doc/src/lib.rs:2479–2508`,
+  `crates/automerge-recovery/src/lib.rs:159–160`).
+- `NotebookDoc::generate_sync_message_recovering` marks no operation error
+  recoverable; caught panics are returned to the caller
+  (`crates/notebook-doc/src/lib.rs:2446–2464`).
 
-**Rebuild procedure (RuntimeStateDoc / CommsDoc):** Round-trip via
-`rebuild_from_save()`, then reset the matching peer state with
-`sync::State::new()`.
+**Mutation policy:** `NotebookDoc::merge_recovering` attempts to rebuild both
+sides after a panic, then returns the failure. `transact_at_heads_recovering`
+restores actor/isolation state and attempts rebuild on panic without rerunning
+the mutation closure (`crates/notebook-doc/src/lib.rs:400–491`).
+`RuntimeStateDoc` has its own transaction recovery and rollback handling
+(`crates/runtime-doc/src/doc.rs:761–819`). These are nteract wrappers around
+upstream APIs, not fork-only methods.
 
-Principle: **reset transport state, preserve document truth.**
+**Notebook rebuild:** `rebuild_from_save` saves and loads the document, rejects
+a result with fewer cells, and preserves the actor before replacing the live
+document (`crates/notebook-doc/src/lib.rs:1477–1502`). Rebuild can fail. Peer
+state reset belongs to the calling sync helper, not to `rebuild_from_save`.
+Do not treat save/load as proof that arbitrary corruption has been repaired.
 
 ### Causal Ordering: required_heads (preferred)
 
@@ -247,9 +272,17 @@ If reconnect latency becomes a problem, preserving `shared_heads` (automerge-rep
 | Per-cell O(1) reads (WASM) | Direct map lookups via `ObjIndex` |
 | Recovery from corrupted indices | `save()` → `load()` round-trip |
 
-### Historical #1187 Panic
+### Historical desktop patches
 
-Concurrent sync can trigger `PatchLog::migrate_actors()` mismatch when actor table ordering shifts mid-batch. nteract's pinned Automerge 0.9 desktop patch covers this, plus `transact_at_heads_recovering` for writes at captured heads. Document-level catch/rebuild/reset remains as containment.
+The fork addressed historical MissingOps and patch-log failures. Production
+has since moved to crates.io `0.11.0`. The local upstream source contains the
+`fork_at` dependency-walk deduplication, no-op actor cleanup, stale-orphan sync
+correction, and historical-view patch finalization. This is not an exhaustive
+accounting of the 21 patches recorded in the earlier `b3502d42` rebase.
+
+Keep the regressions in `crates/automerge-recovery/src/lib.rs:416–483` and the
+document-owned policies above. A fixed historical bug does not justify
+removing recovery or treating every Automerge failure as rebuildable.
 
 ## Adding a New Sync Stream
 
@@ -257,8 +290,8 @@ Concurrent sync can trigger `PatchLog::migrate_actors()` mismatch when actor tab
 2. **Choose ownership pattern:**
    - SharedDocState pattern (notebook, runtime-state): doc + peer_state in `SharedDocState`, managed by `sync_task.rs`
    - Separate ownership (pool-state): frontend owns sync state; daemon carries peer state in peer loop
-3. **Add document-owned recovery helpers** (receive + generate with panic capture, rebuild, peer state reset)
-4. **Add rebuild function** (save→load→reset pattern)
+3. **Add document-owned recovery helpers** with explicit error classification; return sync panics rather than automatically rebuilding or retrying them.
+4. **Add rebuild validation and peer-state reset** for recoverable sync errors, following the document-owned policy above.
 5. **Update biased select loop** or relevant frame handler
 6. **Consider subscription scope:** Every peer or specific consumers?
 7. **Test with concurrent mutation:** Actor/heads bugs only manifest under concurrent sync
@@ -269,8 +302,8 @@ Concurrent sync can trigger `PatchLog::migrate_actors()` mismatch when actor tab
 - `generate_sync_message()` returning `None` after local mutations is correct (in-flight suppression)
 - Keep the frame reader draining: use waiters, not blocking waits
 - Lock scope drops before `.await`: compute inside lock, send outside
-- Reset sync state on transport breaks (reconnect, panic), not on local mutations
-- Cell-count guard prevents silent cell loss during rebuild
+- Reset sync state on reconnect and classified recoverable sync errors, not on local mutations; caught sync panics return a failure.
+- The notebook rebuild guard rejects fewer cells; it does not prove that all content is unchanged.
 - Actor table is sorted lexicographically. Disagreement corrupts OpIds.
 
 ## Decision Framework
@@ -278,7 +311,9 @@ Concurrent sync can trigger `PatchLog::migrate_actors()` mismatch when actor tab
 | Situation | Action |
 |-----------|--------|
 | Transport disconnect | Reset `sync::State` (new or encode/decode) |
-| Automerge panic caught | Rebuild doc (save/load), reset sync::State |
+| Recoverable sync error (`PatchLogMismatch`) | Reset peer state, rebuild, retry once; return failure if recovery fails |
+| Sync panic caught | Return failure without rebuild or retry |
+| Mutation panic caught | Follow the document helper's cleanup/rebuild policy; do not rerun the closure |
 | Local mutation | Let next `generate_sync_message` handle it |
 | Check if peer has changes | `change_graph.has_change(&hash)` (O(1)) |
 | Document at earlier point | `fork_at(heads)` (expensive, views only) |

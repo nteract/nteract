@@ -231,9 +231,17 @@ Package versions checked with `npm view` and `cargo search` from this workspace:
 | `@lexical/markdown` | not installed | `0.45.0` | Ecosystem reference, not the recommended document model. |
 | `@milkdown/kit` | not installed | `7.21.2` | ProseMirror-based reference, not the recommended document model. |
 | `@markdoc/markdoc` | not installed | `0.5.7` | Safer component-tag alternative to full MDX. |
-| `@automerge/automerge` | Rust fork in repo | `3.2.6` | JS ecosystem has rich text/text APIs, but repo is pinned to nteract fork. |
+| `@automerge/automerge` | not installed | `3.2.6` | JS ecosystem reference; notebook state uses Rust WASM bindings. See the dated dependency update below. |
 | `automerge-repo` | not installed | `0.1.0` | Interesting sync reference, not a direct replacement. |
 | Rust `markdown` crate | `markdown = "1"` | `1.0.0` | Current per `cargo search markdown`. |
+
+**Automerge dependency update, 2026-09-04:** The table's JS version is the
+2026-06-12 observation, not a current release claim. Production Rust and WASM
+now use crates.io Automerge exactly `0.11.0` (`Cargo.toml:57`), adopted by
+`ae6aef0f` on 2026-08-26. Only `automerge-store` keeps `nteract/automerge`
+revision `3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) as a
+legacy test peer (`crates/automerge-store/Cargo.toml:17`), not a production
+patch. See [the fork patch register](automerge-fork-patches.md).
 
 Relevant upstream docs:
 

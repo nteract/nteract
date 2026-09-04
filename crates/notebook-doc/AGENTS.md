@@ -125,7 +125,23 @@ let mut doc = room.doc.write().await;
 doc.merge_recovering(&mut fork, "external-worker-merge").ok();
 ```
 
-Reserve `fork_at(heads)` for views and diagnostics — it builds a separate historical document with its own actor stream, so don't use it as the historical write primitive. The pinned Automerge 0.9 desktop patch covers the old MissingOps panic, but actor sequencing, restoration, integration, and panic recovery stay centralized when you go through the document-owned helpers.
+Reserve `fork_at(heads)` for views and diagnostics — it builds a separate historical document with its own actor stream, so don't use it as the historical write primitive.
+
+As of 2026-09-04, production and WASM use crates.io Automerge exactly `0.11.0`
+(`Cargo.toml:57`), adopted in `ae6aef0f` on 2026-08-26. The old MissingOps
+regression remains in `crates/automerge-recovery/src/lib.rs:416`; its
+"desktop patch" test name records history, not the current dependency source.
+Only `automerge-store` retains the legacy `nteract/automerge` revision
+`3fb6af5cc3af23b79f27cebfa339c8c98987e7b7` (Rust `0.10.0`) as a dev-only
+compatibility peer (`crates/automerge-store/Cargo.toml:17`).
+
+`transact_at_heads_recovering` is our wrapper around upstream `set_actor`,
+`isolate`, and `integrate`, not a fork-only API. Actor restoration and
+panic-triggered rebuild stay in `crates/notebook-doc/src/lib.rs:438`.
+This differs from sync recovery: `receive_sync_message_recovering` retries once
+after `PatchLogMismatch`, resetting peer state and rebuilding, but returns
+panics without rebuild or retry (`crates/notebook-doc/src/lib.rs:2479`,
+`crates/automerge-recovery/src/lib.rs:159–201`).
 
 ### Synchronous blocks
 

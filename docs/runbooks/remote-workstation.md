@@ -124,13 +124,23 @@ is passed through the environment (`RUNT_CLOUD_TOKEN`), never argv.
 credential for foreground `runt workstation run`; the service path uses the
 stored credential file written by `connect`.
 
-In the hosted notebook, attaching compute to a workstation dispatches an attach
-job; the agent accepts it and the runtime peer attaches to the room as
+In the hosted notebook, an owner attaching compute to a workstation dispatches
+an attach job; the agent accepts it and the runtime peer attaches to the room as
 `runtime_peer` over an outbound WebSocket. The peer reconnects with backoff
-across room evictions and network blips and keeps the kernel alive across
-reconnects; a clean room close does not tear the kernel down. If the agent
-restarts, it adopts runtime peers that are still alive (per-job pid + log files
-under the daemon cache) and reports the ones that are gone.
+across recoverable room evictions and network blips, retaining the kernel.
+Ordinary transport closes are recoverable, but an intentional room stop is not.
+
+**Current lifecycle, 2026-09-04:** after 30 minutes without queued or active
+execution, the room stops idle compute, even if viewers remain connected. Its
+`runtime idle timeout` close uses code 1000 but is treated as a terminal,
+graceful shutdown. Replacement, restart, and policy-rejection closes are also
+terminal for the old peer, not instructions to reconnect it. Owner execution
+can resume an eligible previously selected workstation as described below.
+
+If the workstation agent restarts, it adopts its runtime peers that are still
+alive using per-job pid + log files under the daemon cache, and reports the
+ones that are gone. This is recovery of nteract runtime-peer processes, not
+adoption of arbitrary existing Jupyter kernels.
 
 ## Run it as a service
 
@@ -229,10 +239,26 @@ flows.
 
 ## What the workstation offers
 
-`runtimed` maintains prewarmed environment pools (uv/conda/pixi) and captured
-per-notebook environments. The workstation endpoint projects these as the
-environments it can offer (`list_environments`), and the hosted room's
-workstation panel surfaces attachment state.
+As of 2026-09-04, the shipped workstation agent advertises **Current Python**:
+its configured interpreter, working directory, and `launch_current_python`
+capability. It launches kernels in that interpreter without installing
+packages. The hosted workstation panel surfaces registration and attachment
+state, not a catalog of every daemon-managed environment.
+
+`runtimed` also maintains prewarmed environment pools (uv/conda/pixi) and
+per-notebook environments. The `list_environments` helper in
+`crates/runtimed/src/workstation/environments.rs` projects pool state, but it is
+not wired into the hosted workstation registration/catalog path. Hosted pool
+selection and captured-environment discovery remain follow-up work.
+
+Hosted attachment and execution requests are owner-only; editing a notebook
+does not grant permission to spend compute. If an owner executes with no active
+runtime peer, an attachment already connecting can accept queued work. A
+previously selected registered workstation whose attachment is `ready`,
+`disconnected`, or `idle` can receive a resume attach job when it belongs to
+the notebook owner and passes the room's online/lease/heartbeat checks. The room rejects execution
+when no eligible attachment can connect or resume. It does not select compute
+from the room URL or fall back to an unrelated workstation.
 
 Hosted runtime controls use the workstation contract rather than browser-owned
 kernel launch state. Interrupt requests are forwarded to the active runtime
