@@ -1,8 +1,8 @@
 # Comments Rollout
 
-Scoped execution tracker for wiring notebook comments through the remaining app,
-agent, and hosted surfaces. The durable design lives in
-[Notebook Comments Document](../adr/notebook-comments-document.md).
+This plan tracks the remaining work to support notebook comments in the app,
+agents, and hosted notebooks. See
+[Notebook Comments Document](../adr/notebook-comments-document.md) for the design.
 
 ## Current Baseline
 
@@ -11,10 +11,10 @@ The core comments architecture has landed:
 - `crates/comments-doc` owns the document, identity, projection, and attribution
   model.
 - `COMMENTS_DOC_SYNC` is part of the typed-frame protocol.
-- `runtimed-wasm`, the TypeScript sync engine, and the local daemon have
-  CommentsDoc sync/projection seams.
-- The desktop app has comment projection and highlight/selection UI surfaces.
-- Elements contains comment-surface fixtures for visual iteration.
+- `runtimed-wasm`, the TypeScript sync engine, and the local daemon include
+  CommentsDoc sync and projection code.
+- The desktop app projects comments and provides highlighting and selection UI.
+- Elements contains comment fixtures for trying out UI changes.
 
 ## Remaining Work
 

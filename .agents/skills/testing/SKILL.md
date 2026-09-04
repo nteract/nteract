@@ -133,7 +133,7 @@ cargo xtask e2e test-fixture <notebook> <spec>  # Single fixture test
 
 **Fixture test:** Create notebook in `crates/notebook/fixtures/audit-test/`, create spec in `e2e/specs/`, add to `FIXTURE_SPECS` in `e2e/wdio.conf.js`, add to `crates/xtask/src/main.rs`, add to CI.
 
-**Regular test:** Create spec in `e2e/specs/` — picked up automatically if not in `FIXTURE_SPECS`.
+**Regular test:** Create a spec in `e2e/specs/`. It is picked up automatically if not in `FIXTURE_SPECS`.
 
 ### Helpers (e2e/helpers.js)
 
@@ -150,10 +150,10 @@ cargo xtask e2e test-fixture <notebook> <spec>  # Single fixture test
 
 ### wry WebDriver Constraints
 
-- Use `data-testid` attributes — text selectors return broken refs
-- Use `browser.execute()` + `browser.waitUntil()` — `executeAsync()` unsupported
-- Use `typeSlowly()` for CodeMirror — fast input drops characters
-- Use `browser.execute()` for iframe testing — `switchToFrame()` broken
+- Use `data-testid` attributes. Text selectors return broken refs.
+- Use `browser.execute()` + `browser.waitUntil()`. `executeAsync()` is unsupported.
+- Use `typeSlowly()` for CodeMirror. Fast input drops characters.
+- Use `browser.execute()` for iframe testing. `switchToFrame()` is broken.
 
 ### Selectors
 

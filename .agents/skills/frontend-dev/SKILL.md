@@ -227,7 +227,7 @@ each async completion is a stale-write risk:
   consumption, never activation - its owner activates the instances it supplies.
   A controller that dispatches actions on the same store reads it from the same
   context too, so an override gets a coherent store.
-- **Capture at issue, drop at apply — for every completion.** Poll ticks AND
+- **Capture at issue, drop at apply for every completion.** Poll ticks AND
   imperative actions capture `{epoch, auth reference, endpoint}` when the
   request starts; after every `await` (success, error, and any follow-up
   refetch), the result is discarded if the identity moved. A guarded first
@@ -356,8 +356,8 @@ Starts dev daemon, launches `nteract-dev`, spawns child `runt mcp`, proxies note
 ### Hot Reload Watches
 
 `python/nteract/src/`, `python/runtimed/src/`, `crates/runtimed-py/src/`, `crates/runtimed/src/`:
-- **Python changes** — child restarts automatically
-- **Rust changes** — `maturin develop` runs first, then child restarts
+- **Python changes:** Child restarts automatically
+- **Rust changes:** `maturin develop` runs first, then child restarts
 
 ### Direct Mode (no proxy)
 

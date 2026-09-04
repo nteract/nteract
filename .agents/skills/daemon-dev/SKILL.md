@@ -47,10 +47,10 @@ The daemon (`runtimed`) is a singleton coordinating notebook windows over a Unix
 
 ### How `cargo xtask build` works (4 phases)
 
-0. **Artifact guard** — verify gitignored WASM, renderer-plugin, and MCP widget outputs. Build/dev commands fingerprint workspace inputs and skip wasm-pack when outputs are current; rebuild only when outputs are missing, invalid, or stale.
-1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p nteract-mcp -p mcp-supervisor`. Sidecars copied to `crates/notebook/binaries/`. The `notebook` crate is intentionally excluded until the Tauri link phase after frontend assets exist.
-2. **Frontend build** — `pnpm build` (TypeScript + Vite). `--rust-only` skips this.
-3. **Tauri link** — `cargo tauri build --debug --no-bundle` with embedded frontend assets. Use `--skip-tauri` only for fast edit checks where updated sidecar binaries are enough; run a normal build before launching the bundled app.
+0. **Artifact guard:** Verify gitignored WASM, renderer-plugin, and MCP widget outputs. Build/dev commands fingerprint workspace inputs and skip wasm-pack when outputs are current; rebuild only when outputs are missing, invalid, or stale.
+1. **Single Rust compilation:** `cargo build -p runtimed -p runt -p nteract-mcp -p mcp-supervisor`. Sidecars copied to `crates/notebook/binaries/`. The `notebook` crate is intentionally excluded until the Tauri link phase after frontend assets exist.
+2. **Frontend build:** `pnpm build` (TypeScript + Vite). `--rust-only` skips this.
+3. **Tauri link:** `cargo tauri build --debug --no-bundle` with embedded frontend assets. Use `--skip-tauri` only for fast edit checks where updated sidecar binaries are enough; run a normal build before launching the bundled app.
 
 All Rust targets build in one `cargo build` call to avoid feature-unification recompilation. WASM outputs are gitignored; `runtimed`'s `build.rs` panics if missing. `nteract-mcp` embeds the MCP widget HTML; prepare it with `cargo xtask artifacts ensure mcp-widget`.
 
@@ -118,7 +118,7 @@ cargo test -p runtimed test_daemon_ping_pong    # Specific test
 ### Installation
 
 ```bash
-# Into workspace venv (most common — what `up rebuild=true` does)
+# Into workspace venv (most common; what `up rebuild=true` does)
 cd crates/runtimed-py
 VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 
@@ -126,7 +126,7 @@ VIRTUAL_ENV=../../.venv uv run --directory ../../python/runtimed maturin develop
 VIRTUAL_ENV=../../python/runtimed/.venv uv run --directory ../../python/runtimed maturin develop
 ```
 
-Always set `VIRTUAL_ENV` explicitly — without it, the `.so` installs into whichever venv `uv run` resolves.
+Always set `VIRTUAL_ENV` explicitly. Without it, the `.so` installs into whichever venv `uv run` resolves.
 
 ### Basic usage
 
@@ -170,7 +170,7 @@ The MCP server ships as `runt mcp` (Rust). Run via `cargo xtask run-mcp` for dev
 
 **Advertised tools** (`all_tools()`): `list_active_notebooks`, `list_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `disconnect_notebook`, `create_cell`, `set_cell`, `delete_cell`, `move_cell`, `execute_cell`, `run_all_cells`, `get_results`, `interrupt_kernel`, `restart_kernel`, `manage_dependencies`, `replace_match`, `replace_regex`.
 
-**Hidden/callable read tools** (`hidden_tools()`): `get_cell`, `get_all_cells`. These are callable but not advertised in `list_tools()` — dispatch-only read paths for clients that prefer direct tool calls over resource URIs.
+**Hidden/callable read tools** (`hidden_tools()`): `get_cell`, `get_all_cells`. These are callable but not advertised in `list_tools()`. They are dispatch-only read paths for clients that prefer direct tool calls over resource URIs.
 
 Legacy dependency and cell-metadata tool names still dispatch for compatibility, but new workflows should use `manage_dependencies` for dependency inspection/edits and `get_results` for execution output lookup by `execution_id`.
 
@@ -217,7 +217,7 @@ Each open notebook has a room (`NotebookRoom`), keyed by UUID. A `PathIndex` map
 
 ## Key Invariants
 
-- `is_binary_mime()` has one canonical Rust implementation in `notebook-doc::mime` — single source of truth across all crates.
+- `is_binary_mime()` has one canonical Rust implementation in `notebook-doc::mime`, shared across all crates.
 - Iframe sandbox: `allow-same-origin` is forbidden.
 - Per-cell O(1) accessors must stay in sync across WASM, Rust, and Python.
 - Hold tokio mutex guards only within synchronous blocks (use block scoping, verify with `cargo test -p runtimed --test tokio_mutex_lint`).
@@ -239,4 +239,4 @@ Production daemon installs as a system service (macOS: launchd, Linux: systemd u
 
 **Key paths (macOS):** Binary at `~/Library/Application Support/runt/bin/runtimed`, socket at `~/Library/Caches/runt/runtimed.sock`, logs at `~/Library/Caches/runt/runtimed.log`.
 
-Use `./target/debug/runt daemon stop` to stop only your worktree's daemon. Avoid `pkill`/`killall` — they affect every worktree.
+Use `./target/debug/runt daemon stop` to stop only your worktree's daemon. Avoid `pkill`/`killall` because they affect every worktree.

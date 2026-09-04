@@ -3,12 +3,11 @@
 A *workstation* is any machine that offers compute to hosted nteract notebook
 rooms: an Outerbounds workstation, a JupyterHub single-user server, a beefy box
 under your desk. The daemon attaches to a room as a `runtime_peer` over an
-outbound WebSocket — no inbound ports, no reverse proxy — launches kernels
-locally, and syncs outputs back through the room.
+outbound WebSocket, launches kernels locally, and syncs outputs back through the
+room. You don't need inbound ports or a reverse proxy.
 
-This doc is the operator path. The architecture lives in
-`docs/adr/remote-workstation-doc-agents.md` and
-`docs/adr/deployment-topology.md`; the daemon-side surface in
+For the architecture, see `docs/adr/remote-workstation-doc-agents.md` and
+`docs/adr/deployment-topology.md`. The daemon implementation is in
 `crates/runtimed/src/workstation/`.
 
 ## Install (one-liner)
@@ -30,8 +29,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headle
 `--headless` skips the desktop app and installs just `runt`, `runtimed`, and
 `nteract-mcp` into `~/.local/share/nteract/stable` (on macOS, as the sidecars
 of the .app bundle kept under that prefix), links them into `~/.local/bin`,
-and installs the per-user daemon service (`runt daemon doctor --fix` —
-systemd on Linux, launchd on macOS). Everything is per-user; no root
+and installs the per-user daemon service with `runt daemon doctor --fix`
+(systemd on Linux, launchd on macOS). Everything is per-user; no root
 required. Re-run to upgrade.
 
 If this is a fresh shell, make the installed CLI available before running the
@@ -72,7 +71,7 @@ runt workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
    at `~/.config/nteract/workstation.json` (mode 0600), and registers the
    workstation so it appears in the panel immediately. `--id` / `--name`
    override the default `ws-<hostname>` identity. If the code is rejected,
-   mint a fresh one from the panel — codes expire and cannot be reused.
+   mint a fresh one from the panel. Codes expire and cannot be reused.
 
 3. On Linux, keep the workstation available with user systemd:
 
@@ -120,10 +119,10 @@ is the fast path; low-frequency attach-job polling remains as recovery for
 missed wakeup events and jobs that existed before the agent started. The socket
 is deliberately only a wakeup signal, not a replay log: attach jobs are durable
 in the hosted database, so reconnect recovery polls the queue. The credential
-rides the environment (`RUNT_CLOUD_TOKEN`), never argv. `RUNT_CLOUD_TOKEN` /
-`RUNT_CLOUD_URL` environment variables override the stored credential for
-foreground `runt workstation run`; the service path uses the stored credential
-file written by `connect`.
+is passed through the environment (`RUNT_CLOUD_TOKEN`), never argv.
+`RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL` environment variables override the stored
+credential for foreground `runt workstation run`; the service path uses the
+stored credential file written by `connect`.
 
 In the hosted notebook, attaching compute to a workstation dispatches an attach
 job; the agent accepts it and the runtime peer attaches to the room as
@@ -177,8 +176,8 @@ externally issued bearer. It still works and remains useful for dev and for
 deployments that issue their own credentials:
 
 1. In the hosted notebook, grant the workstation principal an explicit
-   `runtime_peer` ACL row (owner alone is not sufficient — compute access is
-   never derived from human roles).
+   `runtime_peer` ACL row. Ownership alone is not sufficient: compute access is
+   never derived from human roles.
 2. On the workstation:
 
 ```bash
@@ -188,7 +187,7 @@ RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
   --python-path "$(command -v python3)"
 ```
 
-The credential always rides the environment, never argv. Defaults: scope
+The credential is always passed through the environment, never argv. Defaults: scope
 `runtime_peer`, auth kind `oidc` (use `--auth-kind anaconda-key` for Anaconda
 API keys, `--auth-kind workstation` for a pairing-flow credential). Blob root
 defaults under the daemon's standard cache. `--python-path` launches a kernel
@@ -223,7 +222,7 @@ extension, and Hub-service provisioning are explored in
 
 ## Outerbounds
 
-Outerbounds workstations are Linux x64 with a per-user home — the defaults
+Outerbounds workstations are Linux x64 with a per-user home. The defaults
 above apply unchanged. Use the workstation's task environment Python as
 `--python-path` so notebook execution sees the same dependencies as your
 flows.

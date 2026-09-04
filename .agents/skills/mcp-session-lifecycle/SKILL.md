@@ -176,7 +176,7 @@ not for the entire tool execution. `DocHandle` is cheaply cloneable
 
 **Ephemeral notebooks** call `connect(uuid)` directly and trust the daemon's
 resident/recoverable-room handling. The daemon is authoritative about whether
-a notebook still exists — a refusal comes back as `NotebookUnavailable` and
+a notebook still exists. A refusal comes back as `NotebookUnavailable` and
 is handled as evicted with no retry. No pre-check `list_rooms` call.
 
 **File-backed notebooks** use `connect_open(path)` which lets the daemon
@@ -233,11 +233,11 @@ is closed. Use `connect_open(path)` to let the daemon reload from disk.
 If an ephemeral room was evicted, `connect(uuid)` creates a new empty room
 with no cells and no kernel. Check `list_rooms` first.
 
-## North Star: Concurrent MCP Clients
+## Goal: Support Concurrent MCP Clients
 
 The current architecture assumes a single MCP client per daemon session.
-The north star is supporting multiple concurrent MCP clients against the
-same daemon. Key tension points:
+The goal is to support multiple concurrent MCP clients against the
+same daemon. Constraints to address:
 
 - **Session state is per-process:** Each `runt mcp` process has one
   `Arc<RwLock<Option<NotebookSession>>>`. Multiple clients would need

@@ -1,6 +1,6 @@
 # nteract
 
-nteract is a local-first notebook environment where humans, kernels, and AI agents can work against the same live document. It ships as a native desktop app with instant startup, realtime sync across windows and programmatic clients, and managed local environments.
+nteract is a local-first notebook environment where humans, kernels, and AI agents can work with the same live document. It ships as a native desktop app with realtime sync across windows and programmatic clients, and managed local environments.
 
 Built on [jupyter-zmq-client](https://crates.io/crates/jupyter-zmq-client) and [jupyter-protocol](https://crates.io/crates/jupyter-protocol).
 
@@ -8,9 +8,9 @@ Built on [jupyter-zmq-client](https://crates.io/crates/jupyter-zmq-client) and [
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/nteract/releases).
 
-Linux x64 and macOS (Apple silicon or Intel) can install with one command —
-the AppImage or signed .app bundle plus CLI/daemon and the per-user service
-(systemd or launchd) in one step:
+On Linux x64 and macOS (Apple silicon or Intel), this command installs the
+AppImage or signed .app bundle, CLI/daemon, and per-user service
+(systemd or launchd):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash
@@ -21,23 +21,21 @@ installs are not currently supported because `runtimed` is a per-user daemon
 managed by the app and CLI, not by system package-manager scripts.
 
 For remote workstations (Outerbounds, JupyterHub) that offer compute to
-hosted notebooks, use the headless one-liner — see
-[Remote workstations](docs/runbooks/remote-workstation.md):
+hosted notebooks, use the headless installer. See
+[Remote workstations](docs/runbooks/remote-workstation.md) for details:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless
 ```
 
-The desktop app bundles everything — `runt` CLI and `runtimed` daemon.
-
-The `runt` CLI and `runtimed` Python bindings ship with the app and stay up to date automatically. For nightly builds, use `runt-nightly` instead.
+The desktop app bundles the `runt` CLI, `runtimed` daemon, and `runtimed` Python bindings. The CLI and Python bindings stay up to date automatically. For nightly builds, use `runt-nightly` instead.
 
 ## What's in here
 
 | Component | Description |
 |-----------|-------------|
 | `nteract` | Desktop notebook editor (Tauri + React) |
-| `runtimed` | Background daemon — environment pools, notebook sync, kernel execution |
+| `runtimed` | Background daemon for environment pools, notebook sync, and kernel execution |
 | `runt` | CLI for managing kernels, notebooks, and the daemon |
 | `runtimed` (Python) | Python bindings for the daemon (ships with the app) |
 
@@ -49,7 +47,7 @@ Execution requests name a synced `cell_id`; the daemon reads the cell source fro
 
 ## MCP Server
 
-The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans in real-time — watching the notebook update live in the desktop app while the agent works.
+The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans in real time. The notebook updates live in the desktop app while the agent works.
 
 ### Install the Codex plugin
 
@@ -85,7 +83,7 @@ Pin a specific version:
 /plugin install nteract@nteract --ref v2.3.0
 ```
 
-The plugin ships the right `nteract-mcp` binary for your platform (macOS arm64/x64, Linux x64, Windows x64) — no separate install needed. `main` of `nteract/agent-plugins` always points at the latest stable release.
+The plugin ships the `nteract-mcp` binary for your platform (macOS arm64/x64, Linux x64, Windows x64), so no separate install is needed. `main` of `nteract/agent-plugins` always points at the latest stable release.
 
 For pre-release builds (updated daily):
 
@@ -99,7 +97,7 @@ If you use the nteract desktop app with Claude Desktop, there's a one-click inst
 
 ![nteract menu showing 'Install Extension for Claude...'](https://img.runt.run/install-claude-extension.png)
 
-The desktop app builds a `.mcpb` bundle at runtime (manifest, icons, `nteract-mcp` binary) and hands it to Claude Desktop, which prompts you to confirm the install. Requires the nteract desktop app; Claude Desktop picks up the bundle from there.
+The nteract desktop app is required: it builds a `.mcpb` bundle at runtime (manifest, icons, `nteract-mcp` binary) and hands it to Claude Desktop, which prompts you to confirm the install.
 
 ## Usage
 
@@ -282,18 +280,18 @@ cargo clippy --all-targets -- -D warnings               # Lint Rust
 
 The underlying Rust libraries are published to crates.io:
 
-- [`jupyter-protocol`](https://crates.io/crates/jupyter-protocol) — Jupyter messaging protocol
-- [`jupyter-zmq-client`](https://crates.io/crates/jupyter-zmq-client) - Jupyter kernel interactions over ZeroMQ
-- [`nbformat`](https://crates.io/crates/nbformat) — Notebook parsing
+- [`jupyter-protocol`](https://crates.io/crates/jupyter-protocol): Jupyter messaging protocol
+- [`jupyter-zmq-client`](https://crates.io/crates/jupyter-zmq-client): Jupyter kernel interactions over ZeroMQ
+- [`nbformat`](https://crates.io/crates/nbformat): Notebook parsing
 
 ## Contributing
 
 See `AGENTS.md` for the subsystem map and development guidance. Key entry points:
 
-- `crates/runtimed/AGENTS.md` — architecture, daemon, state ownership
-- `apps/notebook/src/AGENTS.md` — frontend architecture
-- `crates/notebook-wire/AGENTS.md` — wire protocol
-- `cargo xtask help` — all build commands
+- `crates/runtimed/AGENTS.md`: architecture, daemon, state ownership
+- `apps/notebook/src/AGENTS.md`: frontend architecture
+- `crates/notebook-wire/AGENTS.md`: wire protocol
+- `cargo xtask help`: all build commands
 
 ## License
 
