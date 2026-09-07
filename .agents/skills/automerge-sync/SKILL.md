@@ -232,7 +232,8 @@ work:
 | Batch→Incremental | Bloom filter exchange → live sync frames | Fingerprint reconciliation → subscription push | Same as raw automerge |
 | Testability | Async, needs mocks | Pure sans-IO functions | Async select! loop |
 
-**nteract's `required_heads` is novel:** request-scoped causal gating where the daemon defers one request until preconditions are met while sync continues unblocked. Neither automerge-repo nor samod gates actions on causal preconditions this way.
+nteract implements `required_heads` in its daemon: it defers one request until
+its causal preconditions are met while sync continues unblocked.
 
 ### Settings Sync
 

@@ -1,8 +1,8 @@
 ---
 name: daemon-dev
 description: >
-  Develop, debug, and manage the runtimed daemon, Python bindings, build system,
-  and Python bindings. Use when working on daemon code, kernel issues,
+  Develop, debug, and manage the runtimed daemon, Python bindings, and build
+  system. Use when working on daemon code, kernel issues,
   maturin builds, or xtask workflows.
 ---
 

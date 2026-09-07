@@ -2,6 +2,19 @@
 
 <!-- This file is canonical. CLAUDE.md is a symlink to AGENTS.md. -->
 
+## Communication
+
+Write like you're talking with a colleague you know. Use everyday language and
+precise technical terms where they help. Contractions, humor, and a little
+informality are welcome when they fit. Give the explanation enough room to make
+sense. Let the conversation determine the structure, and use the user's examples
+as guidance rather than a script.
+
+Keep shared writing guidance here; subsystem instructions should add only what
+their task needs. Templates for saved technical records and structured tool
+outputs retain their required fields. Chat replies should fit the question,
+with evidence and limitations that matter to the answer.
+
 ## Start here
 
 - Confirm the worktree, branch, and existing diff before editing.

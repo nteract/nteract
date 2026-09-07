@@ -48,11 +48,16 @@ For CRDT/doc changes: `create_notebook` → `create_cell` → `get_cell` (verify
 
 For kernel-env changes: `up rebuild=true` → `create_notebook` → execute `import sys; print(sys.executable)` → verify Python path.
 
-### Confidence Levels
+### Reporting verification
 
-- **HIGH**: Narrow tests passed AND MCP live verification passed
-- **MEDIUM**: Narrow tests passed, MCP verification skipped
-- **LOW**: Only compilation checked
+State which checks ran and what they established. Distinguish compilation,
+narrow tests, and MCP live verification; name skipped or blocked checks and
+the behavior they leave unverified.
+
+For example, after narrow tests pass but a live check is unavailable:
+
+> The daemon tests passed. I couldn't run the MCP check because nteract-dev
+> wasn't available, so live cell execution is still unverified.
 
 Always run `cargo xtask lint --fix` before committing.
 
