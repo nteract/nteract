@@ -4552,6 +4552,7 @@ version = "0.6.6"
 dependencies = [
  "dirs",
  "libc",
+ "mcp-transport",
  "notify",
  "notify-debouncer-mini",
  "rmcp 3.2.0",
@@ -4564,6 +4565,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "mcp-transport"
+version = "0.1.0"
+dependencies = [
+ "rmcp 3.2.0",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -5056,6 +5066,7 @@ name = "nteract-mcp"
 version = "0.5.6"
 dependencies = [
  "dirs",
+ "mcp-transport",
  "rmcp 3.2.0",
  "runt-mcp-proxy",
  "runt-workspace",
@@ -7510,6 +7521,7 @@ dependencies = [
  "flate2",
  "kernel-env",
  "libc",
+ "mcp-transport",
  "notebook-doc",
  "notebook-sync",
  "notify",
@@ -7544,6 +7556,7 @@ dependencies = [
  "fancy-regex 0.14.0",
  "futures-util",
  "mcp-client-branding",
+ "mcp-transport",
  "notebook-cloud-transport",
  "notebook-doc",
  "notebook-protocol",
@@ -7573,6 +7586,7 @@ dependencies = [
 name = "runt-mcp-proxy"
 version = "0.5.6"
 dependencies = [
+ "mcp-transport",
  "rmcp 1.5.0",
  "rmcp 3.2.0",
  "runt-mcp",

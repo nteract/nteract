@@ -81,6 +81,7 @@ async fn run_wait(
         return Ok(change_result(params, notebook_id, initial, None));
     }
     let Some(execution_id) = params.execution_id.as_deref() else {
+        crate::progress::status("Watching notebook edits, outputs, and comments");
         let change = observer
             .wait(params.after.as_deref().unwrap_or(&initial.cursor), timeout)
             .await
@@ -92,6 +93,7 @@ async fn run_wait(
         .map_err(sync_error)?;
     let terminal = async {
         while let Some(progress) = watcher.next().await {
+            crate::progress::status(format!("Execution {execution_id}: {}", progress.status));
             if progress.terminal {
                 return Some(progress);
             }

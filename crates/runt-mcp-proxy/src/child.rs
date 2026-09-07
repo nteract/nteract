@@ -25,9 +25,17 @@ pub struct ChildClientHandler {
     pub upstream_title: Option<String>,
     pub notifications:
         tokio::sync::broadcast::Sender<rmcp::model::ResourceUpdatedNotificationParam>,
+    pub progress: tokio::sync::broadcast::Sender<rmcp::model::ProgressNotificationParam>,
 }
 
 impl ClientHandler for ChildClientHandler {
+    async fn on_progress(
+        &self,
+        params: rmcp::model::ProgressNotificationParam,
+        _: rmcp::service::NotificationContext<RoleChild>,
+    ) {
+        let _ = self.progress.send(params);
+    }
     async fn on_resource_updated(
         &self,
         params: rmcp::model::ResourceUpdatedNotificationParam,
@@ -241,6 +249,7 @@ pub async fn spawn_child(
         upstream_name: upstream_name.to_string(),
         upstream_title: upstream_title.map(|s| s.to_string()),
         notifications: tokio::sync::broadcast::channel(256).0,
+        progress: tokio::sync::broadcast::channel(256).0,
     };
 
     let client = handler
@@ -284,6 +293,7 @@ mod tests {
             upstream_name: "codex-mcp-client".to_string(),
             upstream_title: Some("Codex".to_string()),
             notifications: tokio::sync::broadcast::channel(256).0,
+            progress: tokio::sync::broadcast::channel(256).0,
         };
         let info = handler.get_info();
         assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
@@ -317,6 +327,7 @@ mod tests {
             upstream_name: "test".to_string(),
             upstream_title: None,
             notifications: tokio::sync::broadcast::channel(256).0,
+            progress: tokio::sync::broadcast::channel(256).0,
         };
         let client = handler
             .serve(client_side)

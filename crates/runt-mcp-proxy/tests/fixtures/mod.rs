@@ -205,6 +205,38 @@ impl ServerHandler for LegacyChild {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        if request.name == "progress_job" {
+            let job = request
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("job"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let root =
+                std::path::PathBuf::from(std::env::var("NTERACT_COMPATIBILITY_ROOT").unwrap());
+            let background_root = root.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                std::fs::write(background_root.join(format!("completed-{job}")), "done").unwrap();
+            });
+            if let Some(token) = context.meta.get_progress_token() {
+                context
+                    .peer
+                    .notify_progress(rmcp_legacy::model::ProgressNotificationParam {
+                        progress_token: token,
+                        progress: 0.0,
+                        total: None,
+                        message: Some(format!("job-{job}")),
+                    })
+                    .await
+                    .unwrap();
+            }
+            tokio::select! {
+                _ = context.ct.cancelled() => { std::fs::write(root.join(format!("cancelled-{job}")), context.id.to_string()).unwrap(); },
+                _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {},
+            }
+            return Ok(CallToolResult::success(vec![]));
+        }
         if self.lose_first_response {
             if request.name == "definitive_error" {
                 return Err(ErrorData::invalid_params(

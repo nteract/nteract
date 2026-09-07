@@ -24,7 +24,7 @@ impl Wire {
     pub fn start<S: ServerHandler + Send + Sync + 'static>(handler: S) -> Self {
         let (server, client) = tokio::io::duplex(64 * 1024);
         let task = tokio::spawn(async move {
-            match handler.serve(server).await {
+            match handler.serve(mcp_transport::server(server)).await {
                 Ok(service) => service
                     .waiting()
                     .await

@@ -184,6 +184,21 @@ timed_out, resync_required, or unavailable, with compact changes and resource
 links. Neither notification delivery nor a progress callback proves that a host
 has refreshed model context.
 
+Tool requests honor request cancellation and connection teardown throughout
+their observation future. The shared `mcp-transport` adapter attaches a connection
+token to each request and cancels it on EOF, failed writes, close, or drop; the
+SDK's request token alone does not signal EOF during its response drain. The
+proxy maps cancellation to the private child's request ID and
+maps progress back to the upstream progress token. Independent concurrent
+requests have separate scopes. Dropping a forwarding future also sends a
+bounded cancellation notification to the child; it does not interrupt a kernel.
+
+Progress is opt-in and reports elapsed seconds with real status messages,
+at most once per second, with a heartbeat every five seconds. A request keeps
+one elapsed clock and rate limit across a safe child retry. Progress delivery
+has a short timeout so a slow notification consumer cannot indefinitely stall
+the tool. Completion and cancellation discard pending progress updates.
+
 This observation layer does not by itself enable the native `2026-07-28`
 lifecycle or `subscriptions/listen`; those require their own transport and
 discovery support at every entrypoint.

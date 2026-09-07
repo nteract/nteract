@@ -754,7 +754,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let last_session_drop = server.last_session_drop().clone();
     let parked_sessions = server.parked_sessions().clone();
 
-    let transport = rmcp::transport::io::stdio();
+    let transport = mcp_transport::server(rmcp::transport::io::stdio());
     let handle = server.serve(transport).await?;
     if handle.peer().peer_info().is_none() {
         handle.cancel().await?;

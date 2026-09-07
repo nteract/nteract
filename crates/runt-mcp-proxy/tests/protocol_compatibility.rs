@@ -313,6 +313,106 @@ async fn subscriptions_wait_for_startup_and_rebind_after_child_replacement() {
 }
 
 #[tokio::test]
+async fn concurrent_progress_uses_each_upstream_token_and_is_opt_in() {
+    let (_dir, proxy, _) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    for (id, token) in [(90, "alpha"), (91, "beta")] {
+        wire.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":id},"_meta":{"progressToken":token}}})).await;
+    }
+    let mut completed = 0;
+    let mut progress = Vec::new();
+    while completed < 2 {
+        let message = wire.receive().await;
+        if message["id"].is_number() {
+            completed += 1;
+            assert!(message.get("result").is_some());
+        } else if message["method"] == "notifications/progress" {
+            progress.push(message);
+        }
+    }
+    assert_eq!(progress.len(), 2);
+    for message in progress {
+        let token = message["params"]["progressToken"].as_str().unwrap();
+        assert_eq!(
+            message["params"]["message"],
+            if token == "alpha" {
+                "job-90"
+            } else {
+                assert_eq!(token, "beta");
+                "job-91"
+            }
+        );
+    }
+    wire.notifications.clear();
+    wire.request(
+        92,
+        "tools/call",
+        Some(json!({"name":"progress_job","arguments":{"job":92}})),
+    )
+    .await;
+    assert!(!wire
+        .notifications
+        .iter()
+        .any(|notification| notification["method"] == "notifications/progress"));
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn cancellation_targets_child_request_but_background_execution_continues() {
+    let (dir, proxy, resolves) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    wire.send(json!({"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":99},"_meta":{"progressToken":"cancel-this"}}})).await;
+    wire.notification("notifications/progress").await;
+    wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99,"reason":"stop waiting"}})).await;
+    timeout(DEADLINE, async {
+        while !dir.path().join("cancelled-99").exists() || !dir.path().join("completed-99").exists()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_ne!(
+        std::fs::read_to_string(dir.path().join("cancelled-99")).unwrap(),
+        "99"
+    );
+    assert_eq!(resolves.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        legacy_result(&wire.request(100, "ping", None).await),
+        &json!({})
+    );
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn upstream_disconnect_cancels_the_child_wait() {
+    let (dir, proxy, _) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    wire.send(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":101},"_meta":{"progressToken":"disconnect"}}})).await;
+    wire.notification("notifications/progress").await;
+    wire.finish().await;
+    timeout(DEADLINE, async {
+        while !dir.path().join("cancelled-101").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
 async fn resource_subscriptions_relay_early_notifications_and_invalidate_on_child_loss() {
     let (_dir, proxy, _) = isolated_proxy();
     proxy.init_child().await.unwrap();

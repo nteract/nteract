@@ -11,6 +11,7 @@ publish = false
 workspace = true
 
 [dependencies]
+mcp-transport = { path = "../mcp-transport" }
 base64 = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-io"] }
 reqwest = { workspace = true, features = ["json"] }
@@ -39,6 +40,7 @@ url = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client"] }
 futures-util = { workspace = true }
 proptest = { workspace = true }

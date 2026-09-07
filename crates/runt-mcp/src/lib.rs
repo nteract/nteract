@@ -30,6 +30,7 @@ pub mod formatting;
 mod icons;
 pub mod observation;
 pub mod presence;
+mod progress;
 pub mod project_file;
 mod resources;
 mod session;
@@ -600,7 +601,7 @@ impl ServerHandler for NteractMcp {
             }
         }
         let start = std::time::Instant::now();
-        let result = tools::dispatch(self, &request).await;
+        let result = progress::run(&context, &request.name, tools::dispatch(self, &request)).await;
         let elapsed = start.elapsed();
         if elapsed >= SLOW_MCP_TOOL_CALL {
             tracing::warn!(

@@ -1056,7 +1056,13 @@ impl McpProxy {
         }
         let start = Instant::now();
 
-        let result = match snapshot.peer.call_tool_once(params.clone()).await {
+        let result = match crate::request_scope::call_child(
+            &snapshot.peer,
+            params.clone(),
+            snapshot.progress.subscribe(),
+        )
+        .await
+        {
             Ok(response) => complete_tool_response(response).map_err(|error| ForwardToolFailure {
                 error,
                 generation: Some(generation),
@@ -1065,6 +1071,18 @@ impl McpProxy {
             }),
             Err(rmcp::service::ServiceError::McpError(error)) => Err(ForwardToolFailure {
                 error,
+                generation: Some(generation),
+                transport_closed: false,
+                may_have_run: false,
+            }),
+            Err(rmcp::service::ServiceError::Cancelled { reason }) => Err(ForwardToolFailure {
+                error: McpError::new(
+                    rmcp::model::ErrorCode(-32800),
+                    reason.unwrap_or_else(|| {
+                        "Request observation cancelled; daemon execution may continue".into()
+                    }),
+                    None,
+                ),
                 generation: Some(generation),
                 transport_closed: false,
                 may_have_run: false,
@@ -1209,6 +1227,7 @@ impl McpProxy {
             .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
         Ok(ChildPeerSnapshot {
             peer: client.peer().clone(),
+            progress: client.service().progress.clone(),
             generation: state.child_generation,
         })
     }
@@ -1252,6 +1271,7 @@ impl McpProxy {
 
 struct ChildPeerSnapshot {
     peer: Peer<child::RoleChild>,
+    progress: tokio::sync::broadcast::Sender<rmcp::model::ProgressNotificationParam>,
     generation: u64,
 }
 
@@ -1528,10 +1548,16 @@ impl ServerHandler for McpProxy {
                 "Tool '{}' called before child ready, waiting...",
                 request.name
             );
-            let _ = tokio::time::timeout(Duration::from_secs(60), notified).await;
+            tokio::select! {
+                biased;
+                _ = context.ct.cancelled() => return Err(McpError::new(rmcp::model::ErrorCode(-32800), "Request cancelled before the child became ready", None)),
+                _ = tokio::time::timeout(Duration::from_secs(60), notified) => {},
+            }
         }
 
-        self.forward_tool_call(request).await.map(Into::into)
+        crate::request_scope::scope(context, self.forward_tool_call(request))
+            .await
+            .map(Into::into)
     }
 
     // Spawn the child only after the client has sent `notifications/initialized`.
