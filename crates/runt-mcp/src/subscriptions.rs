@@ -96,13 +96,19 @@ pub(crate) async fn listen(
             }
         });
     }
-    if watches.is_empty() {
-        return Ok(());
-    }
     tokio::select! {
         _ = mcp_transport::cancelled(context.request_context()) => Ok(()),
-        ended = watches.join_next() => ended.ok_or_else(|| McpError::internal_error("Subscription worker ended", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        result = drain_watches(&mut watches) => result,
     }
+}
+
+async fn drain_watches(
+    watches: &mut tokio::task::JoinSet<Result<(), McpError>>,
+) -> Result<(), McpError> {
+    while let Some(ended) = watches.join_next().await {
+        ended.map_err(|error| McpError::internal_error(error.to_string(), None))??;
+    }
+    Ok(())
 }
 
 type ResourceWatch = (uuid::Uuid, ObservationReader, tokio::task::JoinHandle<()>);
@@ -243,6 +249,31 @@ mod tests {
     use rmcp::model::*;
     use rmcp::service::{NotificationContext, RequestContext, RoleClient};
     use rmcp::{ClientHandler, ServerHandler, ServiceExt};
+
+    #[tokio::test]
+    async fn releasing_one_attachment_keeps_other_listener_watches_running() {
+        let mut watches = tokio::task::JoinSet::new();
+        let (released, observed) = tokio::sync::oneshot::channel();
+        watches.spawn(async move {
+            let _ = released.send(());
+            Ok(())
+        });
+        let (release_second, second) = tokio::sync::oneshot::channel();
+        watches.spawn(async move {
+            let _ = second.await;
+            Ok(())
+        });
+        observed.await.expect("first attachment released");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), drain_watches(&mut watches))
+                .await
+                .is_err()
+        );
+        release_second.send(()).expect("second watch still alive");
+        drain_watches(&mut watches)
+            .await
+            .expect("all attachments released");
+    }
 
     struct Notifications(tokio::sync::mpsc::UnboundedSender<String>);
     impl ClientHandler for Notifications {

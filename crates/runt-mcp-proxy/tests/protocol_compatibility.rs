@@ -1094,3 +1094,36 @@ async fn successful_reconnect_returns_when_replacement_is_ready() {
     stop_child(&proxy).await;
     wire.finish().await;
 }
+
+#[tokio::test]
+async fn native_recovers_after_a_transient_first_start_failure() {
+    let (dir, proxy, resolves) = isolated_proxy();
+    std::fs::write(dir.path().join("fail-resolution"), "fail").unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    let params =
+        json!({"name":"compatibility_echo","arguments":{},"_meta":modern_meta("2026-07-28",false)});
+    assert!(wire
+        .request(1, "tools/call", Some(params.clone()))
+        .await
+        .get("error")
+        .is_some());
+    std::fs::remove_file(dir.path().join("fail-resolution")).unwrap();
+    let response = wire.request(2, "tools/call", Some(params)).await;
+    assert_eq!(response["result"]["resultType"], "complete", "{response}");
+    assert_eq!(resolves.load(Ordering::SeqCst), 2);
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn repeated_native_start_failures_are_bounded_by_the_circuit_breaker() {
+    let (dir, proxy, resolves) = isolated_proxy();
+    std::fs::write(dir.path().join("fail-resolution"), "fail").unwrap();
+    let mut wire = Wire::start(proxy);
+    for id in 1..=8 {
+        let response=wire.request(id,"tools/call",Some(json!({"name":"compatibility_echo","arguments":{},"_meta":modern_meta("2026-07-28",false)}))).await;
+        assert!(response.get("error").is_some(), "{response}");
+    }
+    assert_eq!(resolves.load(Ordering::SeqCst), 5);
+    wire.finish().await;
+}

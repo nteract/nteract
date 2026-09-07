@@ -230,6 +230,19 @@ so cancelling one listener cannot unsubscribe another. Child loss ends native
 streams rather than silently moving them to replacement attachments. Clients
 must reconnect, obtain new handles, and establish new baselines.
 
+Legacy responses also carry the zero-TTL private cache hints as optional fields;
+legacy clients may ignore them. Only native responses require the result-type
+discriminator. A rejected first request does not open the native lifecycle:
+entrypoints wait for valid protocol metadata before starting recovery or dev
+setup. Transient native child startup failures can retry, within the existing
+circuit breaker's attempt budget.
+
+Handle-qualified `show_notebook` requests always reach the child's attachment
+validation and launch policy. The supervisor's direct Vite launch path applies
+to legacy explicit-path requests; it must not bypass a supplied handle. Releasing
+one attachment ends only its per-URI watches; other watches in the native listen
+request continue until cancelled, unavailable, or the child connection ends.
+
 The shared transport adapter covers two SDK 3.2 lifecycle ordering constraints.
 It primes a native first application request with a private, pure discovery
 request so the SDK's peer pump is running before a tool emits progress or a

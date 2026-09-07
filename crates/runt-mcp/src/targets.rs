@@ -33,11 +33,10 @@ pub(crate) async fn dispatch(
                 None,
             ));
         }
-        if request
-            .arguments
-            .as_ref()
-            .is_some_and(|args| args.contains_key("notebook_id"))
-        {
+        if request.arguments.as_ref().is_some_and(|args| {
+            args.get("notebook_id")
+                .is_some_and(|value| !value.is_null())
+        }) {
             return Err(ErrorData::invalid_params(
                 "Use notebook_handle without notebook_id",
                 None,

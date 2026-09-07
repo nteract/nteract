@@ -347,6 +347,12 @@ pub fn require_protocol(context: &RequestContext<RoleServer>) -> Result<(), rmcp
         return Ok(());
     }
     if is_native(context) {
+        if let Some(protocol) = context.extensions.get::<ProtocolSession>() {
+            if let Some(identity) = context.client_info() {
+                let _ = protocol.identity.set(identity);
+            }
+            protocol.accepted.cancel();
+        }
         return Ok(());
     }
     Err(rmcp::ErrorData::invalid_request(
@@ -385,20 +391,61 @@ pub async fn cancelled(context: &RequestContext<RoleServer>) {
     }
 }
 
+/// A valid native request opens the protocol lifecycle. Rejected metadata must
+/// not start notebook recovery or development-daemon setup.
+#[derive(Clone)]
+pub struct ProtocolSession {
+    accepted: CancellationToken,
+    closed: CancellationToken,
+    identity: Arc<std::sync::OnceLock<rmcp::model::Implementation>>,
+}
+impl ProtocolSession {
+    pub async fn wait_for_native(&self) -> bool {
+        tokio::select! {
+            biased;
+            _ = self.accepted.cancelled() => true,
+            _ = self.closed.cancelled() => false,
+        }
+    }
+    pub fn client_info(&self) -> Option<rmcp::model::Implementation> {
+        self.identity.get().cloned()
+    }
+}
+
 /// Apply once at each server entry point, including in-memory wire tests.
 pub fn server<T, E, A>(transport: T) -> impl Transport<RoleServer, Error = E>
 where
     T: IntoTransport<RoleServer, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
-    ServerTransport {
-        inner: transport.into_transport(),
+    server_with_protocol(transport).0
+}
+
+pub fn server_with_protocol<T, E, A>(
+    transport: T,
+) -> (impl Transport<RoleServer, Error = E>, ProtocolSession)
+where
+    T: IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let protocol = ProtocolSession {
+        accepted: CancellationToken::new(),
         closed: CancellationToken::new(),
-        opening: Arc::new(Mutex::new(Opening::default())),
-    }
+        identity: Arc::default(),
+    };
+    (
+        ServerTransport {
+            inner: transport.into_transport(),
+            closed: protocol.closed.clone(),
+            protocol: protocol.clone(),
+            opening: Arc::new(Mutex::new(Opening::default())),
+        },
+        protocol,
+    )
 }
 
 struct ServerTransport<T> {
+    protocol: ProtocolSession,
     inner: T,
     closed: CancellationToken,
     opening: Arc<Mutex<Opening>>,
@@ -503,6 +550,10 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for ServerTransport<T> {
                     .request
                     .extensions_mut()
                     .insert(ConnectionClosed(self.closed.clone()));
+                request
+                    .request
+                    .extensions_mut()
+                    .insert(self.protocol.clone());
                 let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
                 if matches!(
                     request.request,
@@ -545,6 +596,7 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for ServerTransport<T> {
                         discovery
                             .extensions_mut()
                             .insert(ConnectionClosed(self.closed.clone()));
+                        discovery.extensions_mut().insert(self.protocol.clone());
                         let prime = JsonRpcMessage::request(discovery, request.id.clone());
                         opening.priming_id = Some(request.id.clone());
                         opening.pending = message.take();

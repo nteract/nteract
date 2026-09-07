@@ -779,7 +779,6 @@ struct SupervisorState {
 
 #[derive(Clone)]
 struct Supervisor {
-    native_identity: Arc<std::sync::OnceLock<Implementation>>,
     state: Arc<RwLock<SupervisorState>>,
     /// Signaled when the child client is first connected by the background
     /// init task. `list_tools` waits on this so the initial tool list
@@ -823,7 +822,6 @@ impl Supervisor {
         let log_dir = project_root.join(".context");
         let _ = std::fs::create_dir_all(&log_dir);
         Self {
-            native_identity: Arc::default(),
             state: Arc::new(RwLock::new(SupervisorState {
                 proxy: None,
                 log_dir,
@@ -1162,6 +1160,13 @@ impl Supervisor {
         request: &CallToolRequestParams,
         vite_port: u16,
     ) -> Result<CallToolResult, McpError> {
+        if request
+            .arguments
+            .as_ref()
+            .is_some_and(|args| args.contains_key("notebook_handle"))
+        {
+            return self.forward_tool_call(request.clone()).await;
+        }
         let state = self.state.read().await;
 
         let binary = runt_workspace::cargo_binary_path_for_workspace(
@@ -1928,11 +1933,7 @@ impl ServerHandler for Supervisor {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::DiscoverResult, McpError> {
-        let result = mcp_transport::discover(&context, self.get_info())?;
-        if let Some(identity) = context.client_info() {
-            let _ = self.native_identity.set(identity);
-        }
-        Ok(result)
+        mcp_transport::discover(&context, self.get_info())
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -3110,8 +3111,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tool_list_changed_tx,
     );
 
-    let transport = mcp_transport::server(rmcp::transport::io::stdio());
+    let (transport, protocol) = mcp_transport::server_with_protocol(rmcp::transport::io::stdio());
     let server = supervisor.serve(transport).await?;
+    if server.peer().peer_info().is_none() && !protocol.wait_for_native().await {
+        server.waiting().await?;
+        return Ok(());
+    }
+
     info!("MCP server initialized on stdio (supervisor tools available)");
 
     // Extract upstream client identity from the MCP initialize handshake.
@@ -3127,11 +3133,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (name, title)
         })
         .unwrap_or_else(|| {
-            server
-                .service()
-                .native_identity
-                .get()
-                .map(|info| (info.name.clone(), info.title.clone()))
+            protocol
+                .client_info()
+                .map(|info| (info.name, info.title))
                 .unwrap_or_else(|| ("nteract-dev".to_string(), None))
         });
 
@@ -3412,7 +3416,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let watcher_supervisor = Supervisor {
-                native_identity: Arc::default(),
                 state: state_for_watcher,
                 child_ready: Arc::new(Notify::new()),
             };
@@ -3474,6 +3477,30 @@ mod tests {
 
     fn root() -> PathBuf {
         PathBuf::from("/repo")
+    }
+
+    #[tokio::test]
+    async fn handle_qualified_show_uses_child_validation_before_dev_launch() {
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(root(), DevMode::Attach, root(), None, tx);
+        for arguments in [
+            serde_json::json!({"notebook_handle":"active"}),
+            serde_json::json!({"notebook_handle":"parked","notebook_id":null}),
+            serde_json::json!({"notebook_handle":"expired","notebook_id":"/another.ipynb"}),
+        ] {
+            let request: CallToolRequestParams = serde_json::from_value(
+                serde_json::json!({"name":"show_notebook","arguments":arguments}),
+            )
+            .unwrap();
+            let error = supervisor
+                .show_notebook_dev(&request, 5173)
+                .await
+                .unwrap_err();
+            assert!(
+                error.message.contains("not yet initialized"),
+                "request must reach the child, not bypass it with the dev binary fallback: {error}"
+            );
+        }
     }
 
     async fn supervisor_responses(requests: Vec<Value>) -> Vec<Value> {

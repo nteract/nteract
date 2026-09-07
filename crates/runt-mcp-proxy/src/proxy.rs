@@ -187,7 +187,7 @@ pub struct McpProxy {
     operator_session: String,
     observation_bridge: Arc<crate::observation_bridge::ObservationBridge>,
     native_subscriptions: Arc<crate::native_subscriptions::Registry>,
-    native_startup: Arc<std::sync::OnceLock<RestartCompletion>>,
+    native_startup: Arc<std::sync::Mutex<Option<RestartCompletion>>>,
 }
 
 impl McpProxy {
@@ -495,8 +495,19 @@ impl McpProxy {
     }
 
     async fn restart_child_owned(&self) -> Result<(), String> {
-        if self.state.read().await.child_generation == 0 {
-            return self.init_child().await;
+        let cold_start = { self.state.read().await.child_generation == 0 };
+        if cold_start {
+            let allowed = { self.state.write().await.circuit_breaker.record_crash() };
+            if !allowed {
+                return Err(
+                    "Child startup failed repeatedly; retry after the recovery cooldown".into(),
+                );
+            }
+            let result = self.init_child().await;
+            if result.is_ok() {
+                self.state.write().await.circuit_breaker.reset();
+            }
+            return result;
         }
         let reason = self.current_child_restart_reason().await;
         info!(
@@ -1782,9 +1793,15 @@ impl McpProxy {
         if self.state.read().await.child_client.is_some() {
             return Ok(());
         }
-        let mut ready = self
-            .native_startup
-            .get_or_init(|| {
+        let mut ready = {
+            let mut startup = self
+                .native_startup
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if startup
+                .as_ref()
+                .is_none_or(|receiver| receiver.borrow().is_some())
+            {
                 let (sender, receiver) = tokio::sync::watch::channel(None);
                 let proxy = self.clone();
                 let identity = context.client_info();
@@ -1802,9 +1819,13 @@ impl McpProxy {
                     };
                     sender.send_replace(Some(result));
                 });
-                receiver
-            })
-            .clone();
+                *startup = Some(receiver);
+            }
+            startup
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| McpError::internal_error("Startup completion unavailable", None))?
+        };
         let wait = async {
             loop {
                 if let Some(result) = ready.borrow_and_update().clone() {

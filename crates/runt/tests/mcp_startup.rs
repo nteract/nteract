@@ -11,9 +11,9 @@ use tokio::time::timeout;
 #[tokio::test]
 async fn rejected_first_request_does_not_start_notebook_recovery() {
     for (method, version, expected_code) in [
-        ("tools/list", "2026-07-28", -32022),
+        ("tools/list", "2099-01-01", -32022),
         ("tools/list", "2025-11-25", -32600),
-        ("server/discover", "2025-11-25", -32601),
+        ("server/discover", "2025-11-25", -32600),
     ] {
         let dir = tempfile::tempdir().expect("isolated runt MCP directory");
         let notebook = dir.path().join("rejoin.ipynb");

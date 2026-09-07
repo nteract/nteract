@@ -60,6 +60,14 @@ fn always_load_meta() -> MetaObject {
     MetaObject(meta)
 }
 
+fn notebook_resources_json(notebook_id: &str) -> serde_json::Value {
+    if let Some(handle) = crate::targets::current() {
+        let cells = crate::resources::attachment_cells_uri(&handle);
+        return serde_json::json!({"cells":cells,"cell_template":format!("{cells}/{{cell_id}}")});
+    }
+    crate::resources::notebook_resources_json(notebook_id)
+}
+
 fn cell_resource_uri(notebook_id: &str, cell_id: &str) -> String {
     match crate::targets::current() {
         Some(handle) => crate::resources::attachment_cell_resource_link(&handle, cell_id).uri,
