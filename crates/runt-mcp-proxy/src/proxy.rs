@@ -1648,12 +1648,6 @@ impl McpProxy {
             ));
         }
 
-        // Best-effort wait so the caller's next tool call sees the new
-        // child. Don't fail the reconnect call if the child is slow —
-        // the next forwarded call will retry via the normal restart path.
-        let notified = self.child_ready.notified();
-        let _ = tokio::time::timeout(Duration::from_secs(30), notified).await;
-
         let restart_count = self.restart_count().await;
         let pending = self.state.write().await.reconnection_message.take();
         let detail = pending.unwrap_or_else(|| "Child restarted.".to_string());

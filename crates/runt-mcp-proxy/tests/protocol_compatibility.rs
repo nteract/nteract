@@ -1012,3 +1012,30 @@ async fn version_skew_production_spawn_child_pins_legacy_and_reaps_old_sdk_child
     .await
     .expect("production child owner did not reap the old SDK fixture");
 }
+
+#[tokio::test]
+async fn successful_reconnect_returns_when_replacement_is_ready() {
+    let (_dir, proxy, resolves) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    assert_initialize(
+        &wire.initialize("2025-11-25").await,
+        "2025-11-25",
+        "compatibility-proxy",
+    );
+    let response = timeout(
+        std::time::Duration::from_secs(5),
+        wire.request(
+            901,
+            "tools/call",
+            Some(json!({"name":"reconnect","arguments":{}})),
+        ),
+    )
+    .await
+    .expect("ready reconnect returns without a lost-notification delay");
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    assert!(response.get("result").is_some(), "{response}");
+    assert_eq!(resolves.load(Ordering::SeqCst), 2);
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
