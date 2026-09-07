@@ -2084,9 +2084,20 @@ impl ServerHandler for Supervisor {
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
         require_legacy_handshake(&context)?;
-        let proxy = {
-            let state = self.state.read().await;
-            Self::get_proxy(&state)?.clone()
+        let ready = self.child_ready.notified();
+        let proxy = { self.state.read().await.proxy.clone() };
+        let proxy = match proxy {
+            Some(proxy) => proxy,
+            None => {
+                tokio::select! {
+                    _ = context.ct.cancelled() => return Err(McpError::internal_error("Subscription cancelled during startup", None)),
+                    result = tokio::time::timeout(Duration::from_secs(30), ready) => {
+                        result.map_err(|_| McpError::internal_error("MCP startup timed out; retry after startup completes", None))?;
+                    }
+                }
+                let state = self.state.read().await;
+                Self::get_proxy(&state)?.clone()
+            }
         };
         proxy.forward_subscribe(request.uri, context.peer).await
     }

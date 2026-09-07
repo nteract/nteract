@@ -166,12 +166,22 @@ impl ServerHandler for LegacyChild {
         request: rmcp_legacy::model::SubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        if request.uri == "compatibility://stalled" {
+            std::future::pending::<()>().await;
+        }
         if request.uri == "compatibility://missing" {
             return Err(ErrorData::resource_not_found(
                 "Missing fixture resource",
                 None,
             ));
         }
+        let root = std::path::PathBuf::from(std::env::var("NTERACT_COMPATIBILITY_ROOT").unwrap());
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(root.join("subscription-calls"))
+            .unwrap();
+        writeln!(log, "{}", request.uri).unwrap();
         context
             .peer
             .notify_resource_updated(rmcp_legacy::model::ResourceUpdatedNotificationParam {

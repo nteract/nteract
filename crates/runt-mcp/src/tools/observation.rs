@@ -71,6 +71,7 @@ async fn run_wait(
     observer: &ObservationReader,
     timeout: Duration,
 ) -> Result<CallToolResult, McpError> {
+    let deadline = tokio::time::Instant::now() + timeout;
     let initial = observer.read(params.after.as_deref()).map_err(sync_error)?;
     if matches!(
         initial.outcome,
@@ -111,7 +112,7 @@ async fn run_wait(
         }
     };
     let progress = tokio::select! {
-        result = tokio::time::timeout(timeout, terminal) => result.ok().flatten(),
+        result = tokio::time::timeout_at(deadline, terminal) => result.ok().flatten(),
         unavailable = unavailable => return Ok(change_result(params, notebook_id, unavailable?, None)),
     };
     let mut latest = observer
@@ -133,10 +134,21 @@ async fn run_wait(
             ExecutionTerminalReason::Done
                 | ExecutionTerminalReason::Error
                 | ExecutionTerminalReason::Cancelled
+                | ExecutionTerminalReason::Interrupted
         )
     ) {
-        latest.outcome = ChangeOutcome::Unavailable;
-        return Ok(change_result(params, notebook_id, latest, None));
+        let reason = progress
+            .terminal_reason
+            .as_ref()
+            .map(ExecutionTerminalReason::as_str)
+            .unwrap_or("execution_unavailable");
+        return Ok(change_result_details(
+            params,
+            notebook_id,
+            latest,
+            None,
+            Some(reason),
+        ));
     }
     let Some(exec) = latest.snapshot.runtime.executions.get(execution_id) else {
         latest.outcome = ChangeOutcome::ResyncRequired;
@@ -156,6 +168,7 @@ async fn run_wait(
         .cell_id
         .as_ref()
         .map(|id| std::collections::HashMap::from([(execution_id.to_owned(), id.clone())]));
+    let source_available = exec.source.is_some();
     let rendered = super::execution::render_execution_result(
         server,
         execution_id,
@@ -164,8 +177,39 @@ async fn run_wait(
         cell,
         mapping,
         false,
-    )
-    .await?;
+    );
+    let mut rendered = match tokio::time::timeout_at(deadline, rendered).await {
+        Ok(result) => result?,
+        Err(_) => {
+            let mut latest = observer
+                .read(Some(params.after.as_deref().unwrap_or(&initial.cursor)))
+                .map_err(sync_error)?;
+            if !matches!(
+                latest.outcome,
+                ChangeOutcome::Unavailable | ChangeOutcome::ResyncRequired
+            ) {
+                latest.outcome = ChangeOutcome::TimedOut;
+            }
+            return Ok(change_result(params, notebook_id, latest, None));
+        }
+    };
+    if !source_available {
+        if let Some(cell) = rendered
+            .structured_content
+            .as_mut()
+            .and_then(|data| data.get_mut("cell"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            cell.remove("source");
+            cell.insert(
+                "execution_source_available".into(),
+                serde_json::json!(false),
+            );
+        }
+        rendered.content.push(crate::formatting::assistant_text(
+            "The executed source was not recorded.",
+        ));
+    }
     // Rendering may await blob resolution. Do not return a successful attachment
     // result after its owning session was released during that work.
     if observer.read(None).map_err(sync_error)?.outcome == ChangeOutcome::Unavailable {
@@ -181,7 +225,19 @@ fn change_result(
     change: ChangeRead,
     execution: Option<CallToolResult>,
 ) -> CallToolResult {
-    let outcome = if execution.is_some() {
+    change_result_details(params, notebook_id, change, execution, None)
+}
+
+fn change_result_details(
+    params: &WaitForNotebookChangeParams,
+    notebook_id: &str,
+    change: ChangeRead,
+    execution: Option<CallToolResult>,
+    kernel_reason: Option<&str>,
+) -> CallToolResult {
+    let outcome = if kernel_reason.is_some() {
+        "unavailable".into()
+    } else if execution.is_some() {
         "completed".into()
     } else {
         serde_json::to_value(change.outcome).unwrap_or_default()
@@ -192,6 +248,9 @@ fn change_result(
         "execution_id":params.execution_id,
         "execution_status":params.execution_id.as_ref().and_then(|id| change.snapshot.runtime.executions.get(id)).map(|execution| &execution.status),
         "execution":execution.as_ref().and_then(|result| result.structured_content.as_ref()),
+        "reason":kernel_reason,
+        "message":kernel_reason.map(|_| "The kernel stopped before this execution produced a settled result. The notebook attachment is still available; inspect its cells or use restart_kernel before executing again."),
+        "attachment_available":change.outcome != ChangeOutcome::Unavailable,
     });
     let mut content = vec![crate::formatting::assistant_text(payload.to_string())];
     if let Some(execution) = execution {
@@ -375,5 +434,132 @@ mod tests {
                 .unwrap()["outcome"],
             "unavailable"
         );
+    }
+
+    #[tokio::test]
+    async fn interrupted_execution_completes_without_losing_the_attachment() {
+        let fixture = fixture();
+        fixture.runtime.send_modify(|state| {
+            state.executions.insert(
+                "interrupted".into(),
+                serde_json::from_value(json!({"status":"error","outputs":[]})).unwrap(),
+            );
+        });
+        let mut params = params();
+        params.execution_id = Some("interrupted".into());
+        let result = run_wait(
+            &server(),
+            &params,
+            "notebook",
+            &fixture.owner.reader(),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let payload = result.structured_content.unwrap();
+        assert_eq!(payload["outcome"], "completed");
+        assert_eq!(payload["execution_status"], "error");
+        assert_eq!(payload["attachment_available"], true);
+        assert!(serde_json::to_string(&result.content)
+            .unwrap()
+            .contains("nteract://sessions/attachment/cells"));
+    }
+
+    #[tokio::test]
+    async fn kernel_failure_retains_notebook_context_and_explains_recovery() {
+        let fixture = fixture();
+        fixture.runtime.send_modify(|state| {
+            state.kernel.lifecycle = runtime_doc::RuntimeLifecycle::Error;
+            state.executions.insert(
+                "pending".into(),
+                serde_json::from_value(json!({"status":"running","outputs":[]})).unwrap(),
+            );
+        });
+        let mut params = params();
+        params.execution_id = Some("pending".into());
+        let result = run_wait(
+            &server(),
+            &params,
+            "notebook",
+            &fixture.owner.reader(),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let payload = result.structured_content.unwrap();
+        assert_eq!(payload["outcome"], "unavailable");
+        assert_eq!(payload["reason"], "kernel_failed");
+        assert_eq!(payload["attachment_available"], true);
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("restart_kernel"));
+        assert!(serde_json::to_string(&result.content)
+            .unwrap()
+            .contains("nteract://sessions/attachment/cells"));
+    }
+
+    #[tokio::test]
+    async fn missing_execution_source_is_explicit_and_never_uses_a_later_edit() {
+        let fixture = fixture();
+        fixture.notebook.send_replace(edited("a later edit"));
+        fixture.runtime.send_modify(|state| { state.executions.insert("old".into(), serde_json::from_value(json!({"cell_id":"cell-1","status":"done","outputs":[{"output_type":"display_data","data":{"text/plain":{"inline":"old output"}}}]})).unwrap()); });
+        let mut params = params();
+        params.execution_id = Some("old".into());
+        let result = run_wait(
+            &server(),
+            &params,
+            "notebook",
+            &fixture.owner.reader(),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let cell = &result.structured_content.as_ref().unwrap()["execution"]["cell"];
+        assert_eq!(cell["execution_source_available"], false);
+        assert!(cell.get("source").is_none());
+        assert!(!serde_json::to_string(&result.content)
+            .unwrap()
+            .contains("a later edit"));
+    }
+
+    #[tokio::test]
+    async fn output_resolution_shares_the_wait_deadline() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted, mut connected) = tokio::sync::oneshot::channel();
+        let stall = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            let _ = accepted.send(());
+            std::future::pending::<()>().await;
+        });
+        let fixture = fixture();
+        fixture.runtime.send_modify(|state| { state.executions.insert("blob".into(), serde_json::from_value(json!({"status":"done","outputs":[{"output_type":"display_data","data":{"text/plain":{"blob":"unreachable-output","size":10}}}]})).unwrap()); });
+        let mut params = params();
+        params.execution_id = Some("blob".into());
+        let server = NteractMcp::new(
+            "unused.sock".into(),
+            Some(format!("http://{address}")),
+            None,
+        );
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_wait(
+                &server,
+                &params,
+                "notebook",
+                &fixture.owner.reader(),
+                Duration::from_millis(200),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            connected.try_recv().is_ok(),
+            "fixture must reach the stalled blob server"
+        );
+        assert_eq!(result.structured_content.unwrap()["outcome"], "timed_out");
+        stall.abort();
     }
 }

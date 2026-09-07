@@ -239,6 +239,80 @@ async fn stop_child(proxy: &McpProxy) {
 }
 
 #[tokio::test]
+async fn stalled_subscription_does_not_block_later_watches() {
+    let (_dir, proxy, _) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    let response = wire
+        .request(
+            2,
+            "resources/subscribe",
+            Some(json!({"uri":"compatibility://stalled"})),
+        )
+        .await;
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("timed out"));
+    assert_eq!(
+        legacy_result(
+            &wire
+                .request(
+                    3,
+                    "resources/subscribe",
+                    Some(json!({"uri":"compatibility://resource"}))
+                )
+                .await
+        ),
+        &json!({})
+    );
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn subscriptions_wait_for_startup_and_rebind_after_child_replacement() {
+    let (_dir, proxy, resolves) = isolated_proxy();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    let uri = "compatibility://resource";
+    assert_eq!(
+        legacy_result(
+            &wire
+                .request(2, "resources/subscribe", Some(json!({"uri":uri})))
+                .await
+        ),
+        &json!({})
+    );
+    wire.notification("notifications/resources/updated").await;
+    wire.notifications.clear();
+    proxy.restart_child().await.unwrap();
+    assert_eq!(
+        legacy_result(
+            &wire
+                .request(3, "resources/subscribe", Some(json!({"uri":uri})))
+                .await
+        ),
+        &json!({})
+    );
+    assert_eq!(resolves.load(Ordering::SeqCst), 2);
+    // The new child's subscribe emits an update before its acknowledgment.
+    // Checking its call log distinguishes this from the old child's invalidation.
+    assert_eq!(
+        std::fs::read_to_string(_dir.path().join("subscription-calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
 async fn resource_subscriptions_relay_early_notifications_and_invalidate_on_child_loss() {
     let (_dir, proxy, _) = isolated_proxy();
     proxy.init_child().await.unwrap();

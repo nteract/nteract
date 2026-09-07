@@ -20,6 +20,7 @@ enum Operation {
     Subscribe {
         uri: String,
         child: Peer<RoleClient>,
+        generation: u64,
         notifications: broadcast::Receiver<ResourceUpdatedNotificationParam>,
         upstream: Peer<RoleServer>,
         reply: Reply,
@@ -40,6 +41,7 @@ impl Drop for Worker {
 }
 struct Watch {
     child: Peer<RoleClient>,
+    generation: u64,
     upstream: Peer<RoleServer>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -59,6 +61,12 @@ impl ObservationBridge {
             .worker
             .lock()
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        if worker
+            .as_ref()
+            .is_some_and(|worker| worker.task.is_finished())
+        {
+            worker.take();
+        }
         Ok(worker
             .get_or_insert_with(|| {
                 let (sender, receiver) = mpsc::channel(128);
@@ -75,30 +83,40 @@ impl ObservationBridge {
         &self,
         uri: String,
         child: Peer<RoleClient>,
+        generation: u64,
         notifications: broadcast::Receiver<ResourceUpdatedNotificationParam>,
         upstream: Peer<RoleServer>,
     ) -> Result<(), McpError> {
         let (reply, response) = oneshot::channel();
-        self.sender()?
-            .send(Operation::Subscribe {
-                uri,
-                child,
-                notifications,
-                upstream,
-                reply,
-            })
-            .await
-            .map_err(|_| unavailable())?;
-        response.await.map_err(|_| unavailable())?
+        let operation = async {
+            self.sender()?
+                .send(Operation::Subscribe {
+                    uri,
+                    child,
+                    generation,
+                    notifications,
+                    upstream,
+                    reply,
+                })
+                .await
+                .map_err(|_| unavailable())?;
+            response.await.map_err(|_| unavailable())?
+        };
+        tokio::time::timeout(Duration::from_secs(10), operation).await.map_err(|_| McpError::internal_error("Resource subscription timed out; obtain a fresh notebook baseline before retrying", None))?
     }
 
     pub(crate) async fn unsubscribe(&self, uri: String) -> Result<(), McpError> {
         let (reply, response) = oneshot::channel();
-        self.sender()?
-            .send(Operation::Unsubscribe { uri, reply })
+        let operation = async {
+            self.sender()?
+                .send(Operation::Unsubscribe { uri, reply })
+                .await
+                .map_err(|_| unavailable())?;
+            response.await.map_err(|_| unavailable())?
+        };
+        tokio::time::timeout(Duration::from_secs(10), operation)
             .await
-            .map_err(|_| unavailable())?;
-        response.await.map_err(|_| unavailable())?
+            .map_err(|_| McpError::internal_error("Resource unsubscribe timed out", None))?
     }
 }
 fn unavailable() -> McpError {
@@ -114,7 +132,13 @@ fn child_error(error: rmcp::service::ServiceError) -> McpError {
 #[allow(deprecated)]
 async fn run(mut operations: mpsc::Receiver<Operation>) {
     let mut watches: HashMap<String, Watch> = HashMap::new();
-    while let Some(operation) = operations.recv().await {
+    let mut cleanup = tokio::time::interval(Duration::from_secs(1));
+    cleanup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let operation = tokio::select! {
+            operation = operations.recv() => match operation { Some(operation) => Some(operation), None => break },
+            _ = cleanup.tick() => None,
+        };
         let closed: Vec<_> = watches
             .iter()
             .filter(|(_, watch)| watch.child.is_transport_closed())
@@ -122,18 +146,26 @@ async fn run(mut operations: mpsc::Receiver<Operation>) {
             .collect();
         for uri in closed {
             if let Some(watch) = watches.remove(&uri) {
-                // The actor may observe closure before the relay's next tick.
-                let _ = watch
-                    .upstream
-                    .notify_resource_updated(ResourceUpdatedNotificationParam::new(uri))
-                    .await;
+                // Transport closure can precede the callback channel closing.
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(250),
+                    watch
+                        .upstream
+                        .notify_resource_updated(ResourceUpdatedNotificationParam::new(uri)),
+                )
+                .await;
             }
         }
-        watches.retain(|_, watch| !watch.task.is_finished());
+        watches
+            .retain(|_, watch| !watch.task.is_finished() && !watch.upstream.is_transport_closed());
+        let Some(operation) = operation else {
+            continue;
+        };
         match operation {
             Operation::Subscribe {
                 uri,
                 child,
+                generation,
                 notifications,
                 upstream,
                 reply,
@@ -141,9 +173,21 @@ async fn run(mut operations: mpsc::Receiver<Operation>) {
                 if reply.is_closed() {
                     continue;
                 }
-                if watches.contains_key(&uri) {
+                if watches
+                    .get(&uri)
+                    .is_some_and(|watch| watch.generation == generation)
+                {
                     let _ = reply.send(Ok(()));
                     continue;
+                }
+                if let Some(previous) = watches.remove(&uri) {
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(250),
+                        previous
+                            .upstream
+                            .notify_resource_updated(ResourceUpdatedNotificationParam::new(&uri)),
+                    )
+                    .await;
                 }
                 if watches.len() >= 128 {
                     let _ = reply.send(Err(McpError::invalid_request(
@@ -152,14 +196,23 @@ async fn run(mut operations: mpsc::Receiver<Operation>) {
                     )));
                     continue;
                 }
-                let result = child
-                    .subscribe(SubscribeRequestParams::new(&uri))
-                    .await
-                    .map_err(child_error);
+                let result = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    child.subscribe(SubscribeRequestParams::new(&uri)),
+                )
+                .await
+                .map_err(|_| {
+                    McpError::internal_error("Child resource subscription timed out", None)
+                })
+                .and_then(|result| result.map_err(child_error));
                 match result {
                     Ok(_) => {
                         if reply.send(Ok(())).is_err() {
-                            let _ = child.unsubscribe(UnsubscribeRequestParams::new(uri)).await;
+                            let _ = tokio::time::timeout(
+                                Duration::from_secs(5),
+                                child.unsubscribe(UnsubscribeRequestParams::new(uri)),
+                            )
+                            .await;
                             continue;
                         }
                         let task = tokio::spawn(relay(
@@ -172,6 +225,7 @@ async fn run(mut operations: mpsc::Receiver<Operation>) {
                             uri,
                             Watch {
                                 child,
+                                generation,
                                 upstream,
                                 task,
                             },
@@ -185,12 +239,15 @@ async fn run(mut operations: mpsc::Receiver<Operation>) {
             Operation::Unsubscribe { uri, reply } => {
                 let result = if let Some(watch) = watches.remove(&uri) {
                     watch.task.abort();
-                    watch
-                        .child
-                        .unsubscribe(UnsubscribeRequestParams::new(uri))
-                        .await
-                        .map(|_| ())
-                        .map_err(child_error)
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        watch.child.unsubscribe(UnsubscribeRequestParams::new(uri)),
+                    )
+                    .await
+                    .map_err(|_| {
+                        McpError::internal_error("Child resource unsubscribe timed out", None)
+                    })
+                    .and_then(|result| result.map(|_| ()).map_err(child_error))
                 } else {
                     Ok(())
                 };
@@ -206,7 +263,6 @@ async fn relay(
     mut notifications: broadcast::Receiver<ResourceUpdatedNotificationParam>,
     upstream: Peer<RoleServer>,
 ) {
-    let mut tick = tokio::time::interval(Duration::from_millis(100));
     loop {
         if upstream.is_transport_closed() {
             break;
@@ -217,16 +273,15 @@ async fn relay(
                 .await;
             break;
         }
-        let update = tokio::select! {
-            event = notifications.recv() => match event {
-                Ok(event) => event.uri == uri,
-                Err(broadcast::error::RecvError::Lagged(_)) => true,
-                Err(broadcast::error::RecvError::Closed) => {
-                    let _ = upstream.notify_resource_updated(ResourceUpdatedNotificationParam::new(&uri)).await;
-                    break;
-                },
-            },
-            _ = tick.tick() => false,
+        let update = match notifications.recv().await {
+            Ok(event) => event.uri == uri,
+            Err(broadcast::error::RecvError::Lagged(_)) => true,
+            Err(broadcast::error::RecvError::Closed) => {
+                let _ = upstream
+                    .notify_resource_updated(ResourceUpdatedNotificationParam::new(&uri))
+                    .await;
+                break;
+            }
         };
         if update
             && upstream
