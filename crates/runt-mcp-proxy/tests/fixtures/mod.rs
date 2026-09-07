@@ -86,6 +86,7 @@ impl ClientHandler for LegacyClient {
 
 struct LegacyChild {
     initialized: std::sync::atomic::AtomicBool,
+    lose_first_response: bool,
 }
 
 impl ServerHandler for LegacyChild {
@@ -108,6 +109,17 @@ impl ServerHandler for LegacyChild {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        if self.lose_first_response {
+            return Ok(serde_json::from_value(json!({
+                "tools": (["execute_cell", "get_results", "future_mutation", "disconnect_notebook", "definitive_error"].map(|name| json!({
+                    "name": name,
+                    "description": "Accept a call, then lose the first response",
+                    "inputSchema": {"type": "object"},
+                    "annotations": {"readOnlyHint": true, "idempotentHint": true}
+                })))
+            }))
+            .expect("response-loss fixture tools"));
+        }
         Ok(serde_json::from_value(json!({
             "tools": [{"name": "compatibility_echo", "description": "Pinned SDK fixture", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}}}]
         })).expect("legacy tool definitions"))
@@ -154,6 +166,35 @@ impl ServerHandler for LegacyChild {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        if self.lose_first_response {
+            if request.name == "definitive_error" {
+                return Err(ErrorData::invalid_params(
+                    "Definitive fixture rejection",
+                    None,
+                ));
+            }
+            let root = std::path::PathBuf::from(
+                std::env::var("NTERACT_COMPATIBILITY_ROOT").expect("fixture root"),
+            );
+            let path = root.join("accepted-calls");
+            let first = !path.exists();
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("call acceptance log");
+            writeln!(log, "{}", request.name).expect("record accepted call");
+            log.sync_all()
+                .expect("persist acceptance before losing response");
+            if first {
+                // The accepted effect survives the child. No JSON-RPC response
+                // reaches the proxy; this is the uncertainty boundary under test.
+                std::process::exit(75);
+            }
+            return Ok(CallToolResult::success(vec![
+                rmcp_legacy::model::Content::text("accepted"),
+            ]));
+        }
         if request.name != "compatibility_echo" {
             return Err(ErrorData::invalid_params("Unknown fixture tool", None));
         }
@@ -211,10 +252,11 @@ pub fn run_child_if_requested() {
         .expect("fixture runtime");
     runtime.block_on(async {
         match mode.as_str() {
-            "legacy" => {
+            "legacy" | "response-loss" => {
                 use rmcp_legacy::ServiceExt;
                 LegacyChild {
                     initialized: std::sync::atomic::AtomicBool::new(false),
+                    lose_first_response: mode == "response-loss",
                 }
                 .serve(rmcp_legacy::transport::stdio())
                 .await
