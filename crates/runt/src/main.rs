@@ -756,10 +756,6 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
 
     let transport = mcp_transport::server(rmcp::transport::io::stdio());
     let handle = server.serve(transport).await?;
-    if handle.peer().peer_info().is_none() {
-        handle.cancel().await?;
-        return Ok(());
-    }
 
     // Grab a cancellation token before `waiting()` moves ownership of `handle`.
     // Used to gracefully close the MCP transport on daemon upgrade so the

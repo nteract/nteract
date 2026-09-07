@@ -12,6 +12,99 @@ use crate::observation::{ChangeKind, ChangeOutcome, NotebookChanges, Observation
 use crate::resources::NotebookResourceUri;
 
 const MAX_WATCHES: usize = 128;
+
+pub(crate) async fn listen(
+    server: &crate::NteractMcp,
+    context: rmcp::service::SubscriptionContext,
+) -> Result<(), McpError> {
+    let uris = context
+        .accepted()
+        .resource_subscriptions
+        .clone()
+        .unwrap_or_default();
+    let _permit = server
+        .native_subscription_slots
+        .try_acquire_many(uris.len() as u32)
+        .map_err(|_| {
+            McpError::invalid_request("At most 128 native resource watches may be active", None)
+        })?;
+    let mut prepared = Vec::new();
+    for uri in uris {
+        let target = crate::resources::parse_notebook_resource_uri(&uri)
+            .map_err(|e| McpError::invalid_params(e, None))?;
+        let handle = match &target {
+            NotebookResourceUri::Cells { notebook_id }
+            | NotebookResourceUri::Cell { notebook_id, .. }
+            | NotebookResourceUri::Comments { notebook_id } => notebook_id,
+            NotebookResourceUri::Notebooks => {
+                return Err(McpError::invalid_params(
+                    "Use a notebook attachment URI",
+                    None,
+                ))
+            }
+        };
+        let (_, observer) = server.observer_for_handle(handle).await?.ok_or_else(|| {
+            McpError::invalid_params(
+                "Notebook attachment expired; connect again and obtain a new handle",
+                None,
+            )
+        })?;
+        let baseline = observer
+            .read(None)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        if baseline.outcome == ChangeOutcome::Unavailable {
+            return Err(McpError::invalid_params(
+                "Notebook attachment is unavailable",
+                None,
+            ));
+        }
+        prepared.push((uri, target, observer, baseline.cursor));
+    }
+    // Receivers and cursors exist before the client sees its acknowledgment.
+    mcp_transport::acknowledge(context.request_context()).await?;
+    let mut watches = tokio::task::JoinSet::new();
+    for (uri, target, observer, mut cursor) in prepared {
+        let sink = context.sink().clone();
+        watches.spawn(async move {
+            loop {
+                let change = observer
+                    .wait(&cursor, Duration::from_secs(50))
+                    .await
+                    .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                cursor = change.cursor;
+                let invalidated = matches!(
+                    change.outcome,
+                    ChangeOutcome::Unavailable | ChangeOutcome::ResyncRequired
+                );
+                if invalidated || affects(&target, &change.changes) {
+                    tokio::time::timeout(
+                        Duration::from_secs(1),
+                        sink.notify_resource_updated(&uri),
+                    )
+                    .await
+                    .map_err(|_| {
+                        McpError::internal_error(
+                            "Subscription delivery timed out; read a fresh baseline",
+                            None,
+                        )
+                    })?
+                    .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                }
+                if change.outcome == ChangeOutcome::Unavailable {
+                    return Ok::<(), McpError>(());
+                }
+            }
+        });
+    }
+    if watches.is_empty() {
+        return Ok(());
+    }
+    tokio::select! {
+        _ = mcp_transport::cancelled(context.request_context()) => Ok(()),
+        ended = watches.join_next() => ended.ok_or_else(|| McpError::internal_error("Subscription worker ended", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?,
+    }
+}
+
 type ResourceWatch = (uuid::Uuid, ObservationReader, tokio::task::JoinHandle<()>);
 
 #[derive(Default)]

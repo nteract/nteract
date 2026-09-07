@@ -60,7 +60,27 @@ fn always_load_meta() -> MetaObject {
     MetaObject(meta)
 }
 
+fn cell_resource_uri(notebook_id: &str, cell_id: &str) -> String {
+    match crate::targets::current() {
+        Some(handle) => crate::resources::attachment_cell_resource_link(&handle, cell_id).uri,
+        None => crate::resources::notebook_cell_uri(notebook_id, cell_id),
+    }
+}
+
+fn cells_resource_content(notebook_id: &str) -> ContentBlock {
+    let resource = match crate::targets::current() {
+        Some(handle) => crate::resources::attachment_cells_resource_link(&handle),
+        None => crate::resources::notebook_cells_resource_link(notebook_id),
+    };
+    ContentBlock::resource_link(resource)
+}
+
 fn cell_resource_content(notebook_id: &str, cell_id: &str) -> ContentBlock {
+    if let Some(handle) = crate::targets::current() {
+        return ContentBlock::resource_link(crate::resources::attachment_cell_resource_link(
+            &handle, cell_id,
+        ));
+    }
     ContentBlock::resource_link(crate::resources::notebook_cell_resource_link(
         notebook_id,
         cell_id,
@@ -334,6 +354,7 @@ pub fn cli_discoverable_tools() -> Vec<Tool> {
 }
 
 fn attach_icons(tools: &mut [Tool]) {
+    mcp_transport::attachment_tool_schemas(tools, false);
     for tool in tools {
         if let Some(icon) = crate::icons::tool_icon(tool.name.as_ref()) {
             tool.icons = Some(crate::icons::icons(icon));
@@ -730,10 +751,7 @@ pub async fn build_execution_result(
         if let Some(cell_obj) = sc.get_mut("cell").and_then(|c| c.as_object_mut()) {
             cell_obj.insert(
                 "uri".to_string(),
-                serde_json::Value::String(crate::resources::notebook_cell_uri(
-                    handle.notebook_id(),
-                    &result.cell_id,
-                )),
+                serde_json::Value::String(cell_resource_uri(handle.notebook_id(), &result.cell_id)),
             );
             // Inject execution_id into structured content so MCP App renderers
             // can associate outputs with a specific execution.

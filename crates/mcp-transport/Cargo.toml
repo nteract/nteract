@@ -10,6 +10,7 @@ publish = false
 rmcp = { workspace = true, features = ["server", "client"] }
 tokio-util = "0.7"
 tokio = { workspace = true, features = ["macros"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

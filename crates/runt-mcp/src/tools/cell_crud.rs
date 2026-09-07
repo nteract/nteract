@@ -340,7 +340,7 @@ pub async fn move_cell(
         "cell_id": cell_id,
         "after_cell_id": after_cell_id,
         "moved": true,
-        "uri": crate::resources::notebook_cell_uri(handle.notebook_id(), cell_id),
+        "uri": super::cell_resource_uri(handle.notebook_id(), cell_id),
     });
     cell_resource_json_success(result, handle.notebook_id(), cell_id)
 }

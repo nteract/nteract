@@ -150,6 +150,7 @@ pub struct ProxyState {
     /// durable handoff target may instead be a path or hosted URL, so retain
     /// both forms to recognize an explicit disconnect by notebook id.
     last_notebook_session_id: Option<String>,
+    last_notebook_handle: Option<String>,
     /// Upstream MCP client name (forwarded to child).
     pub upstream_name: String,
     /// Upstream MCP client title (forwarded to child).
@@ -185,6 +186,8 @@ pub struct McpProxy {
     /// operator used by the explicit connect in the previous child.
     operator_session: String,
     observation_bridge: Arc<crate::observation_bridge::ObservationBridge>,
+    native_subscriptions: Arc<crate::native_subscriptions::Registry>,
+    native_startup: Arc<std::sync::OnceLock<RestartCompletion>>,
 }
 
 impl McpProxy {
@@ -212,6 +215,7 @@ impl McpProxy {
                 cached_tools,
                 last_notebook_id: None,
                 last_notebook_session_id: None,
+                last_notebook_handle: None,
                 upstream_name: "unknown".to_string(),
                 upstream_title: None,
                 last_daemon_version: None,
@@ -227,6 +231,8 @@ impl McpProxy {
             restart_in_progress: Arc::default(),
             operator_session: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
             observation_bridge: Arc::default(),
+            native_subscriptions: Arc::default(),
+            native_startup: Arc::default(),
         }
     }
 
@@ -241,6 +247,60 @@ impl McpProxy {
             self.operator_session.clone(),
         );
         child_env
+    }
+
+    pub async fn forward_listen(
+        &self,
+        context: rmcp::service::SubscriptionContext,
+    ) -> Result<(), McpError> {
+        let uris = context
+            .accepted()
+            .resource_subscriptions
+            .clone()
+            .unwrap_or_default();
+        if uris.is_empty() {
+            mcp_transport::acknowledge(context.request_context()).await?;
+            return Ok(());
+        }
+        let (peer, generation, mut notifications, lifetime) = {
+            let state = self.state.read().await;
+            let child = state.child_client.as_ref().ok_or_else(|| {
+                McpError::internal_error("Child not ready; reconnect and subscribe again", None)
+            })?;
+            (
+                child.peer().clone(),
+                state.child_generation,
+                child.service().notifications.subscribe(),
+                child.service().lifetime.clone(),
+            )
+        };
+        let _lease = tokio::select! {
+            _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+            _ = lifetime.closed() => return Ok(()),
+            lease = self.native_subscriptions.acquire(generation, uris.clone(), peer) => lease?,
+        };
+        mcp_transport::acknowledge(context.request_context()).await?;
+        loop {
+            let changed = tokio::select! {
+                _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+                _ = lifetime.closed() => return Ok(()),
+                update = notifications.recv() => match update {
+                    Ok(update) => vec![update.uri],
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => uris.clone(),
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                },
+            };
+            for uri in changed {
+                if uris.contains(&uri) {
+                    tokio::select! {
+                        _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+                        result = tokio::time::timeout(Duration::from_secs(1), context.sink().notify_resource_updated(uri)) => {
+                            result.map_err(|_| McpError::internal_error("Subscription delivery timed out; read a fresh baseline", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Subscribe only after child startup, with one recovery for a closed child.
@@ -435,6 +495,9 @@ impl McpProxy {
     }
 
     async fn restart_child_owned(&self) -> Result<(), String> {
+        if self.state.read().await.child_generation == 0 {
+            return self.init_child().await;
+        }
         let reason = self.current_child_restart_reason().await;
         info!(
             event = "child_restart_classified",
@@ -447,6 +510,7 @@ impl McpProxy {
             let mut state = self.state.write().await;
             let was_dead = state.child_client.is_none();
             let old_child = state.child_client.take();
+            state.last_notebook_handle = None;
             state.child_exit_status = None;
             if old_child.is_some() {
                 state.child_generation = state.child_generation.wrapping_add(1);
@@ -1143,7 +1207,10 @@ impl McpProxy {
             .peer
             .read_resource_once(params.clone())
             .await
-            .map_err(|e| McpError::internal_error(format!("Child resource read failed: {e}"), None))
+            .map_err(|e| match e {
+                rmcp::service::ServiceError::McpError(error) => error,
+                e => McpError::internal_error(format!("Child resource read failed: {e}"), None),
+            })
             .and_then(complete_resource_response);
         self.log_child_call_if_slow(
             "read_resource",
@@ -1162,13 +1229,24 @@ impl McpProxy {
             .and_then(|args| args.get("notebook_id"))
             .and_then(serde_json::Value::as_str);
         let mut state = self.state.write().await;
-        let disconnected_active = requested_id.is_none()
-            || requested_id == state.last_notebook_id.as_deref()
-            || requested_id == state.last_notebook_session_id.as_deref();
+        let requested_handle = params
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("notebook_handle"));
+        let disconnected_active = if let Some(handle) = requested_handle {
+            handle
+                .as_str()
+                .is_some_and(|handle| state.last_notebook_handle.as_deref() == Some(handle))
+        } else {
+            requested_id.is_none()
+                || requested_id == state.last_notebook_id.as_deref()
+                || requested_id == state.last_notebook_session_id.as_deref()
+        };
         if disconnected_active {
             info!("Clearing notebook handoff target for explicit disconnect intent");
             state.last_notebook_id = None;
             state.last_notebook_session_id = None;
+            state.last_notebook_handle = None;
         }
     }
 
@@ -1180,6 +1258,28 @@ impl McpProxy {
 
         if let Some(id) = session::extract_session_id(params, result) {
             let mut state = self.state.write().await;
+            if params.name == "save_notebook" {
+                if let Some(handle) = params
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("notebook_handle"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if state.last_notebook_handle.as_deref() != Some(handle) {
+                        return;
+                    }
+                }
+            } else {
+                state.last_notebook_handle = result.content.iter().find_map(|content| {
+                    if let ContentBlock::Text(text) = content {
+                        serde_json::from_str::<serde_json::Value>(&text.text)
+                            .ok()
+                            .and_then(|value| value["notebook_handle"].as_str().map(str::to_owned))
+                    } else {
+                        None
+                    }
+                });
+            }
             let saving_hosted_session = params.name.as_ref() == "save_notebook"
                 && state
                     .last_notebook_id
@@ -1345,14 +1445,8 @@ fn unknown_tool_outcome(
     result
 }
 
-fn require_legacy_handshake(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
-    if context.peer.peer_info().is_none() {
-        return Err(McpError::invalid_request(
-            "initialize is required before application requests",
-            None,
-        ));
-    }
-    Ok(())
+fn require_protocol(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
+    mcp_transport::require_protocol(context)
 }
 
 fn complete_tool_response(response: CallToolResponse) -> Result<CallToolResult, McpError> {
@@ -1385,6 +1479,17 @@ fn complete_resource_response(
 /// IS the MCP server. The supervisor wraps this with its own ServerHandler that
 /// adds supervisor_* tools.
 impl ServerHandler for McpProxy {
+    fn accepted_subscription_filter(
+        &self,
+        requested: &rmcp::model::SubscriptionFilter,
+    ) -> Option<rmcp::model::SubscriptionFilter> {
+        Some(mcp_transport::notebook_subscription_filter(requested))
+    }
+    async fn listen(&self, context: rmcp::service::SubscriptionContext) -> Result<(), McpError> {
+        mcp_transport::require_protocol(context.request_context())?;
+        self.native_ready(context.request_context()).await?;
+        self.forward_listen(context).await
+    }
     async fn initialize(
         &self,
         request: rmcp::model::InitializeRequestParams,
@@ -1397,23 +1502,14 @@ impl ServerHandler for McpProxy {
             ));
         }
         let mut info = self.get_info();
-        if self
-            .supported_protocol_versions()
-            .contains(&request.protocol_version)
-        {
+        if mcp_transport::LEGACY_VERSIONS.contains(&request.protocol_version) {
             info.protocol_version = request.protocol_version;
         }
         Ok(info)
     }
 
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
-        const VERSIONS: &[ProtocolVersion] = &[
-            ProtocolVersion::V_2024_11_05,
-            ProtocolVersion::V_2025_03_26,
-            ProtocolVersion::V_2025_06_18,
-            ProtocolVersion::V_2025_11_25,
-        ];
-        std::borrow::Cow::Borrowed(VERSIONS)
+        std::borrow::Cow::Borrowed(mcp_transport::SUPPORTED_VERSIONS)
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -1449,11 +1545,9 @@ impl ServerHandler for McpProxy {
 
     async fn discover(
         &self,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::DiscoverResult, McpError> {
-        Err(McpError::method_not_found::<
-            rmcp::model::DiscoverRequestMethod,
-        >())
+        mcp_transport::discover(&context, self.get_info())
     }
 
     async fn list_prompts(
@@ -1461,8 +1555,11 @@ impl ServerHandler for McpProxy {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListPromptsResult, McpError> {
-        require_legacy_handshake(&context)?;
-        Ok(rmcp::model::ListPromptsResult::default())
+        require_protocol(&context)?;
+        self.native_ready(&context).await?;
+        Ok(rmcp::model::ListPromptsResult::default()
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn complete(
@@ -1470,7 +1567,8 @@ impl ServerHandler for McpProxy {
         _request: rmcp::model::CompleteRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CompleteResult, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        self.native_ready(&context).await?;
         Ok(rmcp::model::CompleteResult::default())
     }
 
@@ -1479,7 +1577,8 @@ impl ServerHandler for McpProxy {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        self.native_ready(&context).await?;
         // Serve tools optimistically: if the child is connected, query it live;
         // otherwise return the cached/built-in tool definitions immediately.
         // This avoids blocking the MCP client during async child initialization.
@@ -1495,7 +1594,10 @@ impl ServerHandler for McpProxy {
             cached
         };
         tools.push(reconnect_tool());
-        Ok(ListToolsResult::with_all_items(tools))
+        mcp_transport::attachment_tool_schemas(&mut tools, mcp_transport::is_native(&context));
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn list_resources(
@@ -1503,8 +1605,24 @@ impl ServerHandler for McpProxy {
         request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        require_legacy_handshake(&context)?;
-        Ok(self.child_resources(request).await)
+        require_protocol(&context)?;
+        self.native_ready(&context).await?;
+        let mut result = self.child_resources(request).await;
+        if mcp_transport::is_native(&context) {
+            result.resources.retain(|resource| {
+                resource.uri == "ui://nteract/output.html" || resource.uri == "nteract://notebooks"
+            });
+            if result.resources.is_empty() {
+                return Err(McpError::internal_error(
+                    "Notebook resource catalog is unavailable",
+                    None,
+                ));
+            }
+        }
+        result.result_type = Some(rmcp::model::ResultType::COMPLETE);
+        Ok(result
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn list_resource_templates(
@@ -1512,8 +1630,18 @@ impl ServerHandler for McpProxy {
         request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
-        require_legacy_handshake(&context)?;
-        Ok(self.child_resource_templates(request).await)
+        require_protocol(&context)?;
+        self.native_ready(&context).await?;
+        let mut result = self.child_resource_templates(request).await;
+        if mcp_transport::is_native(&context) {
+            result
+                .resource_templates
+                .retain(|template| template.uri_template.starts_with("nteract://sessions/"));
+        }
+        result.result_type = Some(rmcp::model::ResultType::COMPLETE);
+        Ok(result
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn read_resource(
@@ -1521,8 +1649,19 @@ impl ServerHandler for McpProxy {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        require_legacy_handshake(&context)?;
-        self.forward_read_resource(request).await.map(Into::into)
+        require_protocol(&context)?;
+        self.native_ready(&context).await?;
+        mcp_transport::validate_resource_uri(&request.uri, &context)?;
+        self.forward_read_resource(request)
+            .await
+            .map(|mut result| {
+                result.result_type = Some(rmcp::model::ResultType::COMPLETE);
+                result
+                    .with_ttl_ms(0)
+                    .with_cache_scope(rmcp::model::CacheScope::Private)
+            })
+            .map_err(|error| mcp_transport::resource_error(error, &context))
+            .map(Into::into)
     }
 
     #[allow(deprecated)]
@@ -1531,7 +1670,8 @@ impl ServerHandler for McpProxy {
         request: rmcp::model::SubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        self.native_ready(&context).await?;
         self.forward_subscribe(request.uri, context.peer).await
     }
 
@@ -1541,7 +1681,8 @@ impl ServerHandler for McpProxy {
         request: rmcp::model::UnsubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        self.native_ready(&context).await?;
         self.forward_unsubscribe(request.uri).await
     }
 
@@ -1550,14 +1691,17 @@ impl ServerHandler for McpProxy {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        mcp_transport::validate_tool_target(&request, &context)?;
         crate::request_scope::scope(context.clone(), async {
         // Intercept the built-in reconnect tool before waiting on child
         // readiness — reconnect is the escape hatch when the child is
         // wedged, so it must not block on child readiness itself.
         if request.name == RECONNECT_TOOL_NAME {
+            if let Some(identity) = context.client_info() { self.set_upstream_identity(identity.name, identity.title).await; }
             return self.handle_reconnect().await.map(Into::into);
         }
+        self.native_ready(&context).await?;
 
         // Wait for child if not ready
         let notified = self.child_ready.notified();
@@ -1574,7 +1718,7 @@ impl ServerHandler for McpProxy {
             }
         }
 
-        self.forward_tool_call(request).await.map(Into::into)
+        self.forward_tool_call(request).await.map(|mut result| { result.result_type = Some(rmcp::model::ResultType::COMPLETE); result.into() })
         }).await
     }
 
@@ -1631,6 +1775,52 @@ fn reconnect_tool() -> Tool {
 }
 
 impl McpProxy {
+    async fn native_ready(&self, context: &RequestContext<RoleServer>) -> Result<(), McpError> {
+        if !mcp_transport::is_native(context) {
+            return Ok(());
+        }
+        if self.state.read().await.child_client.is_some() {
+            return Ok(());
+        }
+        let mut ready = self
+            .native_startup
+            .get_or_init(|| {
+                let (sender, receiver) = tokio::sync::watch::channel(None);
+                let proxy = self.clone();
+                let identity = context.client_info();
+                tokio::spawn(async move {
+                    if let Some(identity) = identity {
+                        proxy
+                            .set_upstream_identity(identity.name, identity.title)
+                            .await;
+                    }
+                    let already_started = { proxy.state.read().await.child_client.is_some() };
+                    let result = if already_started {
+                        Ok(())
+                    } else {
+                        proxy.restart_child().await
+                    };
+                    sender.send_replace(Some(result));
+                });
+                receiver
+            })
+            .clone();
+        let wait = async {
+            loop {
+                if let Some(result) = ready.borrow_and_update().clone() {
+                    return result.map_err(|error| McpError::internal_error(error, None));
+                }
+                ready.changed().await.map_err(|_| {
+                    McpError::internal_error("Child startup ended without a result", None)
+                })?;
+            }
+        };
+        tokio::select! {
+            _ = mcp_transport::cancelled(context) => Err(McpError::internal_error("Request cancelled during child startup", None)),
+            result = tokio::time::timeout(Duration::from_secs(60), wait) => result.map_err(|_| McpError::internal_error("Child startup timed out", None))?,
+        }
+    }
+
     /// Handle the built-in `reconnect` tool call.
     ///
     /// Kicks the child via `restart_child()` and waits briefly for the new
@@ -1707,8 +1897,8 @@ mod tests {
     async fn legacy_initialize_negotiates_each_supported_version() {
         let proxy = McpProxy::new(test_config(), None);
         let versions = proxy.supported_protocol_versions();
-        assert_eq!(versions.len(), 4);
-        for version in versions.iter() {
+        assert_eq!(versions.len(), 5);
+        for version in mcp_transport::LEGACY_VERSIONS {
             let response = first_request_response(serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -1726,7 +1916,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn modern_first_requests_are_rejected_before_dispatch() {
+    async fn future_first_requests_are_rejected_before_dispatch() {
         for method in ["server/discover", "tools/list"] {
             let response = first_request_response(serde_json::json!({
                 "jsonrpc": "2.0",
@@ -1734,7 +1924,7 @@ mod tests {
                 "method": method,
                 "params": {
                     "_meta": {
-                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/protocolVersion": "2099-01-01",
                         "io.modelcontextprotocol/clientCapabilities": {}
                     }
                 }

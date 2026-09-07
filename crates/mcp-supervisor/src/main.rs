@@ -19,7 +19,6 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -30,10 +29,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverRequestMethod,
-    DiscoverResult, Implementation, ListResourceTemplatesResult, ListResourcesResult,
-    ListToolsResult, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::schemars;
 use rmcp::service::{RequestContext, RoleServer};
@@ -44,6 +43,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::{error, info, warn};
 
+#[cfg(test)]
 const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2024_11_05,
     ProtocolVersion::V_2025_03_26,
@@ -51,14 +51,8 @@ const LEGACY_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2025_11_25,
 ];
 
-fn require_legacy_handshake(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
-    if context.peer.peer_info().is_none() {
-        return Err(McpError::invalid_request(
-            "initialize is required before application requests",
-            None,
-        ));
-    }
-    Ok(())
+fn require_protocol(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
+    mcp_transport::require_protocol(context)
 }
 
 // ---------------------------------------------------------------------------
@@ -785,6 +779,7 @@ struct SupervisorState {
 
 #[derive(Clone)]
 struct Supervisor {
+    native_identity: Arc<std::sync::OnceLock<Implementation>>,
     state: Arc<RwLock<SupervisorState>>,
     /// Signaled when the child client is first connected by the background
     /// init task. `list_tools` waits on this so the initial tool list
@@ -793,6 +788,28 @@ struct Supervisor {
 }
 
 impl Supervisor {
+    async fn native_proxy_ready(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<McpProxy, McpError> {
+        let ready = self.child_ready.notified();
+        let existing = { self.state.read().await.proxy.clone() };
+        let proxy = match existing {
+            Some(proxy) => proxy,
+            None => {
+                tokio::select! {
+                    _ = mcp_transport::cancelled(context) => return Err(McpError::internal_error("Request cancelled during supervisor startup", None)),
+                    result = tokio::time::timeout(Duration::from_secs(60), ready) => { result.map_err(|_| McpError::internal_error("Supervisor startup timed out", None))?; }
+                }
+                let state = self.state.read().await;
+                Self::get_proxy(&state)?.clone()
+            }
+        };
+        if let Some(info) = context.client_info() {
+            proxy.set_upstream_identity(info.name, info.title).await;
+        }
+        Ok(proxy)
+    }
     /// Create a supervisor with no proxy yet. The stdio MCP server starts
     /// immediately so the client doesn't time out; the proxy and child are
     /// connected later via a background task.
@@ -806,6 +823,7 @@ impl Supervisor {
         let log_dir = project_root.join(".context");
         let _ = std::fs::create_dir_all(&log_dir);
         Self {
+            native_identity: Arc::default(),
             state: Arc::new(RwLock::new(SupervisorState {
                 proxy: None,
                 log_dir,
@@ -1873,6 +1891,17 @@ struct DownParams {
 
 /// MCP ServerHandler that proxies to the nteract child + injects supervisor tools.
 impl ServerHandler for Supervisor {
+    fn accepted_subscription_filter(
+        &self,
+        requested: &rmcp::model::SubscriptionFilter,
+    ) -> Option<rmcp::model::SubscriptionFilter> {
+        Some(mcp_transport::notebook_subscription_filter(requested))
+    }
+    async fn listen(&self, context: rmcp::service::SubscriptionContext) -> Result<(), McpError> {
+        mcp_transport::require_protocol(context.request_context())?;
+        let proxy = self.native_proxy_ready(context.request_context()).await?;
+        proxy.forward_listen(context).await
+    }
     async fn initialize(
         &self,
         request: rmcp::model::InitializeRequestParams,
@@ -1885,24 +1914,25 @@ impl ServerHandler for Supervisor {
             ));
         }
         let mut info = self.get_info();
-        if self
-            .supported_protocol_versions()
-            .contains(&request.protocol_version)
-        {
+        if mcp_transport::LEGACY_VERSIONS.contains(&request.protocol_version) {
             info.protocol_version = request.protocol_version;
         }
         Ok(info)
     }
 
-    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(LEGACY_PROTOCOL_VERSIONS)
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(mcp_transport::SUPPORTED_VERSIONS)
     }
 
     async fn discover(
         &self,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<DiscoverResult, McpError> {
-        Err(McpError::method_not_found::<DiscoverRequestMethod>())
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::DiscoverResult, McpError> {
+        let result = mcp_transport::discover(&context, self.get_info())?;
+        if let Some(identity) = context.client_info() {
+            let _ = self.native_identity.set(identity);
+        }
+        Ok(result)
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -1936,8 +1966,10 @@ impl ServerHandler for Supervisor {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListPromptsResult, McpError> {
-        require_legacy_handshake(&context)?;
-        Ok(rmcp::model::ListPromptsResult::default())
+        require_protocol(&context)?;
+        Ok(rmcp::model::ListPromptsResult::default()
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn complete(
@@ -1945,7 +1977,7 @@ impl ServerHandler for Supervisor {
         _request: rmcp::model::CompleteRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CompleteResult, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         Ok(rmcp::model::CompleteResult::default())
     }
 
@@ -1954,7 +1986,7 @@ impl ServerHandler for Supervisor {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         let mut tools = Vec::new();
 
         // Supervisor's own tools. Schema generation is fallible in principle
@@ -2011,20 +2043,23 @@ impl ServerHandler for Supervisor {
             logs_schema,
         ));
 
-        // Get child tools from the proxy (live or cached), falling back
-        // to the built-in tool cache if the proxy isn't ready yet.
-        {
-            let state = self.state.read().await;
-            if let Some(ref proxy) = state.proxy {
-                let child_tools = proxy.child_tools().await;
-                tools.extend(child_tools);
-            } else if let Some(builtin) = runt_mcp_proxy::tools::load_builtin_tools() {
-                info!("Serving {} built-in tools (proxy not ready)", builtin.len());
-                tools.extend(builtin);
-            }
+        // Native discovery waits for the complete catalog. Clone the proxy
+        // before awaiting child I/O so supervisor state remains accessible.
+        let proxy = if mcp_transport::is_native(&context) {
+            Some(self.native_proxy_ready(&context).await?)
+        } else {
+            self.state.read().await.proxy.clone()
+        };
+        if let Some(proxy) = proxy {
+            tools.extend(proxy.child_tools().await);
+        } else if let Some(builtin) = runt_mcp_proxy::tools::load_builtin_tools() {
+            tools.extend(builtin);
         }
 
-        Ok(ListToolsResult::with_all_items(tools))
+        mcp_transport::attachment_tool_schemas(&mut tools, mcp_transport::is_native(&context));
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn list_resources(
@@ -2032,7 +2067,14 @@ impl ServerHandler for Supervisor {
         request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        if mcp_transport::is_native(&context) {
+            return self
+                .native_proxy_ready(&context)
+                .await?
+                .list_resources(request, context)
+                .await;
+        }
         let state = self.state.read().await;
         if let Some(ref proxy) = state.proxy {
             Ok(proxy.child_resources(request).await)
@@ -2046,7 +2088,14 @@ impl ServerHandler for Supervisor {
         request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        if mcp_transport::is_native(&context) {
+            return self
+                .native_proxy_ready(&context)
+                .await?
+                .list_resource_templates(request, context)
+                .await;
+        }
         let state = self.state.read().await;
         if let Some(ref proxy) = state.proxy {
             Ok(proxy.child_resource_templates(request).await)
@@ -2060,7 +2109,14 @@ impl ServerHandler for Supervisor {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        if mcp_transport::is_native(&context) {
+            return self
+                .native_proxy_ready(&context)
+                .await?
+                .read_resource(request, context)
+                .await;
+        }
         self.forward_read_resource(request)
             .await
             .map(ReadResourceResponse::Complete)
@@ -2071,10 +2127,17 @@ impl ServerHandler for Supervisor {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        mcp_transport::validate_tool_target(&request, &context)?;
+        if mcp_transport::is_native(&context) {
+            self.native_proxy_ready(&context).await?;
+        }
         runt_mcp_proxy::request_scope::scope(context, self.handle_tool_call(request))
             .await
-            .map(CallToolResponse::Complete)
+            .map(|mut result| {
+                result.result_type = Some(rmcp::model::ResultType::COMPLETE);
+                CallToolResponse::Complete(result)
+            })
     }
 
     #[allow(deprecated)]
@@ -2083,7 +2146,7 @@ impl ServerHandler for Supervisor {
         request: rmcp::model::SubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         let ready = self.child_ready.notified();
         let proxy = { self.state.read().await.proxy.clone() };
         let proxy = match proxy {
@@ -2108,7 +2171,7 @@ impl ServerHandler for Supervisor {
         request: rmcp::model::UnsubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         let proxy = {
             let state = self.state.read().await;
             state.proxy.clone()
@@ -3049,10 +3112,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let transport = mcp_transport::server(rmcp::transport::io::stdio());
     let server = supervisor.serve(transport).await?;
-    if server.peer().peer_info().is_none() {
-        server.cancellation_token().cancel();
-        return Err("The initialize handshake is required".into());
-    }
     info!("MCP server initialized on stdio (supervisor tools available)");
 
     // Extract upstream client identity from the MCP initialize handshake.
@@ -3067,7 +3126,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Upstream MCP client: name={name:?}, title={title:?}");
             (name, title)
         })
-        .unwrap_or_else(|| ("nteract-dev".to_string(), None));
+        .unwrap_or_else(|| {
+            server
+                .service()
+                .native_identity
+                .get()
+                .map(|info| (info.name.clone(), info.title.clone()))
+                .unwrap_or_else(|| ("nteract-dev".to_string(), None))
+        });
 
     // Clone what we need before waiting() consumes the server
     let state_for_init = server.service().state.clone();
@@ -3346,6 +3412,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let watcher_supervisor = Supervisor {
+                native_identity: Arc::default(),
                 state: state_for_watcher,
                 child_ready: Arc::new(Notify::new()),
             };
@@ -3559,7 +3626,7 @@ mod tests {
             "resources/read",
         ] {
             let responses =
-                supervisor_responses(vec![request_without_handshake(method, "2026-07-28")]).await;
+                supervisor_responses(vec![request_without_handshake(method, "2099-01-01")]).await;
             assert_eq!(responses[0]["error"]["code"], -32022, "{}", responses[0]);
             assert!(responses[0].get("result").is_none());
         }
@@ -3594,7 +3661,7 @@ mod tests {
         assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
         assert_eq!(
             supervisor.supported_protocol_versions().as_ref(),
-            LEGACY_PROTOCOL_VERSIONS
+            mcp_transport::SUPPORTED_VERSIONS
         );
         assert!(info.capabilities.extensions.as_ref().is_some_and(
             |extensions| extensions.contains_key(runt_mcp_proxy::MCP_APPS_EXTENSION_ID)

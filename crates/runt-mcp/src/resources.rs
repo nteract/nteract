@@ -69,7 +69,15 @@ fn resource_ui_meta(blob_base_url: &Option<String>) -> MetaObject {
 }
 
 /// List available MCP resources.
+#[cfg(test)]
 pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, McpError> {
+    list_resources_for_mode(server, false).await
+}
+
+pub(crate) async fn list_resources_for_mode(
+    server: &NteractMcp,
+    native: bool,
+) -> Result<ListResourcesResult, McpError> {
     let mut resources = Vec::new();
     resources.push(resource(
         OUTPUT_RESOURCE_URI,
@@ -88,7 +96,12 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
         NOTEBOOK_CONTEXT_PRIORITY,
     ));
 
-    for notebook_id in known_session_notebook_ids(server).await {
+    let notebook_ids = if native {
+        Vec::new()
+    } else {
+        known_session_notebook_ids(server).await
+    };
+    for notebook_id in notebook_ids {
         resources.push(assistant_resource(
             notebook_cells_uri(&notebook_id),
             format!("nteract cells {notebook_id}"),
@@ -617,6 +630,12 @@ pub(crate) fn attachment_cells_uri(notebook_handle: &str) -> String {
 pub(crate) fn attachment_cells_resource_link(notebook_handle: &str) -> Resource {
     let mut resource = notebook_cells_resource_link(notebook_handle);
     resource.uri = attachment_cells_uri(notebook_handle);
+    resource
+}
+
+pub(crate) fn attachment_cell_resource_link(notebook_handle: &str, cell_id: &str) -> Resource {
+    let mut resource = notebook_cell_resource_link(notebook_handle, cell_id);
+    resource.uri = attachment_cell_uri(notebook_handle, cell_id);
     resource
 }
 

@@ -62,6 +62,61 @@ fn isolated_proxy_with_mode(mode: &str) -> (tempfile::TempDir, McpProxy, Arc<Ato
 }
 
 #[tokio::test]
+async fn native_first_listen_installs_child_watch_before_ack_and_closes_on_child_loss() {
+    let (dir, proxy, resolves) = isolated_proxy();
+    let mut wire = Wire::start(proxy.clone());
+    let uri = "nteract://sessions/fixture/cells";
+    wire.send(json!({"jsonrpc":"2.0","id":7,"method":"subscriptions/listen","params":{"_meta":modern_meta("2026-07-28",false),"notifications":{"resourceSubscriptions":[uri,"compatibility://unsupported"],"toolsListChanged":true}}})).await;
+    let ack = wire.receive().await;
+    assert_eq!(
+        ack["method"], "notifications/subscriptions/acknowledged",
+        "{ack}"
+    );
+    assert_eq!(
+        ack["params"]["notifications"]["resourceSubscriptions"],
+        json!([uri])
+    );
+    assert_eq!(
+        ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("subscription-calls"))
+            .unwrap()
+            .trim(),
+        uri
+    );
+    let update = wire.receive().await;
+    assert_eq!(update["method"], "notifications/resources/updated");
+    assert_eq!(update["params"]["uri"], uri);
+    assert_eq!(
+        update["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        7
+    );
+    assert_eq!(resolves.load(Ordering::SeqCst), 1);
+    stop_child(&proxy).await;
+    let completed = wire.receive().await;
+    assert_eq!(completed["id"], 7);
+    assert_eq!(completed["result"]["resultType"], "complete");
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn native_tool_uses_a_private_legacy_child_with_empty_capabilities() {
+    let (_dir, proxy, _) = isolated_proxy();
+    let mut wire = Wire::start(proxy.clone());
+    let result = wire.request(8, "tools/call", Some(json!({"name":"compatibility_echo","arguments":{"probe":"native"},"_meta":modern_meta("2026-07-28",false)}))).await;
+    assert_eq!(result["result"]["resultType"], "complete", "{result}");
+    let payload: Value =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["protocolVersion"], "2025-11-25");
+    assert_eq!(payload["capabilities"], json!({}));
+    assert_eq!(payload["arguments"], json!({"probe":"native"}));
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
 async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
     for name in ["execute_cell", "future_mutation"] {
         let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
@@ -651,7 +706,7 @@ async fn legacy_proxy_wire(version: &str) {
             Some(json!({"uri": "compatibility://missing"})),
         )
         .await;
-    assert_eq!(response["error"]["code"], -32603);
+    assert_eq!(response["error"]["code"], -32002);
     assert!(response["error"]["message"]
         .as_str()
         .expect("forwarded resource error")
@@ -717,8 +772,8 @@ legacy_test!(version_skew_new_proxy_to_old_child_2025_03_26, "2025-03-26");
 legacy_test!(version_skew_new_proxy_to_old_child_2025_06_18, "2025-06-18");
 legacy_test!(version_skew_new_proxy_to_old_child_2025_11_25, "2025-11-25");
 
-async fn reject_modern_without_handshake(anonymous: bool) {
-    for version in ["2026-07-28", "2099-01-01"] {
+async fn reject_future_without_handshake(anonymous: bool) {
+    for version in ["2099-01-01"] {
         for (method, mut params) in modern_requests() {
             let (dir, proxy, resolves) = isolated_proxy();
             let cached = std::fs::read(dir.path().join("tool-cache.json")).expect("cached tools");
@@ -738,13 +793,13 @@ async fn reject_modern_without_handshake(anonymous: bool) {
 }
 
 #[tokio::test]
-async fn modern_named_requests_rejected_without_handshake_or_child_side_effects() {
-    reject_modern_without_handshake(false).await;
+async fn future_named_requests_rejected_without_handshake_or_child_side_effects() {
+    reject_future_without_handshake(false).await;
 }
 
 #[tokio::test]
-async fn modern_anonymous_requests_rejected_without_handshake_or_child_side_effects() {
-    reject_modern_without_handshake(true).await;
+async fn future_anonymous_requests_rejected_without_handshake_or_child_side_effects() {
+    reject_future_without_handshake(true).await;
 }
 
 #[tokio::test]
@@ -821,7 +876,7 @@ async fn repeated_initialize_cannot_change_proxy_protocol_or_identity() {
 #[tokio::test]
 async fn legacy_inline_metadata_and_initialized_notification_cannot_start_a_child() {
     for anonymous in [false, true] {
-        for version in ["2025-11-25", "2026-07-28"] {
+        for version in ["2025-11-25", "2099-01-01"] {
             let (dir, proxy, resolves) = isolated_proxy();
             let mut wire = Wire::start(proxy.clone());
             let response = wire

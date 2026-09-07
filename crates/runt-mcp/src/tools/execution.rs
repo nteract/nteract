@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
 use runtimed_outputs::output_resolver;
 use schemars::JsonSchema;
@@ -17,7 +17,7 @@ use super::{arg_bool, arg_str, assert_cell_exists, tool_error};
 fn cells_resource_result(message: String, notebook_id: &str) -> CallToolResult {
     CallToolResult::success(vec![
         formatting::assistant_text(message),
-        ContentBlock::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+        super::cells_resource_content(notebook_id),
     ])
 }
 
@@ -241,9 +241,7 @@ pub async fn run_all_cells(
     let comms = runtime_state.as_ref().map(|rs| &rs.comms);
     let mut content_items = vec![
         formatting::assistant_text(header.clone()),
-        rmcp::model::ContentBlock::resource_link(crate::resources::notebook_cells_resource_link(
-            handle.notebook_id(),
-        )),
+        super::cells_resource_content(handle.notebook_id()),
     ];
     let mut structured_cells: Vec<serde_json::Value> = Vec::new();
 
@@ -329,7 +327,7 @@ pub async fn run_all_cells(
                     if let Some(obj) = cell_data.as_object_mut() {
                         obj.insert(
                             "uri".to_string(),
-                            serde_json::Value::String(crate::resources::notebook_cell_uri(
+                            serde_json::Value::String(super::cell_resource_uri(
                                 handle.notebook_id(),
                                 &cell.id,
                             )),

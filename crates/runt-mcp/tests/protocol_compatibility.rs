@@ -142,8 +142,8 @@ legacy_test!(legacy_2025_03_26_newline_wire, "2025-03-26");
 legacy_test!(legacy_2025_06_18_newline_wire, "2025-06-18");
 legacy_test!(legacy_2025_11_25_newline_wire, "2025-11-25");
 
-async fn reject_modern_without_handshake(anonymous: bool) {
-    for version in ["2026-07-28", "2099-01-01"] {
+async fn reject_future_without_handshake(anonymous: bool) {
+    for version in ["2099-01-01"] {
         for (method, mut params) in modern_requests() {
             let (dir, server) = isolated_server();
             let label = server.peer_label_shared().read().await.clone();
@@ -177,13 +177,13 @@ async fn reject_modern_without_handshake(anonymous: bool) {
 }
 
 #[tokio::test]
-async fn modern_named_requests_rejected_without_handshake_or_notebook_side_effects() {
-    reject_modern_without_handshake(false).await;
+async fn future_named_requests_rejected_without_handshake_or_notebook_side_effects() {
+    reject_future_without_handshake(false).await;
 }
 
 #[tokio::test]
-async fn modern_anonymous_requests_rejected_without_handshake_or_notebook_side_effects() {
-    reject_modern_without_handshake(true).await;
+async fn future_anonymous_requests_rejected_without_handshake_or_notebook_side_effects() {
+    reject_future_without_handshake(true).await;
 }
 
 #[tokio::test]

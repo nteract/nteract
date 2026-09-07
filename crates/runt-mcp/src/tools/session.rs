@@ -961,6 +961,48 @@ pub async fn disconnect_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
+    if let Some(handle) = crate::targets::current() {
+        let removed = {
+            let mut active = server.session.write().await;
+            if active
+                .as_ref()
+                .is_some_and(|session| session.notebook_handle == handle)
+            {
+                server.advance_session_intent_epoch();
+                active.take()
+            } else {
+                None
+            }
+        };
+        if let Some(session) = removed {
+            *server.last_session_drop.write().await = Some(SessionDropInfo {
+                reason: SessionDropReason::Disconnected,
+                notebook_id: session.notebook_id.clone(),
+                notebook_path: session.notebook_path.clone(),
+                rejoin_target: Some(session.rejoin_target()),
+            });
+            drop(session);
+            return tool_success(
+                "Released the notebook attachment. Connect again to obtain a new handle.",
+            );
+        }
+        let removed = {
+            let mut parked = server.parked_sessions.write().await;
+            let key = parked
+                .iter()
+                .find(|(_, session)| session.notebook_handle == handle)
+                .map(|(key, _)| key.clone());
+            key.and_then(|key| parked.remove(&key))
+        };
+        if removed.is_some() {
+            drop(removed);
+            return tool_success("Released the parked notebook attachment.");
+        }
+        return Err(McpError::invalid_params(
+            "Notebook attachment expired",
+            None,
+        ));
+    }
     let target_id = arg_str(request, "notebook_id");
 
     match target_id {
@@ -1885,15 +1927,22 @@ pub async fn show_notebook(
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     // Resolve notebook_id (and optional path) from param or current session
-    let (target, session_path) = match arg_str(request, "notebook_id") {
-        Some(id) => (id.to_string(), None),
-        None => {
-            let session = server.session.read().await;
-            match session.as_ref() {
-                Some(s) => (s.notebook_id.clone(), s.notebook_path.clone()),
-                None => {
-                    drop(session);
-                    return super::no_session_error(server).await;
+    let (target, session_path) = if let Some(handle) = crate::targets::current() {
+        server
+            .attachment_identity(&handle)
+            .await
+            .ok_or_else(|| McpError::invalid_params("Notebook attachment expired", None))?
+    } else {
+        match arg_str(request, "notebook_id") {
+            Some(id) => (id.to_string(), None),
+            None => {
+                let session = server.session.read().await;
+                match session.as_ref() {
+                    Some(s) => (s.notebook_id.clone(), s.notebook_path.clone()),
+                    None => {
+                        drop(session);
+                        return super::no_session_error(server).await;
+                    }
                 }
             }
         }
