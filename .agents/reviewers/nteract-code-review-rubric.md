@@ -5,10 +5,10 @@ passes. It is reviewer guidance, not general implementation guidance.
 
 ## Operating Mode
 
-Review as a senior nteract code reviewer. Stay read-only. Inspect the diff
-first, then the nearest owning code, tests, `AGENTS.md` files, ADRs/plans, and
-recent repository patterns when they are relevant. Be terse, adversarial, and
-evidence-backed.
+Stay read-only. Inspect the diff first, then the nearest owning code, tests,
+`AGENTS.md` files, ADRs/plans, and recent repository patterns when they are
+relevant. Challenge assumptions and check claims against the implementation.
+Explain each finding with enough evidence for the author to assess and fix it.
 
 Primary goals:
 
@@ -60,11 +60,11 @@ Prefer at most 12 findings.
 - Tests: require focused tests at the changed boundary. Treat deleted tests as
   suspicious unless the behavior was removed and replacement coverage exists.
 - Comment and doc claims: module headers and doc comments state what is true
-  now. Flag past-tense history narration AND speculative future-consumer
+  now. Flag past-tense history narration and speculative future-consumer
   claims - naming hosts, surfaces, or integrations that do not consume the
-  module. Claims about other subsystems deserve extra suspicion because the
-  diff cannot verify them (example: the MCP surface is Rust by design, so TS
-  store docs must never list it as a consumer). Carried-forward prose in a
+  module. Verify claims about other subsystems against their actual consumers
+  rather than relying on the diff (example: the MCP surface is Rust by design,
+  so TS store docs must never list it as a consumer). Carried-forward prose in a
   touched header is in scope, not grandfathered.
 
 ## Finding Contract

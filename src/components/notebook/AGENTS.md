@@ -1,10 +1,10 @@
 # Notebook state stores
 
 Scope: `src/components/notebook/state/**` - the shared store layer between
-WASM/host sources and notebook UI. Two store idioms live here; the boundary is
-a Decision 8 call, not an accident (`docs/adr/frontend-sync-bridge.md`).
+WASM/host sources and notebook UI. Decision 8 in
+`docs/adr/frontend-sync-bridge.md` defines when to use each store pattern.
 
-## Two store idioms
+## Choosing a store pattern
 
 - **Hand-rolled `Map`/`Set` pub/sub** (`cell-store.ts`, `execution-store.ts`,
   `output-store.ts`, `rail-ui-state.ts`, ...): synchronous per-entity fan-out
@@ -15,7 +15,7 @@ a Decision 8 call, not an accident (`docs/adr/frontend-sync-bridge.md`).
   `AbortController`. `runtime-state-store.ts` in `packages/runtimed` extends
   `ObservableStore` (frontend-sync-bridge Decision 8).
 
-## Binding is plumbing
+## React binding
 
 - `observable-binding.ts` is the single tearing-safe `useSyncExternalStore`
   binding, shared by desktop and cloud store-hook modules. Its file header is
@@ -24,5 +24,5 @@ a Decision 8 call, not an accident (`docs/adr/frontend-sync-bridge.md`).
   (`useRuntimeState`, `useCloudAuthState`, ...). Inline `select()` creates a
   fresh Observable per render and defeats the binding cache.
 - Reset/reconnect paths invalidate stale async writes by epoch, not just
-  visible state. How-to depth: frontend-dev skill, "Module-Singleton Source
-  Stores".
+  visible state. See the frontend-dev skill's "Module-Singleton Source Stores"
+  section for implementation guidance.

@@ -214,54 +214,56 @@ in a module-level `ObservableStore` singleton, follow Decision 8
 (`docs/adr/frontend-sync-bridge.md`). The store outlives every component, so
 each async completion is a stale-write risk:
 
-- **Domain hooks are the API; the binding is plumbing.** Components import
+- **Components consume named domain hooks.** Components import
   `useCloudAuthState`/`useHostedCatalogAuth`/`useCloudWorkstationsRegistry`, never
   `store.select(...)` inline in a render body and never
-  `observable-binding.ts` directly. One binding, shared desktop and cloud.
-- **Singletons for lifetime, context for consumption.** The store stays a module
-  singleton (boot, drivers, instant-paint snapshot reads), but each domain hook
+  `observable-binding.ts` directly. Desktop and cloud share one binding.
+- **Resolve store instances through context.** The store stays a module
+  singleton for boot, drivers, and initial snapshot reads, but each domain hook
   resolves its instance from `useCloudStores()` (`cloud-stores-context.ts`),
-  whose default is the singleton bundle. Production mounts no provider, so it is
-  byte-identical; a test or Elements fixture mounts `CloudStoresProvider` with
-  its own instances and the subtree reads those. The provider overrides
+  whose default is the singleton bundle. Production mounts no provider and uses
+  those same instances; a test or Elements fixture mounts `CloudStoresProvider`
+  with its own instances and the subtree reads those. The provider overrides
   consumption, never activation - its owner activates the instances it supplies.
   A controller that dispatches actions on the same store reads it from the same
   context too, so an override gets a coherent store.
-- **Capture at issue, drop at apply for every completion.** Poll ticks AND
+- **Check request identity after every await.** Poll ticks and
   imperative actions capture `{epoch, auth reference, endpoint}` when the
   request starts; after every `await` (success, error, and any follow-up
-  refetch), the result is discarded if the identity moved. A guarded first
-  await followed by an unguarded second await is the recurring hole.
-- **Invalidation covers bookkeeping, not just visible state.** `dispose`,
+  refetch), discard the result if the identity changed. Checking only the
+  first await leaves later completions able to write stale state.
+- **Invalidate pending work and clear its indicators.** `dispose`,
   `reset`, and a signed-out closed gate bump the activation epoch so captured
-  issues die with them (a transient `loading` gate is a recoverable dip and
+  requests become stale (a transient `loading` gate is recoverable and
   keeps in-flight work alive); a dropped completion also clears any indicator
   it wrote (by object-reference ownership, so it can never clobber a newer
   identity's own state).
-- **After-settle loops re-arm on settle, never on emission.** A self-scheduling
+- **Restart after-settle polls on completion.** A self-scheduling
   poll re-arms via `repeat()` on completion, so a swallowed inner rejection
   cannot kill the loop. Keep `catchError` on the inner fetch.
-- **One in-flight guard, one `exhaustMap`.** Fixed-rate triggers that must
+- **Route fixed-rate triggers through one `exhaustMap`.** Triggers that must
   not overlap (interval tick, visibility rise, manual wakeup) feed a single
   `exhaustMap`; do not give each trigger its own guard. After-settle stores
   instead serialize manual refresh and mutation refetches through a dedicated
-  `concatMap` action stream off the poll loop, so the coupling stays ordered
-  and the cadence unperturbed.
+  `concatMap` action stream outside the poll loop, preserving action order
+  and polling cadence.
 - **Inject every clock.** `scheduler`, `now`, and the network operations are
   `activate(deps)` arguments, so tests run entirely on virtual time and the
-  suite proves cadence, gates, aborts, and stale drops deterministically.
-- **Named comparators with the manifest tripwire.** `distinctUntilChanged`
+  suite checks cadence, gates, aborts, and discarded stale results
+  deterministically.
+- **List every field in the comparator's manifest.** `distinctUntilChanged`
   uses a named `fooEquals(a, b)` with a colocated
   `satisfies Record<keyof T, true>` manifest. The manifest forces every key to
   be *listed* when the type grows; it does not prove every key is *compared* -
   treat a break as a prompt to revisit the comparator body, not proof of
   correctness. A projection that allocates an array or object each tick needs
   a structural comparator (length plus per-element identity/fields); a
-  reference check on a re-allocated value dedups nothing. The manifest break
-  surfaces as a tsc error (`pnpm --dir apps/notebook-cloud typecheck`); the
+  reference check on a newly allocated value deduplicates nothing. A missing
+  manifest key surfaces as a tsc error (`pnpm --dir apps/notebook-cloud typecheck`); the
   node test script alone will not catch it.
-- **`loaded$` gates readiness, not state.** The state subject emits its seeded
-  default before the gate opens (state emits first, then the gate); a consumer
+- **Read `loaded$` to distinguish loading from loaded empty state.** The state
+  subject emits its seeded default before the gate opens (state emits first,
+  then the gate); a consumer
   that must tell "loading" from "loaded empty" reads `loaded$`, never infers
   from an empty snapshot.
 

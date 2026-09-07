@@ -11,21 +11,21 @@ projections). Mechanism only - no React and no
 
 ## Invariants
 
-- **`ObservableStore` emission order is load-bearing.** `setState` emits state
+- **Preserve `ObservableStore` emission order.** `setState` emits state
   before the `loaded$` gate; `resetState` flips the gate false before the
   default state lands. A subscriber combining the two must never see
   `loaded=true` alongside a not-yet-applied state.
 - **`createPoll` after-settle re-arms on completion (`repeat`), never on
   emission.** A rejected fetch is swallowed to `EMPTY` and emits nothing; if
   re-arm depended on emission, one transient error would kill the loop.
-- **`createPoll` fixed-rate funnels every trigger through ONE `exhaustMap`.**
+- **`createPoll` fixed-rate funnels every trigger through one `exhaustMap`.**
   Interval tick, gate rise, and wakeups share a single in-flight guard; a
   trigger landing mid-fetch is dropped, never a concurrent request.
-- **`interval$` is the teardown lever.** A new cadence (or `null`) tears down
+- **Use `interval$` to change or stop polling.** A new cadence (or `null`) tears down
   the running loop and aborts the in-flight fetch via `finalize`. Model dynamic
   cadence policy as this stream; do not add a second stop mechanism.
 - **Every timer takes an injectable `SchedulerLike`.** New pipelines here must
-  be virtual-time-total; tests never sleep on the wall clock.
+  run entirely on virtual time in tests; tests never sleep on the wall clock.
 - **Comparators are named and manifest-backed.** `distinctUntilChanged` uses
   named field-by-field `fooEquals` functions carrying a colocated
   `satisfies Record<keyof T, true>` manifest (keys listed, not proven
@@ -33,6 +33,6 @@ projections). Mechanism only - no React and no
 - **The barrel uses explicit re-exports.** A new export must be added to
   `src/index.ts` or the `pnpm --dir apps/notebook build` tsc gate fails.
 
-Decision record: `docs/adr/frontend-sync-bridge.md` Decision 8. How-to depth:
-frontend-dev skill, "Module-Singleton Source Stores". Rust daemon guidance is
-separate: `crates/runtimed/AGENTS.md`.
+Decision record: `docs/adr/frontend-sync-bridge.md` Decision 8. See the
+frontend-dev skill's "Module-Singleton Source Stores" section for implementation
+guidance and `crates/runtimed/AGENTS.md` for Rust daemon guidance.

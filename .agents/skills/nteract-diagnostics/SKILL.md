@@ -82,13 +82,19 @@ date -u -d "@$(jq -r '.[0].results[0].created_at' upload-row.json)"
 date -u -d "@$(jq -r '.[0].results[0].uploaded_at' upload-row.json)"
 ```
 
-## Report Shape
+## Reporting the diagnosis
 
-Return:
+Keep `upload-row.json` and `entries.txt` with the investigation artifacts so
+the upload metadata (excluding the token) and complete archive inventory remain
+available. In the reply, explain the likely cause with short evidence snippets
+and file references. Include metadata and archive entries that help assess the
+incident, and link the saved artifacts when useful. If the archive does not
+cover the reported time window, say what is missing and which check comes next.
 
-- Upload metadata from `upload-row.json`, excluding the token.
-- Archive entries from `entries.txt`.
-- Likely cause, with short evidence snippets and file references.
-- Missing evidence or the next check if the archive does not cover the reported time window.
+For example, when logs start after the incident:
+
+> The daemon was healthy when these logs were captured, but `runtimed.log`
+> starts after the reported freeze. This archive can't establish its cause.
+> The next check is the rotated `runtimed.log.1` from that time window.
 
 Do not overfit to the first scary error. Check whether the daemon was healthy at capture time, whether the logs include the reported timestamp, and whether later user messages make an earlier error a red herring.
