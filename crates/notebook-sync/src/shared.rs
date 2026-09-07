@@ -16,6 +16,8 @@ use comments_doc::CommentsDoc;
 use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::{CommsDoc, RuntimeStateDoc};
+use std::sync::Arc;
+use tokio::sync::watch;
 
 /// The shared state behind `Arc<Mutex<SharedDocState>>`.
 ///
@@ -53,6 +55,10 @@ pub struct SharedDocState {
     /// Automerge sync protocol state for the CommentsDoc peer.
     pub(crate) comments_peer_state: sync::State,
 
+    /// Retained comments projection. Receivers own no sync command sender, so
+    /// observing comments cannot keep a notebook peer connected.
+    pub(crate) comments_tx: watch::Sender<Option<Arc<comments_doc::CommentsProjection>>>,
+
     #[cfg(test)]
     panic_on_next_doc_sync: bool,
     #[cfg(test)]
@@ -83,6 +89,7 @@ impl SharedDocState {
             comms_peer_state: sync::State::new(),
             comments_doc,
             comments_peer_state: sync::State::new(),
+            comments_tx: watch::channel(None).0,
             #[cfg(test)]
             panic_on_next_doc_sync: false,
             #[cfg(test)]
@@ -295,6 +302,7 @@ impl SharedDocState {
         &mut self,
         message: sync::Message,
     ) -> Result<(), automerge::AutomergeError> {
+        let before = self.comments_doc.doc_mut().get_heads();
         self.comments_doc
             .doc_mut()
             .sync()
@@ -309,7 +317,22 @@ impl SharedDocState {
                 self.notebook_id, err
             );
         }
+        if before != self.comments_doc.doc_mut().get_heads() {
+            self.publish_comments_snapshot();
+        }
         Ok(())
+    }
+
+    pub(crate) fn publish_comments_snapshot(&self) {
+        let projection = self.comments_doc.read_projection(None).ok().map(Arc::new);
+        self.comments_tx.send_if_modified(|current| {
+            if *current == projection {
+                false
+            } else {
+                *current = projection;
+                true
+            }
+        });
     }
 
     pub(crate) fn receive_comments_sync_message_recovering(

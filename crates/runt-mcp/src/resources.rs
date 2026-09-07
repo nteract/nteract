@@ -8,6 +8,7 @@ use rmcp::model::{
 use rmcp::ErrorData as McpError;
 
 use crate::icons::{self, IconKind};
+use crate::observation::{ChangeOutcome, ChangeRead, ObservationReader, ObservedNotebook};
 use crate::NteractMcp;
 
 const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
@@ -103,7 +104,7 @@ pub async fn list_resources(server: &NteractMcp) -> Result<ListResourcesResult, 
 
 /// List available dynamic MCP resource templates.
 pub fn list_resource_templates() -> ListResourceTemplatesResult {
-    let templates = vec![
+    let mut templates = vec![
         assistant_resource_template(
             "nteract://notebooks/{notebook_id}/cells",
             "nteract notebook cells",
@@ -130,6 +131,18 @@ pub fn list_resource_templates() -> ListResourceTemplatesResult {
         ),
     ];
 
+    let attachment_templates: Vec<_> = templates
+        .iter()
+        .cloned()
+        .map(|mut template| {
+            template.uri_template = template
+                .uri_template
+                .replace("notebooks/{notebook_id}", "sessions/{notebook_handle}");
+            template.name = format!("{} by attachment", template.name);
+            template
+        })
+        .collect();
+    templates.extend(attachment_templates);
     ListResourceTemplatesResult::with_all_items(templates)
 }
 
@@ -159,29 +172,39 @@ pub async fn read_resource(
             Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
         }
         NotebookResourceUri::Cells { notebook_id } => {
-            let handle = handle_for_notebook(server, &notebook_id).await?;
-            let text = cells_json(&notebook_id, &handle);
-            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
+            let (notebook_id, handle_id, _handle, observer) =
+                resource_session(server, &notebook_id, uri.starts_with("nteract://sessions/"))
+                    .await?;
+            let snapshot = observed_read(&observer)?;
+            let text = cells_json(&notebook_id, &snapshot.snapshot, &handle_id);
+            observed_resource(uri, text, &handle_id, &snapshot)
         }
         NotebookResourceUri::Cell {
             notebook_id,
             cell_id,
         } => {
-            let handle = handle_for_notebook(server, &notebook_id).await?;
-            let text = cell_json(&notebook_id, &handle, &cell_id)?;
-            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
+            let (notebook_id, handle_id, _handle, observer) =
+                resource_session(server, &notebook_id, uri.starts_with("nteract://sessions/"))
+                    .await?;
+            let snapshot = observed_read(&observer)?;
+            let text = cell_json(&notebook_id, &snapshot.snapshot, &cell_id, &handle_id)?;
+            observed_resource(uri, text, &handle_id, &snapshot)
         }
         NotebookResourceUri::Comments { notebook_id } => {
-            let handle = handle_for_notebook(server, &notebook_id).await?;
+            let (_notebook_id, handle_id, handle, observer) =
+                resource_session(server, &notebook_id, uri.starts_with("nteract://sessions/"))
+                    .await?;
             // Settle pending comments/state frames so a read right after join
             // does not race the daemon's initial CommentsDocSync.
             let _ = handle.confirm_state_sync().await;
-            let projection = handle
-                .get_comments_projection()
-                .map_err(|e| McpError::internal_error(format!("read comments: {e}"), None))?;
+            let snapshot = observed_read(&observer)?;
+            let projection =
+                snapshot.snapshot.comments.as_ref().ok_or_else(|| {
+                    McpError::internal_error("Comments are not available yet", None)
+                })?;
             let text = serde_json::to_string_pretty(&projection)
                 .map_err(|e| McpError::internal_error(format!("serialize comments: {e}"), None))?;
-            Ok(ReadResourceResult::new(vec![json_resource(uri, text)]))
+            observed_resource(uri, text, &handle_id, &snapshot)
         }
     }
 }
@@ -273,23 +296,62 @@ async fn known_session_notebook_ids(server: &NteractMcp) -> Vec<String> {
     notebook_ids
 }
 
-async fn handle_for_notebook(
+pub(crate) async fn resource_session(
     server: &NteractMcp,
     notebook_id: &str,
-) -> Result<notebook_sync::handle::DocHandle, McpError> {
-    if let Some(session) = server.session.read().await.as_ref() {
-        if session.notebook_id == notebook_id {
-            return session
-                .access(crate::session::SessionRequirement::DocumentRead)
-                .map(|access| access.handle)
-                .map_err(resource_session_access_error);
+    by_handle: bool,
+) -> Result<
+    (
+        String,
+        String,
+        notebook_sync::handle::DocHandle,
+        ObservationReader,
+    ),
+    McpError,
+> {
+    let capture = |session: &crate::session::NotebookSession| {
+        let access = session
+            .access(crate::session::SessionRequirement::DocumentRead)
+            .map_err(resource_session_access_error)?;
+        let observer = session
+            .observer()
+            .map_err(|error| McpError::internal_error(error, None))?;
+        Ok((
+            session.notebook_id.clone(),
+            session.notebook_handle.clone(),
+            access.handle,
+            observer,
+        ))
+    };
+    let matches = |session: &crate::session::NotebookSession| {
+        if by_handle {
+            session.notebook_handle == notebook_id
+        } else {
+            session.notebook_id == notebook_id
+        }
+    };
+    let mut found = {
+        let active = server.session.read().await;
+        active
+            .as_ref()
+            .filter(|session| matches(session))
+            .map(capture)
+            .transpose()?
+    };
+    {
+        let parked = server.parked_sessions.read().await;
+        for session in parked.values().filter(|session| matches(session)) {
+            if let Some((_, handle, _, _)) = &found {
+                if *handle == session.notebook_handle {
+                    continue;
+                }
+                return Err(McpError::invalid_params("Ambiguous notebook ID; read its nteract://sessions/{notebook_handle} resource instead", None));
+            }
+            found = Some(capture(session)?);
         }
     }
-    if let Some(session) = server.parked_sessions.read().await.get(notebook_id) {
-        return session
-            .access(crate::session::SessionRequirement::DocumentRead)
-            .map(|access| access.handle)
-            .map_err(resource_session_access_error);
+    if let Some(found) = found {
+        return Ok(found);
     }
     Err(McpError::resource_not_found(
         format!(
@@ -300,7 +362,37 @@ async fn handle_for_notebook(
     ))
 }
 
-fn resource_session_access_error(error: crate::session::SessionAccessError) -> McpError {
+fn observed_read(observer: &ObservationReader) -> Result<ChangeRead, McpError> {
+    let read = observer
+        .read(None)
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    if read.outcome == ChangeOutcome::Unavailable {
+        return Err(McpError::resource_not_found(
+            "Notebook attachment is no longer available",
+            None,
+        ));
+    }
+    Ok(read)
+}
+
+fn observed_resource(
+    uri: &str,
+    text: String,
+    handle: &str,
+    read: &ChangeRead,
+) -> Result<ReadResourceResult, McpError> {
+    let mut data: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    data["cursor"] = serde_json::json!(read.cursor);
+    data["notebook_handle"] = serde_json::json!(handle);
+    Ok(
+        ReadResourceResult::new(vec![json_resource(uri, data.to_string())])
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private),
+    )
+}
+
+pub(crate) fn resource_session_access_error(error: crate::session::SessionAccessError) -> McpError {
     McpError::internal_error(
         serde_json::json!({
             "error": {
@@ -323,30 +415,26 @@ fn json_resource(uri: &str, text: String) -> ResourceContents {
     }
 }
 
-fn cells_json(notebook_id: &str, handle: &notebook_sync::handle::DocHandle) -> String {
-    let status_by_cell = crate::tools::cell_read::build_cell_status_map(handle);
-    let execution_count_by_cell = crate::tools::cell_read::build_cell_execution_count_map(handle);
-    let outputs_by_cell = handle.get_all_outputs();
-    let cells = handle.get_cells();
+fn cells_json(notebook_id: &str, view: &ObservedNotebook, notebook_handle: &str) -> String {
+    let cells = view.notebook.cells();
     let cell_entries: Vec<_> = cells
         .iter()
         .enumerate()
         .map(|(index, cell)| {
-            let execution_id = handle.get_cell_execution_id(&cell.id);
-            let status = status_by_cell.get(&cell.id).cloned().or_else(|| {
-                (cell.cell_type == "code" && execution_id.is_none()).then(|| "never_run".into())
-            });
+            let execution_id = view.notebook.execution_pointers.get(&cell.id);
+            let execution = execution_id.and_then(|id| view.runtime.executions.get(id));
+            let status = observed_cell_status(view, cell);
             serde_json::json!({
                 "cell_id": cell.id,
-                "uri": notebook_cell_uri(notebook_id, &cell.id),
+                "uri": attachment_cell_uri(notebook_handle, &cell.id),
                 "cell_type": cell.cell_type,
-                "previous_cell_id": previous_cell_id(&cells, index),
-                "next_cell_id": next_cell_id(&cells, index),
+                "previous_cell_id": previous_cell_id(cells, index),
+                "next_cell_id": next_cell_id(cells, index),
                 "source_preview": source_preview(&cell.source, 160),
                 "execution_id": execution_id,
-                "execution_count": execution_count_by_cell.get(&cell.id),
+                "execution_count": execution.and_then(|entry| entry.execution_count).map(|count| count.to_string()),
                 "status": status,
-                "outputs": summarize_outputs(outputs_by_cell.get(&cell.id).map(Vec::as_slice).unwrap_or(&[])),
+                "outputs": summarize_outputs(execution.map(|entry| entry.outputs.as_slice()).unwrap_or(&[])),
             })
         })
         .collect();
@@ -370,31 +458,33 @@ fn next_cell_id(cells: &[notebook_doc::CellSnapshot], index: usize) -> Option<&s
 
 fn cell_json(
     notebook_id: &str,
-    handle: &notebook_sync::handle::DocHandle,
+    view: &ObservedNotebook,
     cell_id: &str,
+    notebook_handle: &str,
 ) -> Result<String, McpError> {
-    let cell = handle
+    let cell = view
+        .notebook
         .get_cell(cell_id)
         .ok_or_else(|| McpError::resource_not_found(format!("Cell not found: {cell_id}"), None))?;
-    let execution_id = handle.get_cell_execution_id(cell_id);
-    let execution_count =
-        crate::tools::cell_read::get_cell_execution_count_from_runtime(handle, cell_id);
-    let status_by_cell = crate::tools::cell_read::build_cell_status_map(handle);
-    let status = status_by_cell.get(cell_id).cloned().or_else(|| {
-        (cell.cell_type == "code" && execution_id.is_none()).then(|| "never_run".into())
-    });
-    let outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
-    let execution_count = (!execution_count.is_empty()).then_some(execution_count);
-    let cells = handle.get_cells();
+    let execution_id = view.notebook.execution_pointers.get(cell_id);
+    let execution = execution_id.and_then(|id| view.runtime.executions.get(id));
+    let execution_count = execution
+        .and_then(|entry| entry.execution_count)
+        .map(|count| count.to_string());
+    let status = observed_cell_status(view, cell);
+    let outputs = execution
+        .map(|entry| entry.outputs.as_slice())
+        .unwrap_or(&[]);
+    let cells = view.notebook.cells();
     let cell_index = cells.iter().position(|candidate| candidate.id == cell_id);
-    let previous_cell_id = cell_index.and_then(|index| previous_cell_id(&cells, index));
-    let next_cell_id = cell_index.and_then(|index| next_cell_id(&cells, index));
+    let previous_cell_id = cell_index.and_then(|index| previous_cell_id(cells, index));
+    let next_cell_id = cell_index.and_then(|index| next_cell_id(cells, index));
 
     Ok(serde_json::to_string_pretty(&serde_json::json!({
         "notebook_id": notebook_id,
         "cell": {
             "cell_id": cell.id,
-            "uri": notebook_cell_uri(notebook_id, cell_id),
+            "uri": attachment_cell_uri(notebook_handle, cell_id),
             "cell_type": cell.cell_type,
             "previous_cell_id": previous_cell_id,
             "next_cell_id": next_cell_id,
@@ -407,10 +497,42 @@ fn cell_json(
             "execution_id": execution_id,
             "execution_count": execution_count,
             "status": status,
-            "outputs": summarize_outputs(&outputs),
+            "outputs": summarize_outputs(outputs),
         }
     }))
     .unwrap_or_else(|_| "{}".into()))
+}
+
+fn observed_cell_status<'a>(
+    view: &'a ObservedNotebook,
+    cell: &notebook_doc::CellSnapshot,
+) -> Option<&'a str> {
+    let Some(id) = view.notebook.execution_pointers.get(&cell.id) else {
+        return (cell.cell_type == "code").then_some("never_run");
+    };
+    if view
+        .runtime
+        .queue
+        .executing
+        .as_ref()
+        .is_some_and(|entry| &entry.execution_id == id)
+    {
+        return Some("running");
+    }
+    if view
+        .runtime
+        .queue
+        .queued
+        .iter()
+        .any(|entry| &entry.execution_id == id)
+    {
+        return Some("queued");
+    }
+    view.runtime
+        .executions
+        .get(id)
+        .map(|entry| entry.status.as_str())
+        .filter(|status| matches!(*status, "done" | "error" | "cancelled"))
 }
 
 fn summarize_outputs(outputs: &[serde_json::Value]) -> Vec<serde_json::Value> {
@@ -444,7 +566,7 @@ fn source_preview(source: &str, max_chars: usize) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum NotebookResourceUri {
+pub(crate) enum NotebookResourceUri {
     Notebooks,
     Cells {
         notebook_id: String,
@@ -458,12 +580,15 @@ enum NotebookResourceUri {
     },
 }
 
-fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String> {
+pub(crate) fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String> {
     if uri == NOTEBOOKS_RESOURCE_URI {
         return Ok(NotebookResourceUri::Notebooks);
     }
 
-    let Some(rest) = uri.strip_prefix("nteract://notebooks/") else {
+    let Some(rest) = uri
+        .strip_prefix("nteract://notebooks/")
+        .or_else(|| uri.strip_prefix("nteract://sessions/"))
+    else {
         return Err(format!("Unknown nteract resource URI: {uri}"));
     };
     let parts: Vec<&str> = rest.split('/').collect();
@@ -480,6 +605,27 @@ fn parse_notebook_resource_uri(uri: &str) -> Result<NotebookResourceUri, String>
         }),
         _ => Err(format!("Unknown nteract resource URI: {uri}")),
     }
+}
+
+pub(crate) fn attachment_cells_uri(notebook_handle: &str) -> String {
+    format!(
+        "nteract://sessions/{}/cells",
+        encode_segment(notebook_handle)
+    )
+}
+
+pub(crate) fn attachment_cells_resource_link(notebook_handle: &str) -> Resource {
+    let mut resource = notebook_cells_resource_link(notebook_handle);
+    resource.uri = attachment_cells_uri(notebook_handle);
+    resource
+}
+
+fn attachment_cell_uri(notebook_handle: &str, cell_id: &str) -> String {
+    format!(
+        "{}/{}",
+        attachment_cells_uri(notebook_handle),
+        encode_segment(cell_id)
+    )
 }
 
 pub(crate) fn notebook_cells_uri(notebook_id: &str) -> String {
@@ -824,6 +970,43 @@ mod tests {
                 notebook_id: "nb 1".to_string(),
                 cell_id: "cell/with/slash".to_string()
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_body_keeps_its_snapshot_cursor_and_execution_pointer() {
+        let fixture = crate::observation::tests::fixture();
+        fixture
+            .notebook
+            .send_replace(crate::observation::tests::edited("old source"));
+        fixture.notebook.send_modify(|notebook| {
+            std::sync::Arc::make_mut(&mut notebook.execution_pointers)
+                .insert("cell-1".into(), "run-1".into());
+        });
+        fixture.runtime.send_modify(|runtime| {
+            runtime.executions.insert("run-1".into(), serde_json::from_value(serde_json::json!({"status":"done","execution_count":3,"outputs":[{"output_type":"stream","text":{"inline":"old output"}}]})).unwrap());
+            runtime.executions.insert("run-2".into(), serde_json::from_value(serde_json::json!({"status":"running","execution_count":4,"outputs":[]})).unwrap());
+        });
+        let observer = fixture.owner.reader();
+        let selected = observed_read(&observer).unwrap();
+        fixture
+            .notebook
+            .send_replace(crate::observation::tests::edited("new source"));
+        let uri = attachment_cell_uri("attachment", "cell-1");
+        let body = cell_json("notebook", &selected.snapshot, "cell-1", "attachment").unwrap();
+        let resource = observed_resource(&uri, body, "attachment", &selected).unwrap();
+        let data = serde_json::to_value(resource).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(data["contents"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["cursor"], selected.cursor);
+        assert_eq!(body["cell"]["source"], "old source");
+        assert_eq!(body["cell"]["execution_id"], "run-1");
+        assert_eq!(body["cell"]["execution_count"], "3");
+        assert_eq!(body["cell"]["status"], "done");
+        assert_eq!(body["cell"]["outputs"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            observer.read(Some(&selected.cursor)).unwrap().outcome,
+            ChangeOutcome::Changed
         );
     }
 

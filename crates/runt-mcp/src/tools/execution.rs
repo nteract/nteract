@@ -450,7 +450,7 @@ pub async fn get_results(
     ))
 }
 
-async fn render_execution_result(
+pub(super) async fn render_execution_result(
     server: &NteractMcp,
     execution_id: &str,
     exec: &runtime_doc::ExecutionState,

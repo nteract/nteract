@@ -4,6 +4,7 @@
 //! (local or remote). Readers access the latest state without acquiring
 //! the document mutex — they just borrow from the watch channel.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use notebook_doc::metadata::NotebookMetadataSnapshot;
@@ -23,6 +24,10 @@ pub struct NotebookSnapshot {
     /// Parsed notebook metadata (kernelspec, language_info, runt config).
     /// `None` if the document has no metadata yet.
     pub notebook_metadata: Option<NotebookMetadataSnapshot>,
+
+    /// Current execution pointers captured under the same document lock as
+    /// cells. Runtime entries alone cannot identify a cell's selected execution.
+    pub execution_pointers: Arc<BTreeMap<String, String>>,
 }
 
 impl NotebookSnapshot {
@@ -30,9 +35,17 @@ impl NotebookSnapshot {
     pub fn from_doc(doc: &automerge::AutoCommit) -> Self {
         use notebook_doc::{get_cells_from_doc, get_metadata_snapshot_from_doc};
 
+        let cells = get_cells_from_doc(doc);
+        let execution_pointers = cells
+            .iter()
+            .filter_map(|cell| {
+                crate::handle::read_execution_id(doc, &cell.id).map(|id| (cell.id.clone(), id))
+            })
+            .collect();
         Self {
-            cells: Arc::new(get_cells_from_doc(doc)),
+            cells: Arc::new(cells),
             notebook_metadata: get_metadata_snapshot_from_doc(doc),
+            execution_pointers: Arc::new(execution_pointers),
         }
     }
 
@@ -41,6 +54,7 @@ impl NotebookSnapshot {
         Self {
             cells: Arc::new(Vec::new()),
             notebook_metadata: None,
+            execution_pointers: Arc::new(BTreeMap::new()),
         }
     }
 

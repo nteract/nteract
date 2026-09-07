@@ -581,6 +581,7 @@ fn format_projected_cell_summaries(cells: &[NotebookCellProjection]) -> String {
 }
 
 fn add_progressive_session_fields(response: &mut serde_json::Value, session: &NotebookSession) {
+    response["notebook_handle"] = serde_json::json!(session.notebook_handle);
     let readiness = session.readiness();
     response["session_generation"] = serde_json::json!(readiness.session_generation);
     response["source_state"] = readiness.source_state.clone();
@@ -807,9 +808,19 @@ fn add_created_notebook_recovery(mut result: CallToolResult, notebook_id: &str) 
 
 fn notebook_session_response(mut response: serde_json::Value, notebook_id: &str) -> CallToolResult {
     response["resources"] = crate::resources::notebook_resources_json(notebook_id);
+    let link = if let Some(handle) = response["notebook_handle"].as_str().map(str::to_owned) {
+        let cells = crate::resources::attachment_cells_uri(&handle);
+        response["resources"] = serde_json::json!({
+            "cells": cells, "cell_template": format!("{cells}/{{cell_id}}"),
+            "comments": format!("nteract://sessions/{handle}/comments"),
+        });
+        crate::resources::attachment_cells_resource_link(&handle)
+    } else {
+        crate::resources::notebook_cells_resource_link(notebook_id)
+    };
     CallToolResult::success(vec![
         ContentBlock::text(serde_json::to_string_pretty(&response).unwrap_or_default()),
-        ContentBlock::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+        ContentBlock::resource_link(link),
     ])
 }
 

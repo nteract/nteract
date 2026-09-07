@@ -1911,6 +1911,7 @@ impl ServerHandler for Supervisor {
                 .enable_tools()
                 .enable_tool_list_changed()
                 .enable_resources()
+                .enable_resources_subscribe()
                 .enable_resources_list_changed()
                 .enable_extensions_with(mcp_apps_extension_capabilities())
                 .build(),
@@ -2074,6 +2075,37 @@ impl ServerHandler for Supervisor {
         self.handle_tool_call(request)
             .await
             .map(CallToolResponse::Complete)
+    }
+
+    #[allow(deprecated)]
+    async fn subscribe(
+        &self,
+        request: rmcp::model::SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
+        let proxy = {
+            let state = self.state.read().await;
+            Self::get_proxy(&state)?.clone()
+        };
+        proxy.forward_subscribe(request.uri, context.peer).await
+    }
+
+    #[allow(deprecated)]
+    async fn unsubscribe(
+        &self,
+        request: rmcp::model::UnsubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
+        let proxy = {
+            let state = self.state.read().await;
+            state.proxy.clone()
+        };
+        if let Some(proxy) = proxy {
+            proxy.forward_unsubscribe(request.uri).await?;
+        }
+        Ok(())
     }
 }
 

@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -189,6 +189,10 @@ pub struct SessionAccessError {
 
 /// An active notebook session connected via the daemon.
 pub struct NotebookSession {
+    /// Opaque identity of this concrete attachment. Parking preserves it;
+    /// reconnecting creates a new handle.
+    pub notebook_handle: String,
+    observation: OnceLock<Result<crate::observation::ObservationOwner, String>>,
     /// The Automerge document handle for this notebook.
     pub handle: DocHandle,
     /// The notebook ID (always a UUID).
@@ -211,6 +215,17 @@ pub struct NotebookSession {
 }
 
 impl NotebookSession {
+    pub fn observer(&self) -> Result<crate::observation::ObservationReader, String> {
+        self.observation
+            .get_or_init(|| {
+                crate::observation::ObservationOwner::new(&self.handle)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map(|owner| owner.reader())
+            .map_err(Clone::clone)
+    }
+
     pub fn local(
         handle: DocHandle,
         notebook_id: String,
@@ -219,6 +234,8 @@ impl NotebookSession {
     ) -> Self {
         let activation_target = format!("local:id:{notebook_id}");
         Self {
+            notebook_handle: uuid::Uuid::new_v4().to_string(),
+            observation: OnceLock::new(),
             handle,
             notebook_id,
             notebook_path,
@@ -240,6 +257,8 @@ impl NotebookSession {
         daemon_incarnation: Option<DaemonIncarnation>,
     ) -> Self {
         Self {
+            notebook_handle: uuid::Uuid::new_v4().to_string(),
+            observation: OnceLock::new(),
             handle,
             notebook_id,
             notebook_path,
@@ -256,6 +275,8 @@ impl NotebookSession {
     pub fn hosted(handle: DocHandle, notebook_id: String, domain: String) -> Self {
         let activation_target = crate::cloud::hosted_notebook_url(&domain, &notebook_id);
         Self {
+            notebook_handle: uuid::Uuid::new_v4().to_string(),
+            observation: OnceLock::new(),
             handle,
             notebook_id,
             notebook_path: None,
@@ -275,6 +296,8 @@ impl NotebookSession {
         activation_target: CanonicalNotebookTarget,
     ) -> Self {
         Self {
+            notebook_handle: uuid::Uuid::new_v4().to_string(),
+            observation: OnceLock::new(),
             handle,
             notebook_id,
             notebook_path: None,

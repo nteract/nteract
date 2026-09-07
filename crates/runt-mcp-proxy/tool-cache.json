@@ -212,6 +212,51 @@
     "name": "disconnect_notebook"
   },
   {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Wait for notebook changes or an exact execution.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "description": "Opaque cursor from a prior read or wait. Omit with no execution_id for an immediate baseline.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "execution_id": {
+          "description": "Wait for this exact execution to finish, including trailing output, even if its cell is rerun.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Attachment handle returned by connect_notebook or create_notebook.",
+          "type": "string"
+        },
+        "timeout_secs": {
+          "description": "Maximum wait in seconds. Default 25; must be between 0 and 50.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "notebook_handle"
+      ],
+      "title": "WaitForNotebookChangeParams",
+      "type": "object"
+    },
+    "name": "wait_for_notebook_change"
+  },
+  {
     "_meta": {
       "ui": {
         "resourceUri": "ui://nteract/output.html"

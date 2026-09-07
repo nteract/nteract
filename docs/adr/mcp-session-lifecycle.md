@@ -146,6 +146,48 @@ See `crates/runt-mcp/src/lib.rs:119`, `:273`,
 `crates/runt-mcp/src/tools/session.rs:74`, `:742`, `:949`, `:1200`, and
 `crates/runt-mcp/src/resources.rs:285`.
 
+## Notebook observation
+
+Connect and create responses return an opaque `notebook_handle` for the exact
+attachment. Handle-qualified `nteract://sessions/{notebook_handle}/cells`,
+`/cells/{cell_id}`, and `/comments` resources also work while that session is
+parked. A replacement or release invalidates its handle. A reconnect must return
+a new handle; an old handle never silently binds to the new peer. Legacy
+notebook-ID resource URIs remain readable, but ambiguous IDs require a handle.
+
+Each observed session owns one observer of NotebookDoc snapshots (including
+execution pointers), RuntimeStateDoc, CommentsDoc, and sync status. Observers
+subscribe before reading their baseline. Resource reads return the cursor for
+the exact snapshot they serialize. The journal retains 256 compact change
+batches, coalescing background updates over 100 ms. Reads flush pending changes
+before selecting their cursor. The journal stores IDs and change kinds, not
+copies of cell source or output bodies. Expired or foreign cursors require a
+fresh baseline. Mutable notebook reads use private caching with a zero TTL.
+
+Legacy `resources/subscribe` watches emit URI invalidations. A connection can
+hold 128 watches; unsubscribing is idempotent. The proxy orders subscription
+operations and forwards child notifications, invalidating watches when that
+child transport ends. Watches retain snapshot receivers rather than DocHandle
+command senders, so they do not independently keep notebook peers or kernels
+alive. Releasing a session wakes pending observers as unavailable.
+
+`wait_for_notebook_change` is the bounded fallback for hosts that do not make
+resource notifications available to agents. It requires a notebook handle,
+accepts an optional cursor and execution ID, and waits 25 seconds by default
+(50 seconds maximum, eight simultaneous waits per connection). Without a
+cursor or execution ID it returns an immediate baseline. An execution wait
+follows that exact execution, including trailing stream output, independently
+of later edits or reruns of its cell. Completion uses the existing output
+formatter and the execution's captured source. Cancellation ends observation;
+it does not interrupt the kernel. The tool returns baseline, changed, completed,
+timed_out, resync_required, or unavailable, with compact changes and resource
+links. Neither notification delivery nor a progress callback proves that a host
+has refreshed model context.
+
+This observation layer does not by itself enable the native `2026-07-28`
+lifecycle or `subscriptions/listen`; those require their own transport and
+discovery support at every entrypoint.
+
 ## Decision 4: Tool intent and guarded publication are the convergence point
 
 Recovery connects outside the session lock. It captures `session_intent_epoch`

@@ -75,6 +75,7 @@ mod deps;
 mod editing;
 mod execution;
 mod kernel;
+mod observation;
 mod session;
 
 /// Helper to generate a tool's input schema from a type.
@@ -156,6 +157,12 @@ pub fn all_tools() -> Vec<Tool> {
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         // -- Cell CRUD --
+        Tool::new(
+            "wait_for_notebook_change",
+            "Wait for notebook changes or an exact execution.",
+            schema_for::<observation::WaitForNotebookChangeParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "create_cell",
             "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
@@ -357,6 +364,7 @@ pub async fn dispatch(
         "save_notebook" => session::save_notebook(server, request).await,
         "show_notebook" | "launch_app" => session::show_notebook(server, request).await,
         "disconnect_notebook" => session::disconnect_notebook(server, request).await,
+        "wait_for_notebook_change" => observation::wait_for_notebook_change(server, request).await,
         // Cell read. Hidden from tool listing but still callable for backwards compat;
         // resource-aware clients should read nteract://notebooks/{notebook_id}/cells.
         "get_cell" => cell_read::get_cell(server, request).await,

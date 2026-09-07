@@ -161,6 +161,35 @@ impl ServerHandler for LegacyChild {
         })).expect("legacy resource result"))
     }
 
+    async fn subscribe(
+        &self,
+        request: rmcp_legacy::model::SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        if request.uri == "compatibility://missing" {
+            return Err(ErrorData::resource_not_found(
+                "Missing fixture resource",
+                None,
+            ));
+        }
+        context
+            .peer
+            .notify_resource_updated(rmcp_legacy::model::ResourceUpdatedNotificationParam {
+                uri: request.uri,
+            })
+            .await
+            .unwrap();
+        Ok(())
+    }
+
+    async fn unsubscribe(
+        &self,
+        _: rmcp_legacy::model::UnsubscribeRequestParams,
+        _: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        Ok(())
+    }
+
     async fn call_tool(
         &self,
         request: CallToolRequestParams,

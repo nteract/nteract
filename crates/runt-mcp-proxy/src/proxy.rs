@@ -182,6 +182,7 @@ pub struct McpProxy {
     /// Stable across child generations so automatic rejoin retains the exact
     /// operator used by the explicit connect in the previous child.
     operator_session: String,
+    observation_bridge: Arc<crate::observation_bridge::ObservationBridge>,
 }
 
 impl McpProxy {
@@ -223,6 +224,7 @@ impl McpProxy {
             exit_signal: Arc::new(Notify::new()),
             restart_in_progress: Arc::new(Mutex::new(false)),
             operator_session: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
+            observation_bridge: Arc::default(),
         }
     }
 
@@ -237,6 +239,32 @@ impl McpProxy {
             self.operator_session.clone(),
         );
         child_env
+    }
+
+    /// Set the upstream client identity (from MCP initialize handshake).
+    pub async fn forward_subscribe(
+        &self,
+        uri: String,
+        upstream: Peer<RoleServer>,
+    ) -> Result<(), McpError> {
+        let (peer, notifications) = {
+            let state = self.state.read().await;
+            let client = state
+                .child_client
+                .as_ref()
+                .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
+            (
+                client.peer().clone(),
+                client.service().notifications.subscribe(),
+            )
+        };
+        self.observation_bridge
+            .subscribe(uri, peer, notifications, upstream)
+            .await
+    }
+
+    pub async fn forward_unsubscribe(&self, uri: String) -> Result<(), McpError> {
+        self.observation_bridge.unsubscribe(uri).await
     }
 
     /// Set the upstream client identity (from MCP initialize handshake).
@@ -1187,6 +1215,7 @@ fn tool_can_be_replayed(name: &str) -> bool {
             | "get_all_cells"
             | "get_results"
             | "get_dependencies"
+            | "wait_for_notebook_change"
     )
 }
 
@@ -1300,6 +1329,7 @@ impl ServerHandler for McpProxy {
                 .enable_tools()
                 .enable_tool_list_changed()
                 .enable_resources()
+                .enable_resources_subscribe()
                 .enable_resources_list_changed()
                 .enable_extensions_with(crate::mcp_apps_extension_capabilities())
                 .build(),
@@ -1394,6 +1424,26 @@ impl ServerHandler for McpProxy {
     ) -> Result<ReadResourceResponse, McpError> {
         require_legacy_handshake(&context)?;
         self.forward_read_resource(request).await.map(Into::into)
+    }
+
+    #[allow(deprecated)]
+    async fn subscribe(
+        &self,
+        request: rmcp::model::SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
+        self.forward_subscribe(request.uri, context.peer).await
+    }
+
+    #[allow(deprecated)]
+    async fn unsubscribe(
+        &self,
+        request: rmcp::model::UnsubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
+        self.forward_unsubscribe(request.uri).await
     }
 
     async fn call_tool(

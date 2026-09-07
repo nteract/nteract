@@ -49,7 +49,7 @@ pub(crate) fn tool_icon(name: &str) -> Option<IconKind> {
         "move_cell" => IconKind::MoveCell,
         "execute_cell" => IconKind::RunCell,
         "run_all_cells" => IconKind::RunAllCells,
-        "get_results" => IconKind::GetResults,
+        "get_results" | "wait_for_notebook_change" => IconKind::GetResults,
         "interrupt_kernel" => IconKind::InterruptKernel,
         "restart_kernel" => IconKind::RestartKernel,
         "manage_dependencies" => IconKind::ManageDependencies,

@@ -89,6 +89,10 @@
       "name": "disconnect_notebook"
     },
     {
+      "description": "Wait for notebook changes or an exact execution.",
+      "name": "wait_for_notebook_change"
+    },
+    {
       "description": "Create a cell anchored by after_cell_id; omit after_cell_id to append.",
       "name": "create_cell"
     },

@@ -238,6 +238,53 @@ async fn stop_child(proxy: &McpProxy) {
     }
 }
 
+#[tokio::test]
+async fn resource_subscriptions_relay_early_notifications_and_invalidate_on_child_loss() {
+    let (_dir, proxy, _) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    let info = wire.initialize("2025-11-25").await;
+    assert_eq!(
+        legacy_result(&info)["capabilities"]["resources"]["subscribe"],
+        true
+    );
+    wire.initialized().await;
+    let uri = "compatibility://resource";
+    let subscribed = wire
+        .request(2, "resources/subscribe", Some(json!({"uri":uri})))
+        .await;
+    assert_eq!(legacy_result(&subscribed), &json!({}));
+    wire.notification("notifications/resources/updated").await;
+    assert!(wire
+        .notifications
+        .iter()
+        .any(|notification| notification["params"]["uri"] == uri));
+    wire.notifications.clear();
+    let duplicate = wire
+        .request(3, "resources/subscribe", Some(json!({"uri":uri})))
+        .await;
+    assert_eq!(legacy_result(&duplicate), &json!({}));
+    let rejected = wire
+        .request(
+            4,
+            "resources/subscribe",
+            Some(json!({"uri":"compatibility://missing"})),
+        )
+        .await;
+    assert_eq!(rejected["error"]["code"], -32002);
+    stop_child(&proxy).await;
+    wire.notification("notifications/resources/updated").await;
+    assert!(wire
+        .notifications
+        .iter()
+        .any(|notification| notification["params"]["uri"] == uri));
+    let unsubscribed = wire
+        .request(5, "resources/unsubscribe", Some(json!({"uri":uri})))
+        .await;
+    assert_eq!(legacy_result(&unsubscribed), &json!({}));
+    wire.finish().await;
+}
+
 async fn legacy_proxy_wire(version: &str) {
     let (dir, proxy, resolves) = isolated_proxy();
     proxy
