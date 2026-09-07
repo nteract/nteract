@@ -357,6 +357,7 @@ async fn concurrent_progress_uses_each_upstream_token_and_is_opt_in() {
         .notifications
         .iter()
         .any(|notification| notification["method"] == "notifications/progress"));
+    assert!(!_dir.path().join("progress-requested-92").exists());
     stop_child(&proxy).await;
     wire.finish().await;
 }
@@ -368,7 +369,7 @@ async fn cancellation_targets_child_request_but_background_execution_continues()
     let mut wire = Wire::start(proxy.clone());
     wire.initialize("2025-11-25").await;
     wire.initialized().await;
-    wire.send(json!({"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":99},"_meta":{"progressToken":"cancel-this"}}})).await;
+    wire.send(json!({"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":99,"expect_cancel":true},"_meta":{"progressToken":"cancel-this"}}})).await;
     wire.notification("notifications/progress").await;
     wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99,"reason":"stop waiting"}})).await;
     timeout(DEADLINE, async {
@@ -393,13 +394,90 @@ async fn cancellation_targets_child_request_but_background_execution_continues()
 }
 
 #[tokio::test]
+async fn safe_retry_retains_one_progress_clock_and_upstream_token() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    wire.send(json!({"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"get_results","arguments":{"probe_progress":true},"_meta":{"progressToken":"retry"}}})).await;
+    let mut updates = Vec::new();
+    for attempt in 1..=2 {
+        wire.notification("notifications/progress").await;
+        let update = wire.notifications.pop().unwrap();
+        assert_eq!(update["params"]["progressToken"], "retry");
+        assert_eq!(update["params"]["message"], format!("attempt-{attempt}"));
+        updates.push(update["params"]["progress"].as_f64().unwrap());
+        std::fs::write(
+            dir.path().join(format!("release-attempt-{attempt}")),
+            "continue",
+        )
+        .unwrap();
+    }
+    assert!(updates[1] - updates[0] >= 1.0, "{updates:?}");
+    let response = wire.receive().await;
+    assert_eq!(response["id"], 104);
+    assert!(response.get("result").is_some());
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn upstream_disconnect_while_waiting_for_startup_ends_promptly() {
+    let (_dir, proxy, resolves) = isolated_proxy();
+    let mut wire = Wire::start(proxy);
+    wire.initialize("2025-11-25").await;
+    // Deliberately omit notifications/initialized so no child starts.
+    wire.send(
+        json!({"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"get_results"}}),
+    )
+    .await;
+    timeout(std::time::Duration::from_secs(1), wire.finish())
+        .await
+        .unwrap();
+    assert_eq!(resolves.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn reconnect_outlives_its_cancelled_observer_and_remains_single_flight() {
+    let (_dir, proxy, resolves) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let generation = proxy.state.read().await.child_generation;
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    wire.send(
+        json!({"jsonrpc":"2.0","id":103,"method":"tools/call","params":{"name":"reconnect"}}),
+    )
+    .await;
+    timeout(DEADLINE, async {
+        while proxy.state.read().await.child_generation == generation {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    timeout(std::time::Duration::from_secs(1), wire.finish())
+        .await
+        .unwrap();
+    // A second waiter joins the owned restart instead of reporting early success.
+    timeout(DEADLINE, proxy.restart_child())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolves.load(Ordering::SeqCst), 2);
+    assert!(proxy.state.read().await.child_client.is_some());
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
 async fn upstream_disconnect_cancels_the_child_wait() {
     let (dir, proxy, _) = isolated_proxy();
     proxy.init_child().await.unwrap();
     let mut wire = Wire::start(proxy.clone());
     wire.initialize("2025-11-25").await;
     wire.initialized().await;
-    wire.send(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":101},"_meta":{"progressToken":"disconnect"}}})).await;
+    wire.send(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":101,"expect_cancel":true},"_meta":{"progressToken":"disconnect"}}})).await;
     wire.notification("notifications/progress").await;
     wire.finish().await;
     timeout(DEADLINE, async {

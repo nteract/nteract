@@ -23,7 +23,11 @@ struct ScopedRequest {
 
 /// Preserve the upstream request while supervisor helpers forward to the child.
 /// The scope follows this future only; independent requests have separate state.
-pub async fn scope<T>(context: RequestContext<RoleServer>, future: impl Future<Output = T>) -> T {
+pub async fn scope<T>(
+    context: RequestContext<RoleServer>,
+    future: impl Future<Output = Result<T, rmcp::ErrorData>>,
+) -> Result<T, rmcp::ErrorData> {
+    let cancellation_context = context.clone();
     UPSTREAM_REQUEST
         .scope(
             ScopedRequest {
@@ -31,7 +35,13 @@ pub async fn scope<T>(context: RequestContext<RoleServer>, future: impl Future<O
                 started: tokio::time::Instant::now(),
                 last_progress: Arc::default(),
             },
-            future,
+            async {
+                tokio::select! {
+                    biased;
+                    _ = mcp_transport::cancelled(&cancellation_context) => Err(mcp_transport::cancellation_error()),
+                    result = future => result,
+                }
+            },
         )
         .await
 }
@@ -77,10 +87,14 @@ pub(crate) async fn call_child(
         return peer.call_tool_once(params).await;
     };
     let context = &scope.context;
+    let mut request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+    if context.meta.get_progress_token().is_none() {
+        mcp_transport::suppress_progress(&mut request);
+    }
     let handle = tokio::select! {
         biased;
         _ = mcp_transport::cancelled(context) => return Err(cancelled()),
-        result = peer.send_cancellable_request(ClientRequest::CallToolRequest(CallToolRequest::new(params)), PeerRequestOptions::no_options()) => result?,
+        result = peer.send_cancellable_request(request, PeerRequestOptions::no_options()) => result?,
     };
     let child_token = handle.progress_token.clone();
     let upstream_token = context.meta.get_progress_token();

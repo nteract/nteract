@@ -26,6 +26,7 @@ pub struct ChildClientHandler {
     pub notifications:
         tokio::sync::broadcast::Sender<rmcp::model::ResourceUpdatedNotificationParam>,
     pub progress: tokio::sync::broadcast::Sender<rmcp::model::ProgressNotificationParam>,
+    pub lifetime: mcp_transport::ConnectionLifetime,
 }
 
 impl ClientHandler for ChildClientHandler {
@@ -244,12 +245,14 @@ pub async fn spawn_child(
 
     let (transport, exit_status) = spawn_managed_transport(command, args, env)
         .map_err(|e| format!("Failed to spawn child process: {e}"))?;
+    let (transport, lifetime) = mcp_transport::client(transport);
 
     let handler = ChildClientHandler {
         upstream_name: upstream_name.to_string(),
         upstream_title: upstream_title.map(|s| s.to_string()),
         notifications: tokio::sync::broadcast::channel(256).0,
         progress: tokio::sync::broadcast::channel(256).0,
+        lifetime,
     };
 
     let client = handler
@@ -294,6 +297,7 @@ mod tests {
             upstream_title: Some("Codex".to_string()),
             notifications: tokio::sync::broadcast::channel(256).0,
             progress: tokio::sync::broadcast::channel(256).0,
+            lifetime: Default::default(),
         };
         let info = handler.get_info();
         assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
@@ -328,6 +332,7 @@ mod tests {
             upstream_title: None,
             notifications: tokio::sync::broadcast::channel(256).0,
             progress: tokio::sync::broadcast::channel(256).0,
+            lifetime: Default::default(),
         };
         let client = handler
             .serve(client_side)

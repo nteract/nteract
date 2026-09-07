@@ -6,7 +6,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use rmcp::model::{ErrorCode, ProgressNotificationParam};
+use rmcp::model::ProgressNotificationParam;
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ErrorData as McpError;
 use tokio::sync::watch;
@@ -26,13 +26,7 @@ pub(crate) async fn run<T>(
     tool: &str,
     operation: impl Future<Output = Result<T, McpError>>,
 ) -> Result<T, McpError> {
-    let cancelled = || {
-        McpError::new(
-            ErrorCode(-32800),
-            "Request observation cancelled; daemon execution may continue",
-            None,
-        )
-    };
+    let cancelled = mcp_transport::cancellation_error;
     let Some(token) = context.meta.get_progress_token() else {
         return tokio::select! { biased; _ = mcp_transport::cancelled(context) => Err(cancelled()), result = operation => result };
     };
@@ -57,7 +51,10 @@ pub(crate) async fn run<T>(
         if elapsed_since_send.is_none_or(|elapsed| elapsed >= Duration::from_secs(5)) {
             pending = true;
         }
-        if pending && elapsed_since_send.is_none_or(|elapsed| elapsed >= Duration::from_secs(1)) {
+        if pending
+            && started.elapsed() >= Duration::from_secs(1)
+            && elapsed_since_send.is_none_or(|elapsed| elapsed >= Duration::from_secs(1))
+        {
             let elapsed = started.elapsed().as_secs_f64();
             let message = format!(
                 "{} ({elapsed:.0}s elapsed)",

@@ -17,7 +17,7 @@ use rmcp::model::{
 };
 use rmcp::service::{NotificationContext, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
-use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio::sync::{mpsc, Notify, RwLock};
 use tracing::{error, info, warn};
 
 use crate::child::{self, ChildExitStatus, RunningChild};
@@ -169,6 +169,8 @@ pub struct ProxyState {
 }
 
 /// The MCP proxy — manages child process lifecycle and forwards MCP calls.
+type RestartCompletion = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
+
 #[derive(Clone)]
 pub struct McpProxy {
     pub state: Arc<RwLock<ProxyState>>,
@@ -177,8 +179,8 @@ pub struct McpProxy {
     pub child_ready: Arc<Notify>,
     /// Signaled when the proxy should exit (incompatible tool divergence).
     pub exit_signal: Arc<Notify>,
-    /// Flag to prevent concurrent restarts (monitor + tool call racing).
-    restart_in_progress: Arc<Mutex<bool>>,
+    /// Shared completion for one owned restart (monitor and requests may join).
+    restart_in_progress: Arc<std::sync::Mutex<Option<RestartCompletion>>>,
     /// Stable across child generations so automatic rejoin retains the exact
     /// operator used by the explicit connect in the previous child.
     operator_session: String,
@@ -222,7 +224,7 @@ impl McpProxy {
             config: Arc::new(config),
             child_ready: Arc::new(Notify::new()),
             exit_signal: Arc::new(Notify::new()),
-            restart_in_progress: Arc::new(Mutex::new(false)),
+            restart_in_progress: Arc::default(),
             operator_session: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
             observation_bridge: Arc::default(),
         }
@@ -399,15 +401,40 @@ impl McpProxy {
     }
 
     async fn restart_child_for_reason(&self) -> Result<(), String> {
-        // Prevent concurrent restarts (monitor task + tool call racing)
-        let mut restart_lock = self.restart_in_progress.lock().await;
-        if *restart_lock {
-            info!("Restart already in progress, skipping duplicate request");
-            return Ok(());
+        let mut completion = {
+            let mut running = self
+                .restart_in_progress
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if running
+                .as_ref()
+                .is_none_or(|receiver| receiver.borrow().is_some())
+            {
+                let (sender, receiver) = tokio::sync::watch::channel(None);
+                let proxy = self.clone();
+                tokio::spawn(async move {
+                    let result = proxy.restart_child_owned().await;
+                    sender.send_replace(Some(result));
+                });
+                *running = Some(receiver);
+            }
+            running
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| "Restart completion channel unavailable".to_string())?
+        };
+        loop {
+            if let Some(result) = completion.borrow_and_update().clone() {
+                return result;
+            }
+            completion
+                .changed()
+                .await
+                .map_err(|_| "Restart task ended without a result".to_string())?;
         }
-        *restart_lock = true;
-        drop(restart_lock);
+    }
 
+    async fn restart_child_owned(&self) -> Result<(), String> {
         let reason = self.current_child_restart_reason().await;
         info!(
             event = "child_restart_classified",
@@ -463,7 +490,6 @@ impl McpProxy {
                 );
                 state.reconnection_message = Some(msg.clone());
                 drop(state);
-                self.clear_restart_in_progress().await;
                 return Err(msg);
             }
 
@@ -497,7 +523,6 @@ impl McpProxy {
                 let mut state = self.state.write().await;
                 state.reconnection_message = Some(msg.clone());
                 drop(state);
-                self.clear_restart_in_progress().await;
                 return Err(msg);
             }
         };
@@ -607,8 +632,6 @@ impl McpProxy {
                     let _ = tx.send(()).await;
                     info!("Notified upstream client of tool list change to keep connection alive");
                 }
-
-                self.clear_restart_in_progress().await;
                 self.child_ready.notify_waiters();
                 info!("Child restarted successfully");
                 Ok(())
@@ -618,7 +641,6 @@ impl McpProxy {
                 state.reconnection_message = Some(format!("Child restart failed: {e}"));
                 error!("Failed to restart child: {e}");
                 drop(state);
-                self.clear_restart_in_progress().await;
                 Err(e)
             }
         }
@@ -1085,7 +1107,7 @@ impl McpProxy {
                 ),
                 generation: Some(generation),
                 transport_closed: false,
-                may_have_run: false,
+                may_have_run: true,
             }),
             Err(error) => Err(ForwardToolFailure {
                 transport_closed: snapshot.peer.is_transport_closed()
@@ -1262,10 +1284,6 @@ impl McpProxy {
             restart_count,
             "Slow child MCP call"
         );
-    }
-
-    async fn clear_restart_in_progress(&self) {
-        *self.restart_in_progress.lock().await = false;
     }
 }
 
@@ -1533,6 +1551,7 @@ impl ServerHandler for McpProxy {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_legacy_handshake(&context)?;
+        crate::request_scope::scope(context.clone(), async {
         // Intercept the built-in reconnect tool before waiting on child
         // readiness — reconnect is the escape hatch when the child is
         // wedged, so it must not block on child readiness itself.
@@ -1550,14 +1569,13 @@ impl ServerHandler for McpProxy {
             );
             tokio::select! {
                 biased;
-                _ = context.ct.cancelled() => return Err(McpError::new(rmcp::model::ErrorCode(-32800), "Request cancelled before the child became ready", None)),
+                _ = mcp_transport::cancelled(&context) => return Err(McpError::new(rmcp::model::ErrorCode(-32800), "Request cancelled before the child became ready", None)),
                 _ = tokio::time::timeout(Duration::from_secs(60), notified) => {},
             }
         }
 
-        crate::request_scope::scope(context, self.forward_tool_call(request))
-            .await
-            .map(Into::into)
+        self.forward_tool_call(request).await.map(Into::into)
+        }).await
     }
 
     // Spawn the child only after the client has sent `notifications/initialized`.
@@ -2562,17 +2580,20 @@ mod tests {
     #[tokio::test]
     async fn restart_in_progress_prevents_duplicate_restarts() {
         let proxy = McpProxy::new(test_config(), None);
-
-        // Simulate restart in progress
-        *proxy.restart_in_progress.lock().await = true;
-
-        // Attempt restart should return early
-        let result = proxy.restart_child().await;
-
-        // Should succeed but do nothing (early return)
-        assert!(result.is_ok());
-
-        // Restart count should still be 0
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        *proxy.restart_in_progress.lock().unwrap() = Some(receiver);
+        let first = proxy.restart_child();
+        let second = proxy.restart_child();
+        tokio::pin!(first, second);
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut first)
+            .await
+            .is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut second)
+            .await
+            .is_err());
+        sender.send_replace(Some(Err("shared restart failure".to_string())));
+        assert_eq!(first.await.unwrap_err(), "shared restart failure");
+        assert_eq!(second.await.unwrap_err(), "shared restart failure");
         assert_eq!(proxy.restart_count().await, 0);
     }
 
