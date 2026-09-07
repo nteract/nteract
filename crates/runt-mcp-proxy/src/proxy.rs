@@ -10,9 +10,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, Implementation, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, ReadResourceRequestParams, ReadResourceResult,
-    ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::service::{NotificationContext, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
@@ -81,7 +82,8 @@ fn circuit_breaker_allows_restart(
 /// reachable when the child started — the proxy degrades to a generic
 /// "child restarted" reconnection banner in that case.
 fn extract_daemon_version(client: &child::RunningChild) -> Option<String> {
-    let title = client.peer_info()?.server_info.title.as_deref()?;
+    let peer_info = client.peer_info()?;
+    let title = peer_info.server_info.as_ref()?.title.as_deref()?;
     // Title format: "nteract (daemon X.Y.Z)".
     let open = title.find("(daemon ")?;
     let close = title.rfind(')')?;
@@ -920,10 +922,12 @@ impl McpProxy {
         let generation = snapshot.generation;
         let start = Instant::now();
 
-        let result =
-            snapshot.peer.call_tool(params.clone()).await.map_err(|e| {
-                McpError::internal_error(format!("Child tool call failed: {e}"), None)
-            });
+        let result = snapshot
+            .peer
+            .call_tool_once(params.clone())
+            .await
+            .map_err(|e| McpError::internal_error(format!("Child tool call failed: {e}"), None))
+            .and_then(complete_tool_response);
         self.log_child_call_if_slow(
             "call_tool",
             Some(params.name.as_ref()),
@@ -944,11 +948,10 @@ impl McpProxy {
 
         let result = snapshot
             .peer
-            .read_resource(params.clone())
+            .read_resource_once(params.clone())
             .await
-            .map_err(|e| {
-                McpError::internal_error(format!("Child resource read failed: {e}"), None)
-            });
+            .map_err(|e| McpError::internal_error(format!("Child resource read failed: {e}"), None))
+            .and_then(complete_resource_response);
         self.log_child_call_if_slow(
             "read_resource",
             Some(params.uri.as_ref()),
@@ -1003,7 +1006,7 @@ impl McpProxy {
             // Prepend the reconnection notice before the actual tool result
             result
                 .content
-                .insert(0, Content::text(format!("[nteract] {msg}\n")));
+                .insert(0, ContentBlock::text(format!("[nteract] {msg}\n")));
         }
     }
 
@@ -1095,6 +1098,38 @@ struct ChildPeerSnapshot {
     generation: u64,
 }
 
+fn require_legacy_handshake(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
+    if context.peer.peer_info().is_none() {
+        return Err(McpError::invalid_request(
+            "initialize is required before application requests",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn complete_tool_response(response: CallToolResponse) -> Result<CallToolResult, McpError> {
+    match response {
+        CallToolResponse::Complete(result) => Ok(result),
+        _ => Err(McpError::internal_error(
+            "Child returned a non-final tool response on a legacy MCP connection",
+            None,
+        )),
+    }
+}
+
+fn complete_resource_response(
+    response: ReadResourceResponse,
+) -> Result<ReadResourceResult, McpError> {
+    match response {
+        ReadResourceResponse::Complete(result) => Ok(result),
+        _ => Err(McpError::internal_error(
+            "Child returned a non-final resource response on a legacy MCP connection",
+            None,
+        )),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ServerHandler — used when McpProxy is the top-level MCP server (nteract-mcp)
 // ---------------------------------------------------------------------------
@@ -1103,6 +1138,37 @@ struct ChildPeerSnapshot {
 /// IS the MCP server. The supervisor wraps this with its own ServerHandler that
 /// adds supervisor_* tools.
 impl ServerHandler for McpProxy {
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, McpError> {
+        if context.peer.peer_info().as_deref() != Some(&request) {
+            return Err(McpError::invalid_request(
+                "initialize cannot change an existing connection or follow application requests",
+                None,
+            ));
+        }
+        let mut info = self.get_info();
+        if self
+            .supported_protocol_versions()
+            .contains(&request.protocol_version)
+        {
+            info.protocol_version = request.protocol_version;
+        }
+        Ok(info)
+    }
+
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        const VERSIONS: &[ProtocolVersion] = &[
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+        ];
+        std::borrow::Cow::Borrowed(VERSIONS)
+    }
+
     fn get_info(&self) -> ServerInfo {
         // list_tools serves the cached tool set synchronously so the first
         // client response is fast, then on_initialized spawns the child and
@@ -1119,6 +1185,7 @@ impl ServerHandler for McpProxy {
                 .enable_extensions_with(crate::mcp_apps_extension_capabilities())
                 .build(),
         )
+        .with_protocol_version(ProtocolVersion::V_2025_11_25)
         .with_server_info(Implementation::new(
             &self.config.server_name,
             env!("CARGO_PKG_VERSION"),
@@ -1132,11 +1199,39 @@ impl ServerHandler for McpProxy {
         )
     }
 
+    async fn discover(
+        &self,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::DiscoverResult, McpError> {
+        Err(McpError::method_not_found::<
+            rmcp::model::DiscoverRequestMethod,
+        >())
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListPromptsResult, McpError> {
+        require_legacy_handshake(&context)?;
+        Ok(rmcp::model::ListPromptsResult::default())
+    }
+
+    async fn complete(
+        &self,
+        _request: rmcp::model::CompleteRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CompleteResult, McpError> {
+        require_legacy_handshake(&context)?;
+        Ok(rmcp::model::CompleteResult::default())
+    }
+
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        require_legacy_handshake(&context)?;
         // Serve tools optimistically: if the child is connected, query it live;
         // otherwise return the cached/built-in tool definitions immediately.
         // This avoids blocking the MCP client during async child initialization.
@@ -1152,47 +1247,47 @@ impl ServerHandler for McpProxy {
             cached
         };
         tools.push(reconnect_tool());
-        Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn list_resources(
         &self,
         request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
+        require_legacy_handshake(&context)?;
         Ok(self.child_resources(request).await)
     }
 
     async fn list_resource_templates(
         &self,
         request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
+        require_legacy_handshake(&context)?;
         Ok(self.child_resource_templates(request).await)
     }
 
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        self.forward_read_resource(request).await
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        require_legacy_handshake(&context)?;
+        self.forward_read_resource(request).await.map(Into::into)
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        require_legacy_handshake(&context)?;
         // Intercept the built-in reconnect tool before waiting on child
         // readiness — reconnect is the escape hatch when the child is
         // wedged, so it must not block on child readiness itself.
         if request.name == RECONNECT_TOOL_NAME {
-            return self.handle_reconnect().await;
+            return self.handle_reconnect().await.map(Into::into);
         }
 
         // Wait for child if not ready
@@ -1206,13 +1301,16 @@ impl ServerHandler for McpProxy {
             let _ = tokio::time::timeout(Duration::from_secs(60), notified).await;
         }
 
-        self.forward_tool_call(request).await
+        self.forward_tool_call(request).await.map(Into::into)
     }
 
     // Spawn the child only after the client has sent `notifications/initialized`.
     // Once the child is up, send tools/list_changed and resources/list_changed
     // so the client re-queries and replaces the cached list with the live one.
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if context.peer.peer_info().is_none() {
+            return;
+        }
         if self.state.read().await.child_client.is_some() {
             return;
         }
@@ -1286,7 +1384,7 @@ impl McpProxy {
         let pending = self.state.write().await.reconnection_message.take();
         let detail = pending.unwrap_or_else(|| "Child restarted.".to_string());
         let body = format!("{detail}\n\nRestart #{restart_count} (was #{prior_restart_count}).");
-        Ok(CallToolResult::success(vec![Content::text(body)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
     }
 }
 
@@ -1297,7 +1395,6 @@ impl McpProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::Content;
     use std::collections::HashMap;
 
     fn test_config() -> ProxyConfig {
@@ -1309,6 +1406,74 @@ mod tests {
             cache_dir: None,
             monitor_poll_interval_ms: 500,
             recovery_hint: "Test recovery hint.".to_string(),
+        }
+    }
+
+    async fn first_request_response(request: serde_json::Value) -> serde_json::Value {
+        use rmcp::ServiceExt;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let proxy = McpProxy::new(test_config(), None);
+        let (server_side, mut client_side) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            if let Ok(service) = proxy.serve(server_side).await {
+                let _ = service.waiting().await;
+            }
+        });
+        let mut encoded = serde_json::to_vec(&request).unwrap();
+        encoded.push(b'\n');
+        client_side.write_all(&encoded).await.unwrap();
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            BufReader::new(client_side).read_line(&mut response),
+        )
+        .await
+        .expect("first request should receive a response")
+        .unwrap();
+        server.abort();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    #[tokio::test]
+    async fn legacy_initialize_negotiates_each_supported_version() {
+        let proxy = McpProxy::new(test_config(), None);
+        let versions = proxy.supported_protocol_versions();
+        assert_eq!(versions.len(), 4);
+        for version in versions.iter() {
+            let response = first_request_response(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": version,
+                    "capabilities": {},
+                    "clientInfo": { "name": "test-client", "version": "1" }
+                }
+            }))
+            .await;
+            assert_eq!(response["result"]["protocolVersion"], version.as_str());
+            assert!(response.get("error").is_none(), "{response}");
+        }
+    }
+
+    #[tokio::test]
+    async fn modern_first_requests_are_rejected_before_dispatch() {
+        for method in ["server/discover", "tools/list"] {
+            let response = first_request_response(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {}
+                    }
+                }
+            }))
+            .await;
+            assert_eq!(response["error"]["code"], -32022, "{response}");
+            assert!(response.get("result").is_none(), "{response}");
         }
     }
 
@@ -1570,25 +1735,101 @@ mod tests {
             Some("Daemon upgraded (2.1.2 → 2.1.3)".to_string());
 
         // Create a tool result
-        let mut result = CallToolResult::success(vec![Content::text("tool output")]);
+        let mut result = CallToolResult::success(vec![ContentBlock::text("tool output")]);
 
         // Prepend should add the message
         proxy.prepend_reconnection_message(&mut result).await;
 
         assert_eq!(result.content.len(), 2);
         // First content should be the reconnection notice
-        let first_text = result.content[0]
-            .raw
-            .as_text()
-            .expect("first content should be text");
+        let ContentBlock::Text(first_text) = &result.content[0] else {
+            panic!("first content should be text");
+        };
         assert!(first_text.text.contains("Daemon upgraded"));
         assert!(first_text.text.starts_with("[nteract]"));
         // Second should be the original
-        let second_text = result.content[1]
-            .raw
-            .as_text()
-            .expect("second content should be text");
+        let ContentBlock::Text(second_text) = &result.content[1] else {
+            panic!("second content should be text");
+        };
         assert_eq!(second_text.text, "tool output");
+    }
+
+    #[tokio::test]
+    async fn complete_tool_response_preserves_metadata_and_content_after_reconnection() {
+        use rmcp::model::{MetaObject, Resource};
+
+        let proxy = McpProxy::new(test_config(), None);
+        proxy.state.write().await.reconnection_message = Some("Child restarted".to_string());
+        let mut meta = MetaObject::new();
+        meta.insert(
+            "ui".to_string(),
+            serde_json::json!({"resourceUri": "ui://notebook"}),
+        );
+        let annotations = serde_json::from_value(serde_json::json!({
+            "audience": ["user"],
+            "priority": 0.8
+        }))
+        .unwrap();
+        let resource = Resource::new("ui://notebook", "notebook")
+            .with_meta(meta.clone())
+            .with_annotations(annotations);
+        let original_content = vec![
+            ContentBlock::text("tool output"),
+            ContentBlock::resource_link(resource),
+            ContentBlock::image("aW1hZ2U=", "image/png"),
+        ];
+        let mut result = CallToolResult::success(original_content.clone());
+        result.structured_content = Some(serde_json::json!({"notebook_id": "notebook-id"}));
+        result.meta = Some(meta.clone());
+        result.is_error = Some(true);
+        let expected_structured = result.structured_content.clone();
+
+        let mut result = complete_tool_response(result.into()).unwrap();
+        proxy.prepend_reconnection_message(&mut result).await;
+        let result = complete_tool_response(result.into()).unwrap();
+
+        assert_eq!(&result.content[1..], original_content.as_slice());
+        assert_eq!(result.meta, Some(meta));
+        assert_eq!(result.structured_content, expected_structured);
+        assert_eq!(result.is_error, Some(true));
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            wire["content"][2]["annotations"]["audience"],
+            serde_json::json!(["user"])
+        );
+        assert_eq!(
+            wire["content"][2]["_meta"]["ui"]["resourceUri"],
+            "ui://notebook"
+        );
+    }
+
+    #[test]
+    fn complete_resource_response_preserves_contents_and_metadata() {
+        let wire = serde_json::json!({
+            "contents": [{
+                "uri": "ui://notebook",
+                "mimeType": "text/html;profile=mcp-app",
+                "text": "<main>Notebook</main>",
+                "_meta": {"ui": {"prefersBorder": true}}
+            }],
+            "_meta": {"source": "child"}
+        });
+        let result: ReadResourceResult = serde_json::from_value(wire.clone()).unwrap();
+        let result = complete_resource_response(result.into()).unwrap();
+        assert_eq!(serde_json::to_value(result).unwrap(), wire);
+    }
+
+    #[test]
+    fn non_final_child_responses_are_rejected() {
+        let input = rmcp::model::InputRequiredResult::from_request_state("state");
+        let tool_error =
+            complete_tool_response(CallToolResponse::InputRequired(input.clone())).unwrap_err();
+        let resource_error =
+            complete_resource_response(ReadResourceResponse::InputRequired(input)).unwrap_err();
+        assert!(tool_error.message.contains("non-final tool response"));
+        assert!(resource_error
+            .message
+            .contains("non-final resource response"));
     }
 
     #[tokio::test]
@@ -1597,7 +1838,7 @@ mod tests {
 
         proxy.state.write().await.reconnection_message = Some("test message".to_string());
 
-        let mut result = CallToolResult::success(vec![Content::text("output")]);
+        let mut result = CallToolResult::success(vec![ContentBlock::text("output")]);
         proxy.prepend_reconnection_message(&mut result).await;
 
         // Message should be consumed
@@ -1609,7 +1850,7 @@ mod tests {
         let proxy = McpProxy::new(test_config(), None);
 
         // No reconnection message set
-        let mut result = CallToolResult::success(vec![Content::text("output")]);
+        let mut result = CallToolResult::success(vec![ContentBlock::text("output")]);
         let original_len = result.content.len();
 
         proxy.prepend_reconnection_message(&mut result).await;
@@ -1622,12 +1863,12 @@ mod tests {
         let proxy = McpProxy::new(test_config(), None);
         proxy.state.write().await.reconnection_message = Some("upgraded".to_string());
 
-        let mut result1 = CallToolResult::success(vec![Content::text("first")]);
+        let mut result1 = CallToolResult::success(vec![ContentBlock::text("first")]);
         proxy.prepend_reconnection_message(&mut result1).await;
         assert_eq!(result1.content.len(), 2);
 
         // Second call should not prepend anything
-        let mut result2 = CallToolResult::success(vec![Content::text("second")]);
+        let mut result2 = CallToolResult::success(vec![ContentBlock::text("second")]);
         proxy.prepend_reconnection_message(&mut result2).await;
         assert_eq!(result2.content.len(), 1);
     }
@@ -1643,7 +1884,7 @@ mod tests {
             "arguments": { "path": "/tmp/test.ipynb" }
         }))
         .unwrap();
-        let result = CallToolResult::success(vec![Content::text("ok")]);
+        let result = CallToolResult::success(vec![ContentBlock::text("ok")]);
 
         proxy.track_session(&params, &result).await;
 
@@ -1664,7 +1905,7 @@ mod tests {
         proxy
             .track_session(
                 &params1,
-                &CallToolResult::success(vec![Content::text("ok")]),
+                &CallToolResult::success(vec![ContentBlock::text("ok")]),
             )
             .await;
 
@@ -1677,7 +1918,7 @@ mod tests {
         proxy
             .track_session(
                 &params2,
-                &CallToolResult::success(vec![Content::text("ok")]),
+                &CallToolResult::success(vec![ContentBlock::text("ok")]),
             )
             .await;
 
@@ -1700,7 +1941,7 @@ mod tests {
         proxy
             .track_session(
                 &create,
-                &CallToolResult::success(vec![Content::text(
+                &CallToolResult::success(vec![ContentBlock::text(
                     r#"{"notebook_id":"38582ef2-a117-4ce6-83d2-20c2c45d33d7"}"#,
                 )]),
             )
@@ -1714,7 +1955,7 @@ mod tests {
         proxy
             .track_session(
                 &save,
-                &CallToolResult::success(vec![Content::text(
+                &CallToolResult::success(vec![ContentBlock::text(
                     r#"{"path":"/tmp/analysis.ipynb","notebook_id":"38582ef2-a117-4ce6-83d2-20c2c45d33d7"}"#,
                 )]),
             )
@@ -1741,7 +1982,7 @@ mod tests {
         proxy
             .track_session(
                 &save,
-                &CallToolResult::success(vec![Content::text(
+                &CallToolResult::success(vec![ContentBlock::text(
                     r#"{"path":"/tmp/analysis.ipynb","notebook_id":"01KTZA152886TK1WAHYA48G7HJ"}"#,
                 )]),
             )
@@ -1771,7 +2012,7 @@ mod tests {
         proxy
             .track_session(
                 &disconnect,
-                &CallToolResult::success(vec![Content::text("ok")]),
+                &CallToolResult::success(vec![ContentBlock::text("ok")]),
             )
             .await;
 
@@ -1797,7 +2038,7 @@ mod tests {
         proxy
             .track_session(
                 &disconnect,
-                &CallToolResult::success(vec![Content::text("ok")]),
+                &CallToolResult::success(vec![ContentBlock::text("ok")]),
             )
             .await;
 
@@ -1817,7 +2058,10 @@ mod tests {
         .unwrap();
 
         proxy
-            .track_session(&params, &CallToolResult::success(vec![Content::text("ok")]))
+            .track_session(
+                &params,
+                &CallToolResult::success(vec![ContentBlock::text("ok")]),
+            )
             .await;
 
         let state = proxy.state.read().await;
@@ -1833,7 +2077,7 @@ mod tests {
             "arguments": { "path": "/tmp/test.ipynb" }
         }))
         .unwrap();
-        let mut result = CallToolResult::success(vec![Content::text("error")]);
+        let mut result = CallToolResult::success(vec![ContentBlock::text("error")]);
         result.is_error = Some(true);
 
         proxy.track_session(&params, &result).await;
@@ -2113,7 +2357,10 @@ mod tests {
                 let text: String = call_result
                     .content
                     .iter()
-                    .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+                    .filter_map(|content| match content {
+                        ContentBlock::Text(text) => Some(text.text.clone()),
+                        _ => None,
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
                 assert!(

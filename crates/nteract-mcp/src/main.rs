@@ -270,6 +270,11 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if server.peer().peer_info().is_none() {
+        error!("The initialize handshake is required");
+        server.cancellation_token().cancel();
+        return ExitCode::FAILURE;
+    }
 
     // Extract upstream client identity
     let (upstream_name, upstream_title) = server
@@ -380,6 +385,32 @@ mod tests {
         );
         assert_eq!(config.server_name, runt_workspace::desktop_product_name());
         assert_eq!(config.monitor_poll_interval_ms, 500);
+    }
+
+    #[test]
+    fn proxy_preserves_legacy_protocol_and_compiled_server_identity() {
+        use rmcp::model::ProtocolVersion;
+        use rmcp::ServerHandler;
+
+        let mut config = proxy_config_for_channel("nightly".to_string());
+        config.cache_dir = None;
+        let proxy = McpProxy::new(config, None);
+        let info = proxy.get_info();
+
+        assert_eq!(
+            info.server_info.name,
+            runt_workspace::desktop_product_name()
+        );
+        assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
+        assert_eq!(
+            proxy.supported_protocol_versions().as_ref(),
+            &[
+                ProtocolVersion::V_2024_11_05,
+                ProtocolVersion::V_2025_03_26,
+                ProtocolVersion::V_2025_06_18,
+                ProtocolVersion::V_2025_11_25,
+            ]
+        );
     }
 
     #[test]

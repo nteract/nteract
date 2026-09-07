@@ -15,6 +15,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+rmcp_legacy = { package = "rmcp", version = "=1.5.0", default-features = false, features = ["server", "client", "transport-io"] }
+runt-mcp = { path = "../runt-mcp" }
 tempfile = { workspace = true }
 
 [lints]

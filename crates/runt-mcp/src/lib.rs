@@ -6,15 +6,17 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, ReadResourceRequestParams, ReadResourceResult,
-    ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, CompleteRequestParams, CompleteResult,
+    DiscoverRequestMethod, DiscoverResult, Implementation, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
@@ -40,6 +42,12 @@ use session::{
 use session_activation::SessionActivation;
 
 const SLOW_MCP_TOOL_CALL: Duration = Duration::from_secs(30);
+const LEGACY_PROTOCOL_VERSIONS: [ProtocolVersion; 4] = [
+    ProtocolVersion::V_2024_11_05,
+    ProtocolVersion::V_2025_03_26,
+    ProtocolVersion::V_2025_06_18,
+    ProtocolVersion::V_2025_11_25,
+];
 /// Client names are untrusted handshake input. Keep the derived operator slug
 /// compact enough for actor labels, logs, and UI while retaining useful brand
 /// names in full.
@@ -391,7 +399,67 @@ impl NteractMcp {
     }
 }
 
+fn require_legacy_handshake(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
+    if context.peer.peer_info().is_none() {
+        return Err(McpError::invalid_request(
+            "initialize is required before application requests",
+            None,
+        ));
+    }
+    Ok(())
+}
+
 impl ServerHandler for NteractMcp {
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, McpError> {
+        if context.peer.peer_info().as_deref() != Some(&request) {
+            return Err(McpError::invalid_request(
+                "initialize cannot change an existing connection or follow application requests",
+                None,
+            ));
+        }
+        let mut info = self.get_info();
+        if self
+            .supported_protocol_versions()
+            .contains(&request.protocol_version)
+        {
+            info.protocol_version = request.protocol_version;
+        }
+        Ok(info)
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(&LEGACY_PROTOCOL_VERSIONS)
+    }
+
+    async fn discover(
+        &self,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, McpError> {
+        Err(McpError::method_not_found::<DiscoverRequestMethod>())
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        require_legacy_handshake(&context)?;
+        Ok(ListPromptsResult::default())
+    }
+
+    async fn complete(
+        &self,
+        _request: CompleteRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CompleteResult, McpError> {
+        require_legacy_handshake(&context)?;
+        Ok(CompleteResult::default())
+    }
+
     fn get_info(&self) -> ServerInfo {
         // Advertise MCP Apps extension for output rendering
         let mut extensions = rmcp::model::ExtensionCapabilities::new();
@@ -417,6 +485,7 @@ impl ServerHandler for NteractMcp {
                 .enable_extensions_with(extensions)
                 .build(),
         )
+        .with_protocol_version(ProtocolVersion::V_2025_11_25)
         .with_server_info(impl_info)
         .with_instructions(
             "nteract MCP server for Jupyter notebooks. \
@@ -432,35 +501,35 @@ impl ServerHandler for NteractMcp {
 
     /// Accept logging/setLevel requests (no-op — we don't change log level dynamically).
     /// Without this, MCP Jam gets an error on connect.
+    #[allow(deprecated)]
     async fn set_level(
         &self,
         _request: rmcp::model::SetLevelRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
         Ok(())
     }
 
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        require_legacy_handshake(&context)?;
         let mut tools = tools::all_tools();
         if self.no_show {
             tools.retain(|t| t.name.as_ref() != "show_notebook");
         }
-        Ok(ListToolsResult {
-            tools,
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
+        require_legacy_handshake(&context)?;
         // Sniff client name on first call for use as the notebook peer label.
         // The title (e.g., "Claude Desktop") is preferred over the raw
         // implementation name ("claude-ai"), then known names are canonicalized.
@@ -498,30 +567,35 @@ impl ServerHandler for NteractMcp {
         if tracing::enabled!(tracing::Level::DEBUG) {
             log_mcp_response(&request.name, elapsed, &result);
         }
-        result
+        result.map(Into::into)
     }
 
     async fn list_resources(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
+        require_legacy_handshake(&context)?;
         resources::list_resources(self).await
     }
 
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
-        resources::read_resource(self, &request).await
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        require_legacy_handshake(&context)?;
+        resources::read_resource(self, &request)
+            .await
+            .map(Into::into)
     }
 
     async fn list_resource_templates(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
+        require_legacy_handshake(&context)?;
         Ok(resources::list_resource_templates())
     }
 }
@@ -622,7 +696,133 @@ fn log_mcp_response(tool_name: &str, elapsed: Duration, result: &Result<CallTool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::model::{CallToolResult, Content};
+    use rmcp::model::{CallToolResult, ContentBlock};
+
+    #[test]
+    fn server_advertises_only_legacy_protocol_versions() {
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+        assert_eq!(
+            server.get_info().protocol_version,
+            ProtocolVersion::V_2025_11_25
+        );
+        assert_eq!(
+            server
+                .supported_protocol_versions()
+                .iter()
+                .map(ProtocolVersion::as_str)
+                .collect::<Vec<_>>(),
+            ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
+        );
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn application_handlers_require_handshake_even_with_legacy_inline_metadata() {
+        use rmcp::model::{
+            ArgumentInfo, ClientInfo, ErrorCode, LoggingLevel, Reference, RequestMetaObject,
+            SetLevelRequestParams,
+        };
+
+        for initialized in [false, true] {
+            let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+            let (_client_transport, server_transport) = tokio::io::duplex(4096);
+            let client_info =
+                ClientInfo::default().with_protocol_version(ProtocolVersion::V_2025_11_25);
+            let mut running = rmcp::service::serve_directly(
+                server,
+                server_transport,
+                initialized.then_some(client_info.clone()),
+            );
+            let context = || {
+                let mut context = RequestContext::new(
+                    rmcp::model::NumberOrString::Number(1),
+                    running.peer().clone(),
+                );
+                context.meta = RequestMetaObject::with_client_context(
+                    ProtocolVersion::V_2025_11_25,
+                    client_info.client_info.clone(),
+                    client_info.capabilities.clone(),
+                );
+                context
+            };
+            let server = running.service();
+            let results = [
+                server.list_tools(None, context()).await.map(|_| ()),
+                server
+                    .call_tool(CallToolRequestParams::new("interrupt_kernel"), context())
+                    .await
+                    .map(|_| ()),
+                server.list_resources(None, context()).await.map(|_| ()),
+                server
+                    .list_resource_templates(None, context())
+                    .await
+                    .map(|_| ()),
+                server
+                    .read_resource(
+                        ReadResourceRequestParams::new("ui://nteract/output.html"),
+                        context(),
+                    )
+                    .await
+                    .map(|_| ()),
+                server
+                    .set_level(SetLevelRequestParams::new(LoggingLevel::Info), context())
+                    .await,
+                server.list_prompts(None, context()).await.map(|result| {
+                    assert!(result.prompts.is_empty());
+                }),
+                server
+                    .complete(
+                        CompleteRequestParams::new(
+                            Reference::for_prompt("unused"),
+                            ArgumentInfo::new("name", ""),
+                        ),
+                        context(),
+                    )
+                    .await
+                    .map(|result| assert!(result.completion.values.is_empty())),
+            ];
+            for result in results {
+                if initialized {
+                    result.expect("initialized application request");
+                } else {
+                    let error = result.expect_err("application request without initialize");
+                    assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
+                    assert_eq!(
+                        error.message,
+                        "initialize is required before application requests"
+                    );
+                }
+            }
+            let error = server
+                .discover(context())
+                .await
+                .expect_err("discovery is unsupported");
+            assert_eq!(error.code, ErrorCode::METHOD_NOT_FOUND);
+            running.close().await.expect("close test service");
+        }
+    }
+
+    #[test]
+    fn complete_tool_responses_preserve_content_errors_and_metadata() {
+        for is_error in [false, true] {
+            let content = vec![crate::formatting::assistant_text("notebook result")];
+            let mut result = if is_error {
+                CallToolResult::error(content)
+            } else {
+                CallToolResult::success(content)
+            };
+            result.structured_content = Some(serde_json::json!({
+                "notebook_id": "nb-1", "execution_id": "exec-1"
+            }));
+            let expected = serde_json::to_value(&result).expect("serialize tool result");
+            let response: CallToolResponse = result.into();
+            assert!(matches!(response, CallToolResponse::Complete(_)));
+            let wire = serde_json::to_value(rmcp::model::ServerResult::from(response))
+                .expect("serialize complete tool response");
+            assert_eq!(wire, expected);
+            assert_eq!(wire.get("isError"), Some(&serde_json::json!(is_error)));
+        }
+    }
 
     #[test]
     fn seeded_operator_identity_matches_handshake_identity() {
@@ -794,8 +994,8 @@ mod tests {
     /// Build a text content item whose JSON serialization exceeds `min_bytes`,
     /// with multi-byte characters (em-dashes) placed densely near the cut point
     /// so the truncation is guaranteed to land inside one.
-    fn content_with_multibyte_near(min_bytes: usize) -> Content {
-        // JSON overhead for Content::text is ~30-40 bytes. Use em-dashes
+    fn content_with_multibyte_near(min_bytes: usize) -> ContentBlock {
+        // JSON overhead for ContentBlock::text is ~30-40 bytes. Use em-dashes
         // (3 bytes each) densely from byte ~(min_bytes - 50) onward to
         // guarantee the cut point hits mid-character regardless of exact overhead.
         let safe_prefix = min_bytes.saturating_sub(50);
@@ -805,7 +1005,7 @@ mod tests {
         for _ in 0..emdash_count {
             text.push('—');
         }
-        Content::text(text)
+        ContentBlock::text(text)
     }
 
     #[test]
@@ -831,11 +1031,11 @@ mod tests {
         }
         let structured = serde_json::json!({ "data": text });
 
-        let mut result = CallToolResult::success(vec![Content::text("ok")]);
+        let mut result = CallToolResult::success(vec![ContentBlock::text("ok")]);
         result.structured_content = Some(serde_json::from_value(structured).unwrap());
         // Force the warn path (which logs structured_content) by injecting a null byte
         // into the main content so null_bytes > 0.
-        result.content = vec![Content::text("has\0null")];
+        result.content = vec![ContentBlock::text("has\0null")];
         let elapsed = Duration::from_millis(1);
 
         log_mcp_response("test_tool", elapsed, &Ok(result));
@@ -849,7 +1049,7 @@ mod tests {
         for _ in 0..40 {
             text.push_str("╔═══╗\n║ x ║\n╚═══╝\n");
         }
-        let result = CallToolResult::success(vec![Content::text(text)]);
+        let result = CallToolResult::success(vec![ContentBlock::text(text)]);
         let elapsed = Duration::from_millis(1);
 
         log_mcp_response("test_tool", elapsed, &Ok(result));
