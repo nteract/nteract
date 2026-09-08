@@ -165,3 +165,6 @@ ds-bundle/
 .design-sync/synthpkg/compiled.css
 .design-sync/synthpkg/types/
 .design-sync/synthpkg/tsconfig.emit.json
+
+# celld local prototype (generated projects, state, logs)
+apps/notebook-cloud/.celld-local/

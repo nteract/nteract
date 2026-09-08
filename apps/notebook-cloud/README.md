@@ -60,6 +60,24 @@ existing smoke commands. Use
 `NOTEBOOK_CLOUD_WRANGLER_INSPECTOR_PORT` only when you need an explicit local
 override.
 
+### Running on celld instead of Wrangler
+
+[celld](https://github.com/denoland/celld) hosts this Worker's Durable Objects,
+D1, and R2 bindings outside Cloudflare. `scripts/celld-local.mjs` packages the
+three Workers (app, output-document shell, renderer assets) as separate celld
+projects under the gitignored `.celld-local/` and runs them with `celld dev`
+on `127.0.0.1:9876`, `:9877`, and `:9878` with the local OIDC issuer enabled:
+
+```bash
+pnpm --dir apps/notebook-cloud build
+node apps/notebook-cloud/scripts/celld-local.mjs start     # also: status | stop | restart | logs
+node apps/notebook-cloud/scripts/celld-local.mjs workstation-start   # pairing-flow kernel host
+```
+
+The script header documents the celld constraints it works around (JSON config,
+project-relative `main`/assets, one deployment per store, static WASM import).
+Smoke and publish scripts target it with `NOTEBOOK_CLOUD_URL=http://127.0.0.1:9876`.
+
 For Browser-driven UI polish, use the wrapper that prints a local auth bootstrap
 URL:
 
