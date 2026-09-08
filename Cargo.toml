@@ -30,6 +30,7 @@ members = [
     "crates/runtimed-py",
     "crates/runtimed-wasm",
     "crates/mcp-client-branding",
+    "crates/mcp-transport",
     "crates/mcp-supervisor",
     "crates/nteract-markdown-engine",
     "crates/nteract-markdown-wasm",

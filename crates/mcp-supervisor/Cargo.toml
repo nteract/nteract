@@ -12,6 +12,7 @@ name = "mcp-supervisor"
 path = "src/main.rs"
 
 [dependencies]
+mcp-transport = { path = "../mcp-transport" }
 rmcp = { workspace = true, features = ["server", "client", "transport-child-process", "transport-io"] }
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }

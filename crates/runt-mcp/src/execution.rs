@@ -1,7 +1,7 @@
-//! Execution pipeline: submit cell → poll RuntimeStateDoc → collect outputs.
+//! Execution pipeline: submit cell → observe RuntimeStateDoc → collect outputs.
 //!
 //! This module handles the async execution lifecycle for `execute_cell` and
-//! tools that use `and_run`. It polls the RuntimeStateDoc (the daemon-owned
+//! tools that use `and_run`. It observes RuntimeStateDoc (the daemon-owned
 //! Automerge CRDT) for execution lifecycle state, using the CRDT as the
 //! source of truth instead of relying on broadcast hints.
 
@@ -45,7 +45,7 @@ pub struct ExecutionResult {
     /// The cell ID that was executed.
     pub cell_id: String,
     /// The execution ID assigned by the daemon (from `CellQueued`).
-    /// Agents can pass this to `get_cell(execution_id=...)` to read
+    /// Agents can pass this to `get_results(execution_id=...)` to read
     /// outputs for this specific execution, bypassing the cell's
     /// current pointer.
     pub execution_id: String,
@@ -81,12 +81,11 @@ pub fn execution_cell_map(handle: &DocHandle) -> HashMap<String, String> {
 ///
 /// 1. Captures current Automerge heads as a causal precondition.
 /// 2. Sends `ExecuteCell` request.
-/// 3. Polls RuntimeStateDoc until the execution reaches terminal status.
+/// 3. Observes RuntimeStateDoc until the execution reaches terminal status.
 /// 4. Collects and resolves outputs from the CRDT.
 ///
-/// The daemon writes `set_execution_done` AFTER all outputs are written,
-/// so once the synced execution status is `"done"` or `"error"`, outputs
-/// are guaranteed to be present.
+/// The shared wait helper settles trailing stream updates that can arrive in
+/// a later sync frame than the terminal status.
 pub async fn execute_and_wait(
     handle: &DocHandle,
     cell_id: &str,
@@ -129,6 +128,10 @@ pub async fn execute_and_wait(
             )));
         }
     };
+
+    crate::progress::status(format!(
+        "Submitted execution {execution_id}; waiting for its output"
+    ));
 
     // Step 3: Wait for terminal state via the shared helper. This uses
     // the RuntimeStateDoc as the source of truth (no broadcast dependency)
@@ -296,6 +299,7 @@ pub async fn run_all_and_wait(
     timeout: Duration,
 ) -> Result<RunAllResult, ExecutionDispatchError> {
     let mut result = run_all_and_queue(handle).await?;
+    crate::progress::status("Submitted notebook executions; waiting for results");
 
     if result.status == "error" || result.cell_execution_ids.is_empty() {
         return Ok(result);

@@ -2072,7 +2072,7 @@ impl ServerHandler for Supervisor {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_legacy_handshake(&context)?;
-        self.handle_tool_call(request)
+        runt_mcp_proxy::request_scope::scope(context, self.handle_tool_call(request))
             .await
             .map(CallToolResponse::Complete)
     }
@@ -3047,7 +3047,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tool_list_changed_tx,
     );
 
-    let transport = rmcp::transport::io::stdio();
+    let transport = mcp_transport::server(rmcp::transport::io::stdio());
     let server = supervisor.serve(transport).await?;
     if server.peer().peer_info().is_none() {
         server.cancellation_token().cancel();

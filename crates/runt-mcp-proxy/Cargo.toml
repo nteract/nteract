@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+mcp-transport = { path = "../mcp-transport" }
 rmcp = { workspace = true, features = ["server", "client", "transport-async-rw", "transport-io"] }
 tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }

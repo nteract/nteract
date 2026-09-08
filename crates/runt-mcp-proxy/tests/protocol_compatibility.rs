@@ -313,6 +313,184 @@ async fn subscriptions_wait_for_startup_and_rebind_after_child_replacement() {
 }
 
 #[tokio::test]
+async fn concurrent_progress_uses_each_upstream_token_and_is_opt_in() {
+    let (_dir, proxy, _) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    for (id, token) in [(90, "alpha"), (91, "beta")] {
+        wire.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":id},"_meta":{"progressToken":token}}})).await;
+    }
+    let mut completed = 0;
+    let mut progress = Vec::new();
+    while completed < 2 {
+        let message = wire.receive().await;
+        if message["id"].is_number() {
+            completed += 1;
+            assert!(message.get("result").is_some());
+        } else if message["method"] == "notifications/progress" {
+            progress.push(message);
+        }
+    }
+    assert_eq!(progress.len(), 2);
+    for message in progress {
+        let token = message["params"]["progressToken"].as_str().unwrap();
+        assert_eq!(
+            message["params"]["message"],
+            if token == "alpha" {
+                "job-90"
+            } else {
+                assert_eq!(token, "beta");
+                "job-91"
+            }
+        );
+    }
+    wire.notifications.clear();
+    wire.request(
+        92,
+        "tools/call",
+        Some(json!({"name":"progress_job","arguments":{"job":92}})),
+    )
+    .await;
+    assert!(!wire
+        .notifications
+        .iter()
+        .any(|notification| notification["method"] == "notifications/progress"));
+    assert!(!_dir.path().join("progress-requested-92").exists());
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn cancellation_targets_child_request_but_background_execution_continues() {
+    let (dir, proxy, resolves) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    wire.send(json!({"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":99,"expect_cancel":true},"_meta":{"progressToken":"cancel-this"}}})).await;
+    wire.notification("notifications/progress").await;
+    wire.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99,"reason":"stop waiting"}})).await;
+    timeout(DEADLINE, async {
+        while !dir.path().join("cancelled-99").exists() || !dir.path().join("completed-99").exists()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_ne!(
+        std::fs::read_to_string(dir.path().join("cancelled-99")).unwrap(),
+        "99"
+    );
+    assert_eq!(resolves.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        legacy_result(&wire.request(100, "ping", None).await),
+        &json!({})
+    );
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn safe_retry_retains_one_progress_clock_and_upstream_token() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    wire.send(json!({"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"get_results","arguments":{"probe_progress":true},"_meta":{"progressToken":"retry"}}})).await;
+    let mut updates = Vec::new();
+    for attempt in 1..=2 {
+        wire.notification("notifications/progress").await;
+        let update = wire.notifications.pop().unwrap();
+        assert_eq!(update["params"]["progressToken"], "retry");
+        assert_eq!(update["params"]["message"], format!("attempt-{attempt}"));
+        updates.push(update["params"]["progress"].as_f64().unwrap());
+        std::fs::write(
+            dir.path().join(format!("release-attempt-{attempt}")),
+            "continue",
+        )
+        .unwrap();
+    }
+    assert!(updates[1] - updates[0] >= 1.0, "{updates:?}");
+    let response = wire.receive().await;
+    assert_eq!(response["id"], 104);
+    assert!(response.get("result").is_some());
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn upstream_disconnect_while_waiting_for_startup_ends_promptly() {
+    let (_dir, proxy, resolves) = isolated_proxy();
+    let mut wire = Wire::start(proxy);
+    wire.initialize("2025-11-25").await;
+    // Deliberately omit notifications/initialized so no child starts.
+    wire.send(
+        json!({"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"get_results"}}),
+    )
+    .await;
+    timeout(std::time::Duration::from_secs(1), wire.finish())
+        .await
+        .unwrap();
+    assert_eq!(resolves.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn reconnect_outlives_its_cancelled_observer_and_remains_single_flight() {
+    let (_dir, proxy, resolves) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let generation = proxy.state.read().await.child_generation;
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    wire.send(
+        json!({"jsonrpc":"2.0","id":103,"method":"tools/call","params":{"name":"reconnect"}}),
+    )
+    .await;
+    timeout(DEADLINE, async {
+        while proxy.state.read().await.child_generation == generation {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    timeout(std::time::Duration::from_secs(1), wire.finish())
+        .await
+        .unwrap();
+    // A second waiter joins the owned restart instead of reporting early success.
+    timeout(DEADLINE, proxy.restart_child())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolves.load(Ordering::SeqCst), 2);
+    assert!(proxy.state.read().await.child_client.is_some());
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn upstream_disconnect_cancels_the_child_wait() {
+    let (dir, proxy, _) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    wire.send(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"progress_job","arguments":{"job":101,"expect_cancel":true},"_meta":{"progressToken":"disconnect"}}})).await;
+    wire.notification("notifications/progress").await;
+    wire.finish().await;
+    timeout(DEADLINE, async {
+        while !dir.path().join("cancelled-101").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
 async fn resource_subscriptions_relay_early_notifications_and_invalidate_on_child_loss() {
     let (_dir, proxy, _) = isolated_proxy();
     proxy.init_child().await.unwrap();
@@ -833,4 +1011,31 @@ async fn version_skew_production_spawn_child_pins_legacy_and_reaps_old_sdk_child
     })
     .await
     .expect("production child owner did not reap the old SDK fixture");
+}
+
+#[tokio::test]
+async fn successful_reconnect_returns_when_replacement_is_ready() {
+    let (_dir, proxy, resolves) = isolated_proxy();
+    proxy.init_child().await.unwrap();
+    let mut wire = Wire::start(proxy.clone());
+    assert_initialize(
+        &wire.initialize("2025-11-25").await,
+        "2025-11-25",
+        "compatibility-proxy",
+    );
+    let response = timeout(
+        std::time::Duration::from_secs(5),
+        wire.request(
+            901,
+            "tools/call",
+            Some(json!({"name":"reconnect","arguments":{}})),
+        ),
+    )
+    .await
+    .expect("ready reconnect returns without a lost-notification delay");
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    assert!(response.get("result").is_some(), "{response}");
+    assert_eq!(resolves.load(Ordering::SeqCst), 2);
+    stop_child(&proxy).await;
+    wire.finish().await;
 }

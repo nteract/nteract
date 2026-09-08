@@ -262,7 +262,7 @@ async fn main() -> ExitCode {
     let proxy = McpProxy::new(config, None);
 
     // Start the MCP server on stdio immediately
-    let transport = rmcp::transport::io::stdio();
+    let transport = mcp_transport::server(rmcp::transport::io::stdio());
     let server = match proxy.serve(transport).await {
         Ok(s) => s,
         Err(e) => {

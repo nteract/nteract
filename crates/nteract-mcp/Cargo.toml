@@ -12,6 +12,7 @@ name = "nteract-mcp"
 path = "src/main.rs"
 
 [dependencies]
+mcp-transport = { path = "../mcp-transport" }
 runt-mcp-proxy = { path = "../runt-mcp-proxy" }
 runt-workspace = { path = "../runt-workspace" }
 rmcp = { workspace = true, features = ["transport-io"] }
