@@ -46,12 +46,15 @@
 //   NOTEBOOK_CLOUD_CELLD_BIN         celld executable (default: `celld` on PATH)
 //   NOTEBOOK_CLOUD_CELLD_LOGS=1      pass --logs to celld dev (node INFO/WARN)
 //   NOTEBOOK_CLOUD_CELLD_CLEAN=1     pass --clean on start (discard local state)
+//   NOTEBOOK_CLOUD_ESBUILD           esbuild executable for celld's bundler
+//                                    (default: the esbuild devDependency's bin)
 //   NOTEBOOK_CLOUD_RUNT_BIN          runt executable (default target/debug/runt)
 //   NOTEBOOK_CLOUD_WORKSTATION_PYTHON  kernel interpreter with ipykernel
 //                                    (default .celld-local/kernel-venv/bin/python)
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rm, writeFile, open } from "node:fs/promises";
 import path from "node:path";
@@ -65,7 +68,7 @@ const logsDir = path.join(rootDir, "logs");
 const HOST = "127.0.0.1";
 const basePort = readPort(process.env.NOTEBOOK_CLOUD_CELLD_PORT) ?? 9876;
 const celldBin = process.env.NOTEBOOK_CLOUD_CELLD_BIN?.trim() || "celld";
-const esbuildBin = path.join(appDir, "node_modules", ".bin", "esbuild");
+const esbuildBin = resolveEsbuild();
 const workspaceRoot = path.resolve(appDir, "..", "..");
 const runtBin = path.resolve(
   workspaceRoot,
@@ -202,8 +205,10 @@ async function prepare() {
       );
     }
   }
-  if (!existsSync(esbuildBin)) {
-    throw new Error(`esbuild not found at ${esbuildBin}; run pnpm install`);
+  if (!esbuildBin) {
+    throw new Error(
+      "esbuild not found; run `pnpm install` (declared in apps/notebook-cloud devDependencies) or set NOTEBOOK_CLOUD_ESBUILD",
+    );
   }
 
   await mkdir(stateDir, { recursive: true });
@@ -405,16 +410,12 @@ async function stop() {
     while (Date.now() < deadline && isAlive(pid)) {
       await sleep(250);
     }
-    if (isAlive(pid)) {
+    if (isAlive(pid) && isOurSupervisor(pid, worker)) {
       console.error(`[celld-local] ${worker.name} pid ${pid} did not exit; sending SIGKILL`);
       try {
-        process.kill(-pid, "SIGKILL");
+        process.kill(pid, "SIGKILL");
       } catch {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // gone
-        }
+        // gone
       }
     }
     await rm(pidPath(worker), { force: true });
@@ -425,10 +426,18 @@ async function stop() {
 
 // `celld dev` runs the node as a child in its own process group. On Linux the
 // kernel kills that child if the supervisor dies; macOS has no equivalent, so a
-// SIGKILLed supervisor leaves a node holding the port. Find it by listener.
+// SIGKILLed supervisor leaves a node holding the port. Find it by listener, but
+// only signal it once it is proven to be this project's node: the port alone
+// says nothing about who owns the process.
 async function stopOrphanedNode(worker) {
   const pid = listenerPid(worker.port);
   if (!pid) return;
+  if (!isOurNode(pid, worker)) {
+    console.error(
+      `[celld-local] :${worker.port} is held by pid ${pid}, which is not this project's celld node; leaving it alone`,
+    );
+    return;
+  }
   console.error(
     `[celld-local] stopping orphaned ${worker.name} node pid ${pid} on :${worker.port}`,
   );
@@ -441,7 +450,7 @@ async function stopOrphanedNode(worker) {
   while (Date.now() < deadline && isAlive(pid)) {
     await sleep(250);
   }
-  if (isAlive(pid)) {
+  if (isAlive(pid) && isOurNode(pid, worker)) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {
@@ -458,6 +467,75 @@ function listenerPid(port) {
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 }
 
+// Process identity. PIDs get reused and ports get shared with unrelated
+// software, so every signal is preceded by a check that the process is the one
+// this script started (or the node a supervisor it started spawned).
+
+function processCommand(pid) {
+  const result = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+  if (result.status !== 0) return undefined;
+  const command = result.stdout.trim();
+  return command.length > 0 ? command : undefined;
+}
+
+// Environment of a same-user process (`ps -E`), as `KEY=value` strings.
+// Empty when the platform or permissions do not expose it.
+function processEnvironment(pid) {
+  const result = spawnSync("ps", ["-Eo", "command=", "-p", String(pid)], { encoding: "utf8" });
+  if (result.status !== 0) return [];
+  return result.stdout
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.includes("="));
+}
+
+function processCwd(pid) {
+  const result = spawnSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return undefined;
+  const line = result.stdout.split("\n").find((candidate) => candidate.startsWith("n"));
+  return line ? line.slice(1) : undefined;
+}
+
+// The `celld dev` supervisor this script launched: argv carries the absolute
+// path of this project's generated config.
+function isOurSupervisor(pid, worker) {
+  const command = processCommand(pid);
+  if (!command) return false;
+  const configPath = path.join(rootDir, worker.name, "wrangler.json");
+  return /\bcelld\b/.test(command) && /\bdev\b/.test(command) && command.includes(configPath);
+}
+
+// The node a supervisor spawned: `celld --no-control-plane --bucket celld-dev
+// --listen 127.0.0.1:<port> ...`, launched from this project directory with
+// `CELLD_INTERNAL_DEV_STORE` pointing at this project's `.celld/dev` store.
+// Either the env var or the cwd proves ownership; both are checked because a
+// hardened `ps` may hide the environment.
+function isOurNode(pid, worker) {
+  const command = processCommand(pid);
+  if (!command) return false;
+  if (!/\bcelld\b/.test(command) || !command.includes(`--listen ${HOST}:${worker.port}`)) {
+    return false;
+  }
+  const projectDir = path.join(rootDir, worker.name);
+  const store = path.join(projectDir, ".celld", "dev", "objects.sqlite3");
+  if (processEnvironment(pid).includes(`CELLD_INTERNAL_DEV_STORE=${store}`)) return true;
+  return processCwd(pid) === projectDir;
+}
+
+// The `runt workstation run` this script launched: argv carries this
+// project's working directory.
+function isOurWorkstationAgent(pid) {
+  const command = processCommand(pid);
+  if (!command) return false;
+  return (
+    /\bworkstation\b/.test(command) &&
+    /\brun\b/.test(command) &&
+    command.includes(`--working-directory ${rootDir}`)
+  );
+}
+
 async function status() {
   const running = await runningWorkers();
   const rows = [];
@@ -472,7 +550,7 @@ async function status() {
       log: logPath(worker),
     });
   }
-  const workstationPid = await readPid(workstationPidPath());
+  const workstationPid = await readPid(workstationPidPath(), isOurWorkstationAgent);
   console.log(
     JSON.stringify(
       {
@@ -513,7 +591,7 @@ async function logs(name) {
 // for the workstation registered against this celld origin.
 
 async function workstationStart() {
-  const existing = await readPid(workstationPidPath());
+  const existing = await readPid(workstationPidPath(), isOurWorkstationAgent);
   if (existing) {
     console.error(`[celld-local] workstation agent already running (pid ${existing})`);
     return;
@@ -553,14 +631,15 @@ async function workstationStart() {
 }
 
 async function workstationStop() {
-  const pid = await readPid(workstationPidPath());
+  const pid = await readPid(workstationPidPath(), isOurWorkstationAgent);
   if (!pid) {
     await rm(workstationPidPath(), { force: true });
     console.error("[celld-local] workstation agent not running");
     return;
   }
-  // The agent spawns one `runtimed cloud-runtime-agent` per attach job in the
-  // same process group; signal the group so the kernels stop with it.
+  // The agent was spawned detached, so it leads its own process group, which
+  // also holds the `runtimed cloud-runtime-agent` children (one per attach job)
+  // and their kernels. `readPid` already confirmed the identity of the leader.
   try {
     process.kill(-pid, "SIGTERM");
   } catch {
@@ -574,7 +653,7 @@ async function workstationStop() {
   while (Date.now() < deadline && isAlive(pid)) {
     await sleep(250);
   }
-  if (isAlive(pid)) {
+  if (isAlive(pid) && isOurWorkstationAgent(pid)) {
     try {
       process.kill(-pid, "SIGKILL");
     } catch {
@@ -585,10 +664,19 @@ async function workstationStop() {
   console.error(`[celld-local] stopped workstation agent (pid ${pid})`);
 }
 
-async function readPid(file) {
+// A stored PID counts only if a live process with that PID still matches the
+// identity we recorded it under; a reused PID is reported as "not running".
+async function readPid(file, isOurs) {
   const raw = await readFile(file, "utf8").catch(() => "");
   const pid = Number.parseInt(raw.trim(), 10);
-  return Number.isInteger(pid) && pid > 0 && isAlive(pid) ? pid : undefined;
+  if (!Number.isInteger(pid) || pid <= 0 || !isAlive(pid)) return undefined;
+  if (!isOurs(pid)) {
+    console.error(
+      `[celld-local] ignoring stale pid file ${file}: pid ${pid} is a different process now`,
+    );
+    return undefined;
+  }
+  return pid;
 }
 
 function workstationPidPath() {
@@ -631,11 +719,8 @@ async function probe(worker) {
 async function runningWorkers() {
   const map = new Map();
   for (const worker of WORKERS) {
-    const raw = await readFile(pidPath(worker), "utf8").catch(() => "");
-    const pid = Number.parseInt(raw.trim(), 10);
-    if (Number.isInteger(pid) && pid > 0 && isAlive(pid)) {
-      map.set(worker.name, pid);
-    }
+    const pid = await readPid(pidPath(worker), (candidate) => isOurSupervisor(candidate, worker));
+    if (pid) map.set(worker.name, pid);
   }
   return map;
 }
@@ -682,6 +767,23 @@ function celldVersion() {
 function gitCommit() {
   const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: appDir, encoding: "utf8" });
   return result.status === 0 ? result.stdout.trim() : "unknown";
+}
+
+// celld bundles Worker sources with esbuild and needs an executable path.
+// `esbuild` is a declared devDependency of this package; resolve its bin
+// through node's resolver so the location does not depend on pnpm's shim layout.
+function resolveEsbuild() {
+  const override = process.env.NOTEBOOK_CLOUD_ESBUILD?.trim();
+  if (override) return override;
+  try {
+    const require = createRequire(path.join(appDir, "package.json"));
+    const packageJson = require.resolve("esbuild/package.json");
+    return path.join(path.dirname(packageJson), "bin", "esbuild");
+  } catch {
+    // fall through
+  }
+  const shim = path.join(appDir, "node_modules", ".bin", "esbuild");
+  return existsSync(shim) ? shim : undefined;
 }
 
 function readPort(value) {
