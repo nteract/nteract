@@ -79,9 +79,15 @@ restored as a group.
 See `crates/runt-mcp-proxy/src/proxy.rs:310`, `:962`, and
 `crates/runt-mcp-proxy/src/session.rs:17`. The proxy's `reconnect` tool replaces
 the child, not the daemon (`proxy.rs:1268`). A requested rejoin is not proof of
-a ready notebook. Forwarding retries once after a closed child transport
-(`proxy.rs:658`), so transparent restart is not an exactly-once mutation
-contract.
+a ready notebook. Forwarding may retry once when no request was dispatched or
+the tool is on the proxy's explicit read-only replay allowlist. A mutation
+whose response was lost returns a tool error with `error.code: outcome_unknown`
+and `error.retry_safe: false` in structured content. It is never automatically
+replayed. The text asks the agent to inspect notebook state or execution results
+before deciding whether to repeat the action, and includes recovery failures.
+This prevents duplicate dispatch during recovery; it does not establish
+exactly-once execution. Explicit disconnect intent clears the matching rejoin
+target before dispatch, so losing its reply cannot restore the released session.
 
 ## Decision 2: Proxy modes are policy, not state
 
@@ -509,10 +515,12 @@ already implemented separate-child/shared-daemon model.
    a separate compatibility policy. Recovery hints are already caller-specific:
    installed wrapper at `crates/nteract-mcp/src/main.rs:204`, dev supervisor at
    `crates/mcp-supervisor/src/main.rs:3159`.
-5. **Retry and protocol compatibility.** The proxy's one retry after a closed
-   child transport does not establish exactly-once execution. Define any
-   stronger retry guarantee and migration to the newer upstream protocol
-   explicitly; do not infer either from transparent restart or SDK version.
+5. **Recovery concurrency and protocol compatibility.** Concurrent callers
+   currently skip a restart already in progress rather than await its result.
+   A retry can therefore race replacement startup. Shared restart completion
+   and migration to the newer upstream protocol need explicit lifecycle work;
+   neither exactly-once execution nor native protocol support follows from
+   transparent restart or the SDK version.
 
 Already-absent UUID refusal and file-backed UUID registry recovery are
 implemented; the snapshot-disappearance race in Decision 8 remains a separate

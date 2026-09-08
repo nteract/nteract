@@ -654,37 +654,60 @@ impl McpProxy {
         });
     }
 
-    /// Forward a tool call to the child, restarting if the child has disconnected.
+    /// Forward a tool call, recovering a disconnected child without replaying
+    /// mutations whose outcome may have been lost with the response.
     ///
     /// Prepends any pending reconnection message to the result.
     pub async fn forward_tool_call(
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
+        // Record release intent before sending: a lost disconnect reply must
+        // not cause the replacement child to rejoin the notebook just released.
+        if params.name.as_ref() == "disconnect_notebook" {
+            self.clear_disconnect_handoff(&params).await;
+        }
         // First attempt
-        match self.try_forward_tool_call(&params).await {
+        let failure = match self.try_forward_tool_call(&params).await {
             Ok(mut result) => {
                 self.track_session(&params, &result).await;
                 self.prepend_reconnection_message(&mut result).await;
                 return Ok(result);
             }
-            Err(e) => {
-                let state = self.state.read().await;
-                let child_alive = state
+            Err(failure) => {
+                if !failure.transport_closed {
+                    if failure.may_have_run && !tool_can_be_replayed(&params.name) {
+                        return Ok(unknown_tool_outcome(&params.name, &failure, None));
+                    }
+                    return Err(failure.error);
+                }
+                failure
+            }
+        };
+
+        // Judge the transport used for this call, not a replacement that a
+        // background monitor may already have installed. Do not restart that
+        // healthy replacement merely because the old call failed.
+        let replacement_ready = {
+            let state = self.state.read().await;
+            failure.generation != Some(state.child_generation)
+                && state
                     .child_client
                     .as_ref()
-                    .is_some_and(|c| !c.is_transport_closed());
-                drop(state);
-                if child_alive {
-                    warn!("Tool call failed but child still connected, not restarting: {e}");
-                    return Err(e);
-                }
-                warn!("Tool call failed and child transport closed, attempting restart: {e}");
-            }
+                    .is_some_and(|c| !c.is_transport_closed())
+        };
+        let recovery = if replacement_ready {
+            Ok(())
+        } else {
+            self.restart_child().await
+        };
+
+        if failure.may_have_run && !tool_can_be_replayed(&params.name) {
+            return Ok(unknown_tool_outcome(&params.name, &failure, recovery.err()));
         }
 
-        // Child is gone — restart and retry once
-        if let Err(e) = self.restart_child().await {
+        // No request was dispatched, or the operation is explicitly read-only.
+        if let Err(e) = recovery {
             return Err(McpError::internal_error(
                 format!("Child restart failed: {e}"),
                 None,
@@ -708,7 +731,13 @@ impl McpProxy {
         }
 
         // Second attempt after restart
-        let mut result = self.try_forward_tool_call(&params).await?;
+        let mut result = match self.try_forward_tool_call(&params).await {
+            Ok(result) => result,
+            Err(failure) if failure.may_have_run && !tool_can_be_replayed(&params.name) => {
+                return Ok(unknown_tool_outcome(&params.name, &failure, None));
+            }
+            Err(failure) => return Err(failure.error),
+        };
         self.track_session(&params, &result).await;
         self.prepend_reconnection_message(&mut result).await;
         Ok(result)
@@ -917,17 +946,52 @@ impl McpProxy {
     async fn try_forward_tool_call(
         &self,
         params: &CallToolRequestParams,
-    ) -> Result<CallToolResult, McpError> {
-        let snapshot = self.child_peer_snapshot().await?;
+    ) -> Result<CallToolResult, ForwardToolFailure> {
+        let snapshot = self
+            .child_peer_snapshot()
+            .await
+            .map_err(|error| ForwardToolFailure {
+                error,
+                generation: None,
+                transport_closed: true,
+                may_have_run: false,
+            })?;
         let generation = snapshot.generation;
+        if snapshot.peer.is_transport_closed() {
+            return Err(ForwardToolFailure {
+                error: McpError::internal_error("Child transport was closed before dispatch", None),
+                generation: Some(generation),
+                transport_closed: true,
+                may_have_run: false,
+            });
+        }
         let start = Instant::now();
 
-        let result = snapshot
-            .peer
-            .call_tool_once(params.clone())
-            .await
-            .map_err(|e| McpError::internal_error(format!("Child tool call failed: {e}"), None))
-            .and_then(complete_tool_response);
+        let result = match snapshot.peer.call_tool_once(params.clone()).await {
+            Ok(response) => complete_tool_response(response).map_err(|error| ForwardToolFailure {
+                error,
+                generation: Some(generation),
+                transport_closed: false,
+                may_have_run: true,
+            }),
+            Err(rmcp::service::ServiceError::McpError(error)) => Err(ForwardToolFailure {
+                error,
+                generation: Some(generation),
+                transport_closed: false,
+                may_have_run: false,
+            }),
+            Err(error) => Err(ForwardToolFailure {
+                transport_closed: snapshot.peer.is_transport_closed()
+                    || matches!(
+                        error,
+                        rmcp::service::ServiceError::TransportClosed
+                            | rmcp::service::ServiceError::TransportSend(_)
+                    ),
+                error: McpError::internal_error(format!("Child tool call failed: {error}"), None),
+                generation: Some(generation),
+                may_have_run: true,
+            }),
+        };
         self.log_child_call_if_slow(
             "call_tool",
             Some(params.name.as_ref()),
@@ -962,22 +1026,26 @@ impl McpProxy {
         result
     }
 
+    async fn clear_disconnect_handoff(&self, params: &CallToolRequestParams) {
+        let requested_id = params
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("notebook_id"))
+            .and_then(serde_json::Value::as_str);
+        let mut state = self.state.write().await;
+        let disconnected_active = requested_id.is_none()
+            || requested_id == state.last_notebook_id.as_deref()
+            || requested_id == state.last_notebook_session_id.as_deref();
+        if disconnected_active {
+            info!("Clearing notebook handoff target for explicit disconnect intent");
+            state.last_notebook_id = None;
+            state.last_notebook_session_id = None;
+        }
+    }
+
     async fn track_session(&self, params: &CallToolRequestParams, result: &CallToolResult) {
         if params.name.as_ref() == "disconnect_notebook" && result.is_error != Some(true) {
-            let requested_id = params
-                .arguments
-                .as_ref()
-                .and_then(|args| args.get("notebook_id"))
-                .and_then(serde_json::Value::as_str);
-            let mut state = self.state.write().await;
-            let disconnected_active = requested_id.is_none()
-                || requested_id == state.last_notebook_id.as_deref()
-                || requested_id == state.last_notebook_session_id.as_deref();
-            if disconnected_active {
-                info!("Clearing notebook handoff target after explicit disconnect");
-                state.last_notebook_id = None;
-                state.last_notebook_session_id = None;
-            }
+            self.clear_disconnect_handoff(params).await;
             return;
         }
 
@@ -1096,6 +1164,57 @@ impl McpProxy {
 struct ChildPeerSnapshot {
     peer: Peer<child::RoleChild>,
     generation: u64,
+}
+
+#[derive(Debug)]
+struct ForwardToolFailure {
+    error: McpError,
+    /// The peer generation acquired for this attempt, if any.
+    generation: Option<u64>,
+    transport_closed: bool,
+    /// A send was attempted and no definitive tool or protocol result arrived.
+    may_have_run: bool,
+}
+
+/// This is a local contract, not an interpretation of a child's tool hints.
+/// Unknown tools, session changes, and execution are deliberately excluded.
+fn tool_can_be_replayed(name: &str) -> bool {
+    matches!(
+        name,
+        "list_active_notebooks"
+            | "list_notebooks"
+            | "get_cell"
+            | "get_all_cells"
+            | "get_results"
+            | "get_dependencies"
+    )
+}
+
+fn unknown_tool_outcome(
+    name: &str,
+    failure: &ForwardToolFailure,
+    recovery_error: Option<String>,
+) -> CallToolResult {
+    warn!(event = "tool_outcome_unknown", tool = name, generation = failure.generation, error = %failure.error, recovery_error = ?recovery_error, "Tool response lost; mutation was not replayed");
+    let mut message = format!(
+        "No definitive response arrived after '{name}' was sent. The operation may already have \
+         completed, so it was not retried. Inspect notebook state or execution results \
+         before deciding whether to repeat it."
+    );
+    if let Some(error) = &recovery_error {
+        message.push_str(&format!(" Recovery also failed: {error}"));
+    }
+    let mut result = CallToolResult::error(vec![ContentBlock::text(message.clone())]);
+    result.structured_content = Some(serde_json::json!({
+        "error": {
+            "code": "outcome_unknown",
+            "message": message,
+            "tool": name,
+            "retry_safe": false,
+            "recovery_error": recovery_error,
+        }
+    }));
+    result
 }
 
 fn require_legacy_handshake(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
@@ -2099,7 +2218,8 @@ mod tests {
         let result = proxy.try_forward_tool_call(&params).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.message.contains("not running"));
+        assert!(err.error.message.contains("not running"));
+        assert!(err.generation.is_none());
     }
 
     #[tokio::test]

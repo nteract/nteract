@@ -22,6 +22,10 @@ fn compatibility_child_process() {
 }
 
 fn isolated_proxy() -> (tempfile::TempDir, McpProxy, Arc<AtomicUsize>) {
+    isolated_proxy_with_mode("legacy")
+}
+
+fn isolated_proxy_with_mode(mode: &str) -> (tempfile::TempDir, McpProxy, Arc<AtomicUsize>) {
     let dir = tempfile::tempdir().expect("isolated proxy directory");
     runt_mcp_proxy::tools::save_tool_cache(
         dir.path(),
@@ -35,14 +39,18 @@ fn isolated_proxy() -> (tempfile::TempDir, McpProxy, Arc<AtomicUsize>) {
     let executable = std::env::current_exe().expect("test executable");
     let resolves = Arc::new(AtomicUsize::new(0));
     let count = resolves.clone();
+    let fail_resolution = dir.path().join("fail-resolution");
     let proxy = McpProxy::new(
         ProxyConfig {
             resolve_child_command: Box::new(move || {
                 count.fetch_add(1, Ordering::SeqCst);
+                if fail_resolution.exists() {
+                    return Err("Fixture binary unavailable; restart your MCP session".into());
+                }
                 Ok(executable.clone())
             }),
             child_args: fixtures::child_args(),
-            child_env: fixtures::child_env(dir.path(), "legacy"),
+            child_env: fixtures::child_env(dir.path(), mode),
             server_name: "compatibility-proxy".into(),
             cache_dir: Some(dir.path().to_path_buf()),
             monitor_poll_interval_ms: 60_000,
@@ -51,6 +59,156 @@ fn isolated_proxy() -> (tempfile::TempDir, McpProxy, Arc<AtomicUsize>) {
         None,
     );
     (dir, proxy, resolves)
+}
+
+#[tokio::test]
+async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
+    for name in ["execute_cell", "future_mutation"] {
+        let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
+        proxy.init_child().await.expect("start response-loss child");
+        let request = serde_json::from_value(json!({"name": name, "arguments": {}})).unwrap();
+        let result = timeout(DEADLINE, proxy.forward_tool_call(request))
+            .await
+            .expect("bounded recovery")
+            .expect("actionable tool result");
+        assert_eq!(result.is_error, Some(true));
+        let details = result
+            .structured_content
+            .as_ref()
+            .expect("structured recovery guidance");
+        assert_eq!(details["error"]["code"], "outcome_unknown");
+        assert_eq!(details["error"]["retry_safe"], false);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("accepted-calls")).unwrap(),
+            format!("{name}\n")
+        );
+
+        let read = serde_json::from_value(json!({"name": "get_results", "arguments": {}})).unwrap();
+        let next = timeout(DEADLINE, proxy.forward_tool_call(read))
+            .await
+            .expect("recovered child responds")
+            .expect("read recovered state");
+        assert_ne!(next.is_error, Some(true));
+        stop_child(&proxy).await;
+    }
+}
+
+#[tokio::test]
+async fn lost_read_response_is_retried_once() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
+    proxy.init_child().await.expect("start response-loss child");
+    let request = serde_json::from_value(json!({"name": "get_results", "arguments": {}})).unwrap();
+    let result = timeout(DEADLINE, proxy.forward_tool_call(request))
+        .await
+        .expect("bounded recovery")
+        .expect("read retry");
+    assert_ne!(result.is_error, Some(true));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("accepted-calls")).unwrap(),
+        "get_results\nget_results\n"
+    );
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn mutation_can_run_once_when_the_stored_child_was_already_closed() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
+    proxy.init_child().await.unwrap();
+    let mut child = proxy.state.write().await.child_client.take().unwrap();
+    child.close().await.unwrap();
+    proxy.state.write().await.child_client = Some(child);
+    // Disable the fault for the replacement: no request has been accepted.
+    std::fs::write(dir.path().join("accepted-calls"), "").unwrap();
+    let request = serde_json::from_value(json!({"name":"execute_cell","arguments":{}})).unwrap();
+    let result = timeout(DEADLINE, proxy.forward_tool_call(request))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(result.is_error, Some(true));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("accepted-calls")).unwrap(),
+        "execute_cell\n"
+    );
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn definitive_protocol_error_is_preserved_without_restarting() {
+    let (dir, proxy, resolves) = isolated_proxy_with_mode("response-loss");
+    proxy.init_child().await.unwrap();
+    let request =
+        serde_json::from_value(json!({"name":"definitive_error","arguments":{}})).unwrap();
+    let error = proxy.forward_tool_call(request).await.unwrap_err();
+    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    assert_eq!(error.message, "Definitive fixture rejection");
+    assert_eq!(resolves.load(Ordering::SeqCst), 1);
+    assert!(!dir.path().join("accepted-calls").exists());
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn unknown_outcome_includes_failed_recovery_in_text() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
+    proxy.init_child().await.unwrap();
+    std::fs::write(dir.path().join("fail-resolution"), "fail").unwrap();
+    let request = serde_json::from_value(json!({"name":"execute_cell","arguments":{}})).unwrap();
+    let result = proxy.forward_tool_call(request).await.unwrap();
+    assert_eq!(
+        result.structured_content.as_ref().unwrap()["error"]["code"],
+        "outcome_unknown"
+    );
+    let contents = serde_json::to_value(&result.content).unwrap();
+    assert!(contents[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("restart your MCP session"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("accepted-calls")).unwrap(),
+        "execute_cell\n"
+    );
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn lost_disconnect_response_does_not_restore_the_release_target() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
+    proxy.init_child().await.unwrap();
+    proxy.state.write().await.last_notebook_id = Some("released-notebook".into());
+    let request =
+        serde_json::from_value(json!({"name":"disconnect_notebook","arguments":{}})).unwrap();
+    let result = proxy.forward_tool_call(request).await.unwrap();
+    assert_eq!(
+        result.structured_content.as_ref().unwrap()["error"]["code"],
+        "outcome_unknown"
+    );
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("accepted-calls")).unwrap(),
+        "disconnect_notebook\n"
+    );
+    stop_child(&proxy).await;
+}
+
+#[tokio::test]
+async fn mutation_sent_after_initial_child_recovery_still_reports_lost_response() {
+    let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
+    // No previously advertised catalog: exercise startup, not incompatible
+    // replacement of the deliberately unrelated optimistic test cache.
+    proxy.state.write().await.cached_tools = None;
+    let request = serde_json::from_value(json!({"name": "execute_cell", "arguments": {}})).unwrap();
+    let result = timeout(DEADLINE, proxy.forward_tool_call(request))
+        .await
+        .expect("bounded startup")
+        .expect("actionable result");
+    assert_eq!(
+        result.structured_content.unwrap()["error"]["code"],
+        "outcome_unknown"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("accepted-calls")).unwrap(),
+        "execute_cell\n"
+    );
+    stop_child(&proxy).await;
 }
 
 async fn assert_no_child(proxy: &McpProxy, resolves: &AtomicUsize, dir: &std::path::Path) {
