@@ -6,7 +6,6 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -14,9 +13,9 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CompleteRequestParams, CompleteResult,
-    DiscoverRequestMethod, DiscoverResult, Implementation, ListPromptsResult,
-    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerInfo,
+    Implementation, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
+    ListToolsResult, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
+    ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
@@ -37,6 +36,7 @@ mod session;
 mod session_activation;
 mod structured;
 mod subscriptions;
+mod targets;
 pub mod tools;
 
 use session::{
@@ -45,12 +45,6 @@ use session::{
 use session_activation::SessionActivation;
 
 const SLOW_MCP_TOOL_CALL: Duration = Duration::from_secs(30);
-const LEGACY_PROTOCOL_VERSIONS: [ProtocolVersion; 4] = [
-    ProtocolVersion::V_2024_11_05,
-    ProtocolVersion::V_2025_03_26,
-    ProtocolVersion::V_2025_06_18,
-    ProtocolVersion::V_2025_11_25,
-];
 /// Client names are untrusted handshake input. Keep the derived operator slug
 /// compact enough for actor labels, logs, and UI while retaining useful brand
 /// names in full.
@@ -144,6 +138,7 @@ pub struct NteractMcp {
     parked_sessions: Arc<RwLock<std::collections::HashMap<String, NotebookSession>>>,
     observation_waits: tokio::sync::Semaphore,
     resource_subscriptions: Arc<subscriptions::ResourceSubscriptions>,
+    native_subscription_slots: tokio::sync::Semaphore,
     /// Context from the most recently dropped session — allows error messages
     /// to tell agents *why* the session was lost and *which notebook_id* to
     /// reconnect to, instead of the generic "No active notebook session".
@@ -171,6 +166,26 @@ pub struct NteractMcp {
 }
 
 impl NteractMcp {
+    pub(crate) async fn attachment_identity(
+        &self,
+        handle: &str,
+    ) -> Option<(String, Option<String>)> {
+        {
+            let active = self.session.read().await;
+            if let Some(session) = active
+                .as_ref()
+                .filter(|session| session.notebook_handle == handle)
+            {
+                return Some((session.notebook_id.clone(), session.notebook_path.clone()));
+            }
+        }
+        self.parked_sessions
+            .read()
+            .await
+            .values()
+            .find(|session| session.notebook_handle == handle)
+            .map(|session| (session.notebook_id.clone(), session.notebook_path.clone()))
+    }
     pub(crate) async fn observer_for_handle(
         &self,
         notebook_handle: &str,
@@ -222,6 +237,7 @@ impl NteractMcp {
             parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             observation_waits: tokio::sync::Semaphore::new(8),
             resource_subscriptions: Arc::default(),
+            native_subscription_slots: tokio::sync::Semaphore::new(128),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
             operator: Arc::new(RwLock::new(agent_operator(
@@ -324,6 +340,23 @@ impl NteractMcp {
         &self,
         requirement: SessionRequirement,
     ) -> Result<Option<SessionAccess>, SessionAccessError> {
+        if let Some(handle) = targets::current() {
+            {
+                let active = self.session.read().await;
+                if let Some(session) = active
+                    .as_ref()
+                    .filter(|session| session.notebook_handle == handle)
+                {
+                    return session.access(requirement).map(Some);
+                }
+            }
+            let parked = self.parked_sessions.read().await;
+            return parked
+                .values()
+                .find(|session| session.notebook_handle == handle)
+                .map(|session| session.access(requirement))
+                .transpose();
+        }
         let guard = self.session.read().await;
         let Some(session) = guard.as_ref() else {
             return Ok(None);
@@ -350,6 +383,15 @@ impl NteractMcp {
         &self,
         access: &SessionAccess,
     ) -> Result<(), SessionAccessError> {
+        if let Some(handle) = targets::current() {
+            return if access.notebook_handle == handle
+                && self.attachment_identity(&handle).await.is_some()
+            {
+                Ok(())
+            } else {
+                Err(Self::superseded_access_error(access))
+            };
+        }
         let generation = access.readiness.session_generation;
         let target = &access.readiness.target;
         let activation_current = generation == 0
@@ -376,6 +418,30 @@ impl NteractMcp {
         access: &SessionAccess,
         path: String,
     ) -> Result<(), SessionAccessError> {
+        if let Some(handle) = targets::current() {
+            if access.notebook_handle != handle {
+                return Err(Self::superseded_access_error(access));
+            }
+            {
+                let mut active = self.session.write().await;
+                if let Some(session) = active
+                    .as_mut()
+                    .filter(|session| session.notebook_handle == handle)
+                {
+                    session.notebook_path = Some(path);
+                    return Ok(());
+                }
+            }
+            let mut parked = self.parked_sessions.write().await;
+            if let Some(session) = parked
+                .values_mut()
+                .find(|session| session.notebook_handle == handle)
+            {
+                session.notebook_path = Some(path);
+                return Ok(());
+            }
+            return Err(Self::superseded_access_error(access));
+        }
         let generation = access.readiness.session_generation;
         let target = &access.readiness.target;
         let mut guard = self.session.write().await;
@@ -438,17 +504,21 @@ impl NteractMcp {
     }
 }
 
-fn require_legacy_handshake(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
-    if context.peer.peer_info().is_none() {
-        return Err(McpError::invalid_request(
-            "initialize is required before application requests",
-            None,
-        ));
-    }
-    Ok(())
+fn require_protocol(context: &RequestContext<RoleServer>) -> Result<(), McpError> {
+    mcp_transport::require_protocol(context)
 }
 
 impl ServerHandler for NteractMcp {
+    fn accepted_subscription_filter(
+        &self,
+        requested: &rmcp::model::SubscriptionFilter,
+    ) -> Option<rmcp::model::SubscriptionFilter> {
+        Some(mcp_transport::notebook_subscription_filter(requested))
+    }
+    async fn listen(&self, context: rmcp::service::SubscriptionContext) -> Result<(), McpError> {
+        mcp_transport::require_protocol(context.request_context())?;
+        subscriptions::listen(self, context).await
+    }
     async fn initialize(
         &self,
         request: rmcp::model::InitializeRequestParams,
@@ -461,24 +531,21 @@ impl ServerHandler for NteractMcp {
             ));
         }
         let mut info = self.get_info();
-        if self
-            .supported_protocol_versions()
-            .contains(&request.protocol_version)
-        {
+        if mcp_transport::LEGACY_VERSIONS.contains(&request.protocol_version) {
             info.protocol_version = request.protocol_version;
         }
         Ok(info)
     }
 
-    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(&LEGACY_PROTOCOL_VERSIONS)
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(mcp_transport::SUPPORTED_VERSIONS)
     }
 
     async fn discover(
         &self,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<DiscoverResult, McpError> {
-        Err(McpError::method_not_found::<DiscoverRequestMethod>())
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::DiscoverResult, McpError> {
+        mcp_transport::discover(&context, self.get_info())
     }
 
     async fn list_prompts(
@@ -486,8 +553,10 @@ impl ServerHandler for NteractMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
-        require_legacy_handshake(&context)?;
-        Ok(ListPromptsResult::default())
+        require_protocol(&context)?;
+        Ok(ListPromptsResult::default()
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn complete(
@@ -495,7 +564,7 @@ impl ServerHandler for NteractMcp {
         _request: CompleteRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         Ok(CompleteResult::default())
     }
 
@@ -554,7 +623,7 @@ impl ServerHandler for NteractMcp {
         _request: rmcp::model::SetLevelRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         Ok(())
     }
 
@@ -563,12 +632,15 @@ impl ServerHandler for NteractMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         let mut tools = tools::all_tools();
         if self.no_show {
             tools.retain(|t| t.name.as_ref() != "show_notebook");
         }
-        Ok(ListToolsResult::with_all_items(tools))
+        mcp_transport::attachment_tool_schemas(&mut tools, mcp_transport::is_native(&context));
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn call_tool(
@@ -576,7 +648,7 @@ impl ServerHandler for NteractMcp {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         // Sniff client name on first call for use as the notebook peer label.
         // The title (e.g., "Claude Desktop") is preferred over the raw
         // implementation name ("claude-ai"), then known names are canonicalized.
@@ -584,11 +656,10 @@ impl ServerHandler for NteractMcp {
             let current = self.peer_label.read().await;
             if *current == "Inkwell" {
                 drop(current);
-                if let Some(info) = context.peer.peer_info() {
-                    if let Some(label) = mcp_client_branding::display_name(
-                        &info.client_info.name,
-                        info.client_info.title.as_deref(),
-                    ) {
+                if let Some(info) = context.client_info() {
+                    if let Some(label) =
+                        mcp_client_branding::display_name(&info.name, info.title.as_deref())
+                    {
                         *self.peer_label.write().await = label.into_owned();
                     }
                     // The operator slug comes from the raw implementation name,
@@ -596,12 +667,17 @@ impl ServerHandler for NteractMcp {
                     // against the client roster in `mcp-client-branding`, which is
                     // keyed by that raw name ("claude-code", "codex-mcp-client").
                     *self.operator.write().await =
-                        agent_operator(&info.client_info.name, &self.operator_session);
+                        agent_operator(&info.name, &self.operator_session);
                 }
             }
         }
         let start = std::time::Instant::now();
-        let result = progress::run(&context, &request.name, tools::dispatch(self, &request)).await;
+        let result = progress::run(
+            &context,
+            &request.name,
+            targets::dispatch(self, &request, mcp_transport::is_native(&context)),
+        )
+        .await;
         let elapsed = start.elapsed();
         if elapsed >= SLOW_MCP_TOOL_CALL {
             tracing::warn!(
@@ -622,8 +698,14 @@ impl ServerHandler for NteractMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        require_legacy_handshake(&context)?;
-        resources::list_resources(self).await
+        require_protocol(&context)?;
+        resources::list_resources_for_mode(self, mcp_transport::is_native(&context))
+            .await
+            .map(|result| {
+                result
+                    .with_ttl_ms(0)
+                    .with_cache_scope(rmcp::model::CacheScope::Private)
+            })
     }
 
     async fn read_resource(
@@ -631,9 +713,16 @@ impl ServerHandler for NteractMcp {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
+        mcp_transport::validate_resource_uri(&request.uri, &context)?;
         resources::read_resource(self, &request)
             .await
+            .map_err(|error| mcp_transport::resource_error(error, &context))
+            .map(|result| {
+                result
+                    .with_ttl_ms(0)
+                    .with_cache_scope(rmcp::model::CacheScope::Private)
+            })
             .map(Into::into)
     }
 
@@ -642,8 +731,17 @@ impl ServerHandler for NteractMcp {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
-        require_legacy_handshake(&context)?;
-        Ok(resources::list_resource_templates())
+        require_protocol(&context)?;
+        let mut result = resources::list_resource_templates();
+        if mcp_transport::is_native(&context) {
+            result
+                .resource_templates
+                .retain(|template| template.uri_template.starts_with("nteract://sessions/"));
+        }
+        result.result_type = Some(rmcp::model::ResultType::COMPLETE);
+        Ok(result
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     #[allow(deprecated)]
@@ -652,7 +750,7 @@ impl ServerHandler for NteractMcp {
         request: rmcp::model::SubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         let target = resources::parse_notebook_resource_uri(&request.uri)
             .map_err(|message| McpError::resource_not_found(message, None))?;
         let notebook_id = match &target {
@@ -683,7 +781,7 @@ impl ServerHandler for NteractMcp {
         request: rmcp::model::UnsubscribeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
-        require_legacy_handshake(&context)?;
+        require_protocol(&context)?;
         self.resource_subscriptions.unsubscribe(&request.uri)
     }
 }
@@ -787,7 +885,7 @@ mod tests {
     use rmcp::model::{CallToolResult, ContentBlock};
 
     #[test]
-    fn server_advertises_only_legacy_protocol_versions() {
+    fn server_advertises_legacy_and_native_protocol_versions() {
         let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
         assert_eq!(
             server.get_info().protocol_version,
@@ -799,7 +897,13 @@ mod tests {
                 .iter()
                 .map(ProtocolVersion::as_str)
                 .collect::<Vec<_>>(),
-            ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
+            [
+                "2024-11-05",
+                "2025-03-26",
+                "2025-06-18",
+                "2025-11-25",
+                "2026-07-28"
+            ]
         );
     }
 
@@ -877,7 +981,7 @@ mod tests {
                     assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
                     assert_eq!(
                         error.message,
-                        "initialize is required before application requests"
+                        "initialize is required for legacy application requests"
                     );
                 }
             }
@@ -885,7 +989,14 @@ mod tests {
                 .discover(context())
                 .await
                 .expect_err("discovery is unsupported");
-            assert_eq!(error.code, ErrorCode::METHOD_NOT_FOUND);
+            assert_eq!(
+                error.code,
+                if initialized {
+                    ErrorCode::METHOD_NOT_FOUND
+                } else {
+                    ErrorCode::INVALID_REQUEST
+                }
+            );
             running.close().await.expect("close test service");
         }
     }

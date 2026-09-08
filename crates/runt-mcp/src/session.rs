@@ -173,6 +173,7 @@ pub struct SessionReadiness {
 
 #[derive(Debug, Clone)]
 pub struct SessionAccess {
+    pub notebook_handle: String,
     pub handle: DocHandle,
     pub notebook_id: String,
     pub notebook_path: Option<String>,
@@ -587,6 +588,7 @@ impl NotebookSession {
         }
 
         Ok(SessionAccess {
+            notebook_handle: self.notebook_handle.clone(),
             handle: self.handle.clone(),
             notebook_id: self.notebook_id.clone(),
             notebook_path: self.notebook_path.clone(),

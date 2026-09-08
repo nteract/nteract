@@ -205,9 +205,52 @@ one elapsed clock and rate limit across a safe child retry. Progress delivery
 has a short timeout so a slow notification consumer cannot indefinitely stall
 the tool. Completion and cancellation discard pending progress updates.
 
-This observation layer does not by itself enable the native `2026-07-28`
-lifecycle or `subscriptions/listen`; those require their own transport and
-discovery support at every entrypoint.
+The native `2026-07-28` lifecycle is available at the child, installed wrapper,
+and development supervisor. Clients may send `server/discover` or an application
+request first, with the revision's required inline metadata. Initialize-based
+connections remain on their negotiated legacy revision. Inline metadata cannot
+upgrade an existing legacy connection.
+
+Native notebook-scoped tools require the attachment's `notebook_handle`.
+Legacy tools may also supply it. Selecting a handle routes just that request to
+an active or parked attachment; it does not switch the connection's active
+notebook. Native resource catalogs contain the static output UI and notebook
+listing, plus handle-qualified resource templates. Catalog entries do not depend
+on which notebooks this connection has opened. Reads and catalogs use private
+caching with zero TTL. The private child remains on `2025-11-25`, advertises empty
+client capabilities, and disables SDK caching. The proxy restores native result
+discriminators when forwarding deserialized legacy responses.
+
+`subscriptions/listen` accepts handle-qualified resource subscriptions, with a
+128-watch connection limit. Unsupported filter categories are declined. Watch
+installation and baseline capture happen before acknowledgment. Each accepted
+stream correlates invalidations with its subscription ID; cancellation releases
+only that listener's watches. The proxy reference-counts shared child watches,
+so cancelling one listener cannot unsubscribe another. Child loss ends native
+streams rather than silently moving them to replacement attachments. Clients
+must reconnect, obtain new handles, and establish new baselines.
+
+Legacy responses also carry the zero-TTL private cache hints as optional fields;
+legacy clients may ignore them. Only native responses require the result-type
+discriminator. A rejected first request does not open the native lifecycle:
+entrypoints wait for valid protocol metadata before starting recovery or dev
+setup. Transient native child startup failures can retry, within the existing
+circuit breaker's attempt budget.
+
+Handle-qualified `show_notebook` requests always reach the child's attachment
+validation and launch policy. The supervisor's direct Vite launch path applies
+to legacy explicit-path requests; it must not bypass a supplied handle. Releasing
+one attachment ends only its per-URI watches; other watches in the native listen
+request continue until cancelled, unavailable, or the child connection ends.
+
+The shared transport adapter covers two SDK 3.2 lifecycle ordering constraints.
+It primes a native first application request with a private, pure discovery
+request so the SDK's peer pump is running before a tool emits progress or a
+listener acknowledges. It also holds the SDK's early subscription acknowledgment
+in a request-owned slot until the handler has installed its watch. Validation
+errors retain the original request ID; this does not dispatch or replay an
+application operation. Tests exercise first-request progress, filtered
+acknowledgments, cancellation, and child transport loss over the actual SDK wire.
 
 ## Decision 4: Tool intent and guarded publication are the convergence point
 
@@ -536,23 +579,17 @@ application lifecycle checks, not an upstream MCP conformance suite.
 
 ## MCP protocol checkpoint
 
-`Cargo.toml:90` requests `rmcp = "1.4"`; `Cargo.lock:7357` resolves it to 1.5.0.
-That SDK defaults `ServerInfo::new` to MCP `2025-11-25`, which the child and
-proxy use (`crates/runt-mcp/src/lib.rs:413`,
-`crates/runt-mcp-proxy/src/proxy.rs:1113`). Older requested revisions can be
-negotiated by the SDK, but negotiation is not proof of a complete old-client
-compatibility matrix. The child emits resource links without a version-specific
-fallback, and the proxy initializes its child with a separate default-capability
-handshake (`crates/runt-mcp/src/tools/session.rs:808`,
-`crates/runt-mcp-proxy/src/child.rs:28`).
+The workspace uses `rmcp` 3.2.0. The public stdio entrypoints support the four
+legacy revisions from `2024-11-05` through `2025-11-25`, and native `2026-07-28`
+metadata, discovery, and resource subscriptions. The private child handshake is
+pinned to `2025-11-25`. Protocol tests cover negotiation, metadata validation,
+first requests, and old/new SDK interoperability.
 
-The upstream `2026-07-28` revision removes the initialize/protocol-session model
-and introduces per-request metadata, `server/discover`, and MRTR. The shipped
-entrypoints still use initialize-based stdio and do not implement that newer
-contract. Tools, resources, and the MCP Apps UI extension are advertised; the
-SDK dependency alone does not imply every protocol feature is exposed. Detailed
-compatibility and migration followups belong in the
-[MCP, cloud, and Automerge audit](../audits/mcp-cloud-automerge-audit.md).
+This is one upstream client per process. HTTP transport, Tasks, multi-round-trip
+requests, and multiplexing independent clients into one child are outside this
+change. Protocol support does not establish how a particular host exposes
+notifications to its model; host probes and desktop acceptance remain separate
+checks. See the [MCP, cloud, and Automerge audit](../audits/mcp-cloud-automerge-audit.md).
 
 ## Open Follow-ups
 
@@ -579,8 +616,8 @@ already implemented separate-child/shared-daemon model.
    installed wrapper at `crates/nteract-mcp/src/main.rs:204`, dev supervisor at
    `crates/mcp-supervisor/src/main.rs:3159`.
 5. **Protocol compatibility.** Concurrent callers now await shared restart
-   completion. Migration to the newer upstream protocol needs explicit lifecycle work;
-   neither exactly-once execution nor native protocol support follows from
+   completion. Further protocol features need explicit lifecycle work;
+   exactly-once execution does not follow from
    transparent restart or the SDK version.
 
 Already-absent UUID refusal and file-backed UUID registry recovery are

@@ -151,6 +151,10 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "path": {
           "default": null,
           "description": "Path to save the notebook to (e.g., \"~/analysis.ipynb\").\nRequired for ephemeral notebooks created with create_notebook().\nOmit to save to the notebook's existing file path.",
@@ -174,6 +178,10 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "notebook_id": {
           "default": null,
           "description": "Notebook ID to show. Defaults to current session's notebook.",
@@ -197,6 +205,10 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "notebook_id": {
           "default": null,
           "description": "Notebook ID to disconnect and release. If omitted, disconnects the\nactive session. Pass a notebook_id to release a specific parked session\nwithout switching away from the current one.",
@@ -294,6 +306,10 @@
             "null"
           ]
         },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "source": {
           "default": null,
           "description": "Cell source code or markdown content.",
@@ -352,6 +368,10 @@
             "null"
           ]
         },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "source": {
           "default": null,
           "description": "New source code (None to leave unchanged).",
@@ -391,6 +411,10 @@
         "cell_id": {
           "description": "The cell ID to delete.",
           "type": "string"
+        },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
         }
       },
       "required": [
@@ -423,6 +447,10 @@
         "cell_id": {
           "description": "The cell ID to move.",
           "type": "string"
+        },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
         }
       },
       "required": [
@@ -449,6 +477,10 @@
       "properties": {
         "cell_id": {
           "description": "The cell ID to execute.",
+          "type": "string"
+        },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
           "type": "string"
         },
         "timeout_secs": {
@@ -483,6 +515,10 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "timeout_secs": {
           "default": null,
           "description": "Max seconds to wait for all cells to finish. Default: 300.",
@@ -531,6 +567,10 @@
             "boolean",
             "null"
           ]
+        },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
         }
       },
       "required": [
@@ -551,6 +591,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Empty params for tools that take no arguments.",
+      "properties": {
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        }
+      },
       "title": "EmptyParams",
       "type": "object"
     },
@@ -565,6 +611,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Empty params for tools that take no arguments.",
+      "properties": {
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        }
+      },
       "title": "EmptyParams",
       "type": "object"
     },
@@ -608,6 +660,10 @@
             "string",
             "null"
           ]
+        },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
         },
         "remove": {
           "default": [],
@@ -678,6 +734,10 @@
           "description": "Literal text to find (must match exactly once).",
           "type": "string"
         },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "timeout_secs": {
           "default": null,
           "description": "Max seconds to wait for execution.",
@@ -726,6 +786,10 @@
         },
         "content": {
           "description": "Literal replacement text — not interpreted as a regex or escape sequence. To insert a newline, use an actual newline character in the JSON string.",
+          "type": "string"
+        },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
           "type": "string"
         },
         "pattern": {
@@ -797,6 +861,10 @@
         "body": {
           "description": "Comment text (markdown supported).",
           "type": "string"
+        },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
         }
       },
       "required": [
@@ -820,6 +888,10 @@
       "properties": {
         "body": {
           "description": "Reply text (markdown supported).",
+          "type": "string"
+        },
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
           "type": "string"
         },
         "thread_id": {
@@ -847,6 +919,10 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "thread_id": {
           "description": "Thread ID to resolve.",
           "type": "string"
@@ -871,6 +947,10 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "notebook_handle": {
+          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "type": "string"
+        },
         "thread_id": {
           "description": "Thread ID to reopen.",
           "type": "string"

@@ -4572,6 +4572,7 @@ name = "mcp-transport"
 version = "0.1.0"
 dependencies = [
  "rmcp 3.2.0",
+ "serde_json",
  "tokio",
  "tokio-util",
 ]

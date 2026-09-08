@@ -270,5 +270,9 @@ pub fn assert_unsupported(response: &Value, version: &str) {
         .map(|value| value.as_str().expect("protocol version string"))
         .collect();
     supported.sort_unstable();
-    assert_eq!(supported, LEGACY_VERSIONS);
+    let mut expected = LEGACY_VERSIONS.to_vec();
+    if version != "2026-07-28" {
+        expected.push("2026-07-28");
+    }
+    assert_eq!(supported, expected);
 }

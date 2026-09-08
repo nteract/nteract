@@ -262,7 +262,7 @@ async fn main() -> ExitCode {
     let proxy = McpProxy::new(config, None);
 
     // Start the MCP server on stdio immediately
-    let transport = mcp_transport::server(rmcp::transport::io::stdio());
+    let (transport, protocol) = mcp_transport::server_with_protocol(rmcp::transport::io::stdio());
     let server = match proxy.serve(transport).await {
         Ok(s) => s,
         Err(e) => {
@@ -270,28 +270,20 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if server.peer().peer_info().is_none() {
-        error!("The initialize handshake is required");
-        server.cancellation_token().cancel();
-        return ExitCode::FAILURE;
+
+    if server.peer().peer_info().is_none() && !protocol.wait_for_native().await {
+        let _ = server.waiting().await;
+        return ExitCode::SUCCESS;
     }
-
-    // Extract upstream client identity
-    let (upstream_name, upstream_title) = server
-        .peer()
-        .peer_info()
-        .map(|info| {
-            let name = info.client_info.name.clone();
-            let title = info.client_info.title.clone();
-            info!("Upstream MCP client: name={name:?}, title={title:?}");
-            (name, title)
-        })
-        .unwrap_or_else(|| ("unknown".to_string(), None));
-
     let proxy_ref = server.service().clone();
-    proxy_ref
-        .set_upstream_identity(upstream_name, upstream_title)
-        .await;
+    if let Some(info) = server.peer().peer_info() {
+        proxy_ref
+            .set_upstream_identity(
+                info.client_info.name.clone(),
+                info.client_info.title.clone(),
+            )
+            .await;
+    }
 
     // Child spawn and `tools/list_changed` / `resources/list_changed` notifications
     // happen in `McpProxy::on_initialized`, after the client sends
@@ -404,12 +396,7 @@ mod tests {
         assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
         assert_eq!(
             proxy.supported_protocol_versions().as_ref(),
-            &[
-                ProtocolVersion::V_2024_11_05,
-                ProtocolVersion::V_2025_03_26,
-                ProtocolVersion::V_2025_06_18,
-                ProtocolVersion::V_2025_11_25,
-            ]
+            mcp_transport::SUPPORTED_VERSIONS
         );
     }
 

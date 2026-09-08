@@ -54,12 +54,15 @@ pub async fn wait_for_notebook_change(
             "message":"This notebook attachment is no longer available. Connect again and obtain a new handle."
         })));
     };
-    run_wait(
-        server,
-        &params,
-        &notebook_id,
-        &observer,
-        Duration::from_secs_f64(seconds),
+    crate::targets::with_handle(
+        params.notebook_handle.clone(),
+        run_wait(
+            server,
+            &params,
+            &notebook_id,
+            &observer,
+            Duration::from_secs_f64(seconds),
+        ),
     )
     .await
 }

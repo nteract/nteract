@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -304,7 +304,7 @@ pub async fn delete_cell(
     let result = serde_json::json!({
         "cell_id": cell_id,
         "deleted": true,
-        "resources": crate::resources::notebook_resources_json(handle.notebook_id()),
+        "resources": super::notebook_resources_json(handle.notebook_id()),
     });
     cells_resource_json_success(result, handle.notebook_id())
 }
@@ -340,7 +340,7 @@ pub async fn move_cell(
         "cell_id": cell_id,
         "after_cell_id": after_cell_id,
         "moved": true,
-        "uri": crate::resources::notebook_cell_uri(handle.notebook_id(), cell_id),
+        "uri": super::cell_resource_uri(handle.notebook_id(), cell_id),
     });
     cell_resource_json_success(result, handle.notebook_id(), cell_id)
 }
@@ -404,10 +404,7 @@ fn cell_resource_success(
 ) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![
         crate::formatting::assistant_text(message),
-        ContentBlock::resource_link(crate::resources::notebook_cell_resource_link(
-            notebook_id,
-            cell_id,
-        )),
+        super::cell_resource_content(notebook_id, cell_id),
     ]))
 }
 
@@ -420,10 +417,7 @@ fn cell_resource_json_success(
         crate::formatting::assistant_text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
         ),
-        ContentBlock::resource_link(crate::resources::notebook_cell_resource_link(
-            notebook_id,
-            cell_id,
-        )),
+        super::cell_resource_content(notebook_id, cell_id),
     ]))
 }
 
@@ -435,7 +429,7 @@ fn cells_resource_json_success(
         crate::formatting::assistant_text(
             serde_json::to_string_pretty(&result).unwrap_or_default(),
         ),
-        ContentBlock::resource_link(crate::resources::notebook_cells_resource_link(notebook_id)),
+        super::cells_resource_content(notebook_id),
     ]))
 }
 
@@ -473,6 +467,22 @@ fn explicit_after_cell_id_arg(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn handle_routed_mutation_results_only_link_to_that_attachment() {
+        crate::targets::with_handle("attachment".into(), async {
+            for result in [
+                cell_resource_success("created".into(), "notebook", "cell/1"),
+                cell_resource_json_success(serde_json::json!({"uri": super::super::cell_resource_uri("notebook", "cell/1")}), "notebook", "cell/1"),
+                cells_resource_json_success(serde_json::json!({"resources": super::super::notebook_resources_json("notebook")}), "notebook"),
+            ] {
+                let result = result.expect("mutation result");
+                let value = serde_json::to_string(&result).expect("wire result");
+                assert!(!value.contains("nteract://notebooks/"), "{value}");
+                assert!(result.content[1].as_resource_link().expect("link").uri.starts_with("nteract://sessions/attachment/cells"));
+            }
+        }).await;
+    }
 
     #[test]
     fn cell_resource_success_returns_mcp_resource_link() {
