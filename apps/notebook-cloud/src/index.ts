@@ -5240,17 +5240,32 @@ async function routeBlob(
     const response = immutableR2ObjectResponse(object, { includeContentLength: true });
     if (cache) {
       response.headers.set("X-Notebook-Cloud-Blob-Cache", "miss");
-      ctx.waitUntil(
-        cache.put(cacheKey, response.clone()).catch((error) => {
-          cloudLog("warn", "blob.read.cache_put_failed", {
-            notebook_id: notebookId,
-            hash,
-            error: errorMessage(error),
-            counter: "blob_read_cache_put_failures",
-            counter_delta: 1,
-          });
-        }),
-      );
+      // The cache write needs its own copy of the streaming body. workerd tees
+      // the stream on clone; other Workers hosts (celld) expose `caches.default`
+      // but refuse to clone an unconsumed stream. The cache is an optimization,
+      // so a failed clone must not fail the blob read.
+      const cacheCopy = cloneResponseForCache(response);
+      if (cacheCopy) {
+        ctx.waitUntil(
+          cache.put(cacheKey, cacheCopy).catch((error) => {
+            cloudLog("warn", "blob.read.cache_put_failed", {
+              notebook_id: notebookId,
+              hash,
+              error: errorMessage(error),
+              counter: "blob_read_cache_put_failures",
+              counter_delta: 1,
+            });
+          }),
+        );
+      } else {
+        cloudLog("debug", "blob.read.cache_put_skipped", {
+          notebook_id: notebookId,
+          hash,
+          reason: "streaming_response_not_cloneable",
+          counter: "blob_read_cache_put_skipped",
+          counter_delta: 1,
+        });
+      }
     }
     return response;
   }
@@ -5380,6 +5395,14 @@ type CloudflareCacheStorage = CacheStorage & { default?: Cache };
 function cloudflareDefaultCache(): Cache | null {
   const cacheStorage = (globalThis as { caches?: CloudflareCacheStorage }).caches;
   return cacheStorage?.default ?? null;
+}
+
+function cloneResponseForCache(response: Response): Response | null {
+  try {
+    return response.clone();
+  } catch {
+    return null;
+  }
 }
 
 async function matchBlobCache(

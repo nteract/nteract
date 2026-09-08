@@ -5689,6 +5689,57 @@ describe("Worker artifact routes", () => {
     }
   });
 
+  it("serves the blob when the edge cache cannot clone a streaming response", async () => {
+    // Non-workerd hosts (celld) expose caches.default but refuse to tee an
+    // unconsumed stream. The cache write is an optimization; the read must win.
+    const env = fakeEnv();
+    seedNotebook(env, "blob-cache-clone-demo");
+    seedAcl(env, {
+      notebookId: "blob-cache-clone-demo",
+      subject: "user:dev:alice",
+      scope: "viewer",
+    });
+    const body = new Uint8Array([4, 2, 4, 2]);
+    const hash = await sha256Hex(body);
+    const key = blobKey("blob-cache-clone-demo", hash);
+    await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
+      httpMetadata: { contentType: "image/png" },
+    });
+    let putCalls = 0;
+    const restoreCaches = installGlobalCaches({
+      default: {
+        async match() {
+          return undefined;
+        },
+        async put() {
+          putCalls += 1;
+        },
+      } as unknown as Cache,
+    });
+    const originalClone = Response.prototype.clone;
+    Response.prototype.clone = function cloneUnsupported(): Response {
+      throw new TypeError("Cannot clone a streaming response before consumption");
+    };
+    const waitUntilPromises: Promise<unknown>[] = [];
+
+    try {
+      const response = await blobGet(
+        env,
+        `/api/n/blob-cache-clone-demo/blobs/${hash}`,
+        fakeContextWithWaitUntil(waitUntilPromises),
+      );
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("X-Notebook-Cloud-Blob-Cache"), "miss");
+      assert.deepEqual(new Uint8Array(await response.arrayBuffer()), body);
+      await Promise.all(waitUntilPromises);
+      assert.equal(putCalls, 0);
+      assert.deepEqual(env.NOTEBOOK_SNAPSHOTS.getKeys, [key]);
+    } finally {
+      Response.prototype.clone = originalClone;
+      restoreCaches();
+    }
+  });
+
   it("rejects blob uploads whose path hash does not match the bytes", async () => {
     const env = fakeEnv();
     seedNotebook(env, "runtime-demo");
