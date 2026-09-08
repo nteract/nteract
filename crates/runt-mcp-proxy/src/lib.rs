@@ -12,6 +12,7 @@
 
 pub mod child;
 pub mod circuit_breaker;
+mod observation_bridge;
 pub mod proxy;
 pub mod session;
 pub mod tools;

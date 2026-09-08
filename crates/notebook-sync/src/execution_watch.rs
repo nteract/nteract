@@ -67,8 +67,17 @@ impl ExecutionWatcher {
         cell_id: impl Into<String>,
         execution_id: impl Into<String>,
     ) -> Self {
+        Self::from_receiver(handle.subscribe_runtime_state(), cell_id, execution_id)
+    }
+
+    /// Observe a runtime snapshot stream without retaining a sync handle.
+    pub fn from_receiver(
+        rx: watch::Receiver<RuntimeState>,
+        cell_id: impl Into<String>,
+        execution_id: impl Into<String>,
+    ) -> Self {
         Self {
-            rx: handle.subscribe_runtime_state(),
+            rx,
             cell_id: cell_id.into(),
             execution_id: execution_id.into(),
             prev: None,

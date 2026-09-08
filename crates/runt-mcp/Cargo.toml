@@ -39,6 +39,7 @@ url = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+rmcp = { workspace = true, features = ["client"] }
 futures-util = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }

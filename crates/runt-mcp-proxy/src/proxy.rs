@@ -182,6 +182,7 @@ pub struct McpProxy {
     /// Stable across child generations so automatic rejoin retains the exact
     /// operator used by the explicit connect in the previous child.
     operator_session: String,
+    observation_bridge: Arc<crate::observation_bridge::ObservationBridge>,
 }
 
 impl McpProxy {
@@ -223,6 +224,7 @@ impl McpProxy {
             exit_signal: Arc::new(Notify::new()),
             restart_in_progress: Arc::new(Mutex::new(false)),
             operator_session: uuid::Uuid::new_v4().simple().to_string()[..8].to_string(),
+            observation_bridge: Arc::default(),
         }
     }
 
@@ -237,6 +239,93 @@ impl McpProxy {
             self.operator_session.clone(),
         );
         child_env
+    }
+
+    /// Subscribe only after child startup, with one recovery for a closed child.
+    pub async fn forward_subscribe(
+        &self,
+        uri: String,
+        upstream: Peer<RoleServer>,
+    ) -> Result<(), McpError> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut recovered = false;
+        loop {
+            let ready = self.child_ready.notified();
+            let snapshot = {
+                let state = self.state.read().await;
+                state.child_client.as_ref().map(|client| {
+                    (
+                        client.peer().clone(),
+                        state.child_generation,
+                        client.service().notifications.subscribe(),
+                    )
+                })
+            };
+            let Some((peer, generation, notifications)) = snapshot else {
+                tokio::time::timeout_at(deadline, ready)
+                    .await
+                    .map_err(|_| {
+                        McpError::internal_error(
+                            "Notebook MCP child did not become ready for subscription",
+                            None,
+                        )
+                    })?;
+                continue;
+            };
+            if peer.is_transport_closed() {
+                if recovered {
+                    return Err(McpError::internal_error(
+                        "Notebook MCP child closed during subscription recovery",
+                        None,
+                    ));
+                }
+                recovered = true;
+                let proxy = self.clone();
+                // A caller timeout must not abandon the restart's ownership flag.
+                let recovery = tokio::spawn(async move {
+                    let replacement_ready = {
+                        let state = proxy.state.read().await;
+                        state.child_generation != generation
+                            && state
+                                .child_client
+                                .as_ref()
+                                .is_some_and(|child| !child.is_transport_closed())
+                    };
+                    if replacement_ready {
+                        Ok(())
+                    } else {
+                        proxy.restart_child().await
+                    }
+                });
+                tokio::time::timeout_at(deadline, recovery)
+                    .await
+                    .map_err(|_| McpError::internal_error("Subscription recovery timed out", None))?
+                    .map_err(|error| McpError::internal_error(error.to_string(), None))?
+                    .map_err(|error| McpError::internal_error(error, None))?;
+                continue;
+            }
+            let result = self
+                .observation_bridge
+                .subscribe(
+                    uri.clone(),
+                    peer.clone(),
+                    generation,
+                    notifications,
+                    upstream.clone(),
+                )
+                .await;
+            if result.is_err() && peer.is_transport_closed() && !recovered {
+                continue;
+            }
+            if self.state.read().await.child_generation != generation {
+                return Err(McpError::internal_error("Notebook MCP child changed during subscription; read a fresh baseline and subscribe again", None));
+            }
+            return result;
+        }
+    }
+
+    pub async fn forward_unsubscribe(&self, uri: String) -> Result<(), McpError> {
+        self.observation_bridge.unsubscribe(uri).await
     }
 
     /// Set the upstream client identity (from MCP initialize handshake).
@@ -1187,6 +1276,7 @@ fn tool_can_be_replayed(name: &str) -> bool {
             | "get_all_cells"
             | "get_results"
             | "get_dependencies"
+            | "wait_for_notebook_change"
     )
 }
 
@@ -1300,6 +1390,7 @@ impl ServerHandler for McpProxy {
                 .enable_tools()
                 .enable_tool_list_changed()
                 .enable_resources()
+                .enable_resources_subscribe()
                 .enable_resources_list_changed()
                 .enable_extensions_with(crate::mcp_apps_extension_capabilities())
                 .build(),
@@ -1394,6 +1485,26 @@ impl ServerHandler for McpProxy {
     ) -> Result<ReadResourceResponse, McpError> {
         require_legacy_handshake(&context)?;
         self.forward_read_resource(request).await.map(Into::into)
+    }
+
+    #[allow(deprecated)]
+    async fn subscribe(
+        &self,
+        request: rmcp::model::SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
+        self.forward_subscribe(request.uri, context.peer).await
+    }
+
+    #[allow(deprecated)]
+    async fn unsubscribe(
+        &self,
+        request: rmcp::model::UnsubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
+        self.forward_unsubscribe(request.uri).await
     }
 
     async fn call_tool(

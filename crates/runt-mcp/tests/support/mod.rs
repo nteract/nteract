@@ -229,6 +229,18 @@ pub fn modern_requests() -> Vec<(&'static str, Value)> {
         ("resources/templates/list", json!({})),
         ("resources/read", json!({"uri": "ui://nteract/output.html"})),
         (
+            "resources/subscribe",
+            json!({"uri":"nteract://sessions/expired/cells"}),
+        ),
+        (
+            "resources/unsubscribe",
+            json!({"uri":"nteract://sessions/expired/cells"}),
+        ),
+        (
+            "tools/call",
+            json!({"name":"wait_for_notebook_change","arguments":{"notebook_handle":"expired"}}),
+        ),
+        (
             "tools/call",
             json!({"name": "create_notebook", "arguments": {"ephemeral": true}}),
         ),

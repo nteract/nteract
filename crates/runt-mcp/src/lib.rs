@@ -28,12 +28,14 @@ pub mod editing;
 pub mod execution;
 pub mod formatting;
 mod icons;
+pub mod observation;
 pub mod presence;
 pub mod project_file;
 mod resources;
 mod session;
 mod session_activation;
 mod structured;
+mod subscriptions;
 pub mod tools;
 
 use session::{
@@ -139,6 +141,8 @@ pub struct NteractMcp {
     /// the room doesn't hit the eviction timer. On switch-back, the parked
     /// session is resumed instead of creating a new connection.
     parked_sessions: Arc<RwLock<std::collections::HashMap<String, NotebookSession>>>,
+    observation_waits: tokio::sync::Semaphore,
+    resource_subscriptions: Arc<subscriptions::ResourceSubscriptions>,
     /// Context from the most recently dropped session — allows error messages
     /// to tell agents *why* the session was lost and *which notebook_id* to
     /// reconnect to, instead of the generic "No active notebook session".
@@ -166,6 +170,38 @@ pub struct NteractMcp {
 }
 
 impl NteractMcp {
+    pub(crate) async fn observer_for_handle(
+        &self,
+        notebook_handle: &str,
+    ) -> Result<Option<(String, observation::ObservationReader)>, McpError> {
+        let capture = |session: &NotebookSession| {
+            session
+                .access(session::SessionRequirement::DocumentRead)
+                .map_err(resources::resource_session_access_error)?;
+            session
+                .observer()
+                .map(|observer| Some((session.notebook_id.clone(), observer)))
+                .map_err(|error| McpError::internal_error(error, None))
+        };
+        {
+            let active = self.session.read().await;
+            if let Some(session) = active
+                .as_ref()
+                .filter(|session| session.notebook_handle == notebook_handle)
+            {
+                return capture(session);
+            }
+        }
+        let parked = self.parked_sessions.read().await;
+        match parked
+            .values()
+            .find(|session| session.notebook_handle == notebook_handle)
+        {
+            Some(session) => capture(session),
+            None => Ok(None),
+        }
+    }
+
     /// Create a new MCP server instance.
     pub fn new(
         socket_path: PathBuf,
@@ -183,6 +219,8 @@ impl NteractMcp {
             session_intent_epoch: Arc::new(AtomicU64::new(0)),
             session_activation: Arc::new(SessionActivation::default()),
             parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            observation_waits: tokio::sync::Semaphore::new(8),
+            resource_subscriptions: Arc::default(),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
             operator: Arc::new(RwLock::new(agent_operator(
@@ -482,6 +520,7 @@ impl ServerHandler for NteractMcp {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_resources_subscribe()
                 .enable_extensions_with(extensions)
                 .build(),
         )
@@ -495,7 +534,14 @@ impl ServerHandler for NteractMcp {
              Calling these again switches your active session. \
              Read cells through MCP resources: \
              nteract://notebooks/{notebook_id}/cells and \
-             nteract://notebooks/{notebook_id}/cells/{cell_id}.",
+             nteract://notebooks/{notebook_id}/cells/{cell_id}. \
+             Connect/create also return a notebook_handle for that exact attachment; \
+             use its nteract://sessions/{notebook_handle}/cells or /comments resource. \
+             Reads return a cursor. Use wait_for_notebook_change with that handle \
+             and cursor for a bounded wait, or supply execution_id to wait for an \
+             exact execution and its settled output. Canceling a wait only stops \
+             observation; interrupt_kernel explicitly stops computation. A released \
+             attachment needs a new connect and handle.",
         )
     }
 
@@ -597,6 +643,47 @@ impl ServerHandler for NteractMcp {
     ) -> Result<ListResourceTemplatesResult, McpError> {
         require_legacy_handshake(&context)?;
         Ok(resources::list_resource_templates())
+    }
+
+    #[allow(deprecated)]
+    async fn subscribe(
+        &self,
+        request: rmcp::model::SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
+        let target = resources::parse_notebook_resource_uri(&request.uri)
+            .map_err(|message| McpError::resource_not_found(message, None))?;
+        let notebook_id = match &target {
+            resources::NotebookResourceUri::Cells { notebook_id }
+            | resources::NotebookResourceUri::Cell { notebook_id, .. }
+            | resources::NotebookResourceUri::Comments { notebook_id } => notebook_id,
+            resources::NotebookResourceUri::Notebooks => {
+                return Err(McpError::invalid_params(
+                    "Subscribe to a connected notebook's cells or comments resource",
+                    None,
+                ))
+            }
+        };
+        let (_, _, handle, observer) = resources::resource_session(
+            self,
+            notebook_id,
+            request.uri.starts_with("nteract://sessions/"),
+        )
+        .await?;
+        drop(handle);
+        self.resource_subscriptions
+            .subscribe(request.uri, target, observer, context.peer)
+    }
+
+    #[allow(deprecated)]
+    async fn unsubscribe(
+        &self,
+        request: rmcp::model::UnsubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        require_legacy_handshake(&context)?;
+        self.resource_subscriptions.unsubscribe(&request.uri)
     }
 }
 

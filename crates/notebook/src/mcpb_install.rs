@@ -76,6 +76,7 @@ pub fn install_mcpb(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             { "name": "save_notebook", "description": "Save notebook to disk. For notebooks created with create_notebook(), you must provide a path." },
             { "name": "show_notebook", "description": "Open the notebook in the nteract app for the user. Headless: returns a structured no-display reason." },
             { "name": "disconnect_notebook", "description": "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session." },
+            { "name": "wait_for_notebook_change", "description": "Wait for notebook changes or an exact execution." },
             { "name": "get_cell", "description": "Get a cell by ID, including execution status/id and compact output summaries." },
             { "name": "get_all_cells", "description": "Get all cells as summary, json, or rich format with compact execution/output summaries." },
             { "name": "create_cell", "description": "Create a cell anchored by after_cell_id; omit after_cell_id to append." },

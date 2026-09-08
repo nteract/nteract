@@ -856,6 +856,7 @@ impl DocHandle {
                 None,
                 &created_at,
             )?;
+            state.publish_comments_snapshot();
         }
 
         // Notify sync task that CommentsDoc changed
@@ -885,6 +886,7 @@ impl DocHandle {
                 after_message_id.as_deref(),
                 &created_at,
             )?;
+            state.publish_comments_snapshot();
         }
 
         // Notify sync task that CommentsDoc changed
@@ -900,6 +902,7 @@ impl DocHandle {
         {
             let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
             state.comments_doc.resolve_thread(thread_id, &resolved_at)?;
+            state.publish_comments_snapshot();
         }
 
         // Notify sync task that CommentsDoc changed
@@ -913,6 +916,7 @@ impl DocHandle {
         {
             let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
             state.comments_doc.reopen_thread(thread_id)?;
+            state.publish_comments_snapshot();
         }
 
         // Notify sync task that CommentsDoc changed
@@ -926,6 +930,18 @@ impl DocHandle {
         let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
         let projection = state.comments_doc.read_projection(None)?;
         Ok(projection)
+    }
+
+    /// Observe local and remote comments without retaining a notebook peer.
+    /// Subscribe before taking a baseline; the retained projection and watch
+    /// registration are captured under the same document lock. `None` means
+    /// comments identity/projection is not available yet.
+    pub fn subscribe_comments(
+        &self,
+    ) -> Result<watch::Receiver<Option<Arc<comments_doc::CommentsProjection>>>, SyncError> {
+        let state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        state.publish_comments_snapshot();
+        Ok(state.comments_tx.subscribe())
     }
 
     fn readiness_error(status: &SyncStatus) -> Option<SyncError> {
@@ -1217,7 +1233,7 @@ fn document_contains_heads(
 }
 
 /// Read the execution_id for a cell directly from a raw AutoCommit document.
-fn read_execution_id(doc: &AutoCommit, cell_id: &str) -> Option<String> {
+pub(crate) fn read_execution_id(doc: &AutoCommit, cell_id: &str) -> Option<String> {
     let (_, cells_id) = doc.get(&automerge::ROOT, "cells").ok().flatten()?;
     let (_, cell_obj) = doc.get(&cells_id, cell_id).ok().flatten()?;
     let (value, _) = doc.get(&cell_obj, "execution_id").ok().flatten()?;
@@ -1277,6 +1293,113 @@ mod tests {
             status_rx,
             "test-notebook".to_string(),
         )
+    }
+
+    #[test]
+    fn comments_watch_covers_local_crud_and_does_not_retain_handle() {
+        let handle = test_handle();
+        handle.set_actor("agent:test").unwrap();
+        let mut comments = handle.subscribe_comments().unwrap();
+        assert!(comments
+            .borrow_and_update()
+            .as_ref()
+            .unwrap()
+            .threads
+            .is_empty());
+        let thread = handle
+            .create_comment_thread(
+                CommentAnchor::Cell {
+                    cell_id: "cell-1".into(),
+                    observed_cell_position: None,
+                },
+                "first".into(),
+            )
+            .unwrap();
+        assert!(comments.has_changed().unwrap());
+        assert_eq!(
+            comments.borrow_and_update().as_ref().unwrap().threads[0]
+                .messages
+                .len(),
+            1
+        );
+        handle.reply_to_comment(&thread, "second".into()).unwrap();
+        assert_eq!(
+            comments.borrow_and_update().as_ref().unwrap().threads[0]
+                .messages
+                .len(),
+            2
+        );
+        handle.resolve_comment_thread(&thread).unwrap();
+        assert!(comments.has_changed().unwrap());
+        comments.borrow_and_update();
+        handle.reopen_comment_thread(&thread).unwrap();
+        assert!(comments.has_changed().unwrap());
+        comments.borrow_and_update();
+        // A second observer neither generates a false update nor retains a
+        // command channel after the session releases the last handle.
+        let _second = handle.subscribe_comments().unwrap();
+        assert!(!comments.has_changed().unwrap());
+        drop(handle);
+        assert!(comments.has_changed().is_err());
+    }
+
+    #[test]
+    fn comments_watch_publishes_remote_sync_and_suppresses_negotiation_frames() {
+        let source = test_handle();
+        source.set_actor("agent:source").unwrap();
+        source
+            .create_comment_thread(
+                CommentAnchor::Cell {
+                    cell_id: "cell-1".into(),
+                    observed_cell_position: None,
+                },
+                "remote comment".into(),
+            )
+            .unwrap();
+        let target = test_handle();
+        target.doc.lock().unwrap().comments_doc = comments_doc::CommentsDoc::new_empty_for_sync();
+        let mut comments = target.subscribe_comments().unwrap();
+        assert!(comments.borrow_and_update().is_none());
+        for _ in 0..10 {
+            let from_source = source
+                .doc
+                .lock()
+                .unwrap()
+                .generate_comments_sync_message_recovering("test-send")
+                .unwrap();
+            let from_target = target
+                .doc
+                .lock()
+                .unwrap()
+                .generate_comments_sync_message_recovering("test-reply")
+                .unwrap();
+            if from_source.is_none() && from_target.is_none() {
+                break;
+            }
+            if let Some(message) = from_source {
+                target
+                    .doc
+                    .lock()
+                    .unwrap()
+                    .receive_comments_sync_message_recovering(message, "test-receive")
+                    .unwrap();
+            }
+            if let Some(message) = from_target {
+                source
+                    .doc
+                    .lock()
+                    .unwrap()
+                    .receive_comments_sync_message_recovering(message, "test-receive")
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            comments.borrow_and_update().as_ref().unwrap().threads[0].messages[0].body,
+            "remote comment"
+        );
+        let state = target.doc.lock().unwrap();
+        state.publish_comments_snapshot();
+        assert!(!comments.has_changed().unwrap());
     }
 
     #[test]

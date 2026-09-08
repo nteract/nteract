@@ -42,6 +42,24 @@ async fn legacy_wire(version: &str) {
     assert_eq!(server.session_intent_epoch().load(Ordering::Acquire), 0);
 
     wire.initialized().await;
+    for (index, uri) in ["nteract://notebooks", "nteract://sessions/expired/cells"]
+        .into_iter()
+        .enumerate()
+    {
+        let response = wire
+            .request(
+                200 + index as u64,
+                "resources/subscribe",
+                Some(json!({"uri":uri})),
+            )
+            .await;
+        assert!(response.get("error").is_some(), "{response}");
+    }
+    let response = wire.request(202, "tools/call", Some(json!({"name":"wait_for_notebook_change","arguments":{"notebook_handle":"expired"}}))).await;
+    assert_eq!(
+        legacy_result(&response)["structuredContent"]["outcome"],
+        "unavailable"
+    );
     let response = wire.request(3, "resources/list", None).await;
     let resources = legacy_result(&response)["resources"]
         .as_array()

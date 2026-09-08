@@ -23,9 +23,18 @@ pub type RoleChild = rmcp::service::RoleClient;
 pub struct ChildClientHandler {
     pub upstream_name: String,
     pub upstream_title: Option<String>,
+    pub notifications:
+        tokio::sync::broadcast::Sender<rmcp::model::ResourceUpdatedNotificationParam>,
 }
 
 impl ClientHandler for ChildClientHandler {
+    async fn on_resource_updated(
+        &self,
+        params: rmcp::model::ResourceUpdatedNotificationParam,
+        _: rmcp::service::NotificationContext<RoleChild>,
+    ) {
+        let _ = self.notifications.send(params);
+    }
     fn get_info(&self) -> rmcp::model::ClientInfo {
         let mut impl_info = Implementation::new(&self.upstream_name, env!("CARGO_PKG_VERSION"));
         impl_info.title = self.upstream_title.clone();
@@ -231,6 +240,7 @@ pub async fn spawn_child(
     let handler = ChildClientHandler {
         upstream_name: upstream_name.to_string(),
         upstream_title: upstream_title.map(|s| s.to_string()),
+        notifications: tokio::sync::broadcast::channel(256).0,
     };
 
     let client = handler
@@ -273,6 +283,7 @@ mod tests {
         let handler = ChildClientHandler {
             upstream_name: "codex-mcp-client".to_string(),
             upstream_title: Some("Codex".to_string()),
+            notifications: tokio::sync::broadcast::channel(256).0,
         };
         let info = handler.get_info();
         assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
@@ -305,6 +316,7 @@ mod tests {
         let handler = ChildClientHandler {
             upstream_name: "test".to_string(),
             upstream_title: None,
+            notifications: tokio::sync::broadcast::channel(256).0,
         };
         let client = handler
             .serve(client_side)
