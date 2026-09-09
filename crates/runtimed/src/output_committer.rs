@@ -787,6 +787,7 @@ mod tests {
             vec![crate::stream_flush::PendingStreamFlush {
                 execution_id: "exec-1".to_string(),
                 stream_name: "stdout".to_string(),
+                segment: 0,
             }],
             LifecycleSignal::ExecutionDone {
                 execution_id: "exec-1".to_string(),
