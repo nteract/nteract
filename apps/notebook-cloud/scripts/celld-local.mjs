@@ -54,6 +54,10 @@
 //   NOTEBOOK_CLOUD_CELLD_LOGS=1      pass --logs to celld dev (node INFO/WARN)
 //   NOTEBOOK_CLOUD_CELLD_CLEAN=1     pass --clean on start (discard local state)
 //   NOTEBOOK_CLOUD_ESBUILD           esbuild executable for celld's bundler
+//   NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS  "https://app,https://outputs,https://assets"
+//                                    for `export` behind a TLS ingress; requires
+//                                    NOTEBOOK_CLOUD_CELLD_OIDC_{ISSUER,CLIENT_ID,
+//                                    AUDIENCE,PRINCIPAL_NAMESPACE[,PROVIDER_LABEL]}
 //                                    (default: the esbuild devDependency's bin)
 //   NOTEBOOK_CLOUD_RUNT_BIN          runt executable (default target/debug/runt)
 //   NOTEBOOK_CLOUD_WORKSTATION_PYTHON  kernel interpreter with ipykernel
@@ -85,11 +89,32 @@ const workstationPython =
   process.env.NOTEBOOK_CLOUD_WORKSTATION_PYTHON?.trim() ||
   path.join(rootDir, "kernel-venv", "bin", "python");
 
-const origins = {
+// Browser-facing origins. The defaults are the loopback listeners, which is
+// what `celld dev` serves and what an SSH port-forward to a remote node
+// reproduces. `export` for a public deployment sets
+// NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS=<app>,<outputs>,<renderer-assets> (three
+// distinct https origins behind the operator's TLS ingress); the node
+// listeners stay on loopback either way.
+const publicOrigins = readPublicOrigins(process.env.NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS);
+const origins = publicOrigins ?? {
   main: `http://${HOST}:${basePort}`,
   outputs: `http://${HOST}:${basePort + 1}`,
   "renderer-assets": `http://${HOST}:${basePort + 2}`,
 };
+
+// Identity provider for a public deployment. Loopback deployments use the
+// Worker's own dev issuer; a public origin cannot (it is loopback-gated), so
+// these must all be set together with the public origins. Values match the
+// wrangler.toml var names without the NOTEBOOK_CLOUD_ prefix.
+const publicOidc = publicOrigins
+  ? {
+      issuer: requireEnv("NOTEBOOK_CLOUD_CELLD_OIDC_ISSUER"),
+      clientId: requireEnv("NOTEBOOK_CLOUD_CELLD_OIDC_CLIENT_ID"),
+      audience: requireEnv("NOTEBOOK_CLOUD_CELLD_OIDC_AUDIENCE"),
+      principalNamespace: requireEnv("NOTEBOOK_CLOUD_CELLD_OIDC_PRINCIPAL_NAMESPACE"),
+      providerLabel: process.env.NOTEBOOK_CLOUD_CELLD_OIDC_PROVIDER_LABEL?.trim() || "Sign in",
+    }
+  : undefined;
 
 // Each Worker's celld project. `entry` is re-exported by a generated shim so the
 // bundler's `main` stays inside the project; `assets` is copied (not linked).
@@ -427,6 +452,22 @@ async function writeWorkerConfig(worker, projectDir, main, sessionSecret) {
 
 function mainVars(sessionSecret) {
   const main = origins.main;
+  if (publicOidc) {
+    return {
+      DEPLOYMENT_ENV: "celld",
+      NOTEBOOK_CLOUD_BUILD_SHA: gitCommit(),
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: main,
+      NOTEBOOK_CLOUD_OIDC_ISSUER: publicOidc.issuer,
+      NOTEBOOK_CLOUD_OIDC_CLIENT_ID: publicOidc.clientId,
+      NOTEBOOK_CLOUD_OIDC_AUDIENCE: publicOidc.audience,
+      NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: publicOidc.principalNamespace,
+      NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL: publicOidc.providerLabel,
+      NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: `${main}/oidc`,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: sessionSecret,
+      RENDERER_ASSETS_BASE_URL: `${origins["renderer-assets"]}/renderer-assets/`,
+      OUTPUT_DOCUMENT_BASE_URL: `${origins.outputs}/frame/`,
+    };
+  }
   return {
     DEPLOYMENT_ENV: "celld-local",
     NOTEBOOK_CLOUD_BUILD_SHA: gitCommit(),
@@ -896,6 +937,36 @@ function resolveEsbuild() {
   }
   const shim = path.join(appDir, "node_modules", ".bin", "esbuild");
   return existsSync(shim) ? shim : undefined;
+}
+
+function readPublicOrigins(value) {
+  if (!value?.trim()) return undefined;
+  const parts = value.split(",").map((part) => part.trim());
+  if (parts.length !== 3) {
+    throw new Error(
+      "NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS must list three origins: app,outputs,renderer-assets",
+    );
+  }
+  const parsed = parts.map((part) => {
+    const url = new URL(part);
+    if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash) {
+      throw new Error(`public origin must be a bare https origin: ${part}`);
+    }
+    return url.origin;
+  });
+  if (new Set(parsed).size !== 3) {
+    throw new Error(
+      "public origins must be three distinct origins (untrusted output frames need their own)",
+    );
+  }
+  return { main: parsed[0], outputs: parsed[1], "renderer-assets": parsed[2] };
+}
+
+function requireEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value)
+    throw new Error(`${name} is required when NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS is set`);
+  return value;
 }
 
 function readPort(value) {
