@@ -210,14 +210,27 @@ pub fn merge_paths(user: &str, daemon: &str) -> String {
 
 #[cfg(unix)]
 fn capture_inner() -> Result<ShellEnvOverlay, String> {
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| std::ffi::OsString::from("/bin/zsh"));
+    let script = capture_script_for_shell(&shell);
+    capture_with(&shell, script, CAPTURE_TIMEOUT)
+}
+
+/// Run `shell -l -c script` in its own session and parse its NUL-separated
+/// `env -0` output. `capture_inner` supplies the user's `$SHELL`, the matching
+/// rc-sourcing script, and the production timeout; tests pass a minimal shell
+/// and their own timeout so they exercise the spawn, session, pipe, and parse
+/// path without depending on the developer's rc files or machine load.
+#[cfg(unix)]
+fn capture_with(
+    shell: &std::ffi::OsStr,
+    script: &str,
+    timeout: std::time::Duration,
+) -> Result<ShellEnvOverlay, String> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    let shell = std::env::var_os("SHELL").unwrap_or_else(|| std::ffi::OsString::from("/bin/zsh"));
-    let script = capture_script_for_shell(&shell);
-
-    let mut cmd = Command::new(&shell);
+    let mut cmd = Command::new(shell);
     cmd.args(["-l", "-c", script])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -248,7 +261,7 @@ fn capture_inner() -> Result<ShellEnvOverlay, String> {
         let _ = tx.send(result);
     });
 
-    let buf = match rx.recv_timeout(CAPTURE_TIMEOUT) {
+    let buf = match rx.recv_timeout(timeout) {
         Ok(Ok(buf)) => buf,
         Ok(Err(e)) => {
             kill_group_and_wait(pid, &mut child);
@@ -256,9 +269,7 @@ fn capture_inner() -> Result<ShellEnvOverlay, String> {
         }
         Err(_) => {
             kill_group_and_wait(pid, &mut child);
-            return Err(format!(
-                "shell startup capture timed out after {CAPTURE_TIMEOUT:?}"
-            ));
+            return Err(format!("shell startup capture timed out after {timeout:?}"));
         }
     };
 
@@ -343,16 +354,57 @@ mod tests {
         assert_eq!(overlay.entries()[0].1, "line1\nline2\nline3");
     }
 
+    /// End-to-end capture through a minimal POSIX shell. `/bin/sh -l` reads
+    /// only the system profile, and the timeout is generous, so this passes
+    /// under a saturated parallel test run regardless of the developer's
+    /// `$SHELL` rc files. The production `capture()` path differs only in
+    /// which shell, script, and timeout it supplies.
     #[cfg(unix)]
     #[test]
     fn capture_returns_at_least_path() {
-        let overlay = ShellEnvOverlay::capture();
+        let overlay = capture_with(
+            std::ffi::OsStr::new("/bin/sh"),
+            DEFAULT_SHELL_CAPTURE_SCRIPT,
+            std::time::Duration::from_secs(60),
+        )
+        .expect("capture through /bin/sh");
         assert!(
             !overlay.is_empty(),
             "expected at least one entry from shell startup"
         );
         let has_path = overlay.entries().iter().any(|(k, _)| k == "PATH");
         assert!(has_path, "expected PATH in captured shell env");
+    }
+
+    /// A shell that never finishes must not hang the daemon: the capture
+    /// returns a timeout error and the whole process group is gone, including
+    /// the subshell that held the pipe open.
+    #[cfg(unix)]
+    #[test]
+    fn capture_times_out_and_kills_the_shell_group() {
+        let started = std::time::Instant::now();
+        let error = capture_with(
+            std::ffi::OsStr::new("/bin/sh"),
+            "(sleep 30; env -0) & sleep 30; env -0",
+            std::time::Duration::from_millis(300),
+        )
+        .expect_err("capture must time out");
+        assert!(error.contains("timed out"), "unexpected error: {error}");
+        // Reaping the group must not wait for the 30s sleeps.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "timeout path took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The production capture never panics or hangs; a failed or slow shell
+    /// degrades to an empty overlay. Not asserting on contents keeps this
+    /// independent of the developer's shell configuration.
+    #[cfg(unix)]
+    #[test]
+    fn capture_with_user_shell_degrades_gracefully() {
+        let _overlay = ShellEnvOverlay::capture();
     }
 
     #[test]
