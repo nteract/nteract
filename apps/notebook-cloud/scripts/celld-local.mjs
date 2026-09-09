@@ -34,6 +34,13 @@
 //   node scripts/celld-local.mjs restart
 //   node scripts/celld-local.mjs status
 //   node scripts/celld-local.mjs logs [main|outputs|renderer-assets|workstation]
+//   node scripts/celld-local.mjs export <dir>  # self-contained celld projects for a fleet
+//
+// `export` writes one deployable project per Worker: a pre-bundled `index.js`
+// (esbuild, ESM, `node:*` left external for nodejs_compat), the runtime WASM
+// as a sibling module, copied assets, migrations, and `wrangler.json`. A node
+// deploys it with `celld deploy <dir>/<worker> --bucket s3://...` needing only
+// the celld and esbuild binaries; nothing from this checkout.
 //   node scripts/celld-local.mjs workstation-start   # `runt workstation run` against this host
 //   node scripts/celld-local.mjs workstation-stop
 //
@@ -47,6 +54,10 @@
 //   NOTEBOOK_CLOUD_CELLD_LOGS=1      pass --logs to celld dev (node INFO/WARN)
 //   NOTEBOOK_CLOUD_CELLD_CLEAN=1     pass --clean on start (discard local state)
 //   NOTEBOOK_CLOUD_ESBUILD           esbuild executable for celld's bundler
+//   NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS  "https://app,https://outputs,https://assets"
+//                                    for `export` behind a TLS ingress; requires
+//                                    NOTEBOOK_CLOUD_CELLD_OIDC_{ISSUER,CLIENT_ID,
+//                                    AUDIENCE,PRINCIPAL_NAMESPACE[,PROVIDER_LABEL]}
 //                                    (default: the esbuild devDependency's bin)
 //   NOTEBOOK_CLOUD_RUNT_BIN          runt executable (default target/debug/runt)
 //   NOTEBOOK_CLOUD_WORKSTATION_PYTHON  kernel interpreter with ipykernel
@@ -78,11 +89,32 @@ const workstationPython =
   process.env.NOTEBOOK_CLOUD_WORKSTATION_PYTHON?.trim() ||
   path.join(rootDir, "kernel-venv", "bin", "python");
 
-const origins = {
+// Browser-facing origins. The defaults are the loopback listeners, which is
+// what `celld dev` serves and what an SSH port-forward to a remote node
+// reproduces. `export` for a public deployment sets
+// NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS=<app>,<outputs>,<renderer-assets> (three
+// distinct https origins behind the operator's TLS ingress); the node
+// listeners stay on loopback either way.
+const publicOrigins = readPublicOrigins(process.env.NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS);
+const origins = publicOrigins ?? {
   main: `http://${HOST}:${basePort}`,
   outputs: `http://${HOST}:${basePort + 1}`,
   "renderer-assets": `http://${HOST}:${basePort + 2}`,
 };
+
+// Identity provider for a public deployment. Loopback deployments use the
+// Worker's own dev issuer; a public origin cannot (it is loopback-gated), so
+// these must all be set together with the public origins. Values match the
+// wrangler.toml var names without the NOTEBOOK_CLOUD_ prefix.
+const publicOidc = publicOrigins
+  ? {
+      issuer: requireEnv("NOTEBOOK_CLOUD_CELLD_OIDC_ISSUER"),
+      clientId: requireEnv("NOTEBOOK_CLOUD_CELLD_OIDC_CLIENT_ID"),
+      audience: requireEnv("NOTEBOOK_CLOUD_CELLD_OIDC_AUDIENCE"),
+      principalNamespace: requireEnv("NOTEBOOK_CLOUD_CELLD_OIDC_PRINCIPAL_NAMESPACE"),
+      providerLabel: process.env.NOTEBOOK_CLOUD_CELLD_OIDC_PROVIDER_LABEL?.trim() || "Sign in",
+    }
+  : undefined;
 
 // Each Worker's celld project. `entry` is re-exported by a generated shim so the
 // bundler's `main` stays inside the project; `assets` is copied (not linked).
@@ -180,6 +212,9 @@ try {
     case "logs":
       await logs(selection);
       break;
+    case "export":
+      await exportProjects(selection);
+      break;
     case "workstation-start":
       await workstationStart();
       break;
@@ -188,7 +223,7 @@ try {
       break;
     default:
       throw new Error(
-        `unknown command ${command}; use prepare|start|stop|restart|status|logs|workstation-start|workstation-stop`,
+        `unknown command ${command}; use prepare|start|stop|restart|status|logs|export|workstation-start|workstation-stop`,
       );
   }
 } catch (error) {
@@ -197,14 +232,7 @@ try {
 }
 
 async function prepare() {
-  for (const worker of WORKERS) {
-    const assetsSource = path.join(appDir, worker.assets);
-    if (!existsSync(assetsSource)) {
-      throw new Error(
-        `${worker.assets} is missing; run \`pnpm --dir apps/notebook-cloud build\` first`,
-      );
-    }
-  }
+  assertBuildOutputs();
   if (!esbuildBin) {
     throw new Error(
       "esbuild not found; run `pnpm install` (declared in apps/notebook-cloud devDependencies) or set NOTEBOOK_CLOUD_ESBUILD",
@@ -218,75 +246,9 @@ async function prepare() {
   for (const worker of WORKERS) {
     const projectDir = path.join(rootDir, worker.name);
     await mkdir(projectDir, { recursive: true });
-
-    // Entry shim: the only file celld's `main` may point at.
-    const relativeEntry = path
-      .relative(projectDir, path.join(appDir, worker.entry))
-      .split(path.sep)
-      .join("/");
-    const exportsList = worker.entryExports
-      .filter((name) => name !== "default")
-      .map((name) => `export { ${name} } from "${relativeEntry}";`);
-    const shimLines = [
-      `// Generated by scripts/celld-local.mjs. celld requires \`main\` inside the project.`,
-    ];
-    if (worker.name === "main") {
-      // celld rejects `await import("*.wasm")` (only static WebAssembly imports
-      // are supported), which is how src/runtimed-wasm.ts loads the runtime
-      // module on Cloudflare. Import it statically here and seed the module
-      // before any room code asks for it.
-      const wasmPath = path.join(
-        appDir,
-        "..",
-        "notebook",
-        "src",
-        "wasm",
-        "runtimed-wasm",
-        "runtimed_wasm_bg.wasm",
-      );
-      const relativeWasm = path.relative(projectDir, wasmPath).split(path.sep).join("/");
-      const relativeWasmModule = path
-        .relative(projectDir, path.join(appDir, "src", "runtimed-wasm.ts"))
-        .split(path.sep)
-        .join("/");
-      shimLines.push(
-        `import runtimedWasmModule from "${relativeWasm}";`,
-        `import { initializeRuntimedWasm } from "${relativeWasmModule}";`,
-        `void initializeRuntimedWasm(runtimedWasmModule);`,
-      );
-    }
-    shimLines.push(`export { default } from "${relativeEntry}";`, ...exportsList, "");
-    const shim = shimLines.join("\n");
-    await writeFile(path.join(projectDir, "worker.ts"), shim);
-
-    // Assets: fresh copy each prepare so a rebuild is picked up. Dereference so
-    // no symlink survives (celld refuses them).
-    const assetsDir = path.join(projectDir, "assets");
-    await rm(assetsDir, { recursive: true, force: true });
-    await cp(path.join(appDir, worker.assets), assetsDir, { recursive: true, dereference: true });
-
-    // Config. `migrations_dir` for D1 must also be inside the project; copy the
-    // SQL files so `celld d1 migrations apply` has a valid target if a fleet
-    // deployment ever needs it. The local Worker bootstraps its own schema.
-    if (worker.name === "main") {
-      const migrationsDir = path.join(projectDir, "migrations");
-      await rm(migrationsDir, { recursive: true, force: true });
-      await cp(path.join(appDir, "migrations"), migrationsDir, { recursive: true });
-    }
-
-    const vars = worker.name === "main" ? mainVars(sessionSecret) : undefined;
-    const config = {
-      name: worker.scriptName,
-      main: "worker.ts",
-      compatibility_date: "2024-11-06",
-      compatibility_flags: ["nodejs_compat"],
-      ...worker.config(vars),
-    };
-    await writeFile(
-      path.join(projectDir, "wrangler.json"),
-      `${JSON.stringify(config, null, 2)}\n`,
-      { mode: 0o600 },
-    );
+    await writeFile(path.join(projectDir, "worker.ts"), entryShim(worker, projectDir));
+    await copyProjectFiles(worker, projectDir);
+    await writeWorkerConfig(worker, projectDir, "worker.ts", sessionSecret);
   }
 
   await writeFile(
@@ -313,8 +275,199 @@ async function prepare() {
   console.error(`[celld-local] prepared ${WORKERS.length} celld projects under ${rootDir}`);
 }
 
+// Self-contained projects for a real fleet. Each Worker is bundled here with
+// esbuild so the output has no reference to this checkout: `index.js` plus the
+// runtime WASM as a sibling module (celld's own esbuild pass turns the static
+// import into a Wasm module, which `no_bundle` would not), assets, migrations,
+// and `wrangler.json`. The vars are the same loopback origins `prepare` uses;
+// reach a remote node through SSH port-forwards of the same ports, or edit the
+// exported `wrangler.json` for a public origin.
+async function exportProjects(outDir) {
+  if (!outDir) throw new Error("export needs an output directory");
+  assertBuildOutputs();
+  const esbuild = await import("esbuild");
+  const exportRoot = path.resolve(outDir);
+  const buildRoot = path.join(rootDir, "export-build");
+  await mkdir(stateDir, { recursive: true });
+  const sessionSecret = await appSessionSecret();
+
+  for (const worker of WORKERS) {
+    const stageDir = path.join(exportRoot, worker.name);
+    await rm(stageDir, { recursive: true, force: true });
+    await mkdir(stageDir, { recursive: true });
+
+    // The shim lives at the same depth as the prepare() projects so its
+    // relative imports resolve identically.
+    const buildDir = path.join(buildRoot, worker.name);
+    await mkdir(buildDir, { recursive: true });
+    const shimPath = path.join(buildDir, "worker.ts");
+    await writeFile(shimPath, entryShim(worker, buildDir));
+
+    const result = await esbuild.build({
+      entryPoints: [shimPath],
+      outfile: path.join(stageDir, "index.js"),
+      bundle: true,
+      format: "esm",
+      platform: "browser",
+      target: "es2022",
+      conditions: ["workerd", "worker", "browser"],
+      mainFields: ["workerd", "browser", "module", "main"],
+      external: ["node:*", "cloudflare:*"],
+      legalComments: "none",
+      logLevel: "warning",
+      metafile: true,
+      plugins: [wasmSiblingPlugin(stageDir)],
+    });
+    const bundledBytes = Object.values(result.metafile.outputs)
+      .map((output) => output.bytes)
+      .reduce((total, bytes) => total + bytes, 0);
+
+    await copyProjectFiles(worker, stageDir);
+    await writeWorkerConfig(worker, stageDir, "index.js", sessionSecret);
+    console.error(
+      `[celld-local] exported ${worker.name} -> ${stageDir} (${(bundledBytes / 1024).toFixed(0)} KiB bundled)`,
+    );
+  }
+
+  await writeFile(
+    path.join(exportRoot, "export.json"),
+    `${JSON.stringify(
+      {
+        generated_at: new Date().toISOString(),
+        nteract_commit: gitCommit(),
+        celld_target: "v0.4.1",
+        origins,
+        workers: WORKERS.map((worker) => ({
+          name: worker.name,
+          script_name: worker.scriptName,
+          port: worker.port,
+          health: `${origins[worker.name]}${worker.healthPath}`,
+        })),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  console.error(`[celld-local] export complete: ${exportRoot}`);
+}
+
+// Rewrites `import x from "<anywhere>/foo.wasm"` to a sibling `./foo.wasm` and
+// copies the file next to the bundle, so the exported project carries the
+// module and celld's bundler sees a static WebAssembly import it can register.
+function wasmSiblingPlugin(stageDir) {
+  return {
+    name: "wasm-sibling",
+    setup(build) {
+      build.onResolve({ filter: /\.wasm$/ }, async (args) => {
+        const resolved = path.resolve(args.resolveDir, args.path);
+        const sibling = path.basename(resolved);
+        await cp(resolved, path.join(stageDir, sibling));
+        return { path: `./${sibling}`, external: true };
+      });
+    },
+  };
+}
+
+function assertBuildOutputs() {
+  for (const worker of WORKERS) {
+    const assetsSource = path.join(appDir, worker.assets);
+    if (!existsSync(assetsSource)) {
+      throw new Error(
+        `${worker.assets} is missing; run \`pnpm --dir apps/notebook-cloud build\` first`,
+      );
+    }
+  }
+}
+
+// Entry shim: the only file celld's `main` may point at when bundling from
+// source, and the esbuild entry for `export`.
+function entryShim(worker, projectDir) {
+  const relativeEntry = path
+    .relative(projectDir, path.join(appDir, worker.entry))
+    .split(path.sep)
+    .join("/");
+  const exportsList = worker.entryExports
+    .filter((name) => name !== "default")
+    .map((name) => `export { ${name} } from "${relativeEntry}";`);
+  const shimLines = [
+    `// Generated by scripts/celld-local.mjs. celld requires \`main\` inside the project.`,
+  ];
+  if (worker.name === "main") {
+    // celld rejects `await import("*.wasm")` (only static WebAssembly imports
+    // are supported), which is how src/runtimed-wasm.ts loads the runtime
+    // module on Cloudflare. Import it statically here and seed the module
+    // before any room code asks for it.
+    const wasmPath = path.join(
+      appDir,
+      "..",
+      "notebook",
+      "src",
+      "wasm",
+      "runtimed-wasm",
+      "runtimed_wasm_bg.wasm",
+    );
+    const relativeWasm = path.relative(projectDir, wasmPath).split(path.sep).join("/");
+    const relativeWasmModule = path
+      .relative(projectDir, path.join(appDir, "src", "runtimed-wasm.ts"))
+      .split(path.sep)
+      .join("/");
+    shimLines.push(
+      `import runtimedWasmModule from "${relativeWasm}";`,
+      `import { initializeRuntimedWasm } from "${relativeWasmModule}";`,
+      `void initializeRuntimedWasm(runtimedWasmModule);`,
+    );
+  }
+  shimLines.push(`export { default } from "${relativeEntry}";`, ...exportsList, "");
+  return shimLines.join("\n");
+}
+
+// Assets: fresh copy each time so a rebuild is picked up. Dereference so no
+// symlink survives (celld refuses them). `migrations_dir` for D1 must also be
+// inside the project; the local Worker bootstraps its own schema, the SQL is
+// there for `celld d1 migrations apply` on a fleet.
+async function copyProjectFiles(worker, projectDir) {
+  const assetsDir = path.join(projectDir, "assets");
+  await rm(assetsDir, { recursive: true, force: true });
+  await cp(path.join(appDir, worker.assets), assetsDir, { recursive: true, dereference: true });
+  if (worker.name === "main") {
+    const migrationsDir = path.join(projectDir, "migrations");
+    await rm(migrationsDir, { recursive: true, force: true });
+    await cp(path.join(appDir, "migrations"), migrationsDir, { recursive: true });
+  }
+}
+
+async function writeWorkerConfig(worker, projectDir, main, sessionSecret) {
+  const vars = worker.name === "main" ? mainVars(sessionSecret) : undefined;
+  const config = {
+    name: worker.scriptName,
+    main,
+    compatibility_date: "2024-11-06",
+    compatibility_flags: ["nodejs_compat"],
+    ...worker.config(vars),
+  };
+  await writeFile(path.join(projectDir, "wrangler.json"), `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+}
+
 function mainVars(sessionSecret) {
   const main = origins.main;
+  if (publicOidc) {
+    return {
+      DEPLOYMENT_ENV: "celld",
+      NOTEBOOK_CLOUD_BUILD_SHA: gitCommit(),
+      NOTEBOOK_CLOUD_ALLOWED_ORIGINS: main,
+      NOTEBOOK_CLOUD_OIDC_ISSUER: publicOidc.issuer,
+      NOTEBOOK_CLOUD_OIDC_CLIENT_ID: publicOidc.clientId,
+      NOTEBOOK_CLOUD_OIDC_AUDIENCE: publicOidc.audience,
+      NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE: publicOidc.principalNamespace,
+      NOTEBOOK_CLOUD_OIDC_PROVIDER_LABEL: publicOidc.providerLabel,
+      NOTEBOOK_CLOUD_OIDC_REDIRECT_URI: `${main}/oidc`,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: sessionSecret,
+      RENDERER_ASSETS_BASE_URL: `${origins["renderer-assets"]}/renderer-assets/`,
+      OUTPUT_DOCUMENT_BASE_URL: `${origins.outputs}/frame/`,
+    };
+  }
   return {
     DEPLOYMENT_ENV: "celld-local",
     NOTEBOOK_CLOUD_BUILD_SHA: gitCommit(),
@@ -784,6 +937,36 @@ function resolveEsbuild() {
   }
   const shim = path.join(appDir, "node_modules", ".bin", "esbuild");
   return existsSync(shim) ? shim : undefined;
+}
+
+function readPublicOrigins(value) {
+  if (!value?.trim()) return undefined;
+  const parts = value.split(",").map((part) => part.trim());
+  if (parts.length !== 3) {
+    throw new Error(
+      "NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS must list three origins: app,outputs,renderer-assets",
+    );
+  }
+  const parsed = parts.map((part) => {
+    const url = new URL(part);
+    if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash) {
+      throw new Error(`public origin must be a bare https origin: ${part}`);
+    }
+    return url.origin;
+  });
+  if (new Set(parsed).size !== 3) {
+    throw new Error(
+      "public origins must be three distinct origins (untrusted output frames need their own)",
+    );
+  }
+  return { main: parsed[0], outputs: parsed[1], "renderer-assets": parsed[2] };
+}
+
+function requireEnv(name) {
+  const value = process.env[name]?.trim();
+  if (!value)
+    throw new Error(`${name} is required when NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS is set`);
+  return value;
 }
 
 function readPort(value) {
