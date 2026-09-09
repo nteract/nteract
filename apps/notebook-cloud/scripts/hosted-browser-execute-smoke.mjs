@@ -3,8 +3,15 @@ import os from "node:os";
 
 import { chromium } from "@playwright/test";
 import { firstPositionalArg } from "./cli-args.mjs";
+import { storageStateForDevIdentity } from "./hosted-collab-smoke-env.mjs";
 import { viewerUrlWithMode } from "./hosted-render-smoke-routes.mjs";
+import {
+  DEV_WORKSTATION_AUTH_KIND,
+  WORKSTATION_DEV_TOKEN_ENV,
+  WORKSTATION_DEV_USER_ENV,
+} from "./hosted-workstation-agent-core.mjs";
 import { saveSmokeScreenshot, smokeOutputPath } from "./smoke-paths.mjs";
+import { isLoopbackBaseUrl } from "./wasm-roundtrip-env.mjs";
 
 const viewerUrl =
   firstPositionalArg() ??
@@ -14,6 +21,18 @@ const tokenPath =
   process.env.NTERACT_PREVIEW_OIDC_TOKEN_PATH ??
   process.env.NOTEBOOK_CLOUD_OIDC_TOKEN_PATH ??
   `${os.homedir()}/token.preview.json`;
+// Explicit `dev` selects the loopback dev identity even when an OIDC token
+// cache exists on this machine (a preview token is useless against a local
+// Worker). Without it, the dev identity is only a fallback for a missing cache.
+const requestedAuthKind = (
+  process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_AUTH_KIND ??
+  process.env.NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND ??
+  ""
+)
+  .trim()
+  .toLowerCase();
+const devToken = process.env[WORKSTATION_DEV_TOKEN_ENV]?.trim() || null;
+const devUser = process.env[WORKSTATION_DEV_USER_ENV]?.trim() || null;
 const requestedScope = process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_SCOPE ?? "owner";
 const executeButtonIndex = parseNonNegativeInteger(
   process.env.NOTEBOOK_CLOUD_BROWSER_EXECUTE_BUTTON_INDEX,
@@ -57,31 +76,38 @@ async function main() {
   // Execute buttons only accept clicks in edit mode; the runtime-peer smoke
   // hands over the canonical (view-mode) room URL.
   const url = new URL(viewerUrlWithMode(viewerUrl, "edit"));
-  const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
-  const token = JSON.parse(tokenStorageJson);
-  const tokenSecondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
-  if (!Number.isFinite(tokenSecondsRemaining) || tokenSecondsRemaining <= 60) {
-    throw new Error(
-      `${tokenPath} is expired or near expiry; refresh it before running the browser execute smoke`,
-    );
-  }
+  const identity = await resolveBrowserIdentity(url);
 
   const browser = await chromium.launch({ headless: true });
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-    await context.addInitScript(
-      ({ origin, scope, tokenJson }) => {
-        try {
-          if (globalThis.location?.origin !== origin) return;
-          globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
-          globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", scope);
-        } catch {
-          // Sandboxed output frames do not always have localStorage. Ignore them:
-          // only the first-party notebook shell needs the token cache.
-        }
-      },
-      { origin: url.origin, scope: requestedScope, tokenJson: tokenStorageJson },
-    );
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 1000 },
+      ...(identity.kind === "dev"
+        ? {
+            storageState: storageStateForDevIdentity({
+              origin: url.origin,
+              token: identity.token,
+              user: identity.user,
+              scope: requestedScope,
+            }),
+          }
+        : {}),
+    });
+    if (identity.kind === "oidc") {
+      await context.addInitScript(
+        ({ origin, scope, tokenJson }) => {
+          try {
+            if (globalThis.location?.origin !== origin) return;
+            globalThis.localStorage?.setItem("nteract:notebook-cloud:oidc-token", tokenJson);
+            globalThis.localStorage?.setItem("nteract:notebook-cloud:scope", scope);
+          } catch {
+            // Sandboxed output frames do not always have localStorage. Ignore them:
+            // only the first-party notebook shell needs the token cache.
+          }
+        },
+        { origin: url.origin, scope: requestedScope, tokenJson: identity.tokenStorageJson },
+      );
+    }
 
     const page = await context.newPage();
     const events = {
@@ -227,10 +253,15 @@ async function main() {
         {
           ok: true,
           viewerUrl: url.href,
-          token: {
-            path: tokenPath,
-            secondsRemaining: tokenSecondsRemaining,
-          },
+          auth: identity.kind,
+          ...(identity.kind === "oidc"
+            ? {
+                token: {
+                  path: tokenPath,
+                  secondsRemaining: identity.secondsRemaining,
+                },
+              }
+            : { devUser: identity.user }),
           click: {
             executeButtonIndex,
             clickedAria,
@@ -240,7 +271,9 @@ async function main() {
             preClickSettleMs,
           },
           checks: [
-            "oidc_token_seeded_in_browser_storage",
+            identity.kind === "oidc"
+              ? "oidc_token_seeded_in_browser_storage"
+              : "dev_identity_seeded_in_browser_storage",
             "execute_button_rendered",
             "execute_button_clicked",
             "execution_count_advanced_after_click",
@@ -259,6 +292,51 @@ async function main() {
   } finally {
     await browser.close().catch(() => {});
   }
+}
+
+async function resolveBrowserIdentity(url) {
+  if (requestedAuthKind === DEV_WORKSTATION_AUTH_KIND) {
+    return devIdentity(url);
+  }
+  if (requestedAuthKind && requestedAuthKind !== "oidc") {
+    // Bearer kinds (anaconda-key) have no browser storage equivalent; the
+    // viewer only knows OIDC and dev identities.
+    throw new Error(
+      "NOTEBOOK_CLOUD_BROWSER_EXECUTE_AUTH_KIND must be oidc or dev for the browser execute smoke",
+    );
+  }
+
+  let tokenStorageJson;
+  try {
+    tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
+  } catch (error) {
+    if (error?.code === "ENOENT" && devToken) {
+      return devIdentity(url);
+    }
+    throw error;
+  }
+  const token = JSON.parse(tokenStorageJson);
+  const secondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(secondsRemaining) || secondsRemaining <= 60) {
+    throw new Error(
+      `${tokenPath} is expired or near expiry; refresh it before running the browser execute smoke`,
+    );
+  }
+  return { kind: "oidc", tokenStorageJson, secondsRemaining };
+}
+
+function devIdentity(url) {
+  if (!devToken || !devUser) {
+    throw new Error(
+      `${WORKSTATION_DEV_TOKEN_ENV} and ${WORKSTATION_DEV_USER_ENV} are required for the dev browser identity`,
+    );
+  }
+  if (!isLoopbackBaseUrl(url.origin)) {
+    throw new Error(
+      `dev browser identity is only allowed against a loopback Worker (127.0.0.1, localhost, or [::1]); refusing ${url.origin}`,
+    );
+  }
+  return { kind: "dev", token: devToken, user: devUser };
 }
 
 async function readOidcTokenStorageJson(path) {

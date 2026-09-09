@@ -33,6 +33,7 @@ async function main() {
     ok: true,
     source,
     scopes,
+    authKind: runs[0]?.runtimePeer?.authKind ?? null,
     checks: [
       "runtime_peer_browser_execute_passed_for_requested_scopes",
       "runtime_peers_stopped_after_browser_smokes",
@@ -71,6 +72,14 @@ async function runScope(scope) {
         ...process.env,
         NOTEBOOK_CLOUD_BROWSER_EXECUTE_EXPECTED_TEXT: source,
         NOTEBOOK_CLOUD_BROWSER_EXECUTE_SCOPE: scope,
+        // With dev auth the runtime-peer smoke owns the room as `user:dev:<devUser>`;
+        // the browser must present the same dev user to get owner scope there.
+        ...(typeof runtime.devUser === "string" && runtime.devUser
+          ? {
+              NOTEBOOK_CLOUD_BROWSER_EXECUTE_AUTH_KIND: "dev",
+              NOTEBOOK_CLOUD_DEV_USER: runtime.devUser,
+            }
+          : {}),
       },
     );
     const browserSummary = browserRunSummary(browser, scope);
@@ -90,6 +99,8 @@ async function runScope(scope) {
         ...(runtimePeerStopped ? ["runtime_peer_stopped_after_browser_smoke"] : []),
       ],
       runtimePeer: {
+        authKind: runtime.authKind ?? null,
+        devUser: runtime.devUser ?? null,
         notebookId: runtime.notebookId,
         vanityName: runtime.vanityName,
         pid: runtime.runtimePeer?.pid ?? null,

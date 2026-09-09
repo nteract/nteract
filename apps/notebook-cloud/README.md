@@ -828,6 +828,45 @@ old `--timeout` flag in smoke scripts. Rooms created with the API-key path are
 private; anonymous hosted render smokes may return a catalog 404 unless the
 browser context has a credential for the owning principal.
 
+Runtime smokes against a loopback Worker (dev auth):
+
+The runtime-peer, runtime-browser-execute, browser-execute, workstation-agent,
+and workstation-toolbar smokes all accept
+`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev`. That kind uses the Worker's
+loopback dev credentials instead of a bearer: REST calls send
+`X-Notebook-Cloud-Dev-Token` + `X-User` + `X-Scope`, the browser seeds the
+`nteract:notebook-cloud:dev-token` / `:user` / `:scope` localStorage keys, and
+the spawned `runtimed cloud-runtime-agent` / `cloud-peer` run with
+`--auth-kind dev`, `RUNT_CLOUD_TOKEN`, and `RUNT_CLOUD_DEV_USER`. The Worker
+maps the identity to `user:dev:<user>`. Any non-empty token works on loopback.
+
+```bash
+pnpm --dir apps/notebook-cloud dev            # note the printed loopback URL
+cargo build -p runtimed
+NOTEBOOK_CLOUD_URL=http://127.0.0.1:<port> \
+NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev \
+NOTEBOOK_CLOUD_DEV_TOKEN=local-loopback-dev-token \
+NOTEBOOK_CLOUD_DEV_USER=smoke \
+NOTEBOOK_CLOUD_RUNTIMED_BIN=target/debug/runtimed \
+NOTEBOOK_CLOUD_RUNTIME_PEER_PYTHON=/path/to/python-with-ipykernel \
+pnpm --dir apps/notebook-cloud smoke:hosted:runtime-peer
+```
+
+The same environment drives `smoke:hosted:runtime-browser-execute` (the
+orchestrator forwards the room owner's dev user to the browser step) and
+`smoke:hosted:workstation-agent`. `NOTEBOOK_CLOUD_DEV_USER` is required for the
+agent and browser smokes; the runtime-peer smoke defaults it to
+`runtime-peer-smoke`. The dev kind is refused unless the target URL is loopback
+(`127.0.0.1`, `localhost`, or `[::1]`), so a stray `dev` setting can never send
+placeholder credentials to preview. Per-script overrides:
+`NOTEBOOK_CLOUD_RUNTIME_PEER_SMOKE_AUTH_KIND`,
+`NOTEBOOK_CLOUD_BROWSER_EXECUTE_AUTH_KIND` (`oidc` or `dev`; the browser smoke
+also falls back to `dev` on its own when the OIDC token cache file is missing and
+`NOTEBOOK_CLOUD_DEV_TOKEN` is set), and
+`NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_AUTH_KIND`. Defaults are unchanged:
+`anaconda-key` for the peer/agent smokes and the OIDC token cache for the
+browser smokes.
+
 Hosted workstation agent smoke:
 
 ```bash
@@ -855,8 +894,11 @@ attach jobs are durable D1 rows, so reconnect recovery polls the queue rather
 than replaying transient wakeup events. API-key auth is the default
 (`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=anaconda-key`); set
 `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=oidc` when `NTERACT_API_KEY` carries a
-short-lived OIDC bearer token. Prefer API-key auth for long-lived tmux/systemd
-workstations; browser OIDC token refresh depends on an active browser session.
+short-lived OIDC bearer token, or `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev`
+with `NOTEBOOK_CLOUD_DEV_TOKEN` and `NOTEBOOK_CLOUD_DEV_USER` against a
+loopback Worker (see the dev-auth section above). Prefer API-key auth for
+long-lived tmux/systemd workstations; browser OIDC token refresh depends on an
+active browser session.
 The credential is passed to the runtime peer through `RUNT_CLOUD_TOKEN`, not
 through argv; `runtimed` removes cloud environment variables again before
 launching the Python kernel. When the hosted service returns a rate-limit or

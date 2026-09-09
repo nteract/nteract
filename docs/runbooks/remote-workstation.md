@@ -199,17 +199,28 @@ RUNT_CLOUD_TOKEN=<token> runtimed cloud-runtime-agent \
 
 The credential is always passed through the environment, never argv. Defaults: scope
 `runtime_peer`, auth kind `oidc` (use `--auth-kind anaconda-key` for Anaconda
-API keys, `--auth-kind workstation` for a pairing-flow credential). Blob root
+API keys, `--auth-kind workstation` for a pairing-flow credential,
+`--auth-kind dev` for a loopback Worker's dev credentials). Blob root
 defaults under the daemon's standard cache. `--python-path` launches a kernel
 in that interpreter immediately on attach (launch-on-attach); omit it to
 attach idle and wait for the room to dispatch work. `--workstation-id` /
 `--workstation-display-name` set the non-secret identity shown in the
 notebook's workstation panel.
 
+`--auth-kind dev` reads `RUNT_CLOUD_TOKEN` plus `RUNT_CLOUD_DEV_USER` and sends
+`X-Notebook-Cloud-Dev-Token` / `X-User` / `X-Scope` on the upgrade; the Worker
+maps that to `user:dev:<user>`. The Worker only honors dev credentials on
+loopback requests, so this kind is for Wrangler dev or a local celld launcher,
+never a deployed host.
+
 The Node connector (`apps/notebook-cloud/scripts/hosted-workstation-agent.mjs`)
 is the dev-loop equivalent of `runtimed workstation-agent` and keeps working
 against the same attach-job surface with `NTERACT_API_KEY` or
-`NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN`.
+`NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN`. Against a loopback Worker, set
+`NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev` with `NOTEBOOK_CLOUD_DEV_TOKEN` and
+`NOTEBOOK_CLOUD_DEV_USER`; the connector refuses `dev` for any non-loopback
+`NOTEBOOK_CLOUD_URL`. The `apps/notebook-cloud` README covers the matching
+runtime smoke commands.
 
 For browser-coupled OIDC peers whose token expires, mint fresh tokens via a
 refresher (the transport supports per-connect refresh; see

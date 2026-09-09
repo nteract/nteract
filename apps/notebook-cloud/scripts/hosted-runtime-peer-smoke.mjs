@@ -5,7 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parseHttpResponseBody } from "./hosted-workstation-agent-core.mjs";
+import {
+  assertWorkstationAuthKindAllowedForBaseUrl,
+  buildWorkstationAuthHeaders,
+  DEFAULT_WORKSTATION_AUTH_KIND,
+  DEV_WORKSTATION_AUTH_KIND,
+  devPrincipalForUser,
+  normalizeWorkstationAuthKind,
+  parseHttpResponseBody,
+  resolveWorkstationCredential,
+} from "./hosted-workstation-agent-core.mjs";
 import { notebookCloudBaseUrl, notebookCloudWorkspaceRoot } from "./local-dev.mjs";
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -14,7 +23,18 @@ const workspaceRoot = notebookCloudWorkspaceRoot({ cwd: appDir });
 await loadOptionalEnvFile();
 
 const baseUrl = notebookCloudBaseUrl();
-const apiKey = process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN;
+// Default stays the preview API-key path; `dev` is the loopback Worker path
+// (Wrangler dev or a local celld launcher) and shares the workstation agent's
+// env contract: NOTEBOOK_CLOUD_DEV_TOKEN + NOTEBOOK_CLOUD_DEV_USER.
+const authKind = normalizeWorkstationAuthKind(
+  process.env.NOTEBOOK_CLOUD_RUNTIME_PEER_SMOKE_AUTH_KIND ??
+    process.env.NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND ??
+    process.env.NTERACT_CLOUD_AUTH_KIND ??
+    DEFAULT_WORKSTATION_AUTH_KIND,
+);
+const DEFAULT_DEV_USER = "runtime-peer-smoke";
+let cloudCredential = null;
+let cloudDevUser = null;
 const vanityName = process.env.NOTEBOOK_CLOUD_RUNTIME_PEER_SMOKE_VANITY ?? "lab2-dualpeer";
 const source =
   process.env.NOTEBOOK_CLOUD_RUNTIME_PEER_SMOKE_CODE ?? "print('preview runtime peer smoke')";
@@ -44,11 +64,13 @@ const runtimedBin = path.resolve(
   workspaceRoot,
   process.env.NOTEBOOK_CLOUD_RUNTIMED_BIN ?? "target/release/runtimed",
 );
-// The diagnostic cloud peer is the hidden `runtimed cloud-peer` subcommand
-// (the standalone runt-cloud-peer binary was absorbed into runtimed).
+// The diagnostic cloud peer is the hidden `runtimed cloud-peer` subcommand, so
+// it defaults to the same binary as the runtime peer unless overridden.
 const cloudPeerBin = path.resolve(
   workspaceRoot,
-  process.env.NOTEBOOK_CLOUD_RUNT_CLOUD_PEER_BIN ?? "target/release/runtimed",
+  process.env.NOTEBOOK_CLOUD_RUNT_CLOUD_PEER_BIN ??
+    process.env.NOTEBOOK_CLOUD_RUNTIMED_BIN ??
+    "target/release/runtimed",
 );
 
 const timingsMs = {};
@@ -64,7 +86,7 @@ main().catch((error) => {
 
 async function main() {
   try {
-    requireApiKey();
+    requireCloudCredential();
     await assertBinaryExists(runtimedBin, "runtimed");
     await assertBinaryExists(cloudPeerBin, "runtimed cloud-peer");
     const pythonPath = await resolvePythonPath();
@@ -110,12 +132,16 @@ async function main() {
         {
           ok: true,
           baseUrl,
+          authKind,
+          ...(cloudDevUser ? { devUser: cloudDevUser } : {}),
           notebookId: room.notebookId,
           vanityName,
           viewerUrl: viewerUrl(room.notebookId, vanityName),
           source,
           checks: [
-            "preview_api_key_room_created",
+            authKind === DEV_WORKSTATION_AUTH_KIND
+              ? "loopback_dev_room_created"
+              : "preview_api_key_room_created",
             "runtime_peer_acl_granted",
             "runtime_peer_current_python_ready",
             "owner_execute_cell_request_sent",
@@ -171,12 +197,13 @@ async function loadOptionalEnvFile() {
   }
 }
 
-function requireApiKey() {
-  if (!apiKey) {
-    throw new Error(
-      "NTERACT_API_KEY or NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN is required for hosted runtime-peer smoke",
-    );
-  }
+function requireCloudCredential() {
+  assertWorkstationAuthKindAllowedForBaseUrl(authKind, baseUrl);
+  const resolved = resolveWorkstationCredential(process.env, authKind, {
+    defaultDevUser: DEFAULT_DEV_USER,
+  });
+  cloudCredential = resolved.credential;
+  cloudDevUser = resolved.devUser;
 }
 
 async function assertBinaryExists(binaryPath, name) {
@@ -270,7 +297,7 @@ async function createNotebookRoom() {
   const response = await fetch(new URL("/api/n", baseUrl), {
     method: "POST",
     headers: {
-      ...apiKeyHeaders("owner"),
+      ...cloudAuthHeaders("owner"),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ vanity_name: vanityName }),
@@ -291,11 +318,20 @@ async function grantRuntimePeer(notebookId) {
     (entry) => entry.scope === "owner" && entry.subject_kind === "principal",
   );
   assert(owner?.subject, "room ACL did not include owner principal to grant runtime_peer");
+  if (cloudDevUser) {
+    // The runtime peer connects with the same dev user, so the room's owner row
+    // must be that user's dev principal or the grant lands on the wrong subject.
+    const expected = devPrincipalForUser(cloudDevUser);
+    assert(
+      owner.subject === expected,
+      `room owner principal ${owner.subject} does not match dev identity ${expected}`,
+    );
+  }
 
   const response = await fetch(new URL(`/api/n/${encodeURIComponent(notebookId)}/acl`, baseUrl), {
     method: "POST",
     headers: {
-      ...apiKeyHeaders("owner"),
+      ...cloudAuthHeaders("owner"),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -310,18 +346,29 @@ async function grantRuntimePeer(notebookId) {
 
 async function fetchJson(pathname) {
   const response = await fetch(new URL(pathname, baseUrl), {
-    headers: apiKeyHeaders("owner"),
+    headers: cloudAuthHeaders("owner"),
   });
   const body = await parseHttpResponseBody(response);
   assertResponse(response, body, `GET ${pathname}`, 200);
   return body;
 }
 
-function apiKeyHeaders(scope) {
+function cloudAuthHeaders(scope) {
   return {
-    Authorization: `Bearer ${apiKey}`,
-    "X-Notebook-Cloud-Auth-Provider": "anaconda-api-key",
+    ...buildWorkstationAuthHeaders(authKind, cloudCredential, { devUser: cloudDevUser, scope }),
     "X-Scope": scope,
+  };
+}
+
+function cloudPeerEnv() {
+  return {
+    ...process.env,
+    // `runtimed cloud-runtime-agent` and `runtimed cloud-peer` read the
+    // credential from the environment, never argv, so it cannot leak into the
+    // process command line. `--auth-kind dev` also needs the user label.
+    RUNT_CLOUD_TOKEN: cloudCredential,
+    ...(cloudDevUser ? { RUNT_CLOUD_DEV_USER: cloudDevUser } : {}),
+    RUST_LOG: process.env.RUST_LOG ?? "info",
   };
 }
 
@@ -346,7 +393,7 @@ function startRuntimePeer({ notebookId, pythonPath }) {
         [
           "cloud-runtime-agent",
           "--auth-kind",
-          "anaconda-key",
+          authKind,
           "--cloud-url",
           baseUrl,
           "--notebook-id",
@@ -361,11 +408,7 @@ function startRuntimePeer({ notebookId, pythonPath }) {
         {
           cwd: workspaceRoot,
           detached: keepRuntimePeer,
-          env: {
-            ...process.env,
-            RUNT_CLOUD_TOKEN: apiKey,
-            RUST_LOG: process.env.RUST_LOG ?? "info",
-          },
+          env: cloudPeerEnv(),
           stdio: ["ignore", logFd, logFd],
         },
       );
@@ -465,7 +508,7 @@ async function runOwnerPeer({ notebookId }) {
     [
       "cloud-peer",
       "--auth-kind",
-      "anaconda-key",
+      authKind,
       "--cloud-url",
       baseUrl,
       "--notebook-id",
@@ -483,13 +526,7 @@ async function runOwnerPeer({ notebookId }) {
       logPath: ownerLogPath,
       completeWhen: /status=done\b/,
       timeoutMs: seconds * 1000 + 20_000,
-      env: {
-        ...process.env,
-        // `runtimed cloud-peer` reads the credential from the environment,
-        // never argv, so it cannot leak into the process command line.
-        RUNT_CLOUD_TOKEN: apiKey,
-        RUST_LOG: process.env.RUST_LOG ?? "info",
-      },
+      env: cloudPeerEnv(),
     },
   );
 }
