@@ -3,6 +3,7 @@ import os from "node:os";
 
 import { chromium } from "@playwright/test";
 import { firstPositionalArg } from "./cli-args.mjs";
+import { viewerUrlWithMode } from "./hosted-render-smoke-routes.mjs";
 import { saveSmokeScreenshot, smokeOutputPath } from "./smoke-paths.mjs";
 
 const viewerUrl =
@@ -53,7 +54,9 @@ async function main() {
   }
   assertScope(requestedScope);
 
-  const url = new URL(viewerUrl);
+  // Execute buttons only accept clicks in edit mode; the runtime-peer smoke
+  // hands over the canonical (view-mode) room URL.
+  const url = new URL(viewerUrlWithMode(viewerUrl, "edit"));
   const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
   const token = JSON.parse(tokenStorageJson);
   const tokenSecondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);

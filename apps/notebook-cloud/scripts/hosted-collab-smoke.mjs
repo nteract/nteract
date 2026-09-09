@@ -13,7 +13,7 @@ import {
 } from "./hosted-collab-smoke-env.mjs";
 import { summarizeCollabPerformanceTimings } from "./hosted-collab-smoke-performance.mjs";
 import { performanceBudgetFailures } from "./hosted-render-smoke-performance.mjs";
-import { isRenderCacheApiUrl } from "./hosted-render-smoke-routes.mjs";
+import { isRenderCacheApiUrl, viewerUrlWithMode } from "./hosted-render-smoke-routes.mjs";
 import { firstPositionalArg } from "./cli-args.mjs";
 import { saveSmokeScreenshot, smokeOutputPath } from "./smoke-paths.mjs";
 
@@ -57,6 +57,10 @@ async function main() {
     ? roomFromViewerUrl(providedViewerUrl)
     : await timed("protocol_seed", seedThrowawayRoom);
   const viewerUrl = room.viewerUrl;
+  // Editing identities must request edit mode; the canonical room URL opens in
+  // view mode. Charlie requests it too so the smoke proves the viewer downgrades
+  // an ungranted editor rather than trivially observing view mode.
+  const editorViewerUrl = viewerUrlWithMode(viewerUrl, "edit");
   const origin = new URL(viewerUrl).origin;
   const checks = [providedViewerUrl ? "reused_existing_room" : "protocol_seeded_throwaway_room"];
   const browser = await chromium.launch({
@@ -73,7 +77,7 @@ async function main() {
       openNotebookContext({
         browser,
         name: "alice",
-        viewerUrl,
+        viewerUrl: editorViewerUrl,
         storageState: storageStateForDevIdentity({
           origin,
           token,
@@ -89,7 +93,7 @@ async function main() {
       openNotebookContext({
         browser,
         name: "bob",
-        viewerUrl,
+        viewerUrl: editorViewerUrl,
         storageState: storageStateForDevIdentity({
           origin,
           token,
@@ -211,7 +215,7 @@ ${bobMarker}
       openNotebookContext({
         browser,
         name: "charlie",
-        viewerUrl,
+        viewerUrl: editorViewerUrl,
         storageState: storageStateForDevIdentity({
           origin,
           token,
@@ -256,6 +260,7 @@ ${bobMarker}
         {
           ok: true,
           viewerUrl,
+          editorViewerUrl,
           roomId: room.roomId,
           checks,
           timings_ms: timingSummary,
