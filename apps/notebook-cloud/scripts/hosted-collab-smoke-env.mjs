@@ -1,9 +1,13 @@
 import { isLoopbackBaseUrl } from "./wasm-roundtrip-env.mjs";
+// Import the storage keys from their defining module rather than the viewer
+// re-export: `src/dev-auth-storage.ts` carries only type imports, so plain
+// `node` (no tsx loader) can strip and load it. That keeps this helper usable
+// from smokes that run without `--import tsx`.
 import {
   NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY,
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
-} from "../viewer/collaborator-auth.ts";
+} from "../src/dev-auth-storage.ts";
 
 export function assertHostedCollabSmokeEnv({ baseUrl, devAuthToken }) {
   if (devAuthToken || isLoopbackBaseUrl(baseUrl)) {

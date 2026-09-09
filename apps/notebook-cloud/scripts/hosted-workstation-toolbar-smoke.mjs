@@ -5,11 +5,15 @@ import { pathToFileURL } from "node:url";
 
 import { chromium } from "@playwright/test";
 
+import { storageStateForDevIdentity } from "./hosted-collab-smoke-env.mjs";
 import {
+  assertWorkstationAuthKindAllowedForBaseUrl,
   buildWorkstationAuthHeaders,
   DEFAULT_WORKSTATION_AUTH_KIND,
+  DEV_WORKSTATION_AUTH_KIND,
   normalizeWorkstationAuthKind,
   parseHttpResponseBody,
+  resolveWorkstationCredential,
 } from "./hosted-workstation-agent-core.mjs";
 import {
   saveSmokeScreenshot,
@@ -30,7 +34,8 @@ if (isMainModule()) {
 async function main() {
   await loadOptionalEnvFile();
 
-  const baseUrl = process.env.NTERACT_CLOUD_URL ?? "https://preview.runt.run";
+  const baseUrl =
+    process.env.NTERACT_CLOUD_URL ?? process.env.NOTEBOOK_CLOUD_URL ?? "https://preview.runt.run";
   const authKind = normalizeWorkstationAuthKind(
     process.env.NOTEBOOK_CLOUD_WORKSTATION_TOOLBAR_SMOKE_AUTH_KIND ??
       process.env.NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND ??
@@ -73,30 +78,21 @@ async function main() {
   );
   const reportPath = smokeJsonReportPath("hosted-workstation-toolbar-smoke");
 
-  const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
-  const token = JSON.parse(tokenStorageJson);
-  const cloudCredential =
-    authKind === "oidc"
-      ? token.accessToken
-      : (process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN);
-  if (!cloudCredential) {
-    throw new Error(
-      "NTERACT_API_KEY or NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN is required for hosted workstation toolbar smoke",
-    );
-  }
-  const tokenSecondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
-  if (!Number.isFinite(tokenSecondsRemaining) || tokenSecondsRemaining <= 60) {
-    throw new Error(
-      `${tokenPath} is expired or near expiry; refresh it before running the workstation toolbar smoke`,
-    );
-  }
+  // The browser identity is either the OIDC token cache (preview) or the
+  // loopback dev trio (local Worker). The REST credential follows the same
+  // split: OIDC reuses the cached access token, dev reuses the dev token.
+  const { browserIdentity, cloudCredential, cloudDevUser } = await resolveToolbarSmokeIdentity({
+    authKind,
+    baseUrl,
+    tokenPath,
+  });
+  const restAuth = { authKind, credential: cloudCredential, devUser: cloudDevUser };
 
   const workstationList = await fetchJson({
     baseUrl,
     label: "list workstations",
     pathname: "/api/workstations",
-    authKind,
-    credential: cloudCredential,
+    ...restAuth,
   });
   const workstation = Array.isArray(workstationList.workstations)
     ? workstationList.workstations.find((item) => item?.workstation_id === workstationId)
@@ -118,8 +114,7 @@ async function main() {
       label: "set default workstation",
       method: "PATCH",
       pathname: "/api/workstations/default",
-      authKind,
-      credential: cloudCredential,
+      ...restAuth,
     });
   }
   const created = await fetchJson({
@@ -129,20 +124,23 @@ async function main() {
     label: "create notebook",
     method: "POST",
     pathname: "/api/n",
-    authKind,
-    credential: cloudCredential,
+    ...restAuth,
   });
-  const viewerUrl = scalarString(created.viewer_url);
-  if (!viewerUrl) {
+  const createdViewerUrl = scalarString(created.viewer_url);
+  if (!createdViewerUrl) {
     throw new Error("create notebook response did not include viewer_url");
   }
+  // The Worker reports viewer_url on its configured public host. A loopback
+  // Worker still advertises the deployed hostname, so keep the path and drive
+  // the browser at the origin this smoke was pointed at.
+  const viewerUrl = rebaseUrl(createdViewerUrl, baseUrl);
 
   const browserResult = await runBrowserSmoke({
+    browserIdentity,
     runMarker,
     screenshotPath,
     source,
     timeoutMs,
-    tokenStorageJson,
     viewerUrl,
     workstationDisplayName: scalarString(workstation.display_name) ?? workstationId,
     workstationId,
@@ -155,10 +153,14 @@ async function main() {
     notebookId: created.notebook_id,
     source,
     title,
-    token: {
-      path: tokenPath,
-      secondsRemaining: tokenSecondsRemaining,
-    },
+    ...(browserIdentity.kind === "oidc"
+      ? {
+          token: {
+            path: tokenPath,
+            secondsRemaining: browserIdentity.secondsRemaining,
+          },
+        }
+      : { devUser: browserIdentity.user }),
     viewerUrl,
     workstation: {
       id: workstationId,
@@ -182,11 +184,11 @@ async function main() {
 }
 
 async function runBrowserSmoke({
+  browserIdentity,
   runMarker,
   screenshotPath,
   source,
   timeoutMs,
-  tokenStorageJson,
   viewerUrl,
   workstationDisplayName,
   workstationId,
@@ -197,16 +199,16 @@ async function runBrowserSmoke({
   try {
     const blockedRuns = await assertOwnerBlockedWorkstationStates({
       browser,
+      browserIdentity,
       timeoutMs,
-      tokenStorageJson,
       url,
       workstationId,
     });
 
     const ownerContext = await authenticatedContext(browser, {
+      browserIdentity,
       origin: url.origin,
       scope: "owner",
-      tokenStorageJson,
     });
     let ownerRun;
     try {
@@ -226,16 +228,18 @@ async function runBrowserSmoke({
 
     const viewModeControlCheck = await assertViewModeDoesNotExposeExecutionControls({
       browser,
+      browserIdentity,
       runMarker,
       timeoutMs,
-      tokenStorageJson,
       url,
     });
 
     return {
       ...ownerRun,
       checks: [
-        "oidc_token_seeded_in_browser_storage",
+        browserIdentity.kind === "oidc"
+          ? "oidc_token_seeded_in_browser_storage"
+          : "dev_identity_seeded_in_browser_storage",
         "toolbar_start_compute_rendered",
         "toolbar_start_compute_clicked",
         "execute_button_rendered_after_compute_start",
@@ -434,13 +438,14 @@ function assertKernelStatusNotInitializing(status, context) {
 
 async function assertOwnerBlockedWorkstationStates({
   browser,
+  browserIdentity,
   timeoutMs,
-  tokenStorageJson,
   url,
   workstationId,
 }) {
   const noWorkstations = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
+    browserIdentity,
     expectedLabel: "Set up compute",
     expectedPanelText: "No workstation registered",
     expectedTitleIncludes: ["Open workstations panel"],
@@ -450,11 +455,11 @@ async function assertOwnerBlockedWorkstationStates({
     },
     scenario: "no_registered_workstations",
     timeoutMs,
-    tokenStorageJson,
     url,
   });
   const offlineDefault = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
+    browserIdentity,
     expectedLabel: "Review compute",
     expectedPanelText: "Offline workstation",
     expectedTitleIncludes: ["Open workstations panel"],
@@ -475,11 +480,11 @@ async function assertOwnerBlockedWorkstationStates({
     },
     scenario: "offline_default_workstation",
     timeoutMs,
-    tokenStorageJson,
     url,
   });
   const missingWorkingDirectory = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
+    browserIdentity,
     expectedLabel: "Review compute",
     expectedPanelText:
       "This workstation does not have a working directory configured for notebook execution.",
@@ -499,11 +504,11 @@ async function assertOwnerBlockedWorkstationStates({
     },
     scenario: "missing_working_directory",
     timeoutMs,
-    tokenStorageJson,
     url,
   });
   const missingEnvironment = await assertOwnerToolbarActionWithMockedWorkstations({
     browser,
+    browserIdentity,
     expectedLabel: "Review compute",
     expectedPanelText: "This workstation does not have a runnable default environment configured.",
     expectedTitleIncludes: ["Open workstations panel"],
@@ -521,7 +526,6 @@ async function assertOwnerBlockedWorkstationStates({
     },
     scenario: "missing_environment",
     timeoutMs,
-    tokenStorageJson,
     url,
   });
   return [noWorkstations, offlineDefault, missingWorkingDirectory, missingEnvironment];
@@ -529,19 +533,19 @@ async function assertOwnerBlockedWorkstationStates({
 
 async function assertOwnerToolbarActionWithMockedWorkstations({
   browser,
+  browserIdentity,
   expectedLabel,
   expectedPanelText = null,
   expectedTitleIncludes,
   registry,
   scenario,
   timeoutMs,
-  tokenStorageJson,
   url,
 }) {
   const context = await authenticatedContext(browser, {
+    browserIdentity,
     origin: url.origin,
     scope: "owner",
-    tokenStorageJson,
   });
   await context.route("**/api/workstations", (route) =>
     route.fulfill({
@@ -586,15 +590,15 @@ async function assertOwnerToolbarActionWithMockedWorkstations({
 
 async function assertViewModeDoesNotExposeExecutionControls({
   browser,
+  browserIdentity,
   runMarker,
   timeoutMs,
-  tokenStorageJson,
   url,
 }) {
   const context = await authenticatedContext(browser, {
+    browserIdentity,
     origin: url.origin,
     scope: "owner",
-    tokenStorageJson,
   });
   try {
     const page = await context.newPage();
@@ -617,7 +621,22 @@ async function assertViewModeDoesNotExposeExecutionControls({
   }
 }
 
-async function authenticatedContext(browser, { origin, scope, tokenStorageJson }) {
+async function authenticatedContext(browser, { browserIdentity, origin, scope }) {
+  if (browserIdentity.kind === "dev") {
+    // Dev identities authenticate every viewer request from localStorage; no
+    // app session cookie is involved.
+    return browser.newContext({
+      viewport: { width: 1440, height: 1000 },
+      storageState: storageStateForDevIdentity({
+        origin,
+        token: browserIdentity.token,
+        user: browserIdentity.user,
+        scope,
+      }),
+    });
+  }
+
+  const { tokenStorageJson } = browserIdentity;
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const token = JSON.parse(tokenStorageJson);
   const accessToken = typeof token.accessToken === "string" ? token.accessToken : null;
@@ -805,7 +824,13 @@ function assertCleanBrowserDiagnostics(events) {
 
 async function openNotebookShell(page, href, timeout) {
   await smokePhase("open notebook shell", async () => {
-    await page.goto(href, { waitUntil: "domcontentloaded", timeout });
+    // The command toolbar only renders with edit/execute capabilities, and the
+    // shell lands in view mode unless the URL asks for edit mode.
+    const target = new URL(href);
+    if (!target.searchParams.has("mode")) {
+      target.searchParams.set("mode", "edit");
+    }
+    await page.goto(target.href, { waitUntil: "domcontentloaded", timeout });
   });
   await waitForNotebookReady(page, timeout);
 }
@@ -1111,6 +1136,7 @@ async function fetchJson({
   pathname,
   authKind,
   credential,
+  devUser = null,
 }) {
   return smokePhase(`api ${label}`, async () => {
     const controller = new AbortController();
@@ -1121,7 +1147,7 @@ async function fetchJson({
     try {
       const requestInit = {
         headers: {
-          ...buildWorkstationAuthHeaders(authKind, credential),
+          ...buildWorkstationAuthHeaders(authKind, credential, { devUser, scope: "owner" }),
           "Content-Type": "application/json",
           "X-Scope": "owner",
         },
@@ -1167,6 +1193,41 @@ async function loadOptionalEnvFile() {
   }
 }
 
+async function resolveToolbarSmokeIdentity({ authKind, baseUrl, tokenPath }) {
+  assertWorkstationAuthKindAllowedForBaseUrl(authKind, baseUrl);
+  if (authKind === DEV_WORKSTATION_AUTH_KIND) {
+    const { credential, devUser } = resolveWorkstationCredential(process.env, authKind);
+    return {
+      browserIdentity: { kind: "dev", token: credential, user: devUser },
+      cloudCredential: credential,
+      cloudDevUser: devUser,
+    };
+  }
+
+  const tokenStorageJson = await readOidcTokenStorageJson(tokenPath);
+  const token = JSON.parse(tokenStorageJson);
+  const cloudCredential =
+    authKind === "oidc"
+      ? token.accessToken
+      : (process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN);
+  if (!cloudCredential) {
+    throw new Error(
+      "NTERACT_API_KEY or NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN is required for hosted workstation toolbar smoke",
+    );
+  }
+  const secondsRemaining = Number(token.expiresAt) - Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(secondsRemaining) || secondsRemaining <= 60) {
+    throw new Error(
+      `${tokenPath} is expired or near expiry; refresh it before running the workstation toolbar smoke`,
+    );
+  }
+  return {
+    browserIdentity: { kind: "oidc", tokenStorageJson, secondsRemaining },
+    cloudCredential,
+    cloudDevUser: null,
+  };
+}
+
 async function readOidcTokenStorageJson(tokenPath) {
   const raw = await readFile(tokenPath, "utf8");
   const token = JSON.parse(raw);
@@ -1195,6 +1256,15 @@ export function redactDiagnosticUrl(url) {
 
 function scalarString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function rebaseUrl(href, baseUrl) {
+  const source = new URL(href);
+  const target = new URL(baseUrl);
+  if (source.origin === target.origin) {
+    return source.href;
+  }
+  return new URL(`${source.pathname}${source.search}${source.hash}`, target.origin).href;
 }
 
 function parsePositiveInteger(value, label, fallback) {

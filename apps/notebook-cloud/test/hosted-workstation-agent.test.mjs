@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  assertWorkstationAuthKindAllowedForBaseUrl,
   buildWorkstationAuthHeaders,
   buildAttachJobSpawnPlan,
   buildRuntimeAgentEnv,
   buildWorkstationRegistrationPayload,
+  devPrincipalForUser,
   normalizeWorkstationAuthKind,
   parseHttpResponseBody,
   parsePositiveInteger,
+  resolveWorkstationCredential,
   retryAfterMs,
   retryCooldownMs,
   runtimePeerExitMessage,
@@ -153,7 +156,117 @@ describe("hosted workstation agent launch contract", () => {
     });
     assert.equal(normalizeWorkstationAuthKind("anaconda-api-key"), "anaconda-key");
     assert.equal(normalizeWorkstationAuthKind("oidc-bearer"), "oidc");
+    assert.equal(normalizeWorkstationAuthKind("dev"), "dev");
     assert.throws(() => normalizeWorkstationAuthKind("cookie"), /WORKSTATION_AUTH_KIND/);
+  });
+
+  it("sends the loopback dev credential trio instead of a bearer for dev auth", () => {
+    assert.deepEqual(
+      buildWorkstationAuthHeaders("dev", "local-loopback-dev-token", { devUser: "smoke" }),
+      {
+        "X-Notebook-Cloud-Dev-Token": "local-loopback-dev-token",
+        "X-User": "smoke",
+        "X-Scope": "owner",
+      },
+    );
+    assert.deepEqual(
+      buildWorkstationAuthHeaders("dev", "tok", { devUser: "smoke", scope: "runtime_peer" })[
+        "X-Scope"
+      ],
+      "runtime_peer",
+    );
+    assert.throws(
+      () => buildWorkstationAuthHeaders("dev", "local-loopback-dev-token"),
+      /NOTEBOOK_CLOUD_DEV_USER/,
+    );
+    assert.equal(devPrincipalForUser("smoke"), "user:dev:smoke");
+    assert.equal(devPrincipalForUser("smoke user"), "user:dev:smoke%20user");
+  });
+
+  it("passes the dev user label to the runtime peer only for dev auth", () => {
+    const devEnv = buildRuntimeAgentEnv({ HOME: "/home/dev", PATH: "/usr/bin" }, "dev-token", {
+      authKind: "dev",
+      devUser: "smoke",
+    });
+    assert.equal(devEnv.RUNT_CLOUD_TOKEN, "dev-token");
+    assert.equal(devEnv.RUNT_CLOUD_DEV_USER, "smoke");
+
+    const bearerEnv = buildRuntimeAgentEnv({ HOME: "/home/dev", PATH: "/usr/bin" }, "key", {
+      authKind: "anaconda-key",
+      devUser: "smoke",
+    });
+    assert.equal(bearerEnv.RUNT_CLOUD_TOKEN, "key");
+    assert.equal(bearerEnv.RUNT_CLOUD_DEV_USER, undefined);
+  });
+
+  it("spawns dev-auth runtime peers only against loopback Workers", () => {
+    const spawn = (baseUrl) =>
+      buildAttachJobSpawnPlan({
+        job: { job_id: "job-dev", notebook_id: "nb-dev" },
+        pythonPath: "/opt/k/bin/python",
+        agentRoot: "/tmp/agent",
+        baseUrl,
+        workingDirectory: "/home/dev/project",
+        workstationId: "ws-dev",
+        displayName: "dev workstation",
+        authKind: "dev",
+      });
+
+    for (const baseUrl of [
+      "http://127.0.0.1:45123",
+      "http://localhost:8787",
+      "http://[::1]:8787",
+    ]) {
+      const plan = spawn(baseUrl);
+      assert.deepEqual(plan.args.slice(0, 3), ["cloud-runtime-agent", "--auth-kind", "dev"]);
+      assert.equal(plan.args.includes("local-loopback-dev-token"), false);
+    }
+
+    assert.throws(() => spawn("https://preview.runt.run"), /only allowed against a loopback/);
+    assert.throws(
+      () => assertWorkstationAuthKindAllowedForBaseUrl("dev", "https://preview.runt.run"),
+      /refusing https:\/\/preview\.runt\.run/,
+    );
+    assert.equal(
+      assertWorkstationAuthKindAllowedForBaseUrl("anaconda-key", "https://preview.runt.run"),
+      "anaconda-key",
+    );
+  });
+
+  it("resolves the dev credential from NOTEBOOK_CLOUD_DEV_TOKEN and NOTEBOOK_CLOUD_DEV_USER", () => {
+    assert.deepEqual(
+      resolveWorkstationCredential(
+        {
+          NOTEBOOK_CLOUD_DEV_TOKEN: "local-loopback-dev-token",
+          NOTEBOOK_CLOUD_DEV_USER: "smoke",
+          NTERACT_API_KEY: "ignored-for-dev",
+        },
+        "dev",
+      ),
+      { authKind: "dev", credential: "local-loopback-dev-token", devUser: "smoke" },
+    );
+    assert.deepEqual(
+      resolveWorkstationCredential({ NOTEBOOK_CLOUD_DEV_TOKEN: "tok" }, "dev", {
+        defaultDevUser: "runtime-peer-smoke",
+      }),
+      { authKind: "dev", credential: "tok", devUser: "runtime-peer-smoke" },
+    );
+    assert.throws(
+      () => resolveWorkstationCredential({ NOTEBOOK_CLOUD_DEV_USER: "smoke" }, "dev"),
+      /NOTEBOOK_CLOUD_DEV_TOKEN/,
+    );
+    assert.throws(
+      () => resolveWorkstationCredential({ NOTEBOOK_CLOUD_DEV_TOKEN: "tok" }, "dev"),
+      /NOTEBOOK_CLOUD_DEV_USER/,
+    );
+    assert.deepEqual(
+      resolveWorkstationCredential(
+        { NTERACT_API_KEY: "key-secret", NOTEBOOK_CLOUD_DEV_TOKEN: "unused" },
+        "anaconda-key",
+      ),
+      { authKind: "anaconda-key", credential: "key-secret", devUser: null },
+    );
+    assert.throws(() => resolveWorkstationCredential({}, "oidc"), /NTERACT_API_KEY/);
   });
 
   it("projects stable registration metadata for the current Python launcher", () => {

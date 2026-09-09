@@ -1,12 +1,21 @@
 import os from "node:os";
 import path from "node:path";
 
+import { isLoopbackBaseUrl } from "./wasm-roundtrip-env.mjs";
+
 export const DEFAULT_WORKSTATION_AUTH_KIND = "anaconda-key";
+export const DEV_WORKSTATION_AUTH_KIND = "dev";
 export const DEFAULT_WORKSTATION_RETRY_AFTER_MS = 60_000;
 export const MAX_WORKSTATION_RETRY_AFTER_MS = 15 * 60_000;
 export const WORKSTATION_RETRYABLE_STATUS_CODES = new Set([429, 503]);
 export const STALE_WORKSTATION_RETRYABLE_STATUS_CODES = new Set([404, 410, 429, 503]);
-export const WORKSTATION_AUTH_KINDS = new Set([DEFAULT_WORKSTATION_AUTH_KIND, "oidc"]);
+export const WORKSTATION_AUTH_KINDS = new Set([
+  DEFAULT_WORKSTATION_AUTH_KIND,
+  "oidc",
+  DEV_WORKSTATION_AUTH_KIND,
+]);
+export const WORKSTATION_DEV_TOKEN_ENV = "NOTEBOOK_CLOUD_DEV_TOKEN";
+export const WORKSTATION_DEV_USER_ENV = "NOTEBOOK_CLOUD_DEV_USER";
 
 export function buildWorkstationRegistrationPayload({
   workstationId,
@@ -65,6 +74,7 @@ export function buildAttachJobSpawnPlan({
   const logPath = path.join(runRoot, "runtime-peer.log");
   const launchDirectory = job.working_directory ?? workingDirectory;
   const normalizedAuthKind = normalizeWorkstationAuthKind(authKind);
+  assertWorkstationAuthKindAllowedForBaseUrl(normalizedAuthKind, baseUrl);
   const args = [
     "cloud-runtime-agent",
     "--auth-kind",
@@ -106,7 +116,8 @@ export function buildAttachJobSpawnPlan({
   };
 }
 
-export function buildRuntimeAgentEnv(env, credential) {
+export function buildRuntimeAgentEnv(env, credential, { authKind, devUser } = {}) {
+  const normalizedAuthKind = normalizeWorkstationAuthKind(authKind);
   return compactEnv({
     HOME: env.HOME,
     PATH: env.PATH,
@@ -117,13 +128,31 @@ export function buildRuntimeAgentEnv(env, credential) {
     RUST_BACKTRACE: env.RUST_BACKTRACE,
     RUST_LOG: env.RUST_LOG ?? "info",
     RUNT_CLOUD_TOKEN: credential,
+    // `runtimed cloud-runtime-agent --auth-kind dev` needs the user label next
+    // to the token; it becomes the `X-User` header on the WebSocket upgrade.
+    RUNT_CLOUD_DEV_USER: normalizedAuthKind === DEV_WORKSTATION_AUTH_KIND ? devUser : undefined,
   });
 }
 
-export function buildWorkstationAuthHeaders(authKind, credential) {
+export function buildWorkstationAuthHeaders(
+  authKind,
+  credential,
+  { devUser, scope = "owner" } = {},
+) {
   const normalizedAuthKind = normalizeWorkstationAuthKind(authKind);
   const token = credential?.trim();
   assert(token, "hosted workstation credential is required");
+  if (normalizedAuthKind === DEV_WORKSTATION_AUTH_KIND) {
+    const user = devUser?.trim();
+    assert(user, `${WORKSTATION_DEV_USER_ENV} is required for dev workstation auth`);
+    // Loopback dev credentials: the Worker maps this trio to `user:dev:<user>`.
+    // Dev auth defaults to viewer scope, so the scope is always explicit here.
+    return {
+      "X-Notebook-Cloud-Dev-Token": token,
+      "X-User": user,
+      "X-Scope": scope,
+    };
+  }
   const headers = {
     Authorization: `Bearer ${token}`,
   };
@@ -131,6 +160,49 @@ export function buildWorkstationAuthHeaders(authKind, credential) {
     headers["X-Notebook-Cloud-Auth-Provider"] = "anaconda-api-key";
   }
   return headers;
+}
+
+export function resolveWorkstationCredential(env, authKind, { defaultDevUser } = {}) {
+  const normalizedAuthKind = normalizeWorkstationAuthKind(authKind);
+  if (normalizedAuthKind === DEV_WORKSTATION_AUTH_KIND) {
+    const credential = env[WORKSTATION_DEV_TOKEN_ENV]?.trim();
+    const devUser = (env[WORKSTATION_DEV_USER_ENV] ?? defaultDevUser)?.trim();
+    assert(
+      credential,
+      `${WORKSTATION_DEV_TOKEN_ENV} is required when NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev (any non-empty value is accepted by a loopback Worker)`,
+    );
+    assert(
+      devUser,
+      `${WORKSTATION_DEV_USER_ENV} is required when NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev`,
+    );
+    return { authKind: normalizedAuthKind, credential, devUser };
+  }
+  const credential = (env.NTERACT_API_KEY ?? env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN)?.trim();
+  assert(
+    credential,
+    "NTERACT_API_KEY or NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN is required for hosted workstation auth",
+  );
+  return { authKind: normalizedAuthKind, credential, devUser: null };
+}
+
+export function devPrincipalForUser(user) {
+  const normalized = String(user ?? "").trim();
+  assert(normalized, "dev user cannot be empty");
+  // Mirrors `principalForDevUser` in src/identity.ts.
+  return `user:dev:${encodeURIComponent(normalized)}`;
+}
+
+export function assertWorkstationAuthKindAllowedForBaseUrl(authKind, baseUrl) {
+  const normalizedAuthKind = normalizeWorkstationAuthKind(authKind);
+  if (normalizedAuthKind !== DEV_WORKSTATION_AUTH_KIND) {
+    return normalizedAuthKind;
+  }
+  if (!isLoopbackBaseUrl(baseUrl)) {
+    throw new Error(
+      `NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND=dev is only allowed against a loopback Worker (127.0.0.1, localhost, or [::1]); refusing ${baseUrl}`,
+    );
+  }
+  return normalizedAuthKind;
 }
 
 export function normalizeWorkstationAuthKind(value) {

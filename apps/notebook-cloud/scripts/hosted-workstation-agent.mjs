@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertWorkstationAuthKindAllowedForBaseUrl,
   buildAttachJobSpawnPlan,
   buildRuntimeAgentEnv,
   buildWorkstationAuthHeaders,
@@ -14,6 +15,7 @@ import {
   normalizeWorkstationAuthKind,
   parseHttpResponseBody,
   parsePositiveInteger,
+  resolveWorkstationCredential,
   retryCooldownMs,
   retryAfterMs,
   runtimePeerExitMessage,
@@ -28,13 +30,15 @@ const workspaceRoot = notebookCloudWorkspaceRoot({ cwd: appDir });
 await loadOptionalEnvFile();
 
 const baseUrl = notebookCloudBaseUrl();
-const cloudCredential =
-  process.env.NTERACT_API_KEY ?? process.env.NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN;
 const authKind = normalizeWorkstationAuthKind(
   process.env.NOTEBOOK_CLOUD_WORKSTATION_AUTH_KIND ??
     process.env.NTERACT_CLOUD_AUTH_KIND ??
     DEFAULT_WORKSTATION_AUTH_KIND,
 );
+// Resolved lazily in main() so a missing credential reports one clear error
+// instead of failing at module load.
+let cloudCredential = null;
+let cloudDevUser = null;
 const workstationId =
   process.env.NOTEBOOK_CLOUD_WORKSTATION_ID ?? stableWorkstationId(os.hostname());
 const displayName =
@@ -85,6 +89,7 @@ async function main() {
       workingDirectory,
       pythonPath,
       authKind,
+      ...(cloudDevUser ? { devUser: cloudDevUser } : {}),
       pollIntervalMs,
     }),
   );
@@ -485,19 +490,26 @@ async function loadOptionalEnvFile() {
 }
 
 function requireCloudCredential() {
-  if (!cloudCredential) {
-    throw new Error(
-      "NTERACT_API_KEY or NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN is required for hosted workstation agent",
-    );
-  }
+  // Dev credentials only make sense against a loopback Worker; refuse before
+  // any request so a misconfigured agent never sends them to a deployed host.
+  assertWorkstationAuthKindAllowedForBaseUrl(authKind, baseUrl);
+  const resolved = resolveWorkstationCredential(process.env, authKind);
+  cloudCredential = resolved.credential;
+  cloudDevUser = resolved.devUser;
 }
 
 function cloudAuthHeaders() {
-  return buildWorkstationAuthHeaders(authKind, cloudCredential);
+  return buildWorkstationAuthHeaders(authKind, cloudCredential, {
+    devUser: cloudDevUser,
+    scope: "owner",
+  });
 }
 
 function runtimeAgentEnv() {
-  return buildRuntimeAgentEnv(process.env, cloudCredential);
+  return buildRuntimeAgentEnv(process.env, cloudCredential, {
+    authKind,
+    devUser: cloudDevUser,
+  });
 }
 
 async function resolvePythonPath() {
