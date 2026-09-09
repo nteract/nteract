@@ -17,7 +17,7 @@ use crate::output_blob_publisher::publish_or_warn;
 use crate::output_commit_context::OutputCommitContext;
 use crate::output_prep::LifecycleSignal;
 use crate::output_store::{self, ContentRef, OutputManifest, DEFAULT_INLINE_THRESHOLD};
-use crate::stream_flush::PendingStreamFlush;
+use crate::stream_flush::{PendingStreamFlush, StreamFlushBuffer};
 use crate::stream_terminal::{StreamOutputState, StreamTerminals};
 use crate::task_supervisor::spawn_supervised;
 
@@ -75,6 +75,21 @@ impl StreamCommitterHandle {
         for flush in flushes {
             self.request_flush(flush);
         }
+    }
+
+    /// Queue a flush that must commit before any later periodic flush.
+    ///
+    /// Used for a stream segment sealed by the other stream interleaving: the
+    /// sealed text has to reach the document before the next stream's output is
+    /// appended, or the upsert would append it again after that output. The
+    /// priority queue is unbounded and FIFO, so this is never dropped and does
+    /// not block the caller.
+    pub(crate) fn request_ordered_flush(&self, flush: PendingStreamFlush) {
+        let _ = self.priority_tx.send(PriorityStreamCommit {
+            flushes: timed_stream_flushes(vec![flush]),
+            signal: None,
+            ack: None,
+        });
     }
 
     /// Flush streams through the committer before the caller performs an
@@ -272,19 +287,19 @@ pub(crate) async fn commit_stream_flush(
 ) {
     let (known_state, rendered_text) = {
         let terminals = stream_terminals.lock().await;
-        if !terminals.has_stream(&flush.execution_id, &flush.stream_name) {
+        if !terminals.has_segment(&flush.execution_id, &flush.stream_name, flush.segment) {
             debug!(
-                "[stream-committer] Skipping stale stream flush for execution={} stream={}",
-                flush.execution_id, flush.stream_name
+                "[stream-committer] Skipping stale stream flush for execution={} stream={} segment={}",
+                flush.execution_id, flush.stream_name, flush.segment
             );
             return;
         }
         (
             terminals
-                .get_output_state(&flush.execution_id, &flush.stream_name)
+                .get_segment_output_state(&flush.execution_id, &flush.stream_name, flush.segment)
                 .cloned(),
             terminals
-                .render(&flush.execution_id, &flush.stream_name)
+                .render_segment(&flush.execution_id, &flush.stream_name, flush.segment)
                 .unwrap_or_default(),
         )
     };
@@ -356,14 +371,57 @@ pub(crate) async fn commit_stream_flush(
 
     let (_updated, output_id) = upsert_result;
     let mut terminals = stream_terminals.lock().await;
-    terminals.set_output_state(
+    terminals.set_segment_output_state(
         &flush.execution_id,
         &flush.stream_name,
+        flush.segment,
         StreamOutputState {
             output_id,
             blob_hash,
         },
     );
+    // A sealed segment receives no more chunks; this commit rendered its final
+    // text, so its terminal can go. No-op for the current segment.
+    terminals.retire_segment(&flush.execution_id, &flush.stream_name, flush.segment);
+}
+
+/// Route one IOPub stream chunk through the terminals and the committer.
+///
+/// Feeds the chunk into the stream's current terminal segment. If the chunk
+/// switched streams, the other stream's segment is sealed and its flush is
+/// queued ahead of everything periodic so the document keeps nbformat order:
+/// `stdout, stderr, stdout` becomes three outputs, each holding only its own
+/// text. Then the usual coalescing policy decides whether this chunk's segment
+/// flushes now.
+pub(crate) async fn ingest_stream_chunk(
+    stream_terminals: &Arc<Mutex<StreamTerminals>>,
+    stream_flushes: &mut StreamFlushBuffer,
+    committer: &StreamCommitterHandle,
+    execution_id: &str,
+    stream_name: &str,
+    text: &str,
+    now: std::time::Instant,
+) {
+    let placement = {
+        let mut terminals = stream_terminals.lock().await;
+        terminals.feed_chunk(execution_id, stream_name, text)
+    };
+    if let Some(sealed) = placement.sealed {
+        if let Some(flush) =
+            stream_flushes.take_segment(execution_id, &sealed.stream_name, sealed.segment, now)
+        {
+            committer.request_ordered_flush(flush);
+        }
+    }
+    if let Some(flush) = stream_flushes.record_chunk(
+        execution_id,
+        stream_name,
+        placement.segment,
+        text.len(),
+        now,
+    ) {
+        committer.request_flush(flush);
+    }
 }
 
 #[cfg(test)]
@@ -434,6 +492,7 @@ mod tests {
             vec![PendingStreamFlush {
                 execution_id: "exec-1".to_string(),
                 stream_name: "stdout".to_string(),
+                segment: 0,
             }],
             LifecycleSignal::ExecutionDone {
                 execution_id: "exec-1".to_string(),
@@ -466,6 +525,182 @@ mod tests {
         assert_eq!(outputs[0]["name"], "stdout");
     }
 
+    fn stream_text(output: &serde_json::Value) -> String {
+        output["text"]["inline"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// `print("out-1"); print("err-1", file=sys.stderr); print("out-2")` must
+    /// produce three outputs holding only their own text. Before segments, the
+    /// stdout terminal kept accumulating across the stderr interleave and the
+    /// final flush re-committed clean streams, so the document ended up with
+    /// `out-1`, `err-1`, `out-1\nout-2`, `err-1`.
+    #[tokio::test]
+    async fn interleaved_streams_commit_one_output_per_segment() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
+        let state = runtime_state();
+        create_execution(&state);
+
+        let terminals = Arc::new(Mutex::new(StreamTerminals::new()));
+        let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
+        let handle = start_stream_committer(
+            commit_context(state.clone(), blob_store, lifecycle_tx),
+            terminals.clone(),
+        );
+        // Zero delay so every chunk flushes on arrival, like chunks spaced
+        // further apart than STREAM_FLUSH_MAX_DELAY.
+        let mut flushes = StreamFlushBuffer::new(std::time::Duration::ZERO, 1024);
+        let now = std::time::Instant::now();
+
+        for (stream, text) in [
+            ("stdout", "out-1\n"),
+            ("stderr", "err-1\n"),
+            ("stdout", "out-2\n"),
+        ] {
+            ingest_stream_chunk(
+                &terminals,
+                &mut flushes,
+                &handle,
+                "exec-1",
+                stream,
+                text,
+                now,
+            )
+            .await;
+        }
+
+        let done = flushes.flush_execution("exec-1", now);
+        flushes.clear_execution("exec-1");
+        handle.flush_then_signal(
+            done,
+            LifecycleSignal::ExecutionDone {
+                execution_id: "exec-1".to_string(),
+            },
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), lifecycle_rx.recv())
+            .await
+            .expect("signal timeout")
+            .expect("signal");
+
+        let outputs = state
+            .read(|sd| sd.get_outputs("exec-1"))
+            .expect("read outputs");
+        let summary: Vec<(String, String)> = outputs
+            .iter()
+            .map(|output| {
+                (
+                    output["name"].as_str().unwrap_or_default().to_string(),
+                    stream_text(output),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("stdout".to_string(), "out-1\n".to_string()),
+                ("stderr".to_string(), "err-1\n".to_string()),
+                ("stdout".to_string(), "out-2\n".to_string()),
+            ]
+        );
+
+        // Sealed segments are retired once committed; the live one stays.
+        let terminals = terminals.lock().await;
+        assert!(!terminals.has_segment("exec-1", "stdout", 0));
+        assert!(!terminals.has_segment("exec-1", "stderr", 0));
+        assert!(terminals.has_segment("exec-1", "stdout", 1));
+    }
+
+    /// Chunks that arrive faster than the coalescing delay stay in the same
+    /// segment and update in place; the interleave still splits correctly.
+    #[tokio::test]
+    async fn coalesced_chunks_before_an_interleave_stay_in_one_output() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
+        let state = runtime_state();
+        create_execution(&state);
+
+        let terminals = Arc::new(Mutex::new(StreamTerminals::new()));
+        let (lifecycle_tx, mut lifecycle_rx) = mpsc::unbounded_channel();
+        let handle = start_stream_committer(
+            commit_context(state.clone(), blob_store, lifecycle_tx),
+            terminals.clone(),
+        );
+        let mut flushes = StreamFlushBuffer::new(std::time::Duration::from_secs(60), 1 << 20);
+        let now = std::time::Instant::now();
+
+        // "a" flushes immediately (first chunk); "b" and "c" coalesce and are
+        // still pending when stderr interleaves.
+        for text in ["a\n", "b\n", "c\n"] {
+            ingest_stream_chunk(
+                &terminals,
+                &mut flushes,
+                &handle,
+                "exec-1",
+                "stdout",
+                text,
+                now,
+            )
+            .await;
+        }
+        ingest_stream_chunk(
+            &terminals,
+            &mut flushes,
+            &handle,
+            "exec-1",
+            "stderr",
+            "e\n",
+            now,
+        )
+        .await;
+        ingest_stream_chunk(
+            &terminals,
+            &mut flushes,
+            &handle,
+            "exec-1",
+            "stdout",
+            "d\n",
+            now,
+        )
+        .await;
+
+        let done = flushes.flush_execution("exec-1", now);
+        flushes.clear_execution("exec-1");
+        handle.flush_then_signal(
+            done,
+            LifecycleSignal::ExecutionDone {
+                execution_id: "exec-1".to_string(),
+            },
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), lifecycle_rx.recv())
+            .await
+            .expect("signal timeout")
+            .expect("signal");
+
+        let outputs = state
+            .read(|sd| sd.get_outputs("exec-1"))
+            .expect("read outputs");
+        let summary: Vec<(String, String)> = outputs
+            .iter()
+            .map(|output| {
+                (
+                    output["name"].as_str().unwrap_or_default().to_string(),
+                    stream_text(output),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("stdout".to_string(), "a\nb\nc\n".to_string()),
+                ("stderr".to_string(), "e\n".to_string()),
+                ("stdout".to_string(), "d\n".to_string()),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn flush_for_ordering_commits_without_lifecycle_signal() {
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -489,6 +724,7 @@ mod tests {
             .flush_for_ordering(vec![PendingStreamFlush {
                 execution_id: "exec-1".to_string(),
                 stream_name: "stdout".to_string(),
+                segment: 0,
             }])
             .await;
 
@@ -515,6 +751,7 @@ mod tests {
             PendingStreamFlush {
                 execution_id: "exec-1".to_string(),
                 stream_name: "stdout".to_string(),
+                segment: 0,
             },
         )
         .await;
@@ -574,10 +811,12 @@ mod tests {
         handle.request_flush(PendingStreamFlush {
             execution_id: "exec-1".to_string(),
             stream_name: "stdout".to_string(),
+            segment: 0,
         });
         handle.request_flush(PendingStreamFlush {
             execution_id: "exec-2".to_string(),
             stream_name: "stdout".to_string(),
+            segment: 0,
         });
 
         let received = periodic_rx.try_recv().expect("first flush stays queued");

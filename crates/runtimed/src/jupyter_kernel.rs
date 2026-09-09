@@ -1618,6 +1618,14 @@ impl KernelConnection for JupyterKernel {
 
                 let comm_coalesce_tx = comm_coalesce_tx_for_iopub;
                 let mut stream_flushes = StreamFlushBuffer::default();
+                // Ordinary outputs (display_data, execute_result, error) and
+                // stream flushes commit on separate queues. A stream chunk that
+                // follows an ordinary output must not reach the document first,
+                // or it lands before that output and the end-of-execution
+                // stream flush then appends it a second time. Set after each
+                // ordinary output is enqueued; the next stream chunk drains the
+                // output committer before it is fed.
+                let mut stream_awaits_ordinary_outputs = false;
 
                 loop {
                     match iopub.read().await {
@@ -1872,19 +1880,21 @@ impl KernelConnection for JupyterKernel {
                                         };
                                         let eid = execution_id.clone().unwrap_or_default();
 
-                                        {
-                                            let mut terminals = iopub_stream_terminals.lock().await;
-                                            terminals.feed_chunk(&eid, stream_name, &stream.text);
+                                        if stream_awaits_ordinary_outputs {
+                                            output_committer.flush_for_ordering().await;
+                                            stream_awaits_ordinary_outputs = false;
                                         }
 
-                                        if let Some(flush) = stream_flushes.record_chunk(
+                                        crate::stream_committer::ingest_stream_chunk(
+                                            &iopub_stream_terminals,
+                                            &mut stream_flushes,
+                                            &stream_committer,
                                             &eid,
                                             stream_name,
-                                            stream.text.len(),
+                                            &stream.text,
                                             std::time::Instant::now(),
-                                        ) {
-                                            stream_committer.request_flush(flush);
-                                        }
+                                        )
+                                        .await;
                                     }
                                 }
 
@@ -2046,6 +2056,7 @@ impl KernelConnection for JupyterKernel {
                                                     },
                                                 })
                                                 .await;
+                                            stream_awaits_ordinary_outputs = true;
 
                                             // Rich-traceback detection. A display_data or
                                             // execute_result carrying TRACEBACK_MIME IS an error
@@ -2211,6 +2222,7 @@ impl KernelConnection for JupyterKernel {
                                                     kind: OrdinaryOutputKind::Error,
                                                 })
                                                 .await;
+                                            stream_awaits_ordinary_outputs = true;
                                         }
 
                                         output_committer.flush_then_signal(

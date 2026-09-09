@@ -6,7 +6,7 @@
 //! emulator, and the rendered content is serialized back to ANSI text for the
 //! frontend to display.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
@@ -22,12 +22,37 @@ use crate::terminal_size::{TERMINAL_COLUMNS, TERMINAL_LINES};
 /// Keep minimal since notebook outputs don't need scrollback.
 const SCROLLBACK_HISTORY: usize = 10000;
 
-/// Key for terminal buffers: (execution_id, stream_name).
+/// Key for a stream within an execution: (execution_id, stream_name).
 type StreamKey = (String, String);
+
+/// Key for one terminal segment: (execution_id, stream_name, segment).
+///
+/// A stream is split into segments at every point where the other stream
+/// interleaves. Each segment maps to exactly one `stream` output in the
+/// RuntimeStateDoc, so `stdout, stderr, stdout` renders as three outputs with
+/// only the text that belongs to each, matching nbformat's coalescing rule.
+type SegmentKey = (String, String, u64);
 
 // Re-export from the shared notebook-doc crate so existing callers
 // (output_prep, notebook_sync_server) continue to compile.
 pub use runtime_doc::StreamOutputState;
+
+/// A sealed segment: the other stream interleaved after it, so no further
+/// chunks will land in it. Its pending text still has to be committed, and its
+/// terminal can be retired once that commit has rendered it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedStreamSegment {
+    pub stream_name: String,
+    pub segment: u64,
+}
+
+/// Where a fed chunk landed, plus the segment it sealed on the other stream
+/// (if this chunk switched streams).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamChunkPlacement {
+    pub segment: u64,
+    pub sealed: Option<SealedStreamSegment>,
+}
 
 /// Simple dimensions struct for creating terminals.
 struct TermDimensions {
@@ -60,17 +85,28 @@ impl Dimensions for TermDimensions {
 
 /// Manages terminal emulators for stream outputs.
 ///
-/// Each (execution_id, stream_name) pair gets its own terminal emulator to properly
-/// handle escape sequences. When text is fed to a stream, it's processed through
-/// the terminal and the rendered content is returned as ANSI text.
+/// Each (execution_id, stream_name, segment) gets its own terminal emulator to
+/// properly handle escape sequences. A new segment starts whenever the other
+/// stream interleaves, because the previous segment's output is no longer the
+/// last output of the execution and must not absorb later text. A sealed
+/// segment's terminal stays alive until its final commit has rendered it, then
+/// `retire_segment` drops it.
 ///
-/// Also tracks the output state (index + manifest hash) for each stream to enable
-/// efficient in-place updates with validation against external modifications.
+/// Also tracks the output state (output_id + manifest hash) for each segment to
+/// enable efficient in-place updates with validation against external
+/// modifications.
 pub struct StreamTerminals {
-    terminals: HashMap<StreamKey, Term<VoidListener>>,
-    processors: HashMap<StreamKey, Processor>,
-    /// Output state for each (execution_id, stream_name) - tracks output_id and last hash for validation.
-    output_states: HashMap<StreamKey, StreamOutputState>,
+    terminals: HashMap<SegmentKey, Term<VoidListener>>,
+    processors: HashMap<SegmentKey, Processor>,
+    /// Output state per segment - tracks output_id and last hash for validation.
+    output_states: HashMap<SegmentKey, StreamOutputState>,
+    /// Segment currently receiving chunks for each stream.
+    current_segments: HashMap<StreamKey, u64>,
+    /// Stream that received the most recent chunk for each execution.
+    last_stream: HashMap<String, String>,
+    /// Segments the other stream has interleaved after. They take no more
+    /// chunks and are dropped once their final commit has rendered them.
+    sealed_segments: HashSet<SegmentKey>,
 }
 
 impl Default for StreamTerminals {
@@ -86,14 +122,52 @@ impl StreamTerminals {
             terminals: HashMap::new(),
             processors: HashMap::new(),
             output_states: HashMap::new(),
+            current_segments: HashMap::new(),
+            last_stream: HashMap::new(),
+            sealed_segments: HashSet::new(),
         }
     }
 
-    /// Feed text to the terminal for (execution_id, stream_name).
-    pub fn feed_chunk(&mut self, execution_id: &str, stream_name: &str, text: &str) {
-        let key = (execution_id.to_string(), stream_name.to_string());
+    /// Feed text to the current segment of (execution_id, stream_name).
+    ///
+    /// If this chunk switches streams, the other stream's current segment is
+    /// sealed and returned so the caller can commit it ahead of this stream's
+    /// next output. If this stream already had a segment, it moves to a fresh
+    /// one so its next output carries only text from after the switch.
+    pub fn feed_chunk(
+        &mut self,
+        execution_id: &str,
+        stream_name: &str,
+        text: &str,
+    ) -> StreamChunkPlacement {
+        let stream_key = (execution_id.to_string(), stream_name.to_string());
+        let mut sealed = None;
+        match self.last_stream.get(execution_id) {
+            Some(previous) if previous != stream_name => {
+                let previous_key = (execution_id.to_string(), previous.clone());
+                if let Some(segment) = self.current_segments.get(&previous_key) {
+                    self.sealed_segments.insert((
+                        execution_id.to_string(),
+                        previous.clone(),
+                        *segment,
+                    ));
+                    sealed = Some(SealedStreamSegment {
+                        stream_name: previous.clone(),
+                        segment: *segment,
+                    });
+                }
+                if let Some(segment) = self.current_segments.get_mut(&stream_key) {
+                    *segment += 1;
+                }
+            }
+            _ => {}
+        }
+        self.last_stream
+            .insert(execution_id.to_string(), stream_name.to_string());
+        let segment = *self.current_segments.entry(stream_key).or_insert(0);
+        let key = (execution_id.to_string(), stream_name.to_string(), segment);
 
-        // Get or create terminal and processor for this stream
+        // Get or create terminal and processor for this segment
         let term = self.terminals.entry(key.clone()).or_insert_with(|| {
             let config = Config {
                 scrolling_history: SCROLLBACK_HISTORY,
@@ -115,22 +189,43 @@ impl StreamTerminals {
                 processor.advance(term, std::slice::from_ref(byte));
             }
         }
+        StreamChunkPlacement { segment, sealed }
     }
 
-    /// Render the terminal content for (execution_id, stream_name).
+    /// Segment currently receiving chunks for (execution_id, stream_name).
+    pub fn current_segment(&self, execution_id: &str, stream_name: &str) -> Option<u64> {
+        self.current_segments
+            .get(&(execution_id.to_string(), stream_name.to_string()))
+            .copied()
+    }
+
+    /// Render the current segment of (execution_id, stream_name).
     pub fn render(&self, execution_id: &str, stream_name: &str) -> Option<String> {
-        let key = (execution_id.to_string(), stream_name.to_string());
-        self.terminals.get(&key).map(serialize_to_ansi)
+        let segment = self.current_segment(execution_id, stream_name)?;
+        self.render_segment(execution_id, stream_name, segment)
+    }
+
+    /// Render one segment's terminal content.
+    pub fn render_segment(
+        &self,
+        execution_id: &str,
+        stream_name: &str,
+        segment: u64,
+    ) -> Option<String> {
+        self.terminals
+            .get(&(execution_id.to_string(), stream_name.to_string(), segment))
+            .map(serialize_to_ansi)
     }
 
     /// Feed text to the terminal for (execution_id, stream_name).
     ///
-    /// Returns the rendered ANSI text representation of the terminal content.
+    /// Returns the rendered ANSI text representation of the current segment.
     /// This handles escape sequences like `\r` (carriage return) and cursor
     /// movement, so progress bars will show only their final state.
     pub fn feed(&mut self, execution_id: &str, stream_name: &str, text: &str) -> String {
-        self.feed_chunk(execution_id, stream_name, text);
-        self.render(execution_id, stream_name).unwrap_or_default()
+        let placement = self.feed_chunk(execution_id, stream_name, text);
+        self.render_segment(execution_id, stream_name, placement.segment)
+            .unwrap_or_default()
     }
 
     /// Clear terminal(s) for an execution.
@@ -138,43 +233,100 @@ impl StreamTerminals {
     /// Called when a non-stream output arrives to break the stream chain,
     /// or when clearing outputs for an execution.
     pub fn clear(&mut self, execution_id: &str) {
-        // Remove all terminals for this execution (both stdout and stderr)
-        self.terminals.retain(|(eid, _), _| eid != execution_id);
-        self.processors.retain(|(eid, _), _| eid != execution_id);
-        self.output_states.retain(|(eid, _), _| eid != execution_id);
+        // Remove all segments for this execution (both stdout and stderr)
+        self.terminals.retain(|(eid, _, _), _| eid != execution_id);
+        self.processors.retain(|(eid, _, _), _| eid != execution_id);
+        self.output_states
+            .retain(|(eid, _, _), _| eid != execution_id);
+        self.current_segments
+            .retain(|(eid, _), _| eid != execution_id);
+        self.sealed_segments
+            .retain(|(eid, _, _)| eid != execution_id);
+        self.last_stream.remove(execution_id);
     }
 
-    /// Check if a stream exists for an execution.
-    pub fn has_stream(&self, execution_id: &str, stream_name: &str) -> bool {
-        let key = (execution_id.to_string(), stream_name.to_string());
-        self.terminals.contains_key(&key)
-    }
-
-    /// Get the output state for a stream (if known).
+    /// Drop a sealed segment's terminal after its final commit.
     ///
-    /// Returns the state (output_id + manifest hash) we last wrote for this stream.
-    /// Used to validate before updating in place.
+    /// No-op for an unsealed segment: it is still receiving chunks and must
+    /// keep rendering until the stream switches or the execution ends.
+    pub fn retire_segment(&mut self, execution_id: &str, stream_name: &str, segment: u64) {
+        let key = (execution_id.to_string(), stream_name.to_string(), segment);
+        if !self.sealed_segments.remove(&key) {
+            return;
+        }
+        self.terminals.remove(&key);
+        self.processors.remove(&key);
+        self.output_states.remove(&key);
+    }
+
+    /// Whether the other stream has interleaved after this segment.
+    pub fn is_sealed(&self, execution_id: &str, stream_name: &str, segment: u64) -> bool {
+        self.sealed_segments
+            .contains(&(execution_id.to_string(), stream_name.to_string(), segment))
+    }
+
+    /// Check if a stream currently has a segment for an execution.
+    pub fn has_stream(&self, execution_id: &str, stream_name: &str) -> bool {
+        self.current_segment(execution_id, stream_name)
+            .is_some_and(|segment| self.has_segment(execution_id, stream_name, segment))
+    }
+
+    /// Check if a specific segment still has a terminal.
+    pub fn has_segment(&self, execution_id: &str, stream_name: &str, segment: u64) -> bool {
+        self.terminals
+            .contains_key(&(execution_id.to_string(), stream_name.to_string(), segment))
+    }
+
+    /// Get the output state for the current segment of a stream (if known).
     pub fn get_output_state(
         &self,
         execution_id: &str,
         stream_name: &str,
     ) -> Option<&StreamOutputState> {
-        let key = (execution_id.to_string(), stream_name.to_string());
-        self.output_states.get(&key)
+        let segment = self.current_segment(execution_id, stream_name).unwrap_or(0);
+        self.get_segment_output_state(execution_id, stream_name, segment)
     }
 
-    /// Set the output state for a stream.
+    /// Get the output state for one segment (if known).
     ///
-    /// Called after upserting a stream output to track its identity and hash
-    /// for future validation.
+    /// Returns the state (output_id + manifest hash) we last wrote for this
+    /// segment. Used to validate before updating in place.
+    pub fn get_segment_output_state(
+        &self,
+        execution_id: &str,
+        stream_name: &str,
+        segment: u64,
+    ) -> Option<&StreamOutputState> {
+        self.output_states
+            .get(&(execution_id.to_string(), stream_name.to_string(), segment))
+    }
+
+    /// Set the output state for the current segment of a stream.
     pub fn set_output_state(
         &mut self,
         execution_id: &str,
         stream_name: &str,
         state: StreamOutputState,
     ) {
-        let key = (execution_id.to_string(), stream_name.to_string());
-        self.output_states.insert(key, state);
+        let segment = self.current_segment(execution_id, stream_name).unwrap_or(0);
+        self.set_segment_output_state(execution_id, stream_name, segment, state);
+    }
+
+    /// Set the output state for one segment.
+    ///
+    /// Called after upserting a stream output to track its identity and hash
+    /// for future validation.
+    pub fn set_segment_output_state(
+        &mut self,
+        execution_id: &str,
+        stream_name: &str,
+        segment: u64,
+        state: StreamOutputState,
+    ) {
+        self.output_states.insert(
+            (execution_id.to_string(), stream_name.to_string(), segment),
+            state,
+        );
     }
 }
 
