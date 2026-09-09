@@ -5,7 +5,7 @@ import type { NteractEmbedHostContextPatch } from "../../../../src/components/is
 import { resolveCell, type RenderCell, type ResolvedCell } from "../../viewer/render-resolution.ts";
 import type { SnapshotWidgetComm } from "runtimed";
 
-const ARROW_BLOB_HASH = "sha256:10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f";
+const ARROW_BLOB_HASH = "10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f";
 
 const ONE_BY_ONE_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";

@@ -7,6 +7,7 @@ import {
   isRenderCacheApiUrl,
   notebookViewerUrl,
   pinnedNotebookViewerUrl,
+  viewerUrlWithMode,
 } from "../scripts/hosted-render-smoke-routes.mjs";
 
 describe("hosted render smoke routes", () => {
@@ -73,5 +74,21 @@ describe("hosted render smoke routes", () => {
     assert.equal(isRenderCacheApiUrl("https://example.com/api/n/foo/blobs/sha256"), false);
     assert.equal(isRenderCacheApiUrl("https://example.com/n/foo/r/heads"), false);
     assert.equal(isRenderCacheApiUrl("not a url"), false);
+  });
+
+  it("adds an explicit mode to canonical viewer URLs", () => {
+    assert.equal(
+      viewerUrlWithMode("http://127.0.0.1:8787/n/room%2Fid/collab", "edit"),
+      "http://127.0.0.1:8787/n/room%2Fid/collab?mode=edit",
+    );
+    assert.equal(
+      viewerUrlWithMode("https://example.com/n/foo/notebook?mode=view&profile=1#cell", "edit"),
+      "https://example.com/n/foo/notebook?mode=edit&profile=1#cell",
+    );
+    assert.equal(
+      viewerUrlWithMode("https://example.com/n/foo/notebook?mode=edit", "view"),
+      "https://example.com/n/foo/notebook?mode=view",
+    );
+    assert.throws(() => viewerUrlWithMode("https://example.com/n/foo/notebook", "owner"), /mode/);
   });
 });

@@ -43,3 +43,18 @@ export function pinnedNotebookViewerUrl(viewerUrl) {
 export function defaultPresenceTitleForViewerUrl(viewerUrl) {
   return pinnedNotebookViewerUrl(viewerUrl) === null ? "participant" : "";
 }
+
+/**
+ * Canonical viewer URLs carry no `mode` and the hosted viewer opens them in
+ * view mode. Smokes that type into cells or click execute must ask for edit
+ * mode explicitly; the viewer still downgrades identities without editor or
+ * owner access back to view.
+ */
+export function viewerUrlWithMode(viewerUrl, mode) {
+  if (mode !== "edit" && mode !== "view") {
+    throw new Error(`viewer mode must be "edit" or "view", got ${JSON.stringify(mode)}`);
+  }
+  const parsed = new URL(viewerUrl);
+  parsed.searchParams.set("mode", mode);
+  return parsed.href;
+}

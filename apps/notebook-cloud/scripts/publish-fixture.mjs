@@ -10,6 +10,7 @@ import {
 } from "./publish-notebook-id.mjs";
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 import { publishIdentityHeaders } from "./publish-auth.mjs";
+import { fixtureBlobUploadHash } from "./publish-fixture-blobs.mjs";
 import { initializeRuntimedWasmSyncForNode } from "./runtimed-wasm-artifact.mjs";
 
 const baseUrl = notebookCloudBaseUrl();
@@ -117,16 +118,10 @@ async function uploadFixtureBlob(blob) {
   const blobUrl = new URL(blob.path, fixtureRoot);
   await assertExists(blobUrl);
   const bytes = await readFile(blobUrl);
-  if (blob.hash.startsWith("sha256:")) {
-    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-    assert(
-      digest === blob.hash,
-      `Fixture blob ${blob.path} hash mismatch: ${digest} !== ${blob.hash}`,
-    );
-  }
+  const uploadHash = fixtureBlobUploadHash(blob, bytes);
 
   await putBytes(
-    `/api/n/${encodeURIComponent(notebookId)}/blobs/${encodeURIComponent(blob.hash)}`,
+    `/api/n/${encodeURIComponent(notebookId)}/blobs/${encodeURIComponent(uploadHash)}`,
     bytes,
     typeof blob.content_type === "string" ? blob.content_type : "application/octet-stream",
   );
