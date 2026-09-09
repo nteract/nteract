@@ -2,7 +2,7 @@
   "blobs": [
     {
       "content_type": "application/vnd.apache.arrow.stream",
-      "hash": "sha256:10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f",
+      "hash": "10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f",
       "path": "blobs/sha256-10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f.arrow",
       "size": 9352
     }
@@ -10,7 +10,7 @@
   "description": "Cell produces a Sift-compatible Arrow stream manifest with a real blob sidecar",
   "expected": {
     "blob_content_type": "application/vnd.apache.arrow.stream",
-    "blob_hash": "sha256:10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f",
+    "blob_hash": "10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f",
     "blob_path": "blobs/sha256-10bda18795f19e46bee92a2bb34606f89f089868c6b121b7f0526761c913b77f.arrow",
     "blob_size": 9352,
     "cell_id": "cell-1",

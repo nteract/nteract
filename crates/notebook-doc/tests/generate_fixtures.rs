@@ -136,9 +136,11 @@ fn inline(s: &str) -> ContentRef {
     }
 }
 
+/// Bare lowercase hex, matching the daemon `BlobStore` and the hosted blob
+/// route: blob refs carry no `sha256:` algorithm prefix anywhere in the
+/// production output path, so fixtures must not introduce one.
 fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    format!("sha256:{}", hex::encode(digest))
+    hex::encode(Sha256::digest(bytes))
 }
 
 // ── Fixture writing ─────────────────────────────────────────────────
@@ -514,7 +516,8 @@ fn scenario_sift_arrow_output() {
     let arrow_bytes = fs::read(&arrow_path).expect("read polars arrow fixture");
     let arrow_hash = sha256_hex(&arrow_bytes);
     let arrow_size = arrow_bytes.len() as u64;
-    let blob_path = format!("blobs/{}.arrow", arrow_hash.replace(':', "-"));
+    // The sidecar file name spells out the algorithm; the hash itself stays bare.
+    let blob_path = format!("blobs/sha256-{arrow_hash}.arrow");
     let blob = FixtureBlob {
         hash: arrow_hash.clone(),
         path: blob_path.clone(),
