@@ -551,18 +551,6 @@ body {
   line-height: 0.875rem;
 }
 
-.cloud-presence-avatar [data-slot="avatar-badge"] {
-  background: #10b981;
-}
-
-.cloud-presence-avatar [data-slot="avatar-badge"][data-status="idle"] {
-  background: #94a3b8;
-}
-
-.cloud-presence-avatar [data-slot="avatar-badge"][data-status="offline"] {
-  background: #cbd5e1;
-}
-
 .cloud-presence-avatar-count {
   background: color-mix(in srgb, var(--background) 90%, var(--foreground) 10%);
   color: color-mix(in srgb, var(--foreground) 70%, transparent);

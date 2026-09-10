@@ -40,7 +40,7 @@ import {
 } from "./collaborator-auth";
 import { useCloudAuthStore } from "./cloud-auth-context";
 import { materializeCloudNotebookView } from "./cloud-view-model";
-import { CloudLivePresenceStore } from "./live-presence";
+import { normalizeCloudPresencePayload } from "./live-presence";
 import {
   CloudConnectionStatusBridge,
   CloudRecoverableRejectionTracker,
@@ -662,7 +662,6 @@ export function useCloudViewerSession({
     let disposed = false;
     let subscriptions: Array<{ unsubscribe: () => void }> = [];
     let materializeSequence = 0;
-    let livePresenceStore: CloudLivePresenceStore | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingTransport: CloudWebSocketTransport | null = null;
     // Recoverable sync rejections on the CURRENT connection (reset on each
@@ -1401,7 +1400,6 @@ export function useCloudViewerSession({
         setConnectionActorLabel(liveRuntime.actorLabel);
         setConnectionPeerId(liveRuntime.peerId);
         setConnectionPeerLabel(liveRuntime.peerLabel);
-        livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
         let stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
         subscriptions = [
           // Transport-level reconnects preserve the handle, engine,
@@ -1426,7 +1424,6 @@ export function useCloudViewerSession({
             setConnectionPeerId(liveRuntime.peerId);
             setConnectionPeerLabel(liveRuntime.peerLabel);
             // Presence identity is per-connection (server-assigned peer id).
-            livePresenceStore = new CloudLivePresenceStore(liveRuntime.peerId);
             stopCursorDispatch();
             stopCursorDispatch = startCursorDispatch(liveRuntime.peerId);
             // The persistence principal follows the latest identity;
@@ -1444,8 +1441,7 @@ export function useCloudViewerSession({
             emitBroadcast(payload);
           }),
           liveRuntime.engine.presence$.subscribe((payload) => {
-            emitPresence(payload);
-            livePresenceStore?.handlePresence(payload);
+            emitPresence(normalizeCloudPresencePayload(payload));
           }),
           subscribeSerializedCloudCellChanges({
             cellChanges$: liveRuntime.engine.cellChanges$,
@@ -1633,7 +1629,6 @@ export function useCloudViewerSession({
         nextIdentity: `id:${config.notebookId}`,
       });
       resetPoolState();
-      livePresenceStore = null;
       presenceStore.reduceConnection("disconnected");
       setConnectionPeerId(null);
       setConnectionPeerLabel(null);

@@ -2,7 +2,6 @@ import { useSyncExternalStore } from "react";
 import { UserRound } from "lucide-react";
 import {
   Avatar,
-  AvatarBadge,
   AvatarFallback,
   AvatarGroup,
   AvatarGroupCount,
@@ -59,7 +58,7 @@ export function CloudPresenceStatus({
           </AvatarGroupCount>
         ) : null}
       </AvatarGroup>
-      <span className="sr-only">{presenceDisplay.label}</span>
+      <span className="sr-only">{title}</span>
     </span>
   );
 }
@@ -91,17 +90,16 @@ function CloudPresenceAvatar({
   peer: CloudViewerPresencePeer;
   resolveActor?: (actorLabel: string) => ActorDisplay;
 }) {
-  const status = connected ? peer.status : "offline";
+  const title =
+    peer.kind === "unknown"
+      ? peer.label
+      : connected
+        ? `${peer.label} — connected; activity unknown`
+        : `${peer.label} — participant status unavailable`;
   const actorLabel = peer.actorLabel ?? peer.participantKey;
   const imageUrl = resolveActor?.(actorLabel).imageUrl ?? null;
   return (
-    <Avatar
-      size="sm"
-      className="cloud-presence-avatar"
-      data-kind={peer.kind}
-      data-status={status}
-      title={peer.label}
-    >
+    <Avatar size="sm" className="cloud-presence-avatar" data-kind={peer.kind} title={title}>
       {imageUrl ? <AvatarImage className="nb-avatar-img" src={imageUrl} alt="" /> : null}
       <AvatarFallback>
         {peer.kind === "anonymous" ? (
@@ -115,7 +113,6 @@ function CloudPresenceAvatar({
           cloudPresenceInitials(peer.label)
         )}
       </AvatarFallback>
-      <AvatarBadge data-status={status} />
     </Avatar>
   );
 }
