@@ -85,7 +85,9 @@ pub(crate) async fn list_resources_for_mode(
         "Interactive output renderer for notebook cells",
         OUTPUT_MIME_TYPE,
         IconKind::GetResults,
-        Some(resource_ui_meta(&server.blob_base_url)),
+        Some(resource_ui_meta(
+            &server.local_runtime_metadata().await.blob_base_url,
+        )),
     ));
     resources.push(assistant_resource(
         NOTEBOOKS_RESOURCE_URI,
@@ -172,7 +174,9 @@ pub async fn read_resource(
                 uri: OUTPUT_RESOURCE_URI.into(),
                 mime_type: Some(OUTPUT_MIME_TYPE.into()),
                 text: OUTPUT_HTML.to_string(),
-                meta: Some(resource_ui_meta(&server.blob_base_url)),
+                meta: Some(resource_ui_meta(
+                    &server.local_runtime_metadata().await.blob_base_url,
+                )),
             },
         ]));
     }

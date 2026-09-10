@@ -1,0 +1,562 @@
+//! Shared resilient MCP entrypoints for nteract.
+//!
+//! Ships as a sidecar in the nteract desktop app, inside the `.mcpb`
+//! Claude Desktop extension, and in the Claude Code plugin. Finds
+//! `runt` via `runt-workspace`, spawns `runt mcp` as a child, and
+//! proxies MCP over stdio with transparent restart on child death
+//! (daemon upgrade, crash, etc.).
+
+// Allow `expect()` and `unwrap()` in tests
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use rmcp::ServiceExt;
+use runt_mcp_proxy::{McpProxy, ProxyConfig};
+use tracing::{error, info, warn};
+
+fn selected_build_channel(channel: &str) -> runt_workspace::BuildChannel {
+    if channel.eq_ignore_ascii_case("nightly") {
+        runt_workspace::BuildChannel::Nightly
+    } else {
+        runt_workspace::BuildChannel::Stable
+    }
+}
+
+fn runt_binary_name_for_channel(channel: &str) -> &'static str {
+    runt_workspace::cli_command_name_for(selected_build_channel(channel))
+}
+
+fn executable_name(base: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{base}.exe")
+    } else {
+        base.to_string()
+    }
+}
+
+fn bundled_runt_candidates(exe_path: &Path, channel: &str) -> Vec<PathBuf> {
+    let Some(exe_dir) = exe_path.parent() else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    let command_name = runt_binary_name_for_channel(channel);
+    candidates.push(exe_dir.join(executable_name(command_name)));
+
+    // Tauri sidecars are internal bundle files and use the configured
+    // externalBin basename (`runt`) even when the public nightly command is
+    // `runt-nightly`. A bundled MCP proxy should stay paired with its sibling
+    // sidecar instead of requiring the public install name to be on PATH.
+    if selected_build_channel(channel) == runt_workspace::BuildChannel::Nightly {
+        candidates.push(exe_dir.join(executable_name("runt")));
+    }
+
+    candidates
+}
+
+/// Find the `runt` or `runt-nightly` binary on PATH or in platform-specific locations.
+fn find_runt_binary(channel: &str) -> Option<PathBuf> {
+    let binary_name = runt_binary_name_for_channel(channel);
+
+    // 1. Check colocated sidecars first so Tauri bundles/AppImages use the
+    // exact `runt` shipped beside this MCP proxy.
+    if let Ok(current_exe) = std::env::current_exe() {
+        for candidate in bundled_runt_candidates(&current_exe, channel) {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 2. Check PATH via `which`
+    let which_cmd = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+
+    if let Ok(output) = std::process::Command::new(which_cmd)
+        .arg(binary_name)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+
+    // 3. Check platform-specific app bundle locations
+    #[cfg(target_os = "macos")]
+    {
+        let build_channel = if channel == "nightly" {
+            runt_workspace::BuildChannel::Nightly
+        } else {
+            runt_workspace::BuildChannel::Stable
+        };
+
+        if let Some(app_bundle) = runt_workspace::find_installed_app_bundle_for(build_channel) {
+            let exe_dir = app_bundle.join("Contents/MacOS");
+            for candidate in [
+                exe_dir.join(executable_name(binary_name)),
+                exe_dir.join(executable_name("runt")),
+            ] {
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    // 4. Check well-known install locations
+    if let Some(home) = dirs::home_dir() {
+        #[cfg(target_os = "linux")]
+        {
+            let local_bin = home.join(".local/bin").join(binary_name);
+            if local_bin.exists() {
+                return Some(local_bin);
+            }
+
+            // Check packaged app locations (/usr/share/<app>/, /opt/<app>/)
+            let build_channel = if channel == "nightly" {
+                runt_workspace::BuildChannel::Nightly
+            } else {
+                runt_workspace::BuildChannel::Stable
+            };
+            for app_name in runt_workspace::desktop_app_launch_candidates_for(build_channel) {
+                let slug = app_name.to_lowercase().replace(' ', "-");
+                let usr_share =
+                    std::path::PathBuf::from(format!("/usr/share/{slug}/{binary_name}"));
+                if usr_share.exists() {
+                    return Some(usr_share);
+                }
+                let opt = std::path::PathBuf::from(format!("/opt/{slug}/{binary_name}"));
+                if opt.exists() {
+                    return Some(opt);
+                }
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(local_app_data) = dirs::data_local_dir() {
+                let app_name = if channel == "nightly" {
+                    "nteract Nightly"
+                } else {
+                    "nteract"
+                };
+                let exe_name = format!("{binary_name}.exe");
+                let candidate = local_app_data.join(app_name).join(&exe_name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                let candidate = local_app_data
+                    .join("Programs")
+                    .join(app_name)
+                    .join(&exe_name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        // Suppress unused variable warning on macOS where home is only used
+        // in the linux/windows cfg blocks
+        let _ = home;
+    }
+
+    None
+}
+
+fn child_env_for_channel(channel: &str) -> HashMap<String, String> {
+    HashMap::from([("NTERACT_CHANNEL".to_string(), channel.to_string())])
+}
+
+fn proxy_cache_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|d| {
+        let dir = d.join(runt_workspace::cache_namespace()).join("proxy");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    })
+}
+
+fn proxy_config_for_channel(channel: String) -> ProxyConfig {
+    let child_env = child_env_for_channel(&channel);
+    let binary_name = runt_binary_name_for_channel(&channel);
+    let channel_for_resolve = channel.clone();
+    ProxyConfig {
+        resolve_child_command: Box::new(move || {
+            find_runt_binary(&channel_for_resolve).ok_or_else(|| {
+                format!("{binary_name} no longer found on PATH or in known install locations")
+            })
+        }),
+        child_args: vec!["mcp".to_string()],
+        child_env,
+        server_name: runt_workspace::desktop_product_name().to_string(),
+        cache_dir: proxy_cache_dir(),
+        monitor_poll_interval_ms: 500,
+        recovery_hint: "Try restarting the nteract app; if that does not recover, \
+                        reinstall the nteract extension."
+            .to_string(),
+    }
+}
+
+fn init_logging() {
+    // Log to stderr (MCP uses stdout for transport)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+}
+
+/// Compatibility entrypoint for installed `nteract-mcp` integrations.
+pub async fn run_legacy() -> ExitCode {
+    init_logging();
+
+    // Channel is baked in at compile time via RUNT_BUILD_CHANNEL (read by
+    // runt_workspace::build_channel()). The NTERACT_CHANNEL env var is an
+    // optional runtime override for testing — it does NOT change the binary
+    // identity, just which child binary is discovered.
+    let channel = std::env::var("NTERACT_CHANNEL")
+        .unwrap_or_else(|_| runt_workspace::channel_display_name().to_string());
+    let app_name = runt_workspace::desktop_display_name();
+    let binary_name = runt_binary_name_for_channel(&channel);
+
+    info!(
+        "nteract-mcp starting (channel={channel}, compiled={})",
+        runt_workspace::channel_display_name()
+    );
+    if channel != runt_workspace::channel_display_name() {
+        warn!(
+            "NTERACT_CHANNEL overrides baked-in channel ({} → {channel})",
+            runt_workspace::channel_display_name()
+        );
+    }
+    if find_runt_binary(&channel).is_none() {
+        eprintln!(
+            "Error: {binary_name} not found.\n\n\
+             Install {app_name} from https://nteract.io to use this MCP server.\n\
+             The app puts {binary_name} on your PATH during installation."
+        );
+        return ExitCode::FAILURE;
+    }
+    info!("Validated {binary_name} is available");
+
+    // Pass resolution as a closure so the proxy re-discovers the binary
+    // on every child restart. This is the core upgrade mechanism: the user
+    // upgrades the nteract app (new runt binary), and the proxy picks it up
+    // without needing to reinstall the MCPB extension.
+    //
+    // Daemon version tracking now flows through the child's MCP handshake
+    // (`runt mcp` stamps the daemon version into `ServerInfo.title`), so the
+    // proxy no longer opens its own daemon socket — that used to drag the
+    // full runtimed-client compile graph into every MCP process.
+    let config = proxy_config_for_channel(channel.clone());
+
+    serve_proxy(config, false).await
+}
+
+/// Hidden subcommand used by the unified CLI to avoid recursively supervising
+/// another supervisor. This is not an MCP client configuration entrypoint.
+pub const WORKER_COMMAND: &str = "mcp-worker";
+
+fn unified_proxy_config(
+    executable: PathBuf,
+    no_show: bool,
+    socket: Option<PathBuf>,
+    daemon_env: HashMap<String, String>,
+) -> Result<ProxyConfig, String> {
+    let mut child_args = vec![WORKER_COMMAND.to_string()];
+    if no_show {
+        child_args.push("--no-show".to_string());
+    }
+    if let Some(socket) = socket {
+        let socket = socket
+            .into_os_string()
+            .into_string()
+            .map_err(|_| "MCP socket path must be valid UTF-8".to_string())?;
+        child_args.push(format!("--socket={socket}"));
+    }
+    let mut child_env = child_env_for_channel(runt_workspace::channel_display_name());
+    child_env.extend(daemon_env);
+    Ok(ProxyConfig {
+        // Resolve the selected installation on every restart. Replacing its
+        // executable takes effect immediately; PATH never selects another app
+        // or channel, and a missing installation is an actionable failure.
+        resolve_child_command: Box::new(move || {
+            if executable.is_file() {
+                Ok(executable.clone())
+            } else {
+                Err(format!(
+                    "nteract CLI no longer found at {}; reinstall this installation",
+                    executable.display()
+                ))
+            }
+        }),
+        child_args,
+        child_env,
+        server_name: runt_workspace::desktop_product_name().to_string(),
+        // Headless and normal catalogs must not overwrite one another, or a
+        // cached initial tools/list can advertise a tool this worker excludes.
+        cache_dir: proxy_cache_dir().map(|dir| dir.join("cli").join(if no_show { "headless" } else { "default" })),
+        monitor_poll_interval_ms: 500,
+        recovery_hint: "Restart the nteract MCP client; if recovery still fails, reinstall the selected nteract CLI installation.".to_string(),
+    })
+}
+
+/// Run supervised MCP from the selected unified CLI installation.
+///
+/// Unlike the installed legacy extension, a CLI invocation preserves explicit
+/// worktree/socket environment targeting, just as its notebook commands do.
+/// The proxy still owns worker restart, protocol forwarding and shutdown.
+pub async fn run_unified(
+    executable: PathBuf,
+    no_show: bool,
+    socket: Option<PathBuf>,
+    explicit_channel: bool,
+) -> Result<ExitCode, String> {
+    let mut daemon_env = HashMap::new();
+    for name in [
+        "RUNTIMED_DEV",
+        "RUNTIMED_WORKSPACE_PATH",
+        "RUNTIMED_SOCKET_PATH",
+    ] {
+        match std::env::var(name) {
+            Ok(value) => {
+                daemon_env.insert(name.to_string(), value);
+            }
+            Err(std::env::VarError::NotPresent) => {}
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(format!(
+                    "{name} must be valid UTF-8 for MCP worker targeting"
+                ));
+            }
+        }
+    }
+    let mut config = unified_proxy_config(executable, no_show, socket, daemon_env)?;
+    if explicit_channel {
+        config.child_args.push("--explicit-channel".to_string());
+    }
+    (config.resolve_child_command)()?;
+    init_logging();
+    Ok(serve_proxy(config, no_show).await)
+}
+
+async fn serve_proxy(config: ProxyConfig, no_show: bool) -> ExitCode {
+    let proxy = McpProxy::new(config, None);
+    if no_show {
+        let mut state = proxy.state.write().await;
+        if let Some(tools) = &mut state.cached_tools {
+            tools.retain(|tool| tool.name != "show_notebook");
+        }
+    }
+
+    // Start the MCP server on stdio immediately
+    let (transport, protocol) = mcp_transport::server_with_protocol(rmcp::transport::io::stdio());
+    let server = match proxy.serve(transport).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to start MCP server: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if server.peer().peer_info().is_none() && !protocol.wait_for_native().await {
+        let _ = server.waiting().await;
+        return ExitCode::SUCCESS;
+    }
+    let proxy_ref = server.service().clone();
+    if let Some(info) = server.peer().peer_info() {
+        proxy_ref
+            .set_upstream_identity(
+                info.client_info.name.clone(),
+                info.client_info.title.clone(),
+            )
+            .await;
+    }
+
+    // Child spawn and `tools/list_changed` / `resources/list_changed` notifications
+    // happen in `McpProxy::on_initialized`, after the client sends
+    // `notifications/initialized`. Firing them earlier races the MCP handshake —
+    // Claude Code drops notifications received before it has finished initializing,
+    // leaving its tool list empty.
+
+    // Wait for client disconnect OR exit signal from incompatible tool divergence.
+    let exit_signal = proxy_ref.exit_signal.clone();
+    let cancel_token = server.cancellation_token();
+    tokio::select! {
+        result = server.waiting() => {
+            match result {
+                Ok(reason) => info!("Shutting down: {reason:?}"),
+                Err(e) => error!("Server error: {e}"),
+            }
+        }
+        _ = exit_signal.notified() => {
+            info!(
+                "Exiting due to incompatible tool list change after daemon upgrade. \
+                 The MCP client will restart us with the updated tools."
+            );
+            cancel_token.cancel();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
+    // Shut down the child process before exiting. Without this, the Tokio
+    // runtime teardown races the `wait_for_child` detached task — if the
+    // runtime drops first, the child survives as an orphan, holding its
+    // daemon peer connection open and preventing room eviction.
+    proxy_ref.shutdown_child().await;
+
+    ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unified_worker_keeps_options_and_selected_daemon_target() {
+        let daemon_env = HashMap::from([
+            ("RUNTIMED_DEV".to_string(), "1".to_string()),
+            (
+                "RUNTIMED_WORKSPACE_PATH".to_string(),
+                "/work/tree".to_string(),
+            ),
+            (
+                "RUNTIMED_SOCKET_PATH".to_string(),
+                "/tmp/inherited.sock".to_string(),
+            ),
+        ]);
+        let config = unified_proxy_config(
+            PathBuf::from("/selected/bin/nteract-cli"),
+            true,
+            Some(PathBuf::from("/tmp/explicit socket.sock")),
+            daemon_env.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            config.child_args,
+            [
+                "mcp-worker",
+                "--no-show",
+                "--socket=/tmp/explicit socket.sock"
+            ]
+        );
+        for (name, value) in daemon_env {
+            assert_eq!(config.child_env.get(&name), Some(&value));
+        }
+        assert_eq!(
+            config.child_env.get("NTERACT_CHANNEL").map(String::as_str),
+            Some(runt_workspace::channel_display_name())
+        );
+    }
+
+    #[test]
+    fn unified_worker_resolution_tracks_replacement_without_path_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("nteract-cli");
+        std::fs::write(&executable, b"first installation").unwrap();
+        let config = unified_proxy_config(executable.clone(), false, None, HashMap::new()).unwrap();
+        assert_eq!((config.resolve_child_command)().unwrap(), executable);
+        std::fs::remove_file(&executable).unwrap();
+        assert!((config.resolve_child_command)().is_err());
+        std::fs::write(&executable, b"upgraded installation").unwrap();
+        assert_eq!((config.resolve_child_command)().unwrap(), executable);
+        assert_eq!(config.child_args, [WORKER_COMMAND]);
+    }
+
+    #[test]
+    fn channel_name_selects_the_expected_child_binary() {
+        assert_eq!(runt_binary_name_for_channel("stable"), "runt");
+        assert_eq!(runt_binary_name_for_channel("nightly"), "runt-nightly");
+        assert_eq!(runt_binary_name_for_channel("NIGHTLY"), "runt-nightly");
+        assert_eq!(runt_binary_name_for_channel("future"), "runt");
+    }
+
+    #[test]
+    fn bundled_nightly_mcp_accepts_tauri_unsuffixed_runt_sidecar() {
+        let exe = PathBuf::from("/tmp/.mount_nteract/usr/bin/nteract-mcp");
+        let candidates = bundled_runt_candidates(&exe, "nightly");
+        let exe_dir = exe.parent().unwrap();
+
+        assert!(candidates.contains(&exe_dir.join(executable_name("runt-nightly"))));
+        assert!(candidates.contains(&exe_dir.join(executable_name("runt"))));
+    }
+
+    #[test]
+    fn bundled_stable_mcp_uses_unsuffixed_runt_sidecar() {
+        let exe = PathBuf::from("/Applications/nteract.app/Contents/MacOS/nteract-mcp");
+        let candidates = bundled_runt_candidates(&exe, "stable");
+        let exe_dir = exe.parent().unwrap();
+
+        assert_eq!(candidates, vec![exe_dir.join(executable_name("runt"))]);
+    }
+
+    /// `child_env_for_channel` returns the additive env map only. It does not
+    /// (and cannot) prevent the spawned child from inheriting a parent shell's
+    /// `RUNTIMED_DEV` / workspace path. The actual strip lives in
+    /// `runt-mcp-proxy`'s `apply_child_env`; this test guards the additive
+    /// contract that strip relies on.
+    #[test]
+    fn child_env_is_limited_to_the_channel_contract() {
+        let env = child_env_for_channel("stable");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env.get("NTERACT_CHANNEL"), Some(&"stable".to_string()));
+        assert!(!env.contains_key("RUNTIMED_DEV"));
+        assert!(!env.contains_key("RUNTIMED_WORKSPACE_PATH"));
+        assert!(!env.contains_key("RUNTIMED_SOCKET_PATH"));
+    }
+
+    #[test]
+    fn proxy_config_uses_the_resilient_runt_mcp_child_contract() {
+        let config = proxy_config_for_channel("nightly".to_string());
+
+        assert_eq!(config.child_args, vec!["mcp".to_string()]);
+        assert_eq!(
+            config.child_env.get("NTERACT_CHANNEL"),
+            Some(&"nightly".to_string())
+        );
+        assert_eq!(config.server_name, runt_workspace::desktop_product_name());
+        assert_eq!(config.monitor_poll_interval_ms, 500);
+    }
+
+    #[test]
+    fn proxy_preserves_legacy_protocol_and_compiled_server_identity() {
+        use rmcp::model::ProtocolVersion;
+        use rmcp::ServerHandler;
+
+        let mut config = proxy_config_for_channel("nightly".to_string());
+        config.cache_dir = None;
+        let proxy = McpProxy::new(config, None);
+        let info = proxy.get_info();
+
+        assert_eq!(
+            info.server_info.name,
+            runt_workspace::desktop_product_name()
+        );
+        assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
+        assert_eq!(
+            proxy.supported_protocol_versions().as_ref(),
+            mcp_transport::SUPPORTED_VERSIONS
+        );
+    }
+
+    #[test]
+    fn proxy_cache_dir_is_under_the_channel_cache_namespace() {
+        let Some(dir) = proxy_cache_dir() else {
+            return;
+        };
+
+        let suffix = PathBuf::from(runt_workspace::cache_namespace()).join("proxy");
+        assert!(dir.ends_with(suffix));
+    }
+}

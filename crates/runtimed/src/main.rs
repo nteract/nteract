@@ -49,6 +49,9 @@ fn cli_command_name() -> &'static str {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Report compiled runtime identity without starting or configuring anything.
+    #[command(hide = true)]
+    RuntimeIdentity,
     /// Run the daemon (default if no command specified)
     Run {
         /// Socket path for the unified IPC socket (default: ~/.cache/runt*/runtimed.sock)
@@ -348,6 +351,13 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    // Binary admission must be read-only, including avoiding log creation and
+    // service setup. This is compiled identity, not a live readiness claim.
+    if matches!(cli.command, Some(Commands::RuntimeIdentity)) {
+        println!("{}", runtime_identity());
+        return Ok(());
+    }
+
     // Set dev mode environment variable if flag is used
     if cli.dev {
         std::env::set_var("RUNTIMED_DEV", "1");
@@ -436,6 +446,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
+        Some(Commands::RuntimeIdentity) => Ok(()),
         None | Some(Commands::Run { .. }) => {
             // Extract run args from command or use defaults
             let (
@@ -752,6 +763,14 @@ async fn main() -> anyhow::Result<()> {
             })
         }
     }
+}
+
+fn runtime_identity() -> serde_json::Value {
+    serde_json::json!({
+        "channel": runt_workspace::cli::channel_name(runt_workspace::build_channel()),
+        "protocol_version": notebook_protocol::connection::PROTOCOL_VERSION,
+        "daemon_api_version": runtimed_client::protocol::DAEMON_API_VERSION,
+    })
 }
 
 async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {

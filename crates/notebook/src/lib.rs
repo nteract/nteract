@@ -1309,6 +1309,115 @@ async fn setup_sync_receivers(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn desktop_runtime_admission_absence_allows_startup_without_ready() {
+        #[cfg(unix)]
+        let temp = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let endpoint = temp.path().join("missing.sock");
+        #[cfg(windows)]
+        let endpoint = std::path::PathBuf::from(format!(
+            r"\\.\pipe\nteract-admission-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        assert_eq!(
+            super::probe_desktop_runtime(&endpoint, &|_| panic!(
+                "absence must not report readiness"
+            ),)
+            .await
+            .unwrap(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn desktop_runtime_admission_checks_live_metadata_without_repair() {
+        use notebook_protocol::connection::{
+            recv_json_frame, recv_preamble, send_json_frame, Handshake, PROTOCOL_VERSION,
+        };
+        use runtimed::client::DaemonProgress;
+        use runtimed_client::protocol::{Request, Response, DAEMON_API_VERSION};
+        for outcome in ["compatible", "incompatible", "unknown", "starting"] {
+            let temp = tempfile::tempdir().unwrap();
+            let socket = temp.path().join("runtime.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let fixture = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                recv_preamble(&mut stream).await.unwrap();
+                assert!(matches!(
+                    recv_json_frame::<_, Handshake>(&mut stream).await.unwrap(),
+                    Some(Handshake::Pool)
+                ));
+                assert!(matches!(
+                    recv_json_frame::<_, Request>(&mut stream).await.unwrap(),
+                    Some(Request::GetDaemonInfo)
+                ));
+                if outcome == "starting" {
+                    std::future::pending::<()>().await;
+                }
+                let response = if outcome == "unknown" {
+                    Response::Error {
+                        message: "Unknown request".into(),
+                    }
+                } else {
+                    Response::DaemonInfo {
+                        protocol_version: u32::from(PROTOCOL_VERSION),
+                        daemon_api_version: if outcome == "incompatible" {
+                            DAEMON_API_VERSION + 1
+                        } else {
+                            DAEMON_API_VERSION
+                        },
+                        daemon_version: "different-build".into(),
+                        pid: 123,
+                        started_at: chrono::Utc::now(),
+                        blob_port: None,
+                        execution_store_dir: None,
+                        worktree_path: None,
+                        workspace_description: None,
+                    }
+                };
+                send_json_frame(&mut stream, &response).await.unwrap();
+            });
+            let events = std::cell::RefCell::new(Vec::new());
+            let result =
+                super::probe_desktop_runtime(&socket, &|event| events.borrow_mut().push(event))
+                    .await;
+            let events = events.into_inner();
+            assert_eq!(events.len(), 1, "{outcome}");
+            if outcome == "compatible" {
+                assert_eq!(result.unwrap().as_deref(), socket.to_str());
+                assert!(matches!(&events[0], DaemonProgress::Ready { .. }));
+            } else {
+                assert!(result.is_err(), "{outcome}");
+                let DaemonProgress::Failed { guidance, .. } = &events[0] else {
+                    panic!("{outcome} must report failure without readiness");
+                };
+                if outcome == "incompatible" {
+                    assert!(guidance.starts_with("Save your notebooks"));
+                    assert!(
+                        guidance.contains("Repair Runtime")
+                            || guidance.contains("restart the worktree runtime explicitly")
+                    );
+                    assert!(!guidance.contains("Retry"));
+                } else {
+                    assert!(guidance.contains("Retry"));
+                    assert!(guidance.contains("runtime logs"));
+                    assert!(!guidance.contains("Repair Runtime"));
+                    assert!(!guidance.contains("restart the worktree"));
+                }
+            }
+            if outcome == "starting" {
+                // The unanswered fixture is still alive: admission timed out
+                // without replacing the listener or reporting it as absent.
+                assert!(!fixture.is_finished());
+                fixture.abort();
+            } else {
+                fixture.await.unwrap();
+            }
+        }
+    }
+
     use super::{
         create_window_context_for_daemon, daemon_upgrade_failure, hosted_notebook_window_label,
         is_reusable_startup_placeholder, next_available_sample_path, normalize_font_families,
@@ -2141,12 +2250,55 @@ fn remove_system_cli(app: tauri::AppHandle) -> Result<(), String> {
     cli_install::remove_system_cli(&app)
 }
 
-/// Ensure the daemon is running using Tauri's sidecar API.
-///
-/// 1. Ping to check if daemon is running
-/// 2. If not, spawn `runtimed install` via sidecar (which also starts it)
-/// 3. Wait for daemon to become ready
-/// 4. Emit progress events throughout
+/// Read-only Desktop admission. Definite absence is the only startup decision;
+/// incompatible or uncertain identity emits failure without invoking repair.
+async fn probe_desktop_runtime<F>(
+    endpoint: &std::path::Path,
+    on_progress: &F,
+) -> Result<Option<String>, String>
+where
+    F: Fn(runtimed::client::DaemonProgress),
+{
+    use runtimed::client::DaemonProgress;
+    match runtimed_client::startup::probe_local_runtime(endpoint).await {
+        Ok(Some(info)) => {
+            log::info!(
+                "[startup] Compatible runtime at {} (version={})",
+                info.endpoint,
+                info.version
+            );
+            on_progress(DaemonProgress::Ready {
+                endpoint: info.endpoint.clone(),
+            });
+            Ok(Some(info.endpoint))
+        }
+        Ok(None) => Ok(None),
+        Err(error) => {
+            let guidance = match &error {
+                runtimed_client::startup::RuntimeStartupError::Incompatible { .. } if runt_workspace::is_dev_mode() => {
+                    "Save your notebooks, then restart the worktree runtime explicitly."
+                }
+                runtimed_client::startup::RuntimeStartupError::Incompatible { .. } => {
+                    "Save your notebooks, then use Repair Runtime if you want to replace the active runtime."
+                }
+                _ => "Use Retry to check the runtime again. If it still cannot respond, check the runtime logs.",
+            };
+            let error = error.to_string();
+            log::warn!("[startup] Runtime admission refused without repair: {error}");
+            on_progress(DaemonProgress::Failed {
+                error: error.clone(),
+                guidance: guidance.to_string(),
+            });
+            Err(error)
+        }
+    }
+}
+
+/// Admit a compatible runtime or start an absent runtime through the sidecar.
+/// Explicit repair and updater replacement use their own entrypoints.
+/// The absent path retains the legacy install transaction: a runtime appearing
+/// after this initial probe can still be repaired by install. This is not an
+/// atomic ensure-if-absent operation.
 async fn ensure_daemon_via_sidecar<F>(
     app: &tauri::AppHandle,
     on_progress: F,
@@ -2154,7 +2306,7 @@ async fn ensure_daemon_via_sidecar<F>(
 where
     F: Fn(runtimed::client::DaemonProgress) + Clone + Send + 'static,
 {
-    use runtimed::client::{DaemonProgress, PoolClient};
+    use runtimed::client::DaemonProgress;
     use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
     let bundled_version = bundled_daemon_version();
@@ -2164,51 +2316,12 @@ where
     );
     on_progress(DaemonProgress::Checking);
 
-    // Check if daemon is already running
-    let client = PoolClient::default();
-    if let Ok(()) = client.ping().await {
-        // Daemon is running - check wire and semantic compatibility in
-        // production. Build identity is diagnostic, not an admission gate.
-        // `GetDaemonInfo` is the canonical daemon metadata source.
-        if !runt_workspace::is_dev_mode() {
-            let running_info = runtimed_client::singleton::query_daemon_info(
-                runt_workspace::default_socket_path(),
-            )
-            .await;
-            if let Some(info) = running_info {
-                if let Some(reason) = runtimed::singleton::compatibility_error(&info) {
-                    log::info!(
-                        "[startup] Daemon requires repair: {} (running={}, bundled={})",
-                        reason,
-                        info.version,
-                        bundled_version,
-                    );
-                    return upgrade_daemon_via_sidecar(app, on_progress).await;
-                }
-                log::info!(
-                    "[startup] Daemon compatible: running={} wire={} api={} bundled={}",
-                    info.version,
-                    info.protocol_version,
-                    info.daemon_api_version,
-                    bundled_version,
-                );
-            } else {
-                log::warn!(
-                    "[startup] Daemon responded to ping but socket metadata is unavailable; \
-                     upgrading to bundled daemon ({})",
-                    bundled_version
-                );
-                return upgrade_daemon_via_sidecar(app, on_progress).await;
-            }
-        }
-
-        let endpoint = runt_workspace::default_socket_path()
-            .to_string_lossy()
-            .to_string();
-        log::info!("[startup] Daemon already running at {}", endpoint);
-        on_progress(DaemonProgress::Ready {
-            endpoint: endpoint.clone(),
-        });
+    // Ordinary admission must preserve an incompatible or uninspectable runtime.
+    // Only definite absence permits the existing startup path; explicit repair
+    // and the updater retain their separate sidecar-owned repair transaction.
+    if let Some(endpoint) =
+        probe_desktop_runtime(&runt_workspace::default_socket_path(), &on_progress).await?
+    {
         return Ok(endpoint);
     }
 
@@ -5537,17 +5650,16 @@ pub fn run(
                     tauri::async_runtime::spawn(async move {
                         let result = tauri::async_runtime::spawn_blocking({
                             let app_handle = app_handle.clone();
-                            move || crate::cli_install::install_cli(&app_handle)
+                            move || crate::cli_install::install_cli_and_select(&app_handle)
                         })
                         .await;
 
                         match result {
                             Ok(Ok(())) => {
                                 log::info!("[cli_install] CLI installed successfully");
-                                let cli_cmd = runt_workspace::cli_command_name();
-                                let nb_cmd = runt_workspace::cli_notebook_alias_name();
                                 let success_message = format!(
-                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to ~/.local/bin.\n\nOpen a new terminal and run: {cli_cmd} --help"
+                                    "The 'nteract' command now uses this {} installation.\n\nOpen a new terminal and run: nteract --help",
+                                    runt_workspace::channel_display_name()
                                 );
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(success_message)

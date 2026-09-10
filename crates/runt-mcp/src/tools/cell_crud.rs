@@ -131,6 +131,7 @@ pub async fn create_cell(
     } else {
         require_session_access!(server, DocumentMutation)
     };
+    let metadata = server.local_metadata_for_access(&access);
     let (handle, cell_id) = {
         let handle = access.handle.clone();
         let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
@@ -163,8 +164,8 @@ pub async fn create_cell(
             &handle,
             &cell_id,
             Duration::from_secs_f64(timeout_secs),
-            &server.blob_base_url,
-            &server.blob_store_path,
+            &metadata.blob_base_url,
+            &metadata.blob_store_path,
         )
         .await
         {
@@ -175,7 +176,7 @@ pub async fn create_cell(
             return super::session_access_error(error);
         }
 
-        return super::build_execution_result(&result, &handle, server).await;
+        return super::build_execution_result(&result, &handle, &metadata).await;
     }
 
     confirm_document_sync(&handle, "create_cell").await?;
@@ -214,6 +215,7 @@ pub async fn set_cell(
     } else {
         require_session_access!(server, DocumentMutation)
     };
+    let metadata = server.local_metadata_for_access(&access);
     let handle = access.handle.clone();
     assert_cell_exists(&handle, cell_id)?;
 
@@ -258,8 +260,8 @@ pub async fn set_cell(
             &handle,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
-            &server.blob_base_url,
-            &server.blob_store_path,
+            &metadata.blob_base_url,
+            &metadata.blob_store_path,
         )
         .await
         {
@@ -270,7 +272,7 @@ pub async fn set_cell(
             return super::session_access_error(error);
         }
 
-        return super::build_execution_result(&result, &handle, server).await;
+        return super::build_execution_result(&result, &handle, &metadata).await;
     }
 
     cell_resource_success(

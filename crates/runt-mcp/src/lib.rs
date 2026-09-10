@@ -118,9 +118,10 @@ fn configured_operator_client(configured: Option<String>) -> String {
 /// The nteract MCP server.
 pub struct NteractMcp {
     socket_path: PathBuf,
-    blob_base_url: Option<String>,
-    blob_store_path: Option<PathBuf>,
-    execution_store_path: PathBuf,
+    local_metadata: std::sync::RwLock<LocalRuntimeMetadata>,
+    /// Missing policy preserves legacy behavior. A policy without a launcher
+    /// enables strict admission for custom or shared alternate endpoints.
+    local_runtime_admission: Option<LocalRuntimeAdmission>,
     session: Arc<RwLock<Option<NotebookSession>>>,
     /// Explicit tool intent epoch used to invalidate daemon auto-rejoin work.
     /// The epoch is advanced while holding the active-session write lock so a
@@ -163,6 +164,17 @@ pub struct NteractMcp {
     /// own `DaemonConnection` (which would drag the runtimed-client
     /// compile graph into `mcp-supervisor`).
     daemon_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LocalRuntimeMetadata {
+    blob_base_url: Option<String>,
+    blob_store_path: Option<PathBuf>,
+    execution_store_path: Option<PathBuf>,
+}
+
+struct LocalRuntimeAdmission {
+    launch: Option<runtimed_client::startup::RuntimeLaunch>,
 }
 
 impl NteractMcp {
@@ -228,9 +240,12 @@ impl NteractMcp {
         let operator_client = initial_operator_client();
         Self {
             socket_path,
-            blob_base_url,
-            blob_store_path,
-            execution_store_path: runtimed_client::default_execution_store_dir(),
+            local_metadata: std::sync::RwLock::new(LocalRuntimeMetadata {
+                blob_base_url,
+                blob_store_path,
+                execution_store_path: Some(runtimed_client::default_execution_store_dir()),
+            }),
+            local_runtime_admission: None,
             session: Arc::new(RwLock::new(None)),
             session_intent_epoch: Arc::new(AtomicU64::new(0)),
             session_activation: Arc::new(SessionActivation::default()),
@@ -271,9 +286,107 @@ impl NteractMcp {
     /// Set the durable execution-store path discovered from daemon info.
     pub fn with_execution_store_path(mut self, path: Option<PathBuf>) -> Self {
         if let Some(path) = path {
-            self.execution_store_path = path;
+            self.local_metadata
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .execution_store_path = Some(path);
         }
         self
+    }
+
+    /// Opt canonical clients into non-destructive local runtime admission.
+    /// Construction is read-only; only local connect/create calls may start it.
+    pub fn with_local_runtime_admission(
+        mut self,
+        launch: Option<runtimed_client::startup::RuntimeLaunch>,
+    ) -> Self {
+        self.local_runtime_admission = Some(LocalRuntimeAdmission { launch });
+        self
+    }
+
+    pub(crate) fn uses_local_runtime_admission(&self) -> bool {
+        self.local_runtime_admission.is_some()
+    }
+
+    pub(crate) async fn admit_local_runtime(&self) -> Result<(), String> {
+        let Some(policy) = &self.local_runtime_admission else {
+            return Ok(());
+        };
+        let info = runtimed_client::startup::ensure_local_runtime(
+            self.socket_path.clone(),
+            policy.launch.clone(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        self.refresh_local_metadata(info);
+        Ok(())
+    }
+
+    fn refresh_local_metadata(&self, info: runtimed_client::singleton::DaemonInfo) {
+        // Lazy startup happens after server construction, so blob/output paths
+        // must come from the newly admitted live daemon, not startup defaults.
+        let metadata = LocalRuntimeMetadata {
+            blob_base_url: info
+                .blob_port
+                .map(|port| format!("http://localhost:{port}")),
+            blob_store_path: self
+                .socket_path
+                .parent()
+                .map(|path| path.join("blobs"))
+                .filter(|path| path.exists()),
+            execution_store_path: info.execution_store_dir.map(PathBuf::from),
+        };
+        *self
+            .local_metadata
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = metadata;
+    }
+
+    fn local_metadata_snapshot(&self, allowed: bool) -> LocalRuntimeMetadata {
+        if allowed {
+            self.local_metadata
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        } else {
+            LocalRuntimeMetadata::default()
+        }
+    }
+
+    /// Keep output resolution tied to the session admitted for this operation.
+    pub(crate) fn local_metadata_for_access(&self, access: &SessionAccess) -> LocalRuntimeMetadata {
+        self.local_metadata_snapshot(!access.is_hosted)
+    }
+
+    /// Operations without an admitted session still need a single consistent
+    /// snapshot. Contention waits for ownership to resolve; it is not evidence
+    /// that local durable outputs are absent.
+    pub(crate) async fn local_runtime_metadata(&self) -> LocalRuntimeMetadata {
+        let target = targets::current();
+        {
+            let active = self.session.read().await;
+            if let Some(session) = active.as_ref() {
+                if target
+                    .as_ref()
+                    .is_none_or(|target| session.notebook_handle == *target)
+                {
+                    return self.local_metadata_snapshot(!session.is_hosted());
+                }
+            } else if target.is_none() {
+                return self.local_metadata_snapshot(true);
+            }
+        }
+        let Some(target) = target else {
+            return self.local_metadata_snapshot(true);
+        };
+        let allowed = {
+            let parked = self.parked_sessions.read().await;
+            parked
+                .values()
+                .find(|session| session.notebook_handle == target)
+                .is_some_and(|session| !session.is_hosted())
+        };
+        self.local_metadata_snapshot(allowed)
     }
 
     /// Get the peer label for notebook connections.
@@ -883,6 +996,221 @@ fn log_mcp_response(tool_name: &str, elapsed: Duration, result: &Result<CallTool
 mod tests {
     use super::*;
     use rmcp::model::{CallToolResult, ContentBlock};
+
+    struct IdleFrames;
+
+    impl notebook_protocol::connection::FrameSource for IdleFrames {
+        async fn recv_frame(
+            &mut self,
+        ) -> Option<std::io::Result<notebook_protocol::connection::TypedNotebookFrame>> {
+            std::future::pending().await
+        }
+    }
+
+    async fn metadata_test_handle(id: &str) -> notebook_sync::handle::DocHandle {
+        notebook_sync::connect::connect_frame_io(
+            id.into(),
+            "agent:metadata-test",
+            IdleFrames,
+            notebook_protocol::connection::WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle
+    }
+
+    #[tokio::test]
+    async fn local_metadata_waits_for_session_writer_without_losing_durable_path() {
+        use std::future::Future;
+        let server = NteractMcp::new(
+            "unused.sock".into(),
+            Some("http://localhost:12345".into()),
+            None,
+        )
+        .with_execution_store_path(Some("durable-executions".into()));
+        let mut pending = Box::pin(server.local_runtime_metadata());
+        {
+            let _writer = server.session.try_write().unwrap();
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(pending.as_mut().poll(&mut context).is_pending());
+        }
+        let metadata = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata.execution_store_path,
+            Some("durable-executions".into())
+        );
+        assert_eq!(
+            metadata.blob_base_url.as_deref(),
+            Some("http://localhost:12345")
+        );
+    }
+
+    #[tokio::test]
+    async fn hosted_metadata_suppression_follows_explicit_parked_handles() {
+        let server = NteractMcp::new(
+            "unused.sock".into(),
+            Some("http://localhost:12345".into()),
+            Some("local-blobs".into()),
+        );
+        let local = NotebookSession::local(
+            metadata_test_handle("local").await,
+            "local".into(),
+            None,
+            None,
+        );
+        let local_handle = local.notebook_handle.clone();
+        let hosted = NotebookSession::hosted(
+            metadata_test_handle("hosted").await,
+            "hosted".into(),
+            "https://hosted.example".into(),
+        );
+        let hosted_handle = hosted.notebook_handle.clone();
+        *server.session.write().await = Some(local);
+        server
+            .parked_sessions
+            .write()
+            .await
+            .insert("hosted".into(), hosted);
+        assert!(server
+            .local_runtime_metadata()
+            .await
+            .blob_base_url
+            .is_some());
+        targets::with_handle(hosted_handle.clone(), async {
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_base_url
+                .is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_store_path
+                .is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .execution_store_path
+                .is_none());
+        })
+        .await;
+        let local = server.session.write().await.take().unwrap();
+        let hosted = server
+            .parked_sessions
+            .write()
+            .await
+            .remove("hosted")
+            .unwrap();
+        server
+            .parked_sessions
+            .write()
+            .await
+            .insert("local".into(), local);
+        *server.session.write().await = Some(hosted);
+        assert!(server
+            .local_runtime_metadata()
+            .await
+            .blob_base_url
+            .is_none());
+        targets::with_handle(local_handle, async {
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_base_url
+                .is_some());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_store_path
+                .is_some());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .execution_store_path
+                .is_some());
+        })
+        .await;
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn canonical_custom_endpoint_refuses_implicit_start_and_preserves_empty_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None)
+            .with_local_runtime_admission(None);
+        let request: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+            "name":"connect_notebook", "arguments":{"path":dir.path().join("notebook.ipynb")}
+        }))
+        .unwrap();
+        let result = tools::dispatch(&server, &request).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(serde_json::to_string(&result)
+            .unwrap()
+            .contains("automatic startup is unavailable"));
+        assert!(server.session.read().await.is_none());
+        assert!(!dir.path().join("notebook.ipynb").exists());
+    }
+
+    #[tokio::test]
+    async fn refreshed_runtime_metadata_replaces_startup_paths_and_is_handle_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = dir.path().join("blobs");
+        std::fs::create_dir(&blobs).unwrap();
+        let server = NteractMcp::new(dir.path().join("runtime.sock"), Some("old".into()), None);
+        let executions = dir.path().join("selected-executions");
+        server.refresh_local_metadata(runtimed_client::singleton::DaemonInfo {
+            endpoint: dir
+                .path()
+                .join("runtime.sock")
+                .to_string_lossy()
+                .into_owned(),
+            protocol_version: u32::from(notebook_protocol::connection::PROTOCOL_VERSION),
+            daemon_api_version: runtimed_client::protocol::DAEMON_API_VERSION,
+            pid: 42,
+            version: "compatible".into(),
+            started_at: chrono::Utc::now(),
+            blob_port: Some(31234),
+            execution_store_dir: Some(executions.to_string_lossy().into_owned()),
+            worktree_path: None,
+            workspace_description: None,
+        });
+        assert_eq!(
+            server
+                .local_runtime_metadata()
+                .await
+                .blob_base_url
+                .as_deref(),
+            Some("http://localhost:31234")
+        );
+        assert_eq!(
+            server.local_runtime_metadata().await.blob_store_path,
+            Some(blobs)
+        );
+        assert_eq!(
+            server.local_runtime_metadata().await.execution_store_path,
+            Some(executions)
+        );
+        targets::with_handle("expired-attachment".into(), async {
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_base_url
+                .is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_store_path
+                .is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .execution_store_path
+                .is_none());
+        })
+        .await;
+    }
 
     #[test]
     fn server_advertises_legacy_and_native_protocol_versions() {

@@ -200,6 +200,12 @@ async fn canonical_local_id_target_for_server(
     notebook_id: &str,
 ) -> Result<CanonicalNotebookTarget, McpError> {
     let id_target = canonical_local_id_target(notebook_id)?;
+    // UUID canonicalization reads daemon rooms before activation can begin.
+    // Admit here so a valid local ID can start an absent runtime too.
+    server
+        .admit_local_runtime()
+        .await
+        .map_err(|error| McpError::internal_error(error, None))?;
     let normalized_id = id_target
         .as_str()
         .strip_prefix("local:id:")
@@ -1388,6 +1394,12 @@ async fn connect_local_path_progressive(
     prev: Option<String>,
     lease: &ActivationLease,
 ) -> Result<CallToolResult, McpError> {
+    if let Err(error) = server.admit_local_runtime().await {
+        return tool_error(&error);
+    }
+    if !lease.is_current() {
+        return Ok(superseded_result(lease));
+    }
     let abs_path = PathBuf::from(canonicalize_local_path(&path));
     let incarnation_before = current_daemon_incarnation(server).await;
     let result = match notebook_sync::connect::connect_open(
@@ -1462,6 +1474,12 @@ async fn connect_local_id_progressive(
     prev: Option<String>,
     lease: &ActivationLease,
 ) -> Result<CallToolResult, McpError> {
+    if let Err(error) = server.admit_local_runtime().await {
+        return tool_error(&error);
+    }
+    if !lease.is_current() {
+        return Ok(superseded_result(lease));
+    }
     let incarnation_before = current_daemon_incarnation(server).await;
     let result = match notebook_sync::connect::connect(
         server.socket_path.clone(),
@@ -1683,6 +1701,12 @@ pub async fn create_notebook(
     let prev = previous_notebook_id(server).await;
 
     let outcome = async {
+        if let Err(error) = server.admit_local_runtime().await {
+            return tool_error(&error);
+        }
+        if !activation_lease.is_current() {
+            return Ok(superseded_result(&activation_lease));
+        }
         let incarnation_before = current_daemon_incarnation(server).await;
         match notebook_sync::connect::connect_create(
             server.socket_path.clone(),
@@ -1948,6 +1972,17 @@ pub async fn show_notebook(
         }
     };
 
+    // Opening Desktop must retain this client's selected runtime. Never repair
+    // or replace an incompatible endpoint as a side effect of showing it.
+    if server.uses_local_runtime_admission() {
+        let live = runtimed_client::startup::probe_local_runtime(&server.socket_path)
+            .await
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        if live.is_none() {
+            return tool_error("The selected notebook runtime is no longer available. Reconnect the notebook before opening Desktop.");
+        }
+    }
+
     // Validate notebook is active in daemon
     let client = PoolClient::new(server.socket_path.clone());
     let rooms = client
@@ -1988,16 +2023,24 @@ pub async fn show_notebook(
         return Ok(readable_notebook_session_response(server, result, &target).await);
     }
 
-    if let Some(path) = resolved_path {
-        runt_workspace::open_notebook_app(Some(std::path::Path::new(path)), &[])
-            .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
+    let (app_path, app_args) = if let Some(path) = resolved_path {
+        (Some(std::path::Path::new(path)), Vec::new())
     } else if std::path::Path::new(&target).is_absolute() {
-        runt_workspace::open_notebook_app(Some(std::path::Path::new(&target)), &[])
-            .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
+        (Some(std::path::Path::new(&target)), Vec::new())
     } else {
-        runt_workspace::open_notebook_app(None, &["--notebook-id", &target])
-            .map_err(|e| McpError::internal_error(format!("Failed to open app: {e}"), None))?;
-    }
+        (None, vec!["--notebook-id", target.as_str()])
+    };
+    let opened = if server.uses_local_runtime_admission() {
+        runt_workspace::open_notebook_app_for_endpoint_strict(
+            &server.socket_path,
+            app_path,
+            &app_args,
+        )
+    } else {
+        runt_workspace::open_notebook_app(app_path, &app_args)
+    };
+    opened
+        .map_err(|error| McpError::internal_error(format!("Failed to open app: {error}"), None))?;
 
     let mut result = serde_json::json!({ "notebook_id": target, "opened": true });
     // Include path in the response so callers can see where the notebook lives.
@@ -2039,6 +2082,41 @@ mod tests {
             .expect("tool response text")
             .text
             .as_str()
+    }
+
+    #[tokio::test]
+    async fn local_uuid_connection_admits_runtime_before_canonicalization() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None)
+            .with_local_runtime_admission(None);
+        let request = make_request(
+            "connect_notebook",
+            serde_json::json!({"notebook_id": "12345678-1234-1234-1234-123456789abc"}),
+        );
+
+        let error = open_notebook(&server, &request).await.unwrap_err();
+        assert!(
+            error.message.contains("automatic startup is unavailable"),
+            "{error:?}"
+        );
+        assert!(!error.message.contains("could not canonicalize"));
+        assert!(server.session.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_local_uuid_is_rejected_before_runtime_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None)
+            .with_local_runtime_admission(None);
+        let request = make_request(
+            "connect_notebook",
+            serde_json::json!({"notebook_id": "invalid-uuid"}),
+        );
+
+        let error = open_notebook(&server, &request).await.unwrap_err();
+        assert!(error.message.contains("must be a UUID"), "{error:?}");
+        assert!(!error.message.contains("automatic startup"));
+        assert!(server.session.read().await.is_none());
     }
 
     #[test]

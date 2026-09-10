@@ -34,9 +34,9 @@ requests on one stdio connection share that child's active slot; they are not
 independent MCP clients. The daemon's multiplexed notebook frames are a
 separate protocol, not an HTTP MCP endpoint.
 
-Entry points: `crates/runt/src/main.rs:739`,
-`crates/nteract-mcp/src/main.rs:260`, and
-`crates/mcp-supervisor/src/main.rs:2910`.
+Entry points: `crates/runt/src/lib.rs`,
+`crates/nteract-mcp/src/lib.rs`, and
+`crates/mcp-supervisor/src/main.rs`.
 
 ## Proxy Layer
 
@@ -102,8 +102,14 @@ live daemon incarnation (`pid + started_at`), not a disconnect latch:
    to no live incarnation after confirmed absence. Hosted sessions are excluded
    from this local ownership reconciliation.
 5. Preserve the removed active session's best recovery target, preferring a
-   saved path. With a live daemon and empty slot, try the proxy handoff target
-   first, then that preserved target.
+   saved path. Local recovery requires a live daemon and empty slot; try the
+   proxy handoff target first, then that preserved target.
+
+Hosted proxy handoffs are attempted immediately at watcher entry, without a
+local daemon event or incarnation. Failed hosted recovery has a bounded retry
+timer independent of the local event stream. Both paths retain the explicit
+session intent epoch and publication slot guards; local recovery still checks
+daemon incarnation before and after connection/readiness.
 
 A same-incarnation heartbeat leaves healthy bindings alone. A same-version
 restart changes incarnation and invalidates old local handles even if a
@@ -116,8 +122,8 @@ queries, stale parked handles, and tool-installed replacements.
 
 ## The Session-Write Guard
 
-Background rejoin connects outside the session lock and samples the expected
-daemon incarnation before and after connection/readiness. Then
+Background rejoin connects outside the session lock. Local rejoin samples the
+expected daemon incarnation before and after connection/readiness. Then
 `publish_rejoined_session` checks the captured `session_intent_epoch` and slot
 emptiness under the same write lock that installs the session. Any already
 installed session wins, including one for the same notebook. Explicit
@@ -245,9 +251,11 @@ notebooks provide that routing. See `crates/runt-mcp/src/lib.rs:48`, `:119`,
 
 ## MCP Protocol Checkpoint
 
-The locked `rmcp` 1.5.0 defaults to MCP `2025-11-25` and retains the
-initialize-based lifecycle described here. This is not conformance with the
-upstream `2026-07-28` revision. See the protocol checkpoint and followups in
-`docs/adr/mcp-session-lifecycle.md` and
-`docs/audits/mcp-cloud-automerge-audit.md` before changing the transport or
-handshake contract.
+`crates/mcp-transport/src/lib.rs` supports both legacy initialize-based
+sessions and native MCP `2026-07-28` per-request negotiation. The first valid
+native request opens the lifecycle; invalid metadata must not start recovery
+or runtime setup. `require_protocol`, `ProtocolSession::wait_for_native`, and
+`server_with_protocol` keep the two modes distinct. A legacy initialized
+session cannot switch to native negotiation in place. Read this source and
+its wire tests before changing transport admission; support for the native
+lifecycle is not a blanket claim of complete protocol conformance.

@@ -54,6 +54,7 @@ make_linux_fixtures() {
   local log="$2"
   mkdir -p "$dir"
   make_fake_tool "$dir/runt-linux-x64" "$log"
+  make_fake_tool "$dir/nteract-cli-linux-x64" "$log"
   make_fake_tool "$dir/runtimed-linux-x64" "$log"
   make_fake_tool "$dir/nteract-mcp-linux-x64" "$log"
   echo "fake appimage" > "$dir/nteract-stable-linux-x64.AppImage"
@@ -64,6 +65,7 @@ make_nightly_linux_fixtures() {
   local log="$2"
   mkdir -p "$dir"
   make_fake_tool "$dir/runt-nightly-linux-x64" "$log"
+  make_fake_tool "$dir/nteract-cli-nightly-linux-x64" "$log"
   make_fake_tool "$dir/runtimed-nightly-linux-x64" "$log"
   make_fake_tool "$dir/nteract-mcp-nightly-linux-x64" "$log"
   echo "fake nightly appimage" > "$dir/nteract-nightly-linux-x64.AppImage"
@@ -75,7 +77,7 @@ make_darwin_fixtures() {
   local stage="$dir/.stage"
   local recorders="$dir/.recorders"
   mkdir -p "$dir" "$recorders" "$stage/nteract.app/Contents/MacOS"
-  for tool in nteract runt runtimed nteract-mcp; do
+  for tool in nteract nteract-cli runt runtimed nteract-mcp; do
     # macOS kills shell scripts whose executed path is inside
     # *.app/Contents/MacOS. Keep the recorder script outside the bundle and
     # put an executable symlink where the app sidecar would be.
@@ -111,7 +113,7 @@ make_fetch_tool_path_without_curl() {
   mkdir -p "$dir"
 
   local tool
-  for tool in bash basename chmod cp dirname env ln mkdir mktemp mv rm; do
+  for tool in bash basename chmod cp dirname env ln mkdir mktemp mv readlink rm; do
     ln -s "$(command -v "$tool")" "$dir/$tool"
   done
 
@@ -162,7 +164,8 @@ assert_file "$PREFIX/nteract.AppImage"
 assert_link "$LINUX_HOME/.local/bin/runt" "$PREFIX/bin/runt"
 assert_link "$LINUX_HOME/.local/bin/runtimed" "$PREFIX/bin/runtimed"
 assert_link "$LINUX_HOME/.local/bin/nteract-mcp" "$PREFIX/bin/nteract-mcp"
-assert_link "$LINUX_HOME/.local/bin/nteract" "$PREFIX/nteract.AppImage"
+assert_link "$LINUX_HOME/.local/bin/nteract" "$PREFIX/bin/nteract-cli"
+assert_link "$LINUX_HOME/.local/bin/nteract-desktop" "$PREFIX/nteract.AppImage"
 grep -q "runt daemon doctor --fix --no-start" "$LINUX_LOG" || fail "linux: daemon doctor --fix --no-start not invoked"
 
 note "linux download install falls back to wget without curl"
@@ -177,6 +180,7 @@ WGET_PREFIX="$WGET_HOME/.local/share/nteract/stable"
 assert_file "$WGET_PREFIX/nteract.AppImage"
 assert_link "$WGET_HOME/.local/bin/runt" "$WGET_PREFIX/bin/runt"
 grep -q "wget runt-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: runt asset was not downloaded with wget"
+grep -q "wget nteract-cli-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: canonical CLI asset was not downloaded"
 grep -q "wget runtimed-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: runtimed asset was not downloaded with wget"
 grep -q "wget nteract-mcp-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: mcp asset was not downloaded with wget"
 grep -q "wget nteract-stable-linux-x64.AppImage" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: appimage asset was not downloaded with wget"
@@ -199,7 +203,8 @@ assert_file "$NIGHTLY_PREFIX/nteract-nightly.AppImage"
 assert_link "$NIGHTLY_HOME/.local/bin/runt-nightly" "$NIGHTLY_PREFIX/bin/runt-nightly"
 assert_link "$NIGHTLY_HOME/.local/bin/runtimed-nightly" "$NIGHTLY_PREFIX/bin/runtimed-nightly"
 assert_link "$NIGHTLY_HOME/.local/bin/nteract-mcp-nightly" "$NIGHTLY_PREFIX/bin/nteract-mcp-nightly"
-assert_link "$NIGHTLY_HOME/.local/bin/nteract-nightly" "$NIGHTLY_PREFIX/nteract-nightly.AppImage"
+assert_link "$NIGHTLY_HOME/.local/bin/nteract" "$NIGHTLY_PREFIX/bin/nteract-cli"
+assert_link "$NIGHTLY_HOME/.local/bin/nteract-desktop-nightly" "$NIGHTLY_PREFIX/nteract-nightly.AppImage"
 grep -q "runt-nightly daemon doctor --fix --no-start" "$NIGHTLY_LOG" || fail "nightly: daemon doctor --fix --no-start not invoked"
 
 note "linux nightly headless install"
@@ -214,10 +219,11 @@ assert_missing "$NIGHTLY_HEADLESS_PREFIX/nteract-nightly.AppImage"
 assert_link "$NIGHTLY_HEADLESS_HOME/.local/bin/runt-nightly" "$NIGHTLY_HEADLESS_PREFIX/bin/runt-nightly"
 assert_link "$NIGHTLY_HEADLESS_HOME/.local/bin/runtimed-nightly" "$NIGHTLY_HEADLESS_PREFIX/bin/runtimed-nightly"
 assert_link "$NIGHTLY_HEADLESS_HOME/.local/bin/nteract-mcp-nightly" "$NIGHTLY_HEADLESS_PREFIX/bin/nteract-mcp-nightly"
-grep -q "runt-nightly daemon doctor --fix --no-start" "$NIGHTLY_HEADLESS_LOG" || fail "nightly headless: daemon doctor --fix --no-start not invoked"
-grep -q "$NIGHTLY_HEADLESS_HOME/.local/bin/runt-nightly\" workstation connect" "$WORK/nightly-headless-out.log" || fail "nightly headless: summary should name the installed channel-specific connect command"
-grep -q "$NIGHTLY_HEADLESS_HOME/.local/bin/runt-nightly\" workstation service install --start" "$WORK/nightly-headless-out.log" || fail "nightly headless: summary should name the installed channel-specific service command"
-grep -q "$NIGHTLY_HEADLESS_HOME/.local/bin/runt-nightly\" workstation run" "$WORK/nightly-headless-out.log" || fail "nightly headless: summary should name the installed channel-specific run command"
+assert_missing "$NIGHTLY_HEADLESS_LOG"
+assert_link "$NIGHTLY_HEADLESS_HOME/.local/bin/nteract" "$NIGHTLY_HEADLESS_PREFIX/bin/nteract-cli"
+grep -q "$NIGHTLY_HEADLESS_HOME/.local/bin/nteract\" --channel nightly workstation connect" "$WORK/nightly-headless-out.log" || fail "nightly headless: summary should name the installed CLI"
+grep -q "$NIGHTLY_HEADLESS_HOME/.local/bin/nteract\" --channel nightly workstation service install --start" "$WORK/nightly-headless-out.log" || fail "nightly headless: summary should name the installed service command"
+grep -q "$NIGHTLY_HEADLESS_HOME/.local/bin/nteract\" --channel nightly workstation run" "$WORK/nightly-headless-out.log" || fail "nightly headless: summary should name the installed run command"
 
 note "darwin desktop install (explicit --applications-dir)"
 DARWIN_HOME="$WORK/darwin-home"
@@ -233,6 +239,7 @@ assert_file "$APP_DEST/Contents/MacOS/runt"
 assert_link "$DARWIN_HOME/.local/bin/runt" "$APP_DEST/Contents/MacOS/runt"
 assert_link "$DARWIN_HOME/.local/bin/runtimed" "$APP_DEST/Contents/MacOS/runtimed"
 assert_link "$DARWIN_HOME/.local/bin/nteract-mcp" "$APP_DEST/Contents/MacOS/nteract-mcp"
+assert_link "$DARWIN_HOME/.local/bin/nteract" "$APP_DEST/Contents/MacOS/nteract-cli"
 assert_missing "$DARWIN_HOME/.local/share/nteract/stable/nteract.app"
 grep -q "runt daemon doctor --fix --no-start" "$DARWIN_LOG" || fail "darwin: daemon doctor --fix --no-start not invoked"
 grep -q "App:      $APP_DEST" "$WORK/darwin-out.log" || fail "darwin: summary should name the installed app"
@@ -256,16 +263,137 @@ assert_missing "$APP_DEST.new"
 
 note "darwin headless install"
 HEADLESS_HOME="$WORK/headless-home"
+HEADLESS_LOG="$WORK/headless-calls.log"
+make_darwin_fixtures "$WORK/headless-assets" "$HEADLESS_LOG"
 PATH="$WORK/shim-darwin:$PATH" run_installer "$HEADLESS_HOME" \
-  --from-dir "$WORK/darwin-assets" --headless --no-start > "$WORK/headless-out.log"
+  --from-dir "$WORK/headless-assets" --cli > "$WORK/headless-out.log"
 HEADLESS_APP="$HEADLESS_HOME/.local/share/nteract/stable/nteract.app"
 assert_file "$HEADLESS_APP/Contents/MacOS/runtimed"
 assert_missing "$HEADLESS_HOME/Applications"
 assert_link "$HEADLESS_HOME/.local/bin/runt" "$HEADLESS_APP/Contents/MacOS/runt"
-grep -q "$HEADLESS_HOME/.local/bin/runt\" workstation connect" "$WORK/headless-out.log" || fail "headless: summary should mention the installed workstation pairing flow"
-grep -q "$HEADLESS_HOME/.local/bin/runt\" workstation run" "$WORK/headless-out.log" || fail "headless: summary should mention the installed foreground workstation flow"
+assert_missing "$HEADLESS_LOG"
+assert_link "$HEADLESS_HOME/.local/bin/nteract" "$HEADLESS_APP/Contents/MacOS/nteract-cli"
+grep -q "$HEADLESS_HOME/.local/bin/nteract\" --channel stable workstation connect" "$WORK/headless-out.log" || fail "headless: summary should mention the installed workstation pairing flow"
+grep -q "$HEADLESS_HOME/.local/bin/nteract\" --channel stable workstation run" "$WORK/headless-out.log" || fail "headless: summary should mention the installed foreground workstation flow"
 grep -q "Persistent workstation service management starts with Linux user systemd" "$WORK/headless-out.log" || fail "headless: summary should explain service platform support"
 grep -q "workstation service install --start" "$WORK/headless-out.log" && fail "darwin headless: summary should not print the Linux-only service command"
+
+note "channel installs retain selection until explicitly changed"
+for first_channel in stable nightly; do
+  COEXIST_HOME="$WORK/coexist-$first_channel"
+  for channel in "$first_channel" stable nightly; do
+    assets="$WORK/linux-assets"
+    [[ "$channel" != nightly ]] || assets="$WORK/nightly-assets"
+    PATH="$WORK/shim-linux:$PATH" run_installer "$COEXIST_HOME" \
+      --channel "$channel" --from-dir "$assets" --cli > "$WORK/coexist-out.log"
+    assert_link "$COEXIST_HOME/.local/bin/nteract" "$COEXIST_HOME/.local/share/nteract/$first_channel/bin/nteract-cli"
+  done
+  PATH="$WORK/shim-linux:$PATH" run_installer "$COEXIST_HOME" \
+    --channel nightly --from-dir "$WORK/nightly-assets" --cli --default-cli > "$WORK/coexist-out.log"
+  assert_link "$COEXIST_HOME/.local/bin/nteract" "$COEXIST_HOME/.local/share/nteract/nightly/bin/nteract-cli"
+  grep -qx "$COEXIST_HOME/.local/share/nteract/stable/bin/nteract-cli" "$COEXIST_HOME/.local/bin/.nteract-cli-stable-target" || fail "stable record missing"
+  grep -qx "$COEXIST_HOME/.local/share/nteract/nightly/bin/nteract-cli" "$COEXIST_HOME/.local/bin/.nteract-cli-nightly-target" || fail "nightly record missing"
+done
+
+note "selected installation can move to a custom prefix without changing channel"
+CUSTOM_HOME="$WORK/custom-home"
+CUSTOM_BIN="$WORK/custom commands"
+for prefix in "$WORK/first prefix" "$WORK/replacement prefix"; do
+  PATH="$WORK/shim-linux:$PATH" run_installer "$CUSTOM_HOME" \
+    --from-dir "$WORK/linux-assets" --cli --bin-dir "$CUSTOM_BIN" --prefix "$prefix" > "$WORK/custom-out.log"
+  assert_link "$CUSTOM_BIN/nteract" "$prefix/bin/nteract-cli"
+  assert_link "$CUSTOM_BIN/runt" "$prefix/bin/runt"
+  assert_link "$CUSTOM_BIN/runtimed" "$prefix/bin/runtimed"
+  assert_link "$CUSTOM_BIN/nteract-mcp" "$prefix/bin/nteract-mcp"
+done
+
+note "legacy stable AppImage alias migrates while existing nightly alias remains"
+LEGACY_HOME="$WORK/legacy-home"
+LEGACY_PREFIX="$LEGACY_HOME/.local/share/nteract/stable"
+mkdir -p "$LEGACY_HOME/.local/bin" "$LEGACY_PREFIX"
+echo "existing app" > "$LEGACY_PREFIX/nteract.AppImage"
+ln -s "$LEGACY_PREFIX/nteract.AppImage" "$LEGACY_HOME/.local/bin/nteract"
+ln -s "$LEGACY_HOME/.local/share/nteract/nightly/nteract-nightly.AppImage" "$LEGACY_HOME/.local/bin/nteract-nightly"
+PATH="$WORK/shim-linux:$PATH" run_installer "$LEGACY_HOME" \
+  --from-dir "$WORK/linux-assets" --cli > "$WORK/legacy-out.log"
+assert_link "$LEGACY_HOME/.local/bin/nteract" "$LEGACY_PREFIX/bin/nteract-cli"
+assert_link "$LEGACY_HOME/.local/bin/nteract-desktop" "$LEGACY_PREFIX/nteract.AppImage"
+grep -Fq "Launcher: $LEGACY_HOME/.local/bin/nteract-desktop" "$WORK/legacy-out.log" || fail "CLI migration should report the preserved desktop launcher"
+grep -qx "existing app" "$LEGACY_PREFIX/nteract.AppImage" || fail "headless migration changed desktop app"
+PATH="$WORK/shim-linux:$PATH" run_installer "$LEGACY_HOME" \
+  --channel nightly --from-dir "$WORK/nightly-assets" --cli > "$WORK/legacy-out.log"
+assert_link "$LEGACY_HOME/.local/bin/nteract-nightly" "$LEGACY_HOME/.local/share/nteract/nightly/nteract-nightly.AppImage"
+
+note "CLI migration preserves an unrelated desktop launcher and reports the AppImage fallback"
+DESKTOP_CONFLICT_HOME="$WORK/desktop-conflict-home"
+DESKTOP_CONFLICT_PREFIX="$DESKTOP_CONFLICT_HOME/.local/share/nteract/stable"
+mkdir -p "$DESKTOP_CONFLICT_HOME/.local/bin" "$DESKTOP_CONFLICT_PREFIX"
+echo "existing app" > "$DESKTOP_CONFLICT_PREFIX/nteract.AppImage"
+ln -s "$DESKTOP_CONFLICT_PREFIX/nteract.AppImage" "$DESKTOP_CONFLICT_HOME/.local/bin/nteract"
+ln -s "$WORK/unrelated-desktop" "$DESKTOP_CONFLICT_HOME/.local/bin/nteract-desktop"
+PATH="$WORK/shim-linux:$PATH" run_installer "$DESKTOP_CONFLICT_HOME" \
+  --from-dir "$WORK/linux-assets" --cli > "$WORK/desktop-conflict-out.log" 2>&1
+assert_link "$DESKTOP_CONFLICT_HOME/.local/bin/nteract" "$DESKTOP_CONFLICT_PREFIX/bin/nteract-cli"
+assert_link "$DESKTOP_CONFLICT_HOME/.local/bin/nteract-desktop" "$WORK/unrelated-desktop"
+grep -Fq "Launcher: $DESKTOP_CONFLICT_PREFIX/nteract.AppImage" "$WORK/desktop-conflict-out.log" || fail "conflicting desktop launcher should report direct AppImage path"
+grep -qx "existing app" "$DESKTOP_CONFLICT_PREFIX/nteract.AppImage" || fail "CLI migration changed the existing app"
+
+note "unknown commands and broken symlinks remain untouched, even with explicit selection"
+for kind in file symlink; do
+  CONFLICT_HOME="$WORK/conflict-$kind"
+  mkdir -p "$CONFLICT_HOME/.local/bin"
+  if [[ "$kind" == file ]]; then
+    echo "unrelated executable" > "$CONFLICT_HOME/.local/bin/nteract"
+  else
+    ln -s "$WORK/unrelated-missing" "$CONFLICT_HOME/.local/bin/nteract"
+  fi
+  PATH="$WORK/shim-linux:$PATH" run_installer "$CONFLICT_HOME" \
+    --from-dir "$WORK/linux-assets" --cli --default-cli > "$WORK/conflict-out.log" 2>&1
+  if [[ "$kind" == file ]]; then
+    grep -qx "unrelated executable" "$CONFLICT_HOME/.local/bin/nteract" || fail "unrelated command overwritten"
+  else
+    assert_link "$CONFLICT_HOME/.local/bin/nteract" "$WORK/unrelated-missing"
+  fi
+  assert_missing "$CONFLICT_HOME/.local/bin/.nteract-cli-target"
+  grep -q 'Preserved existing' "$WORK/conflict-out.log" || fail "collision should explain preserved command"
+done
+
+note "legacy aliases preserve unrelated regular files and symlinks on both channels"
+for channel in stable nightly; do
+  suffix=""
+  assets="$WORK/linux-assets"
+  if [[ "$channel" == nightly ]]; then
+    suffix="-nightly"
+    assets="$WORK/nightly-assets"
+  fi
+  for kind in file symlink broken; do
+    COMPAT_HOME="$WORK/compat-$channel-$kind"
+    mkdir -p "$COMPAT_HOME/.local/bin"
+    for name in "runt$suffix" "runtimed$suffix" "nteract-mcp$suffix"; do
+      alias_path="$COMPAT_HOME/.local/bin/$name"
+      case "$kind" in
+        file) echo "user command $name" > "$alias_path" ;;
+        symlink)
+          echo "user target $name" > "$WORK/target-$channel-$name"
+          ln -s "$WORK/target-$channel-$name" "$alias_path" ;;
+        broken) ln -s "$WORK/missing-$channel-$name" "$alias_path" ;;
+      esac
+    done
+    PATH="$WORK/shim-linux:$PATH" run_installer "$COMPAT_HOME" \
+      --channel "$channel" --from-dir "$assets" --cli > "$WORK/compat-out.log" 2>&1
+    for name in "runt$suffix" "runtimed$suffix" "nteract-mcp$suffix"; do
+      alias_path="$COMPAT_HOME/.local/bin/$name"
+      case "$kind" in
+        file) grep -qx "user command $name" "$alias_path" || fail "legacy regular file overwritten: $name" ;;
+        symlink) assert_link "$alias_path" "$WORK/target-$channel-$name" ;;
+        broken) assert_link "$alias_path" "$WORK/missing-$channel-$name" ;;
+      esac
+      assert_missing "$COMPAT_HOME/.local/bin/.nteract-legacy-$name-target"
+      grep -Fq "Installed backend available at $COMPAT_HOME/.local/share/nteract/$channel/bin/$name" "$WORK/compat-out.log" || fail "legacy collision should report real backend: $name"
+    done
+    assert_link "$COMPAT_HOME/.local/bin/nteract" "$COMPAT_HOME/.local/share/nteract/$channel/bin/nteract-cli"
+  done
+done
 
 note "unsupported platform is rejected with guidance"
 make_uname_shim "$WORK/shim-unsupported" "Linux" "armv7l"

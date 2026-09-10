@@ -6,11 +6,13 @@ description = "CLI for Jupyter Runtimes — bundled with nteract"
 repository.workspace = true
 license.workspace = true
 publish = false
+default-run = "runt"
 
 [lints]
 workspace = true
 
 [dependencies]
+nteract-mcp = { path = "../nteract-mcp" }
 mcp-transport = { path = "../mcp-transport" }
 anyhow = { workspace = true }
 serde = { workspace = true }

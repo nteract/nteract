@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+pub mod cli;
 pub mod file_claims;
 pub mod recent;
 
@@ -500,7 +501,62 @@ pub fn open_notebook_app_for_channel(
     if is_dev_mode() {
         return open_notebook_dev(path, extra_args);
     }
-    open_notebook_installed_for(channel, path, extra_args)
+    open_notebook_installed_for(channel, path, extra_args, false)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DesktopRuntimeContext {
+    Installed(BuildChannel),
+    CurrentWorktree,
+}
+
+fn desktop_context_for_endpoint(
+    endpoint: &Path,
+    stable: &Path,
+    nightly: &Path,
+    worktree: Option<&Path>,
+) -> Result<DesktopRuntimeContext, String> {
+    if let Some(worktree) = worktree {
+        if endpoint == worktree {
+            return Ok(DesktopRuntimeContext::CurrentWorktree);
+        }
+    } else if endpoint == stable {
+        return Ok(DesktopRuntimeContext::Installed(BuildChannel::Stable));
+    } else if endpoint == nightly {
+        return Ok(DesktopRuntimeContext::Installed(BuildChannel::Nightly));
+    }
+    Err(format!(
+        "Cannot open Desktop for runtime {}: it is not a known installed runtime or this worktree's runtime. Keep using the notebook through the CLI or MCP.",
+        endpoint.display()
+    ))
+}
+
+/// Open the Desktop installation owning the selected runtime endpoint.
+/// Unknown custom sockets cannot safely be handed to an installed app; a socket
+/// environment variable is not a supported handoff to an already-running app.
+pub fn open_notebook_app_for_endpoint_strict(
+    endpoint: &Path,
+    path: Option<&Path>,
+    extra_args: &[&str],
+) -> Result<(), String> {
+    let worktree_endpoint = if is_dev_mode() {
+        let worktree =
+            get_workspace_path().ok_or("Cannot open Desktop: dev mode has no resolved worktree")?;
+        Some(socket_path_for_context(build_channel(), Some(&worktree)))
+    } else {
+        None
+    };
+    match desktop_context_for_endpoint(
+        endpoint,
+        &socket_path_for_context(BuildChannel::Stable, None),
+        &socket_path_for_context(BuildChannel::Nightly, None),
+        worktree_endpoint.as_deref(),
+    )? {
+        DesktopRuntimeContext::Installed(channel) => {
+            open_notebook_installed_for(channel, path, extra_args, true)
+        }
+        DesktopRuntimeContext::CurrentWorktree => open_notebook_dev(path, extra_args),
+    }
 }
 
 /// Launch the desktop notebook app using the compile-time channel.
@@ -562,10 +618,54 @@ fn open_notebook_installed_for(
     channel: BuildChannel,
     path: Option<&Path>,
     extra_args: &[&str],
+    strict: bool,
 ) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if strict {
+        let executable = selected_cli_backend(channel)?;
+        let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+        linux_desktop_command(&executable, channel, appdir.as_deref(), path, extra_args)?
+            .spawn()
+            .map_err(|error| {
+                format!(
+                    "Failed to launch {} Desktop: {error}",
+                    desktop_display_name_for(channel)
+                )
+            })?;
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    if strict {
+        // NSIS places Desktop beside its CLI backend; only the public command
+        // shim directory is on PATH. Resolve this selected installation directly.
+        let executable = selected_cli_backend(channel)?;
+        let desktop = windows_desktop_beside_cli(&executable).ok_or_else(|| {
+            format!("{} Desktop is not installed beside this CLI. Install Desktop to use `nteract open`.", desktop_display_name_for(channel))
+        })?;
+        let mut command = Command::new(&desktop);
+        if let Some(path) = path {
+            command.arg(path);
+        }
+        command
+            .args(extra_args)
+            .spawn()
+            .map_err(|error| format!("Failed to launch {}: {error}", desktop.display()))?;
+        return Ok(());
+    }
     let mut last_error = None;
 
-    for app_name in desktop_app_launch_candidates_for(channel) {
+    #[cfg(target_os = "linux")]
+    let candidates = linux_desktop_launch_candidates(channel);
+    #[cfg(not(target_os = "linux"))]
+    let candidates = desktop_app_launch_candidates_for(channel);
+
+    for app_name in candidates {
+        if strict
+            && channel == BuildChannel::Nightly
+            && matches!(*app_name, "nteract" | "nteract-desktop")
+        {
+            continue;
+        }
         #[cfg(target_os = "macos")]
         let spawn_result = {
             let mut cmd = Command::new("open");
@@ -577,11 +677,25 @@ fn open_notebook_installed_for(
             }
             cmd.arg("-a").arg(app_name);
             cmd.args(macos_open_args(path, extra_args));
-            cmd.spawn()
+            cmd.output().and_then(|output| {
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(
+                        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                    ))
+                }
+            })
         };
 
         #[cfg(not(target_os = "macos"))]
         let spawn_result = {
+            // The public nteract command now names the CLI. Never launch it
+            // recursively when looking for an older Desktop launcher on PATH.
+            #[cfg(target_os = "linux")]
+            if is_canonical_cli_on_path(app_name) {
+                continue;
+            }
             let mut cmd = Command::new(app_name);
             if let Some(p) = path {
                 cmd.arg(p);
@@ -606,6 +720,235 @@ fn open_notebook_installed_for(
         desktop_display_name_for(channel),
         detail
     ))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn selected_cli_backend(channel: BuildChannel) -> Result<PathBuf, String> {
+    if channel == build_channel() {
+        std::env::current_exe().map_err(|error| error.to_string())
+    } else {
+        cli::resolve_channel(channel)
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_desktop_command(
+    executable: &Path,
+    channel: BuildChannel,
+    appdir: Option<&Path>,
+    path: Option<&Path>,
+    extra_args: &[&str],
+) -> Result<Command, String> {
+    let executable = executable.canonicalize().map_err(|error| {
+        format!(
+            "Cannot locate selected CLI installation {}: {error}",
+            executable.display()
+        )
+    })?;
+    // A CLI running inside an AppImage must use that image's AppRun. An
+    // inherited APPDIR from another installation must never redirect launch.
+    let bundled = appdir
+        .and_then(|dir| dir.canonicalize().ok())
+        .filter(|dir| executable.starts_with(dir))
+        .and_then(|dir| {
+            let app = dir.join("AppRun");
+            let resolved = app.canonicalize().ok()?;
+            (resolved.starts_with(&dir) && resolved.is_file()).then_some(app)
+        });
+    // scripts/install-linux-release installs sidecars in PREFIX/bin and the
+    // channel's AppImage directly in PREFIX, including custom prefixes.
+    let installed = || {
+        let bin = executable.parent()?;
+        if bin.file_name()? != "bin" {
+            return None;
+        }
+        let filename = match channel {
+            BuildChannel::Stable => "nteract.AppImage",
+            BuildChannel::Nightly => "nteract-nightly.AppImage",
+        };
+        let app = bin.parent()?.join(filename);
+        app.is_file().then_some(app)
+    };
+    let desktop = bundled.or_else(installed).ok_or_else(|| format!(
+        "{} Desktop is not installed alongside {}. Install Desktop for this installation; PATH launchers are not used for a selected runtime.",
+        desktop_display_name_for(channel), executable.display()
+    ))?;
+    let mut command = Command::new(desktop);
+    if let Some(path) = path {
+        command.arg(path);
+    }
+    command.args(extra_args);
+    Ok(command)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_desktop_beside_cli(executable: &Path) -> Option<PathBuf> {
+    let desktop = executable.parent()?.join("notebook.exe");
+    desktop.is_file().then_some(desktop)
+}
+
+#[test]
+fn windows_desktop_resolves_within_selected_installation() {
+    let installation = tempfile::tempdir().unwrap();
+    let cli = installation.path().join("nteract-cli.exe");
+    assert!(windows_desktop_beside_cli(&cli).is_none());
+    let desktop = installation.path().join("notebook.exe");
+    std::fs::write(&desktop, "fixture").unwrap();
+    assert_eq!(windows_desktop_beside_cli(&cli), Some(desktop));
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_desktop_launch_candidates(channel: BuildChannel) -> &'static [&'static str] {
+    match channel {
+        BuildChannel::Stable => &["nteract-desktop", "nteract"],
+        BuildChannel::Nightly => &[
+            "nteract-desktop-nightly",
+            "nteract-nightly",
+            "nteract-desktop",
+            "nteract",
+        ],
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn linux_strict_desktop_uses_installed_image_not_unrelated_path_launcher() {
+    use std::os::unix::fs::PermissionsExt;
+    let install = tempfile::tempdir().unwrap();
+    let bin = install.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let backend = bin.join("nteract-cli");
+    std::fs::write(&backend, "backend fixture").unwrap();
+    let app = install.path().join("nteract.AppImage");
+    std::fs::write(
+        &app,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.arguments\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let unknown = tempfile::tempdir().unwrap();
+    let launcher = unknown.path().join("nteract-desktop");
+    std::fs::write(&launcher, "#!/bin/sh\nprintf invoked > \"$0.invoked\"\n").unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let mut command = linux_desktop_command(
+        &backend,
+        BuildChannel::Stable,
+        None,
+        Some(Path::new("notebook with spaces.ipynb")),
+        &["--runtime", "python"],
+    )
+    .unwrap();
+    assert_eq!(
+        command.get_program(),
+        app.canonicalize().unwrap().as_os_str()
+    );
+    assert!(command
+        .env("PATH", unknown.path())
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(
+        std::fs::read_to_string(install.path().join("nteract.AppImage.arguments")).unwrap(),
+        "notebook with spaces.ipynb\n--runtime\npython\n"
+    );
+    assert!(!unknown.path().join("nteract-desktop.invoked").exists());
+    std::fs::remove_file(&app).unwrap();
+    assert!(linux_desktop_command(&backend, BuildChannel::Stable, None, None, &[]).is_err());
+    assert!(!unknown.path().join("nteract-desktop.invoked").exists());
+}
+
+#[test]
+fn linux_strict_desktop_keeps_channel_and_appimage_context() {
+    let install = tempfile::tempdir().unwrap();
+    let bin = install.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let backend = bin.join("nteract-cli");
+    std::fs::write(&backend, "backend fixture").unwrap();
+    let nightly = install.path().join("nteract-nightly.AppImage");
+    std::fs::write(&nightly, "nightly image fixture").unwrap();
+    let image = tempfile::tempdir().unwrap();
+    let image_bin = image.path().join("usr/bin");
+    std::fs::create_dir_all(&image_bin).unwrap();
+    let image_backend = image_bin.join("nteract-cli");
+    std::fs::write(&image_backend, "image backend fixture").unwrap();
+    let apprun = image.path().join("AppRun");
+    std::fs::write(&apprun, "AppRun fixture").unwrap();
+
+    // Other-channel selection ignores the current AppImage's inherited APPDIR.
+    assert_eq!(
+        linux_desktop_command(
+            &backend,
+            BuildChannel::Nightly,
+            Some(image.path()),
+            None,
+            &[]
+        )
+        .unwrap()
+        .get_program(),
+        nightly.canonicalize().unwrap().as_os_str()
+    );
+    assert!(linux_desktop_command(
+        &backend,
+        BuildChannel::Stable,
+        Some(image.path()),
+        None,
+        &[]
+    )
+    .is_err());
+    // The actual bundled backend may reuse only its own image's AppRun.
+    assert_eq!(
+        linux_desktop_command(
+            &image_backend,
+            BuildChannel::Stable,
+            Some(image.path()),
+            None,
+            &[]
+        )
+        .unwrap()
+        .get_program(),
+        apprun.canonicalize().unwrap().as_os_str()
+    );
+    assert!(linux_desktop_command(
+        &image_backend,
+        BuildChannel::Stable,
+        Some(install.path()),
+        None,
+        &[]
+    )
+    .is_err());
+}
+
+#[test]
+fn linux_desktop_launcher_precedes_legacy_public_name() {
+    assert_eq!(
+        linux_desktop_launch_candidates(BuildChannel::Stable)[0],
+        "nteract-desktop"
+    );
+    assert_eq!(
+        linux_desktop_launch_candidates(BuildChannel::Nightly)[0],
+        "nteract-desktop-nightly"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn is_canonical_cli_on_path(command: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(command);
+        if candidate.is_file() {
+            return std::fs::canonicalize(candidate).ok().is_some_and(|path| {
+                path.file_name()
+                    .is_some_and(|name| name == cli::BINARY_NAME)
+                    || std::env::current_exe()
+                        .ok()
+                        .is_some_and(|exe| std::fs::canonicalize(exe).ok().as_ref() == Some(&path))
+            });
+        }
+    }
+    false
 }
 
 // ============================================================================
@@ -1232,20 +1575,41 @@ pub fn default_socket_path() -> PathBuf {
 /// caller's own daemon, not for cross-channel discovery.
 #[cfg(unix)]
 pub fn socket_path_for_channel(channel: BuildChannel) -> PathBuf {
-    daemon_base_dir_for(channel).join("runtimed.sock")
+    let worktree = is_dev_mode().then(get_workspace_path).flatten();
+    socket_path_for_context(channel, worktree.as_deref())
 }
 
 /// Get the endpoint path for a specific channel's daemon (Windows).
 #[cfg(windows)]
 pub fn socket_path_for_channel(channel: BuildChannel) -> PathBuf {
+    let worktree = is_dev_mode().then(get_workspace_path).flatten();
+    socket_path_for_context(channel, worktree.as_deref())
+}
+
+/// Resolve an endpoint for an explicit, complete namespace without consulting
+/// socket or development environment overrides.
+#[cfg(windows)]
+pub fn socket_path_for_context(channel: BuildChannel, worktree: Option<&Path>) -> PathBuf {
     let pipe_name = daemon_binary_basename_for(channel);
-    if is_dev_mode() {
-        if let Some(worktree) = get_workspace_path() {
-            let hash = worktree_hash(&worktree);
-            return PathBuf::from(format!(r"\\.\pipe\{}-{}", pipe_name, hash));
-        }
+    if let Some(worktree) = worktree {
+        let hash = worktree_hash(worktree);
+        return PathBuf::from(format!(r"\\.\pipe\{}-{}", pipe_name, hash));
     }
     PathBuf::from(format!(r"\\.\pipe\{}", pipe_name))
+}
+
+/// Resolve an endpoint for an explicit, complete namespace without consulting
+/// socket or development environment overrides.
+#[cfg(unix)]
+pub fn socket_path_for_context(channel: BuildChannel, worktree: Option<&Path>) -> PathBuf {
+    let base = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(cache_namespace_for(channel));
+    let base = match worktree {
+        Some(path) => base.join("worktrees").join(worktree_hash(path)),
+        None => base,
+    };
+    base.join("runtimed.sock")
 }
 
 /// Check `RUNTIMED_SOCKET_PATH` env var and return the path if valid.
@@ -1385,6 +1749,47 @@ pub fn stable_workstation_id(hostname: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_handoff_uses_runtime_channel_and_rejects_unknown_endpoints() {
+        use super::{desktop_context_for_endpoint, BuildChannel, DesktopRuntimeContext};
+        use std::path::Path;
+        let stable = Path::new("stable.sock");
+        let nightly = Path::new("nightly.sock");
+        for (endpoint, channel) in [
+            (stable, BuildChannel::Stable),
+            (nightly, BuildChannel::Nightly),
+        ] {
+            assert_eq!(
+                desktop_context_for_endpoint(endpoint, stable, nightly, None).unwrap(),
+                DesktopRuntimeContext::Installed(channel)
+            );
+        }
+        assert!(
+            desktop_context_for_endpoint(Path::new("custom.sock"), stable, nightly, None).is_err()
+        );
+    }
+
+    #[test]
+    fn desktop_handoff_preserves_current_worktree_isolation() {
+        use super::{desktop_context_for_endpoint, DesktopRuntimeContext};
+        use std::path::Path;
+        let stable = Path::new("stable.sock");
+        let nightly = Path::new("nightly.sock");
+        let worktree = Path::new("worktree.sock");
+        assert_eq!(
+            desktop_context_for_endpoint(worktree, stable, nightly, Some(worktree)).unwrap(),
+            DesktopRuntimeContext::CurrentWorktree
+        );
+        assert!(desktop_context_for_endpoint(stable, stable, nightly, Some(worktree)).is_err());
+        assert!(desktop_context_for_endpoint(
+            Path::new("another-worktree.sock"),
+            stable,
+            nightly,
+            Some(worktree)
+        )
+        .is_err());
+    }
+
     use super::*;
 
     #[test]

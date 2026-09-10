@@ -173,6 +173,7 @@ pub struct SessionReadiness {
 
 #[derive(Debug, Clone)]
 pub struct SessionAccess {
+    pub is_hosted: bool,
     pub notebook_handle: String,
     pub handle: DocHandle,
     pub notebook_id: String,
@@ -588,6 +589,7 @@ impl NotebookSession {
         }
 
         Ok(SessionAccess {
+            is_hosted: self.is_hosted(),
             notebook_handle: self.notebook_handle.clone(),
             handle: self.handle.clone(),
             notebook_id: self.notebook_id.clone(),

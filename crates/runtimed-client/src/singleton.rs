@@ -42,25 +42,33 @@ pub struct DaemonInfo {
 /// Build identity is intentionally absent. Normal admission is based on the
 /// supported wire range plus semantic daemon API behavior.
 pub fn compatibility_error(info: &DaemonInfo) -> Option<String> {
+    compatibility_error_for_versions(info.protocol_version, info.daemon_api_version)
+}
+
+/// Apply the same admission policy to live metadata and a binary's identity.
+pub fn compatibility_error_for_versions(
+    protocol_version: u32,
+    daemon_api_version: u32,
+) -> Option<String> {
     let min_wire = u32::from(notebook_protocol::connection::MIN_PROTOCOL_VERSION);
     let max_wire = u32::from(notebook_protocol::connection::PROTOCOL_VERSION);
-    if !(min_wire..=max_wire).contains(&info.protocol_version) {
+    if !(min_wire..=max_wire).contains(&protocol_version) {
         return Some(format!(
             "wire protocol {} is outside supported range {}..={}",
-            info.protocol_version, min_wire, max_wire
+            protocol_version, min_wire, max_wire
         ));
     }
-    if info.daemon_api_version < crate::protocol::MIN_DAEMON_API_VERSION {
+    if daemon_api_version < crate::protocol::MIN_DAEMON_API_VERSION {
         return Some(format!(
             "daemon API {} is older than required API {}",
-            info.daemon_api_version,
+            daemon_api_version,
             crate::protocol::MIN_DAEMON_API_VERSION
         ));
     }
-    if info.daemon_api_version > crate::protocol::DAEMON_API_VERSION {
+    if daemon_api_version > crate::protocol::DAEMON_API_VERSION {
         return Some(format!(
             "daemon API {} is newer than supported API {}",
-            info.daemon_api_version,
+            daemon_api_version,
             crate::protocol::DAEMON_API_VERSION
         ));
     }

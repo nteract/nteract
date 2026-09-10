@@ -25,18 +25,18 @@ hosted notebooks, use the headless installer. See
 [Remote workstations](docs/runbooks/remote-workstation.md) for details:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless
+curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli
 ```
 
-The desktop app bundles the `runt` CLI, `runtimed` daemon, and `runtimed` Python bindings. The CLI and Python bindings stay up to date automatically. For nightly builds, use `runt-nightly` instead.
+Use `nteract` for notebook, workstation, and MCP operations. CLI-only installation does not configure or start a local daemon service. The desktop app bundles the same CLI. Existing `runt`, `runt-nightly`, and `nteract-mcp` commands remain compatible. See the [CLI guide](docs/runbooks/cli.md) for runtime startup, channel selection, and scripting behavior.
 
 ## What's in here
 
 | Component | Description |
 |-----------|-------------|
-| `nteract` | Desktop notebook editor (Tauri + React) |
+| nteract Desktop | Notebook editor (Tauri + React) |
 | `runtimed` | Background daemon for environment pools, notebook sync, and kernel execution |
-| `runt` | CLI for managing kernels, notebooks, and the daemon |
+| `nteract` command | CLI for notebooks, workstations, runtime operations, and supervised MCP |
 | `runtimed` (Python) | Python bindings for the daemon (ships with the app) |
 
 ## Runtime model
@@ -47,7 +47,7 @@ Execution requests name a synced `cell_id`; the daemon reads the cell source fro
 
 ## MCP Server
 
-The nteract MCP server connects AI assistants to Jupyter notebooks through the daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans in real time. The notebook updates live in the desktop app while the agent works.
+Run `nteract mcp` to connect AI assistants to notebooks. Local notebooks use the runtime daemon; direct hosted connections use WebSockets without a local daemon. Agents can run code, read and write cells, manage dependencies, and collaborate with humans on the same live notebook.
 
 ### Install the Codex plugin
 
@@ -103,20 +103,20 @@ The nteract desktop app is required: it builds a `.mcpb` bundle at runtime (mani
 
 ```bash
 # Open a notebook
-runt notebook path/to/notebook.ipynb
+nteract open path/to/notebook.ipynb
 
 # MCP server for notebook automation
-runt mcp
+nteract mcp
 
 # Daemon management
-runt daemon status
-runt daemon logs -f
+nteract daemon status
+nteract daemon logs -f
 ```
 
 List open notebooks with kernel and environment info:
 
 ```
-$ runt notebooks
+$ nteract notebooks
 ╭──────────────────────────────────────┬────────┬──────────────┬────────┬───────╮
 │ NOTEBOOK                             │ KERNEL │ ENV          │ STATUS │ PEERS │
 ├──────────────────────────────────────┼────────┼──────────────┼────────┼───────┤
@@ -155,7 +155,7 @@ nteract/nteract
 │   ├── sift/              # Sift visualization renderer
 │   └── odometer/          # Odometer component
 ├── crates/                 # Rust code
-│   ├── runt/              # CLI binary
+│   ├── runt/              # Shared CLI; nteract-cli and legacy runt entrypoints
 │   ├── runtimed/          # Background daemon
 │   ├── runtimed-py/       # Python bindings for the daemon
 │   ├── runtimed-wasm/     # WASM Automerge bindings for frontend

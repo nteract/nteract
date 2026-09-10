@@ -165,9 +165,10 @@ jobs:
       - name: Rename binaries
         run: |
           cp target/x86_64-unknown-linux-gnu/release/runt runt-linux-x64
+          cp target/x86_64-unknown-linux-gnu/release/nteract-cli nteract-cli-linux-x64
           cp target/x86_64-unknown-linux-gnu/release/runtimed runtimed-linux-x64
           cp target/x86_64-unknown-linux-gnu/release/nteract-mcp nteract-mcp-linux-x64
-          chmod +x runt-linux-x64
+          chmod +x runt-linux-x64 nteract-cli-linux-x64
           chmod +x runtimed-linux-x64
           chmod +x nteract-mcp-linux-x64
 
@@ -177,6 +178,7 @@ jobs:
           name: runt-linux-executables
           path: |
             runt-linux-x64
+            nteract-cli-linux-x64
             runtimed-linux-x64
             nteract-mcp-linux-x64
 
@@ -358,6 +360,7 @@ jobs:
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
+          cp target/release/nteract-cli "crates/notebook/binaries/nteract-cli-$TARGET"
           cp target/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
 
       - name: Build with tauri-action
@@ -542,6 +545,7 @@ jobs:
           mkdir -p crates/notebook/binaries
           cp target/x86_64-apple-darwin/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/x86_64-apple-darwin/release/runt "crates/notebook/binaries/runt-$TARGET"
+          cp target/x86_64-apple-darwin/release/nteract-cli "crates/notebook/binaries/nteract-cli-$TARGET"
           cp target/x86_64-apple-darwin/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
 
       - name: Build with tauri-action
@@ -710,6 +714,7 @@ jobs:
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
           cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
+          cp target/release/nteract-cli.exe "crates/notebook/binaries/nteract-cli-$TARGET.exe"
           cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
 
       - name: Locate signing tools
@@ -903,6 +908,7 @@ jobs:
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
+          cp target/release/nteract-cli "crates/notebook/binaries/nteract-cli-$TARGET"
           cp target/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
 
       - name: Build with tauri-action
@@ -1350,7 +1356,12 @@ jobs:
             MCP_NAME="nteract-mcp-nightly"
           fi
           mkdir -p release-assets
+          CANONICAL_CLI_NAME="nteract-cli"
+          if [ "$CHANNEL" = "nightly" ]; then
+            CANONICAL_CLI_NAME="nteract-cli-nightly"
+          fi
           # CLI binaries
+          cp executables/nteract-cli-linux-x64 "release-assets/${CANONICAL_CLI_NAME}-linux-x64"
           cp executables/runt-linux-x64 "release-assets/${CLI_NAME}-linux-x64"
           cp executables/runtimed-linux-x64 "release-assets/${DAEMON_NAME}-linux-x64"
           cp executables/nteract-mcp-linux-x64 "release-assets/${MCP_NAME}-linux-x64"
@@ -1503,6 +1514,10 @@ jobs:
             MCP_NAME="nteract-mcp-nightly"
           fi
           INSTALLER_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG_NAME}/install-linux-release"
+          CANONICAL_CLI_NAME="nteract-cli"
+          if [ "$VERSION_SUFFIX" = "nightly" ]; then
+            CANONICAL_CLI_NAME="nteract-cli-nightly"
+          fi
 
           RELEASE_SERIES="${BASE_VERSION%.*}"
           HIGHLIGHTS_FILE=""
@@ -1550,14 +1565,14 @@ jobs:
             echo "curl -fsSL ${INSTALLER_URL} | bash"
             echo '```'
             echo ''
-            if [ "$VERSION_SUFFIX" = "nightly" ]; then
-              echo 'Headless workstation install:'
-              echo ''
-              echo '```bash'
-              echo "curl -fsSL ${INSTALLER_URL} | bash -s -- --headless"
-              echo '```'
-              echo ''
-            fi
+            echo 'CLI-only install for notebooks, MCP, and workstations (no local daemon service is started):'
+            echo ''
+            echo '```bash'
+            echo "curl -fsSL ${INSTALLER_URL} | bash -s -- --cli"
+            echo 'nteract --help'
+            echo 'nteract mcp'
+            echo '```'
+            echo ''
             if [ "$VERSION_SUFFIX" != "nightly" ]; then
               echo 'Latest stable shortcut:'
               echo ''
@@ -1582,12 +1597,14 @@ jobs:
             fi
             echo '```'
             echo ''
-            echo "### ${CLI_NAME} (CLI)"
+            echo '### nteract CLI and compatibility helpers'
             echo ''
-            echo 'Also bundled inside the desktop app. Standalone binaries:'
+            # shellcheck disable=SC2016 # Literal Markdown command name.
+            echo 'The installer exposes the CLI as `nteract`. macOS and Windows include it in the signed desktop bundle; Linux also provides a standalone backend. Existing runt and MCP entrypoints remain available:'
             echo ''
             echo '| Platform | Architecture | Download |'
             echo '|----------|--------------|----------|'
+            echo "| Linux | x64 | \`${CANONICAL_CLI_NAME}-linux-x64\` |"
             echo "| Linux | x64 | \`${CLI_NAME}-linux-x64\` |"
             echo "| Linux | x64 | \`${DAEMON_NAME}-linux-x64\` |"
             echo "| Linux | x64 | \`${MCP_NAME}-linux-x64\` |"
@@ -1627,6 +1644,7 @@ jobs:
           prerelease: ${{ inputs.github_release_prerelease }}
           files: |
             ./release-assets/runt*-linux-x64
+            ./release-assets/nteract-cli*-linux-x64
             ./release-assets/nteract-mcp*-linux-x64
             ./release-assets/runt*-darwin-arm64
             ./release-assets/runt*-darwin-x64

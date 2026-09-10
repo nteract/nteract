@@ -28,6 +28,7 @@ pub mod protocol;
 pub mod runtime;
 pub mod settings_doc;
 pub mod singleton;
+pub mod startup;
 
 use runt_workspace::daemon_base_dir;
 #[cfg(unix)]

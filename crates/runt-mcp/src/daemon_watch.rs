@@ -9,6 +9,8 @@
 //! 2. Re-join the active notebook session when the daemon comes back
 //!    (either after a brief disconnect, or after a same-version restart).
 //!
+//! Hosted handoff recovery runs independently of local daemon events.
+//!
 //! Tool dispatch asks the daemon directly instead of gating on a local
 //! connection state. Under sustained concurrent load, local gating can stall in
 //! `Reconnecting` while the daemon is healthy, short-circuiting every tool call.
@@ -38,12 +40,13 @@ pub const EXIT_DAEMON_UPGRADED: i32 = 75;
 
 /// Env var the proxy sets on the restarted child to hand off the notebook
 /// the previous child was attached to. Value is either a UUID or an
-/// absolute file path.
+/// absolute file path, or a hosted notebook URL.
 pub const REJOIN_ENV_VAR: &str = "NTERACT_MCP_REJOIN_NOTEBOOK";
 
 const REJOIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const REJOIN_MAX_RETRIES: u32 = 3;
 const REJOIN_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(120);
+const HOSTED_RECOVERY_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 struct RecoveryState {
@@ -102,6 +105,80 @@ impl RecoveryState {
     fn rejoin_succeeded(&mut self) {
         self.initial_target = None;
         self.recovery_target = None;
+    }
+}
+
+#[derive(Default)]
+struct HostedRecoverySchedule {
+    target: Option<String>,
+    next_attempt: Option<tokio::time::Instant>,
+}
+
+/// Attempt a hosted handoff without consulting local runtime identity or waiting
+/// for a local runtime event. Returns the next deadline when recovery is pending.
+/// Daemon events cannot advance that deadline. Publication and its intent/slot
+/// race checks remain in the connector.
+async fn attempt_hosted_recovery<S, C, F>(
+    recovery: &mut RecoveryState,
+    schedule: &mut HostedRecoverySchedule,
+    session: &RwLock<Option<S>>,
+    session_intent_epoch: &AtomicU64,
+    connect: C,
+) -> Option<tokio::time::Instant>
+where
+    C: FnOnce(String, String, u64) -> F,
+    F: Future<Output = bool>,
+{
+    recovery.observe_explicit_intent(session_intent_epoch.load(Ordering::Acquire));
+    let Some(target) = recovery.target() else {
+        *schedule = HostedRecoverySchedule::default();
+        return None;
+    };
+    let Ok(NotebookTarget::Hosted {
+        domain,
+        notebook_id,
+        ..
+    }) = cloud::parse_connect_target(Some(&target), None, None, None)
+    else {
+        *schedule = HostedRecoverySchedule::default();
+        return None;
+    };
+    if session.read().await.is_some() {
+        recovery.rejoin_succeeded();
+        *schedule = HostedRecoverySchedule::default();
+        return None;
+    }
+    if schedule.target.as_deref() != Some(target.as_str()) {
+        schedule.target = Some(target);
+        schedule.next_attempt = None;
+    }
+    if let Some(deadline) = schedule.next_attempt {
+        if tokio::time::Instant::now() < deadline {
+            return Some(deadline);
+        }
+    }
+    if connect(domain, notebook_id, recovery.observed_intent_epoch).await {
+        recovery.rejoin_succeeded();
+        *schedule = HostedRecoverySchedule::default();
+        return None;
+    }
+    recovery.observe_explicit_intent(session_intent_epoch.load(Ordering::Acquire));
+    if recovery.target().is_none() {
+        *schedule = HostedRecoverySchedule::default();
+        return None;
+    }
+    let deadline = tokio::time::Instant::now() + HOSTED_RECOVERY_RETRY_DELAY;
+    schedule.next_attempt = Some(deadline);
+    Some(deadline)
+}
+
+async fn next_watch_event(
+    rx: &mut broadcast::Receiver<DaemonEvent>,
+    hosted_deadline: Option<tokio::time::Instant>,
+) -> Option<Result<DaemonEvent, broadcast::error::RecvError>> {
+    tokio::select! {
+        event = rx.recv() => Some(event),
+        _ = tokio::time::sleep_until(hosted_deadline.unwrap_or_else(tokio::time::Instant::now)), if hosted_deadline.is_some() => None,
     }
 }
 
@@ -252,12 +329,36 @@ pub async fn watch(resources: WatchResources) -> i32 {
         startup_version,
         session_intent_epoch.load(Ordering::Acquire),
     );
+    let mut hosted_schedule = HostedRecoverySchedule::default();
     if recovery.initial_target.is_some() {
         info!("Seeded initial rejoin target from {REJOIN_ENV_VAR}");
     }
 
     loop {
-        let event = match rx.recv().await {
+        // A hosted session can be the only reason this child exists. Attempt
+        // its handoff immediately, even when no local daemon has ever existed.
+        let hosted_deadline = attempt_hosted_recovery(
+            &mut recovery,
+            &mut hosted_schedule,
+            &session,
+            &session_intent_epoch,
+            |domain, notebook_id, expected_epoch| {
+                rejoin_hosted(
+                    &session,
+                    &peer_label,
+                    &last_session_drop,
+                    domain,
+                    notebook_id,
+                    &session_intent_epoch,
+                    expected_epoch,
+                )
+            },
+        )
+        .await;
+        let Some(received) = next_watch_event(&mut rx, hosted_deadline).await else {
+            continue;
+        };
+        let event = match received {
             Ok(event) => Some(event),
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("Daemon event stream lagged, dropped {n} events");
@@ -317,6 +418,14 @@ pub async fn watch(resources: WatchResources) -> i32 {
         let Some(target) = recovery.target() else {
             continue;
         };
+        // Hosted handoffs have one owner: the scheduled attempt above. Local
+        // daemon events may reconcile local sessions, but never retry hosted IO.
+        if matches!(
+            cloud::parse_connect_target(Some(&target), None, None, None),
+            Ok(NotebookTarget::Hosted { .. })
+        ) {
+            continue;
+        }
         let Some(expected_incarnation) = live_incarnation else {
             continue;
         };
@@ -443,22 +552,8 @@ async fn rejoin(
         return true;
     }
     match cloud::parse_connect_target(Some(&target), None, None, None) {
-        Ok(NotebookTarget::Hosted {
-            domain,
-            notebook_id,
-            ..
-        }) => {
-            return rejoin_hosted(
-                session,
-                peer_label,
-                last_session_drop,
-                domain,
-                notebook_id,
-                session_intent_epoch,
-                expected_intent_epoch,
-            )
-            .await;
-        }
+        // Hosted recovery is exclusively owned by attempt_hosted_recovery.
+        Ok(NotebookTarget::Hosted { .. }) => return false,
         Ok(NotebookTarget::LocalPath(_)) | Ok(NotebookTarget::LocalNotebookId(_)) => {}
         Err(e) if target.starts_with("http://") || target.starts_with("https://") => {
             warn!("Hosted rejoin target is invalid: {e}");
@@ -920,6 +1015,223 @@ mod tests {
     fn hosted_binding_survives_local_daemon_loss() {
         assert!(daemon_binding_matches(true, None, None));
         assert!(daemon_binding_matches(true, None, Some(&incarnation(4))));
+    }
+
+    fn hosted_handoff(epoch: u64) -> RecoveryState {
+        RecoveryState {
+            startup_version: None,
+            initial_target: Some(cloud::hosted_notebook_url(
+                "https://example.com",
+                "notebook-id",
+            )),
+            recovery_target: None,
+            observed_intent_epoch: epoch,
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_handoff_attempts_before_any_local_daemon_observation() {
+        let mut recovery = hosted_handoff(0);
+        let mut schedule = HostedRecoverySchedule::default();
+        let session = Arc::new(RwLock::new(None::<FakeSession>));
+        let epoch = AtomicU64::new(0);
+        let session_ref = &session;
+        let epoch_ref = &epoch;
+        let pending = attempt_hosted_recovery(
+            &mut recovery,
+            &mut schedule,
+            &session,
+            &epoch,
+            |domain, notebook_id, expected_epoch| async move {
+                assert_eq!(domain, "https://example.com");
+                assert_eq!(notebook_id, "notebook-id");
+                assert_eq!(expected_epoch, 0);
+                assert_eq!(
+                    publish_rejoined_session(
+                        session_ref,
+                        FakeSession::hosted(&notebook_id),
+                        epoch_ref,
+                        expected_epoch,
+                    )
+                    .await,
+                    PublicationResult::Installed
+                );
+                true
+            },
+        )
+        .await;
+        assert!(pending.is_none());
+        assert!(schedule.next_attempt.is_none());
+        assert!(session.read().await.as_ref().unwrap().hosted);
+        assert!(recovery.target().is_none());
+        assert!(recovery.startup_version.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hosted_retry_deadline_survives_local_events_and_wakes_without_them() {
+        let mut recovery = hosted_handoff(0);
+        let mut schedule = HostedRecoverySchedule::default();
+        let session = RwLock::new(None::<FakeSession>);
+        let epoch = AtomicU64::new(0);
+        let attempts = AtomicUsize::new(0);
+        let connect = |_, _, _| {
+            attempts.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(false)
+        };
+        let deadline =
+            attempt_hosted_recovery(&mut recovery, &mut schedule, &session, &epoch, connect)
+                .await
+                .unwrap();
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        let (tx, mut rx) = broadcast::channel(2);
+        for _ in 0..8 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            tx.send(DaemonEvent::Disconnected).unwrap();
+            assert!(matches!(
+                next_watch_event(&mut rx, Some(deadline)).await,
+                Some(Ok(DaemonEvent::Disconnected))
+            ));
+            assert_eq!(
+                attempt_hosted_recovery(&mut recovery, &mut schedule, &session, &epoch, connect)
+                    .await,
+                Some(deadline)
+            );
+            assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        }
+        // With no local events, the same deadline wakes recovery by itself.
+        assert!(next_watch_event(&mut rx, Some(deadline)).await.is_none());
+        assert_eq!(tokio::time::Instant::now(), deadline);
+        let next = attempt_hosted_recovery(&mut recovery, &mut schedule, &session, &epoch, connect)
+            .await
+            .unwrap();
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        assert_eq!(next, deadline + HOSTED_RECOVERY_RETRY_DELAY);
+        // A queued local event at the deadline does not cause another attempt.
+        tx.send(DaemonEvent::Disconnected).unwrap();
+        assert!(next_watch_event(&mut rx, Some(next)).await.is_some());
+        assert_eq!(
+            attempt_hosted_recovery(&mut recovery, &mut schedule, &session, &epoch, connect).await,
+            Some(next)
+        );
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn hosted_recovery_does_not_resurrect_after_disconnect_during_connect() {
+        let mut recovery = hosted_handoff(4);
+        let mut schedule = HostedRecoverySchedule::default();
+        let session = Arc::new(RwLock::new(None::<FakeSession>));
+        let epoch = AtomicU64::new(4);
+        let session_ref = &session;
+        let epoch_ref = &epoch;
+        let pending = attempt_hosted_recovery(
+            &mut recovery,
+            &mut schedule,
+            &session,
+            &epoch,
+            |_, _, expected_epoch| async move {
+                // Explicit disconnect advances the epoch while the hosted
+                // connection is in flight, before publication acquires the slot.
+                epoch_ref.store(5, Ordering::Release);
+                assert_eq!(
+                    publish_rejoined_session(
+                        session_ref,
+                        FakeSession::hosted("background"),
+                        epoch_ref,
+                        expected_epoch,
+                    )
+                    .await,
+                    PublicationResult::Cancelled
+                );
+                true
+            },
+        )
+        .await;
+        assert!(pending.is_none());
+        assert!(schedule.next_attempt.is_none());
+        assert!(session.read().await.is_none());
+        assert!(recovery.target().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hosted_schedule_resets_on_target_change_success_and_explicit_intent() {
+        let mut recovery = hosted_handoff(0);
+        let mut schedule = HostedRecoverySchedule::default();
+        let session = RwLock::new(None::<FakeSession>);
+        let epoch = AtomicU64::new(0);
+        assert!(attempt_hosted_recovery(
+            &mut recovery,
+            &mut schedule,
+            &session,
+            &epoch,
+            |_, _, _| async { false }
+        )
+        .await
+        .is_some());
+        let previous_deadline = schedule.next_attempt.unwrap();
+        recovery.initial_target = Some(cloud::hosted_notebook_url(
+            "https://example.com",
+            "new-target",
+        ));
+        assert!(attempt_hosted_recovery(
+            &mut recovery,
+            &mut schedule,
+            &session,
+            &epoch,
+            |_, id, _| async move {
+                assert_eq!(id, "new-target");
+                true
+            }
+        )
+        .await
+        .is_none());
+        assert!(tokio::time::Instant::now() < previous_deadline);
+        assert!(schedule.target.is_none());
+        assert!(schedule.next_attempt.is_none());
+        assert!(recovery.target().is_none());
+
+        recovery = hosted_handoff(0);
+        assert!(attempt_hosted_recovery(
+            &mut recovery,
+            &mut schedule,
+            &session,
+            &epoch,
+            |_, _, _| async { false }
+        )
+        .await
+        .is_some());
+        epoch.store(1, Ordering::Release);
+        assert!(attempt_hosted_recovery(
+            &mut recovery,
+            &mut schedule,
+            &session,
+            &epoch,
+            |_, _, _| async { panic!("explicit intent cancels pending retry") }
+        )
+        .await
+        .is_none());
+        assert!(schedule.target.is_none());
+        assert!(schedule.next_attempt.is_none());
+        assert!(recovery.target().is_none());
+    }
+
+    #[tokio::test]
+    async fn local_recovery_cannot_bypass_daemon_incarnation_gate() {
+        let mut recovery = hosted_handoff(0);
+        let mut schedule = HostedRecoverySchedule::default();
+        recovery.initial_target = Some("/tmp/local.ipynb".into());
+        let session = RwLock::new(None::<FakeSession>);
+        let epoch = AtomicU64::new(0);
+        assert!(attempt_hosted_recovery(
+            &mut recovery,
+            &mut schedule,
+            &session,
+            &epoch,
+            |_, _, _| async { panic!("local target must use guarded local rejoin") },
+        )
+        .await
+        .is_none());
+        assert_eq!(recovery.target().as_deref(), Some("/tmp/local.ipynb"));
     }
 
     #[test]

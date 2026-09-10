@@ -1,5 +1,4 @@
-//! CLI installation module for putting the bundled runt binary on PATH and
-//! creating the channel-specific notebook shorthand wrapper.
+//! Install the shared nteract CLI, retaining legacy channel-specific commands.
 //!
 //! On Unix systems, we install to `~/.local/bin` (no admin privileges required)
 //! and create a symlink so the CLI automatically stays in sync when the app
@@ -166,6 +165,121 @@ pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn bundled_nteract_candidates(
+    resource_dir: Option<&Path>,
+    current_exe: Option<&Path>,
+) -> Vec<PathBuf> {
+    bundled_runt_candidates(resource_dir, current_exe)
+        .into_iter()
+        .filter_map(|candidate| {
+            let name = candidate.file_name()?.to_str()?;
+            let suffix = name.strip_prefix("runt")?;
+            Some(candidate.with_file_name(format!("nteract-cli{suffix}")))
+        })
+        .collect()
+}
+
+pub fn get_bundled_nteract_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    bundled_nteract_candidates(
+        app.path().resource_dir().ok().as_deref(),
+        std::env::current_exe().ok().as_deref(),
+    )
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+/// Install only the canonical command. Automatic repair retains the selected
+/// channel; the explicit menu action can select this installation.
+fn install_nteract_command(app: &tauri::AppHandle, select: bool) -> Result<(), String> {
+    let target = get_bundled_nteract_path(app)
+        .ok_or_else(|| "Could not find the bundled nteract CLI".to_string())?;
+    #[cfg(unix)]
+    if is_ephemeral_runt_path(&target) {
+        return Err("Install nteract in a permanent location before installing its CLI.".into());
+    }
+    let dir = install_dir();
+    #[cfg(unix)]
+    let outcome = runt_workspace::cli::install_command(
+        &dir,
+        &target,
+        runt_workspace::build_channel(),
+        select,
+    )?;
+    #[cfg(target_os = "windows")]
+    let outcome =
+        install_windows_nteract_command(&dir, &target, runt_workspace::build_channel(), select)?;
+    match outcome {
+        runt_workspace::cli::InstallOutcome::CommandConflict(path) => Err(format!(
+            "Preserved existing command at {}. The nteract CLI is available at {}. Move the existing command before installing nteract on PATH.",
+            path.display(), target.display()
+        )),
+        runt_workspace::cli::InstallOutcome::Selected
+        | runt_workspace::cli::InstallOutcome::KeptSelection(_) => {
+            #[cfg(unix)]
+            ensure_shell_path(&dir)?;
+            Ok(())
+        }
+    }
+}
+
+/// Windows preserves the same selection contract using an owned .cmd shim.
+/// An executable beside the shim would win command resolution, so report that
+/// collision instead of pretending the CLI was installed successfully.
+#[cfg(any(target_os = "windows", test))]
+fn install_windows_nteract_command(
+    dir: &Path,
+    target: &Path,
+    channel: runt_workspace::BuildChannel,
+    select: bool,
+) -> Result<runt_workspace::cli::InstallOutcome, String> {
+    use runt_workspace::cli::{channel_record_name, InstallOutcome, SELECTION_FILE};
+    if !target.is_absolute() || !target.is_file() {
+        return Err(format!(
+            "CLI binary is not available at {}",
+            target.display()
+        ));
+    }
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let read_record = |name: &str| {
+        fs::read_to_string(dir.join(name))
+            .ok()
+            .map(|text| PathBuf::from(text.trim_end_matches(['\r', '\n'])))
+    };
+    let selected = read_record(SELECTION_FILE);
+    let previous_channel = read_record(&channel_record_name(channel));
+    fs::write(
+        dir.join(channel_record_name(channel)),
+        format!("{}\n", target.display()),
+    )
+    .map_err(|e| e.to_string())?;
+    for extension in ["exe", "com", "bat"] {
+        let other = dir.join(format!("nteract.{extension}"));
+        if fs::symlink_metadata(&other).is_ok() {
+            return Ok(InstallOutcome::CommandConflict(other));
+        }
+    }
+    let shim = dir.join("nteract.cmd");
+    if fs::symlink_metadata(&shim).is_ok() {
+        let existing = fs::read_to_string(&shim).map_err(|e| e.to_string())?;
+        let current = windows_runt_cmd_shim_contents(target);
+        let matches_selected = selected
+            .as_ref()
+            .is_some_and(|path| existing == windows_runt_cmd_shim_contents(path));
+        if !is_owned_windows_cmd_shim(&existing) || (existing != current && !matches_selected) {
+            return Ok(InstallOutcome::CommandConflict(shim));
+        }
+        if !select && existing != current && selected != previous_channel {
+            if let Some(previous) = selected {
+                return Ok(InstallOutcome::KeptSelection(previous));
+            }
+        }
+    }
+    fs::write(&shim, windows_runt_cmd_shim_contents(target)).map_err(|e| e.to_string())?;
+    fs::write(dir.join(SELECTION_FILE), format!("{}\n", target.display()))
+        .map_err(|e| e.to_string())?;
+    Ok(InstallOutcome::Selected)
+}
+
 /// Result of checking whether an installed CLI symlink is current.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SymlinkStatus {
@@ -198,124 +312,63 @@ pub fn check_cli_currency(app: &tauri::AppHandle) -> (SymlinkStatus, SymlinkStat
     (runt_status, nb_status)
 }
 
-/// Check if the runt symlink points to the current bundled binary.
-///
-/// Only considers an existing entry "ours" if it is a symlink whose target
-/// contains "nteract" or "runt" in the path — this avoids clobbering unrelated
-/// commands that happen to share the same name.
+/// Recognize only an exact current target or a previously recorded target.
 #[cfg(unix)]
-fn check_runt_symlink(app: &tauri::AppHandle, symlink_path: &std::path::Path) -> SymlinkStatus {
-    if !symlink_path.is_symlink() {
-        // Not a symlink — either missing or a regular file/directory we don't own.
-        return SymlinkStatus::NotInstalled;
-    }
-
-    let target = match fs::read_link(symlink_path) {
-        Ok(t) => t,
-        Err(e) => {
-            log::warn!(
-                "[cli_install] Failed to read symlink {}: {}",
-                symlink_path.display(),
-                e
-            );
-            // Can't read it — don't touch what we can't verify
-            return SymlinkStatus::NotInstalled;
-        }
-    };
-
-    // Only consider this symlink ours if the target path matches the shape of
-    // an nteract app bundle install. On macOS this is "*.app/Contents/MacOS/runt",
-    // on Linux it's inside an nteract resource directory. We check for "nteract"
-    // as a directory component AND the target filename being "runt" to avoid
-    // false-positives on unrelated symlinks (e.g. /opt/homebrew/bin/runt).
-    //
-    // Note: if a user renames "nteract.app" to something else, the symlink will
-    // no longer be recognized as ours, and auto-repair won't trigger. This is an
-    // acceptable trade-off — renaming is rare and manual `install_cli()` still works.
-    let target_str = target.to_string_lossy();
-    let target_filename = target.file_name().map(|f| f.to_string_lossy());
-    let looks_like_ours = target_filename.as_deref() == Some("runt")
-        && (target_str.contains("/nteract") || target_str.contains("/nteract-nightly"));
-
-    if !looks_like_ours {
-        log::debug!(
-            "[cli_install] Symlink {} -> {} does not appear to be an nteract install, skipping",
-            symlink_path.display(),
-            target_str
-        );
-        return SymlinkStatus::NotInstalled;
-    }
-
-    let bundled = match get_bundled_runt_path(app) {
-        Some(p) => p,
-        None => {
-            log::debug!("[cli_install] Cannot determine bundled runt path for currency check");
-            // Can't determine — assume current to avoid unnecessary reinstall
-            return SymlinkStatus::Current;
-        }
-    };
-
-    if target == bundled {
-        SymlinkStatus::Current
-    } else {
-        log::info!(
-            "[cli_install] Symlink stale: {} -> {} (expected {})",
-            symlink_path.display(),
-            target.display(),
-            bundled.display()
-        );
-        SymlinkStatus::Stale
+fn check_runt_symlink(app: &tauri::AppHandle, symlink_path: &Path) -> SymlinkStatus {
+    match get_bundled_runt_path(app) {
+        Some(bundled) => legacy_runt_status(symlink_path, &bundled),
+        None => SymlinkStatus::NotInstalled,
     }
 }
 
-/// Check if the nb wrapper script references the correct CLI command name.
-///
-/// Only considers the script "ours" if its content mentions "runt" — this avoids
-/// clobbering unrelated `nb` commands.
 #[cfg(unix)]
-fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> SymlinkStatus {
-    if !script_path.exists() {
+fn legacy_runt_status(symlink_path: &Path, bundled: &Path) -> SymlinkStatus {
+    let Ok(target) = fs::read_link(symlink_path) else {
+        return SymlinkStatus::NotInstalled;
+    };
+    if target == bundled {
+        return SymlinkStatus::Current;
+    }
+    let recorded = fs::read_to_string(legacy_target_record(symlink_path))
+        .ok()
+        .map(|text| PathBuf::from(text.trim_end_matches(['\r', '\n'])));
+    if recorded.as_ref() == Some(&target) {
+        SymlinkStatus::Stale
+    } else {
+        SymlinkStatus::NotInstalled
+    }
+}
+
+/// Seed pre-record installations while their symlink still proves ownership.
+/// An unrecorded stale path must never be adopted based on its filename.
+#[cfg(unix)]
+fn seed_current_legacy_target(command: &Path, bundled: &Path) -> Result<(), String> {
+    if fs::read_link(command).ok().as_deref() == Some(bundled) {
+        fs::write(
+            legacy_target_record(command),
+            format!("{}\n", bundled.display()),
+        )
+        .map_err(|e| format!("Failed to record current legacy CLI target: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Recognize only exact generated wrappers, including the other release channel
+/// so a known old wrapper can migrate without adopting user-written scripts.
+#[cfg(unix)]
+fn check_nb_script(script_path: &Path, expected_cli_name: &str) -> SymlinkStatus {
+    if !fs::symlink_metadata(script_path).is_ok_and(|metadata| metadata.is_file()) {
         return SymlinkStatus::NotInstalled;
     }
-
-    match fs::read_to_string(script_path) {
-        Ok(contents) => {
-            // Only consider this script ours if it contains the exact exec pattern
-            // that create_nb_wrapper() generates: "exec runt notebook" or
-            // "exec runt-nightly notebook". A bare substring like "runt" would
-            // false-positive on scripts mentioning "grunt", "runtime", etc.
-            let is_ours = contents.contains("exec runt notebook")
-                || contents.contains("exec runt-nightly notebook");
-
-            if !is_ours {
-                log::debug!(
-                    "[cli_install] Script {} does not appear to be an nteract nb wrapper, skipping",
-                    script_path.display()
-                );
-                return SymlinkStatus::NotInstalled;
-            }
-
-            let expected_exec = format!("exec {} notebook", expected_cli_name);
-            if contents.contains(&expected_exec) {
-                SymlinkStatus::Current
-            } else {
-                log::info!(
-                    "[cli_install] nb script stale: {} does not contain '{}'",
-                    script_path.display(),
-                    expected_exec
-                );
-                SymlinkStatus::Stale
-            }
-        }
-        Err(e) => {
-            log::warn!(
-                "[cli_install] Failed to read nb script {}: {}",
-                script_path.display(),
-                e
-            );
-            // Can't read — don't touch
-            SymlinkStatus::NotInstalled
-        }
+    let Ok(contents) = fs::read_to_string(script_path) else {
+        return SymlinkStatus::NotInstalled;
+    };
+    if contents == nb_wrapper_contents(expected_cli_name) {
+        SymlinkStatus::Current
+    } else if is_known_nb_wrapper(&contents) {
+        SymlinkStatus::Stale
+    } else {
+        SymlinkStatus::NotInstalled
     }
 }
 
@@ -762,18 +815,28 @@ fn is_ephemeral_path(app: &tauri::AppHandle) -> bool {
     ephemeral
 }
 
-/// Silently update the CLI installation if the installed command entrypoints
-/// are stale.
+/// Install or refresh the canonical command without changing its selected
+/// channel. Repair legacy command entrypoints separately when they are stale.
 ///
-/// Called on app launch. On Unix, if the user has previously installed the CLI
-/// (symlink exists), this checks whether it still points to the current app
-/// bundle and re-runs `install_cli()` if not. On Windows, the installer should
+/// Called on app launch. On Unix, the canonical command is installed if missing;
+/// existing legacy commands are repaired only when recognized as ours. On Windows, the installer should
 /// have created owned `.cmd` shims already; app launch repairs stale/missing
 /// shims so older installs and failed installer hooks still recover for UI use.
 ///
 /// Skips the check in dev mode (source builds) and on macOS if the app is
 /// running from a translocated path (e.g., directly from a DMG).
 pub fn ensure_cli_current(app: &tauri::AppHandle) {
+    if !runt_workspace::is_dev_mode() {
+        #[cfg(unix)]
+        let persistent = !is_ephemeral_path(app);
+        #[cfg(target_os = "windows")]
+        let persistent = true;
+        if persistent {
+            if let Err(e) = install_nteract_command(app, false) {
+                log::warn!("[cli_install] Canonical CLI installation skipped: {}", e);
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         if runt_workspace::is_dev_mode() {
@@ -861,6 +924,16 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
             return;
         }
 
+        if let Some(bundled) = get_bundled_runt_path(app) {
+            if let Err(e) =
+                seed_current_legacy_target(&install_dir().join(cli_command_name()), &bundled)
+            {
+                log::warn!(
+                    "[cli_install] Legacy CLI ownership migration skipped: {}",
+                    e
+                );
+            }
+        }
         let (runt_status, nb_status) = check_cli_currency(app);
 
         log::debug!(
@@ -919,8 +992,6 @@ pub fn ensure_cli_current(app: &tauri::AppHandle) {
         );
         if let Err(e) = install_cli(app) {
             log::warn!("[cli_install] Failed to update CLI: {}", e);
-        } else {
-            log::info!("[cli_install] CLI updated successfully");
         }
     }
 }
@@ -965,8 +1036,20 @@ pub fn is_cli_installed_legacy() -> bool {
 }
 
 /// Install the CLI to the user-local command directory (no admin privileges needed).
-/// Returns Ok(()) on success, Err with message on failure.
+/// Canonical installation determines success; legacy compatibility upkeep is
+/// best effort and reports preserved commands separately.
 pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
+    install_nteract_command(app, false)?;
+    if let Err(e) = install_legacy_cli(app) {
+        log::warn!(
+            "[cli_install] Canonical CLI installed; legacy compatibility upkeep skipped: {}",
+            e
+        );
+    }
+    Ok(())
+}
+
+fn install_legacy_cli(app: &tauri::AppHandle) -> Result<(), String> {
     let bundled_runt = get_bundled_runt_path(app)
         .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
 
@@ -998,7 +1081,7 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     try_install_direct(&bundled_runt, &runt_dest, &nb_dest)?;
 
     log::info!(
-        "[cli_install] CLI installed: {} -> {}",
+        "[cli_install] Legacy compatibility CLI installed: {} -> {}",
         runt_dest.display(),
         bundled_runt.display()
     );
@@ -1016,6 +1099,11 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Explicit menu action selects this app's release channel for `nteract`.
+pub fn install_cli_and_select(app: &tauri::AppHandle) -> Result<(), String> {
+    install_nteract_command(app, true)
 }
 
 /// Warn if legacy /usr/local/bin has stale CLI copies that shadow ~/.local/bin.
@@ -1057,9 +1145,9 @@ fn try_install_direct(
 ) -> Result<(), String> {
     #[cfg(unix)]
     {
-        // Remove existing file/symlink if present. Unix install paths are the
-        // existing user-local/manual flow; ownership checks happen before
-        // auto-repair on app launch.
+        // Preflight both compatibility aliases before modifying either one.
+        // Canonical command installation is independent of these legacy names.
+        verify_legacy_install_targets(bundled_runt, runt_dest, nb_dest)?;
         if runt_dest.exists() || runt_dest.is_symlink() {
             fs::remove_file(runt_dest)
                 .map_err(|e| format!("Failed to remove existing {}: {}", cli_command_name(), e))?;
@@ -1067,6 +1155,11 @@ fn try_install_direct(
 
         // Create a symlink so the CLI stays in sync when the app updates.
         symlink(bundled_runt, runt_dest).map_err(|e| format!("Failed to create symlink: {}", e))?;
+        fs::write(
+            legacy_target_record(runt_dest),
+            format!("{}\n", bundled_runt.display()),
+        )
+        .map_err(|e| format!("Failed to record legacy CLI target: {e}"))?;
 
         // Create nb wrapper script.
         create_nb_wrapper(nb_dest, cli_command_name())?;
@@ -1078,18 +1171,69 @@ fn try_install_direct(
     Ok(())
 }
 
+#[cfg(unix)]
+fn legacy_target_record(command: &Path) -> PathBuf {
+    command.with_file_name(format!(
+        ".nteract-legacy-{}-target",
+        command.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+#[cfg(unix)]
+fn verify_legacy_install_targets(
+    target: &Path,
+    runt_dest: &Path,
+    nb_dest: &Path,
+) -> Result<(), String> {
+    if fs::symlink_metadata(runt_dest).is_ok()
+        && legacy_runt_status(runt_dest, target) == SymlinkStatus::NotInstalled
+    {
+        return Err(format!(
+            "Preserved unrelated legacy command {}. Bundled CLI available at {}.",
+            runt_dest.display(),
+            target.display()
+        ));
+    }
+    if let Ok(metadata) = fs::symlink_metadata(nb_dest) {
+        let owned = metadata.is_file()
+            && fs::read_to_string(nb_dest).is_ok_and(|contents| is_known_nb_wrapper(&contents));
+        if !owned {
+            return Err(format!(
+                "Preserved unrelated notebook shorthand {}. Bundled CLI available at {}.",
+                nb_dest.display(),
+                target.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Create the nb wrapper script
 #[cfg(unix)]
-fn create_nb_wrapper(nb_dest: &std::path::Path, cli_command: &str) -> Result<(), String> {
-    let script = format!(
+fn nb_wrapper_contents(cli_command: &str) -> String {
+    format!(
         r#"#!/bin/bash
 # {} - open notebooks faster than you can say {} notebook
 exec {} notebook "$@"
 "#,
-        cli_notebook_alias_name(),
+        if cli_command == "runt-nightly" {
+            "nb-nightly"
+        } else {
+            "nb"
+        },
         cli_command,
         cli_command
-    );
+    )
+}
+
+#[cfg(unix)]
+fn is_known_nb_wrapper(contents: &str) -> bool {
+    contents == nb_wrapper_contents("runt") || contents == nb_wrapper_contents("runt-nightly")
+}
+
+#[cfg(unix)]
+fn create_nb_wrapper(nb_dest: &std::path::Path, cli_command: &str) -> Result<(), String> {
+    let script = nb_wrapper_contents(cli_command);
 
     let mut file =
         fs::File::create(nb_dest).map_err(|e| format!("Failed to create nb script: {}", e))?;
@@ -1126,7 +1270,7 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
         (
             config,
             format!(
-                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nfish_add_path {}\n",
+                "\n# Added by nteract \u{2013} puts nteract CLI on PATH\nfish_add_path {}\n",
                 bin_dir.display()
             ),
         )
@@ -1134,7 +1278,7 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
         (
             home.join(".bashrc"),
             format!(
-                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
+                "\n# Added by nteract \u{2013} puts nteract CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
                 bin_dir.display()
             ),
         )
@@ -1143,7 +1287,7 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
         (
             home.join(".zshrc"),
             format!(
-                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
+                "\n# Added by nteract \u{2013} puts nteract CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
                 bin_dir.display()
             ),
         )
@@ -1409,6 +1553,245 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn current_legacy_alias_seeds_ownership_before_bundle_relocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old-bundled-runt");
+        let new = dir.path().join("new-bundled-runt");
+        let runt = dir.path().join(cli_command_name());
+        let nb = dir.path().join(cli_notebook_alias_name());
+        fs::write(&old, "fixture").unwrap();
+        symlink(&old, &runt).unwrap();
+        fs::write(&nb, nb_wrapper_contents(cli_command_name())).unwrap();
+        assert_eq!(legacy_runt_status(&runt, &old), SymlinkStatus::Current);
+        assert_eq!(
+            check_nb_script(&nb, cli_command_name()),
+            SymlinkStatus::Current
+        );
+        seed_current_legacy_target(&runt, &old).unwrap();
+        fs::rename(&old, &new).unwrap();
+        assert_eq!(legacy_runt_status(&runt, &new), SymlinkStatus::Stale);
+        try_install_direct(&new, &runt, &nb).unwrap();
+        assert_eq!(fs::read_link(&runt).unwrap(), new);
+        assert_eq!(legacy_runt_status(&runt, &new), SymlinkStatus::Current);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrecorded_app_shaped_legacy_target_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let unknown = dir.path().join("nteract-user.app/Contents/MacOS/runt");
+        let target = dir.path().join("bundled-runt");
+        let runt = dir.path().join(cli_command_name());
+        let nb = dir.path().join(cli_notebook_alias_name());
+        fs::write(&target, "fixture").unwrap();
+        symlink(&unknown, &runt).unwrap();
+        seed_current_legacy_target(&runt, &target).unwrap();
+        assert!(!legacy_target_record(&runt).exists());
+        assert_eq!(
+            legacy_runt_status(&runt, &target),
+            SymlinkStatus::NotInstalled
+        );
+        assert!(try_install_direct(&target, &runt, &nb).is_err());
+        assert_eq!(fs::read_link(&runt).unwrap(), unknown);
+        assert!(!nb.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_other_channel_nb_wrapper_migrates_but_user_edits_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("bundled-runt");
+        let runt = dir.path().join(cli_command_name());
+        let nb = dir.path().join(cli_notebook_alias_name());
+        let old_command = if cli_command_name() == "runt" {
+            "runt-nightly"
+        } else {
+            "runt"
+        };
+        fs::write(&target, "fixture").unwrap();
+        symlink(&target, &runt).unwrap();
+        fs::write(&nb, nb_wrapper_contents(old_command)).unwrap();
+        assert_eq!(
+            check_nb_script(&nb, cli_command_name()),
+            SymlinkStatus::Stale
+        );
+        try_install_direct(&target, &runt, &nb).unwrap();
+        assert_eq!(
+            check_nb_script(&nb, cli_command_name()),
+            SymlinkStatus::Current
+        );
+        let edited = format!(
+            "{}echo user customization\n",
+            nb_wrapper_contents(old_command)
+        );
+        fs::write(&nb, &edited).unwrap();
+        assert_eq!(
+            check_nb_script(&nb, cli_command_name()),
+            SymlinkStatus::NotInstalled
+        );
+        assert!(try_install_direct(&target, &runt, &nb).is_err());
+        assert_eq!(fs::read_to_string(&nb).unwrap(), edited);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_install_preserves_unrelated_commands_before_modifying_either_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("bundled-runt");
+        let runt = dir.path().join(cli_command_name());
+        let nb = dir.path().join(cli_notebook_alias_name());
+        fs::write(&target, "fixture").unwrap();
+        symlink(&target, &runt).unwrap();
+        fs::write(&nb, "user notebook command").unwrap();
+        assert!(try_install_direct(&target, &runt, &nb).is_err());
+        assert_eq!(fs::read_link(&runt).unwrap(), target);
+        assert_eq!(fs::read_to_string(&nb).unwrap(), "user notebook command");
+        fs::remove_file(&nb).unwrap();
+        symlink(dir.path().join("missing-user-nb"), &nb).unwrap();
+        assert!(try_install_direct(&target, &runt, &nb).is_err());
+        assert_eq!(
+            fs::read_link(&nb).unwrap(),
+            dir.path().join("missing-user-nb")
+        );
+        fs::remove_file(&nb).unwrap();
+        fs::remove_file(&runt).unwrap();
+        fs::write(&runt, "user runtime command").unwrap();
+        assert!(try_install_direct(&target, &runt, &nb).is_err());
+        assert_eq!(fs::read_to_string(&runt).unwrap(), "user runtime command");
+        assert!(!nb.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_install_refreshes_only_recorded_target_and_exact_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old-runt");
+        let new = dir.path().join("new-runt");
+        let runt = dir.path().join(cli_command_name());
+        let nb = dir.path().join(cli_notebook_alias_name());
+        fs::write(&new, "fixture").unwrap();
+        symlink(&old, &runt).unwrap();
+        fs::write(&nb, nb_wrapper_contents(cli_command_name())).unwrap();
+        // A filename or directory that resembles an app is not ownership.
+        assert!(try_install_direct(&new, &runt, &nb).is_err());
+        fs::write(legacy_target_record(&runt), format!("{}\n", old.display())).unwrap();
+        try_install_direct(&new, &runt, &nb).unwrap();
+        assert_eq!(fs::read_link(&runt).unwrap(), new);
+        fs::write(
+            &nb,
+            format!(
+                "{}echo user customization\n",
+                nb_wrapper_contents(cli_command_name())
+            ),
+        )
+        .unwrap();
+        assert!(try_install_direct(&new, &runt, &nb).is_err());
+    }
+
+    #[test]
+    fn canonical_cli_candidates_never_select_desktop_executable() {
+        let candidates = bundled_nteract_candidates(
+            Some(Path::new("/Applications/nteract.app/Contents/Resources")),
+            Some(Path::new(
+                "/Applications/nteract.app/Contents/MacOS/nteract",
+            )),
+        );
+        assert!(!candidates.is_empty());
+        assert!(candidates.iter().all(|path| path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("nteract-cli")));
+    }
+
+    #[test]
+    fn windows_canonical_shim_preserves_channel_selection_and_unrelated_executables() {
+        use runt_workspace::{cli::InstallOutcome, BuildChannel};
+        let dir = tempfile::tempdir().unwrap();
+        let stable = dir.path().join("stable-cli.exe");
+        let nightly = dir.path().join("nightly-cli.exe");
+        fs::write(&stable, "fixture").unwrap();
+        fs::write(&nightly, "fixture").unwrap();
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &stable, BuildChannel::Stable, false)
+                .unwrap(),
+            InstallOutcome::Selected
+        );
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &nightly, BuildChannel::Nightly, false)
+                .unwrap(),
+            InstallOutcome::KeptSelection(stable.clone())
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("nteract.cmd")).unwrap(),
+            windows_runt_cmd_shim_contents(&stable)
+        );
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &nightly, BuildChannel::Nightly, true)
+                .unwrap(),
+            InstallOutcome::Selected
+        );
+        let desktop = dir.path().join("nteract.exe");
+        fs::write(&desktop, "desktop").unwrap();
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &stable, BuildChannel::Stable, true)
+                .unwrap(),
+            InstallOutcome::CommandConflict(desktop.clone())
+        );
+        assert_eq!(fs::read_to_string(desktop).unwrap(), "desktop");
+    }
+
+    #[test]
+    fn windows_canonical_shim_rejects_unowned_cmd() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("nteract-cli.exe");
+        let shim = dir.path().join("nteract.cmd");
+        fs::write(&target, "fixture").unwrap();
+        fs::write(&shim, "@echo off\r\necho user command\r\n").unwrap();
+        assert_eq!(
+            install_windows_nteract_command(
+                dir.path(),
+                &target,
+                runt_workspace::BuildChannel::Stable,
+                true
+            )
+            .unwrap(),
+            runt_workspace::cli::InstallOutcome::CommandConflict(shim.clone())
+        );
+        assert_eq!(
+            fs::read_to_string(shim).unwrap(),
+            "@echo off\r\necho user command\r\n"
+        );
+    }
+
+    #[test]
+    fn windows_canonical_upgrade_moves_selected_target_but_preserves_user_edits() {
+        use runt_workspace::{cli::InstallOutcome, BuildChannel};
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old-cli.exe");
+        let new = dir.path().join("new-cli.exe");
+        fs::write(&old, "fixture").unwrap();
+        fs::write(&new, "fixture").unwrap();
+        install_windows_nteract_command(dir.path(), &old, BuildChannel::Stable, false).unwrap();
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &new, BuildChannel::Stable, false).unwrap(),
+            InstallOutcome::Selected
+        );
+        let shim = dir.path().join("nteract.cmd");
+        let edited = format!(
+            "{}echo custom command\r\n",
+            windows_runt_cmd_shim_contents(&new)
+        );
+        fs::write(&shim, &edited).unwrap();
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &new, BuildChannel::Stable, true).unwrap(),
+            InstallOutcome::CommandConflict(shim.clone())
+        );
+        assert_eq!(fs::read_to_string(shim).unwrap(), edited);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn appimage_mount_paths_are_ephemeral() {
         let path = PathBuf::from("/tmp/.mount_nteracLoPFjM/usr/bin/runt");
         assert!(is_ephemeral_runt_path(&path));
@@ -1460,9 +1843,9 @@ mod tests {
         let script_path = dir.path().join("nb");
         fs::write(
             &script_path,
-            "#!/bin/bash\n# nb - open notebooks\nexec runt-nightly notebook \"$@\"\n",
+            "#!/bin/bash\n# nb-nightly - open notebooks faster than you can say runt-nightly notebook\nexec runt-nightly notebook \"$@\"\n",
         )
-        .ok();
+        .unwrap();
 
         assert_eq!(
             check_nb_script(&script_path, "runt-nightly"),
@@ -1477,9 +1860,9 @@ mod tests {
         let script_path = dir.path().join("nb");
         fs::write(
             &script_path,
-            "#!/bin/bash\n# nb - open notebooks\nexec runt notebook \"$@\"\n",
+            "#!/bin/bash\n# nb - open notebooks faster than you can say runt notebook\nexec runt notebook \"$@\"\n",
         )
-        .ok();
+        .unwrap();
 
         // Expects runt-nightly but script has runt
         assert_eq!(

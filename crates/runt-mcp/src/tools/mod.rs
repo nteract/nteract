@@ -690,10 +690,10 @@ pub fn tool_success(msg: &str) -> Result<CallToolResult, McpError> {
 /// Text content blocks are the agent channel (annotated `audience:
 /// [assistant]`, compact, with legibility pointers to blob-stored renders);
 /// `structured_content` is the complete, URL-rich human render contract.
-pub async fn build_execution_result(
+pub(crate) async fn build_execution_result(
     result: &crate::execution::ExecutionResult,
     handle: &notebook_sync::handle::DocHandle,
-    server: &NteractMcp,
+    metadata: &crate::LocalRuntimeMetadata,
 ) -> Result<CallToolResult, McpError> {
     let header = crate::formatting::format_cell_header(
         &result.cell_id,
@@ -745,7 +745,7 @@ pub async fn build_execution_result(
                 output_manifests: &result.output_manifests,
                 execution_count: ec,
                 status: &result.status,
-                blob_base_url: &server.blob_base_url,
+                blob_base_url: &metadata.blob_base_url,
                 comms: runtime_comms.as_ref(),
                 resolved_outputs_by_manifest: Some(&result.resolved_outputs_by_manifest),
             },

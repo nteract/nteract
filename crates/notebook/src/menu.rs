@@ -68,10 +68,7 @@ pub fn about_menu_label() -> String {
 }
 
 pub fn install_cli_menu_label() -> String {
-    format!(
-        "Install '{}' Command in PATH",
-        runt_workspace::cli_command_name()
-    )
+    "Install 'nteract' Command in PATH".to_string()
 }
 
 pub fn window_menu_item_id(window_label: &str) -> String {

@@ -2,12 +2,12 @@
 
 A *workstation* is any machine that offers compute to hosted nteract notebook
 rooms: an Outerbounds workstation, a JupyterHub single-user server, a beefy box
-under your desk. The daemon attaches to a room as a `runtime_peer` over an
+under your desk. A runtime agent attaches to a room as a `runtime_peer` over an
 outbound WebSocket, launches kernels locally, and syncs outputs back through the
 room. You don't need inbound ports or a reverse proxy.
 
 For the architecture, see `docs/adr/remote-workstation-doc-agents.md` and
-`docs/adr/deployment-topology.md`. The daemon implementation is in
+`docs/adr/deployment-topology.md`. The workstation implementation is in
 `crates/runtimed/src/workstation/`.
 
 ## Install (one-liner)
@@ -23,15 +23,17 @@ sudo apt update && sudo apt install -y curl tmux
 On a Linux x64 or macOS (Apple silicon / Intel) machine:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless
+curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli
 ```
 
-`--headless` skips the desktop app and installs just `runt`, `runtimed`, and
-`nteract-mcp` into `~/.local/share/nteract/stable` (on macOS, as the sidecars
-of the .app bundle kept under that prefix), links them into `~/.local/bin`,
-and installs the per-user daemon service with `runt daemon doctor --fix`
-(systemd on Linux, launchd on macOS). Everything is per-user; no root
-required. Re-run to upgrade.
+`--cli` (also accepted as `--headless`) installs the CLI and its runtime/MCP
+helpers without configuring or starting the local daemon service. On macOS,
+the signed bundle is retained under the installation prefix without adding a
+Desktop app to Applications. Everything is per-user; re-run to upgrade.
+
+The public command is `nteract`. The runtime helper executable still contains
+the workstation agent and execution modes; these do not need a running local
+notebook daemon. See the [CLI guide](cli.md) for the dependency table.
 
 If this is a fresh shell, make the installed CLI available before running the
 pairing commands:
@@ -40,12 +42,12 @@ pairing commands:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The examples below use the stable channel command names. Nightly releases use
-channel-suffixed commands instead: `runt-nightly`, `runtimed-nightly`, and
-`nteract-mcp-nightly`. If you install a nightly headless release, run
-`runt-nightly workstation ...` wherever this guide shows
-`runt workstation ...`; the workstation credential is stored under
-`~/.config/nteract-nightly/workstation.json`.
+The public command keeps its selected installation when another channel is
+installed. For a Nightly workstation, use `nteract --channel nightly workstation
+...` throughout pairing, serving, and recovery. This selects the actual Nightly
+installation and its credential namespace; it does not reinterpret Stable
+credentials. Pass `--default-cli` to the installer to explicitly change the
+selected command. Legacy channel-specific commands remain compatible.
 
 For air-gapped installs, download the release assets yourself and use
 `--from-dir`.
@@ -63,7 +65,7 @@ The pairing flow needs no externally issued credential
    `https://preview.runt.run`):
 
 ```bash
-runt workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
+nteract workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
 ```
 
    (Omit `--code` to be prompted.) This redeems the code for a long-lived
@@ -76,11 +78,11 @@ runt workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
 3. On Linux, keep the workstation available with user systemd:
 
 ```bash
-runt workstation service install --start
+nteract workstation service install --start
 ```
 
    On Linux this writes and enables a user systemd unit that runs
-   `runt workstation run` with the stored credential. It does not require
+   `nteract workstation run` with the stored credential. It does not require
    root. Use `--python-path /path/to/python` when the workstation should
    launch kernels from a project or virtual environment interpreter instead
    of the first `python3`/`python` on `PATH`. Use
@@ -91,7 +93,7 @@ runt workstation service install --start
    foreground fallback instead:
 
 ```bash
-runt workstation run
+nteract workstation run
 ```
 
    The workstation's `current_python` policy launches kernels against that
@@ -106,9 +108,9 @@ runt workstation run
 4. Check what the credential sees:
 
 ```bash
-runt workstation status          # workstations, status, last-seen, default
-runt workstation status --json
-runt workstation service status  # Linux user systemd service state
+nteract workstation status          # workstations, status, last-seen, default
+nteract workstation status --json
+nteract workstation service status  # Linux user systemd service state
 ```
 
 The service launches `runtimed workstation-agent`, which heartbeats the
@@ -121,7 +123,7 @@ is deliberately only a wakeup signal, not a replay log: attach jobs are durable
 in the hosted database, so reconnect recovery polls the queue. The credential
 is passed through the environment (`RUNT_CLOUD_TOKEN`), never argv.
 `RUNT_CLOUD_TOKEN` / `RUNT_CLOUD_URL` environment variables override the stored
-credential for foreground `runt workstation run`; the service path uses the
+credential for foreground `nteract workstation run`; the service path uses the
 stored credential file written by `connect`.
 
 In the hosted notebook, an owner attaching compute to a workstation dispatches
@@ -144,15 +146,16 @@ adoption of arbitrary existing Jupyter kernels.
 
 ## Run it as a service
 
-The installer's systemd unit runs the *daemon*. Workstation availability is a
-separate user service because the daemon makes the machine notebook-capable,
-while the workstation agent offers this machine's compute to hosted notebooks.
+Workstation availability uses its own user service. CLI-only installation
+does not create a local daemon service. An existing local notebook daemon
+does not make this machine available as a workstation: pairing and the
+workstation agent establish that connection.
 
 Install or update the workstation service after a one-time
-`runt workstation connect`:
+`nteract workstation connect`:
 
 ```bash
-runt workstation service install --start \
+nteract workstation service install --start \
   --python-path "$PWD/.venv/bin/python" \
   --working-directory "$PWD"
 ```
@@ -160,11 +163,11 @@ runt workstation service install --start \
 Manage it with:
 
 ```bash
-runt workstation service status
-runt workstation service logs -f
-runt workstation service stop
-runt workstation service start
-runt workstation service uninstall
+nteract workstation service status
+nteract workstation service logs -f
+nteract workstation service stop
+nteract workstation service start
+nteract workstation service uninstall
 ```
 
 The service command detects missing user systemd sessions and prints the
@@ -176,7 +179,7 @@ For preview/manual testing, the foreground path still works unchanged and is
 useful inside tmux:
 
 ```bash
-runt workstation run --python-path "$PWD/.venv/bin/python" --working-directory "$PWD"
+nteract workstation run --python-path "$PWD/.venv/bin/python" --working-directory "$PWD"
 ```
 
 ## Attach a single room directly (legacy / dev)
@@ -284,7 +287,7 @@ directory, and environment policy.
 ## Diagnostics
 
 ```bash
-runt workstation status     # workstations the credential can see
+nteract workstation status     # workstations the credential can see
 runt daemon status          # daemon state, pool sizes
 runt daemon logs -f         # tail the daemon log
 runt diagnostics            # bundle logs + system info into an archive

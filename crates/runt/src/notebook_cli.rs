@@ -95,14 +95,17 @@ pub struct NotebookCallArgs {
     pub json: bool,
 }
 
-pub async fn command(command: NotebookCommands) -> Result<()> {
+pub async fn command(
+    command: NotebookCommands,
+    local_runtime: crate::local_runtime::LocalRuntimeOptions,
+) -> Result<()> {
     match command {
-        NotebookCommands::Tools { json, all } => list_tools(json, all),
-        NotebookCommands::Call(args) => call_tool(*args).await,
+        NotebookCommands::Tools { json, all } => list_tools(json, all, local_runtime.enabled),
+        NotebookCommands::Call(args) => call_tool(*args, local_runtime).await,
     }
 }
 
-fn list_tools(json: bool, all: bool) -> Result<()> {
+fn list_tools(json: bool, all: bool, canonical: bool) -> Result<()> {
     let tools = if all {
         runt_mcp::tools::cli_discoverable_tools()
     } else {
@@ -122,22 +125,24 @@ fn list_tools(json: bool, all: bool) -> Result<()> {
         }
     }
     if !all {
+        let cli = if canonical { "nteract" } else { "runt" };
         println!();
         println!(
             "Additional callable read tools: get_cell, get_all_cells. \
-             Run `runt nb tools --all` to include dispatch-only read tools hidden from MCP advertisements."
+             Run `{cli} nb tools --all` to include dispatch-only read tools hidden from MCP advertisements."
         );
     }
     Ok(())
 }
 
-async fn call_tool(args: NotebookCallArgs) -> Result<()> {
+async fn call_tool(
+    args: NotebookCallArgs,
+    local_runtime: crate::local_runtime::LocalRuntimeOptions,
+) -> Result<()> {
     validate_create_options(&args)?;
 
-    let socket_path = args
-        .socket
-        .clone()
-        .unwrap_or_else(runtimed_client::daemon_paths::get_socket_path);
+    let selected_runtime = crate::local_runtime::select(local_runtime, args.socket.clone()).await;
+    let socket_path = selected_runtime.endpoint;
     let (blob_base_url, blob_store_path) =
         runtimed_client::daemon_paths::get_blob_paths_async(&socket_path).await;
     let daemon_info = runtimed_client::singleton::query_daemon_info(socket_path.clone()).await;
@@ -148,7 +153,18 @@ async fn call_tool(args: NotebookCallArgs) -> Result<()> {
 
     let server = runt_mcp::NteractMcp::new(socket_path, blob_base_url, blob_store_path)
         .with_execution_store_path(execution_store_path);
-    server.set_peer_label("runt CLI").await;
+    let server = if local_runtime.enabled {
+        server.with_local_runtime_admission(selected_runtime.launch)
+    } else {
+        server
+    };
+    server
+        .set_peer_label(if local_runtime.enabled {
+            "nteract CLI"
+        } else {
+            "runt CLI"
+        })
+        .await;
 
     bootstrap_session(&server, &args).await?;
 
