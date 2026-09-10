@@ -1019,6 +1019,17 @@ impl Pool {
         self.warming += count;
     }
 
+    /// Claim one missing slot before starting a replacement in a detached task.
+    /// Maintenance or another take may already have claimed the deficit while
+    /// the caller was vendoring the acquired environment's launcher.
+    fn reserve_replenishment(&mut self) -> bool {
+        if self.deficit() == 0 || !self.should_retry() {
+            return false;
+        }
+        self.mark_warming(1);
+        true
+    }
+
     /// Register a warming path so GC won't delete it while it's being set up.
     fn register_warming_path(&mut self, path: PathBuf) {
         self.warming_paths.insert(path);
@@ -4714,7 +4725,7 @@ impl Daemon {
                 }
                 let daemon = self.clone();
                 spawn_best_effort("uv-replenish", async move {
-                    daemon.create_uv_env().await;
+                    daemon.replenish_env(PoolKind::Uv).await;
                 });
                 let guard = PoolLeaseGuard::new(self, EnvType::Uv, &e.venv_path);
                 return Some((e, guard));
@@ -4799,7 +4810,7 @@ impl Daemon {
                 }
                 let daemon = self.clone();
                 spawn_best_effort("conda-replenish", async move {
-                    daemon.replenish_conda_env().await;
+                    daemon.replenish_env(PoolKind::Conda).await;
                 });
                 let guard = PoolLeaseGuard::new(self, EnvType::Conda, &e.venv_path);
                 return Some((e, guard));
@@ -4879,7 +4890,7 @@ impl Daemon {
         }
         let daemon = self.clone();
         spawn_best_effort("pixi-replenish", async move {
-            daemon.replenish_pixi_env().await;
+            daemon.replenish_env(PoolKind::Pixi).await;
         });
         let guard = PoolLeaseGuard::new(self, EnvType::Pixi, &e.venv_path);
         Some((e, guard))
@@ -7278,10 +7289,27 @@ impl Daemon {
         }
     }
 
-    /// Replenish a single Conda environment.
-    async fn replenish_conda_env(self: &Arc<Self>) {
-        self.conda_pool.lock().await.mark_warming(1);
-        self.create_conda_env().await;
+    /// Replenish only an unclaimed deficit. Reserving under the same lock used
+    /// by maintenance keeps both producers from building for the same slot.
+    /// This runs in a detached task; taking a ready env never waits for it.
+    async fn replenish_env(self: &Arc<Self>, kind: PoolKind) {
+        let reserved = {
+            let pool = match kind {
+                PoolKind::Uv => &self.uv_pool,
+                PoolKind::Conda => &self.conda_pool,
+                PoolKind::Pixi => &self.pixi_pool,
+            };
+            let mut pool = pool.lock().await;
+            pool.reserve_replenishment()
+        };
+        if !reserved {
+            return;
+        }
+        match kind {
+            PoolKind::Uv => self.create_uv_env().await,
+            PoolKind::Conda => self.create_conda_env().await,
+            PoolKind::Pixi => self.create_pixi_env().await,
+        }
     }
 
     /// Create a pixi environment via subprocess and add it to the pool.
@@ -7367,12 +7395,6 @@ impl Daemon {
                     .await;
             }
         }
-    }
-
-    /// Mark pixi pool as warming and create a pixi environment.
-    async fn replenish_pixi_env(self: &Arc<Self>) {
-        self.pixi_pool.lock().await.mark_warming(1);
-        self.create_pixi_env().await;
     }
 
     /// Update the PoolDoc with current pool state and notify sync connections.
@@ -10167,6 +10189,128 @@ mod tests {
         // add() should remove the path from warming_paths
         assert!(pool.warming_paths.is_empty());
         assert_eq!(pool.warming, 0);
+    }
+
+    #[tokio::test]
+    async fn test_replenishment_reserves_slot_while_creation_is_pending() {
+        let temp_dir = TempDir::new().unwrap();
+        let pool = Arc::new(Mutex::new(Pool::new(2, 3600)));
+        {
+            let mut pool = pool.lock().await;
+            pool.add(create_test_env(&temp_dir, "runtimed-uv-ready"));
+            // The initial warmer is still preparing the second spare.
+            pool.mark_warming(1);
+            assert!(pool.take().0.is_some());
+        }
+
+        let replacement = create_test_env(&temp_dir, "runtimed-uv-replacement");
+        let (reserved_tx, reserved_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let replenisher_pool = pool.clone();
+        let replenisher = tokio::spawn(async move {
+            assert!(replenisher_pool.lock().await.reserve_replenishment());
+            reserved_tx.send(()).unwrap();
+            // Hold environment creation pending while other producers run.
+            finish_rx.await.unwrap();
+            replenisher_pool.lock().await.add(replacement);
+        });
+        reserved_rx.await.unwrap();
+
+        {
+            let mut pool = pool.lock().await;
+            assert_eq!(pool.stats(), (0, 2));
+            assert_eq!(
+                pool.deficit(),
+                0,
+                "maintenance must not duplicate the build"
+            );
+            assert!(
+                !pool.reserve_replenishment(),
+                "another take must not duplicate it"
+            );
+        }
+        finish_tx.send(()).unwrap();
+        replenisher.await.unwrap();
+        let mut pool = pool.lock().await;
+        assert_eq!(
+            pool.stats(),
+            (1, 1),
+            "completion must preserve the initial warmer's reservation"
+        );
+        pool.add(create_test_env(&temp_dir, "runtimed-uv-initial"));
+        assert_eq!(pool.stats(), (2, 0));
+    }
+
+    #[test]
+    fn test_replenishment_rechecks_deficit_and_backoff() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(1, 3600);
+        pool.add(create_test_env(&temp_dir, "runtimed-uv-ready"));
+        assert!(pool.take().0.is_some());
+        // Maintenance claims the slot while the take is awaiting launcher vending.
+        pool.mark_warming(pool.deficit());
+        assert!(!pool.reserve_replenishment());
+        pool.warming_failed_with_error(None);
+        assert_eq!(pool.deficit(), 1);
+        assert!(
+            !pool.reserve_replenishment(),
+            "takes must respect failure backoff"
+        );
+        pool.reset_failure_state();
+        pool.set_target(0);
+        assert!(
+            !pool.reserve_replenishment(),
+            "disabled pools must stay disabled"
+        );
+        pool.set_target(1);
+        assert!(pool.reserve_replenishment());
+    }
+
+    #[tokio::test]
+    async fn test_replenishment_failure_and_cancellation_release_only_owned_reservation() {
+        for kind in [PoolKind::Uv, PoolKind::Conda, PoolKind::Pixi] {
+            let temp_dir = TempDir::new().unwrap();
+            let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+            let pool = match kind {
+                PoolKind::Uv => &daemon.uv_pool,
+                PoolKind::Conda => &daemon.conda_pool,
+                PoolKind::Pixi => &daemon.pixi_pool,
+            };
+            let first = temp_dir.path().join("first");
+            let second = temp_dir.path().join("second");
+            {
+                let mut pool = pool.lock().await;
+                pool.set_target(2);
+                assert!(pool.reserve_replenishment());
+                pool.register_warming_path(first.clone());
+                assert!(pool.reserve_replenishment());
+                pool.register_warming_path(second.clone());
+            }
+            let mut failed = WarmingGuard::new(daemon.clone(), first, kind);
+            failed.fail_with(None).await;
+            assert_eq!(pool.lock().await.stats(), (0, 1));
+            let cancelled = WarmingGuard::new(daemon.clone(), second, kind);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let _guard = cancelled;
+                started_tx.send(()).unwrap();
+                std::future::pending::<()>().await;
+            });
+            started_rx.await.unwrap();
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if pool.lock().await.stats().1 == 0 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(pool.lock().await.warming_paths.is_empty());
+        }
     }
 
     #[test]
