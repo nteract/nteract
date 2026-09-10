@@ -4579,6 +4579,96 @@ describe("Worker artifact routes", () => {
     });
   });
 
+  // A TLS-terminating proxy that delivers plain HTTP (celld behind cloudflared,
+  // an ALB) makes request.url carry the hop's scheme and host. Absolute URLs
+  // the Worker hands out must come from the configured public origin instead:
+  // a runtime peer dialing ws://<public host> would get a redirect, not a
+  // socket.
+  it("hands runtime peers the configured public origin as cloud_url", async () => {
+    const env = fakeEnv({
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://app.example.test",
+      NOTEBOOK_ROOMS: {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: () => ({
+          fetch: async () =>
+            new Response(JSON.stringify({ ok: true, changed: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+        }),
+      } satisfies DurableObjectNamespace,
+    });
+    seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId: "ws-lab2" });
+    seedWorkstationAttachJob(env, {
+      id: "job-1",
+      notebookId: "nb-1",
+      ownerPrincipal: "user:dev:alice",
+      workstationId: "ws-lab2",
+    });
+
+    const response = await worker.fetch(
+      new Request("http://127.0.0.1:9876/api/workstations/ws-lab2/attach-jobs/job-1", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:lab2",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ status: "running" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { job: { runtime_peer: { cloud_url: string } } };
+    assert.equal(body.job.runtime_peer.cloud_url, "https://app.example.test");
+  });
+
+  it("builds viewer links from the configured public origin", async () => {
+    const env = fakeEnv({ NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://app.example.test/" });
+
+    const response = await worker.fetch(
+      new Request("http://127.0.0.1:9876/api/n", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ title: "Public Origin" }),
+      }),
+      env,
+      fakeContext(),
+    );
+
+    assert.equal(response.status, 201);
+    const body = (await response.json()) as { notebook_id: string; viewer_url: string };
+    assert.equal(body.viewer_url, `https://app.example.test/n/${body.notebook_id}/Public%20Origin`);
+
+    // Unset, the request's own origin is the public origin.
+    const plain = fakeEnv();
+    const plainResponse = await worker.fetch(
+      new Request("http://localhost/api/n", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ title: "Own Origin" }),
+      }),
+      plain,
+      fakeContext(),
+    );
+    assert.equal(plainResponse.status, 201);
+    const plainBody = (await plainResponse.json()) as { notebook_id: string; viewer_url: string };
+    assert.equal(plainBody.viewer_url, `http://localhost/n/${plainBody.notebook_id}/Own%20Origin`);
+  });
+
   it("publishes workstation claim progress into RuntimeStateDoc", async () => {
     let attachmentStatus: string | undefined;
     let attachmentMessage: string | undefined | null;
