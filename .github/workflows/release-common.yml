@@ -283,33 +283,44 @@ jobs:
       - name: Install Tauri CLI
         uses: ./.github/actions/install-tauri-cli
 
-      - name: Import Apple signing certificate
+      # Keep the NumFOCUS certificate and notarization credentials together.
+      - name: Prepare NumFOCUS Apple signing and notarization
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.NUMFOCUS_APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.NUMFOCUS_APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.NUMFOCUS_APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.NUMFOCUS_APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.NUMFOCUS_APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.NUMFOCUS_APPLE_API_PRIVATE_KEY }}
         run: |
-          if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "No signing certificate configured, skipping"
-            exit 0
-          fi
+          set -euo pipefail
+          umask 077
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPLE_API_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing NumFOCUS credential: $name"
+              exit 1
+            fi
+          done
 
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security import "$RUNNER_TEMP/certificate.p12" \
             -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            -T /usr/bin/codesign -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
 
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -Fq -- "$APPLE_SIGNING_IDENTITY"
           rm "$RUNNER_TEMP/certificate.p12"
 
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/notarization-key.p8"
 
       - name: Set version in tauri.conf.json
         run: |
@@ -354,20 +365,22 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.NUMFOCUS_APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.NUMFOCUS_APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.NUMFOCUS_APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/notarization-key.p8
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/notebook
           args: --bundles app,dmg --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
 
-      - name: Cleanup keychain
+      - name: Cleanup Apple signing credentials
         if: always()
         run: |
-          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/notarization-key.p8"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          if [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
 
@@ -454,33 +467,44 @@ jobs:
       - name: Install Tauri CLI
         uses: ./.github/actions/install-tauri-cli
 
-      - name: Import Apple signing certificate
+      # Keep the NumFOCUS certificate and notarization credentials together.
+      - name: Prepare NumFOCUS Apple signing and notarization
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.NUMFOCUS_APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.NUMFOCUS_APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.NUMFOCUS_APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.NUMFOCUS_APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.NUMFOCUS_APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.NUMFOCUS_APPLE_API_PRIVATE_KEY }}
         run: |
-          if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "No signing certificate configured, skipping"
-            exit 0
-          fi
+          set -euo pipefail
+          umask 077
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPLE_API_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing NumFOCUS credential: $name"
+              exit 1
+            fi
+          done
 
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security import "$RUNNER_TEMP/certificate.p12" \
             -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            -T /usr/bin/codesign -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
 
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -Fq -- "$APPLE_SIGNING_IDENTITY"
           rm "$RUNNER_TEMP/certificate.p12"
 
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/notarization-key.p8"
 
       - name: Set version in tauri.conf.json
         run: |
@@ -525,20 +549,22 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.NUMFOCUS_APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.NUMFOCUS_APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.NUMFOCUS_APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/notarization-key.p8
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/notebook
           args: --target x86_64-apple-darwin --bundles app,dmg --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
 
-      - name: Cleanup keychain
+      - name: Cleanup Apple signing credentials
         if: always()
         run: |
-          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/notarization-key.p8"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          if [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
 
