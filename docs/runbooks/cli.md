@@ -26,7 +26,7 @@ not on the current terminal's PATH, add it:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Desktop installation also bundles the CLI. Its Install Command menu can select
+Desktop installation also bundles the CLI. Its **Install nteract CLI** menu can select
 that installation. Existing unrelated commands are preserved rather than
 overwritten. The installer reports their path so you can resolve the conflict.
 
@@ -47,7 +47,14 @@ custom installation prefixes. Missing channels produce an installation error.
 ## Notebook and workstation commands
 
 ```sh
-# Open the Desktop app at a notebook
+# Create a fresh untitled Desktop notebook in this directory
+nteract .
+
+# Create a fresh untitled notebook in another project
+nteract ./project
+
+# Open a saved notebook (both forms are equivalent)
+nteract analysis.ipynb
 nteract open analysis.ipynb
 
 # Inspect local notebooks without creating a runtime as a side effect
@@ -64,6 +71,39 @@ nteract workstation run
 # Linux: keep the workstation available independently of this terminal
 nteract workstation service install --start
 ```
+
+A directory always requests a fresh untitled notebook with that directory as its
+working directory, including when Desktop is already running. It does not reopen
+a previous notebook or create an `Untitled.ipynb` file in the project. Save the
+notebook to choose its filename; normal recovery still protects untitled work.
+`nteract open .` uses the same directory behavior.
+
+Command names take precedence over shorthand paths. Use `nteract ./open` or
+`nteract ./nb` for paths with those names, or pass the path to `nteract open`.
+Notebook filenames and directory names are not restricted by the CLI's commands.
+Unknown bare words that do not name an existing path produce a command error;
+use an explicit path such as `./analysis` or an `.ipynb` filename to open a new file.
+
+## Runtime management and diagnostics
+
+The unified CLI keeps the runtime operations used for troubleshooting:
+
+```sh
+nteract doctor
+nteract status
+nteract daemon status
+nteract daemon logs -f
+nteract diagnostics
+
+# Explicitly inspect the Nightly installation
+nteract --channel nightly doctor
+```
+
+`nteract daemon --help` lists service lifecycle and maintenance operations.
+These commands describe the selected installation, even when notebook operations
+are sharing a compatible runtime from another installation.
+
+## Notebook operation behavior
 
 Notebook operations use the same implementation as MCP. Execution operates on
 synced cell IDs, preserving the document seen by other peers. `nb call --json`

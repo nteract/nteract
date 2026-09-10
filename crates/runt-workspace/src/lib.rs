@@ -596,7 +596,11 @@ fn open_notebook_dev(path: Option<&Path>, extra_args: &[&str]) -> Result<(), Str
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn macos_open_args(path: Option<&Path>, extra_args: &[&str]) -> Vec<OsString> {
+fn macos_open_args(
+    path: Option<&Path>,
+    extra_args: &[&str],
+    open_directory: bool,
+) -> Vec<OsString> {
     let mut args = Vec::new();
 
     // Pass the notebook path as a document argument (before --args) so macOS
@@ -606,9 +610,18 @@ fn macos_open_args(path: Option<&Path>, extra_args: &[&str]) -> Vec<OsString> {
         args.push(p.as_os_str().to_os_string());
     }
 
-    if !extra_args.is_empty() {
+    if !extra_args.is_empty() || open_directory {
         args.push(OsString::from("--args"));
         args.extend(extra_args.iter().map(OsString::from));
+        if open_directory {
+            // macOS delivers the directory as a document event even on cold
+            // launch. Seed the requested window before runtime admission, then consume
+            // its matching initial document event without opening it twice.
+            args.push(OsString::from("--open-directory"));
+            if let Some(path) = path {
+                args.push(path.as_os_str().to_os_string());
+            }
+        }
     }
 
     args
@@ -676,7 +689,11 @@ fn open_notebook_installed_for(
                 cmd.arg("-n");
             }
             cmd.arg("-a").arg(app_name);
-            cmd.args(macos_open_args(path, extra_args));
+            cmd.args(macos_open_args(
+                path,
+                extra_args,
+                strict && path.is_some_and(Path::is_dir),
+            ));
             cmd.output().and_then(|output| {
                 if output.status.success() {
                     Ok(())
@@ -1979,7 +1996,7 @@ mod tests {
     #[test]
     fn test_macos_open_args_path_and_runtime() {
         let path = Path::new("/tmp/example.ipynb");
-        let args = macos_open_args(Some(path), &["--runtime", "python"]);
+        let args = macos_open_args(Some(path), &["--runtime", "python"], false);
 
         assert_eq!(
             args,
@@ -1995,14 +2012,31 @@ mod tests {
     #[test]
     fn test_macos_open_args_path_only() {
         let path = Path::new("/tmp/example.ipynb");
-        let args = macos_open_args(Some(path), &[]);
+        let args = macos_open_args(Some(path), &[], false);
 
         assert_eq!(args, vec![OsString::from("/tmp/example.ipynb")]);
     }
 
     #[test]
+    fn test_macos_directory_handoff_supports_cold_and_running_desktop() {
+        let path = Path::new("/tmp/my project");
+        let args = macos_open_args(Some(path), &["--runtime", "deno"], true);
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("/tmp/my project"),
+                OsString::from("--args"),
+                OsString::from("--runtime"),
+                OsString::from("deno"),
+                OsString::from("--open-directory"),
+                OsString::from("/tmp/my project"),
+            ]
+        );
+    }
+
+    #[test]
     fn test_macos_open_args_runtime_only() {
-        let args = macos_open_args(None, &["--runtime", "deno"]);
+        let args = macos_open_args(None, &["--runtime", "deno"], false);
 
         assert_eq!(
             args,
