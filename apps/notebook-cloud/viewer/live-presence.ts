@@ -1,4 +1,11 @@
 import { cloudVisiblePeerLabel } from "./presence";
+import type { SessionControlMessage } from "../src/protocol";
+import type { PresenceLeft } from "@/components/editor/presence-state";
+
+/** Room membership is authoritative even when a departing browser cannot send presence. */
+export function cloudPresenceFromControl(message: SessionControlMessage): PresenceLeft | null {
+  return message.type === "cloud_peer_left" ? { type: "left", peer_id: message.peer_id } : null;
+}
 
 export function normalizeCloudPresencePayload(payload: unknown): unknown {
   if (!isRecord(payload)) return payload;

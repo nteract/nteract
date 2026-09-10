@@ -78,6 +78,7 @@ export interface DurableObjectState {
   // text messages without waking the DO; fakes in tests need not implement
   // it (the room feature-detects before calling).
   setWebSocketAutoResponse?(pair: WebSocketRequestResponsePair): void;
+  getWebSocketAutoResponseTimestamp?(socket: CloudflareWebSocket): Date | null;
 }
 
 export interface WebSocketRequestResponsePair {

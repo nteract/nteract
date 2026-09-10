@@ -40,7 +40,7 @@ import {
 } from "./collaborator-auth";
 import { useCloudAuthStore } from "./cloud-auth-context";
 import { materializeCloudNotebookView } from "./cloud-view-model";
-import { normalizeCloudPresencePayload } from "./live-presence";
+import { cloudPresenceFromControl, normalizeCloudPresencePayload } from "./live-presence";
 import {
   CloudConnectionStatusBridge,
   CloudRecoverableRejectionTracker,
@@ -1279,6 +1279,8 @@ export function useCloudViewerSession({
       },
       onControl: (message) => {
         if (disposed) return;
+        const presence = cloudPresenceFromControl(message);
+        if (presence) emitPresence(presence);
         if (
           message.type === "cloud_room_ready" ||
           message.type === "cloud_peer_joined" ||

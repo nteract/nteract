@@ -44,6 +44,129 @@ before(async () => {
 });
 
 describe("NotebookRoom presence rewrite", () => {
+  it("does not broadcast an in-flight cursor update after announcing the peer's departure", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    await state.drain();
+    const harness = roomHarness(room);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
+    );
+    const socket = new FakeSocket();
+    const observer = new FakeSocket();
+    const peer = {
+      id: "departing",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: new Date().toISOString(),
+      consecutiveRejectedFrames: 0,
+    };
+    harness.peers.set(peer.id, peer);
+    harness.peers.set("observer", {
+      ...peer,
+      id: "observer",
+      socket: observer.asCloudflareWebSocket(),
+    });
+    harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+    const frame = encodeTypedFrame(
+      FrameType.PRESENCE,
+      await encodePresenceFrame({
+        type: "update",
+        peer_id: peer.id,
+        channel: "cursor",
+        data: { cell_id: "cell", line: 1, column: 1 },
+      }),
+    );
+    const pending = harness.handleMessage("demo", peer, frame);
+    harness.removePeer("demo", peer);
+    await pending;
+    await state.drain();
+    const frames = observer.sent.map(splitTypedFrame);
+    assert.deepEqual(
+      frames.map((frame) => frame.type),
+      [FrameType.SESSION_CONTROL],
+    );
+    assert.equal(decodeJsonPayload<{ type: string }>(frames[0].payload).type, "cloud_peer_left");
+    assert.equal(socket.sent.length, 0, "a departed peer is not acknowledged after normalization");
+  });
+
+  for (const event of ["close", "error"] as const) {
+    it(`records ${event} evidence and broadcasts one departure for a hibernation socket`, async () => {
+      const state = hibernatedState([]);
+      const room = new NotebookRoom(state.state, {} as Env);
+      await state.drain();
+      const harness = roomHarness(room);
+      const socket = new FakeSocket();
+      const observer = new FakeSocket();
+      const identity = authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
+      );
+      const connectedAt = new Date(Date.now() - 5_000).toISOString();
+      socket.serializeAttachment({
+        notebookId: "demo",
+        peerId: "departing",
+        identity,
+        connectedAt,
+      });
+      harness.peers.set("departing", {
+        id: "departing",
+        socket: socket.asCloudflareWebSocket(),
+        identity,
+        connectedAt,
+        consecutiveRejectedFrames: 0,
+      });
+      harness.peers.set("observer", {
+        id: "observer",
+        socket: observer.asCloudflareWebSocket(),
+        identity,
+        connectedAt,
+        consecutiveRejectedFrames: 0,
+      });
+      harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+      const heartbeatAt = new Date(Date.now() - 1_000);
+      state.state.getWebSocketAutoResponseTimestamp = (ws) => {
+        assert.equal(ws, socket.asCloudflareWebSocket());
+        assert.equal(socket.closed, false, "read runtime evidence before closing");
+        return heartbeatAt;
+      };
+      const logs: Record<string, unknown>[] = [];
+      const originalInfo = console.info;
+      console.info = (_prefix, record) => logs.push(record);
+      try {
+        if (event === "close")
+          room.webSocketClose(socket.asCloudflareWebSocket(), 1001, "going away", true);
+        else room.webSocketError(socket.asCloudflareWebSocket(), new Error("connection reset"));
+        room.webSocketClose(socket.asCloudflareWebSocket(), 1006, "", false);
+        await state.drain();
+      } finally {
+        console.info = originalInfo;
+      }
+      assert.equal(harness.peers.has("departing"), false);
+      assert.equal(harness.peers.has("observer"), true);
+      const closed = logs.filter((record) => record.event === "room.connection.closed");
+      assert.equal(closed.length, 1);
+      assert.equal(closed[0].close_source, `websocket_${event}`);
+      assert.equal(closed[0].last_auto_response_at, heartbeatAt.toISOString());
+      assert.equal(closed[0].auto_response_timestamp_supported, true);
+      if (event === "close") {
+        assert.equal(closed[0].close_code, 1001);
+        assert.equal(closed[0].close_reason, "going away");
+        assert.equal(closed[0].close_was_clean, true);
+      } else {
+        assert.equal(closed[0].close_error, "connection reset");
+        assert.equal(closed[0].close_was_clean, undefined);
+      }
+      const departures = observer.sent
+        .map(splitTypedFrame)
+        .filter((frame) => frame.type === FrameType.SESSION_CONTROL)
+        .map((frame) => decodeJsonPayload<{ type: string; peer_id: string }>(frame.payload))
+        .filter((control) => control.type === "cloud_peer_left");
+      assert.deepEqual(
+        departures.map((control) => control.peer_id),
+        ["departing"],
+      );
+    });
+  }
   it("builds room-ready rosters from current peers", () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const harness = roomHarness(room);

@@ -33,6 +33,8 @@ import {
   type PersistedCloudNotebookSeed,
 } from "../viewer/live-sync.ts";
 import { FrameType, LIVENESS_PING, LIVENESS_PONG } from "../src/protocol.ts";
+import { cloudPresenceFromControl } from "../viewer/live-presence.ts";
+import { RemotePresenceState } from "../../../src/components/editor/presence-state.ts";
 
 describe("cloud live sync", () => {
   it("accepts known connection scopes", () => {
@@ -956,6 +958,108 @@ describe("cloud persisted-seed handle resolution", () => {
 });
 
 describe("cloud transport reconnect loop", () => {
+  it("clears only the departed peer's cursors and selections on a room leave control", async () => {
+    const fake = installFakeWebSocket();
+    const state = new RemotePresenceState("local");
+    const transport = createTransport({
+      onControl: (message) => {
+        const presence = cloudPresenceFromControl(message);
+        if (presence) state.handlePresence(presence);
+      },
+    });
+    try {
+      const socket = await waitForSocket(0);
+      socket.open();
+      socket.ready("local");
+      await transport.ready;
+      for (const peer_id of ["departing-tab", "remaining-tab"]) {
+        state.handlePresence({
+          type: "update",
+          peer_id,
+          channel: "cursor",
+          data: { cell_id: "cell", line: 1, column: 2 },
+        });
+        state.handlePresence({
+          type: "update",
+          peer_id,
+          channel: "selection",
+          data: { cell_id: "cell", anchor_line: 1, anchor_col: 0, head_line: 1, head_col: 2 },
+        });
+      }
+      assert.equal(state.presenceForCell("cell").cursors.length, 2);
+      assert.equal(state.presenceForCell("cell").selections.length, 2);
+      const leave = {
+        type: "cloud_peer_left",
+        notebook_id: "room",
+        peer_id: "departing-tab",
+        actor_label: "user:dev:alice/browser:tab",
+        room_peer_count: 2,
+        timestamp: new Date().toISOString(),
+      };
+      socket.control(leave);
+      socket.control(leave); // duplicate departure is harmless
+      await drainMicrotasks();
+      const remaining = state.presenceForCell("cell");
+      assert.deepEqual(
+        remaining.cursors.map((cursor) => cursor.peerId),
+        ["remaining-tab"],
+      );
+      assert.equal(remaining.selections.length, 1);
+    } finally {
+      transport.disconnect();
+      fake.restore();
+    }
+  });
+
+  for (const suspendEvent of ["visibilitychange", "pagehide", "freeze"]) {
+    it(`gives a fresh heartbeat deadline after ${suspendEvent} suspension`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+      const fake = installFakeWebSocket();
+      const fakeWindow = installFakeWindow();
+      const originalDocument = (globalThis as { document?: unknown }).document;
+      const doc = Object.assign(new EventTarget(), { visibilityState: "visible" });
+      (globalThis as { document?: unknown }).document = doc;
+      const lost: Error[] = [];
+      const transport = createTransport({ onConnectionLost: (reason) => lost.push(reason) });
+      try {
+        const socket = await waitForSocket(0);
+        socket.open();
+        socket.ready("local");
+        await transport.ready;
+        t.mock.timers.tick(20_000); // deadline armed while visible
+        t.mock.timers.tick(9_000);
+        doc.visibilityState = "hidden";
+        if (suspendEvent === "pagehide") fakeWindow.dispatchEvent(new Event(suspendEvent));
+        else doc.dispatchEvent(new Event(suspendEvent));
+        t.mock.timers.tick(60_000);
+        assert.equal(lost.length, 0, "suspension cannot turn an old deadline into connection loss");
+        doc.visibilityState = "visible";
+        const before = socket.sentText.length;
+        if (suspendEvent === "pagehide") fakeWindow.dispatchEvent(new Event("pageshow"));
+        else
+          doc.dispatchEvent(new Event(suspendEvent === "freeze" ? "resume" : "visibilitychange"));
+        assert.equal(socket.sentText.length, before + 1, "resume probes immediately");
+        t.mock.timers.tick(9_999);
+        assert.equal(lost.length, 0);
+        socket.message(LIVENESS_PONG);
+        t.mock.timers.tick(1);
+        assert.equal(lost.length, 0, "queued reply keeps the resumed socket alive");
+        t.mock.timers.tick(10_000); // next periodic probe
+        t.mock.timers.tick(10_000);
+        assert.equal(lost.length, 1, "a silent visible socket still reconnects");
+        transport.disconnect();
+        const sent = socket.sentText.length;
+        doc.dispatchEvent(new Event("visibilitychange"));
+        fakeWindow.dispatchEvent(new Event("pageshow"));
+        assert.equal(socket.sentText.length, sent, "disposed transport does not probe");
+      } finally {
+        transport.disconnect();
+        (globalThis as { document?: unknown }).document = originalDocument;
+        fakeWindow.restore();
+        fake.restore();
+      }
+    });
+  }
   it("resolves the connect target per attempt (fresh auth + operator nonce)", async () => {
     const fake = installFakeWebSocket();
     const minted: string[] = [];
@@ -1520,11 +1624,13 @@ describe("cloud transport reconnect loop", () => {
     const fake = installFakeWebSocket();
     const visibility = { state: "hidden" };
     const originalDocument = (globalThis as { document?: unknown }).document;
-    (globalThis as { document?: unknown }).document = {
-      get visibilityState() {
+    const documentTarget = new EventTarget();
+    Object.defineProperty(documentTarget, "visibilityState", {
+      get() {
         return visibility.state;
       },
-    };
+    });
+    (globalThis as { document?: unknown }).document = documentTarget;
     try {
       const lost: Error[] = [];
       const transport = createTransport({

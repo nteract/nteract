@@ -38,6 +38,7 @@ import {
   type TypedFrame,
 } from "./protocol.ts";
 import { cloudLog, durationMs, errorMessage } from "./observability.ts";
+import { webSocketDisconnectFields, type WebSocketDisconnect } from "./websocket-lifecycle.ts";
 import { rewritePresenceIngress } from "./runtimed-wasm.ts";
 import {
   isMaterializedSyncFrame,
@@ -110,6 +111,7 @@ interface PeerCloseOptions {
   code?: number;
   reason?: string;
   suppressRuntimePeerWatch?: boolean;
+  observed?: WebSocketDisconnect;
 }
 
 interface PublishComputeSessionSummaryOptions {
@@ -735,12 +737,17 @@ export class NotebookRoom {
     await this.handleMessage(attachment.notebookId, peer, message);
   }
 
-  webSocketClose(socket: CloudflareWebSocket): void {
-    this.removeAttachedPeer(socket);
+  webSocketClose(
+    socket: CloudflareWebSocket,
+    code?: number,
+    reason?: string,
+    wasClean?: boolean,
+  ): void {
+    this.removeAttachedPeer(socket, { source: "websocket_close", code, reason, wasClean });
   }
 
-  webSocketError(socket: CloudflareWebSocket): void {
-    this.removeAttachedPeer(socket);
+  webSocketError(socket: CloudflareWebSocket, error?: unknown): void {
+    this.removeAttachedPeer(socket, { source: "websocket_error", error });
   }
 
   private async restoreHibernatedPeers(): Promise<void> {
@@ -887,11 +894,20 @@ export class NotebookRoom {
     peer.socket.addEventListener("message", (event) => {
       this.state.waitUntil(this.handleMessage(notebookId, peer, event.data));
     });
-    peer.socket.addEventListener("close", () => {
-      this.removePeer(notebookId, peer);
+    peer.socket.addEventListener("close", (event) => {
+      this.removePeer(notebookId, peer, {
+        observed: {
+          source: "websocket_close",
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+        },
+      });
     });
-    peer.socket.addEventListener("error", () => {
-      this.removePeer(notebookId, peer);
+    peer.socket.addEventListener("error", (event) => {
+      this.removePeer(notebookId, peer, {
+        observed: { source: "websocket_error", error: "error" in event ? event.error : undefined },
+      });
     });
   }
 
@@ -903,7 +919,7 @@ export class NotebookRoom {
     return this.peers.get(attachment.peerId);
   }
 
-  private removeAttachedPeer(socket: CloudflareWebSocket): void {
+  private removeAttachedPeer(socket: CloudflareWebSocket, observed: WebSocketDisconnect): void {
     const attachment = socketAttachment(socket);
     if (!attachment) {
       return;
@@ -914,7 +930,7 @@ export class NotebookRoom {
       return;
     }
 
-    this.removePeer(attachment.notebookId, peer);
+    this.removePeer(attachment.notebookId, peer, { observed });
   }
 
   private async handleMessage(
@@ -1019,6 +1035,9 @@ export class NotebookRoom {
     if (frame.type === FrameType.PRESENCE) {
       try {
         normalizedFrame = await rewritePresenceFrame(frame, peer);
+        // Normalization yields: close/error may already have announced this
+        // peer's departure. Do not resurrect their cursor with a late update.
+        if (this.peers.get(peer.id) !== peer) return;
       } catch (error) {
         this.rejectFrame(
           notebookId,
@@ -2351,6 +2370,16 @@ export class NotebookRoom {
     if (!this.peers.delete(peer.id)) {
       return;
     }
+    const disconnectFields = webSocketDisconnectFields(
+      this.state,
+      peer.socket,
+      closeOptions.observed ?? {
+        source: "room",
+        code: closeOptions.code,
+        reason: closeOptions.reason,
+      },
+      peer.connectedAt,
+    );
     this.rejectPendingRuntimePeerResponsesForPeer(
       notebookId,
       peer.id,
@@ -2369,6 +2398,7 @@ export class NotebookRoom {
     }
 
     cloudLog("info", "room.connection.closed", {
+      ...disconnectFields,
       notebook_id: notebookId,
       peer_id: peer.id,
       principal: peer.identity.principal,
