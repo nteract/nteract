@@ -294,7 +294,7 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: exactPath("/", "/index.html"),
     methods: ["GET", "HEAD"],
-    handler: (_match, request) => rootNotebookListRedirect(request),
+    handler: (_match, request, env) => rootNotebookListRedirect(request, env),
   },
   {
     match: exactPath("/n", "/n/"),
@@ -908,8 +908,20 @@ function rejectUntrustedMutationOrigin(request: Request, env: Env): Response | n
   return null;
 }
 
+/**
+ * The origin clients use to reach this deployment. `NOTEBOOK_CLOUD_PUBLIC_ORIGIN`
+ * wins when set; otherwise the request's own origin, which is correct on
+ * Cloudflare and on any host that sees the public scheme and host directly.
+ */
+function publicOrigin(request: Request, env: Env): string {
+  return (
+    normalizedOrigin(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() ?? null) ??
+    new URL(request.url).origin
+  );
+}
+
 function allowedTrustedOrigins(request: Request, env: Env): Set<string> {
-  const origins = new Set<string>([new URL(request.url).origin]);
+  const origins = new Set<string>([new URL(request.url).origin, publicOrigin(request, env)]);
   const loopbackOrigin = trustedLoopbackBrowserOrigin(request, env);
   if (loopbackOrigin) {
     origins.add(loopbackOrigin);
@@ -2356,7 +2368,7 @@ async function routeNotebookWorkstationAttachment(
   return json(
     {
       ok: true,
-      job: workstationAttachJobResponseRow(request, job),
+      job: workstationAttachJobResponseRow(request, env, job),
       workstation: workstationResponseRow(workstation, {
         defaultWorkstationId,
         now: Date.now(),
@@ -2527,7 +2539,7 @@ async function routeWorkstationAttachJobs(
       now: Date.now(),
       lease,
     }),
-    jobs: jobs.map((job) => workstationAttachJobResponseRow(request, job)),
+    jobs: jobs.map((job) => workstationAttachJobResponseRow(request, env, job)),
   });
 }
 
@@ -2833,7 +2845,7 @@ async function routeWorkstationAttachJob(
     return json(
       {
         error: "workstation attach job is no longer active",
-        job: workstationAttachJobResponseRow(request, job),
+        job: workstationAttachJobResponseRow(request, env, job),
       },
       409,
     );
@@ -2852,7 +2864,7 @@ async function routeWorkstationAttachJob(
   }
   return json({
     ok: true,
-    job: workstationAttachJobResponseRow(request, job),
+    job: workstationAttachJobResponseRow(request, env, job),
   });
 }
 
@@ -3309,6 +3321,7 @@ function parseStoredWorkstationEnvironments(value: string | null): unknown[] {
 
 function workstationAttachJobResponseRow(
   request: Request,
+  env: Env,
   job: WorkstationAttachJobRow,
 ): Record<string, unknown> {
   return {
@@ -3323,7 +3336,7 @@ function workstationAttachJobResponseRow(
     finished_at: job.finished_at,
     error_message: job.error_message,
     runtime_peer: {
-      cloud_url: new URL(request.url).origin,
+      cloud_url: publicOrigin(request, env),
       notebook_id: job.notebook_id,
       scope: "runtime_peer",
     },
@@ -3529,12 +3542,14 @@ function viewerUrlForRequest(
   vanityName: string | null,
   env?: Env,
 ): string {
-  const url = new URL(trustedLoopbackBrowserOrigin(request, env) ?? request.url);
+  const origin =
+    trustedLoopbackBrowserOrigin(request, env) ??
+    (env ? publicOrigin(request, env) : new URL(request.url).origin);
   const vanitySegment = vanityName?.trim() || "notebook";
-  url.pathname = `/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanitySegment)}`;
-  url.search = "";
-  url.hash = "";
-  return url.href;
+  return new URL(
+    `/n/${encodeURIComponent(notebookId)}/${encodeURIComponent(vanitySegment)}`,
+    origin,
+  ).href;
 }
 
 function latestNotebookOgImageUrlForRequest(
@@ -3542,11 +3557,8 @@ function latestNotebookOgImageUrlForRequest(
   env: Env,
   notebookId: string,
 ): string {
-  const url = new URL(trustedLoopbackBrowserOrigin(request, env) ?? request.url);
-  url.pathname = `/n/${encodeURIComponent(notebookId)}/r/latest/ogImage.png`;
-  url.search = "";
-  url.hash = "";
-  return url.href;
+  const origin = trustedLoopbackBrowserOrigin(request, env) ?? publicOrigin(request, env);
+  return new URL(`/n/${encodeURIComponent(notebookId)}/r/latest/ogImage.png`, origin).href;
 }
 
 function oidcHealth(env: Env): {
@@ -4921,7 +4933,7 @@ async function validateSnapshotPair(options: {
       runtimeStateBytes: options.runtimeStateBytes,
       commsDocBytes: options.commsDocBytes,
       blobResolver: createNotebookCloudBlobResolver({
-        baseUrl: options.request.url,
+        baseUrl: publicOrigin(options.request, options.env),
         blobBasePath: notebookCloudBlobBasePath(options.notebookId),
       }),
     });
@@ -6088,10 +6100,11 @@ interface ViewerShellResourceHints {
   runtimedWasmPath?: string | null;
 }
 
-function rootNotebookListRedirect(request: Request): Response {
+function rootNotebookListRedirect(request: Request, env: Env): Response {
   const url = new URL(request.url);
-  url.pathname = "/n";
-  return Response.redirect(url.toString(), 302);
+  const target = new URL("/n", publicOrigin(request, env));
+  target.search = url.search;
+  return Response.redirect(target.href, 302);
 }
 
 async function notebookListViewer(request: Request, env: Env): Promise<Response> {
@@ -6489,7 +6502,9 @@ function oidcAuthConfigForRequest(request: Request, env: Env): Record<string, st
   return {
     issuer,
     clientId,
-    redirectUri: env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() || new URL("/oidc", request.url).href,
+    redirectUri:
+      env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() ||
+      new URL("/oidc", publicOrigin(request, env)).href,
     ...(providerLabel ? { providerLabel } : {}),
     // Server-derived: only the dev issuer mount sets this, and the viewer keys
     // its login_hint forwarding on it. Deriving it here (not from the issuer

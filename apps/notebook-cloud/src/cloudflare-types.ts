@@ -8,6 +8,15 @@ export interface Env {
   DEPLOYMENT_ENV?: string;
   NOTEBOOK_CLOUD_BUILD_SHA?: string;
   NOTEBOOK_CLOUD_ALLOWED_ORIGINS?: string;
+  /**
+   * Origin browsers and runtime peers use to reach this deployment, for
+   * example `https://app.example.com`. Set it when a TLS-terminating proxy
+   * delivers plain HTTP to the Worker (celld behind cloudflared or an ALB),
+   * so absolute URLs the Worker hands out (viewer links, the runtime peer's
+   * `cloud_url`, OG images) carry the public scheme and host instead of the
+   * proxy hop's. Unset on Cloudflare, where `request.url` is already public.
+   */
+  NOTEBOOK_CLOUD_PUBLIC_ORIGIN?: string;
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE?: string;
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?: string;
   NOTEBOOK_CLOUD_APP_SESSION_SECRET?: string;

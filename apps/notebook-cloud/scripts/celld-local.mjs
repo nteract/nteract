@@ -456,6 +456,10 @@ function mainVars(sessionSecret) {
     return {
       DEPLOYMENT_ENV: "celld",
       NOTEBOOK_CLOUD_BUILD_SHA: gitCommit(),
+      // The TLS terminator in front of celld delivers plain HTTP, so
+      // request.url carries the hop's scheme and host. Absolute URLs the
+      // Worker hands out (viewer links, runtime peer cloud_url) come from here.
+      NOTEBOOK_CLOUD_PUBLIC_ORIGIN: main,
       NOTEBOOK_CLOUD_ALLOWED_ORIGINS: main,
       NOTEBOOK_CLOUD_OIDC_ISSUER: publicOidc.issuer,
       NOTEBOOK_CLOUD_OIDC_CLIENT_ID: publicOidc.clientId,

@@ -74,6 +74,13 @@ node apps/notebook-cloud/scripts/celld-local.mjs start     # also: status | stop
 node apps/notebook-cloud/scripts/celld-local.mjs workstation-start   # pairing-flow kernel host
 ```
 
+Behind a TLS-terminating proxy that speaks plain HTTP to the Worker (celld
+behind cloudflared, an ALB), set `NOTEBOOK_CLOUD_PUBLIC_ORIGIN` to the browser-
+facing origin. Viewer links, the runtime peer's `cloud_url`, OG image URLs, and
+the root redirect are built from it instead of `request.url`; the origin
+allow-list includes it. `celld-local.mjs export` sets it from
+`NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS`. Unset on Cloudflare.
+
 The script header documents the celld constraints it works around (JSON config,
 project-relative `main`/assets, one deployment per store, static WASM import).
 Smoke and publish scripts target it with `NOTEBOOK_CLOUD_URL=http://127.0.0.1:9876`.
