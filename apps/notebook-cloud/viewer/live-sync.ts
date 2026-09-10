@@ -918,6 +918,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private livenessPingTimer: ReturnType<typeof setInterval> | null = null;
   private livenessPongTimer: ReturnType<typeof setTimeout> | null = null;
+  private pageSuspended = false;
   private manualDisconnect = false;
   private everReady = false;
   private readySettled = false;
@@ -982,6 +983,29 @@ export class CloudWebSocketTransport implements NotebookTransport {
     this.connectionLost(new Error("browser reported offline"), socket);
   };
 
+  private readonly handlePageSuspend = () => {
+    this.pageSuspended = true;
+    this.noteLivenessPong();
+  };
+
+  private readonly handlePageResume = () => {
+    this.pageSuspended = false;
+    this.handleVisibilityChange();
+  };
+
+  private readonly handleVisibilityChange = () => {
+    // A deadline from before suspension must not race a queued pong on resume.
+    this.noteLivenessPong();
+    if (
+      this.pageSuspended ||
+      (typeof document !== "undefined" && document.visibilityState === "hidden")
+    )
+      return;
+    if (this.manualDisconnect || this.livenessPingIntervalMs <= 0) return;
+    const socket = this.socket;
+    if (socket && this.connectionReady) this.sendLivenessPing(socket);
+  };
+
   constructor(options: CloudWebSocketTransportOptions) {
     this.options = options;
     this.reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? RECONNECT_BASE_DELAY_MS;
@@ -1000,6 +1024,13 @@ export class CloudWebSocketTransport implements NotebookTransport {
     if (typeof window !== "undefined") {
       window.addEventListener("online", this.handleBrowserOnline);
       window.addEventListener("offline", this.handleBrowserOffline);
+      window.addEventListener("pagehide", this.handlePageSuspend);
+      window.addEventListener("pageshow", this.handlePageResume);
+    }
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.handleVisibilityChange);
+      document.addEventListener("freeze", this.handlePageSuspend);
+      document.addEventListener("resume", this.handlePageResume);
     }
     void this.connect();
   }
@@ -1191,6 +1222,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 
   private sendLivenessPing(socket: WebSocket): void {
+    if (this.pageSuspended) return;
     if (socket.readyState !== WebSocket.OPEN) return; // close handler will recycle
     try {
       // Raw text send on purpose: the room's WebSocketRequestResponsePair
@@ -1213,12 +1245,17 @@ export class CloudWebSocketTransport implements NotebookTransport {
       // fire on resume BEFORE the queued pong MessageEvent dispatches,
       // declaring a healthy connection dead on every tab foreground. Send
       // the ping (it keeps intermediaries warm) but skip enforcement while
-      // hidden — the next visible-tab ping re-arms the deadline.
+      // hidden — returning to the visible tab probes with a fresh deadline.
       return;
     }
     this.livenessPongTimer = setTimeout(() => {
       this.livenessPongTimer = null;
       if (socket !== this.socket) return;
+      if (
+        this.pageSuspended ||
+        (typeof document !== "undefined" && document.visibilityState === "hidden")
+      )
+        return;
       // The link is zombie: readyState stays OPEN and sends buffer
       // silently, but the room's auto-response never made it back.
       this.connectionLost(
@@ -1371,6 +1408,13 @@ export class CloudWebSocketTransport implements NotebookTransport {
     if (typeof window !== "undefined") {
       window.removeEventListener("online", this.handleBrowserOnline);
       window.removeEventListener("offline", this.handleBrowserOffline);
+      window.removeEventListener("pagehide", this.handlePageSuspend);
+      window.removeEventListener("pageshow", this.handlePageResume);
+    }
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.handleVisibilityChange);
+      document.removeEventListener("freeze", this.handlePageSuspend);
+      document.removeEventListener("resume", this.handlePageResume);
     }
     this.teardownSocket();
     this.rejectPendingFrameAcks(new Error("cloud sync socket disconnected"));
