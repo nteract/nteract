@@ -786,17 +786,21 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     info!("  Pixi pool size: {}", config.pixi_pool_size);
     let daemon = match Daemon::new(config) {
         Ok(d) => d,
-        Err(e) => {
+        Err(runtimed::singleton::DaemonLockError::Contended { path }) => {
             // Another daemon is already running — this is expected during
             // launchd double-start races, NOT a crash. Exit 0 so launchd's
             // KeepAlive.Crashed does not restart us.
             let msg = format!(
-                "Another daemon already running (pid={}, endpoint={}), exiting cleanly",
-                e.info.pid, e.info.endpoint
+                "Another process holds the daemon lock at {}; exiting cleanly (socket readiness is not yet known)",
+                path.display()
             );
-            early_log(&msg);
+            warn!("{msg}");
             eprintln!("{msg}");
-            std::process::exit(0);
+            return Ok(());
+        }
+        Err(error) => {
+            tracing::error!("{error}");
+            return Err(error.into());
         }
     };
 
@@ -1009,4 +1013,47 @@ async fn flush_pool() -> anyhow::Result<()> {
     println!("Pool flushed. Environments will be rebuilt with current settings.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn duplicate_start_succeeds_without_claiming_socket_readiness() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let _owner = runtimed::singleton::DaemonLock::try_acquire(Some(&dir))?;
+        let socket_path = dir.join("never-bound.sock");
+        let config = DaemonConfig {
+            lock_dir: Some(dir),
+            socket_path: socket_path.clone(),
+            ..Default::default()
+        };
+        run_daemon(config).await?;
+        assert!(!socket_path.exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lock_io_failure_is_a_startup_error() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        std::fs::create_dir(dir.join("daemon.lock"))?;
+        let config = DaemonConfig {
+            lock_dir: Some(dir),
+            ..Default::default()
+        };
+        let error = run_daemon(config)
+            .await
+            .expect_err("lock I/O must fail startup");
+        assert!(matches!(
+            error.downcast_ref::<runtimed::singleton::DaemonLockError>(),
+            Some(runtimed::singleton::DaemonLockError::Io {
+                operation: "open",
+                ..
+            })
+        ));
+        Ok(())
+    }
 }

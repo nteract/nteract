@@ -32,12 +32,11 @@ use crate::notebook_sync_server::{NotebookRooms, RoomRegistry};
 use crate::paths::{default_cache_dir, default_socket_path, pool_env_root};
 use crate::protocol::{Request, Response};
 use crate::settings_doc::{SettingsDoc, SyncedSettings};
-use crate::singleton::DaemonLock;
+use crate::singleton::{DaemonLock, DaemonLockError};
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::trusted_packages::{log_store_unavailable, TrustedPackageStore};
 use crate::{default_blob_store_dir, is_pool_env_dir, is_within_cache_dir, EnvType, PooledEnv};
 use notebook_protocol::connection::{self, Handshake};
-use runtimed_client::singleton::DaemonInfo;
 
 fn existing_file_allows_write(path: &Path) -> bool {
     match std::fs::metadata(path) {
@@ -1335,13 +1334,6 @@ pub struct Daemon {
     pub(crate) shell_env_overlay: Arc<crate::shell_env_overlay::ShellEnvOverlay>,
 }
 
-/// Error returned when another daemon is already running.
-#[derive(Debug, thiserror::Error)]
-#[error("Another daemon is already running: {info:?}")]
-pub struct DaemonAlreadyRunning {
-    pub info: Box<DaemonInfo>,
-}
-
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestRecoveryManifestFacts {
@@ -1569,7 +1561,7 @@ impl Daemon {
     /// Test-only convenience that constructs a `Daemon` with an empty shell-env
     /// overlay. Integration tests reach this through the crate's public surface.
     #[doc(hidden)]
-    pub fn new_for_test(mut config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+    pub fn new_for_test(mut config: DaemonConfig) -> Result<Arc<Self>, DaemonLockError> {
         // Test daemons must never write into the real shared file-claim
         // registry; force a config-scoped (tempdir-scoped) one when the
         // test did not pick its own.
@@ -1583,21 +1575,20 @@ impl Daemon {
 
     /// Create a new daemon with the given configuration.
     ///
-    /// Returns an error if another daemon is already running.
-    pub fn new(config: DaemonConfig) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+    /// Returns an error on lock contention or a failure to access the lock.
+    pub fn new(config: DaemonConfig) -> Result<Arc<Self>, DaemonLockError> {
         Self::new_with_overlay(config, crate::shell_env_overlay::ShellEnvOverlay::capture)
     }
 
     fn new_with_overlay(
         config: DaemonConfig,
         overlay_provider: impl FnOnce() -> crate::shell_env_overlay::ShellEnvOverlay,
-    ) -> Result<Arc<Self>, DaemonAlreadyRunning> {
+    ) -> Result<Arc<Self>, DaemonLockError> {
         // Acquire the singleton lock BEFORE capturing the shell env. Duplicate
         // launchd/double-click starts hit this path, and we don't want them to
         // pay the up-to-3s shell-capture cost or run rc files for side effects
         // before discovering the existing daemon and exiting cleanly.
-        let lock = DaemonLock::try_acquire(config.lock_dir.as_ref())
-            .map_err(|info| DaemonAlreadyRunning { info })?;
+        let lock = DaemonLock::try_acquire(config.lock_dir.as_ref())?;
 
         let shell_env_overlay = Arc::new(overlay_provider());
         tracing::info!(
@@ -7800,6 +7791,34 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[test]
+    fn lock_failures_do_not_capture_shell_environment() -> anyhow::Result<()> {
+        let tmp = TempDir::new()?;
+        let dir = tmp.path().to_path_buf();
+        let config = DaemonConfig {
+            lock_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        let owner = DaemonLock::try_acquire(Some(&dir))?;
+        assert!(matches!(
+            Daemon::new_with_overlay(config.clone(), || panic!(
+                "duplicate must not run shell rc files"
+            )),
+            Err(DaemonLockError::Contended { .. })
+        ));
+        drop(owner);
+        // Replace the unlocked file with a directory to force a real open error.
+        std::fs::remove_file(dir.join("daemon.lock"))?;
+        std::fs::create_dir(dir.join("daemon.lock"))?;
+        assert!(matches!(
+            Daemon::new_with_overlay(config, || panic!(
+                "lock failure must not run shell rc files"
+            )),
+            Err(DaemonLockError::Io { .. })
+        ));
+        Ok(())
+    }
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
