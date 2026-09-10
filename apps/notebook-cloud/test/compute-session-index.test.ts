@@ -211,7 +211,8 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
     await object.alarm();
     await settle();
 
-    const expectedError = "workstation lease expired: no heartbeat within the lease window";
+    const expectedError =
+      "the workstation stopped sending heartbeats before it picked up this request. Run `runt workstation run` on that machine, then attach again.";
     for (const jobId of ["pending-job", "accepted-job", "running-job"]) {
       assert.equal(jobs.get(jobId)?.status, "failed");
       assert.equal(jobs.get(jobId)?.error_message, expectedError);

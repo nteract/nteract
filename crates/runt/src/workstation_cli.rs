@@ -215,6 +215,7 @@ async fn connect(
             println!(
                 "Registered workstation \"{display_name}\" ({workstation_id}) with {cloud_url}."
             );
+            println!("It is not serving compute yet.");
         }
         Ok(response) => {
             eprintln!(
@@ -232,18 +233,18 @@ async fn connect(
     }
 
     let cli = runt_workspace::cli_command_name();
-    println!("To serve attach requests in this terminal:");
+    println!();
+    println!("Next, start the agent and leave it running while you use the notebook:");
     println!("  {cli} workstation run");
+    println!("Pass --python-path <python with ipykernel> if the default interpreter lacks it.");
     #[cfg(target_os = "linux")]
     {
-        println!("To keep this workstation available with user systemd:");
+        println!("Or keep it running as a user service:");
         println!("  {cli} workstation service install --start");
     }
     #[cfg(not(target_os = "linux"))]
     {
-        println!(
-            "Persistent workstation service management starts with Linux user systemd; use the foreground command in tmux for now."
-        );
+        println!("Keep that terminal (or a tmux session) open; the workstation goes offline about a minute after it exits.");
     }
     Ok(())
 }
@@ -310,6 +311,12 @@ pub(crate) fn parse_redeem_response(
 /// Minimal registration payload for the one-shot `connect` registration.
 /// (`runtimed workstation-agent` sends the full payload — python path,
 /// capabilities, memory — on every heartbeat.)
+///
+/// `listening: false` tells the cloud that nothing is serving attach requests
+/// yet: the row lists as `connecting` with a "run `runt workstation run`" hint
+/// instead of `online`, and attach is refused with that hint rather than
+/// queued into a job that fails when the pairing lease lapses. The agent's
+/// first heartbeat omits the field and flips the row to `online`.
 pub(crate) fn minimal_registration_payload(
     workstation_id: &str,
     display_name: &str,
@@ -322,6 +329,7 @@ pub(crate) fn minimal_registration_payload(
         "provider": "runtime_peer",
         "environment_policy": "current_python",
         "default_environment_label": "Current Python",
+        "listening": false,
     });
     if let Some(dir) = working_directory {
         payload["working_directory"] = dir.into();
@@ -1407,6 +1415,7 @@ mod tests {
                 "provider": "runtime_peer",
                 "environment_policy": "current_python",
                 "default_environment_label": "Current Python",
+                "listening": false,
                 "working_directory": "/home/ubuntu/project",
                 "cpu_count": 8,
             })
@@ -1415,6 +1424,9 @@ mod tests {
         let sparse = minimal_registration_payload("ws", "ws", None, None);
         assert!(sparse.get("working_directory").is_none());
         assert!(sparse.get("cpu_count").is_none());
+        // connect never claims to be serving compute; only the agent heartbeat
+        // (which omits the field) brings the row online.
+        assert_eq!(sparse.get("listening"), Some(&serde_json::json!(false)));
     }
 
     #[test]

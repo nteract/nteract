@@ -87,6 +87,12 @@ export interface CloudWorkstationPairing {
   status: CloudWorkstationPairingStatus;
   workstationId: string | null;
   workstationName: string | null;
+  /**
+   * Whether the registered workstation is serving compute. `runt workstation
+   * connect` registers the machine before the agent runs, so "registered" is
+   * not "connected"; the dialog says which one it is.
+   */
+  workstationOnline: boolean | null;
   error: string | null;
 }
 
@@ -307,6 +313,7 @@ export function cloudWorkstationPairingEquals(
     a.status === b.status &&
     a.workstationId === b.workstationId &&
     a.workstationName === b.workstationName &&
+    a.workstationOnline === b.workstationOnline &&
     a.error === b.error
   );
 }
@@ -321,6 +328,7 @@ const _CLOUD_WORKSTATION_PAIRING_FIELDS = {
   status: true,
   workstationId: true,
   workstationName: true,
+  workstationOnline: true,
   error: true,
 } satisfies Record<keyof CloudWorkstationPairing, true>;
 void _CLOUD_WORKSTATION_PAIRING_FIELDS;
@@ -357,7 +365,13 @@ function resolvePairingName(
     return pairing;
   }
   const registered = workstations.find((workstation) => workstation.id === pairing.workstationId);
-  return registered ? { ...pairing, workstationName: registered.displayName } : pairing;
+  return registered
+    ? {
+        ...pairing,
+        workstationName: registered.displayName,
+        workstationOnline: registered.status === "online",
+      }
+    : pairing;
 }
 
 function errorMessage(error: unknown): string {
@@ -631,6 +645,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
           status: "pending",
           workstationId: null,
           workstationName: null,
+          workstationOnline: null,
           error: null,
         },
       }));
@@ -649,6 +664,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
           status: "expired",
           workstationId: null,
           workstationName: null,
+          workstationOnline: null,
           error: errorMessage(error),
         },
       }));

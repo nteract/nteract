@@ -3700,9 +3700,14 @@ describe("Worker artifact routes", () => {
     assert.equal(attach.status, 409);
     const body = (await attach.json()) as {
       error?: string;
+      error_code?: string;
       workstation?: { workstation_id?: string; status?: string };
     };
-    assert.equal(body.error, "workstation is not online");
+    assert.equal(
+      body.error,
+      "Lab2 stopped sending heartbeats. Run `runt workstation run` on that machine, then attach again.",
+    );
+    assert.equal(body.error_code, "workstation_not_online");
     assert.equal(body.workstation?.workstation_id, "ws-lab1");
     assert.equal(body.workstation?.status, "offline");
     assert.equal(env.DB.workstationAttachJobs.size, 0);
@@ -3817,6 +3822,122 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  // `runt workstation connect` registers the machine so it shows up, but nothing
+  // serves compute until `runt workstation run` starts. Three users hit this on
+  // the first public deployment: the row read "Online", attach was accepted,
+  // and the job died three minutes later with no visible explanation.
+  it("registers a paired-but-not-listening workstation as connecting with a hint", async () => {
+    const env = fakeEnv();
+    const register = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "cli:runt",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "ws-paired",
+          display_name: "Anils MacBook",
+          listening: false,
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(register.status, 201);
+
+    const list = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        headers: { "X-Operator": "browser:tab", "X-Scope": "owner", "X-User": "alice" },
+      }),
+      env,
+      fakeContext(),
+    );
+    const body = (await list.json()) as {
+      workstations: Array<{
+        workstation_id: string;
+        status: string;
+        status_message: string | null;
+      }>;
+    };
+    const row = body.workstations.find((entry) => entry.workstation_id === "ws-paired");
+    assert.equal(row?.status, "connecting");
+    assert.equal(
+      row?.status_message,
+      "Anils MacBook is paired but no workstation agent is listening. Run `runt workstation run` on that machine, then attach again.",
+    );
+
+    // Attaching now is refused with the same instruction instead of a job that
+    // will fail later.
+    seedNotebook(env, "nb-paired");
+    seedAcl(env, { notebookId: "nb-paired", subject: "user:dev:alice", scope: "owner" });
+    const attach = await worker.fetch(
+      new Request("http://localhost/api/n/nb-paired/workstation-attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "browser:tab",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-paired" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(attach.status, 409);
+    const attachBody = (await attach.json()) as { error: string; error_code: string };
+    assert.equal(attachBody.error_code, "workstation_not_online");
+    assert.match(attachBody.error, /runt workstation run/);
+    assert.equal(env.DB.workstationAttachJobs.size, 0);
+
+    // The agent's first heartbeat omits `listening` and brings the row online.
+    const heartbeat = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:anil",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "ws-paired",
+          display_name: "Anils MacBook",
+          installed_build: "0.1.0+abc123",
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.ok(heartbeat.status === 200 || heartbeat.status === 201);
+    assert.equal(
+      env.DB.workstations.get(workstationKey("user:dev:alice", "ws-paired"))?.status,
+      "online",
+    );
+  });
+
+  it("rejects a non-boolean listening flag on registration", async () => {
+    const env = fakeEnv();
+    const register = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "cli:runt",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({ workstation_id: "ws-x", display_name: "X", listening: "no" }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(register.status, 400);
+  });
+
   it("allows attach requests for stale workstations with a connected event socket", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab2");
     const events = new FakeWorkstationEventsNamespace({ connectedObjectNames: [objectName] });
@@ -3912,9 +4033,14 @@ describe("Worker artifact routes", () => {
     assert.equal(attach.status, 409);
     const body = (await attach.json()) as {
       error?: string;
+      error_code?: string;
       workstation?: { workstation_id?: string; status?: string };
     };
-    assert.equal(body.error, "workstation is not online");
+    assert.equal(
+      body.error,
+      "Lab2 stopped sending heartbeats. Run `runt workstation run` on that machine, then attach again.",
+    );
+    assert.equal(body.error_code, "workstation_not_online");
     assert.equal(body.workstation?.workstation_id, "ws-lab2");
     assert.equal(body.workstation?.status, "offline");
     assert.deepEqual(roomRequests, ["/internal/n/attach-lease-demo/runtime-state-repair"]);
@@ -10351,6 +10477,7 @@ class FakeD1Statement implements D1PreparedStatement {
         displayName,
         provider,
         providerLabel,
+        status,
         statusMessage,
         defaultEnvironmentLabel,
         environmentPolicy,
@@ -10370,6 +10497,7 @@ class FakeD1Statement implements D1PreparedStatement {
         string,
         string,
         string | null,
+        WorkstationRow["status"],
         string | null,
         string | null,
         string | null,
@@ -10392,7 +10520,7 @@ class FakeD1Statement implements D1PreparedStatement {
         display_name: displayName,
         provider,
         provider_label: providerLabel,
-        status: "online",
+        status,
         status_message: statusMessage,
         default_environment_label: defaultEnvironmentLabel,
         environment_policy: environmentPolicy,

@@ -52,6 +52,12 @@ export interface NotebookWorkstationPairingView {
   expiresAt: string;
   status: "pending" | "redeemed" | "registered" | "expired";
   workstationName: string | null;
+  /**
+   * Whether the registered machine is serving compute. Pairing registers it
+   * before the agent runs; `registered` alone means it is listed, not ready.
+   * Omitted (or null) reads as not yet serving.
+   */
+  workstationOnline?: boolean | null;
   error: string | null;
 }
 
@@ -327,7 +333,9 @@ export function WorkstationPairingDialog({
             <div className="flex min-w-0 items-center gap-2 text-sm text-foreground">
               <CircleCheck className="size-4 shrink-0 text-emerald-500" aria-hidden="true" />
               <span data-testid="workstation-pairing-status" aria-live="polite">
-                {pairing.workstationName ?? "Workstation"} is connected.
+                {pairing.workstationOnline
+                  ? `${pairing.workstationName ?? "Workstation"} is connected.`
+                  : `${pairing.workstationName ?? "Workstation"} is registered. Run \`runt workstation run\` on it to start serving compute.`}
               </span>
             </div>
           ) : pairing.status === "expired" ? (
@@ -762,7 +770,8 @@ type WorkstationDetailFact = Omit<NotebookRegisteredWorkstationFactProjection, "
     | "provider"
     | "build"
     | "channel"
-    | "last_seen";
+    | "last_seen"
+    | "status";
 };
 
 function registeredWorkstationDetailFacts(
@@ -792,6 +801,12 @@ function registeredWorkstationDetailFacts(
   );
   push("channel", "Channel", workstation.channel);
   push("last_seen", "Last seen", workstationLastSeenLabel(workstation));
+  // Why a workstation cannot take compute right now, in the server's words.
+  // Online rows carry no such message; for the rest it is the one line that
+  // tells the user what to do (start the agent, usually).
+  if (workstation.status !== "online") {
+    push("status", "Status", workstation.statusMessage, null, "attention");
+  }
 
   return [...workstation.facts, ...extras];
 }

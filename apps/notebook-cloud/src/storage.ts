@@ -185,6 +185,15 @@ export interface WorkstationRegistrationInput {
   memoryBytes?: number | null;
   acceleratorsJson?: string | null;
   environmentsJson?: string | null;
+  /**
+   * False when the registrant is not serving attach requests. `runt workstation
+   * connect` sends this: pairing registers the machine so it appears in the
+   * catalog, but nothing is listening until `runt workstation run` starts. The
+   * row is stored as `connecting`, which the viewer already treats as not
+   * attachable, and the first agent heartbeat (which omits the field) flips it
+   * to `online`. Default true.
+   */
+  listening?: boolean;
 }
 
 export interface WorkstationAttachJobRow {
@@ -1066,7 +1075,7 @@ export async function registerWorkstation(
        created_at,
        updated_at,
        last_seen_at
-     ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(owner_principal, workstation_id) DO UPDATE SET
        display_name = excluded.display_name,
        provider = excluded.provider,
@@ -1091,6 +1100,7 @@ export async function registerWorkstation(
       input.displayName,
       input.provider ?? "runtime_peer",
       input.providerLabel ?? null,
+      input.listening === false ? "connecting" : "online",
       input.statusMessage ?? null,
       input.defaultEnvironmentLabel ?? null,
       input.environmentPolicy ?? null,

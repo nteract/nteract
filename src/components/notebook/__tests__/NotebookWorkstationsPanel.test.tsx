@@ -354,6 +354,11 @@ describe("NotebookWorkstationsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Offline workstation/ }));
     expect(rows().map((row) => row.dataset.selected)).toEqual(["false", "true"]);
     expect(within(details()).getByText("id ws-offline")).toBeVisible();
+    // A workstation that cannot take compute says why, in the details only.
+    expect(within(details()).getByText("Status")).toBeVisible();
+    expect(
+      within(details()).getByText("No heartbeat from this workstation recently."),
+    ).toBeVisible();
     fireEvent.click(within(details()).getByRole("button", { name: "Set default" }));
     expect(defaults).toEqual(["ws-offline"]);
   });
@@ -638,10 +643,11 @@ describe("NotebookWorkstationsPanel", () => {
     const details = within(screen.getByRole("region", { name: "Workstation details" }));
     expect(details.getByText("Current Python")).toBeVisible();
     expect(details.getByText("id ws-lab2")).toBeVisible();
-    // The raw per-workstation message never renders; status is conveyed by the label.
-    expect(
-      screen.queryByText("No heartbeat from this workstation recently."),
-    ).not.toBeInTheDocument();
+    // The per-workstation message renders once, as a detail fact of the
+    // selected row: the label says "Offline", the fact says what to do.
+    expect(details.getByText("Status")).toBeVisible();
+    expect(details.getByText("No heartbeat from this workstation recently.")).toBeVisible();
+    expect(screen.getAllByText("No heartbeat from this workstation recently.")).toHaveLength(1);
   });
 
   it("lists the attached workstation alongside the other registered ones", () => {
@@ -1075,9 +1081,26 @@ describe("NotebookWorkstationsPanel", () => {
     );
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(/Machine connected/);
 
+    // `connect` registers the machine before the agent runs; the dialog must
+    // not call that "connected".
     rerender(
       <WorkstationPairingDialog
         pairing={{ ...pairingBase, status: "registered", workstationName: "Hub devbox" }}
+        onCancel={() => dismissed.push(1)}
+      />,
+    );
+    expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
+      "Hub devbox is registered. Run `runt workstation run` on it to start serving compute.",
+    );
+
+    rerender(
+      <WorkstationPairingDialog
+        pairing={{
+          ...pairingBase,
+          status: "registered",
+          workstationName: "Hub devbox",
+          workstationOnline: true,
+        }}
         onCancel={() => dismissed.push(1)}
       />,
     );

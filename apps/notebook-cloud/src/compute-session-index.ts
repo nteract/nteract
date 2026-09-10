@@ -23,8 +23,9 @@ export const WORKSTATION_LEASE_GC_MS = 24 * 60 * 60_000;
 // Hard ceiling on a single went_offline delivery so a slow or dead events DO
 // cannot keep the background notify (and thus the registry DO) alive.
 const WORKSTATION_WENT_OFFLINE_NOTIFY_TIMEOUT_MS = 5_000;
+// Shown to the user on the attachment and in the panel: say what to do.
 const WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_MESSAGE =
-  "workstation lease expired: no heartbeat within the lease window";
+  "the workstation stopped sending heartbeats before it picked up this request. Run `runt workstation run` on that machine, then attach again.";
 const WORKSTATION_LEASE_EXPIRED_ATTACH_JOB_TIMEOUT_MS = 5_000;
 const WORKSTATION_LEASE_RUNTIME_REPAIR_TIMEOUT_MS = 5_000;
 

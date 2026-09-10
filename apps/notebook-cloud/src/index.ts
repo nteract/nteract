@@ -1809,6 +1809,18 @@ const WORKSTATION_HEARTBEAT_STALE_MS = 3 * 60_000;
 // offline agree. The DO's alarm makes the transition proactive instead of
 // only-on-read.
 const WORKSTATION_LEASE_TTL_MS = WORKSTATION_HEARTBEAT_STALE_MS;
+
+// What a user can do about a workstation that is not taking compute requests.
+// The command is the same on every platform and is what `runt workstation
+// connect` prints; repeating it here is what turns a grey button into a fix.
+const WORKSTATION_START_AGENT_HINT =
+  "Run `runt workstation run` on that machine, then attach again.";
+function workstationNotListeningMessage(displayName: string): string {
+  return `${displayName} is paired but no workstation agent is listening. ${WORKSTATION_START_AGENT_HINT}`;
+}
+function workstationNoHeartbeatMessage(displayName: string): string {
+  return `${displayName} stopped sending heartbeats. ${WORKSTATION_START_AGENT_HINT}`;
+}
 const MAX_WORKSTATION_ATTACH_JOBS_LIMIT = 25;
 const MISSING_WORKSTATION_RETRY_AFTER_SECONDS = 15 * 60;
 const MAX_WORKSTATION_ACCELERATORS = 16;
@@ -2310,15 +2322,19 @@ async function routeNotebookWorkstationAttachment(
       reason: `workstation ${workstationId} is not online while attaching compute`,
       operation: "offline_workstation_attach",
     });
+    const row = workstationResponseRow(workstation, {
+      defaultWorkstationId,
+      now: Date.now(),
+      eventPresence,
+      lease,
+    });
+    // The viewer surfaces this string as the panel status line, so it has to
+    // say what to do, not only that the request was refused.
     return json(
       {
-        error: "workstation is not online",
-        workstation: workstationResponseRow(workstation, {
-          defaultWorkstationId,
-          now: Date.now(),
-          eventPresence,
-          lease,
-        }),
+        error: row.status_message ?? "workstation is not online",
+        error_code: "workstation_not_online",
+        workstation: row,
       },
       409,
     );
@@ -3039,6 +3055,11 @@ function parseWorkstationRegistrationPayload(
     return environmentsJson;
   }
 
+  const listening = payload.listening;
+  if (listening !== undefined && typeof listening !== "boolean") {
+    return json({ error: "listening must be a boolean" }, 400);
+  }
+
   return {
     workstationId,
     displayName,
@@ -3054,6 +3075,7 @@ function parseWorkstationRegistrationPayload(
     memoryBytes,
     acceleratorsJson,
     environmentsJson,
+    ...(listening === undefined ? {} : { listening }),
   };
 }
 
@@ -3204,13 +3226,15 @@ function workstationResponseRow(
     provider_label: workstation.provider_label,
     status,
     status_message:
-      status === "offline" && options.eventPresence?.connected === false
-        ? "Workstation event socket is not connected."
-        : status === "online" && options.eventPresence?.connected === true
-          ? workstation.status_message
-          : status === "offline" && workstation.status === "online"
-            ? "No heartbeat from this workstation recently."
-            : workstation.status_message,
+      status === "connecting" && workstation.status === "connecting"
+        ? (workstation.status_message ?? workstationNotListeningMessage(workstation.display_name))
+        : status === "offline" && options.eventPresence?.connected === false
+          ? workstationNoHeartbeatMessage(workstation.display_name)
+          : status === "online" && options.eventPresence?.connected === true
+            ? workstation.status_message
+            : status === "offline" && workstation.status === "online"
+              ? workstationNoHeartbeatMessage(workstation.display_name)
+              : workstation.status_message,
     default_environment_label: workstation.default_environment_label,
     environment_policy: workstation.environment_policy,
     installed_build: workstation.installed_build,
