@@ -114,7 +114,7 @@ struct CliContext {
 }
 
 impl CliContext {
-    fn name(self) -> &'static str {
+    fn invocation(self) -> &'static str {
         if self.canonical {
             // A follow-up command must address the same credential namespace
             // even when the user's default nteract alias selects another channel.
@@ -242,18 +242,18 @@ async fn connect(
             eprintln!(
                 "Warning: registration returned HTTP {}; `{} workstation run` will retry.",
                 response.status(),
-                cli.name()
+                cli.invocation()
             );
         }
         Err(error) => {
             eprintln!(
                 "Warning: registration failed ({error}); `{} workstation run` will retry.",
-                cli.name()
+                cli.invocation()
             );
         }
     }
 
-    let cli_name = cli.name();
+    let cli_name = cli.invocation();
     println!("To serve attach requests in this terminal:");
     println!("  {cli_name} workstation run");
     #[cfg(target_os = "linux")]
@@ -532,7 +532,7 @@ fn resolve_credentials(cli: CliContext) -> Result<ResolvedCredentials> {
             "no workstation credential found at {} — run `{} workstation connect <url>` first \
              (or set {CLOUD_TOKEN_ENV} and {CLOUD_URL_ENV})",
             path.display(),
-            cli.name()
+            cli.invocation()
         );
     };
 
@@ -600,7 +600,7 @@ async fn status(json_output: bool, cli: CliContext) -> Result<()> {
         bail!(
             "the workstation credential was rejected (HTTP {status}) — it may have been revoked; \
              run `{} workstation connect {}` with a fresh pairing code",
-            cli.name(),
+            cli.invocation(),
             resolved.cloud_url
         );
     }
@@ -630,7 +630,7 @@ async fn status(json_output: bool, cli: CliContext) -> Result<()> {
     if workstations.is_empty() {
         println!(
             "No workstations registered yet. Run `{} workstation run` to register.",
-            cli.name()
+            cli.invocation()
         );
         return Ok(());
     }
@@ -680,7 +680,7 @@ async fn service(command: WorkstationServiceCommands, cli: CliContext) -> Result
         bail!(
             "workstation service management currently supports Linux user systemd only. \
              Use `{} workstation run` in tmux for foreground/manual testing.",
-            cli.name()
+            cli.invocation()
         )
     }
 }
@@ -870,7 +870,10 @@ fn install_workstation_service(
     if start {
         start_or_restart_workstation_service_after_install(cli)?;
     } else {
-        println!("Start it with `{} workstation service start`.", cli.name());
+        println!(
+            "Start it with `{} workstation service start`.",
+            cli.invocation()
+        );
     }
     Ok(())
 }
@@ -949,7 +952,7 @@ fn status_workstation_service(cli: CliContext) -> Result<()> {
         println!("Installed: no");
         println!(
             "Run `{} workstation service install --start` after pairing this machine.",
-            cli.name()
+            cli.invocation()
         );
         return Ok(());
     }
@@ -983,7 +986,7 @@ fn logs_workstation_service(follow: bool, lines: usize, cli: CliContext) -> Resu
         bail!(
             "journalctl failed for {}; run `{} workstation service status` first",
             workstation_service_unit_name(),
-            cli.name()
+            cli.invocation()
         );
     }
     Ok(())
@@ -1013,14 +1016,14 @@ fn ensure_stored_workstation_credential(cli: CliContext) -> Result<()> {
         bail!(
             "no stored workstation credential found at {}. Run `{} workstation connect <url>` first.",
             path.display(),
-            cli.name()
+            cli.invocation()
         );
     };
     if credentials.token.trim().is_empty() || credentials.cloud_url.trim().is_empty() {
         bail!(
             "workstation credential at {} is incomplete. Run `{} workstation connect <url>` again.",
             path.display(),
-            cli.name()
+            cli.invocation()
         );
     }
     Ok(())
@@ -1033,19 +1036,24 @@ fn ensure_workstation_service_installed(cli: CliContext) -> Result<()> {
     }
     bail!(
         "workstation service is not installed. Run `{} workstation service install --start` after pairing this machine.",
-        cli.name()
+        cli.invocation()
     );
 }
 
 #[cfg(target_os = "linux")]
 fn current_runt_path_for_service(cli: CliContext) -> Result<PathBuf> {
+    let binary_name = if cli.canonical {
+        "nteract"
+    } else {
+        runt_workspace::cli_command_name()
+    };
     let path = std::env::current_exe()
-        .with_context(|| format!("resolve current {} executable", cli.name()))?;
+        .with_context(|| format!("resolve current {} executable", binary_name))?;
     let path = std::fs::canonicalize(&path).unwrap_or(path);
     if !path.exists() {
         bail!(
             "current {} executable does not exist at {}",
-            cli.name(),
+            binary_name,
             path.display()
         );
     }
@@ -1086,7 +1094,7 @@ fn user_systemd_unavailable_message(detail: &str, cli: CliContext) -> String {
         "Linux user systemd is not available in this session: {detail}\n\
          Use a normal login session with XDG_RUNTIME_DIR/DBus available, or ask an admin to enable lingering with `loginctl enable-linger $USER` if this workstation should stay available after logout.\n\
          Fallback: run `{} workstation run` inside tmux.",
-        cli.name()
+        cli.invocation()
     )
 }
 
@@ -1166,8 +1174,8 @@ fn systemctl_checked(args: &[&str], action: &str, cli: CliContext) -> Result<()>
         .unwrap_or("systemctl did not report details");
     bail!(
         "failed to {action}: {detail}\nRun `{} workstation service status` for current state, or use `{} workstation run` in tmux.",
-        cli.name(),
-        cli.name()
+        cli.invocation(),
+        cli.invocation()
     );
 }
 
@@ -1619,7 +1627,7 @@ mod tests {
         );
         let fallback = format!(
             "Fallback: run `{} workstation run` inside tmux.",
-            CliContext::default().name()
+            CliContext::default().invocation()
         );
 
         assert!(message.contains(
@@ -1639,7 +1647,7 @@ mod tests {
 
     #[test]
     fn canonical_workstation_hint_round_trips_the_compiled_channel() {
-        let hint = CliContext { canonical: true }.name();
+        let hint = CliContext { canonical: true }.invocation();
         let args = hint.split_whitespace().chain(["workstation", "status"]);
         let matches = crate::cli_command(crate::EntryPoint::Nteract)
             .try_get_matches_from(args)

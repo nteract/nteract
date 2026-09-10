@@ -78,6 +78,10 @@ top-level `status` describe the selected installation instead. An explicit
 `open` and MCP's `show_notebook` launch the Desktop installation that owns the
 selected runtime endpoint. Unknown custom endpoints cannot be handed to Desktop;
 continue using them through CLI or MCP operations.
+In development, Desktop handoff requires the resolved worktree's own endpoint;
+a socket override alone cannot redirect an existing Desktop process. On Linux,
+strict handoff resolves the selected installation's AppImage directly, including
+custom installer prefixes, rather than trusting a launcher name on PATH.
 
 Pairing registers a machine; serving makes it available for attachment. Neither
 means a notebook kernel is ready or a cell has executed. Workstation persistence

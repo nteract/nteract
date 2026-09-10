@@ -135,7 +135,8 @@ pub enum EntryPoint {
 }
 
 impl EntryPoint {
-    /// Recovery commands must preserve the selected installation's channel.
+    /// Installation-scoped recovery pins the selected channel; shared-runtime
+    /// observation hints preserve unscoped selection unless --channel was explicit.
     fn action_command(self) -> &'static str {
         match self {
             Self::Nteract => match runt_workspace::build_channel() {
@@ -4999,6 +5000,7 @@ async fn shutdown_notebook(
         }
         Ok(false) => {
             eprintln!("Notebook not found: {}", notebook_id);
+            // Keep shared runtime discovery for an unscoped notebook command.
             let command = if options.enabled && options.explicit_channel {
                 EntryPoint::Nteract.action_command()
             } else if options.enabled {

@@ -1399,9 +1399,9 @@ mod tests {
                         guidance.contains("Repair Runtime")
                             || guidance.contains("restart the worktree runtime explicitly")
                     );
-                    assert!(!guidance.contains("Retry Startup"));
+                    assert!(!guidance.contains("Retry"));
                 } else {
-                    assert!(guidance.contains("Retry Startup"));
+                    assert!(guidance.contains("Retry"));
                     assert!(guidance.contains("runtime logs"));
                     assert!(!guidance.contains("Repair Runtime"));
                     assert!(!guidance.contains("restart the worktree"));
@@ -2281,7 +2281,7 @@ where
                 runtimed_client::startup::RuntimeStartupError::Incompatible { .. } => {
                     "Save your notebooks, then use Repair Runtime if you want to replace the active runtime."
                 }
-                _ => "Use Retry Startup to check the runtime again. If it still cannot respond, check the runtime logs.",
+                _ => "Use Retry to check the runtime again. If it still cannot respond, check the runtime logs.",
             };
             let error = error.to_string();
             log::warn!("[startup] Runtime admission refused without repair: {error}");
