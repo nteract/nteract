@@ -21,13 +21,13 @@ export interface CloudViewerPresenceState {
 }
 
 export interface CloudViewerPresenceDisplay {
-  label: string;
   title: string;
   connected: boolean;
   peers: CloudViewerPresencePeer[];
   hiddenCount: number;
 }
 
+/** Room membership does not establish whether a participant is active. */
 export interface CloudViewerPresencePeer {
   id: string;
   participantKey: string;
@@ -35,7 +35,6 @@ export interface CloudViewerPresencePeer {
   label: string;
   connectionScope: ConnectionScope | null;
   kind: "self" | "peer" | "anonymous" | "runtime" | "unknown";
-  status: "active" | "idle" | "offline";
   count?: number;
 }
 
@@ -94,11 +93,6 @@ export function reduceCloudViewerConnection(
   return {
     ...state,
     connection,
-    peers: state.peers.map((peer) => ({
-      ...peer,
-      status:
-        connection === "connected" ? "active" : connection === "disconnected" ? "offline" : "idle",
-    })),
   };
 }
 
@@ -201,7 +195,6 @@ function cloudPresencePeerFromMessage({
     label,
     connectionScope: normalizedConnectionScope,
     kind: isRuntimePeer ? "runtime" : isAnonymous ? "anonymous" : kind === "self" ? "self" : "peer",
-    status: "active",
   };
 }
 
@@ -239,17 +232,15 @@ export function cloudViewerPresenceDisplay(
   if (state.connection === "disconnected") {
     const displayPeers = cloudHumanPresenceDisplayPeers(state.peers, state.ownPeerId);
     return {
-      label: "Offline",
-      title: "Room unavailable",
+      title: "Connection lost — participant status unavailable",
       connected: false,
-      peers: displayPeers.peers.map((peer) => ({ ...peer, status: "offline" })),
+      peers: displayPeers.peers,
       hiddenCount: displayPeers.hiddenCount,
     };
   }
 
   if (state.connection === "connecting" || state.roomPeerCount === null) {
     return {
-      label: "Joining room",
       title: "Joining room",
       connected: false,
       peers: [
@@ -259,7 +250,6 @@ export function cloudViewerPresenceDisplay(
           label: "Joining room",
           connectionScope: null,
           kind: "unknown",
-          status: "idle",
         },
       ],
       hiddenCount: 0,
@@ -270,12 +260,9 @@ export function cloudViewerPresenceDisplay(
   const count = displayPeers.count;
   const title =
     count === 0
-      ? "No one else here"
-      : count === 1
-        ? "1 other participant"
-        : `${count} other participants`;
+      ? "No other participants connected"
+      : `${displayPeers.summary} connected; activity unknown`;
   return {
-    label: count === 0 ? "No one else here" : count === 1 ? "1 other here" : `${count} others here`,
     title,
     connected: true,
     peers: displayPeers.peers,
@@ -288,6 +275,7 @@ function cloudHumanPresenceDisplayPeers(
   ownPeerId: string | null,
 ): {
   count: number;
+  summary: string;
   peers: CloudViewerPresencePeer[];
   hiddenCount: number;
 } {
@@ -305,10 +293,11 @@ function cloudHumanPresenceDisplayPeers(
             id: "anonymous-group",
             participantKey: "anonymous",
             label:
-              anonymousCount === 1 ? "Anonymous viewer" : `${anonymousCount} anonymous viewers`,
+              anonymousCount === 1
+                ? "Anonymous viewer session"
+                : `${anonymousCount} anonymous viewer sessions`,
             connectionScope: null,
             kind: "anonymous" as const,
-            status: "active" as const,
             count: anonymousCount,
           },
         ]
@@ -317,6 +306,16 @@ function cloudHumanPresenceDisplayPeers(
   const count = namedPeers.length + anonymousCount;
   return {
     count,
+    summary: [
+      namedPeers.length > 0
+        ? `${namedPeers.length} other ${namedPeers.length === 1 ? "participant" : "participants"}`
+        : null,
+      anonymousCount > 0
+        ? `${anonymousCount} anonymous viewer ${anonymousCount === 1 ? "session" : "sessions"}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" and "),
     peers: visiblePeers,
     hiddenCount,
   };

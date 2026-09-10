@@ -1,21 +1,23 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CloudLivePresenceStore, normalizeCloudPresencePayload } from "../viewer/live-presence.ts";
+import { RemotePresenceState } from "../../../src/components/editor/presence-state.ts";
+import { normalizeCloudPresencePayload } from "../viewer/live-presence.ts";
 
 describe("cloud live presence", () => {
   it("normalizes raw actor labels before they reach shared cursor rendering", () => {
-    const store = new CloudLivePresenceStore("local-peer");
-    const snapshot = store.handlePresence({
-      type: "update",
-      peer_id: "remote-peer",
-      peer_label: "user:anaconda:550e8400-e29b-41d4-a716-446655440000",
-      actor_label: "user:anaconda:550e8400-e29b-41d4-a716-446655440000/browser:tab",
-      channel: "cursor",
-      data: { cell_id: "cell-1", line: 2, column: 4 },
-    });
+    const state = new RemotePresenceState("local-peer");
+    state.handlePresence(
+      normalizeCloudPresencePayload({
+        type: "update",
+        peer_id: "remote-peer",
+        peer_label: "user:anaconda:550e8400-e29b-41d4-a716-446655440000",
+        actor_label: "user:anaconda:550e8400-e29b-41d4-a716-446655440000/browser:tab",
+        channel: "cursor",
+        data: { cell_id: "cell-1", line: 2, column: 4 },
+      }),
+    );
 
-    assert.ok(snapshot);
-    assert.equal(snapshot.cells.get("cell-1")?.cursors[0]?.peerLabel, "Anaconda user");
+    assert.equal(state.presenceForCell("cell-1").cursors[0]?.peerLabel, "Anaconda user");
   });
 
   it("preserves friendly peer labels from presence snapshots", () => {

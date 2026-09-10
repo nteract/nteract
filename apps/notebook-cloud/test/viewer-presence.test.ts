@@ -45,7 +45,7 @@ describe("cloud viewer presence", () => {
         runtimePeerCount: 0,
       },
     );
-    assert.equal(cloudViewerPresenceDisplay(state).label, "No one else here");
+    assert.equal(cloudViewerPresenceDisplay(state).title, "No other participants connected");
 
     state = reduceCloudViewerPresenceMessage(state, {
       type: "cloud_peer_joined",
@@ -57,14 +57,17 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:01.000Z",
     });
     assert.equal(state.roomPeerCount, 2);
-    assert.equal(cloudViewerPresenceDisplay(state).label, "1 other here");
+    assert.equal(
+      cloudViewerPresenceDisplay(state).title,
+      "1 anonymous viewer session connected; activity unknown",
+    );
     assert.deepEqual(
       cloudViewerPresenceDisplay(state).peers.map((peer) => ({
         kind: peer.kind,
         label: peer.label,
         count: peer.count,
       })),
-      [{ kind: "anonymous", label: "Anonymous viewer", count: 1 }],
+      [{ kind: "anonymous", label: "Anonymous viewer session", count: 1 }],
     );
 
     state = reduceCloudViewerPresenceMessage(state, {
@@ -77,7 +80,7 @@ describe("cloud viewer presence", () => {
       timestamp: "2026-05-23T00:00:02.000Z",
     });
     assert.equal(state.roomPeerCount, 1);
-    assert.equal(cloudViewerPresenceDisplay(state).label, "No one else here");
+    assert.equal(cloudViewerPresenceDisplay(state).title, "No other participants connected");
   });
 
   it("surfaces disconnected state without losing the last room count", () => {
@@ -96,14 +99,9 @@ describe("cloud viewer presence", () => {
 
     assert.equal(disconnected.roomPeerCount, 3);
     const display = cloudViewerPresenceDisplay(disconnected);
-    assert.equal(display.label, "Offline");
-    assert.equal(display.title, "Room unavailable");
+    assert.equal(display.title, "Connection lost — participant status unavailable");
     assert.equal(display.connected, false);
     assert.equal(display.peers.length, 0);
-    assert.equal(
-      display.peers.every((peer) => peer.status === "offline"),
-      true,
-    );
   });
 
   it("does not turn count-only private peers into anonymous viewers", () => {
@@ -122,8 +120,7 @@ describe("cloud viewer presence", () => {
 
     assert.equal(state.ownPeerLabel, "Alice Demo");
     const display = cloudViewerPresenceDisplay(state);
-    assert.equal(display.label, "No one else here");
-    assert.equal(display.title, "No one else here");
+    assert.equal(display.title, "No other participants connected");
     assert.equal(display.connected, true);
     assert.deepEqual(
       display.peers.map((peer) => ({
@@ -177,7 +174,7 @@ describe("cloud viewer presence", () => {
 
     const display = cloudViewerPresenceDisplay(state);
 
-    assert.equal(display.label, "1 other here");
+    assert.equal(display.title, "1 other participant connected; activity unknown");
     assert.deepEqual(
       display.peers.map((peer) => ({
         kind: peer.kind,
@@ -223,7 +220,7 @@ describe("cloud viewer presence", () => {
 
     const display = cloudViewerPresenceDisplay(state);
 
-    assert.equal(display.label, "No one else here");
+    assert.equal(display.title, "No other participants connected");
     assert.deepEqual(
       display.peers.map((peer) => ({
         kind: peer.kind,
@@ -273,14 +270,14 @@ describe("cloud viewer presence", () => {
 
     const display = cloudViewerPresenceDisplay(state);
 
-    assert.equal(display.label, "2 others here");
+    assert.equal(display.title, "2 anonymous viewer sessions connected; activity unknown");
     assert.deepEqual(
       display.peers.map((peer) => ({
         kind: peer.kind,
         label: peer.label,
         count: peer.count,
       })),
-      [{ kind: "anonymous", label: "2 anonymous viewers", count: 2 }],
+      [{ kind: "anonymous", label: "2 anonymous viewer sessions", count: 2 }],
     );
   });
 
@@ -327,7 +324,7 @@ describe("cloud viewer presence", () => {
       })),
       [
         { kind: "peer", label: "Bob Demo", count: undefined },
-        { kind: "anonymous", label: "Anonymous viewer", count: 1 },
+        { kind: "anonymous", label: "Anonymous viewer session", count: 1 },
       ],
     );
     assert.equal(display.hiddenCount, 0);
