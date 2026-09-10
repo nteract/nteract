@@ -174,15 +174,19 @@ async fn run_wait(
         .as_ref()
         .map(|id| std::collections::HashMap::from([(execution_id.to_owned(), id.clone())]));
     let source_available = exec.source.is_some();
-    let rendered = super::execution::render_execution_result(
-        server,
-        execution_id,
-        exec,
-        Some(&latest.snapshot.runtime.comms),
-        cell,
-        mapping,
-        false,
-    );
+    let rendered = async {
+        let metadata = server.local_runtime_metadata().await;
+        super::execution::render_execution_result(
+            &metadata,
+            execution_id,
+            exec,
+            Some(&latest.snapshot.runtime.comms),
+            cell,
+            mapping,
+            false,
+        )
+        .await
+    };
     let mut rendered = match tokio::time::timeout_at(deadline, rendered).await {
         Ok(result) => result?,
         Err(_) => {

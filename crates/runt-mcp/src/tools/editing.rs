@@ -82,6 +82,7 @@ pub async fn replace_match(
     } else {
         require_session_access!(server, DocumentMutation)
     };
+    let metadata = server.local_metadata_for_access(&access);
     let handle = access.handle.clone();
 
     let source = match handle.get_cell_source(cell_id) {
@@ -124,8 +125,8 @@ pub async fn replace_match(
             &handle,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
-            &server.blob_base_url(),
-            &server.blob_store_path(),
+            &metadata.blob_base_url,
+            &metadata.blob_store_path,
         )
         .await
         {
@@ -135,7 +136,7 @@ pub async fn replace_match(
         if let Err(error) = server.ensure_session_access_current(&access).await {
             return super::session_access_error(error);
         }
-        return super::build_execution_result(&result, &handle, server).await;
+        return super::build_execution_result(&result, &handle, &metadata).await;
     }
 
     // Return diff
@@ -171,6 +172,7 @@ pub async fn replace_regex(
     } else {
         require_session_access!(server, DocumentMutation)
     };
+    let metadata = server.local_metadata_for_access(&access);
     let handle = access.handle.clone();
 
     let source = match handle.get_cell_source(cell_id) {
@@ -213,8 +215,8 @@ pub async fn replace_regex(
             &handle,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
-            &server.blob_base_url(),
-            &server.blob_store_path(),
+            &metadata.blob_base_url,
+            &metadata.blob_store_path,
         )
         .await
         {
@@ -224,7 +226,7 @@ pub async fn replace_regex(
         if let Err(error) = server.ensure_session_access_current(&access).await {
             return super::session_access_error(error);
         }
-        return super::build_execution_result(&result, &handle, server).await;
+        return super::build_execution_result(&result, &handle, &metadata).await;
     }
 
     // Return diff

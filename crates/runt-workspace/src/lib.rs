@@ -504,13 +504,59 @@ pub fn open_notebook_app_for_channel(
     open_notebook_installed_for(channel, path, extra_args, false)
 }
 
-/// Open Desktop from this installation's channel without falling back to a
-/// different channel. Used by the canonical CLI's deliberate target selection.
-pub fn open_notebook_app_strict(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
-    if is_dev_mode() {
-        return open_notebook_dev(path, extra_args);
+#[derive(Debug, PartialEq, Eq)]
+enum DesktopRuntimeContext {
+    Installed(BuildChannel),
+    CurrentWorktree,
+}
+
+fn desktop_context_for_endpoint(
+    endpoint: &Path,
+    stable: &Path,
+    nightly: &Path,
+    worktree: Option<&Path>,
+) -> Result<DesktopRuntimeContext, String> {
+    if let Some(worktree) = worktree {
+        if endpoint == worktree {
+            return Ok(DesktopRuntimeContext::CurrentWorktree);
+        }
+    } else if endpoint == stable {
+        return Ok(DesktopRuntimeContext::Installed(BuildChannel::Stable));
+    } else if endpoint == nightly {
+        return Ok(DesktopRuntimeContext::Installed(BuildChannel::Nightly));
     }
-    open_notebook_installed_for(build_channel(), path, extra_args, true)
+    Err(format!(
+        "Cannot open Desktop for runtime {}: it is not a known installed runtime or this worktree's runtime. Keep using the notebook through the CLI or MCP.",
+        endpoint.display()
+    ))
+}
+
+/// Open the Desktop installation owning the selected runtime endpoint.
+/// Unknown custom sockets cannot safely be handed to an installed app; a socket
+/// environment variable is not a supported handoff to an already-running app.
+pub fn open_notebook_app_for_endpoint_strict(
+    endpoint: &Path,
+    path: Option<&Path>,
+    extra_args: &[&str],
+) -> Result<(), String> {
+    let worktree_endpoint = if is_dev_mode() {
+        let worktree =
+            get_workspace_path().ok_or("Cannot open Desktop: dev mode has no resolved worktree")?;
+        Some(socket_path_for_context(build_channel(), Some(&worktree)))
+    } else {
+        None
+    };
+    match desktop_context_for_endpoint(
+        endpoint,
+        &socket_path_for_context(BuildChannel::Stable, None),
+        &socket_path_for_context(BuildChannel::Nightly, None),
+        worktree_endpoint.as_deref(),
+    )? {
+        DesktopRuntimeContext::Installed(channel) => {
+            open_notebook_installed_for(channel, path, extra_args, true)
+        }
+        DesktopRuntimeContext::CurrentWorktree => open_notebook_dev(path, extra_args),
+    }
 }
 
 /// Launch the desktop notebook app using the compile-time channel.
@@ -578,7 +624,11 @@ fn open_notebook_installed_for(
     if strict {
         // NSIS places Desktop beside its CLI backend; only the public command
         // shim directory is on PATH. Resolve this selected installation directly.
-        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let executable = if channel == build_channel() {
+            std::env::current_exe().map_err(|error| error.to_string())?
+        } else {
+            cli::resolve_channel(channel)?
+        };
         let desktop = windows_desktop_beside_cli(&executable).ok_or_else(|| {
             format!("{} Desktop is not installed beside this CLI. Install Desktop to use `nteract open`.", desktop_display_name_for(channel))
         })?;
@@ -1521,6 +1571,47 @@ pub fn stable_workstation_id(hostname: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_handoff_uses_runtime_channel_and_rejects_unknown_endpoints() {
+        use super::{desktop_context_for_endpoint, BuildChannel, DesktopRuntimeContext};
+        use std::path::Path;
+        let stable = Path::new("stable.sock");
+        let nightly = Path::new("nightly.sock");
+        for (endpoint, channel) in [
+            (stable, BuildChannel::Stable),
+            (nightly, BuildChannel::Nightly),
+        ] {
+            assert_eq!(
+                desktop_context_for_endpoint(endpoint, stable, nightly, None).unwrap(),
+                DesktopRuntimeContext::Installed(channel)
+            );
+        }
+        assert!(
+            desktop_context_for_endpoint(Path::new("custom.sock"), stable, nightly, None).is_err()
+        );
+    }
+
+    #[test]
+    fn desktop_handoff_preserves_current_worktree_isolation() {
+        use super::{desktop_context_for_endpoint, DesktopRuntimeContext};
+        use std::path::Path;
+        let stable = Path::new("stable.sock");
+        let nightly = Path::new("nightly.sock");
+        let worktree = Path::new("worktree.sock");
+        assert_eq!(
+            desktop_context_for_endpoint(worktree, stable, nightly, Some(worktree)).unwrap(),
+            DesktopRuntimeContext::CurrentWorktree
+        );
+        assert!(desktop_context_for_endpoint(stable, stable, nightly, Some(worktree)).is_err());
+        assert!(desktop_context_for_endpoint(
+            Path::new("another-worktree.sock"),
+            stable,
+            nightly,
+            Some(worktree)
+        )
+        .is_err());
+    }
+
     use super::*;
 
     #[test]

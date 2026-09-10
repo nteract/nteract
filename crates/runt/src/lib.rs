@@ -134,6 +134,19 @@ pub enum EntryPoint {
     Runt,
 }
 
+impl EntryPoint {
+    /// Recovery commands must preserve the selected installation's channel.
+    fn action_command(self) -> &'static str {
+        match self {
+            Self::Nteract => match runt_workspace::build_channel() {
+                runt_workspace::BuildChannel::Stable => "nteract --channel stable",
+                runt_workspace::BuildChannel::Nightly => "nteract --channel nightly",
+            },
+            Self::Runt => "runt",
+        }
+    }
+}
+
 fn cli_command(entrypoint: EntryPoint) -> clap::Command {
     let command = Cli::command();
     match entrypoint {
@@ -535,10 +548,16 @@ pub fn run(entrypoint: EntryPoint) -> Result<()> {
     }
 
     match cli.command {
-        // Open launches the desktop app (no tokio needed)
-        Some(Commands::Open { path, runtime }) => {
-            open_notebook(path, runtime, entrypoint == EntryPoint::Nteract)
+        Some(Commands::Open { path, runtime }) if entrypoint == EntryPoint::Nteract => {
+            let options = local_runtime::LocalRuntimeOptions {
+                enabled: true,
+                explicit_channel: cli.channel.is_some(),
+            };
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(open_notebook_canonical(path, runtime, options))
         }
+        // Legacy open retains its existing app selection behavior.
+        Some(Commands::Open { path, runtime }) => open_notebook(path, runtime, None),
         // All other subcommands use tokio
         other => {
             let rt = tokio::runtime::Runtime::new()?;
@@ -645,7 +664,23 @@ fn enable_virtual_terminal_processing() {}
 ///
 /// The app automatically captures its working directory at startup for untitled
 /// notebooks, so we don't need to pass --cwd explicitly.
-fn open_notebook(path: Option<PathBuf>, runtime: Option<String>, strict: bool) -> Result<()> {
+async fn open_notebook_canonical(
+    path: Option<PathBuf>,
+    runtime: Option<String>,
+    options: local_runtime::LocalRuntimeOptions,
+) -> Result<()> {
+    let selected = local_runtime::select(options, None).await;
+    // Read-only admission: Desktop may start an absent runtime, but an existing
+    // incompatible or uninspectable runtime must remain untouched.
+    runtimed_client::startup::probe_local_runtime(&selected.endpoint).await?;
+    open_notebook(path, runtime, Some(&selected.endpoint))
+}
+
+fn open_notebook(
+    path: Option<PathBuf>,
+    runtime: Option<String>,
+    endpoint: Option<&Path>,
+) -> Result<()> {
     let launch = open_notebook_launch_args(path, runtime);
     let extra_args = launch
         .extra_args
@@ -653,8 +688,12 @@ fn open_notebook(path: Option<PathBuf>, runtime: Option<String>, strict: bool) -
         .map(String::as_str)
         .collect::<Vec<_>>();
 
-    if strict {
-        runt_workspace::open_notebook_app_strict(launch.path.as_deref(), &extra_args)
+    if let Some(endpoint) = endpoint {
+        runt_workspace::open_notebook_app_for_endpoint_strict(
+            endpoint,
+            launch.path.as_deref(),
+            &extra_args,
+        )
     } else {
         runt_workspace::open_notebook_app(launch.path.as_deref(), &extra_args)
     }
@@ -715,6 +754,7 @@ async fn async_main(
     entrypoint: EntryPoint,
     explicit_channel: bool,
 ) -> Result<()> {
+    let command_name = entrypoint.action_command();
     let local_runtime = local_runtime::LocalRuntimeOptions {
         enabled: entrypoint == EntryPoint::Nteract,
         explicit_channel,
@@ -722,7 +762,7 @@ async fn async_main(
     match command {
         // Primary commands
         Some(Commands::Open { .. }) => unreachable!(), // handled in main()
-        Some(Commands::Daemon { command }) => daemon_command(command).await?,
+        Some(Commands::Daemon { command }) => daemon_command(command, entrypoint).await?,
         Some(Commands::Ps { json }) => list_notebooks(json, local_runtime).await?,
         Some(Commands::Stop { path }) => shutdown_notebook(&path, local_runtime).await?,
         Some(Commands::Inspect {
@@ -733,21 +773,26 @@ async fn async_main(
         Some(Commands::Publish { args }) => publish_notebook(args).await?,
 
         // Top-level convenience aliases
-        Some(Commands::Status { json }) => daemon_command(DaemonCommands::Status { json }).await?,
+        Some(Commands::Status { json }) => {
+            daemon_command(DaemonCommands::Status { json }, entrypoint).await?
+        }
         Some(Commands::Doctor {
             fix,
             no_start,
             json,
         }) => {
-            daemon_command(DaemonCommands::Doctor {
-                fix,
-                no_start,
-                json,
-            })
+            daemon_command(
+                DaemonCommands::Doctor {
+                    fix,
+                    no_start,
+                    json,
+                },
+                entrypoint,
+            )
             .await?
         }
         Some(Commands::Logs { follow, lines }) => {
-            daemon_command(DaemonCommands::Logs { follow, lines }).await?
+            daemon_command(DaemonCommands::Logs { follow, lines }, entrypoint).await?
         }
         Some(Commands::Diagnostics { output }) => diagnostics_command(output).await?,
         Some(Commands::Nb { command }) => notebook_cli::command(*command, local_runtime).await?,
@@ -788,18 +833,18 @@ async fn async_main(
             )
             .await?
         }
-        Some(Commands::Env { command }) => env_command(command).await?,
+        Some(Commands::Env { command }) => env_command(command, command_name).await?,
 
         // Development commands (requires RUNTIMED_DEV=1)
         Some(Commands::Dev(dev_cmd)) => {
             if !is_dev_mode() {
                 eprintln!(
-                    "Error: 'runt dev' commands require RUNTIMED_DEV=1 environment variable."
+                    "Error: '{command_name} dev' commands require RUNTIMED_DEV=1 environment variable."
                 );
                 eprintln!("These commands are intended for runtimed development only.");
                 std::process::exit(1);
             }
-            dev_command(dev_cmd).await?
+            dev_command(dev_cmd, command_name).await?
         }
 
         Some(Commands::Pool { command }) => {
@@ -1659,11 +1704,12 @@ async fn stop_daemon_smart(
 }
 
 #[allow(clippy::unwrap_used, clippy::expect_used)] // CLI binary; panics with context are acceptable
-async fn daemon_command(command: DaemonCommands) -> Result<()> {
+async fn daemon_command(command: DaemonCommands, entrypoint: EntryPoint) -> Result<()> {
     use runtimed::client::PoolClient;
     use runtimed_client::singleton::query_daemon_info;
     use runtimed_service::ServiceManager;
 
+    let command_name = entrypoint.action_command();
     let mut manager = ServiceManager::default();
 
     // Get daemon info first so we can use its endpoint for the client.
@@ -1888,6 +1934,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 &mut manager,
                 &client,
                 daemon_info.as_ref(),
+                entrypoint,
                 fix,
                 no_start,
                 json,
@@ -1901,7 +1948,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 std::process::exit(1);
             }
             if !manager.is_installed() {
-                eprintln!("Service not installed. Run 'runt daemon install' first.");
+                eprintln!("Service not installed. Run '{command_name} daemon install' first.");
                 std::process::exit(1);
             }
             println!(
@@ -1954,7 +2001,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 std::process::exit(1);
             }
             if !manager.is_installed() {
-                eprintln!("Service not installed. Run 'runt daemon install' first.");
+                eprintln!("Service not installed. Run '{command_name} daemon install' first.");
                 std::process::exit(1);
             }
             println!(
@@ -2018,14 +2065,16 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     runt_workspace::desktop_display_name()
                 );
                 eprintln!(
-                    "Run 'runt daemon doctor' to diagnose issues, or launch {} to install.",
+                    "Run '{command_name} daemon doctor' to diagnose issues, or launch {} to install.",
                     runt_workspace::desktop_display_name()
                 );
                 std::process::exit(1);
             }
 
             if manager.is_installed() {
-                eprintln!("Service already installed. Use 'runt daemon uninstall' first.");
+                eprintln!(
+                    "Service already installed. Use '{command_name} daemon uninstall' first."
+                );
                 std::process::exit(1);
             }
 
@@ -2035,7 +2084,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
             );
             println!("Source binary: {}", source.display());
             manager.install(&source)?;
-            println!("Service installed. Run 'runt daemon start' to start it.");
+            println!("Service installed. Run '{command_name} daemon start' to start it.");
         }
         DaemonCommands::Uninstall => {
             if !manager.is_installed() {
@@ -2093,7 +2142,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
 }
 
 /// Handle development commands (requires RUNTIMED_DEV=1)
-async fn dev_command(command: DevCommands) -> Result<()> {
+async fn dev_command(command: DevCommands, command_name: &str) -> Result<()> {
     match command {
         DevCommands::Worktrees { json } => {
             list_worktree_daemons(json).await?;
@@ -2106,7 +2155,7 @@ async fn dev_command(command: DevCommands) -> Result<()> {
             yes,
             dry_run,
         } => {
-            clean_worktree_command(hash, all, stale, force, yes, dry_run).await?;
+            clean_worktree_command(hash, all, stale, force, yes, dry_run, command_name).await?;
         }
     }
 
@@ -2118,11 +2167,22 @@ async fn doctor_command(
     manager: &mut runtimed_service::ServiceManager,
     client: &runtimed::client::PoolClient,
     daemon_info: Option<&runtimed::singleton::DaemonInfo>,
+    entrypoint: EntryPoint,
     fix: bool,
     no_start: bool,
     json: bool,
 ) -> Result<()> {
     use serde::Serialize;
+
+    let command_name = entrypoint.action_command();
+    fn bundled_runtime(entrypoint: EntryPoint) -> Option<PathBuf> {
+        match entrypoint {
+            EntryPoint::Nteract => {
+                local_runtime::sibling_runtime_binary().filter(|path| path.is_file())
+            }
+            EntryPoint::Runt => find_bundled_runtimed(),
+        }
+    }
 
     #[derive(Serialize, Clone)]
     struct DoctorReport {
@@ -2160,7 +2220,9 @@ async fn doctor_command(
         client: &runtimed::client::PoolClient,
         daemon_info: Option<&runtimed::singleton::DaemonInfo>,
         actions_taken: Vec<String>,
+        entrypoint: EntryPoint,
     ) -> DoctorReport {
+        let command_name = entrypoint.action_command();
         // On macOS, check what binary the plist actually points to (what launchd
         // runs), rather than what default_binary_path() prefers. This ensures we
         // diagnose the *actual* running binary, not the one we'd install next time.
@@ -2516,7 +2578,7 @@ async fn doctor_command(
             } else {
                 None
             };
-            let bundled_ver = find_bundled_runtimed().and_then(|p| get_binary_version(&p));
+            let bundled_ver = bundled_runtime(entrypoint).and_then(|p| get_binary_version(&p));
             let cli_ver = runt_version_string();
 
             // Build detail string showing all available versions
@@ -2637,11 +2699,11 @@ async fn doctor_command(
 
         // Determine diagnosis
         let diagnosis = if daemon_running_result && version_mismatch {
-            "Daemon is running but version mismatch detected. Run 'runt daemon doctor --fix' or restart the app.".to_string()
+            format!("Daemon is running but version mismatch detected. Run '{command_name} daemon doctor --fix' or restart the app.")
         } else if daemon_running_result && is_legacy_install {
-            "Daemon is running but uses a legacy standalone binary. Run 'runt daemon doctor --fix' to migrate to the app bundle.".to_string()
+            format!("Daemon is running but uses a legacy standalone binary. Run '{command_name} daemon doctor --fix' to migrate to the app bundle.")
         } else if daemon_running_result && file_assoc_issue {
-            "Daemon is healthy but .ipynb file association needs attention. Run 'runt daemon doctor --fix'.".to_string()
+            format!("Daemon is healthy but .ipynb file association needs attention. Run '{command_name} daemon doctor --fix'.")
         } else if daemon_running_result {
             "Daemon is healthy and running.".to_string()
         } else if !binary_exists && !config_exists {
@@ -2655,17 +2717,19 @@ async fn doctor_command(
             "Binary is quarantined by Gatekeeper. Run: xattr -d com.apple.quarantine <binary_path>"
                 .to_string()
         } else if binary_exists && config_exists && launchd_not_loaded {
-            "Plist exists but service not loaded in launchd. Run 'runt daemon doctor --fix' to reset.".to_string()
+            format!("Plist exists but service not loaded in launchd. Run '{command_name} daemon doctor --fix' to reset.")
         } else if binary_exists && config_exists && launchd_error {
-            "Service registered but failing to start. Check logs: runt daemon logs".to_string()
+            format!(
+                "Service registered but failing to start. Check logs: {command_name} daemon logs"
+            )
         } else if binary_exists && config_exists && daemon_state_status == "stale" {
             "Daemon state is stale (process crashed). Service needs restart.".to_string()
         } else if binary_exists && config_exists && !daemon_running_result {
-            "Daemon installed but not running. Try 'runt daemon start'.".to_string()
+            format!("Daemon installed but not running. Try '{command_name} daemon start'.")
         } else if binary_exists && !config_exists {
             "Daemon binary installed but service config missing.".to_string()
         } else {
-            "Unknown state. Check logs with 'runt daemon logs'.".to_string()
+            format!("Unknown state. Check logs with '{command_name} daemon logs'.")
         };
 
         DoctorReport {
@@ -2810,7 +2874,7 @@ async fn doctor_command(
         // Fix legacy standalone binary — migrate plist to in-bundle binary (macOS only)
         #[cfg(target_os = "macos")]
         if runt_workspace::is_legacy_standalone_install() {
-            if let Some(bundled_path) = find_bundled_runtimed() {
+            if let Some(bundled_path) = bundled_runtime(entrypoint) {
                 // Create a ServiceManager with the in-bundle binary path
                 let migrated_config = runtimed_service::ServiceConfig {
                     binary_path: bundled_path.clone(),
@@ -2906,7 +2970,7 @@ async fn doctor_command(
         }
 
         // Look up bundled binary once for version mismatch and repair scenarios
-        let bundled = find_bundled_runtimed();
+        let bundled = bundled_runtime(entrypoint);
         let installed_ver = if binary_exists {
             get_binary_version(&binary_path)
         } else {
@@ -3020,7 +3084,13 @@ async fn doctor_command(
     };
 
     // Run final checks (after any fixes)
-    let report = run_checks(client, daemon_info_after.as_ref(), actions_taken).await;
+    let report = run_checks(
+        client,
+        daemon_info_after.as_ref(),
+        actions_taken,
+        entrypoint,
+    )
+    .await;
 
     // Output results
     if json {
@@ -3208,7 +3278,8 @@ async fn doctor_command(
             println!();
             println!(
                 "{}",
-                "Run 'runt daemon doctor --fix' to attempt automatic repair.".cyan()
+                format!("Run '{command_name} daemon doctor --fix' to attempt automatic repair.")
+                    .cyan()
             );
         }
     }
@@ -3837,6 +3908,7 @@ async fn clean_worktree_command(
     force: bool,
     yes: bool,
     dry_run: bool,
+    command_name: &str,
 ) -> Result<()> {
     use runtimed::client::PoolClient;
     use std::io::{self, Write};
@@ -3968,7 +4040,7 @@ async fn clean_worktree_command(
         }
         eprintln!();
         eprintln!("Use --force to stop them first, or stop manually with:");
-        eprintln!("  runt daemon stop");
+        eprintln!("  {command_name} daemon stop");
         std::process::exit(1);
     }
 
@@ -4407,7 +4479,7 @@ fn set_setting_value(root: &mut serde_json::Value, key: &str, raw_value: &str) -
 // Environment management commands
 // =============================================================================
 
-async fn env_command(command: EnvCommands) -> anyhow::Result<()> {
+async fn env_command(command: EnvCommands, command_name: &str) -> anyhow::Result<()> {
     match command {
         EnvCommands::Stats => env_stats().await,
         EnvCommands::List => env_list().await,
@@ -4416,7 +4488,7 @@ async fn env_command(command: EnvCommands) -> anyhow::Result<()> {
             max_age_days,
             max_count,
             dry_run,
-        } => env_clean(all, max_age_days, max_count, dry_run).await,
+        } => env_clean(all, max_age_days, max_count, dry_run, command_name).await,
     }
 }
 
@@ -4590,13 +4662,14 @@ async fn env_clean(
     max_age_days: u64,
     max_count: usize,
     dry_run: bool,
+    command_name: &str,
 ) -> anyhow::Result<()> {
     let max_age = std::time::Duration::from_secs(max_age_days * 86400);
 
     if all {
         println!("Removing ALL cached environments...");
         println!("Note: pool envs (runtimed-uv-*, runtimed-conda-*) are skipped.");
-        println!("      Use 'runt daemon flush' to reset the pool.\n");
+        println!("      Use '{command_name} daemon flush' to reset the pool.\n");
         if dry_run {
             println!("(dry run — nothing will be deleted)\n");
         }
@@ -4926,7 +4999,13 @@ async fn shutdown_notebook(
         }
         Ok(false) => {
             eprintln!("Notebook not found: {}", notebook_id);
-            let command = if options.enabled { "nteract" } else { "runt" };
+            let command = if options.enabled && options.explicit_channel {
+                EntryPoint::Nteract.action_command()
+            } else if options.enabled {
+                "nteract"
+            } else {
+                "runt"
+            };
             eprintln!("Use '{command} notebooks' to see open notebooks.");
             std::process::exit(1)
         }
@@ -5169,6 +5248,28 @@ mod entrypoint_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_command_preserves_canonical_channel_and_legacy_name() {
+        for entrypoint in [EntryPoint::Nteract, EntryPoint::Runt] {
+            let args = entrypoint
+                .action_command()
+                .split_whitespace()
+                .chain(["daemon", "status"]);
+            let matches = cli_command(entrypoint).try_get_matches_from(args).unwrap();
+            let parsed = <Cli as clap::FromArgMatches>::from_arg_matches(&matches).unwrap();
+            match entrypoint {
+                EntryPoint::Nteract => assert_eq!(
+                    parsed.channel.unwrap().build_channel(),
+                    runt_workspace::build_channel()
+                ),
+                EntryPoint::Runt => {
+                    assert_eq!(entrypoint.action_command(), "runt");
+                    assert!(parsed.channel.is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn open_notebook_uuid_arg_launches_by_notebook_id() {

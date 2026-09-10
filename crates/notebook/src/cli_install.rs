@@ -204,7 +204,6 @@ fn install_nteract_command(app: &tauri::AppHandle, select: bool) -> Result<(), S
         &target,
         runt_workspace::build_channel(),
         select,
-        &[],
     )?;
     #[cfg(target_os = "windows")]
     let outcome =
@@ -1146,8 +1145,7 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
 
 /// Explicit menu action selects this app's release channel for `nteract`.
 pub fn install_cli_and_select(app: &tauri::AppHandle) -> Result<(), String> {
-    install_nteract_command(app, true)?;
-    install_cli(app)
+    install_nteract_command(app, true)
 }
 
 /// Warn if legacy /usr/local/bin has stale CLI copies that shadow ~/.local/bin.
@@ -1189,9 +1187,9 @@ fn try_install_direct(
 ) -> Result<(), String> {
     #[cfg(unix)]
     {
-        // Remove existing file/symlink if present. Unix install paths are the
-        // existing user-local/manual flow; ownership checks happen before
-        // auto-repair on app launch.
+        // Preflight both compatibility aliases before modifying either one.
+        // Canonical command installation is independent of these legacy names.
+        verify_legacy_install_targets(bundled_runt, runt_dest, nb_dest)?;
         if runt_dest.exists() || runt_dest.is_symlink() {
             fs::remove_file(runt_dest)
                 .map_err(|e| format!("Failed to remove existing {}: {}", cli_command_name(), e))?;
@@ -1199,6 +1197,11 @@ fn try_install_direct(
 
         // Create a symlink so the CLI stays in sync when the app updates.
         symlink(bundled_runt, runt_dest).map_err(|e| format!("Failed to create symlink: {}", e))?;
+        fs::write(
+            legacy_target_record(runt_dest),
+            format!("{}\n", bundled_runt.display()),
+        )
+        .map_err(|e| format!("Failed to record legacy CLI target: {e}"))?;
 
         // Create nb wrapper script.
         create_nb_wrapper(nb_dest, cli_command_name())?;
@@ -1210,10 +1213,55 @@ fn try_install_direct(
     Ok(())
 }
 
+#[cfg(unix)]
+fn legacy_target_record(command: &Path) -> PathBuf {
+    command.with_file_name(format!(
+        ".nteract-legacy-{}-target",
+        command.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+#[cfg(unix)]
+fn verify_legacy_install_targets(
+    target: &Path,
+    runt_dest: &Path,
+    nb_dest: &Path,
+) -> Result<(), String> {
+    if fs::symlink_metadata(runt_dest).is_ok() {
+        let linked = fs::read_link(runt_dest).ok();
+        let recorded = fs::read_to_string(legacy_target_record(runt_dest))
+            .ok()
+            .map(|text| PathBuf::from(text.trim_end_matches(['\r', '\n'])));
+        let owned = linked
+            .as_ref()
+            .is_some_and(|path| path == target || recorded.as_ref() == Some(path));
+        if !owned {
+            return Err(format!(
+                "Preserved unrelated legacy command {}. Bundled CLI available at {}.",
+                runt_dest.display(),
+                target.display()
+            ));
+        }
+    }
+    if let Ok(metadata) = fs::symlink_metadata(nb_dest) {
+        let owned = metadata.is_file()
+            && fs::read_to_string(nb_dest).ok().as_deref()
+                == Some(nb_wrapper_contents(cli_command_name()).as_str());
+        if !owned {
+            return Err(format!(
+                "Preserved unrelated notebook shorthand {}. Bundled CLI available at {}.",
+                nb_dest.display(),
+                target.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Create the nb wrapper script
 #[cfg(unix)]
-fn create_nb_wrapper(nb_dest: &std::path::Path, cli_command: &str) -> Result<(), String> {
-    let script = format!(
+fn nb_wrapper_contents(cli_command: &str) -> String {
+    format!(
         r#"#!/bin/bash
 # {} - open notebooks faster than you can say {} notebook
 exec {} notebook "$@"
@@ -1221,7 +1269,12 @@ exec {} notebook "$@"
         cli_notebook_alias_name(),
         cli_command,
         cli_command
-    );
+    )
+}
+
+#[cfg(unix)]
+fn create_nb_wrapper(nb_dest: &std::path::Path, cli_command: &str) -> Result<(), String> {
+    let script = nb_wrapper_contents(cli_command);
 
     let mut file =
         fs::File::create(nb_dest).map_err(|e| format!("Failed to create nb script: {}", e))?;
@@ -1538,6 +1591,61 @@ fn escalate_shell_command(shell_cmd: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_install_preserves_unrelated_commands_before_modifying_either_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("bundled-runt");
+        let runt = dir.path().join(cli_command_name());
+        let nb = dir.path().join(cli_notebook_alias_name());
+        fs::write(&target, "fixture").unwrap();
+        symlink(&target, &runt).unwrap();
+        fs::write(&nb, "user notebook command").unwrap();
+        assert!(try_install_direct(&target, &runt, &nb).is_err());
+        assert_eq!(fs::read_link(&runt).unwrap(), target);
+        assert_eq!(fs::read_to_string(&nb).unwrap(), "user notebook command");
+        fs::remove_file(&nb).unwrap();
+        symlink(dir.path().join("missing-user-nb"), &nb).unwrap();
+        assert!(try_install_direct(&target, &runt, &nb).is_err());
+        assert_eq!(
+            fs::read_link(&nb).unwrap(),
+            dir.path().join("missing-user-nb")
+        );
+        fs::remove_file(&nb).unwrap();
+        fs::remove_file(&runt).unwrap();
+        fs::write(&runt, "user runtime command").unwrap();
+        assert!(try_install_direct(&target, &runt, &nb).is_err());
+        assert_eq!(fs::read_to_string(&runt).unwrap(), "user runtime command");
+        assert!(!nb.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_install_refreshes_only_recorded_target_and_exact_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old-runt");
+        let new = dir.path().join("new-runt");
+        let runt = dir.path().join(cli_command_name());
+        let nb = dir.path().join(cli_notebook_alias_name());
+        fs::write(&new, "fixture").unwrap();
+        symlink(&old, &runt).unwrap();
+        fs::write(&nb, nb_wrapper_contents(cli_command_name())).unwrap();
+        // A filename or directory that resembles an app is not ownership.
+        assert!(try_install_direct(&new, &runt, &nb).is_err());
+        fs::write(legacy_target_record(&runt), format!("{}\n", old.display())).unwrap();
+        try_install_direct(&new, &runt, &nb).unwrap();
+        assert_eq!(fs::read_link(&runt).unwrap(), new);
+        fs::write(
+            &nb,
+            format!(
+                "{}echo user customization\n",
+                nb_wrapper_contents(cli_command_name())
+            ),
+        )
+        .unwrap();
+        assert!(try_install_direct(&new, &runt, &nb).is_err());
+    }
 
     #[test]
     fn canonical_cli_candidates_never_select_desktop_executable() {

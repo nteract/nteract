@@ -302,6 +302,9 @@ for prefix in "$WORK/first prefix" "$WORK/replacement prefix"; do
   PATH="$WORK/shim-linux:$PATH" run_installer "$CUSTOM_HOME" \
     --from-dir "$WORK/linux-assets" --cli --bin-dir "$CUSTOM_BIN" --prefix "$prefix" > "$WORK/custom-out.log"
   assert_link "$CUSTOM_BIN/nteract" "$prefix/bin/nteract-cli"
+  assert_link "$CUSTOM_BIN/runt" "$prefix/bin/runt"
+  assert_link "$CUSTOM_BIN/runtimed" "$prefix/bin/runtimed"
+  assert_link "$CUSTOM_BIN/nteract-mcp" "$prefix/bin/nteract-mcp"
 done
 
 note "legacy stable AppImage alias migrates while existing nightly alias remains"
@@ -314,10 +317,26 @@ ln -s "$LEGACY_HOME/.local/share/nteract/nightly/nteract-nightly.AppImage" "$LEG
 PATH="$WORK/shim-linux:$PATH" run_installer "$LEGACY_HOME" \
   --from-dir "$WORK/linux-assets" --cli > "$WORK/legacy-out.log"
 assert_link "$LEGACY_HOME/.local/bin/nteract" "$LEGACY_PREFIX/bin/nteract-cli"
+assert_link "$LEGACY_HOME/.local/bin/nteract-desktop" "$LEGACY_PREFIX/nteract.AppImage"
+grep -Fq "Launcher: $LEGACY_HOME/.local/bin/nteract-desktop" "$WORK/legacy-out.log" || fail "CLI migration should report the preserved desktop launcher"
 grep -qx "existing app" "$LEGACY_PREFIX/nteract.AppImage" || fail "headless migration changed desktop app"
 PATH="$WORK/shim-linux:$PATH" run_installer "$LEGACY_HOME" \
   --channel nightly --from-dir "$WORK/nightly-assets" --cli > "$WORK/legacy-out.log"
 assert_link "$LEGACY_HOME/.local/bin/nteract-nightly" "$LEGACY_HOME/.local/share/nteract/nightly/nteract-nightly.AppImage"
+
+note "CLI migration preserves an unrelated desktop launcher and reports the AppImage fallback"
+DESKTOP_CONFLICT_HOME="$WORK/desktop-conflict-home"
+DESKTOP_CONFLICT_PREFIX="$DESKTOP_CONFLICT_HOME/.local/share/nteract/stable"
+mkdir -p "$DESKTOP_CONFLICT_HOME/.local/bin" "$DESKTOP_CONFLICT_PREFIX"
+echo "existing app" > "$DESKTOP_CONFLICT_PREFIX/nteract.AppImage"
+ln -s "$DESKTOP_CONFLICT_PREFIX/nteract.AppImage" "$DESKTOP_CONFLICT_HOME/.local/bin/nteract"
+ln -s "$WORK/unrelated-desktop" "$DESKTOP_CONFLICT_HOME/.local/bin/nteract-desktop"
+PATH="$WORK/shim-linux:$PATH" run_installer "$DESKTOP_CONFLICT_HOME" \
+  --from-dir "$WORK/linux-assets" --cli > "$WORK/desktop-conflict-out.log" 2>&1
+assert_link "$DESKTOP_CONFLICT_HOME/.local/bin/nteract" "$DESKTOP_CONFLICT_PREFIX/bin/nteract-cli"
+assert_link "$DESKTOP_CONFLICT_HOME/.local/bin/nteract-desktop" "$WORK/unrelated-desktop"
+grep -Fq "Launcher: $DESKTOP_CONFLICT_PREFIX/nteract.AppImage" "$WORK/desktop-conflict-out.log" || fail "conflicting desktop launcher should report direct AppImage path"
+grep -qx "existing app" "$DESKTOP_CONFLICT_PREFIX/nteract.AppImage" || fail "CLI migration changed the existing app"
 
 note "unknown commands and broken symlinks remain untouched, even with explicit selection"
 for kind in file symlink; do
@@ -337,6 +356,43 @@ for kind in file symlink; do
   fi
   assert_missing "$CONFLICT_HOME/.local/bin/.nteract-cli-target"
   grep -q 'Preserved existing' "$WORK/conflict-out.log" || fail "collision should explain preserved command"
+done
+
+note "legacy aliases preserve unrelated regular files and symlinks on both channels"
+for channel in stable nightly; do
+  suffix=""
+  assets="$WORK/linux-assets"
+  if [[ "$channel" == nightly ]]; then
+    suffix="-nightly"
+    assets="$WORK/nightly-assets"
+  fi
+  for kind in file symlink broken; do
+    COMPAT_HOME="$WORK/compat-$channel-$kind"
+    mkdir -p "$COMPAT_HOME/.local/bin"
+    for name in "runt$suffix" "runtimed$suffix" "nteract-mcp$suffix"; do
+      alias_path="$COMPAT_HOME/.local/bin/$name"
+      case "$kind" in
+        file) echo "user command $name" > "$alias_path" ;;
+        symlink)
+          echo "user target $name" > "$WORK/target-$channel-$name"
+          ln -s "$WORK/target-$channel-$name" "$alias_path" ;;
+        broken) ln -s "$WORK/missing-$channel-$name" "$alias_path" ;;
+      esac
+    done
+    PATH="$WORK/shim-linux:$PATH" run_installer "$COMPAT_HOME" \
+      --channel "$channel" --from-dir "$assets" --cli > "$WORK/compat-out.log" 2>&1
+    for name in "runt$suffix" "runtimed$suffix" "nteract-mcp$suffix"; do
+      alias_path="$COMPAT_HOME/.local/bin/$name"
+      case "$kind" in
+        file) grep -qx "user command $name" "$alias_path" || fail "legacy regular file overwritten: $name" ;;
+        symlink) assert_link "$alias_path" "$WORK/target-$channel-$name" ;;
+        broken) assert_link "$alias_path" "$WORK/missing-$channel-$name" ;;
+      esac
+      assert_missing "$COMPAT_HOME/.local/bin/.nteract-legacy-$name-target"
+      grep -Fq "Installed backend available at $COMPAT_HOME/.local/share/nteract/$channel/bin/$name" "$WORK/compat-out.log" || fail "legacy collision should report real backend: $name"
+    done
+    assert_link "$COMPAT_HOME/.local/bin/nteract" "$COMPAT_HOME/.local/share/nteract/$channel/bin/nteract-cli"
+  done
 done
 
 note "unsupported platform is rejected with guidance"

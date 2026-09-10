@@ -26,10 +26,7 @@ fn selected_build_channel(channel: &str) -> runt_workspace::BuildChannel {
 }
 
 fn runt_binary_name_for_channel(channel: &str) -> &'static str {
-    match selected_build_channel(channel) {
-        runt_workspace::BuildChannel::Nightly => "runt-nightly",
-        runt_workspace::BuildChannel::Stable => "runt",
-    }
+    runt_workspace::cli_command_name_for(selected_build_channel(channel))
 }
 
 fn executable_name(base: &str) -> String {
@@ -265,7 +262,7 @@ pub async fn run_legacy() -> ExitCode {
     // full runtimed-client compile graph into every MCP process.
     let config = proxy_config_for_channel(channel.clone());
 
-    serve_proxy(config).await
+    serve_proxy(config, false).await
 }
 
 /// Hidden subcommand used by the unified CLI to avoid recursively supervising
@@ -351,11 +348,10 @@ pub async fn run_unified(
     }
     (config.resolve_child_command)()?;
     init_logging();
-    Ok(serve_proxy(config).await)
+    Ok(serve_proxy(config, no_show).await)
 }
 
-async fn serve_proxy(config: ProxyConfig) -> ExitCode {
-    let no_show = config.child_args.iter().any(|arg| arg == "--no-show");
+async fn serve_proxy(config: ProxyConfig, no_show: bool) -> ExitCode {
     let proxy = McpProxy::new(config, None);
     if no_show {
         let mut state = proxy.state.write().await;

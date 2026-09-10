@@ -374,12 +374,14 @@ else
 fi
 
 # The app has its own command so CLI `open` cannot recurse into itself.
-if [[ "$OS" == "linux" && "$HEADLESS" == "0" ]]; then
+if [[ "$OS" == "linux" && -f "$APPIMAGE_DEST" ]]; then
   DESKTOP_NAME="nteract-desktop"
+  DESKTOP_LAUNCHER="$APPIMAGE_DEST"
   [[ "$CHANNEL" == "nightly" ]] && DESKTOP_NAME="nteract-desktop-nightly"
   if [[ ! -e "$BIN_DIR/$DESKTOP_NAME" && ! -L "$BIN_DIR/$DESKTOP_NAME" ]] ||
      [[ -L "$BIN_DIR/$DESKTOP_NAME" && "$(readlink "$BIN_DIR/$DESKTOP_NAME")" == "$APPIMAGE_DEST" ]]; then
     ln -sfn "$APPIMAGE_DEST" "$BIN_DIR/$DESKTOP_NAME"
+    DESKTOP_LAUNCHER="$BIN_DIR/$DESKTOP_NAME"
     echo "Linked $BIN_DIR/$DESKTOP_NAME -> $APPIMAGE_DEST"
   else
     echo "Preserved existing $BIN_DIR/$DESKTOP_NAME; app available at $APPIMAGE_DEST" >&2
@@ -426,13 +428,27 @@ if [[ "$select_cli" == "1" ]]; then
 fi
 printf '%s\n' "$GLOBAL_CLI_BIN" > "$CHANNEL_CLI_MARKER.new"
 mv -f "$CHANNEL_CLI_MARKER.new" "$CHANNEL_CLI_MARKER"
-ln -sfn "$RUNT_BIN" "$BIN_DIR/$CLI_NAME"
-ln -sfn "$DAEMON_BIN" "$BIN_DIR/$DAEMON_NAME"
-ln -sfn "$MCP_BIN" "$BIN_DIR/$MCP_NAME"
-
-echo "Linked $BIN_DIR/$CLI_NAME -> $RUNT_BIN"
-echo "Linked $BIN_DIR/$DAEMON_NAME -> $DAEMON_BIN"
-echo "Linked $BIN_DIR/$MCP_NAME -> $MCP_BIN"
+install_compatibility_link() {
+  local name="$1" target="$2"
+  local link="$BIN_DIR/$name" record="$BIN_DIR/.nteract-legacy-$name-target"
+  local previous="" current=""
+  [[ ! -f "$record" ]] || IFS= read -r previous < "$record" || true
+  [[ ! -L "$link" ]] || current="$(readlink "$link")"
+  if [[ -e "$link" || -L "$link" ]]; then
+    if [[ -z "$current" ]] ||
+       [[ "$current" != "$target" && ( -z "$previous" || "$current" != "$previous" ) ]]; then
+      echo "Preserved existing $link. Installed backend available at $target." >&2
+      return
+    fi
+  fi
+  ln -sfn "$target" "$link"
+  printf '%s\n' "$target" > "$record.new"
+  mv -f "$record.new" "$record"
+  echo "Linked $link -> $target"
+}
+install_compatibility_link "$CLI_NAME" "$RUNT_BIN"
+install_compatibility_link "$DAEMON_NAME" "$DAEMON_BIN"
+install_compatibility_link "$MCP_NAME" "$MCP_BIN"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "Note: $BIN_DIR is not on PATH for this shell. Add it to use nteract/runt commands directly." >&2
@@ -453,22 +469,20 @@ fi
 
 echo
 echo "nteract $CHANNEL install complete."
-if [[ "$HEADLESS" == "0" ]]; then
-  if [[ "$OS" == "linux" ]]; then
-    echo "AppImage: $APPIMAGE_DEST"
-    echo "Launcher: $APPIMAGE_DEST"
-  else
-    echo "App:      $APP_DEST"
-  fi
+if [[ "$OS" == "linux" && -f "$APPIMAGE_DEST" ]]; then
+  echo "AppImage: $APPIMAGE_DEST"
+  echo "Launcher: $DESKTOP_LAUNCHER"
+elif [[ "$HEADLESS" == "0" ]]; then
+  echo "App:      $APP_DEST"
 fi
 echo "CLI:      $GLOBAL_CLI_BIN"
 echo "Command:  $GLOBAL_CLI_LINK"
-echo "Daemon:   $BIN_DIR/$DAEMON_NAME"
-echo "MCP:      $BIN_DIR/$MCP_NAME"
+echo "Daemon:   $DAEMON_BIN"
+echo "MCP:      $MCP_BIN"
 if [[ "$HEADLESS" == "1" ]]; then
   echo "CLI-only install: no daemon service was installed, repaired, or started."
 elif [[ "$NO_START" == "1" ]]; then
-  echo "Daemon was installed/repaired but not started (--no-start). Start with: $CLI_NAME daemon start"
+  echo "Daemon was installed/repaired but not started (--no-start). Start with: \"$RUNT_BIN\" daemon start"
 else
   env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$RUNT_DIR:$BIN_DIR:$PATH" \
     "$RUNT_BIN" daemon status || true

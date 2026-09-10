@@ -167,7 +167,7 @@ pub struct NteractMcp {
 }
 
 #[derive(Clone, Debug, Default)]
-struct LocalRuntimeMetadata {
+pub(crate) struct LocalRuntimeMetadata {
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
     execution_store_path: Option<PathBuf>,
@@ -304,6 +304,10 @@ impl NteractMcp {
         self
     }
 
+    pub(crate) fn uses_local_runtime_admission(&self) -> bool {
+        self.local_runtime_admission.is_some()
+    }
+
     pub(crate) async fn admit_local_runtime(&self) -> Result<(), String> {
         let Some(policy) = &self.local_runtime_admission else {
             return Ok(());
@@ -338,70 +342,51 @@ impl NteractMcp {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = metadata;
     }
 
-    fn local_metadata_allowed(&self) -> bool {
+    fn local_metadata_snapshot(&self, allowed: bool) -> LocalRuntimeMetadata {
+        if allowed {
+            self.local_metadata
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        } else {
+            LocalRuntimeMetadata::default()
+        }
+    }
+
+    /// Keep output resolution tied to the session admitted for this operation.
+    pub(crate) fn local_metadata_for_access(&self, access: &SessionAccess) -> LocalRuntimeMetadata {
+        self.local_metadata_snapshot(!access.is_hosted)
+    }
+
+    /// Operations without an admitted session still need a single consistent
+    /// snapshot. Contention waits for ownership to resolve; it is not evidence
+    /// that local durable outputs are absent.
+    pub(crate) async fn local_runtime_metadata(&self) -> LocalRuntimeMetadata {
         let target = targets::current();
-        // These synchronous snapshots must never wait on an async session
-        // writer. On contention or an expired explicit handle, omit local
-        // output resolution rather than guessing which notebook owns it.
-        let Ok(active) = self.session.try_read() else {
-            return false;
-        };
-        if let Some(active) = active.as_ref() {
-            if target
-                .as_ref()
-                .is_none_or(|target| active.notebook_handle == *target)
-            {
-                return !active.is_hosted();
+        {
+            let active = self.session.read().await;
+            if let Some(session) = active.as_ref() {
+                if target
+                    .as_ref()
+                    .is_none_or(|target| session.notebook_handle == *target)
+                {
+                    return self.local_metadata_snapshot(!session.is_hosted());
+                }
+            } else if target.is_none() {
+                return self.local_metadata_snapshot(true);
             }
-        } else if target.is_none() {
-            return true;
         }
         let Some(target) = target else {
-            return true;
+            return self.local_metadata_snapshot(true);
         };
-        let Ok(parked) = self.parked_sessions.try_read() else {
-            return false;
+        let allowed = {
+            let parked = self.parked_sessions.read().await;
+            parked
+                .values()
+                .find(|session| session.notebook_handle == target)
+                .is_some_and(|session| !session.is_hosted())
         };
-        parked
-            .values()
-            .find(|session| session.notebook_handle == target)
-            .is_some_and(|session| !session.is_hosted())
-    }
-
-    pub(crate) fn blob_base_url(&self) -> Option<String> {
-        self.local_metadata_allowed()
-            .then(|| {
-                self.local_metadata
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .blob_base_url
-                    .clone()
-            })
-            .flatten()
-    }
-
-    pub(crate) fn blob_store_path(&self) -> Option<PathBuf> {
-        self.local_metadata_allowed()
-            .then(|| {
-                self.local_metadata
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .blob_store_path
-                    .clone()
-            })
-            .flatten()
-    }
-
-    pub(crate) fn execution_store_path(&self) -> Option<PathBuf> {
-        self.local_metadata_allowed()
-            .then(|| {
-                self.local_metadata
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .execution_store_path
-                    .clone()
-            })
-            .flatten()
+        self.local_metadata_snapshot(allowed)
     }
 
     /// Get the peer label for notebook connections.
@@ -1035,6 +1020,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_metadata_waits_for_session_writer_without_losing_durable_path() {
+        use std::future::Future;
+        let server = NteractMcp::new(
+            "unused.sock".into(),
+            Some("http://localhost:12345".into()),
+            None,
+        )
+        .with_execution_store_path(Some("durable-executions".into()));
+        let mut pending = Box::pin(server.local_runtime_metadata());
+        {
+            let _writer = server.session.try_write().unwrap();
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(pending.as_mut().poll(&mut context).is_pending());
+        }
+        let metadata = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata.execution_store_path,
+            Some("durable-executions".into())
+        );
+        assert_eq!(
+            metadata.blob_base_url.as_deref(),
+            Some("http://localhost:12345")
+        );
+    }
+
+    #[tokio::test]
     async fn hosted_metadata_suppression_follows_explicit_parked_handles() {
         let server = NteractMcp::new(
             "unused.sock".into(),
@@ -1060,11 +1073,27 @@ mod tests {
             .write()
             .await
             .insert("hosted".into(), hosted);
-        assert!(server.blob_base_url().is_some());
+        assert!(server
+            .local_runtime_metadata()
+            .await
+            .blob_base_url
+            .is_some());
         targets::with_handle(hosted_handle.clone(), async {
-            assert!(server.blob_base_url().is_none());
-            assert!(server.blob_store_path().is_none());
-            assert!(server.execution_store_path().is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_base_url
+                .is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_store_path
+                .is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .execution_store_path
+                .is_none());
         })
         .await;
         let local = server.session.write().await.take().unwrap();
@@ -1080,11 +1109,27 @@ mod tests {
             .await
             .insert("local".into(), local);
         *server.session.write().await = Some(hosted);
-        assert!(server.blob_base_url().is_none());
+        assert!(server
+            .local_runtime_metadata()
+            .await
+            .blob_base_url
+            .is_none());
         targets::with_handle(local_handle, async {
-            assert!(server.blob_base_url().is_some());
-            assert!(server.blob_store_path().is_some());
-            assert!(server.execution_store_path().is_some());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_base_url
+                .is_some());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_store_path
+                .is_some());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .execution_store_path
+                .is_some());
         })
         .await;
         server.shutdown().await;
@@ -1132,15 +1177,37 @@ mod tests {
             workspace_description: None,
         });
         assert_eq!(
-            server.blob_base_url().as_deref(),
+            server
+                .local_runtime_metadata()
+                .await
+                .blob_base_url
+                .as_deref(),
             Some("http://localhost:31234")
         );
-        assert_eq!(server.blob_store_path(), Some(blobs));
-        assert_eq!(server.execution_store_path(), Some(executions));
+        assert_eq!(
+            server.local_runtime_metadata().await.blob_store_path,
+            Some(blobs)
+        );
+        assert_eq!(
+            server.local_runtime_metadata().await.execution_store_path,
+            Some(executions)
+        );
         targets::with_handle("expired-attachment".into(), async {
-            assert!(server.blob_base_url().is_none());
-            assert!(server.blob_store_path().is_none());
-            assert!(server.execution_store_path().is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_base_url
+                .is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .blob_store_path
+                .is_none());
+            assert!(server
+                .local_runtime_metadata()
+                .await
+                .execution_store_path
+                .is_none());
         })
         .await;
     }

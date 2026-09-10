@@ -71,6 +71,14 @@ returns the complete MCP tool result; a failed tool result exits unsuccessfully.
 Run `--help` on a command for its argument and output contract. Observation
 commands such as status and listing do not implicitly start services.
 
+Notebook listing and operations use the selected shared runtime. `daemon` and
+top-level `status` describe the selected installation instead. An explicit
+`--channel` constrains both to that channel.
+
+`open` and MCP's `show_notebook` launch the Desktop installation that owns the
+selected runtime endpoint. Unknown custom endpoints cannot be handed to Desktop;
+continue using them through CLI or MCP operations.
+
 Pairing registers a machine; serving makes it available for attachment. Neither
 means a notebook kernel is ready or a cell has executed. Workstation persistence
 currently uses Linux user systemd; macOS workstation service management remains
@@ -119,12 +127,20 @@ Explicit channel, socket, and worktree selections constrain discovery. A
 compatible response is checked using wire and semantic API versions; matching
 build hashes are not required for ordinary admission.
 
-Only a definitely absent endpoint permits lazy startup. Permission errors,
+For programmatic CLI and MCP connections, only a definitely absent endpoint
+permits lazy startup. Permission errors,
 timeouts, unknown protocol responses, and incompatible runtimes produce errors
 without repair, replacement, or an automatic isolation fallback. A successful
 startup process exit is not enough: the endpoint must report a compatible live
 runtime. Existing worktree isolation remains available; changing only a socket
 does not isolate notebook storage, settings, or locks.
+
+Desktop also checks compatibility before its initial startup decision and leaves
+an observed incompatible or uncertain endpoint alone. Its existing first-install
+path still uses service installation: a runtime appearing after the absence
+check can race with that installation. Removing that replacement race requires
+separate service-lifecycle work; this CLI change does not make Desktop bootstrap
+an atomic, non-replacing operation.
 
 Explicit runtime repair remains a separate operation governed by
 [Daemon service repair and semantic compatibility](../adr/daemon-service-repair-and-semantic-compatibility.md).

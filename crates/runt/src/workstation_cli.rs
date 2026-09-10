@@ -116,7 +116,12 @@ struct CliContext {
 impl CliContext {
     fn name(self) -> &'static str {
         if self.canonical {
-            "nteract"
+            // A follow-up command must address the same credential namespace
+            // even when the user's default nteract alias selects another channel.
+            match runt_workspace::build_channel() {
+                runt_workspace::BuildChannel::Stable => "nteract --channel stable",
+                runt_workspace::BuildChannel::Nightly => "nteract --channel nightly",
+            }
         } else {
             runt_workspace::cli_command_name()
         }
@@ -1625,8 +1630,25 @@ mod tests {
             "systemctl was not found on this host",
             CliContext { canonical: true },
         );
-        assert!(canonical.contains("Fallback: run `nteract workstation run` inside tmux."));
+        let channel = runt_workspace::channel_display_name();
+        assert!(canonical.contains(&format!(
+            "Fallback: run `nteract --channel {channel} workstation run` inside tmux."
+        )));
         assert!(!canonical.contains("`runt"));
+    }
+
+    #[test]
+    fn canonical_workstation_hint_round_trips_the_compiled_channel() {
+        let hint = CliContext { canonical: true }.name();
+        let args = hint.split_whitespace().chain(["workstation", "status"]);
+        let matches = crate::cli_command(crate::EntryPoint::Nteract)
+            .try_get_matches_from(args)
+            .unwrap();
+        let parsed = <crate::Cli as clap::FromArgMatches>::from_arg_matches(&matches).unwrap();
+        assert_eq!(
+            parsed.channel.unwrap().build_channel(),
+            runt_workspace::build_channel()
+        );
     }
 
     #[test]

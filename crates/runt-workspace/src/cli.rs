@@ -108,7 +108,6 @@ pub fn install_command(
     target: &Path,
     channel: BuildChannel,
     select: bool,
-    legacy_targets: &[PathBuf],
 ) -> Result<InstallOutcome, String> {
     use std::os::unix::fs::symlink;
     if !target.is_absolute() || !target.is_file() {
@@ -123,9 +122,9 @@ pub fn install_command(
     let previous_channel = read_target(&bin_dir.join(channel_record_name(channel)));
     let existing = std::fs::symlink_metadata(&command).ok();
     let linked = std::fs::read_link(&command).ok();
-    let managed = linked.as_ref().is_some_and(|path| {
-        selected.as_ref() == Some(path) || path == target || legacy_targets.contains(path)
-    });
+    let managed = linked
+        .as_ref()
+        .is_some_and(|path| selected.as_ref() == Some(path) || path == target);
     // The per-channel record supports explicit selection even when the public
     // command is owned by another installation or an unrelated program.
     write_target(&bin_dir.join(channel_record_name(channel)), target)?;
@@ -134,9 +133,7 @@ pub fn install_command(
     }
     if !select && managed {
         if let Some(ref old) = linked {
-            let same_channel = old == target
-                || previous_channel.as_ref() == Some(old)
-                || legacy_targets.contains(old);
+            let same_channel = old == target || previous_channel.as_ref() == Some(old);
             if !same_channel {
                 return Ok(InstallOutcome::KeptSelection(old.clone()));
             }
@@ -163,16 +160,16 @@ mod tests {
         std::fs::write(&stable, "fixture").unwrap();
         std::fs::write(&nightly, "fixture").unwrap();
         assert_eq!(
-            install_command(&bin, &stable, BuildChannel::Stable, false, &[]).unwrap(),
+            install_command(&bin, &stable, BuildChannel::Stable, false).unwrap(),
             InstallOutcome::Selected
         );
         assert_eq!(
-            install_command(&bin, &nightly, BuildChannel::Nightly, false, &[]).unwrap(),
+            install_command(&bin, &nightly, BuildChannel::Nightly, false).unwrap(),
             InstallOutcome::KeptSelection(stable.clone())
         );
         assert_eq!(std::fs::read_link(bin.join("nteract")).unwrap(), stable);
         assert_eq!(
-            install_command(&bin, &nightly, BuildChannel::Nightly, true, &[]).unwrap(),
+            install_command(&bin, &nightly, BuildChannel::Nightly, true).unwrap(),
             InstallOutcome::Selected
         );
         assert_eq!(std::fs::read_link(bin.join("nteract")).unwrap(), nightly);
@@ -185,7 +182,7 @@ mod tests {
         std::fs::write(&target, "fixture").unwrap();
         std::fs::write(dir.path().join("nteract"), "user command").unwrap();
         assert!(matches!(
-            install_command(dir.path(), &target, BuildChannel::Stable, true, &[]).unwrap(),
+            install_command(dir.path(), &target, BuildChannel::Stable, true).unwrap(),
             InstallOutcome::CommandConflict(_)
         ));
         assert_eq!(
@@ -201,8 +198,8 @@ mod tests {
         let new = dir.path().join("new");
         std::fs::write(&old, "fixture").unwrap();
         std::fs::write(&new, "fixture").unwrap();
-        install_command(dir.path(), &old, BuildChannel::Stable, false, &[]).unwrap();
-        install_command(dir.path(), &new, BuildChannel::Stable, false, &[]).unwrap();
+        install_command(dir.path(), &old, BuildChannel::Stable, false).unwrap();
+        install_command(dir.path(), &new, BuildChannel::Stable, false).unwrap();
         assert_eq!(std::fs::read_link(dir.path().join("nteract")).unwrap(), new);
     }
 }

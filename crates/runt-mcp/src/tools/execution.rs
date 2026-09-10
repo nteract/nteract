@@ -64,6 +64,7 @@ pub async fn execute_cell(
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
 
     let access = require_session_access!(server, Execute);
+    let metadata = server.local_metadata_for_access(&access);
     let handle = access.handle.clone();
 
     let timeout_secs = request
@@ -96,8 +97,8 @@ pub async fn execute_cell(
         &handle,
         cell_id,
         Duration::from_secs_f64(timeout_secs),
-        &server.blob_base_url(),
-        &server.blob_store_path(),
+        &metadata.blob_base_url,
+        &metadata.blob_store_path,
     )
     .await
     {
@@ -108,7 +109,7 @@ pub async fn execute_cell(
         return super::session_access_error(error);
     }
 
-    super::build_execution_result(&result, &handle, server).await
+    super::build_execution_result(&result, &handle, &metadata).await
 }
 
 /// Execute all code cells in order.
@@ -122,6 +123,7 @@ pub async fn run_all_cells(
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     let access = require_session_access!(server, Execute);
+    let metadata = server.local_metadata_for_access(&access);
     let handle = access.handle.clone();
 
     let wait = arg_bool(request, "wait").unwrap_or(true);
@@ -265,8 +267,8 @@ pub async fn run_all_cells(
             let aligned = runtimed_outputs::output_resolver::resolve_cell_outputs_for_llm_aligned(
                 output_manifests,
                 runtimed_outputs::output_resolver::ResolveCtx {
-                    blob_base_url: server.blob_base_url().as_deref(),
-                    blob_store_path: server.blob_store_path().as_deref(),
+                    blob_base_url: metadata.blob_base_url.as_deref(),
+                    blob_store_path: metadata.blob_store_path.as_deref(),
                     comms,
                     execution_cell_map: Some(&execution_cell_map),
                     ..Default::default()
@@ -318,7 +320,7 @@ pub async fn run_all_cells(
                         output_manifests,
                         execution_count: exec.execution_count,
                         status: display_status,
-                        blob_base_url: &server.blob_base_url(),
+                        blob_base_url: &metadata.blob_base_url,
                         comms,
                         resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
                     },
@@ -352,7 +354,7 @@ pub async fn run_all_cells(
         let mut wrapper = serde_json::json!({
             "cells": structured_cells,
         });
-        if let Some(base) = &server.blob_base_url() {
+        if let Some(base) = &metadata.blob_base_url {
             wrapper["blob_base_url"] = serde_json::Value::String(base.clone());
         }
         call_result.structured_content = Some(wrapper);
@@ -375,13 +377,16 @@ pub async fn get_results(
     })?;
     let full_output = arg_bool(request, "full_output").unwrap_or(false);
 
-    let (handle, access_error) = match server
+    let (handle, access_error, metadata) = match server
         .session_access(crate::session::SessionRequirement::RuntimeRead)
         .await
     {
-        Ok(Some(access)) => (Some(access.handle), None),
-        Ok(None) => (None, None),
-        Err(error) => (None, Some(error)),
+        Ok(Some(access)) => {
+            let metadata = server.local_metadata_for_access(&access);
+            (Some(access.handle), None, metadata)
+        }
+        Ok(None) => (None, None, server.local_runtime_metadata().await),
+        Err(error) => (None, Some(error), server.local_runtime_metadata().await),
     };
 
     if let Some(handle) = handle.as_ref() {
@@ -399,7 +404,7 @@ pub async fn get_results(
                     .or_insert_with(|| cell.id.clone());
             }
             return render_execution_result(
-                server,
+                &metadata,
                 execution_id,
                 exec,
                 Some(&runtime_state.comms),
@@ -411,7 +416,7 @@ pub async fn get_results(
         }
     }
 
-    let record = if let Some(path) = server.execution_store_path() {
+    let record = if let Some(path) = &metadata.execution_store_path {
         runtimed_client::execution_store::ExecutionStore::new(path)
             .read_record(execution_id)
             .await
@@ -433,7 +438,7 @@ pub async fn get_results(
             .cell_id
             .map(|cell_id| std::collections::HashMap::from([(execution_id.to_string(), cell_id)]));
         return render_execution_result(
-            server,
+            &metadata,
             execution_id,
             &exec,
             None,
@@ -454,7 +459,7 @@ pub async fn get_results(
 }
 
 pub(super) async fn render_execution_result(
-    server: &NteractMcp,
+    metadata: &crate::LocalRuntimeMetadata,
     execution_id: &str,
     exec: &runtime_doc::ExecutionState,
     comms: Option<&std::collections::HashMap<String, runtime_doc::CommDocEntry>>,
@@ -492,8 +497,8 @@ pub(super) async fn render_execution_result(
         let aligned = output_resolver::resolve_cell_outputs_for_llm_aligned(
             &exec.outputs,
             output_resolver::ResolveCtx {
-                blob_base_url: server.blob_base_url().as_deref(),
-                blob_store_path: server.blob_store_path().as_deref(),
+                blob_base_url: metadata.blob_base_url.as_deref(),
+                blob_store_path: metadata.blob_store_path.as_deref(),
                 comms,
                 length: if full_output {
                     output_resolver::OutputLength::Full
@@ -566,7 +571,7 @@ pub(super) async fn render_execution_result(
                 output_manifests: &exec.outputs,
                 execution_count: exec.execution_count,
                 status: display_status,
-                blob_base_url: &server.blob_base_url(),
+                blob_base_url: &metadata.blob_base_url,
                 comms,
                 resolved_outputs_by_manifest: Some(&resolved_outputs_by_manifest),
             },
@@ -580,7 +585,7 @@ pub(super) async fn render_execution_result(
             }
             // Wrap as top-level with blob_base_url
             let mut top = serde_json::json!({ "cell": cell_data });
-            if let Some(base) = &server.blob_base_url() {
+            if let Some(base) = &metadata.blob_base_url {
                 top["blob_base_url"] = serde_json::Value::String(base.clone());
             }
             top
@@ -604,6 +609,49 @@ mod tests {
             "arguments": args,
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn execution_resolution_keeps_one_blob_snapshot_after_runtime_metadata_changes() {
+        let server = NteractMcp::new(
+            "unused.sock".into(),
+            Some("http://localhost:12345".into()),
+            None,
+        );
+        let metadata = server.local_runtime_metadata().await;
+        server.local_metadata.write().unwrap().blob_base_url =
+            Some("http://localhost:54321".into());
+        let execution: runtime_doc::ExecutionState = serde_json::from_value(serde_json::json!({
+            "status": "done",
+            "outputs": [{
+                "output_type": "stream", "name": "stdout",
+                "text": {"blob": "stream_hash", "size": 50000},
+                "llm_preview": {"head": "first\n", "tail": "last\n", "total_bytes": 50000, "total_lines": 100}
+            }]
+        })).unwrap();
+        let result = render_execution_result(
+            &metadata,
+            "exec-snapshot",
+            &execution,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(
+            text.contains("http://localhost:12345/blob/stream_hash"),
+            "{text}"
+        );
+        assert!(!text.contains("54321"));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["blob_base_url"], "http://localhost:12345");
+        assert_eq!(
+            structured["cell"]["outputs"][0]["text"],
+            "http://localhost:12345/blob/stream_hash"
+        );
     }
 
     #[tokio::test]

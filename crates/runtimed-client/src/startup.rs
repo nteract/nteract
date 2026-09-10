@@ -44,7 +44,15 @@ impl RuntimeLaunch {
         let output = tokio::time::timeout(IDENTITY_TIMEOUT, command.output())
             .await
             .map_err(|_| self.identity_error("runtime-identity timed out"))?
-            .map_err(|error| self.identity_error(format!("runtime-identity failed: {error}")))?;
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    RuntimeStartupError::MissingBinary {
+                        binary: self.binary.clone(),
+                    }
+                } else {
+                    self.identity_error(format!("runtime-identity failed: {error}"))
+                }
+            })?;
         if !output.status.success() {
             return Err(
                 self.identity_error(format!("runtime-identity exited with {}", output.status))
@@ -145,6 +153,8 @@ fn validate_binary_identity(output: &[u8], channel: BuildChannel) -> Result<(), 
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeStartupError {
+    #[error("The runtime bundled with this nteract CLI installation is missing at {binary}. Reinstall this nteract installation to restore its runtime.")]
+    MissingBinary { binary: PathBuf },
     #[error("Cannot start runtime binary {binary}: {reason}. Its identity must be known and compatible before startup.")]
     BinaryIdentity { binary: PathBuf, reason: String },
     #[error("The runtime at {endpoint} ({version}) is incompatible: {reason}. It was left running; finish or save its notebooks before explicitly repairing the runtime.")]
@@ -494,6 +504,21 @@ mod tests {
         ] {
             assert!(validate_binary_identity(output, BuildChannel::Stable).is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn missing_runtime_binary_reports_how_to_restore_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let launch = RuntimeLaunch {
+            binary: temp.path().join("missing-runtime"),
+            channel: BuildChannel::Stable,
+            worktree: None,
+        };
+        let error = launch.verify_binary_identity().await.unwrap_err();
+        assert!(matches!(error, RuntimeStartupError::MissingBinary { .. }));
+        assert!(error
+            .to_string()
+            .contains("Reinstall this nteract installation"));
     }
 
     #[cfg(unix)]

@@ -195,3 +195,69 @@ fn notebook_tool_help_keeps_the_selected_public_command() {
             .contains(&format!("`{name} nb tools --all`")));
     }
 }
+
+#[tokio::test]
+async fn canonical_open_refuses_uninspectable_runtime_before_desktop_launch() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let probes = Arc::new(AtomicUsize::new(0));
+    let observed = probes.clone();
+    let fake_endpoint = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            observed.fetch_add(1, Ordering::SeqCst);
+            // A live endpoint with no readable metadata must never count as absent.
+            drop(stream);
+        }
+    });
+    let launchers = dir.path().join("bin");
+    std::fs::create_dir(&launchers).unwrap();
+    let marker = dir.path().join("desktop-launched");
+    for name in ["open", "nteract", "nteract-nightly", "nteract Nightly"] {
+        let launcher = launchers.join(name);
+        std::fs::write(
+            &launcher,
+            "#!/bin/sh\nprintf launched > \"$NTERACT_TEST_DESKTOP_MARKER\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let output = timeout(
+        DEADLINE,
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_nteract-cli"))
+            .arg("open")
+            .env_clear()
+            .env("HOME", dir.path())
+            .env("USERPROFILE", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("XDG_CACHE_HOME", dir.path().join("cache"))
+            .env("XDG_DATA_HOME", dir.path().join("data"))
+            .env("RUNTIMED_SOCKET_PATH", &socket)
+            .env("PATH", &launchers)
+            .env("NTERACT_TEST_DESKTOP_MARKER", &marker)
+            .current_dir(dir.path())
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("canonical open timed out")
+    .unwrap();
+    fake_endpoint.abort();
+    let _ = fake_endpoint.await;
+
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{error}");
+    assert!(
+        error.contains("Could not inspect the runtime at"),
+        "{error}"
+    );
+    assert!(error.contains(socket.to_str().unwrap()), "{error}");
+    assert!(probes.load(Ordering::SeqCst) >= 1);
+    assert!(
+        !marker.exists(),
+        "Desktop launched before runtime admission"
+    );
+}
