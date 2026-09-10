@@ -259,11 +259,14 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         let path = dir.join("daemon.lock");
         std::fs::write(&path, "existing contents")?;
-        let _first = DaemonLock::try_acquire(Some(&dir))?;
-        assert!(matches!(
-            DaemonLock::try_acquire(Some(&dir)),
-            Err(DaemonLockError::Contended { .. })
-        ));
+        {
+            let _first = DaemonLock::try_acquire(Some(&dir))?;
+            assert!(matches!(
+                DaemonLock::try_acquire(Some(&dir)),
+                Err(DaemonLockError::Contended { .. })
+            ));
+        }
+        // Windows denies reads through a second handle while the lock is held.
         assert_eq!(std::fs::read_to_string(path)?, "existing contents");
         Ok(())
     }
