@@ -633,7 +633,7 @@ mod path_shorthand_tests {
         ] {
             let cli = parse(&["nteract", path]).unwrap();
             assert!(
-                matches!(cli.command, Some(Commands::Open { path: Some(actual), runtime: None }) if actual == PathBuf::from(path))
+                matches!(cli.command, Some(Commands::Open { path: Some(actual), runtime: None }) if actual == Path::new(path))
             );
         }
         assert!(matches!(

@@ -77,12 +77,16 @@ working directory, including when Desktop is already running. It does not reopen
 a previous notebook or create an `Untitled.ipynb` file in the project. Save the
 notebook to choose its filename; normal recovery still protects untitled work.
 `nteract open .` uses the same directory behavior.
+To select a runtime, use `nteract open . --runtime deno`. On macOS this explicit
+runtime choice starts a separate Desktop process so the option is honored even
+when Desktop is already running; ordinary directory opens use its default runtime.
 
 Command names take precedence over shorthand paths. Use `nteract ./open` or
 `nteract ./nb` for paths with those names, or pass the path to `nteract open`.
 Notebook filenames and directory names are not restricted by the CLI's commands.
 Unknown bare words that do not name an existing path produce a command error;
-use an explicit path such as `./analysis` or an `.ipynb` filename to open a new file.
+use an explicit path such as `./analysis` to disambiguate. Desktop reports file
+availability and notebook parsing errors.
 
 ## Runtime management and diagnostics
 
