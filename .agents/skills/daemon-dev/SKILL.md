@@ -225,7 +225,7 @@ Each open notebook has a room (`NotebookRoom`), keyed by UUID. A `PathIndex` map
 
 ## Troubleshooting
 
-**Daemon lock held:** `runt daemon status` → check with `lsof`. Remove stale `daemon.lock` + `daemon.json` if crashed.
+**Daemon lock held:** Inspect the selected endpoint with `runt daemon status` and check its `daemon.lock` with `lsof`. The OS releases the advisory lock when its owner exits; an existing file is not proof of a live owner. Do not delete the lock file to bypass contention, since replacing its inode can allow two owners. Filesystem failures are separate errors, and live socket metadata is the discovery source.
 
 **Pool not replenishing:** Verify `uv --version` and check `~/.cache/runt/envs/`.
 

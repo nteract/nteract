@@ -249,7 +249,7 @@ Manage with `runt daemon start/stop/status/logs`. Cross-platform install/uninsta
 
 ## Troubleshooting
 
-**Daemon won't start (lock held):** Check `lsof ~/.cache/<namespace>/daemon.lock`. If stale, remove the lock file.
+**Daemon won't start (lock held):** Check the selected endpoint and `lsof ~/.cache/<namespace>/daemon.lock`. A lock file can outlive its owner; the OS releases the advisory lock when the process exits. Do not delete the file to bypass contention: replacing its inode can allow two owners of the same runtime state. Filesystem failures are reported separately from contention.
 
 **Pool not replenishing:** Verify `uv --version` works and check `~/.cache/<namespace>/envs/`.
 
