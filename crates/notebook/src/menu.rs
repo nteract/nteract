@@ -68,7 +68,7 @@ pub fn about_menu_label() -> String {
 }
 
 pub fn install_cli_menu_label() -> String {
-    "Install 'nteract' Command in PATH".to_string()
+    "Install nteract CLI".to_string()
 }
 
 pub fn window_menu_item_id(window_label: &str) -> String {

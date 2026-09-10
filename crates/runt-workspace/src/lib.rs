@@ -596,8 +596,20 @@ fn open_notebook_dev(path: Option<&Path>, extra_args: &[&str]) -> Result<(), Str
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn macos_open_args(path: Option<&Path>, extra_args: &[&str]) -> Vec<OsString> {
+fn macos_open_args(
+    path: Option<&Path>,
+    extra_args: &[&str],
+    open_directory: bool,
+) -> Vec<OsString> {
     let mut args = Vec::new();
+
+    // A running app ignores everything after --args. ID joins already require
+    // a new instance; directory opens with an explicit runtime do too, so the
+    // requested runtime reaches the seeded window. Default directory opens
+    // still reuse the running app via its document event.
+    if !extra_args.is_empty() && (path.is_none() || open_directory) {
+        args.push(OsString::from("-n"));
+    }
 
     // Pass the notebook path as a document argument (before --args) so macOS
     // delivers it via Apple Events (kAEOpenDocuments) whether the app is
@@ -606,9 +618,18 @@ fn macos_open_args(path: Option<&Path>, extra_args: &[&str]) -> Vec<OsString> {
         args.push(p.as_os_str().to_os_string());
     }
 
-    if !extra_args.is_empty() {
+    if !extra_args.is_empty() || open_directory {
         args.push(OsString::from("--args"));
         args.extend(extra_args.iter().map(OsString::from));
+        if open_directory {
+            // macOS delivers the directory as a document event even on cold
+            // launch. Seed the requested window before runtime admission, then consume
+            // its matching initial document event without opening it twice.
+            args.push(OsString::from("--open-directory"));
+            if let Some(path) = path {
+                args.push(path.as_os_str().to_os_string());
+            }
+        }
     }
 
     args
@@ -669,14 +690,12 @@ fn open_notebook_installed_for(
         #[cfg(target_os = "macos")]
         let spawn_result = {
             let mut cmd = Command::new("open");
-            // When there's no file path but we have CLI args (e.g. --notebook-id),
-            // force a new instance with -n. Without this, macOS `open` activates
-            // the running app and silently drops everything after --args.
-            if path.is_none() && !extra_args.is_empty() {
-                cmd.arg("-n");
-            }
             cmd.arg("-a").arg(app_name);
-            cmd.args(macos_open_args(path, extra_args));
+            cmd.args(macos_open_args(
+                path,
+                extra_args,
+                strict && path.is_some_and(Path::is_dir),
+            ));
             cmd.output().and_then(|output| {
                 if output.status.success() {
                     Ok(())
@@ -1979,7 +1998,7 @@ mod tests {
     #[test]
     fn test_macos_open_args_path_and_runtime() {
         let path = Path::new("/tmp/example.ipynb");
-        let args = macos_open_args(Some(path), &["--runtime", "python"]);
+        let args = macos_open_args(Some(path), &["--runtime", "python"], false);
 
         assert_eq!(
             args,
@@ -1995,18 +2014,50 @@ mod tests {
     #[test]
     fn test_macos_open_args_path_only() {
         let path = Path::new("/tmp/example.ipynb");
-        let args = macos_open_args(Some(path), &[]);
+        let args = macos_open_args(Some(path), &[], false);
 
         assert_eq!(args, vec![OsString::from("/tmp/example.ipynb")]);
     }
 
     #[test]
+    fn test_macos_directory_handoff_forces_new_instance_for_explicit_runtime() {
+        let path = Path::new("/tmp/my project");
+        let args = macos_open_args(Some(path), &["--runtime", "deno"], true);
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("-n"),
+                OsString::from("/tmp/my project"),
+                OsString::from("--args"),
+                OsString::from("--runtime"),
+                OsString::from("deno"),
+                OsString::from("--open-directory"),
+                OsString::from("/tmp/my project"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_macos_default_directory_handoff_reuses_running_desktop() {
+        assert_eq!(
+            macos_open_args(Some(Path::new("/tmp/my project")), &[], true),
+            vec![
+                OsString::from("/tmp/my project"),
+                OsString::from("--args"),
+                OsString::from("--open-directory"),
+                OsString::from("/tmp/my project"),
+            ]
+        );
+    }
+
+    #[test]
     fn test_macos_open_args_runtime_only() {
-        let args = macos_open_args(None, &["--runtime", "deno"]);
+        let args = macos_open_args(None, &["--runtime", "deno"], false);
 
         assert_eq!(
             args,
             vec![
+                OsString::from("-n"),
                 OsString::from("--args"),
                 OsString::from("--runtime"),
                 OsString::from("deno"),

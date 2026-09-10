@@ -564,6 +564,87 @@ struct PreparedHostedRelay {
     raw_frame_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
 }
 
+struct StartupWindow {
+    label: String,
+    title: String,
+    mode: OpenMode,
+    saved_scale_factor: Option<f64>,
+}
+
+/// Directory opens always create a fresh room. The resolved directory travels
+/// with the request instead of depending on the Desktop process's working directory.
+fn directory_open_window(path: &Path, runtime: &Runtime) -> Result<Option<StartupWindow>, String> {
+    if !path.is_dir() {
+        return Ok(None);
+    }
+    let working_dir = path
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve directory '{}': {e}", path.display()))?;
+    Ok(Some(StartupWindow {
+        label: format!("notebook-{}", uuid::Uuid::new_v4()),
+        title: "Untitled.ipynb".to_string(),
+        mode: OpenMode::Create {
+            runtime: runtime.to_string(),
+            working_dir: Some(working_dir),
+            notebook_id: None,
+        },
+        saved_scale_factor: None,
+    }))
+}
+
+/// macOS delivers the CLI's directory as both a cold-launch argument and a
+/// document event. Consume that event once; later opens of the same directory
+/// must still create fresh notebooks. A running app receives only the event.
+#[cfg(any(test, target_os = "macos"))]
+struct InitialDirectoryEvent {
+    path: PathBuf,
+    expires_at: std::time::Instant,
+}
+
+#[cfg(any(test, target_os = "macos"))]
+impl InitialDirectoryEvent {
+    fn new(path: PathBuf, now: std::time::Instant) -> Self {
+        Self {
+            path,
+            // Defensive fallback if LaunchServices omits the initial event.
+            // This is not a delivery guarantee: a very late event opens fresh.
+            expires_at: now + std::time::Duration::from_secs(5),
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn consume_initial_directory_event(
+    pending: &mut Option<InitialDirectoryEvent>,
+    url: &tauri::Url,
+    now: std::time::Instant,
+) -> bool {
+    let Some(expected) = pending.as_ref() else {
+        return false;
+    };
+    if now >= expected.expires_at {
+        *pending = None;
+        return false;
+    }
+    let Ok(path) = url.to_file_path() else {
+        return false;
+    };
+    if path.canonicalize().is_ok_and(|path| path == expected.path) {
+        *pending = None;
+        true
+    } else {
+        false
+    }
+}
+
+/// Explicit document opens can name an extensionless notebook (for example
+/// `nteract ./open`). The daemon validates the notebook bytes; a filename suffix
+/// is not a content check. Preserve the existing missing `.ipynb` open path too.
+#[cfg(any(test, target_os = "macos"))]
+fn is_notebook_file_open_candidate(path: &Path) -> bool {
+    path.is_file() || path.extension().and_then(|extension| extension.to_str()) == Some("ipynb")
+}
+
 fn normalize_hosted_notebook_locator(value: &str) -> Result<String, String> {
     let (domain, notebook_id) = notebook_cloud_transport::registry::parse_hosted_url(value.trim())?;
     Ok(notebook_cloud_transport::registry::hosted_notebook_url(
@@ -1309,6 +1390,147 @@ async fn setup_sync_receivers(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn directory_opens_create_distinct_untitled_windows_in_resolved_directory() {
+        let project = tempfile::tempdir().unwrap();
+        let requested = project.path().join(".");
+        let first = super::directory_open_window(&requested, &super::Runtime::Python)
+            .unwrap()
+            .unwrap();
+        let second = super::directory_open_window(&requested, &super::Runtime::Python)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.label, second.label);
+        for window in [first, second] {
+            assert_eq!(window.title, "Untitled.ipynb");
+            assert!(window.saved_scale_factor.is_none());
+            let super::OpenMode::Create {
+                runtime,
+                working_dir,
+                notebook_id,
+            } = window.mode
+            else {
+                panic!("a directory must create a fresh room, not open or restore a notebook");
+            };
+            assert_eq!(runtime, "python");
+            assert_eq!(working_dir, Some(project.path().canonicalize().unwrap()));
+            assert!(
+                notebook_id.is_none(),
+                "the daemon must allocate a fresh notebook ID"
+            );
+        }
+    }
+
+    #[test]
+    fn directory_opens_leave_file_and_missing_path_handling_unchanged() {
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("saved.ipynb");
+        std::fs::write(&file, "{}").unwrap();
+        for path in [file, project.path().join("missing.ipynb")] {
+            assert!(super::directory_open_window(&path, &super::Runtime::Python)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn directory_handoff_consumes_only_one_matching_initial_event() {
+        let project = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let requested = tauri::Url::from_directory_path(project.path().join(".")).unwrap();
+        let unrelated = tauri::Url::from_directory_path(other.path()).unwrap();
+        let now = std::time::Instant::now();
+        let mut pending = Some(super::InitialDirectoryEvent::new(
+            project.path().canonicalize().unwrap(),
+            now,
+        ));
+        // Other document events do not consume the launch request.
+        assert!(!super::consume_initial_directory_event(
+            &mut pending,
+            &unrelated,
+            now
+        ));
+        assert!(super::consume_initial_directory_event(
+            &mut pending,
+            &requested,
+            now
+        ));
+        // Repeated CLI invocations must pass through to fresh notebook creation.
+        assert!(!super::consume_initial_directory_event(
+            &mut pending,
+            &requested,
+            now
+        ));
+        assert!(!super::consume_initial_directory_event(
+            &mut pending,
+            &requested,
+            now
+        ));
+    }
+
+    #[test]
+    fn running_desktop_never_consumes_directory_requests_as_startup_duplicates() {
+        let project = tempfile::tempdir().unwrap();
+        let requested = tauri::Url::from_directory_path(project.path()).unwrap();
+        assert!(!super::consume_initial_directory_event(
+            &mut None,
+            &requested,
+            std::time::Instant::now()
+        ));
+    }
+
+    #[test]
+    fn missing_initial_directory_event_cannot_suppress_later_requests_indefinitely() {
+        let project = tempfile::tempdir().unwrap();
+        let requested = tauri::Url::from_directory_path(project.path()).unwrap();
+        let now = std::time::Instant::now();
+        let token =
+            || super::InitialDirectoryEvent::new(project.path().canonicalize().unwrap(), now);
+        assert!(super::consume_initial_directory_event(
+            &mut Some(token()),
+            &requested,
+            now + std::time::Duration::from_secs(4)
+        ));
+        let mut pending = Some(token());
+        assert!(!super::consume_initial_directory_event(
+            &mut pending,
+            &requested,
+            now + std::time::Duration::from_secs(5)
+        ));
+        assert!(pending.is_none());
+        assert!(!super::consume_initial_directory_event(
+            &mut pending,
+            &requested,
+            now + std::time::Duration::from_secs(6)
+        ));
+    }
+
+    #[test]
+    fn explicit_document_opens_accept_existing_files_without_an_ipynb_suffix() {
+        let project = tempfile::tempdir().unwrap();
+        for name in ["open", "nb", "renamed.data", "notebook.ipynb"] {
+            let path = project.path().join(name);
+            std::fs::write(
+                &path,
+                r#"{"cells":[],"metadata":{},"nbformat":4,"nbformat_minor":5}"#,
+            )
+            .unwrap();
+            assert!(super::is_notebook_file_open_candidate(&path), "{name}");
+        }
+        // Content validation remains the daemon's responsibility, including
+        // invalid files that happen to carry the conventional suffix.
+        let invalid = project.path().join("invalid-content");
+        std::fs::write(&invalid, "not notebook JSON").unwrap();
+        assert!(super::is_notebook_file_open_candidate(&invalid));
+        assert!(super::is_notebook_file_open_candidate(
+            &project.path().join("new.ipynb")
+        ));
+        assert!(!super::is_notebook_file_open_candidate(
+            &project.path().join("missing")
+        ));
+        assert!(!super::is_notebook_file_open_candidate(project.path()));
+    }
+
     #[tokio::test]
     async fn desktop_runtime_admission_absence_allows_startup_without_ready() {
         #[cfg(unix)]
@@ -3305,7 +3527,30 @@ fn handle_open_url(
         _ => None,
     };
     let Some(path) = path else { return };
-    if path.extension().and_then(|e| e.to_str()) != Some("ipynb") {
+    match directory_open_window(&path, &settings::load_settings().default_runtime) {
+        Ok(Some(request)) => {
+            // A directory is an instruction to create, never a saved document
+            // to focus or a startup placeholder to retarget.
+            if let Err(error) = create_notebook_window_for_daemon(
+                app_handle,
+                registry,
+                request.mode,
+                Some(request.label),
+            ) {
+                log::error!(
+                    "[directory-open] Failed to open '{}': {error}",
+                    path.display()
+                );
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log::error!("[directory-open] {error}");
+            return;
+        }
+    }
+    if !is_notebook_file_open_candidate(&path) {
         return;
     }
 
@@ -4620,7 +4865,15 @@ pub fn run(
     notebook_path: Option<PathBuf>,
     runtime: Option<Runtime>,
     notebook_id: Option<String>,
+    open_directory: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    let initial_directory = open_directory
+        .map(|path| {
+            anyhow::ensure!(path.is_dir(), "Not a directory: '{}'", path.display());
+            path.canonicalize().map_err(anyhow::Error::from)
+        })
+        .transpose()?;
+    let notebook_path = initial_directory.clone().or(notebook_path);
     // Initialize logging via tauri-plugin-log — unified backend for both Rust
     // log::* macros and frontend JS log calls. Writes to notebook.log, stderr,
     // and forwards to webview console.
@@ -4704,11 +4957,25 @@ pub fn run(
     let app_settings = settings::load_settings();
     let needs_onboarding = !app_settings.onboarding_completed && notebook_path.is_none();
 
+    let runtime = runtime.unwrap_or(app_settings.default_runtime);
+    let directory_window = notebook_path
+        .as_deref()
+        .map(|path| directory_open_window(path, &runtime))
+        .transpose()
+        .map_err(anyhow::Error::msg)?
+        .flatten();
+
     // Capture working directory early for untitled notebook project detection.
     // This must happen before Tauri startup, which may change the CWD.
     // Filter out "/" — macOS sets CWD to root when launched from Finder/Dock.
     // Fall back to ~/notebooks (creating it if needed), same as onboarding.
-    let working_dir = if notebook_path.is_none() {
+    let working_dir = if let Some(StartupWindow {
+        mode: OpenMode::Create { working_dir, .. },
+        ..
+    }) = &directory_window
+    {
+        working_dir.clone()
+    } else if notebook_path.is_none() {
         std::env::current_dir()
             .ok()
             .filter(|p| p.parent().is_some())
@@ -4716,9 +4983,6 @@ pub fn run(
     } else {
         None
     };
-
-    // Use provided runtime or fall back to user's default from settings
-    let runtime = runtime.unwrap_or(app_settings.default_runtime);
 
     // Try to restore session if no notebook path/id provided and not onboarding
     let restored_session = if notebook_path.is_none() && notebook_id.is_none() && !needs_onboarding
@@ -4734,16 +4998,11 @@ pub fn run(
     // Build the list of ALL notebook windows to create at startup.
     // All windows are created immediately (showing loading UI) and synced
     // with the daemon once it's available — no primary/secondary distinction.
-    struct StartupWindow {
-        label: String,
-        title: String,
-        mode: OpenMode,
-        saved_scale_factor: Option<f64>,
-    }
-
     let startup_windows: Vec<StartupWindow> = if needs_onboarding {
         info!("[startup] Onboarding needed, skipping notebook state setup");
         Vec::new()
+    } else if let Some(window) = directory_window {
+        vec![window]
     } else if let Some(ref path) = notebook_path {
         // CLI arg: open a specific notebook
         let title = path
@@ -5663,15 +5922,15 @@ pub fn run(
                                 );
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(success_message)
-                                    .title("CLI Installed")
+                                    .title("nteract CLI Installed")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Info)
                                     .blocking_show();
                             }
                             Ok(Err(e)) => {
                                 log::error!("[cli_install] CLI installation failed: {}", e);
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
-                                    .message(format!("Failed to install CLI: {}", e))
-                                    .title("Installation Failed")
+                                    .message(format!("Failed to install nteract CLI: {}", e))
+                                    .title("Install nteract CLI")
                                     .kind(tauri_plugin_dialog::MessageDialogKind::Error)
                                     .blocking_show();
                             }
@@ -5744,6 +6003,9 @@ pub fn run(
     let registry_for_exit_session = window_registry.clone();
     let registry_for_window_close = window_registry.clone();
     let app_quitting = Arc::new(AtomicBool::new(false));
+    #[cfg(target_os = "macos")]
+    let mut pending_directory_event =
+        initial_directory.map(|path| InitialDirectoryEvent::new(path, std::time::Instant::now()));
     app.run(move |app_handle, event| {
         // Drain deferred file-open URLs once startup sync is complete.
         // These were queued by RunEvent::Opened events that arrived before
@@ -5850,6 +6112,17 @@ pub fn run(
         // whose Tauri webviews haven't been created yet.
         #[cfg(target_os = "macos")]
         if let RunEvent::Opened { urls } = &event {
+            let urls: Vec<_> = urls
+                .iter()
+                .filter(|url| {
+                    !consume_initial_directory_event(
+                        &mut pending_directory_event,
+                        url,
+                        std::time::Instant::now(),
+                    )
+                })
+                .cloned()
+                .collect();
             log::info!(
                 "[file-open] RunEvent::Opened with {} URL(s): {:?}",
                 urls.len(),
@@ -5867,7 +6140,7 @@ pub fn run(
                 }
             } else {
                 registry_for_open.prune_stale_entries(app_handle);
-                for url in urls {
+                for url in &urls {
                     handle_open_url(app_handle, &registry_for_open, url, false);
                 }
             }

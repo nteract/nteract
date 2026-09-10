@@ -19,7 +19,7 @@ Start here to understand a subsystem. This is not a complete inventory.
 | Product requirements | [`prd/notebook-identity-environment-surfaces.md`](prd/notebook-identity-environment-surfaces.md), [`prd/hosted-sharing-invites.md`](prd/hosted-sharing-invites.md) |
 | MCP, cloud embedding, and Automerge audit | [`audits/mcp-cloud-automerge-audit.md`](audits/mcp-cloud-automerge-audit.md) |
 | Evidence and measurements | [`audits/`](audits/), [`measurements/`](measurements/) |
-| CLI and installation | [`runbooks/cli.md`](runbooks/cli.md) |
+| CLI and installation | [`runbooks/cli.md`](runbooks/cli.md), [`plans/unified-cli-release.md`](plans/unified-cli-release.md) |
 | Operational setup | [`runbooks/macos-setup.md`](runbooks/macos-setup.md), [`runbooks/hosted-direct-oidc-demo-runbook.md`](runbooks/hosted-direct-oidc-demo-runbook.md) |
 
 For the architecture decision register's status vocabulary and maintenance

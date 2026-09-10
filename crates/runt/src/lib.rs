@@ -155,6 +155,13 @@ fn cli_command(entrypoint: EntryPoint) -> clap::Command {
             .name("nteract")
             .bin_name("nteract")
             .about("Open notebooks, manage runtimes and workstations, and serve MCP")
+            .subcommand_precedence_over_arg(true)
+            .arg(
+                clap::Arg::new("launch_path")
+                    .value_name("PATH")
+                    .value_parser(clap::value_parser!(PathBuf))
+                    .help("Open a notebook, or create an untitled notebook in a directory"),
+            )
             .mut_arg("channel", |arg| arg.hide(false))
             .mut_subcommand("nb", |command| {
                 command.about("Read, edit, and execute notebooks without the desktop app")
@@ -543,7 +550,7 @@ pub fn run(entrypoint: EntryPoint) -> Result<()> {
         route_channel(channel_from_args(std::env::args_os().skip(1))?)?;
     }
     let matches = cli_command(entrypoint).get_matches();
-    let cli = Cli::from_arg_matches(&matches)?;
+    let cli = cli_from_matches(entrypoint, &matches).unwrap_or_else(|error| error.exit());
     if entrypoint == EntryPoint::Runt && cli.channel.is_some() {
         anyhow::bail!("Select release channels with `nteract --channel stable|nightly`");
     }
@@ -567,7 +574,117 @@ pub fn run(entrypoint: EntryPoint) -> Result<()> {
     }
 }
 
+fn cli_from_matches(
+    entrypoint: EntryPoint,
+    matches: &clap::ArgMatches,
+) -> std::result::Result<Cli, clap::Error> {
+    let mut cli = Cli::from_arg_matches(matches)?;
+    if entrypoint == EntryPoint::Nteract {
+        if let Some(path) = matches.get_one::<PathBuf>("launch_path") {
+            if cli.command.is_some() {
+                return Err(cli_command(entrypoint).error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "Choose a command or a notebook path, not both",
+                ));
+            }
+            // Preserve useful typo errors for bare command-like words. Explicit
+            // paths and .ipynb names can name a new file; existing files without
+            // extensions remain valid. Subcommands always take precedence.
+            let explicit_path = path.is_absolute()
+                || path.components().count() > 1
+                || path.as_os_str().to_string_lossy().starts_with('.');
+            if !explicit_path
+                && !path.exists()
+                && path.extension() != Some(std::ffi::OsStr::new("ipynb"))
+                && notebook_id_from_uuid_arg(path).is_none()
+            {
+                return Err(cli_command(entrypoint)
+                    .error(clap::error::ErrorKind::InvalidSubcommand, format!("Unknown command or notebook path '{}'. Use an explicit path such as './{}', or 'nteract open <path>'.", path.display(), path.display())));
+            }
+            cli.command = Some(Commands::Open {
+                path: Some(path.clone()),
+                runtime: None,
+            });
+        }
+    }
+    Ok(cli)
+}
+
 const CHANNEL_DISPATCH_ENV: &str = "NTERACT_CLI_DISPATCH_CHANNEL";
+
+#[cfg(test)]
+mod path_shorthand_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> std::result::Result<Cli, clap::Error> {
+        let matches = cli_command(EntryPoint::Nteract).try_get_matches_from(args)?;
+        cli_from_matches(EntryPoint::Nteract, &matches)
+    }
+
+    #[test]
+    fn paths_are_shorthand_for_open_and_commands_take_precedence() {
+        for path in [
+            ".",
+            "./project",
+            "./open",
+            "./nb",
+            "../analysis.ipynb",
+            "new.ipynb",
+        ] {
+            let cli = parse(&["nteract", path]).unwrap();
+            assert!(
+                matches!(cli.command, Some(Commands::Open { path: Some(actual), runtime: None }) if actual == Path::new(path))
+            );
+        }
+        assert!(matches!(
+            parse(&["nteract", "open"]).unwrap().command,
+            Some(Commands::Open { path: None, .. })
+        ));
+        assert!(matches!(
+            parse(&["nteract", "nb", "tools"]).unwrap().command,
+            Some(Commands::Nb { .. })
+        ));
+        assert!(matches!(
+            parse(&["nteract", "doctor"]).unwrap().command,
+            Some(Commands::Doctor { .. })
+        ));
+        assert!(parse(&["nteract"]).unwrap().command.is_none());
+    }
+
+    #[test]
+    fn path_shorthand_preserves_channel_selection_and_explicit_open_runtime() {
+        let cli = parse(&["nteract", "--channel", "nightly", "."]).unwrap();
+        assert!(matches!(cli.channel, Some(CliChannel::Nightly)));
+        assert!(matches!(cli.command, Some(Commands::Open { .. })));
+        let cli = parse(&["nteract", "open", "./nb", "--runtime", "deno"]).unwrap();
+        assert!(
+            matches!(cli.command, Some(Commands::Open { runtime: Some(runtime), .. }) if runtime == "deno")
+        );
+    }
+
+    #[test]
+    fn path_shorthand_rejects_typos_and_mixed_commands_without_changing_runt() {
+        assert!(parse(&["nteract", "workstaiton"]).is_err());
+        assert!(parse(&["nteract", ".", "open"]).is_err());
+        assert!(cli_command(EntryPoint::Runt)
+            .try_get_matches_from(["runt", "."])
+            .is_err());
+    }
+
+    #[test]
+    fn directory_launch_preserves_explicit_location_and_spaces() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("project with spaces");
+        std::fs::create_dir(&project).unwrap();
+        let launch = open_notebook_launch_args(Some(project.clone()), None);
+        assert_eq!(launch.path, Some(project));
+        assert!(launch.extra_args.is_empty());
+        assert_eq!(
+            open_notebook_launch_args(Some(PathBuf::from(".")), None).path,
+            Some(std::env::current_dir().unwrap().join("."))
+        );
+    }
+}
 
 fn channel_from_args(args: impl IntoIterator<Item = OsString>) -> Result<Option<CliChannel>> {
     use clap::ValueEnum;
@@ -663,8 +780,8 @@ fn enable_virtual_terminal_processing() {}
 
 /// Open the notebook application with optional path and runtime arguments.
 ///
-/// The app automatically captures its working directory at startup for untitled
-/// notebooks, so we don't need to pass --cwd explicitly.
+/// Explicit paths are resolved against the invoking terminal's directory before
+/// handoff; a running Desktop process cannot inherit the caller's directory.
 async fn open_notebook_canonical(
     path: Option<PathBuf>,
     runtime: Option<String>,
