@@ -9,6 +9,8 @@
 //! 2. Re-join the active notebook session when the daemon comes back
 //!    (either after a brief disconnect, or after a same-version restart).
 //!
+//! Hosted handoff recovery runs independently of local daemon events.
+//!
 //! Tool dispatch asks the daemon directly instead of gating on a local
 //! connection state. Under sustained concurrent load, local gating can stall in
 //! `Reconnecting` while the daemon is healthy, short-circuiting every tool call.
@@ -38,12 +40,13 @@ pub const EXIT_DAEMON_UPGRADED: i32 = 75;
 
 /// Env var the proxy sets on the restarted child to hand off the notebook
 /// the previous child was attached to. Value is either a UUID or an
-/// absolute file path.
+/// absolute file path, or a hosted notebook URL.
 pub const REJOIN_ENV_VAR: &str = "NTERACT_MCP_REJOIN_NOTEBOOK";
 
 const REJOIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const REJOIN_MAX_RETRIES: u32 = 3;
 const REJOIN_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(120);
+const HOSTED_RECOVERY_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 struct RecoveryState {
@@ -102,6 +105,43 @@ impl RecoveryState {
     fn rejoin_succeeded(&mut self) {
         self.initial_target = None;
         self.recovery_target = None;
+    }
+}
+
+/// Attempt a hosted handoff without consulting local runtime identity or waiting
+/// for a local runtime event. Returns true when a hosted target needs another
+/// attempt. Publication and its intent/slot race checks remain in the connector.
+async fn attempt_hosted_recovery<S, C, F>(
+    recovery: &mut RecoveryState,
+    session: &RwLock<Option<S>>,
+    session_intent_epoch: &AtomicU64,
+    connect: C,
+) -> bool
+where
+    C: FnOnce(String, String, u64) -> F,
+    F: Future<Output = bool>,
+{
+    recovery.observe_explicit_intent(session_intent_epoch.load(Ordering::Acquire));
+    let Some(target) = recovery.target() else {
+        return false;
+    };
+    let Ok(NotebookTarget::Hosted {
+        domain,
+        notebook_id,
+        ..
+    }) = cloud::parse_connect_target(Some(&target), None, None, None)
+    else {
+        return false;
+    };
+    if session.read().await.is_some() {
+        recovery.rejoin_succeeded();
+        return false;
+    }
+    if connect(domain, notebook_id, recovery.observed_intent_epoch).await {
+        recovery.rejoin_succeeded();
+        false
+    } else {
+        true
     }
 }
 
@@ -257,7 +297,30 @@ pub async fn watch(resources: WatchResources) -> i32 {
     }
 
     loop {
-        let event = match rx.recv().await {
+        // A hosted session can be the only reason this child exists. Attempt
+        // its handoff immediately, even when no local daemon has ever existed.
+        let hosted_pending = attempt_hosted_recovery(
+            &mut recovery,
+            &session,
+            &session_intent_epoch,
+            |domain, notebook_id, expected_epoch| {
+                rejoin_hosted(
+                    &session,
+                    &peer_label,
+                    &last_session_drop,
+                    domain,
+                    notebook_id,
+                    &session_intent_epoch,
+                    expected_epoch,
+                )
+            },
+        )
+        .await;
+        let received = tokio::select! {
+            event = rx.recv() => event,
+            _ = tokio::time::sleep(HOSTED_RECOVERY_RETRY_DELAY), if hosted_pending => continue,
+        };
+        let event = match received {
             Ok(event) => Some(event),
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("Daemon event stream lagged, dropped {n} events");
@@ -920,6 +983,121 @@ mod tests {
     fn hosted_binding_survives_local_daemon_loss() {
         assert!(daemon_binding_matches(true, None, None));
         assert!(daemon_binding_matches(true, None, Some(&incarnation(4))));
+    }
+
+    fn hosted_handoff(epoch: u64) -> RecoveryState {
+        RecoveryState {
+            startup_version: None,
+            initial_target: Some(cloud::hosted_notebook_url(
+                "https://example.com",
+                "notebook-id",
+            )),
+            recovery_target: None,
+            observed_intent_epoch: epoch,
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_handoff_attempts_before_any_local_daemon_observation() {
+        let mut recovery = hosted_handoff(0);
+        let session = Arc::new(RwLock::new(None::<FakeSession>));
+        let epoch = AtomicU64::new(0);
+        let session_ref = &session;
+        let epoch_ref = &epoch;
+        let pending = attempt_hosted_recovery(
+            &mut recovery,
+            &session,
+            &epoch,
+            |domain, notebook_id, expected_epoch| async move {
+                assert_eq!(domain, "https://example.com");
+                assert_eq!(notebook_id, "notebook-id");
+                assert_eq!(expected_epoch, 0);
+                assert_eq!(
+                    publish_rejoined_session(
+                        session_ref,
+                        FakeSession::hosted(&notebook_id),
+                        epoch_ref,
+                        expected_epoch,
+                    )
+                    .await,
+                    PublicationResult::Installed
+                );
+                true
+            },
+        )
+        .await;
+        assert!(!pending);
+        assert!(session.read().await.as_ref().unwrap().hosted);
+        assert!(recovery.target().is_none());
+        assert!(recovery.startup_version.is_none());
+    }
+
+    #[tokio::test]
+    async fn hosted_failure_keeps_target_for_timer_retry_without_daemon_events() {
+        let mut recovery = hosted_handoff(0);
+        let session = RwLock::new(None::<FakeSession>);
+        let epoch = AtomicU64::new(0);
+        let attempts = AtomicUsize::new(0);
+        for _ in 0..2 {
+            assert!(
+                attempt_hosted_recovery(&mut recovery, &session, &epoch, |_, _, _| async {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    false
+                },)
+                .await
+            );
+            assert!(recovery.target().is_some());
+        }
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn hosted_recovery_does_not_resurrect_after_disconnect_during_connect() {
+        let mut recovery = hosted_handoff(4);
+        let session = Arc::new(RwLock::new(None::<FakeSession>));
+        let epoch = AtomicU64::new(4);
+        let session_ref = &session;
+        let epoch_ref = &epoch;
+        let pending = attempt_hosted_recovery(
+            &mut recovery,
+            &session,
+            &epoch,
+            |_, _, expected_epoch| async move {
+                // Explicit disconnect advances the epoch while the hosted
+                // connection is in flight, before publication acquires the slot.
+                epoch_ref.store(5, Ordering::Release);
+                assert_eq!(
+                    publish_rejoined_session(
+                        session_ref,
+                        FakeSession::hosted("background"),
+                        epoch_ref,
+                        expected_epoch,
+                    )
+                    .await,
+                    PublicationResult::Cancelled
+                );
+                true
+            },
+        )
+        .await;
+        assert!(!pending);
+        assert!(session.read().await.is_none());
+        assert!(recovery.target().is_none());
+    }
+
+    #[tokio::test]
+    async fn local_recovery_cannot_bypass_daemon_incarnation_gate() {
+        let mut recovery = hosted_handoff(0);
+        recovery.initial_target = Some("/tmp/local.ipynb".into());
+        let session = RwLock::new(None::<FakeSession>);
+        let epoch = AtomicU64::new(0);
+        assert!(
+            !attempt_hosted_recovery(&mut recovery, &session, &epoch, |_, _, _| async {
+                panic!("local target must use guarded local rejoin")
+            },)
+            .await
+        );
+        assert_eq!(recovery.target().as_deref(), Some("/tmp/local.ipynb"));
     }
 
     #[test]

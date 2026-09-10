@@ -124,8 +124,8 @@ pub async fn replace_match(
             &handle,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
-            &server.blob_base_url,
-            &server.blob_store_path,
+            &server.blob_base_url(),
+            &server.blob_store_path(),
         )
         .await
         {
@@ -213,8 +213,8 @@ pub async fn replace_regex(
             &handle,
             cell_id,
             Duration::from_secs_f64(timeout_secs),
-            &server.blob_base_url,
-            &server.blob_store_path,
+            &server.blob_base_url(),
+            &server.blob_store_path(),
         )
         .await
         {

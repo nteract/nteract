@@ -1,5 +1,4 @@
-//! CLI installation module for putting the bundled runt binary on PATH and
-//! creating the channel-specific notebook shorthand wrapper.
+//! Install the shared nteract CLI, retaining legacy channel-specific commands.
 //!
 //! On Unix systems, we install to `~/.local/bin` (no admin privileges required)
 //! and create a symlink so the CLI automatically stays in sync when the app
@@ -164,6 +163,122 @@ pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     }
 
     None
+}
+
+fn bundled_nteract_candidates(
+    resource_dir: Option<&Path>,
+    current_exe: Option<&Path>,
+) -> Vec<PathBuf> {
+    bundled_runt_candidates(resource_dir, current_exe)
+        .into_iter()
+        .filter_map(|candidate| {
+            let name = candidate.file_name()?.to_str()?;
+            let suffix = name.strip_prefix("runt")?;
+            Some(candidate.with_file_name(format!("nteract-cli{suffix}")))
+        })
+        .collect()
+}
+
+pub fn get_bundled_nteract_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    bundled_nteract_candidates(
+        app.path().resource_dir().ok().as_deref(),
+        std::env::current_exe().ok().as_deref(),
+    )
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
+
+/// Install only the canonical command. Automatic repair retains the selected
+/// channel; the explicit menu action can select this installation.
+fn install_nteract_command(app: &tauri::AppHandle, select: bool) -> Result<(), String> {
+    let target = get_bundled_nteract_path(app)
+        .ok_or_else(|| "Could not find the bundled nteract CLI".to_string())?;
+    #[cfg(unix)]
+    if is_ephemeral_runt_path(&target) {
+        return Err("Install nteract in a permanent location before installing its CLI.".into());
+    }
+    let dir = install_dir();
+    #[cfg(unix)]
+    let outcome = runt_workspace::cli::install_command(
+        &dir,
+        &target,
+        runt_workspace::build_channel(),
+        select,
+        &[],
+    )?;
+    #[cfg(target_os = "windows")]
+    let outcome =
+        install_windows_nteract_command(&dir, &target, runt_workspace::build_channel(), select)?;
+    match outcome {
+        runt_workspace::cli::InstallOutcome::CommandConflict(path) => Err(format!(
+            "Preserved existing command at {}. The nteract CLI is available at {}. Move the existing command before installing nteract on PATH.",
+            path.display(), target.display()
+        )),
+        runt_workspace::cli::InstallOutcome::Selected
+        | runt_workspace::cli::InstallOutcome::KeptSelection(_) => {
+            #[cfg(unix)]
+            ensure_shell_path(&dir)?;
+            Ok(())
+        }
+    }
+}
+
+/// Windows preserves the same selection contract using an owned .cmd shim.
+/// An executable beside the shim would win command resolution, so report that
+/// collision instead of pretending the CLI was installed successfully.
+#[cfg(any(target_os = "windows", test))]
+fn install_windows_nteract_command(
+    dir: &Path,
+    target: &Path,
+    channel: runt_workspace::BuildChannel,
+    select: bool,
+) -> Result<runt_workspace::cli::InstallOutcome, String> {
+    use runt_workspace::cli::{channel_record_name, InstallOutcome, SELECTION_FILE};
+    if !target.is_absolute() || !target.is_file() {
+        return Err(format!(
+            "CLI binary is not available at {}",
+            target.display()
+        ));
+    }
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let read_record = |name: &str| {
+        fs::read_to_string(dir.join(name))
+            .ok()
+            .map(|text| PathBuf::from(text.trim_end_matches(['\r', '\n'])))
+    };
+    let selected = read_record(SELECTION_FILE);
+    let previous_channel = read_record(&channel_record_name(channel));
+    fs::write(
+        dir.join(channel_record_name(channel)),
+        format!("{}\n", target.display()),
+    )
+    .map_err(|e| e.to_string())?;
+    for extension in ["exe", "com", "bat"] {
+        let other = dir.join(format!("nteract.{extension}"));
+        if fs::symlink_metadata(&other).is_ok() {
+            return Ok(InstallOutcome::CommandConflict(other));
+        }
+    }
+    let shim = dir.join("nteract.cmd");
+    if fs::symlink_metadata(&shim).is_ok() {
+        let existing = fs::read_to_string(&shim).map_err(|e| e.to_string())?;
+        let current = windows_runt_cmd_shim_contents(target);
+        let matches_selected = selected
+            .as_ref()
+            .is_some_and(|path| existing == windows_runt_cmd_shim_contents(path));
+        if !is_owned_windows_cmd_shim(&existing) || (existing != current && !matches_selected) {
+            return Ok(InstallOutcome::CommandConflict(shim));
+        }
+        if !select && existing != current && selected != previous_channel {
+            if let Some(previous) = selected {
+                return Ok(InstallOutcome::KeptSelection(previous));
+            }
+        }
+    }
+    fs::write(&shim, windows_runt_cmd_shim_contents(target)).map_err(|e| e.to_string())?;
+    fs::write(dir.join(SELECTION_FILE), format!("{}\n", target.display()))
+        .map_err(|e| e.to_string())?;
+    Ok(InstallOutcome::Selected)
 }
 
 /// Result of checking whether an installed CLI symlink is current.
@@ -762,18 +877,28 @@ fn is_ephemeral_path(app: &tauri::AppHandle) -> bool {
     ephemeral
 }
 
-/// Silently update the CLI installation if the installed command entrypoints
-/// are stale.
+/// Install or refresh the canonical command without changing its selected
+/// channel. Repair legacy command entrypoints separately when they are stale.
 ///
-/// Called on app launch. On Unix, if the user has previously installed the CLI
-/// (symlink exists), this checks whether it still points to the current app
-/// bundle and re-runs `install_cli()` if not. On Windows, the installer should
+/// Called on app launch. On Unix, the canonical command is installed if missing;
+/// existing legacy commands are repaired only when recognized as ours. On Windows, the installer should
 /// have created owned `.cmd` shims already; app launch repairs stale/missing
 /// shims so older installs and failed installer hooks still recover for UI use.
 ///
 /// Skips the check in dev mode (source builds) and on macOS if the app is
 /// running from a translocated path (e.g., directly from a DMG).
 pub fn ensure_cli_current(app: &tauri::AppHandle) {
+    if !runt_workspace::is_dev_mode() {
+        #[cfg(unix)]
+        let persistent = !is_ephemeral_path(app);
+        #[cfg(target_os = "windows")]
+        let persistent = true;
+        if persistent {
+            if let Err(e) = install_nteract_command(app, false) {
+                log::warn!("[cli_install] Canonical CLI installation skipped: {}", e);
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         if runt_workspace::is_dev_mode() {
@@ -967,6 +1092,7 @@ pub fn is_cli_installed_legacy() -> bool {
 /// Install the CLI to the user-local command directory (no admin privileges needed).
 /// Returns Ok(()) on success, Err with message on failure.
 pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
+    install_nteract_command(app, false)?;
     let bundled_runt = get_bundled_runt_path(app)
         .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
 
@@ -1016,6 +1142,12 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Explicit menu action selects this app's release channel for `nteract`.
+pub fn install_cli_and_select(app: &tauri::AppHandle) -> Result<(), String> {
+    install_nteract_command(app, true)?;
+    install_cli(app)
 }
 
 /// Warn if legacy /usr/local/bin has stale CLI copies that shadow ~/.local/bin.
@@ -1126,7 +1258,7 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
         (
             config,
             format!(
-                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nfish_add_path {}\n",
+                "\n# Added by nteract \u{2013} puts nteract CLI on PATH\nfish_add_path {}\n",
                 bin_dir.display()
             ),
         )
@@ -1134,7 +1266,7 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
         (
             home.join(".bashrc"),
             format!(
-                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
+                "\n# Added by nteract \u{2013} puts nteract CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
                 bin_dir.display()
             ),
         )
@@ -1143,7 +1275,7 @@ fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
         (
             home.join(".zshrc"),
             format!(
-                "\n# Added by nteract \u{2013} puts runt CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
+                "\n# Added by nteract \u{2013} puts nteract CLI on PATH\nexport PATH=\"{}:$PATH\"\n",
                 bin_dir.display()
             ),
         )
@@ -1406,6 +1538,108 @@ fn escalate_shell_command(shell_cmd: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_cli_candidates_never_select_desktop_executable() {
+        let candidates = bundled_nteract_candidates(
+            Some(Path::new("/Applications/nteract.app/Contents/Resources")),
+            Some(Path::new(
+                "/Applications/nteract.app/Contents/MacOS/nteract",
+            )),
+        );
+        assert!(!candidates.is_empty());
+        assert!(candidates.iter().all(|path| path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("nteract-cli")));
+    }
+
+    #[test]
+    fn windows_canonical_shim_preserves_channel_selection_and_unrelated_executables() {
+        use runt_workspace::{cli::InstallOutcome, BuildChannel};
+        let dir = tempfile::tempdir().unwrap();
+        let stable = dir.path().join("stable-cli.exe");
+        let nightly = dir.path().join("nightly-cli.exe");
+        fs::write(&stable, "fixture").unwrap();
+        fs::write(&nightly, "fixture").unwrap();
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &stable, BuildChannel::Stable, false)
+                .unwrap(),
+            InstallOutcome::Selected
+        );
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &nightly, BuildChannel::Nightly, false)
+                .unwrap(),
+            InstallOutcome::KeptSelection(stable.clone())
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("nteract.cmd")).unwrap(),
+            windows_runt_cmd_shim_contents(&stable)
+        );
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &nightly, BuildChannel::Nightly, true)
+                .unwrap(),
+            InstallOutcome::Selected
+        );
+        let desktop = dir.path().join("nteract.exe");
+        fs::write(&desktop, "desktop").unwrap();
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &stable, BuildChannel::Stable, true)
+                .unwrap(),
+            InstallOutcome::CommandConflict(desktop.clone())
+        );
+        assert_eq!(fs::read_to_string(desktop).unwrap(), "desktop");
+    }
+
+    #[test]
+    fn windows_canonical_shim_rejects_unowned_cmd() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("nteract-cli.exe");
+        let shim = dir.path().join("nteract.cmd");
+        fs::write(&target, "fixture").unwrap();
+        fs::write(&shim, "@echo off\r\necho user command\r\n").unwrap();
+        assert_eq!(
+            install_windows_nteract_command(
+                dir.path(),
+                &target,
+                runt_workspace::BuildChannel::Stable,
+                true
+            )
+            .unwrap(),
+            runt_workspace::cli::InstallOutcome::CommandConflict(shim.clone())
+        );
+        assert_eq!(
+            fs::read_to_string(shim).unwrap(),
+            "@echo off\r\necho user command\r\n"
+        );
+    }
+
+    #[test]
+    fn windows_canonical_upgrade_moves_selected_target_but_preserves_user_edits() {
+        use runt_workspace::{cli::InstallOutcome, BuildChannel};
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old-cli.exe");
+        let new = dir.path().join("new-cli.exe");
+        fs::write(&old, "fixture").unwrap();
+        fs::write(&new, "fixture").unwrap();
+        install_windows_nteract_command(dir.path(), &old, BuildChannel::Stable, false).unwrap();
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &new, BuildChannel::Stable, false).unwrap(),
+            InstallOutcome::Selected
+        );
+        let shim = dir.path().join("nteract.cmd");
+        let edited = format!(
+            "{}echo custom command\r\n",
+            windows_runt_cmd_shim_contents(&new)
+        );
+        fs::write(&shim, &edited).unwrap();
+        assert_eq!(
+            install_windows_nteract_command(dir.path(), &new, BuildChannel::Stable, true).unwrap(),
+            InstallOutcome::CommandConflict(shim.clone())
+        );
+        assert_eq!(fs::read_to_string(shim).unwrap(), edited);
+    }
 
     #[cfg(unix)]
     #[test]

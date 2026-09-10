@@ -653,10 +653,12 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
             cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
+            cp target/release/nteract-cli.exe "crates/notebook/binaries/nteract-cli-$TARGET.exe"
             cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
           else
             cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
+            cp target/release/nteract-cli "crates/notebook/binaries/nteract-cli-$TARGET"
             cp target/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
           fi
 
@@ -676,9 +678,11 @@ jobs:
           path: |
             target/release/runtimed
             target/release/runt
+            target/release/nteract-cli
             target/release/nteract-mcp
             crates/notebook/binaries/runtimed-*
             crates/notebook/binaries/runt-*
+            crates/notebook/binaries/nteract-cli-*
             crates/notebook/binaries/nteract-mcp-*
           retention-days: 1
 
@@ -690,6 +694,7 @@ jobs:
           mkdir -p target/release/binaries
           cp crates/notebook/binaries/runtimed-* target/release/binaries/
           cp crates/notebook/binaries/runt-* target/release/binaries/
+          cp crates/notebook/binaries/nteract-cli-* target/release/binaries/
           cp crates/notebook/binaries/nteract-mcp-* target/release/binaries/
 
       - name: Upload E2E app
@@ -988,10 +993,12 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
             cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
+            cp target/release/nteract-cli.exe "crates/notebook/binaries/nteract-cli-$TARGET.exe"
             cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
           else
             cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
             cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
+            cp target/release/nteract-cli "crates/notebook/binaries/nteract-cli-$TARGET"
             cp target/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
           fi
 

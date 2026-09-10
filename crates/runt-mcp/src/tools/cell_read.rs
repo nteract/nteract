@@ -147,8 +147,8 @@ pub async fn get_cell(
     let outputs = output_resolver::resolve_cell_outputs_for_llm(
         &raw_outputs,
         output_resolver::ResolveCtx {
-            blob_base_url: server.blob_base_url.as_deref(),
-            blob_store_path: server.blob_store_path.as_deref(),
+            blob_base_url: server.blob_base_url().as_deref(),
+            blob_store_path: server.blob_store_path().as_deref(),
             comms: comms.as_ref(),
             length: if full_output {
                 output_resolver::OutputLength::Full
@@ -357,8 +357,8 @@ pub async fn get_all_cells(
                 let resolved = output_resolver::resolve_cell_outputs_for_llm(
                     raw_outputs,
                     output_resolver::ResolveCtx {
-                        blob_base_url: server.blob_base_url.as_deref(),
-                        blob_store_path: server.blob_store_path.as_deref(),
+                        blob_base_url: server.blob_base_url().as_deref(),
+                        blob_store_path: server.blob_store_path().as_deref(),
                         comms: comms.as_ref(),
                         execution_cell_map: Some(&execution_cell_map),
                         ..Default::default()
@@ -407,8 +407,8 @@ pub async fn get_all_cells(
                 let outputs = output_resolver::resolve_cell_outputs_for_llm(
                     raw_outputs,
                     output_resolver::ResolveCtx {
-                        blob_base_url: server.blob_base_url.as_deref(),
-                        blob_store_path: server.blob_store_path.as_deref(),
+                        blob_base_url: server.blob_base_url().as_deref(),
+                        blob_store_path: server.blob_store_path().as_deref(),
                         comms: comms.as_ref(),
                         execution_cell_map: Some(&execution_cell_map),
                         ..Default::default()
@@ -459,8 +459,8 @@ pub async fn get_all_cells(
                     output_resolver::resolve_cell_outputs_for_llm(
                         raw_outputs,
                         output_resolver::ResolveCtx {
-                            blob_base_url: server.blob_base_url.as_deref(),
-                            blob_store_path: server.blob_store_path.as_deref(),
+                            blob_base_url: server.blob_base_url().as_deref(),
+                            blob_store_path: server.blob_store_path().as_deref(),
                             comms: comms.as_ref(),
                             execution_cell_map: Some(&execution_cell_map),
                             ..Default::default()

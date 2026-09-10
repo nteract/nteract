@@ -36,8 +36,8 @@ Concurrent requests on a child's stdio connection share its active selection;
 the entrypoints do not multiplex independent MCP clients within that child.
 The daemon's notebook framing is a separate transport protocol.
 
-The source entrypoints are `crates/runt/src/main.rs:739`,
-`crates/nteract-mcp/src/main.rs:260`, and
+The source entrypoints are `crates/runt/src/lib.rs`,
+`crates/nteract-mcp/src/lib.rs`, and
 `crates/mcp-supervisor/src/main.rs:2910`. Same-room peer propagation is covered
 by `test_notebook_sync_cross_window_propagation` in
 `crates/runtimed/tests/integration.rs:1135`.
@@ -99,10 +99,15 @@ target before dispatch, so losing its reply cannot restore the released session.
 | `attach` | no | no, errors out if missing | Codex, second IDE |
 | `isolated` | yes, per session | yes, scoped to session dir | one-shot test runs |
 
-The installed `nteract-mcp` wrapper has no `NTERACT_DEV_MODE`. It locates the
+The compatibility `nteract-mcp` wrapper has no `NTERACT_DEV_MODE`. It locates the
 channel's `runt` binary and spawns `runt mcp`; daemon service management remains
-outside that child. See `crates/nteract-mcp/src/main.rs:190` and
-`crates/runt/src/main.rs:715`.
+outside that compatibility child. The canonical `nteract mcp` command uses the
+same proxy library and runs an internal worker from its selected CLI executable.
+Both retain restart, protocol, cancellation, and target-handoff behavior.
+Canonical local notebook connection/creation may lazily start an absent runtime;
+MCP initialization and direct hosted connections do not. Incompatible or
+uninspectable runtimes remain untouched. See `crates/nteract-mcp/src/lib.rs`,
+`crates/runt/src/lib.rs`, and the [CLI guide](../runbooks/cli.md).
 
 **Why separate management from attachment.** Multiple children can share a
 worktree daemon without each managing its lifecycle. Attach mode makes that
@@ -613,7 +618,7 @@ already implemented separate-child/shared-daemon model.
    sets, not input/output schemas (`crates/runt-mcp-proxy/src/tools.rs:98`).
    Removal/rename can trigger exit; schema changes under an unchanged name need
    a separate compatibility policy. Recovery hints are already caller-specific:
-   installed wrapper at `crates/nteract-mcp/src/main.rs:204`, dev supervisor at
+   installed wrapper at `crates/nteract-mcp/src/lib.rs`, dev supervisor at
    `crates/mcp-supervisor/src/main.rs:3159`.
 5. **Protocol compatibility.** Concurrent callers now await shared restart
    completion. Further protocol features need explicit lifecycle work;

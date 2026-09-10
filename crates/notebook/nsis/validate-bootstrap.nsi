@@ -23,9 +23,10 @@ Section "ValidateInstallHooks"
   StrCpy $UpdateMode 0
   !insertmacro NSIS_HOOK_PREINSTALL
   !insertmacro NSIS_HOOK_POSTINSTALL
+  WriteUninstaller "$OUTDIR\uninstall.exe"
 SectionEnd
 
-Section "ValidateUninstallHooks"
+Section "Uninstall"
   StrCpy $INSTDIR "$TEMP\nteract-bootstrap-validation"
   StrCpy $UpdateMode 0
   !insertmacro NSIS_HOOK_PREUNINSTALL

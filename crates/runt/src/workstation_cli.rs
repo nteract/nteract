@@ -108,20 +108,36 @@ pub enum WorkstationServiceCommands {
     Uninstall,
 }
 
-pub async fn command(command: WorkstationCommands) -> Result<()> {
+#[derive(Clone, Copy, Default)]
+struct CliContext {
+    canonical: bool,
+}
+
+impl CliContext {
+    fn name(self) -> &'static str {
+        if self.canonical {
+            "nteract"
+        } else {
+            runt_workspace::cli_command_name()
+        }
+    }
+}
+
+pub async fn command(command: WorkstationCommands, canonical: bool) -> Result<()> {
+    let cli = CliContext { canonical };
     match command {
         WorkstationCommands::Connect {
             url,
             code,
             id,
             name,
-        } => connect(url, code, id, name).await,
+        } => connect(url, code, id, name, cli).await,
         WorkstationCommands::Run {
             python_path,
             working_directory,
-        } => run(python_path, working_directory).await,
-        WorkstationCommands::Service { command } => service(command).await,
-        WorkstationCommands::Status { json } => status(json).await,
+        } => run(python_path, working_directory, cli).await,
+        WorkstationCommands::Service { command } => service(command, cli).await,
+        WorkstationCommands::Status { json } => status(json, cli).await,
     }
 }
 
@@ -146,6 +162,7 @@ async fn connect(
     code: Option<String>,
     id: Option<String>,
     name: Option<String>,
+    cli: CliContext,
 ) -> Result<()> {
     let cloud_url = normalize_cloud_url(&url)?;
     let code = match code {
@@ -220,24 +237,24 @@ async fn connect(
             eprintln!(
                 "Warning: registration returned HTTP {}; `{} workstation run` will retry.",
                 response.status(),
-                runt_workspace::cli_command_name()
+                cli.name()
             );
         }
         Err(error) => {
             eprintln!(
                 "Warning: registration failed ({error}); `{} workstation run` will retry.",
-                runt_workspace::cli_command_name()
+                cli.name()
             );
         }
     }
 
-    let cli = runt_workspace::cli_command_name();
+    let cli_name = cli.name();
     println!("To serve attach requests in this terminal:");
-    println!("  {cli} workstation run");
+    println!("  {cli_name} workstation run");
     #[cfg(target_os = "linux")]
     {
         println!("To keep this workstation available with user systemd:");
-        println!("  {cli} workstation service install --start");
+        println!("  {cli_name} workstation service install --start");
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -336,14 +353,21 @@ pub(crate) fn minimal_registration_payload(
 // run
 // ---------------------------------------------------------------------------
 
-async fn run(python_path: Option<PathBuf>, working_directory: Option<PathBuf>) -> Result<()> {
-    let resolved = resolve_credentials()?;
+async fn run(
+    python_path: Option<PathBuf>,
+    working_directory: Option<PathBuf>,
+    cli: CliContext,
+) -> Result<()> {
+    let resolved = resolve_credentials(cli)?;
     let working_directory = match working_directory {
         Some(path) => Some(resolve_existing_directory(&path)?),
         None => None,
     };
 
-    let runtimed_bin = locate_runtimed_binary().ok_or_else(|| {
+    let runtimed_bin = locate_runtimed_binary(cli).ok_or_else(|| {
+        if cli.canonical {
+            return anyhow::anyhow!("The runtime bundled with this nteract CLI installation is missing. Reinstall this nteract installation to run a workstation.");
+        }
         anyhow::anyhow!(
             "could not find a runtimed binary next to runt or in the installed app; \
              build one with `cargo build -p runtimed` or reinstall nteract"
@@ -490,7 +514,7 @@ struct ResolvedCredentials {
     display_name: String,
 }
 
-fn resolve_credentials() -> Result<ResolvedCredentials> {
+fn resolve_credentials(cli: CliContext) -> Result<ResolvedCredentials> {
     let path = runt_workspace::workstation_credentials_path();
     let stored = read_credential_file(&path)?;
     let env_token = non_empty_env(CLOUD_TOKEN_ENV);
@@ -503,7 +527,7 @@ fn resolve_credentials() -> Result<ResolvedCredentials> {
             "no workstation credential found at {} — run `{} workstation connect <url>` first \
              (or set {CLOUD_TOKEN_ENV} and {CLOUD_URL_ENV})",
             path.display(),
-            runt_workspace::cli_command_name()
+            cli.name()
         );
     };
 
@@ -527,7 +551,10 @@ fn resolve_credentials() -> Result<ResolvedCredentials> {
 
 /// Find the runtimed binary: the bundled/sibling lookup `runt` already uses
 /// for daemon management, with a dev fallback to the workspace target dir.
-fn locate_runtimed_binary() -> Option<PathBuf> {
+fn locate_runtimed_binary(cli: CliContext) -> Option<PathBuf> {
+    if cli.canonical {
+        return crate::local_runtime::sibling_runtime_binary().filter(|path| path.is_file());
+    }
     if let Some(path) = crate::find_bundled_runtimed() {
         return Some(path);
     }
@@ -553,8 +580,8 @@ fn locate_runtimed_binary() -> Option<PathBuf> {
 // status
 // ---------------------------------------------------------------------------
 
-async fn status(json_output: bool) -> Result<()> {
-    let resolved = resolve_credentials()?;
+async fn status(json_output: bool, cli: CliContext) -> Result<()> {
+    let resolved = resolve_credentials(cli)?;
     let client = http_client()?;
     let response = client
         .get(format!("{}/api/workstations", resolved.cloud_url))
@@ -568,7 +595,7 @@ async fn status(json_output: bool) -> Result<()> {
         bail!(
             "the workstation credential was rejected (HTTP {status}) — it may have been revoked; \
              run `{} workstation connect {}` with a fresh pairing code",
-            runt_workspace::cli_command_name(),
+            cli.name(),
             resolved.cloud_url
         );
     }
@@ -598,7 +625,7 @@ async fn status(json_output: bool) -> Result<()> {
     if workstations.is_empty() {
         println!(
             "No workstations registered yet. Run `{} workstation run` to register.",
-            runt_workspace::cli_command_name()
+            cli.name()
         );
         return Ok(());
     }
@@ -636,10 +663,10 @@ async fn status(json_output: bool) -> Result<()> {
 // service
 // ---------------------------------------------------------------------------
 
-async fn service(command: WorkstationServiceCommands) -> Result<()> {
+async fn service(command: WorkstationServiceCommands, cli: CliContext) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        service_linux(command)
+        service_linux(command, cli)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -648,26 +675,26 @@ async fn service(command: WorkstationServiceCommands) -> Result<()> {
         bail!(
             "workstation service management currently supports Linux user systemd only. \
              Use `{} workstation run` in tmux for foreground/manual testing.",
-            runt_workspace::cli_command_name()
+            cli.name()
         )
     }
 }
 
 #[cfg(target_os = "linux")]
-fn service_linux(command: WorkstationServiceCommands) -> Result<()> {
+fn service_linux(command: WorkstationServiceCommands, cli: CliContext) -> Result<()> {
     match command {
         WorkstationServiceCommands::Install {
             python_path,
             working_directory,
             start,
-        } => install_workstation_service(python_path, working_directory, start),
-        WorkstationServiceCommands::Start => start_workstation_service(),
-        WorkstationServiceCommands::Stop => stop_workstation_service(),
-        WorkstationServiceCommands::Status => status_workstation_service(),
+        } => install_workstation_service(python_path, working_directory, start, cli),
+        WorkstationServiceCommands::Start => start_workstation_service(cli),
+        WorkstationServiceCommands::Stop => stop_workstation_service(cli),
+        WorkstationServiceCommands::Status => status_workstation_service(cli),
         WorkstationServiceCommands::Logs { follow, lines } => {
-            logs_workstation_service(follow, lines)
+            logs_workstation_service(follow, lines, cli)
         }
-        WorkstationServiceCommands::Uninstall => uninstall_workstation_service(),
+        WorkstationServiceCommands::Uninstall => uninstall_workstation_service(cli),
     }
 }
 
@@ -797,15 +824,16 @@ fn install_workstation_service(
     python_path: Option<PathBuf>,
     working_directory: Option<PathBuf>,
     start: bool,
+    cli: CliContext,
 ) -> Result<()> {
-    ensure_user_systemd_available()?;
-    ensure_stored_workstation_credential()?;
+    ensure_user_systemd_available(cli)?;
+    ensure_stored_workstation_credential(cli)?;
     let service_path = workstation_service_path();
     let working_directory = match working_directory {
         Some(path) => resolve_existing_directory(&path)?,
         None => resolve_existing_directory(&std::env::current_dir().context("resolve cwd")?)?,
     };
-    let runt_path = current_runt_path_for_service()?;
+    let runt_path = current_runt_path_for_service(cli)?;
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
     let config = WorkstationServiceUnitConfig {
@@ -820,10 +848,11 @@ fn install_workstation_service(
     }
     std::fs::write(&service_path, render_workstation_systemd_unit(&config))
         .with_context(|| format!("write {}", service_path.display()))?;
-    systemctl_checked(&["daemon-reload"], "reload user systemd")?;
+    systemctl_checked(&["daemon-reload"], "reload user systemd", cli)?;
     systemctl_checked(
         &["enable", &workstation_service_unit_name()],
         "enable workstation service",
+        cli,
     )?;
     println!(
         "Installed workstation service at {}",
@@ -834,20 +863,17 @@ fn install_workstation_service(
         config.runt_path.display()
     );
     if start {
-        start_or_restart_workstation_service_after_install()?;
+        start_or_restart_workstation_service_after_install(cli)?;
     } else {
-        println!(
-            "Start it with `{} workstation service start`.",
-            runt_workspace::cli_command_name()
-        );
+        println!("Start it with `{} workstation service start`.", cli.name());
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn start_or_restart_workstation_service_after_install() -> Result<()> {
-    ensure_user_systemd_available()?;
-    ensure_workstation_service_installed()?;
+fn start_or_restart_workstation_service_after_install(cli: CliContext) -> Result<()> {
+    ensure_user_systemd_available(cli)?;
+    ensure_workstation_service_installed(cli)?;
     let active_state = systemctl_probe(&["is-active", &workstation_service_unit_name()]);
     let action = workstation_service_start_action_for_active_state(&active_state);
     systemctl_checked(
@@ -857,6 +883,7 @@ fn start_or_restart_workstation_service_after_install() -> Result<()> {
         } else {
             "start workstation service"
         },
+        cli,
     )?;
     println!(
         "Workstation service {}.",
@@ -879,20 +906,21 @@ fn workstation_service_start_action_for_active_state(active_state: &str) -> &'st
 }
 
 #[cfg(target_os = "linux")]
-fn start_workstation_service() -> Result<()> {
-    ensure_user_systemd_available()?;
-    ensure_workstation_service_installed()?;
+fn start_workstation_service(cli: CliContext) -> Result<()> {
+    ensure_user_systemd_available(cli)?;
+    ensure_workstation_service_installed(cli)?;
     systemctl_checked(
         &["start", &workstation_service_unit_name()],
         "start workstation service",
+        cli,
     )?;
     println!("Workstation service started.");
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn stop_workstation_service() -> Result<()> {
-    ensure_user_systemd_available()?;
+fn stop_workstation_service(cli: CliContext) -> Result<()> {
+    ensure_user_systemd_available(cli)?;
     if !workstation_service_path().exists() {
         println!("Workstation service is not installed.");
         return Ok(());
@@ -900,14 +928,15 @@ fn stop_workstation_service() -> Result<()> {
     systemctl_checked(
         &["stop", &workstation_service_unit_name()],
         "stop workstation service",
+        cli,
     )?;
     println!("Workstation service stopped.");
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn status_workstation_service() -> Result<()> {
-    ensure_user_systemd_available()?;
+fn status_workstation_service(cli: CliContext) -> Result<()> {
+    ensure_user_systemd_available(cli)?;
     let service_path = workstation_service_path();
     println!("Unit: {}", workstation_service_unit_name());
     println!("File: {}", service_path.display());
@@ -915,7 +944,7 @@ fn status_workstation_service() -> Result<()> {
         println!("Installed: no");
         println!(
             "Run `{} workstation service install --start` after pairing this machine.",
-            runt_workspace::cli_command_name()
+            cli.name()
         );
         return Ok(());
     }
@@ -932,9 +961,9 @@ fn status_workstation_service() -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn logs_workstation_service(follow: bool, lines: usize) -> Result<()> {
-    ensure_user_systemd_available()?;
-    ensure_workstation_service_installed()?;
+fn logs_workstation_service(follow: bool, lines: usize, cli: CliContext) -> Result<()> {
+    ensure_user_systemd_available(cli)?;
+    ensure_workstation_service_installed(cli)?;
     let mut command = journalctl_command();
     command
         .args(["--user", "-u"])
@@ -949,15 +978,15 @@ fn logs_workstation_service(follow: bool, lines: usize) -> Result<()> {
         bail!(
             "journalctl failed for {}; run `{} workstation service status` first",
             workstation_service_unit_name(),
-            runt_workspace::cli_command_name()
+            cli.name()
         );
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn uninstall_workstation_service() -> Result<()> {
-    ensure_user_systemd_available()?;
+fn uninstall_workstation_service(cli: CliContext) -> Result<()> {
+    ensure_user_systemd_available(cli)?;
     let service_path = workstation_service_path();
     if !service_path.exists() {
         println!("Workstation service is not installed.");
@@ -967,49 +996,51 @@ fn uninstall_workstation_service() -> Result<()> {
     systemctl_best_effort(&["disable", &workstation_service_unit_name()]);
     std::fs::remove_file(&service_path)
         .with_context(|| format!("remove {}", service_path.display()))?;
-    systemctl_checked(&["daemon-reload"], "reload user systemd")?;
+    systemctl_checked(&["daemon-reload"], "reload user systemd", cli)?;
     println!("Workstation service uninstalled.");
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn ensure_stored_workstation_credential() -> Result<()> {
+fn ensure_stored_workstation_credential(cli: CliContext) -> Result<()> {
     let path = runt_workspace::workstation_credentials_path();
     let Some(credentials) = read_credential_file(&path)? else {
         bail!(
             "no stored workstation credential found at {}. Run `{} workstation connect <url>` first.",
             path.display(),
-            runt_workspace::cli_command_name()
+            cli.name()
         );
     };
     if credentials.token.trim().is_empty() || credentials.cloud_url.trim().is_empty() {
         bail!(
             "workstation credential at {} is incomplete. Run `{} workstation connect <url>` again.",
             path.display(),
-            runt_workspace::cli_command_name()
+            cli.name()
         );
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn ensure_workstation_service_installed() -> Result<()> {
+fn ensure_workstation_service_installed(cli: CliContext) -> Result<()> {
     if workstation_service_path().exists() {
         return Ok(());
     }
     bail!(
         "workstation service is not installed. Run `{} workstation service install --start` after pairing this machine.",
-        runt_workspace::cli_command_name()
+        cli.name()
     );
 }
 
 #[cfg(target_os = "linux")]
-fn current_runt_path_for_service() -> Result<PathBuf> {
-    let path = std::env::current_exe().context("resolve current runt executable")?;
+fn current_runt_path_for_service(cli: CliContext) -> Result<PathBuf> {
+    let path = std::env::current_exe()
+        .with_context(|| format!("resolve current {} executable", cli.name()))?;
     let path = std::fs::canonicalize(&path).unwrap_or(path);
     if !path.exists() {
         bail!(
-            "current runt executable does not exist at {}",
+            "current {} executable does not exist at {}",
+            cli.name(),
             path.display()
         );
     }
@@ -1017,7 +1048,7 @@ fn current_runt_path_for_service() -> Result<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn ensure_user_systemd_available() -> Result<()> {
+fn ensure_user_systemd_available(cli: CliContext) -> Result<()> {
     let output = match systemctl_command()
         .args(["--user", "show-environment"])
         .output()
@@ -1029,7 +1060,7 @@ fn ensure_user_systemd_available() -> Result<()> {
             } else {
                 format!("could not run systemctl --user show-environment: {error}")
             };
-            bail!("{}", user_systemd_unavailable_message(&detail));
+            bail!("{}", user_systemd_unavailable_message(&detail, cli));
         }
     };
     if output.status.success() {
@@ -1041,16 +1072,16 @@ fn ensure_user_systemd_available() -> Result<()> {
         .into_iter()
         .find(|value| !value.is_empty())
         .unwrap_or("systemctl --user did not report details");
-    bail!("{}", user_systemd_unavailable_message(detail));
+    bail!("{}", user_systemd_unavailable_message(detail, cli));
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn user_systemd_unavailable_message(detail: &str) -> String {
+fn user_systemd_unavailable_message(detail: &str, cli: CliContext) -> String {
     format!(
         "Linux user systemd is not available in this session: {detail}\n\
          Use a normal login session with XDG_RUNTIME_DIR/DBus available, or ask an admin to enable lingering with `loginctl enable-linger $USER` if this workstation should stay available after logout.\n\
          Fallback: run `{} workstation run` inside tmux.",
-        runt_workspace::cli_command_name()
+        cli.name()
     )
 }
 
@@ -1111,7 +1142,7 @@ fn journalctl_command() -> Command {
 }
 
 #[cfg(target_os = "linux")]
-fn systemctl_checked(args: &[&str], action: &str) -> Result<()> {
+fn systemctl_checked(args: &[&str], action: &str, cli: CliContext) -> Result<()> {
     let output = systemctl_command()
         .arg("--user")
         .args(args)
@@ -1130,8 +1161,8 @@ fn systemctl_checked(args: &[&str], action: &str) -> Result<()> {
         .unwrap_or("systemctl did not report details");
     bail!(
         "failed to {action}: {detail}\nRun `{} workstation service status` for current state, or use `{} workstation run` in tmux.",
-        runt_workspace::cli_command_name(),
-        runt_workspace::cli_command_name()
+        cli.name(),
+        cli.name()
     );
 }
 
@@ -1577,16 +1608,25 @@ mod tests {
 
     #[test]
     fn user_systemd_unavailable_message_includes_tmux_fallback() {
-        let message = user_systemd_unavailable_message("systemctl was not found on this host");
+        let message = user_systemd_unavailable_message(
+            "systemctl was not found on this host",
+            CliContext::default(),
+        );
         let fallback = format!(
             "Fallback: run `{} workstation run` inside tmux.",
-            runt_workspace::cli_command_name()
+            CliContext::default().name()
         );
 
         assert!(message.contains(
             "Linux user systemd is not available in this session: systemctl was not found on this host"
         ));
         assert!(message.contains(&fallback));
+        let canonical = user_systemd_unavailable_message(
+            "systemctl was not found on this host",
+            CliContext { canonical: true },
+        );
+        assert!(canonical.contains("Fallback: run `nteract workstation run` inside tmux."));
+        assert!(!canonical.contains("`runt"));
     }
 
     #[test]

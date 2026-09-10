@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+pub mod cli;
 pub mod file_claims;
 pub mod recent;
 
@@ -500,7 +501,16 @@ pub fn open_notebook_app_for_channel(
     if is_dev_mode() {
         return open_notebook_dev(path, extra_args);
     }
-    open_notebook_installed_for(channel, path, extra_args)
+    open_notebook_installed_for(channel, path, extra_args, false)
+}
+
+/// Open Desktop from this installation's channel without falling back to a
+/// different channel. Used by the canonical CLI's deliberate target selection.
+pub fn open_notebook_app_strict(path: Option<&Path>, extra_args: &[&str]) -> Result<(), String> {
+    if is_dev_mode() {
+        return open_notebook_dev(path, extra_args);
+    }
+    open_notebook_installed_for(build_channel(), path, extra_args, true)
 }
 
 /// Launch the desktop notebook app using the compile-time channel.
@@ -562,10 +572,40 @@ fn open_notebook_installed_for(
     channel: BuildChannel,
     path: Option<&Path>,
     extra_args: &[&str],
+    strict: bool,
 ) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if strict {
+        // NSIS places Desktop beside its CLI backend; only the public command
+        // shim directory is on PATH. Resolve this selected installation directly.
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let desktop = windows_desktop_beside_cli(&executable).ok_or_else(|| {
+            format!("{} Desktop is not installed beside this CLI. Install Desktop to use `nteract open`.", desktop_display_name_for(channel))
+        })?;
+        let mut command = Command::new(&desktop);
+        if let Some(path) = path {
+            command.arg(path);
+        }
+        command
+            .args(extra_args)
+            .spawn()
+            .map_err(|error| format!("Failed to launch {}: {error}", desktop.display()))?;
+        return Ok(());
+    }
     let mut last_error = None;
 
-    for app_name in desktop_app_launch_candidates_for(channel) {
+    #[cfg(target_os = "linux")]
+    let candidates = linux_desktop_launch_candidates(channel);
+    #[cfg(not(target_os = "linux"))]
+    let candidates = desktop_app_launch_candidates_for(channel);
+
+    for app_name in candidates {
+        if strict
+            && channel == BuildChannel::Nightly
+            && matches!(*app_name, "nteract" | "nteract-desktop")
+        {
+            continue;
+        }
         #[cfg(target_os = "macos")]
         let spawn_result = {
             let mut cmd = Command::new("open");
@@ -577,11 +617,25 @@ fn open_notebook_installed_for(
             }
             cmd.arg("-a").arg(app_name);
             cmd.args(macos_open_args(path, extra_args));
-            cmd.spawn()
+            cmd.output().and_then(|output| {
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(
+                        String::from_utf8_lossy(&output.stderr).trim().to_string(),
+                    ))
+                }
+            })
         };
 
         #[cfg(not(target_os = "macos"))]
         let spawn_result = {
+            // The public nteract command now names the CLI. Never launch it
+            // recursively when looking for an older Desktop launcher on PATH.
+            #[cfg(target_os = "linux")]
+            if is_canonical_cli_on_path(app_name) {
+                continue;
+            }
             let mut cmd = Command::new(app_name);
             if let Some(p) = path {
                 cmd.arg(p);
@@ -606,6 +660,67 @@ fn open_notebook_installed_for(
         desktop_display_name_for(channel),
         detail
     ))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_desktop_beside_cli(executable: &Path) -> Option<PathBuf> {
+    let desktop = executable.parent()?.join("notebook.exe");
+    desktop.is_file().then_some(desktop)
+}
+
+#[test]
+fn windows_desktop_resolves_within_selected_installation() {
+    let installation = tempfile::tempdir().unwrap();
+    let cli = installation.path().join("nteract-cli.exe");
+    assert!(windows_desktop_beside_cli(&cli).is_none());
+    let desktop = installation.path().join("notebook.exe");
+    std::fs::write(&desktop, "fixture").unwrap();
+    assert_eq!(windows_desktop_beside_cli(&cli), Some(desktop));
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_desktop_launch_candidates(channel: BuildChannel) -> &'static [&'static str] {
+    match channel {
+        BuildChannel::Stable => &["nteract-desktop", "nteract"],
+        BuildChannel::Nightly => &[
+            "nteract-desktop-nightly",
+            "nteract-nightly",
+            "nteract-desktop",
+            "nteract",
+        ],
+    }
+}
+
+#[test]
+fn linux_desktop_launcher_precedes_legacy_public_name() {
+    assert_eq!(
+        linux_desktop_launch_candidates(BuildChannel::Stable)[0],
+        "nteract-desktop"
+    );
+    assert_eq!(
+        linux_desktop_launch_candidates(BuildChannel::Nightly)[0],
+        "nteract-desktop-nightly"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn is_canonical_cli_on_path(command: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(command);
+        if candidate.is_file() {
+            return std::fs::canonicalize(candidate).ok().is_some_and(|path| {
+                path.file_name()
+                    .is_some_and(|name| name == cli::BINARY_NAME)
+                    || std::env::current_exe()
+                        .ok()
+                        .is_some_and(|exe| std::fs::canonicalize(exe).ok().as_ref() == Some(&path))
+            });
+        }
+    }
+    false
 }
 
 // ============================================================================
@@ -1232,20 +1347,41 @@ pub fn default_socket_path() -> PathBuf {
 /// caller's own daemon, not for cross-channel discovery.
 #[cfg(unix)]
 pub fn socket_path_for_channel(channel: BuildChannel) -> PathBuf {
-    daemon_base_dir_for(channel).join("runtimed.sock")
+    let worktree = is_dev_mode().then(get_workspace_path).flatten();
+    socket_path_for_context(channel, worktree.as_deref())
 }
 
 /// Get the endpoint path for a specific channel's daemon (Windows).
 #[cfg(windows)]
 pub fn socket_path_for_channel(channel: BuildChannel) -> PathBuf {
+    let worktree = is_dev_mode().then(get_workspace_path).flatten();
+    socket_path_for_context(channel, worktree.as_deref())
+}
+
+/// Resolve an endpoint for an explicit, complete namespace without consulting
+/// socket or development environment overrides.
+#[cfg(windows)]
+pub fn socket_path_for_context(channel: BuildChannel, worktree: Option<&Path>) -> PathBuf {
     let pipe_name = daemon_binary_basename_for(channel);
-    if is_dev_mode() {
-        if let Some(worktree) = get_workspace_path() {
-            let hash = worktree_hash(&worktree);
-            return PathBuf::from(format!(r"\\.\pipe\{}-{}", pipe_name, hash));
-        }
+    if let Some(worktree) = worktree {
+        let hash = worktree_hash(worktree);
+        return PathBuf::from(format!(r"\\.\pipe\{}-{}", pipe_name, hash));
     }
     PathBuf::from(format!(r"\\.\pipe\{}", pipe_name))
+}
+
+/// Resolve an endpoint for an explicit, complete namespace without consulting
+/// socket or development environment overrides.
+#[cfg(unix)]
+pub fn socket_path_for_context(channel: BuildChannel, worktree: Option<&Path>) -> PathBuf {
+    let base = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(cache_namespace_for(channel));
+    let base = match worktree {
+        Some(path) => base.join("worktrees").join(worktree_hash(path)),
+        None => base,
+    };
+    base.join("runtimed.sock")
 }
 
 /// Check `RUNTIMED_SOCKET_PATH` env var and return the path if valid.

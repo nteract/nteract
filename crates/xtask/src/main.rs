@@ -1280,6 +1280,7 @@ fn cmd_build(rust_only: bool, skip_tauri: bool) {
     // Copy sidecar binaries for Tauri bundling
     copy_sidecar_binary("runtimed", false);
     copy_sidecar_binary("runt", false);
+    copy_sidecar_binary("nteract-cli", false);
     copy_sidecar_binary("nteract-mcp", false);
 
     // Phase 2: Build the frontend. Python bindings are no longer part of
@@ -4115,6 +4116,7 @@ fn run_cmd_ok(cmd: &str, args: &[&str]) -> bool {
 fn build_runtimed_daemon(release: bool) {
     build_external_binary("runtimed", "runtimed", release);
     build_external_binary("runt", "runt", release);
+    copy_sidecar_binary("nteract-cli", release);
     build_external_binary("nteract-mcp", "nteract-mcp", release);
 }
 

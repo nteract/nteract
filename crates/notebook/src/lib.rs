@@ -5537,17 +5537,16 @@ pub fn run(
                     tauri::async_runtime::spawn(async move {
                         let result = tauri::async_runtime::spawn_blocking({
                             let app_handle = app_handle.clone();
-                            move || crate::cli_install::install_cli(&app_handle)
+                            move || crate::cli_install::install_cli_and_select(&app_handle)
                         })
                         .await;
 
                         match result {
                             Ok(Ok(())) => {
                                 log::info!("[cli_install] CLI installed successfully");
-                                let cli_cmd = runt_workspace::cli_command_name();
-                                let nb_cmd = runt_workspace::cli_notebook_alias_name();
                                 let success_message = format!(
-                                    "The '{cli_cmd}' and '{nb_cmd}' commands have been installed to ~/.local/bin.\n\nOpen a new terminal and run: {cli_cmd} --help"
+                                    "The 'nteract' command now uses this {} installation.\n\nOpen a new terminal and run: nteract --help",
+                                    runt_workspace::channel_display_name()
                                 );
                                 let _ = tauri_plugin_dialog::DialogExt::dialog(&app_handle)
                                     .message(success_message)

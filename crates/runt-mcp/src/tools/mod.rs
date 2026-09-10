@@ -745,7 +745,7 @@ pub async fn build_execution_result(
                 output_manifests: &result.output_manifests,
                 execution_count: ec,
                 status: &result.status,
-                blob_base_url: &server.blob_base_url,
+                blob_base_url: &server.blob_base_url(),
                 comms: runtime_comms.as_ref(),
                 resolved_outputs_by_manifest: Some(&result.resolved_outputs_by_manifest),
             },

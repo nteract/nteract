@@ -47,7 +47,7 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/runtimed", "binaries/runt", "binaries/nteract-mcp"],
+    "externalBin": ["binaries/runtimed", "binaries/runt", "binaries/nteract-cli", "binaries/nteract-mcp"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,6 +1,117 @@
 !define NTERACT_SHIM_MARKER "nteract-managed-cli-shim v1"
 !define NTERACT_HWND_BROADCAST 0xffff
 !define NTERACT_WM_SETTINGCHANGE 0x001A
+${StrRep}
+${UnStrRep}
+
+Var NteractCliTarget
+Var NteractCliSelected
+Var NteractCliPreviousChannel
+Var NteractCliEscapedTarget
+Var NteractCliOwned
+
+; Records are shared with the Rust desktop installer and may use LF or CRLF.
+!macro NTERACT_READ_CLI_TARGET RECORD_PATH OUTPUT
+  StrCpy ${OUTPUT} ""
+  ClearErrors
+  FileOpen $R3 "${RECORD_PATH}" r
+  ${IfNot} ${Errors}
+    FileRead $R3 ${OUTPUT}
+    FileClose $R3
+    ${Do}
+      StrCpy $R2 ${OUTPUT} 1 -1
+      ${If} $R2 == "$\r"
+      ${OrIf} $R2 == "$\n"
+        StrCpy ${OUTPUT} ${OUTPUT} -1
+      ${Else}
+        ${ExitDo}
+      ${EndIf}
+    ${Loop}
+  ${EndIf}
+!macroend
+
+; Match the full generated shim, not just a comment that could survive edits.
+!macro NTERACT_CHECK_CANONICAL_SHIM CLI_DIR
+  StrCpy $NteractCliOwned "0"
+  ClearErrors
+  FileOpen $R3 "${CLI_DIR}\nteract.cmd" r
+  ${IfNot} ${Errors}
+    FileRead $R3 $R2
+    ${If} $R2 == "@echo off$\r$\n"
+      FileRead $R3 $R2
+      ${If} $R2 == "rem ${NTERACT_SHIM_MARKER}$\r$\n"
+        FileRead $R3 $R2
+        ${If} $R2 == "$\"$NteractCliEscapedTarget$\" %*$\r$\n"
+          ClearErrors
+          FileRead $R3 $R2
+          ${If} ${Errors}
+            StrCpy $NteractCliOwned "1"
+          ${EndIf}
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+    FileClose $R3
+  ${EndIf}
+!macroend
+
+!macro NTERACT_INSTALL_CANONICAL_CLI
+  StrCpy $NteractCliTarget "$INSTDIR\nteract-cli.exe"
+  !insertmacro NTERACT_READ_CLI_TARGET "$R6\.nteract-cli-target" $NteractCliSelected
+  !insertmacro NTERACT_READ_CLI_TARGET "$R6\.nteract-cli-$R9-target" $NteractCliPreviousChannel
+  ClearErrors
+  FileOpen $R3 "$R6\.nteract-cli-$R9-target" w
+  ${IfNot} ${Errors}
+    FileWrite $R3 "$NteractCliTarget$\r$\n"
+    FileClose $R3
+  ${EndIf}
+  StrCpy $NteractCliOwned "1"
+  ${If} ${FileExists} "$R6\nteract.cmd"
+    ${StrRep} $NteractCliEscapedTarget "$NteractCliSelected" "%" "%%"
+    !insertmacro NTERACT_CHECK_CANONICAL_SHIM "$R6"
+    ${If} $NteractCliSelected != $NteractCliTarget
+    ${AndIf} $NteractCliSelected != $NteractCliPreviousChannel
+      StrCpy $NteractCliOwned "0"
+    ${EndIf}
+  ${EndIf}
+  ${If} ${FileExists} "$R6\nteract.exe"
+  ${OrIf} ${FileExists} "$R6\nteract.com"
+  ${OrIf} ${FileExists} "$R6\nteract.bat"
+    StrCpy $NteractCliOwned "0"
+  ${EndIf}
+  ${If} $NteractCliOwned == "1"
+    ${StrRep} $NteractCliEscapedTarget "$NteractCliTarget" "%" "%%"
+    !insertmacro NTERACT_WRITE_SHIM "$R6\nteract.cmd" "$\"$NteractCliEscapedTarget$\" %*"
+    ; Record selection only when the resulting shim matches this target.
+    !insertmacro NTERACT_CHECK_CANONICAL_SHIM "$R6"
+    ${If} $NteractCliOwned == "1"
+      ClearErrors
+      FileOpen $R3 "$R6\.nteract-cli-target" w
+      ${IfNot} ${Errors}
+        FileWrite $R3 "$NteractCliTarget$\r$\n"
+        FileClose $R3
+      ${EndIf}
+    ${EndIf}
+  ${Else}
+    !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "Preserved existing nteract command or other channel selection. CLI available at $NteractCliTarget"
+  ${EndIf}
+!macroend
+
+!macro NTERACT_REMOVE_CANONICAL_CLI CLI_DIR
+  StrCpy $NteractCliTarget "$INSTDIR\nteract-cli.exe"
+  !insertmacro NTERACT_READ_CLI_TARGET "${CLI_DIR}\.nteract-cli-target" $NteractCliSelected
+  ${If} $NteractCliSelected == $NteractCliTarget
+    ${UnStrRep} $NteractCliEscapedTarget "$NteractCliTarget" "%" "%%"
+    !insertmacro NTERACT_CHECK_CANONICAL_SHIM "${CLI_DIR}"
+    ${If} $NteractCliOwned == "1"
+      Delete "${CLI_DIR}\nteract.cmd"
+      Delete "${CLI_DIR}\.nteract-cli-target"
+    ${EndIf}
+  ${EndIf}
+  !insertmacro NTERACT_READ_CLI_TARGET "${CLI_DIR}\.nteract-cli-$R9-target" $NteractCliPreviousChannel
+  ${If} $NteractCliPreviousChannel == $NteractCliTarget
+    Delete "${CLI_DIR}\.nteract-cli-$R9-target"
+  ${EndIf}
+!macroend
 
 !macro NTERACT_SET_CHANNEL_VALUES
   StrCpy $R9 "stable"
@@ -125,6 +236,7 @@
   !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "CLI shim directory: $R6"
   !insertmacro NTERACT_WRITE_SHIM "$R6\$R8.cmd" "$\"$INSTDIR\runt.exe$\" %*"
   !insertmacro NTERACT_WRITE_SHIM "$R6\$R7.cmd" "$\"$INSTDIR\runt.exe$\" notebook %*"
+  !insertmacro NTERACT_INSTALL_CANONICAL_CLI
 
   ; Run daemon doctor --fix --no-start. This installs the daemon binary and
   ; writes the Startup folder VBS entry (so the daemon auto-starts at login)
@@ -166,5 +278,7 @@
     !insertmacro NTERACT_DELETE_OWNED_SHIM "$LOCALAPPDATA\Microsoft\WindowsApps\$R7.cmd"
     !insertmacro NTERACT_DELETE_OWNED_SHIM "$PROFILE\.local\bin\$R8.cmd"
     !insertmacro NTERACT_DELETE_OWNED_SHIM "$PROFILE\.local\bin\$R7.cmd"
+    !insertmacro NTERACT_REMOVE_CANONICAL_CLI "$LOCALAPPDATA\Microsoft\WindowsApps"
+    !insertmacro NTERACT_REMOVE_CANONICAL_CLI "$PROFILE\.local\bin"
   ${EndIf}
 !macroend

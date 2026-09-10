@@ -1388,6 +1388,12 @@ async fn connect_local_path_progressive(
     prev: Option<String>,
     lease: &ActivationLease,
 ) -> Result<CallToolResult, McpError> {
+    if let Err(error) = server.admit_local_runtime().await {
+        return tool_error(&error);
+    }
+    if !lease.is_current() {
+        return Ok(superseded_result(lease));
+    }
     let abs_path = PathBuf::from(canonicalize_local_path(&path));
     let incarnation_before = current_daemon_incarnation(server).await;
     let result = match notebook_sync::connect::connect_open(
@@ -1462,6 +1468,12 @@ async fn connect_local_id_progressive(
     prev: Option<String>,
     lease: &ActivationLease,
 ) -> Result<CallToolResult, McpError> {
+    if let Err(error) = server.admit_local_runtime().await {
+        return tool_error(&error);
+    }
+    if !lease.is_current() {
+        return Ok(superseded_result(lease));
+    }
     let incarnation_before = current_daemon_incarnation(server).await;
     let result = match notebook_sync::connect::connect(
         server.socket_path.clone(),
@@ -1683,6 +1695,12 @@ pub async fn create_notebook(
     let prev = previous_notebook_id(server).await;
 
     let outcome = async {
+        if let Err(error) = server.admit_local_runtime().await {
+            return tool_error(&error);
+        }
+        if !activation_lease.is_current() {
+            return Ok(superseded_result(&activation_lease));
+        }
         let incarnation_before = current_daemon_incarnation(server).await;
         match notebook_sync::connect::connect_create(
             server.socket_path.clone(),
