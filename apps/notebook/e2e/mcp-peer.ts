@@ -92,6 +92,28 @@ export class McpPeer {
     });
   }
 
+  async moveCell(cellId: string, afterCellId: string | null): Promise<unknown> {
+    return this.callToolText("move_cell", { cell_id: cellId, after_cell_id: afterCellId });
+  }
+
+  async deleteCell(cellId: string): Promise<unknown> {
+    return this.callToolText("delete_cell", { cell_id: cellId });
+  }
+
+  async createComment(body: string, cellId?: string): Promise<string> {
+    const text = await this.callToolText("create_comment", {
+      anchor: cellId ? { cell_id: cellId } : { notebook: true },
+      body,
+    });
+    const match = text.match(/Created comment thread:\s*([^\s]+)/);
+    if (!match) throw new Error(`create_comment did not return a thread id: ${text}`);
+    return match[1];
+  }
+
+  async replyComment(threadId: string, body: string): Promise<unknown> {
+    return await this.callToolText("reply_comment", { thread_id: threadId, body });
+  }
+
   async manageDependencies(dependencies: string[]): Promise<unknown> {
     return await this.callToolJson("manage_dependencies", {
       add: dependencies,

@@ -345,7 +345,7 @@ function AppContent() {
   const daemonInfo = useDaemonInfo();
 
   // Apply theme to this window
-  const { defaultPythonEnv, featureFlags } = useSyncedTheme();
+  const { defaultPythonEnv } = useSyncedTheme();
 
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
