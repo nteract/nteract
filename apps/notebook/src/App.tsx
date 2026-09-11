@@ -381,6 +381,7 @@ function AppContent() {
     clearOutputs,
     setCellType,
     save,
+    saveError,
     openNotebook,
     cloneNotebook,
 
@@ -1963,6 +1964,31 @@ function AppContent() {
           onRetry={reconnectRuntime}
           onRepair={host.daemon.repair ? repairRuntime : undefined}
         />
+        {saveError && (
+          <div
+            role="alert"
+            className="flex items-start justify-between gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-3 text-sm"
+          >
+            <div>
+              <p className="font-medium">Save did not finish</p>
+              <p>
+                Your notebook or discussions may not be fully saved. Keep this window open and
+                retry.
+              </p>
+              <details className="mt-1 text-xs">
+                <summary className="cursor-pointer">Error details</summary>
+                <p className="mt-1 break-all">{saveError}</p>
+              </details>
+            </div>
+            <button
+              type="button"
+              className="shrink-0 font-medium underline"
+              onClick={() => void save()}
+            >
+              Retry save
+            </button>
+          </div>
+        )}
         <PoolErrorBanner
           uvError={poolUvError}
           condaError={poolCondaError}
