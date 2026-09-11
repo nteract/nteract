@@ -73,7 +73,19 @@ export class McpPeer {
   }
 
   async connectNotebook(notebookId: string): Promise<unknown> {
-    return await this.callToolJson("connect_notebook", { notebook_id: notebookId });
+    // Connecting can return a readable projection before the replica can mutate.
+    // Reconnecting to the same active target samples its readiness without
+    // replacing the session. Never use a trial mutation as a readiness probe.
+    const deadline = Date.now() + 30_000;
+    let result: { capabilities?: { mutate?: boolean } };
+    do {
+      result = (await this.callToolJson("connect_notebook", {
+        notebook_id: notebookId,
+      })) as { capabilities?: { mutate?: boolean } };
+      if (result.capabilities?.mutate) return result;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } while (Date.now() < deadline);
+    throw new Error(`Notebook did not become ready for mutations: ${JSON.stringify(result)}`);
   }
 
   async createCell(source: string, cellType = "code"): Promise<string> {
