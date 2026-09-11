@@ -354,7 +354,7 @@ describe("cloud workstations client", () => {
   it("builds the workstation pairing command from origin and code", () => {
     assert.equal(
       cloudWorkstationConnectCommand("https://preview.runt.run", "ABCD-EFGH-JKMN"),
-      "runt workstation connect https://preview.runt.run --code ABCD-EFGH-JKMN",
+      "nteract workstation connect https://preview.runt.run --code ABCD-EFGH-JKMN",
     );
   });
 
@@ -382,7 +382,7 @@ describe("cloud workstations client", () => {
         {
           id: "connect",
           label: "Pair this workstation",
-          command: "runt workstation connect https://preview.runt.run --code ABCD-EFGH-JKMN",
+          command: "nteract workstation connect https://preview.runt.run --code ABCD-EFGH-JKMN",
         },
         {
           id: "run",

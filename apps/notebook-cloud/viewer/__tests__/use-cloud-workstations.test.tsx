@@ -147,15 +147,15 @@ describe("useCloudWorkstationManager pairing", () => {
     expect(pairing?.status).toBe("pending");
     expect(pairing?.code).toBe("ABCD-EFGH-JKMN");
     expect(pairing?.connectCommand).toBe(
-      `runt workstation connect ${window.location.origin} --code ABCD-EFGH-JKMN`,
+      `nteract workstation connect ${window.location.origin} --code ABCD-EFGH-JKMN`,
     );
     expect(pairing?.commands.map((command) => command.command)).toEqual([
       "sudo apt update && sudo apt install -y curl tmux",
       "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
       'export PATH="$HOME/.local/bin:$PATH"',
-      `runt workstation connect ${window.location.origin} --code ABCD-EFGH-JKMN`,
-      "runt workstation service install --start",
-      "runt workstation run",
+      `nteract workstation connect ${window.location.origin} --code ABCD-EFGH-JKMN`,
+      "nteract workstation service install --start",
+      "nteract workstation run",
     ]);
     expect(pairing?.commands[0]?.optional).toBe(true);
     expect(pairing?.commands[2]?.optional).toBe(true);

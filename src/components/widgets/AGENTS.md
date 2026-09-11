@@ -160,5 +160,5 @@ display(slider)
 The shared frontend logger in `src/lib/logger.ts` routes through the active host log sink. For comm-level tracing:
 
 ```bash
-runt daemon logs -f | grep -i comm
+nteract daemon logs -f | grep -i comm
 ```

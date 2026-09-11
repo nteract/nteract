@@ -1,18 +1,19 @@
-//! `runt workstation` — pair this machine with a hosted nteract cloud and
+//! `nteract workstation` — pair this machine with a hosted nteract cloud and
 //! serve attach requests.
 //!
 //! The operator path (`docs/runbooks/remote-workstation.md`, ADR
 //! `docs/adr/hosted-credential-transport.md` Decision 9):
 //!
 //! 1. Mint a pairing code in the hosted workstation panel.
-//! 2. `runt workstation connect <url> --code XXXX-XXXX-XXXX` redeems it for a
+//! 2. `nteract workstation connect <url> --code XXXX-XXXX-XXXX` redeems it for a
 //!    long-lived workstation credential (`nwc_` token) and stores it at
 //!    [`runt_workspace::workstation_credentials_path`] (mode 0600).
-//! 3. `runt workstation run` launches the sibling `runtimed workstation-agent`
+//! 3. `nteract workstation run` launches the sibling `runtimed workstation-agent`
 //!    service loop with the credential in the environment (never argv).
 //!
-//! `runt workstation status` lists the workstations the credential can see.
-
+//! `nteract workstation status` lists the workstations the credential can see.
+//!
+//! `runt workstation ...` remains accepted as a compatibility alias.
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]

@@ -213,17 +213,17 @@ Install into workspace venv: `cd crates/runtimed-py && VIRTUAL_ENV=../../.venv m
 
 `Output.data` typing: binary MIME → `bytes`, JSON → `dict`, text → `str`. Binary images are raw bytes, not base64.
 
-Socket path: respects `RUNTIMED_SOCKET_PATH`. For worktree daemons, export the socket path from `runt daemon status --json`.
+Socket path: respects `RUNTIMED_SOCKET_PATH`. For worktree daemons, export the socket path from `nteract daemon status --json`.
 
 ## CLI commands
 
 ```bash
-runt daemon status          # Show service + pool statistics
-runt daemon start/stop      # Service lifecycle
-runt daemon logs -f         # Tail logs
-runt daemon ping            # Health check
-runt ps                     # List all kernels
-runt notebooks              # List open notebooks
+nteract daemon status          # Show service + pool statistics
+nteract daemon start/stop      # Service lifecycle
+nteract daemon logs -f         # Tail logs
+nteract daemon ping            # Health check
+nteract ps                     # List all kernels
+nteract notebooks              # List open notebooks
 ```
 
 ### Cloud workstation attach
@@ -245,7 +245,7 @@ The daemon installs as a system service at login:
 - **Linux**: systemd user service in `~/.config/systemd/user/`
 - **Windows**: Startup folder script
 
-Manage with `runt daemon start/stop/status/logs`. Cross-platform install/uninstall via `crates/runtimed-service/src/lib.rs`.
+Manage with `nteract daemon start/stop/status/logs`. Cross-platform install/uninstall via `crates/runtimed-service/src/lib.rs`.
 
 ## Troubleshooting
 

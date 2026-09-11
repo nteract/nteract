@@ -139,10 +139,7 @@ impl EntryPoint {
     /// observation hints preserve unscoped selection unless --channel was explicit.
     fn action_command(self) -> &'static str {
         match self {
-            Self::Nteract => match runt_workspace::build_channel() {
-                runt_workspace::BuildChannel::Stable => "nteract --channel stable",
-                runt_workspace::BuildChannel::Nightly => "nteract --channel nightly",
-            },
+            Self::Nteract => runt_workspace::public_cli_invocation(),
             Self::Runt => "runt",
         }
     }
@@ -966,11 +963,15 @@ async fn async_main(
         }
 
         Some(Commands::Pool { command }) => {
-            eprintln!("Warning: 'runt pool' is deprecated. Use 'runt daemon' instead.");
+            eprintln!(
+                "Warning: '{command_name} pool' is deprecated. Use '{command_name} daemon' instead."
+            );
             pool_command(command).await?
         }
         Some(Commands::Rooms { json }) => {
-            eprintln!("Warning: 'runt rooms' is deprecated. Use 'runt notebooks' instead.");
+            eprintln!(
+                "Warning: '{command_name} rooms' is deprecated. Use '{command_name} notebooks' instead."
+            );
             list_notebooks(json, local_runtime).await?
         }
 

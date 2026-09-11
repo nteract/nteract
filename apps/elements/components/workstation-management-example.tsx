@@ -198,7 +198,7 @@ const pairingCode = "QNTR-0385-NM";
 function fixturePairingView(status: NotebookWorkstationPairingView["status"]) {
   return {
     code: pairingCode,
-    connectCommand: `runt workstation connect https://nteract.example --code ${pairingCode}`,
+    connectCommand: `nteract workstation connect https://nteract.example --code ${pairingCode}`,
     commands: [
       {
         id: "install",
@@ -209,7 +209,7 @@ function fixturePairingView(status: NotebookWorkstationPairingView["status"]) {
       {
         id: "connect",
         label: "Pair this workstation",
-        command: `runt workstation connect https://nteract.example --code ${pairingCode}`,
+        command: `nteract workstation connect https://nteract.example --code ${pairingCode}`,
       },
     ],
     expiresAt: new Date(FIXED_NOW + 9 * MINUTE_MS).toISOString(),

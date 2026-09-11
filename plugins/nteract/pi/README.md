@@ -32,17 +32,17 @@ See [`packages/runtimed-node/README.md`](../../packages/runtimed-node/README.md)
 
 ### Inspecting and managing sessions
 
-The daemon is controlled by the `runt` CLI (installed with nteract). Use it to inspect active sessions, open notebooks in the desktop app, or troubleshoot:
+The daemon is controlled by the `nteract` CLI (installed with nteract). Use it to inspect active sessions, open notebooks in the desktop app, or troubleshoot:
 
 ```bash
 # List active Python sessions
-runt list
+nteract notebooks
 
-# Open a session in nteract Desktop
-runt show <notebook-id>
+# Open a notebook in nteract Desktop
+nteract open <path>
 
 # Check daemon status
-runt daemon status
+nteract daemon status
 ```
 
 ## Local development

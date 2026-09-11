@@ -116,12 +116,14 @@ impl PongInfo {
             )),
             Some(remote) => Err(format!(
                 "Daemon is running protocol version {remote}, but this CLI expects version {expected}. \
-                 Please update the daemon: runt daemon doctor --fix"
+                 Please update the daemon: {} doctor --fix",
+                runt_workspace::public_cli_invocation()
             )),
             None => {
                 log::warn!(
                     "[pool-client] Daemon did not report a protocol version — \
-                     it may be outdated. Consider updating: runt daemon doctor --fix"
+                     it may be outdated. Consider updating: {} doctor --fix",
+                    runt_workspace::public_cli_invocation()
                 );
                 Ok(())
             }

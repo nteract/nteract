@@ -2142,7 +2142,7 @@ where
         error: error.clone(),
         guidance: format!(
             "Check daemon logs: {} daemon logs",
-            runt_workspace::cli_command_name()
+            runt_workspace::public_cli_invocation()
         ),
     });
     Err(error)
@@ -2649,7 +2649,7 @@ where
         error: error.clone(),
         guidance: format!(
             "Check daemon logs: {} daemon logs",
-            runt_workspace::cli_command_name()
+            runt_workspace::public_cli_invocation()
         ),
     });
     Err(error)

@@ -60,20 +60,20 @@ When falling back to manual commands, `cargo xtask dev-daemon`, `cargo xtask
 notebook`, and `cargo xtask run-mcp` derive the current git worktree and pass
 the dev env to subprocesses; direnv is not required for those xtask paths.
 
-## System daemon CLI (`runt` / `runt-nightly`)
+## System daemon CLI (`nteract --channel stable|nightly`)
 
 When running CLI commands against system-installed daemons from a dev environment, **always use `env -i`** to strip dev env vars (`RUNTIMED_DEV`, `RUNTIMED_WORKSPACE_PATH`) that would otherwise redirect commands to the per-worktree dev daemon:
 
-**Important:** The repo's `bin/runt` (added to PATH by direnv) shadows `/usr/local/bin/runt` and always resolves to the dev build (nightly channel). When targeting system-installed daemons, use absolute paths:
+**Important:** `env -i` clears `PATH`, and the repo's `bin/runt` (added to PATH by direnv) shadows any installed legacy `runt` with the dev build. Invoke the installed `nteract` link by absolute path (`~/.local/bin` by default) and select the installation with `--channel`:
 
 ```bash
 # Nightly system daemon
-env -i HOME=$HOME /usr/local/bin/runt-nightly diagnostics
-env -i HOME=$HOME /usr/local/bin/runt-nightly daemon status
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel nightly diagnostics
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel nightly daemon status
 
 # Stable system daemon
-env -i HOME=$HOME /usr/local/bin/runt diagnostics
-env -i HOME=$HOME /usr/local/bin/runt daemon status
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel stable diagnostics
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel stable daemon status
 ```
 
 For the dev daemon, prefer `nteract-dev` tools or `cargo xtask` commands. If you
@@ -107,7 +107,7 @@ cat /proc/{PID}/environ | tr '\0' '\n' | grep RUNTIMED
 # Should return nothing: no RUNTIMED_DEV or RUNTIMED_WORKSPACE_PATH
 
 # 5. Verify nteract-nightly daemon socket (should be system socket)
-env -i HOME=$HOME /usr/local/bin/runt-nightly daemon status --json | jq -r '.socket_path'
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel nightly daemon status --json | jq -r '.socket_path'
 # Expected: ~/.cache/runt-nightly/runtimed.sock (NOT worktrees/)
 ```
 
