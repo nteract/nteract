@@ -4,6 +4,7 @@ import {
   executeCell,
   waitForKernelStatus,
   waitForOutputContaining,
+  waitForNotebookSessionReady,
 } from "./helpers";
 import { McpPeer } from "./mcp-peer";
 
@@ -33,6 +34,9 @@ test("comments are always available and synchronize human and MCP replies across
     await reply.fill("Human reply first");
     await reply.press("ControlOrMeta+Enter");
     await expect(thread.getByText("Human reply first", { exact: true })).toBeVisible();
+    // Local rendering is optimistic. Establish that the MCP replica has seen
+    // the human reply before testing a causally ordered follow-up from that peer.
+    await expect.poll(() => peer.readCommentBodies(threadId)).toContain("Human reply first");
     await peer.replyComment(threadId, "MCP reply second");
     await expect(thread.getByText("MCP reply second", { exact: true })).toBeVisible();
     await expect(thread.locator("[data-comment-reply]")).toContainText([
@@ -52,6 +56,7 @@ test("comments are always available and synchronize human and MCP replies across
 
     await second.close();
     await page.reload();
+    await waitForNotebookSessionReady(page);
     await page.getByRole("button", { name: "Discussions", exact: true }).click();
     await expect(panel.getByText("MCP reply second", { exact: true })).toBeVisible();
     await expect(panel.getByText("Human document discussion", { exact: true })).toHaveCount(1);
@@ -90,6 +95,7 @@ test("source comments remain available after edits, moves, and cell deletion", a
     await peer.deleteCell(cellId);
     await expect(panel.getByText("Review selected value", { exact: true })).toBeVisible();
     await page.reload();
+    await waitForNotebookSessionReady(page);
     await page.getByRole("button", { name: "Discussions", exact: true }).click();
     await expect(panel.getByText("Review selected value", { exact: true })).toHaveCount(1);
   } finally {

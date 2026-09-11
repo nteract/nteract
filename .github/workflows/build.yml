@@ -568,12 +568,14 @@ jobs:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
 
       - name: Run browser E2E
+        id: browser_e2e
         run: pnpm --filter notebook-ui test:e2e:browser -- --project=chromium --workers=1
         env:
           NTERACT_BROWSER_E2E_READY_TIMEOUT_MS: 900000
 
       - name: Upload Playwright report
-        if: failure()
+        # A successful retry must not discard the first attempt's failure trace.
+        if: ${{ !cancelled() && (steps.browser_e2e.outcome == 'success' || steps.browser_e2e.outcome == 'failure') }}
         uses: actions/upload-artifact@v7
         with:
           name: browser-e2e-playwright-report

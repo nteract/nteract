@@ -28,6 +28,7 @@ export class McpPeer {
   private nextId = 1;
   private stdout = "";
   private stderr = "";
+  private notebookHandle: string | undefined;
 
   private constructor(child: ChildProcessWithoutNullStreams) {
     this.child = child;
@@ -77,12 +78,15 @@ export class McpPeer {
     // Reconnecting to the same active target samples its readiness without
     // replacing the session. Never use a trial mutation as a readiness probe.
     const deadline = Date.now() + 30_000;
-    let result: { capabilities?: { mutate?: boolean } };
+    let result: { notebook_handle?: string; capabilities?: { mutate?: boolean } };
     do {
       result = (await this.callToolJson("connect_notebook", {
         notebook_id: notebookId,
-      })) as { capabilities?: { mutate?: boolean } };
-      if (result.capabilities?.mutate) return result;
+      })) as { notebook_handle?: string; capabilities?: { mutate?: boolean } };
+      if (result.capabilities?.mutate) {
+        this.notebookHandle = result.notebook_handle;
+        return result;
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (Date.now() < deadline);
     throw new Error(`Notebook did not become ready for mutations: ${JSON.stringify(result)}`);
@@ -124,6 +128,21 @@ export class McpPeer {
 
   async replyComment(threadId: string, body: string): Promise<unknown> {
     return await this.callToolText("reply_comment", { thread_id: threadId, body });
+  }
+
+  async readCommentBodies(threadId: string): Promise<string[]> {
+    if (!this.notebookHandle) throw new Error("Connect a notebook before reading comments");
+    const result = (await this.request("resources/read", {
+      uri: `nteract://sessions/${this.notebookHandle}/comments`,
+    })) as { contents: Array<{ text: string }> };
+    const projection = JSON.parse(result.contents[0].text) as {
+      threads: Array<{ id: string; messages: Array<{ body: string }> }>;
+    };
+    return (
+      projection.threads
+        .find((thread) => thread.id === threadId)
+        ?.messages.map((message) => message.body) ?? []
+    );
   }
 
   async manageDependencies(dependencies: string[]): Promise<unknown> {
