@@ -329,8 +329,7 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub disable_nteract_launcher: bool,
 
-    /// Show the comments UI (panels and creation affordances). Comments sync stays
-    /// active regardless of this flag. Default off.
+    /// Legacy compatibility only. Commenting is always available; clients ignore this value.
     #[serde(default)]
     pub enable_comments: bool,
 

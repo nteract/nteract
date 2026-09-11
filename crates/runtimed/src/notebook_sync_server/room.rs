@@ -158,6 +158,27 @@ impl NotebookFileBinding {
             .await;
     }
 
+    /// Keep the local discussion identity reachable through the saved path.
+    /// Called before acknowledging a file save, including retries after index IO errors.
+    pub(crate) fn persist_comments_binding(
+        room: &NotebookRoom,
+        canonical: &Path,
+    ) -> Result<(), String> {
+        let doc_id = room
+            .comments
+            .read(|doc| doc.comments_doc_id())
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "missing comments document identity".to_string())?;
+        room.comments_store
+            .bind_doc_id_to_locator(
+                &comments_locator_for_room(room.id, Some(canonical)),
+                &doc_id,
+            )
+            .map_err(|error| {
+                format!("could not persist saved notebook discussion binding: {error:#}")
+            })
+    }
+
     pub async fn promote_after_save(room: &Arc<NotebookRoom>, canonical: PathBuf) {
         room.file_binding.set_bound_path(canonical.clone()).await;
         room.file_binding.mark_file_backed();

@@ -127,9 +127,35 @@ describe("saveNotebook", () => {
       reason: { type: "io", message: "disk full" },
     });
 
-    const result = await saveNotebook(stubHost, flushSync, true);
+    const onError = vi.fn();
+    const result = await saveNotebook(stubHost, flushSync, true, { onError });
 
     expect(result).toBe(false);
+    expect(onError).toHaveBeenCalledWith("disk full");
+  });
+
+  it("reports initial save binding failure and allows an already-current retry", async () => {
+    const onError = vi.fn();
+    mockSaveDialog.mockResolvedValueOnce("/tmp/saved.ipynb");
+    mockSaveAs.mockRejectedValueOnce(new Error("could not persist saved notebook discussion binding"));
+    await expect(saveNotebook(stubHost, flushSync, false, { onError })).resolves.toBe(false);
+    expect(onError).toHaveBeenCalledWith("could not persist saved notebook discussion binding");
+    mockSendRequest.mockResolvedValueOnce({
+      result: "notebook_already_current", path: "/tmp/saved.ipynb",
+      exported_heads: ["abc123"], save_sequence: 2,
+    });
+    await expect(saveNotebook(stubHost, flushSync, true, { onError })).resolves.toBe(true);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a failed sync flush but stays quiet on dialog cancellation", async () => {
+    const onError = vi.fn();
+    await expect(saveNotebook(stubHost, async () => false, false, { onError })).resolves.toBe(false);
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining("synchronized"));
+    onError.mockClear();
+    mockSaveDialog.mockResolvedValueOnce(null);
+    await expect(saveNotebook(stubHost, flushSync, false, { onError })).resolves.toBe(false);
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("treats an already-current causal checkpoint as a successful save", async () => {
@@ -150,7 +176,9 @@ describe("saveNotebook", () => {
       reason: { type: "superseded", latest_sequence: 4 },
     });
 
-    await expect(saveNotebook(stubHost, flushSync, true)).resolves.toBe(false);
+    const onError = vi.fn();
+    await expect(saveNotebook(stubHost, flushSync, true, { onError })).resolves.toBe(false);
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("returns false on transport failure", async () => {

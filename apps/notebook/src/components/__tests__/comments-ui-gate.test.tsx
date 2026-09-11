@@ -4,12 +4,11 @@ import { resolveCommentsUiSurface } from "@/components/notebook/comments-ui-gate
 import { NotebookPackagesPanel, NotebookRail } from "@/components/notebook-rail";
 
 describe("resolveCommentsUiSurface", () => {
-  it("passes the comments panel and callbacks when comments UI is enabled", () => {
+  it("passes the comments panel and callbacks for writers", () => {
     const onCreateSourceComment = vi.fn();
     const onCreateOutputComment = vi.fn();
     const onActivateCommentThread = vi.fn();
     const surface = resolveCommentsUiSurface({
-      commentsUiEnabled: true,
       canCreateComments: true,
       commentsPanel: "comments panel",
       onCreateSourceComment,
@@ -23,24 +22,17 @@ describe("resolveCommentsUiSurface", () => {
     expect(surface.onActivateCommentThread).toBe(onActivateCommentThread);
   });
 
-  it("suppresses the comments panel and every NotebookView callback when comments UI is disabled", () => {
+  it("always exposes Discussions in the rail", () => {
     const surface = resolveCommentsUiSurface({
-      commentsUiEnabled: false,
-      canCreateComments: true,
+      canCreateComments: false,
       commentsPanel: "comments panel",
       onCreateSourceComment: vi.fn(),
       onCreateOutputComment: vi.fn(),
       onActivateCommentThread: vi.fn(),
     });
-
-    expect(surface.commentsPanel).toBeUndefined();
-    expect(surface.onCreateSourceComment).toBeUndefined();
-    expect(surface.onCreateOutputComment).toBeUndefined();
-    expect(surface.onActivateCommentThread).toBeUndefined();
-
     render(
       <NotebookRail
-        activePanelId="outline"
+        activePanelId="comments"
         collapsed={false}
         outlineItems={[]}
         packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
@@ -49,14 +41,13 @@ describe("resolveCommentsUiSurface", () => {
         onCollapsedChange={vi.fn()}
       />,
     );
-    expect(screen.queryByRole("button", { name: "Discussions" })).not.toBeInTheDocument();
-    expect(screen.queryByText("comments panel")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discussions" })).toBeInTheDocument();
+    expect(screen.getByText("comments panel")).toBeInTheDocument();
   });
 
   it("keeps the panel and activation callback for read-only comments without create affordances", () => {
     const onActivateCommentThread = vi.fn();
     const surface = resolveCommentsUiSurface({
-      commentsUiEnabled: true,
       canCreateComments: false,
       commentsPanel: "comments panel",
       onCreateSourceComment: vi.fn(),

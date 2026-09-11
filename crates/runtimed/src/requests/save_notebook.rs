@@ -296,6 +296,18 @@ async fn handle_with_intent(
         // If path didn't change, this is save-in-place: nothing else.
     }
 
+    // Comments remain the same room-owned document through promotion and Save As.
+    // Bind only after file checkpoint and promotion succeed, before acknowledging
+    // the save. On index IO failure the file remains bound, and saving again
+    // retries this step even when the notebook bytes are already current.
+    if let Err(message) = NotebookFileBinding::persist_comments_binding(room, &canonical) {
+        return NotebookResponse::NotebookSaveBlocked {
+            path: Some(written),
+            save_sequence: Some(checkpoint_sequence),
+            reason: notebook_protocol::protocol::SaveBlockedReason::Io { message },
+        };
+    }
+
     match save_outcome {
         FileSaveOutcome::Saved {
             exported_heads,

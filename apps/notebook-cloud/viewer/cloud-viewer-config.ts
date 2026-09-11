@@ -63,7 +63,6 @@ function loadConfig(): CloudViewerConfig {
       canSubmitExecutionRequests: Boolean(parsed.hostCapabilities?.canSubmitExecutionRequests),
     },
     featureFlags: {
-      enable_comments: parsed.featureFlags?.enable_comments === true,
       disable_auto_format: parsed.featureFlags?.disable_auto_format === true,
     },
     initialCatalogAccess: normalizeInitialCatalogAccess(parsed.initialCatalogAccess),

@@ -25,6 +25,11 @@ export interface ExecutionPerformanceSnapshot {
 
 export async function waitForNotebookReady(page: Page, path = "/") {
   await page.goto(path);
+  await waitForNotebookSessionReady(page);
+}
+
+/** Also used after reload, when the shell can render before its replica is ready. */
+export async function waitForNotebookSessionReady(page: Page) {
   await expect(page.getByTestId("notebook-toolbar")).toBeVisible({ timeout: 30_000 });
   // NotebookView marks sync complete once loading has finished without a load
   // error. Zero-cell notebooks are valid once the host has initialized them.

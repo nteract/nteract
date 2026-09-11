@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 
 export interface CommentsUiSurfaceOptions<SourceHandler, OutputHandler, ActivateHandler> {
-  commentsUiEnabled: boolean;
   canCreateComments: boolean;
   commentsPanel: ReactNode;
   onCreateSourceComment: SourceHandler;
@@ -17,7 +16,6 @@ export interface CommentsUiSurface<SourceHandler, OutputHandler, ActivateHandler
 }
 
 export function resolveCommentsUiSurface<SourceHandler, OutputHandler, ActivateHandler>({
-  commentsUiEnabled,
   canCreateComments,
   commentsPanel,
   onCreateSourceComment,
@@ -28,11 +26,10 @@ export function resolveCommentsUiSurface<SourceHandler, OutputHandler, ActivateH
   OutputHandler,
   ActivateHandler
 > {
-  const canShowCreateAffordances = commentsUiEnabled && canCreateComments;
   return {
-    commentsPanel: commentsUiEnabled ? commentsPanel : undefined,
-    onCreateSourceComment: canShowCreateAffordances ? onCreateSourceComment : undefined,
-    onCreateOutputComment: canShowCreateAffordances ? onCreateOutputComment : undefined,
-    onActivateCommentThread: commentsUiEnabled ? onActivateCommentThread : undefined,
+    commentsPanel,
+    onCreateSourceComment: canCreateComments ? onCreateSourceComment : undefined,
+    onCreateOutputComment: canCreateComments ? onCreateOutputComment : undefined,
+    onActivateCommentThread: onActivateCommentThread,
   };
 }

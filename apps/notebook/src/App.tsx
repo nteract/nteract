@@ -345,8 +345,7 @@ function AppContent() {
   const daemonInfo = useDaemonInfo();
 
   // Apply theme to this window
-  const { defaultPythonEnv, featureFlags } = useSyncedTheme();
-  const commentsUiEnabled = featureFlags.enable_comments;
+  const { defaultPythonEnv } = useSyncedTheme();
 
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
@@ -382,6 +381,7 @@ function AppContent() {
     clearOutputs,
     setCellType,
     save,
+    saveError,
     openNotebook,
     cloneNotebook,
 
@@ -1055,9 +1055,7 @@ function AppContent() {
   );
 
   const pendingSourceCommentAnchor =
-    commentsUiEnabled && commentDraftTarget?.anchor.kind === "source_range"
-      ? commentDraftTarget.anchor
-      : null;
+    commentDraftTarget?.anchor.kind === "source_range" ? commentDraftTarget.anchor : null;
   const commentsPanel = (
     <NotebookCommentsPanel
       projection={commentsProjection}
@@ -1081,7 +1079,6 @@ function AppContent() {
     />
   );
   const commentsUiSurface = resolveCommentsUiSurface({
-    commentsUiEnabled,
     canCreateComments: canMutateComments,
     commentsPanel,
     onCreateSourceComment: handleRequestSourceComment,
@@ -1384,17 +1381,12 @@ function AppContent() {
     return null;
   }, [envSource, envSyncState]);
 
-  const renderedActiveRailPanel =
-    !commentsUiEnabled && activeRailPanel === "comments" ? "outline" : activeRailPanel;
+  const renderedActiveRailPanel = activeRailPanel;
   const packagesRailOpen = !railCollapsed && renderedActiveRailPanel === "packages";
 
-  const handleRailPanelChange = useCallback(
-    (panelId: NotebookRailPanelId) => {
-      if (!commentsUiEnabled && panelId === "comments") return;
-      openNotebookRailPanel(panelId);
-    },
-    [commentsUiEnabled],
-  );
+  const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
+    openNotebookRailPanel(panelId);
+  }, []);
 
   const handleTogglePackagesRail = useCallback(() => {
     if (!shellCapabilities.canViewPackages) {
@@ -1972,6 +1964,31 @@ function AppContent() {
           onRetry={reconnectRuntime}
           onRepair={host.daemon.repair ? repairRuntime : undefined}
         />
+        {saveError && (
+          <div
+            role="alert"
+            className="flex items-start justify-between gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-3 text-sm"
+          >
+            <div>
+              <p className="font-medium">Save did not finish</p>
+              <p>
+                Your notebook or discussions may not be fully saved. Keep this window open and
+                retry.
+              </p>
+              <details className="mt-1 text-xs">
+                <summary className="cursor-pointer">Error details</summary>
+                <p className="mt-1 break-all">{saveError}</p>
+              </details>
+            </div>
+            <button
+              type="button"
+              className="shrink-0 font-medium underline"
+              onClick={() => void save()}
+            >
+              Retry save
+            </button>
+          </div>
+        )}
         <PoolErrorBanner
           uvError={poolUvError}
           condaError={poolCondaError}
@@ -2297,7 +2314,7 @@ function AppContent() {
                   onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
                   onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
                   onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
-                  commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
+                  commentThreadsByCell={sourceCommentThreadsByCell}
                   pendingCommentAnchor={pendingSourceCommentAnchor}
                   markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
                 />

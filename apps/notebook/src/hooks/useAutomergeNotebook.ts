@@ -146,6 +146,9 @@ export function useNotebook() {
   const cellIds = useCellIds();
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saveFeedbackGeneration = useRef(0);
+  const completedSaveFeedbackGeneration = useRef(0);
   const [canAcceptCellMutations, setCanAcceptCellMutations] = useState(false);
 
   const handleRef = useRef<NotebookHandle | null>(null);
@@ -624,9 +627,20 @@ export function useNotebook() {
     // it on save / save-as / untitled promotion. Reading it here avoids
     // a Tauri round-trip to the WindowNotebookRegistry.
     const hasPath = runtimePath != null;
-    await saveNotebook(host, flushSync, hasPath, {
+    const generation = ++saveFeedbackGeneration.current;
+    const saved = await saveNotebook(host, flushSync, hasPath, {
       hosted: hostedNotebookUrl !== null,
+      onError: (message) => {
+        if (generation >= completedSaveFeedbackGeneration.current) {
+          completedSaveFeedbackGeneration.current = generation;
+          setSaveError(message);
+        }
+      },
     });
+    if (saved && generation >= completedSaveFeedbackGeneration.current) {
+      completedSaveFeedbackGeneration.current = generation;
+      setSaveError(null);
+    }
   }, [host, flushSync, hostedNotebookUrl, runtimePath]);
 
   const openNotebook = useCallback(() => openNotebookFile(host), [host]);
@@ -697,6 +711,7 @@ export function useNotebook() {
     clearOutputs,
     setCellType,
     save,
+    saveError,
     openNotebook,
     cloneNotebook,
     loadError,

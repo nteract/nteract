@@ -28,6 +28,7 @@ export class McpPeer {
   private nextId = 1;
   private stdout = "";
   private stderr = "";
+  private notebookHandle: string | undefined;
 
   private constructor(child: ChildProcessWithoutNullStreams) {
     this.child = child;
@@ -73,7 +74,22 @@ export class McpPeer {
   }
 
   async connectNotebook(notebookId: string): Promise<unknown> {
-    return await this.callToolJson("connect_notebook", { notebook_id: notebookId });
+    // Connecting can return a readable projection before the replica can mutate.
+    // Reconnecting to the same active target samples its readiness without
+    // replacing the session. Never use a trial mutation as a readiness probe.
+    const deadline = Date.now() + 30_000;
+    let result: { notebook_handle?: string; capabilities?: { mutate?: boolean } };
+    do {
+      result = (await this.callToolJson("connect_notebook", {
+        notebook_id: notebookId,
+      })) as { notebook_handle?: string; capabilities?: { mutate?: boolean } };
+      if (result.capabilities?.mutate) {
+        this.notebookHandle = result.notebook_handle;
+        return result;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } while (Date.now() < deadline);
+    throw new Error(`Notebook did not become ready for mutations: ${JSON.stringify(result)}`);
   }
 
   async createCell(source: string, cellType = "code"): Promise<string> {
@@ -90,6 +106,43 @@ export class McpPeer {
       and_run: andRun,
       timeout_secs: 120,
     });
+  }
+
+  async moveCell(cellId: string, afterCellId: string | null): Promise<unknown> {
+    return this.callToolText("move_cell", { cell_id: cellId, after_cell_id: afterCellId });
+  }
+
+  async deleteCell(cellId: string): Promise<unknown> {
+    return this.callToolText("delete_cell", { cell_id: cellId });
+  }
+
+  async createComment(body: string, cellId?: string): Promise<string> {
+    const text = await this.callToolText("create_comment", {
+      anchor: cellId ? { cell_id: cellId } : { notebook: true },
+      body,
+    });
+    const match = text.match(/Created comment thread:\s*([^\s]+)/);
+    if (!match) throw new Error(`create_comment did not return a thread id: ${text}`);
+    return match[1];
+  }
+
+  async replyComment(threadId: string, body: string): Promise<unknown> {
+    return await this.callToolText("reply_comment", { thread_id: threadId, body });
+  }
+
+  async readCommentBodies(threadId: string): Promise<string[]> {
+    if (!this.notebookHandle) throw new Error("Connect a notebook before reading comments");
+    const result = (await this.request("resources/read", {
+      uri: `nteract://sessions/${this.notebookHandle}/comments`,
+    })) as { contents: Array<{ text: string }> };
+    const projection = JSON.parse(result.contents[0].text) as {
+      threads: Array<{ id: string; messages: Array<{ body: string }> }>;
+    };
+    return (
+      projection.threads
+        .find((thread) => thread.id === threadId)
+        ?.messages.map((message) => message.body) ?? []
+    );
   }
 
   async manageDependencies(dependencies: string[]): Promise<unknown> {

@@ -32,11 +32,14 @@ export async function saveNotebook(
   host: NotebookHost,
   flushSync: () => Promise<boolean | void>,
   hasPath: boolean,
-  options: { hosted?: boolean } = {},
+  options: { hosted?: boolean; onError?: (message: string) => void } = {},
 ): Promise<boolean> {
   try {
     const flushed = await flushSync();
-    if (flushed === false) return false;
+    if (flushed === false) {
+      options.onError?.("Notebook changes could not be synchronized. Check the connection and retry.");
+      return false;
+    }
 
     // A daemon-mediated hosted room is already persisted by its cloud host.
     // Its daemon-local room is intentionally ephemeral, so `path == null`
@@ -48,6 +51,16 @@ export async function saveNotebook(
       const outcome = await client.saveNotebook({ formatCells: true });
       if (outcome.outcome === "blocked") {
         logger.error("[notebook-file-ops] Save blocked:", outcome.reason);
+        // A newer checkpoint superseding this request is not a save failure.
+        if (outcome.reason.type !== "superseded") {
+          options.onError?.(
+            "message" in outcome.reason
+              ? outcome.reason.message
+              : outcome.reason.type === "path_already_open"
+                ? "This file is already open in another notebook. Choose a different path."
+                : "The notebook could not be saved. Restart the application and retry.",
+          );
+        }
         return false;
       }
     } else {
@@ -63,6 +76,7 @@ export async function saveNotebook(
     return true;
   } catch (e) {
     logger.error("[notebook-file-ops] Save failed:", e);
+    options.onError?.(e instanceof Error ? e.message : String(e));
     return false;
   }
 }

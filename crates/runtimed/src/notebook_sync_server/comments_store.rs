@@ -96,7 +96,6 @@ impl CommentsSidecarStore {
         })
     }
 
-    #[allow(dead_code)]
     pub(crate) fn bind_doc_id_to_locator(
         &self,
         locator: &CommentsLocator,

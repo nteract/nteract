@@ -6,6 +6,126 @@ use uuid::Uuid;
 
 const SCHEMA_SEED_ACTOR_LABEL: &str = "nteract:notebook-schema:v5";
 
+#[tokio::test]
+async fn comments_survive_initial_save_and_save_as_reopening() {
+    let tmp = tempfile::tempdir().unwrap();
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let blobs = test_blob_store(&tmp);
+    let id = Uuid::new_v4();
+    let room = Arc::new(NotebookRoom::new_fresh(
+        id,
+        None,
+        &docs_dir,
+        blobs.clone(),
+        false,
+    ));
+    room.comments
+        .with_doc(|doc| {
+            doc.create_thread(
+                "thread",
+                "first",
+                &comments_doc::CommentAnchor::Notebook,
+                "Before initial save",
+                None,
+                "2026-09-11T00:00:00Z",
+            )?;
+            doc.reply(
+                "thread",
+                "reply",
+                "Reply in order",
+                Some("first"),
+                "2026-09-11T00:00:01Z",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    room.comments_store.save_handle(&room.comments).unwrap();
+    let expected = room
+        .comments
+        .read(|doc| doc.read_projection(None).unwrap())
+        .unwrap();
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+
+    for name in ["initial.ipynb", "renamed.ipynb"] {
+        let path = tmp.path().join(name);
+        // A file checkpoint alone must not acknowledge success when its
+        // discussion locator cannot be persisted. A subsequent save can retry.
+        let index = room.comments_store.root().join("index.json");
+        let backup = index.with_extension("backup");
+        std::fs::rename(&index, &backup).unwrap();
+        std::fs::create_dir(&index).unwrap();
+        let blocked = crate::requests::save_notebook::handle(
+            &room,
+            &daemon,
+            false,
+            Some(path.to_string_lossy().into_owned()),
+        )
+        .await;
+        assert!(
+            matches!(
+                blocked,
+                crate::protocol::NotebookResponse::NotebookSaveBlocked {
+                    reason: notebook_protocol::protocol::SaveBlockedReason::Io { .. },
+                    ..
+                }
+            ),
+            "{blocked:?}"
+        );
+        std::fs::remove_dir(&index).unwrap();
+        std::fs::rename(&backup, &index).unwrap();
+        let response = crate::requests::save_notebook::handle(
+            &room,
+            &daemon,
+            false,
+            Some(path.to_string_lossy().into_owned()),
+        )
+        .await;
+        assert!(
+            matches!(
+                response,
+                crate::protocol::NotebookResponse::NotebookSaved { .. }
+                    | crate::protocol::NotebookResponse::NotebookAlreadyCurrent { .. }
+            ),
+            "{response:?}"
+        );
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        // A new room loads only durable sidecar state, as after daemon restart.
+        let reopened =
+            NotebookRoom::new_fresh(id, Some(canonical), &docs_dir, blobs.clone(), false);
+        let actual = reopened
+            .comments
+            .read(|doc| doc.read_projection(None).unwrap())
+            .unwrap();
+        assert_eq!(
+            actual, expected,
+            "discussion identity and ordered content after {name}"
+        );
+    }
+    // A failed file write must leave every previous discussion association intact.
+    let index = room.comments_store.root().join("index.json");
+    let previous_index = std::fs::read(&index).unwrap();
+    let invalid_target = tmp.path().join("directory.ipynb");
+    std::fs::create_dir(&invalid_target).unwrap();
+    let blocked = crate::requests::save_notebook::handle(
+        &room,
+        &daemon,
+        false,
+        Some(invalid_target.to_string_lossy().into_owned()),
+    )
+    .await;
+    assert!(
+        matches!(
+            blocked,
+            crate::protocol::NotebookResponse::NotebookSaveBlocked { .. }
+        ),
+        "{blocked:?}"
+    );
+    assert_eq!(std::fs::read(index).unwrap(), previous_index);
+    room.file_binding.shutdown_notebook_watcher().await;
+    shutdown_autosave_debouncer(&room, "comments-test", std::time::Duration::from_secs(5)).await;
+}
+
 #[test]
 fn fallback_output_stamps_id_when_missing() {
     let raw = serde_json::json!({

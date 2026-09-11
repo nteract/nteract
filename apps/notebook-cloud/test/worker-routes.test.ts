@@ -1080,7 +1080,7 @@ describe("Worker artifact routes", () => {
     assert.equal(response.status, 200);
     const html = await response.text();
     const config = notebookViewerConfig(html);
-    assert.equal(config.featureFlags?.enable_comments, true);
+    assert.equal(config.featureFlags?.enable_comments, undefined);
     assert.equal(config.session?.provider, "oidc");
     assert.equal(typeof config.session?.expires_at, "number");
     assert.equal(typeof config.session?.cache_key, "string");

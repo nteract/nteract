@@ -299,7 +299,6 @@ export function NotebookViewer({
     CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const commentsUiEnabled = config.featureFlags?.enable_comments === true;
   const { store: widgetStore } = useWidgetStoreRequired();
   // Selected interaction mode and the user's edit-access request are owned by the
   // access-request store; this component reads them through its domain hooks and
@@ -693,13 +692,9 @@ export function NotebookViewer({
     }
     openNotebookRailPanel("packages");
   }, [activeRailPanel, railCollapsed]);
-  const handleRailPanelChange = useCallback(
-    (panelId: NotebookRailPanelId) => {
-      if (!commentsUiEnabled && panelId === "comments") return;
-      setActiveNotebookRailPanel(panelId);
-    },
-    [commentsUiEnabled],
-  );
+  const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
+    setActiveNotebookRailPanel(panelId);
+  }, []);
   const handleOpenMobileRail = useCallback(() => {
     setNotebookRailCollapsed(false);
   }, []);
@@ -1574,11 +1569,9 @@ export function NotebookViewer({
     [],
   );
   const renderedActiveRailPanel =
-    !commentsUiEnabled && activeRailPanel === "comments"
+    !shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"
       ? "outline"
-      : !shouldShowCloudWorkstationsPanel && activeRailPanel === "workstations"
-        ? "outline"
-        : activeRailPanel;
+      : activeRailPanel;
   const commentsPanelStatus = commentsProjection ? null : "Syncing comments...";
   const resolveSourceQuote = useCallback((anchor: SourceRangeCommentAnchor): string | null => {
     const cell = getCellById(anchor.cell_id);
@@ -1598,9 +1591,7 @@ export function NotebookViewer({
     return range ? sourcePointFromStringOffset(cell.source, range.from) : null;
   }, []);
   const pendingSourceCommentAnchor =
-    commentsUiEnabled && commentDraftTarget?.anchor.kind === "source_range"
-      ? commentDraftTarget.anchor
-      : null;
+    commentDraftTarget?.anchor.kind === "source_range" ? commentDraftTarget.anchor : null;
   const commentsPanel = (
     <NotebookCommentsPanel
       projection={commentsProjection}
@@ -1624,7 +1615,6 @@ export function NotebookViewer({
     />
   );
   const commentsUiSurface = resolveCommentsUiSurface({
-    commentsUiEnabled,
     canCreateComments: canWriteComments,
     commentsPanel,
     onCreateSourceComment: handleRequestSourceComment,
@@ -2019,7 +2009,7 @@ export function NotebookViewer({
                 onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
                 onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
                 onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
-                commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
+                commentThreadsByCell={sourceCommentThreadsByCell}
                 pendingCommentAnchor={pendingSourceCommentAnchor}
                 markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
                 outputHostContext={outputHostContext}

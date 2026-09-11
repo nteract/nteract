@@ -139,7 +139,6 @@ export interface CloudViewerConfig {
     canSubmitExecutionRequests?: boolean;
   };
   featureFlags?: {
-    enable_comments?: boolean;
     disable_auto_format?: boolean;
   };
   initialCatalogAccess?: {
