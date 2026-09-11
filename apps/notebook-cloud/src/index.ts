@@ -6022,9 +6022,6 @@ async function viewer(
     hostCapabilities: {
       canManageSharing: true,
     },
-    featureFlags: {
-      enable_comments: true,
-    },
     initialCatalogAccess,
     session: session ? appSessionResponse(session) : null,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,

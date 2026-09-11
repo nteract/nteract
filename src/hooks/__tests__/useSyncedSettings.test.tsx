@@ -5,7 +5,7 @@ import {
   getNotebookEditorSettingsSnapshot,
   setNotebookEditorSettings,
 } from "@/components/editor/editor-settings-store";
-import { useSyncedSettings, useSyncedTheme } from "../useSyncedSettings";
+import { FEATURE_FLAGS, useSyncedSettings, useSyncedTheme } from "../useSyncedSettings";
 
 const mocks = vi.hoisted(() => {
   const getSynced = vi.fn();
@@ -75,6 +75,18 @@ describe("useSyncedSettings", () => {
   afterEach(() => {
     localStorage.clear();
   });
+
+  it.each([false, true, undefined])(
+    "ignores legacy enable_comments=%s without rewriting old settings",
+    async (enable_comments) => {
+      mocks.getSynced.mockResolvedValue({ enable_comments, disable_auto_format: true });
+      const { result } = renderHook(() => useSyncedSettings());
+      await waitFor(() => expect(result.current.featureFlags.disable_auto_format).toBe(true));
+      expect(result.current.featureFlags).not.toHaveProperty("enable_comments");
+      expect(FEATURE_FLAGS.map((flag) => flag.id)).not.toContain("enable_comments");
+      expect(mocks.setSynced).not.toHaveBeenCalled();
+    },
+  );
 
   it("ignores initial host settings that resolve after unmount", async () => {
     const load = deferred<unknown>();

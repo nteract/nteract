@@ -770,6 +770,55 @@ describe("RoomMaterializer", () => {
     assert.deepEqual(await materializer.getCommentAuthorActorLabels(), [editorIdentity.actorLabel]);
   });
 
+  it("recovers comments after checkpoint and rejects viewer writes", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const editorIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=editor"),
+    );
+    const editorPeer = { id: "comments-editor", identity: editorIdentity };
+    const editor = NotebookHandle.create_bootstrap(editorIdentity.actorLabel);
+    editor.init_comments_sync_target("comments:demo");
+    await syncCommentsMaterializerWithClient(materializer, editorPeer, editor);
+    editor.create_comment_thread(
+      "thread-recovery",
+      "message-recovery",
+      { kind: "notebook" },
+      "Keep this discussion",
+      undefined,
+      "2026-09-11T00:00:00Z",
+    );
+    assert.equal(
+      (await applyCommentsClientChangesToMaterializer(materializer, editorPeer, editor)).changed,
+      true,
+    );
+    await materializer.checkpoint();
+
+    const reloaded = new RoomMaterializer("demo", state, {} as Env);
+    const viewerIdentity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=bob&operator=browser:b&scope=viewer"),
+    );
+    const viewerPeer = { id: "comments-viewer", identity: viewerIdentity };
+    const viewer = NotebookHandle.create_bootstrap(viewerIdentity.actorLabel);
+    viewer.init_comments_sync_target("comments:demo");
+    await syncCommentsMaterializerWithClient(reloaded, viewerPeer, viewer);
+    assert.deepEqual(await reloaded.getCommentAuthorActorLabels(), [editorIdentity.actorLabel]);
+    const projection = viewer.get_comments_projection();
+    assert.equal(projection.threads.length, 1);
+    assert.equal(projection.threads[0].messages[0].body, "Keep this discussion");
+    viewer.create_comment_thread(
+      "denied-thread",
+      "denied-message",
+      { kind: "notebook" },
+      "Viewer must not write",
+      undefined,
+      "2026-09-11T00:01:00Z",
+    );
+    const denied = await applyCommentsClientChangesToMaterializer(reloaded, viewerPeer, viewer);
+    assert.equal(denied.changed, false);
+    assert.deepEqual(await reloaded.getCommentAuthorActorLabels(), [editorIdentity.actorLabel]);
+  });
+
   it("ignores unversioned prototype checkpoints so published snapshots can hydrate rooms", async () => {
     const state = fakeState();
     const editorIdentity = authenticateDevRequest(
@@ -2156,7 +2205,17 @@ async function syncCommentsMaterializerWithClient(
   peer: { id: string; identity: ReturnType<typeof authenticateDevRequest> },
   client: NotebookHandle,
 ): Promise<void> {
-  let result = await materializer.syncPeer(peer);
+  const initial = client.flush_comments_doc_sync();
+  const initialOutbound = initial
+    ? (
+        await materializer.receiveFrame(peer, {
+          type: FrameType.COMMENTS_DOC_SYNC,
+          payload: initial,
+        })
+      ).outbound
+    : [];
+  const hostSync = await materializer.syncPeer(peer);
+  let result = { ...hostSync, outbound: [...initialOutbound, ...hostSync.outbound] };
   for (let round = 0; round < 8; round += 1) {
     const replies = applyCommentsOutboundToClient(result.outbound, peer.id, client);
     if (replies.length === 0) {

@@ -346,7 +346,6 @@ function AppContent() {
 
   // Apply theme to this window
   const { defaultPythonEnv, featureFlags } = useSyncedTheme();
-  const commentsUiEnabled = featureFlags.enable_comments;
 
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
@@ -1055,9 +1054,7 @@ function AppContent() {
   );
 
   const pendingSourceCommentAnchor =
-    commentsUiEnabled && commentDraftTarget?.anchor.kind === "source_range"
-      ? commentDraftTarget.anchor
-      : null;
+    commentDraftTarget?.anchor.kind === "source_range" ? commentDraftTarget.anchor : null;
   const commentsPanel = (
     <NotebookCommentsPanel
       projection={commentsProjection}
@@ -1081,7 +1078,6 @@ function AppContent() {
     />
   );
   const commentsUiSurface = resolveCommentsUiSurface({
-    commentsUiEnabled,
     canCreateComments: canMutateComments,
     commentsPanel,
     onCreateSourceComment: handleRequestSourceComment,
@@ -1384,17 +1380,12 @@ function AppContent() {
     return null;
   }, [envSource, envSyncState]);
 
-  const renderedActiveRailPanel =
-    !commentsUiEnabled && activeRailPanel === "comments" ? "outline" : activeRailPanel;
+  const renderedActiveRailPanel = activeRailPanel;
   const packagesRailOpen = !railCollapsed && renderedActiveRailPanel === "packages";
 
-  const handleRailPanelChange = useCallback(
-    (panelId: NotebookRailPanelId) => {
-      if (!commentsUiEnabled && panelId === "comments") return;
-      openNotebookRailPanel(panelId);
-    },
-    [commentsUiEnabled],
-  );
+  const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
+    openNotebookRailPanel(panelId);
+  }, []);
 
   const handleTogglePackagesRail = useCallback(() => {
     if (!shellCapabilities.canViewPackages) {
@@ -2297,7 +2288,7 @@ function AppContent() {
                   onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
                   onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
                   onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
-                  commentThreadsByCell={commentsUiEnabled ? sourceCommentThreadsByCell : undefined}
+                  commentThreadsByCell={sourceCommentThreadsByCell}
                   pendingCommentAnchor={pendingSourceCommentAnchor}
                   markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
                 />
