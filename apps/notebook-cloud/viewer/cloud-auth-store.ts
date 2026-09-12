@@ -48,7 +48,7 @@ import {
   type CloudAppSession,
   type CloudAppSessionStatus,
 } from "./app-session";
-import { cloudOidcRenewalFailureMessage } from "./auth-renewal-copy";
+import { cloudOidcRenewalFailureMessage, isTransientCloudOidcError } from "./auth-renewal-copy";
 import { documentVisible$, windowFocus$, cloudAuthStorage$ } from "./browser-signals";
 import {
   cloudBrowserApiAuthStateForFetch,
@@ -546,7 +546,16 @@ export class CloudAuthStore {
       }
       console.warn("[notebook-cloud] OIDC session refresh failed", error);
       this.refreshAuthState();
-      this.setRenewal({ kind: "failed", message: cloudOidcRenewalFailureMessage(error) });
+      // A transient failure (no usable response, or a 429/5xx from the token
+      // endpoint) never confirmed the session is gone, so it stays a
+      // "refreshing" notice (calm tone, no sign-in-again action) that the
+      // next interval tick or focus/visibility trigger will clear silently
+      // on success. Only a server- or storage-confirmed failure escalates to
+      // "failed" with the sign-in-again action.
+      this.setRenewal({
+        kind: isTransientCloudOidcError(error) ? "refreshing" : "failed",
+        message: cloudOidcRenewalFailureMessage(error),
+      });
     }
   }
 

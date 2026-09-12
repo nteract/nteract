@@ -477,7 +477,15 @@ export function CloudNotebookListView({
         </div>
       </header>
 
-      {authRenewal.kind !== "idle" && !hasAppSession ? (
+      {/*
+       * Suppressed once the list has actually fallen to the signed-out panel:
+       * that panel is already the sign-in invitation, so a renewal notice
+       * above it would either restate "sign in" as an alarm or, worse, show
+       * a stale "refreshing" message the user has no live session for. This
+       * banner is for the case where a session is live (dashboard visible)
+       * and renewal just failed under it.
+       */}
+      {authRenewal.kind !== "idle" && !hasAppSession && listState.kind !== "signed_out" ? (
         <div
           className="cloud-notebook-list-banner"
           data-kind={authRenewal.kind === "failed" ? "error" : "info"}

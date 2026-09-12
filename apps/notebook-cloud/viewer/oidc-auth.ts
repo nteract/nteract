@@ -28,6 +28,55 @@ export class OidcTimeoutError extends Error {
   }
 }
 
+/**
+ * The browser could not obtain a usable response: DNS failure, connection
+ * refused, tunnel down, offline, a dropped connection while streaming the
+ * body, or an opaque CORS failure where a server may have actually answered
+ * but the browser withheld the result. That last case means this error does
+ * not prove "no server was reached" - only that the browser has nothing
+ * usable, so session validity is unknown either way. Distinct from
+ * `OidcTimeoutError` (a response never arrived in time) and from an
+ * HTTP-status or stored-session error (a server answered and the browser can
+ * read what it said). Callers use this to tell "the browser got nothing
+ * usable" from "the session is actually gone" without string-matching a
+ * caught error's message.
+ */
+export class OidcNetworkError extends Error {
+  readonly phase: OidcFetchPhase;
+
+  constructor(phase: OidcFetchPhase, cause: unknown) {
+    const subject = phase === "discovery" ? "OIDC discovery" : "OIDC token endpoint";
+    super(`${subject} did not return a usable response.`);
+    this.name = "OidcNetworkError";
+    this.phase = phase;
+    this.cause = cause;
+  }
+}
+
+/**
+ * A confirmed HTTP-status failure from the token endpoint or discovery
+ * document, carrying the numeric status so callers can tell a transient
+ * service error (429, 5xx: the server is unavailable right now, retry) from
+ * an explicit rejection (400/401/403: the request itself - most often the
+ * refresh token - was refused) without parsing the error message.
+ */
+export class OidcHttpError extends Error {
+  readonly phase: OidcFetchPhase;
+  readonly status: number;
+
+  constructor(phase: OidcFetchPhase, status: number, subjectLabel: string) {
+    super(`${subjectLabel} failed: ${status}`);
+    this.name = "OidcHttpError";
+    this.phase = phase;
+    this.status = status;
+  }
+}
+
+/** 429 and 5xx mean the service is unavailable right now, not that a stored token or session was rejected. */
+export function isTransientOidcHttpStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
 export interface CloudOidcAuthConfig {
   issuer: string;
   clientId: string;
@@ -399,9 +448,9 @@ export async function discoverOidcEndpoints(
     options,
   );
   if (!response.ok) {
-    throw new Error(`OIDC discovery failed: ${response.status}`);
+    throw new OidcHttpError("discovery", response.status, "OIDC discovery");
   }
-  const body = (await response.json()) as {
+  const body = (await readOidcJsonBody(response, "discovery")) as {
     authorization_endpoint?: unknown;
     token_endpoint?: unknown;
   };
@@ -456,9 +505,9 @@ async function exchangeAuthorizationCode(
     options,
   );
   if (!response.ok) {
-    throw new Error(`OIDC token exchange failed: ${response.status}`);
+    throw new OidcHttpError("token-exchange", response.status, "OIDC token exchange");
   }
-  return (await response.json()) as CloudOidcTokenResponse;
+  return (await readOidcJsonBody(response, "token-exchange")) as CloudOidcTokenResponse;
 }
 
 async function exchangeRefreshToken(
@@ -491,9 +540,31 @@ async function exchangeRefreshToken(
     options,
   );
   if (!response.ok) {
-    throw new Error(`OIDC token refresh failed: ${response.status}`);
+    throw new OidcHttpError("token-exchange", response.status, "OIDC token refresh");
   }
-  return (await response.json()) as CloudOidcTokenResponse;
+  return (await readOidcJsonBody(response, "token-exchange")) as CloudOidcTokenResponse;
+}
+
+/**
+ * Reads a response body under the same failure classification as the fetch
+ * itself: a dropped connection or aborted read while streaming the body is
+ * indistinguishable, from the caller's perspective, from never getting a
+ * response at all. A malformed body (e.g. `SyntaxError` from invalid JSON) is
+ * a real, distinct problem and is not reclassified - it means a server
+ * answered with something unusable, not that the network is unreliable.
+ */
+async function readOidcJsonBody(response: Response, phase: OidcFetchPhase): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch (error) {
+    if (isTimeoutAbortError(error)) {
+      throw new OidcTimeoutError(phase);
+    }
+    if (isNetworkFetchError(error)) {
+      throw new OidcNetworkError(phase, error);
+    }
+    throw error;
+  }
 }
 
 async function fetchWithTimeout(
@@ -514,6 +585,9 @@ async function fetchWithTimeout(
     if (isTimeoutAbortError(error)) {
       throw new OidcTimeoutError(phase);
     }
+    if (isNetworkFetchError(error)) {
+      throw new OidcNetworkError(phase, error);
+    }
     throw error;
   }
 }
@@ -528,6 +602,18 @@ function isTimeoutAbortError(error: unknown): boolean {
   }
   const name = (error as { name?: unknown }).name;
   return name === "TimeoutError" || name === "AbortError";
+}
+
+/**
+ * `fetch` rejects with a `TypeError` for DNS failure, connection refused,
+ * offline, mixed content, and CORS failures (including the case where a
+ * server actually answered but the browser withheld the result). A non-OK
+ * HTTP response resolves normally and is handled by the caller, so a
+ * `TypeError` here always means the browser has nothing usable, whether or
+ * not a server was ever reached.
+ */
+function isNetworkFetchError(error: unknown): boolean {
+  return error instanceof TypeError;
 }
 
 function readOidcRequestState(
