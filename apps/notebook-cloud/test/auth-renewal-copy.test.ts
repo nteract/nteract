@@ -68,4 +68,20 @@ describe("cloud auth renewal copy", () => {
     assert.equal(isTransientCloudOidcError(new Error("OIDC token refresh failed: 403")), false);
     assert.equal(isTransientCloudOidcError(new Error("Stored OIDC session is missing.")), false);
   });
+
+  it("never tells the user to sign in again for a status that isn't a confirmed rejection or a known-transient one", () => {
+    // 404/405/408 say the request or endpoint had a problem, not that the
+    // server looked at the refresh token and refused it. The old "anything
+    // outside 429/5xx is a rejection" rule got this wrong for exactly these.
+    for (const status of [404, 405, 408]) {
+      const typed = new OidcHttpError("token-exchange", status, "OIDC token refresh");
+      assert.equal(isTransientCloudOidcError(typed), false);
+      const message = cloudOidcRenewalFailureMessage(typed);
+      assert.notEqual(
+        message,
+        "Sign in again to continue. Your browser session could not be refreshed.",
+      );
+      assert.equal(message, `Unable to refresh sign-in: OIDC token refresh failed: ${status}`);
+    }
+  });
 });

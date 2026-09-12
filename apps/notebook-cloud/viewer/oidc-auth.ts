@@ -605,10 +605,12 @@ function isTimeoutAbortError(error: unknown): boolean {
 }
 
 /**
- * `fetch` rejects with a `TypeError` when it never reaches a server (DNS,
- * connection refused, offline, mixed content, CORS preflight failure). A
- * non-OK HTTP response resolves normally and is handled by the caller, so a
- * `TypeError` here always means no response arrived at all.
+ * `fetch` rejects with a `TypeError` for DNS failure, connection refused,
+ * offline, mixed content, and CORS failures (including the case where a
+ * server actually answered but the browser withheld the result). A non-OK
+ * HTTP response resolves normally and is handled by the caller, so a
+ * `TypeError` here always means the browser has nothing usable, whether or
+ * not a server was ever reached.
  */
 function isNetworkFetchError(error: unknown): boolean {
   return error instanceof TypeError;

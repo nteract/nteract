@@ -59,15 +59,20 @@ export function cloudOidcRenewalFailureMessage(error: unknown): string {
 }
 
 /**
- * A token-endpoint status counts as a confirmed rejection only outside the
- * transient range (429/5xx already handled above): 400 (most commonly
- * `invalid_grant`), 401, and 403 mean the server looked at the refresh token
- * and refused it, not that the service is temporarily down.
+ * The token-endpoint statuses that RFC 6749 §5.2 (and providers in practice)
+ * use to reject a refresh grant outright: 400 (most commonly
+ * `invalid_grant`), 401, and 403. This is an allowlist, not "anything that
+ * isn't 429/5xx" - a 404, 405, or 408 says the request or endpoint had a
+ * problem, not that the server looked at the refresh token and refused it.
+ * Those fall through to the generic diagnostic message instead of claiming
+ * the session is confirmed dead.
  */
+const OIDC_TOKEN_REJECTION_STATUSES = new Set([400, 401, 403]);
+
 function isStaleOidcSessionError(message: string): boolean {
   const status = tokenRefreshFailureStatus(message);
   if (status !== null) {
-    return !isTransientOidcHttpStatus(status);
+    return OIDC_TOKEN_REJECTION_STATUSES.has(status);
   }
   return /^Stored OIDC session (?:is|cannot|could not|was|has|missing)/.test(message);
 }
