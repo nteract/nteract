@@ -1009,7 +1009,7 @@ describe("NotebookWorkstationsPanel", () => {
     expect(
       additionalCommands.getByText(/Fresh Debian\/Ubuntu hosts may need curl and tmux/),
     ).toBeVisible();
-    expect(additionalCommands.getByText(/a new terminal already has it on PATH/)).toBeVisible();
+    expect(additionalCommands.getByText(/add it to PATH for the current session/)).toBeVisible();
     expect(additionalCommands.getByText(/foreground fallback in tmux/)).toBeVisible();
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
       /Waiting for this machine to connect/,

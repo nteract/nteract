@@ -145,6 +145,21 @@ impl EntryPoint {
     }
 }
 
+/// Command to show in hints for shared-runtime observation (`notebooks`,
+/// `ps`). An unscoped `nteract` discovers notebooks across channels, so the
+/// hint stays unscoped unless the user passed `--channel` explicitly;
+/// otherwise following it would show a different list than the command the
+/// user just ran.
+fn observation_command(options: &local_runtime::LocalRuntimeOptions) -> &'static str {
+    if options.enabled && options.explicit_channel {
+        EntryPoint::Nteract.action_command()
+    } else if options.enabled {
+        "nteract"
+    } else {
+        "runt"
+    }
+}
+
 fn cli_command(entrypoint: EntryPoint) -> clap::Command {
     let command = Cli::command();
     match entrypoint {
@@ -969,8 +984,9 @@ async fn async_main(
             pool_command(command).await?
         }
         Some(Commands::Rooms { json }) => {
+            let observe = observation_command(&local_runtime);
             eprintln!(
-                "Warning: '{command_name} rooms' is deprecated. Use '{command_name} notebooks' instead."
+                "Warning: '{observe} rooms' is deprecated. Use '{observe} notebooks' instead."
             );
             list_notebooks(json, local_runtime).await?
         }
@@ -5118,14 +5134,7 @@ async fn shutdown_notebook(
         }
         Ok(false) => {
             eprintln!("Notebook not found: {}", notebook_id);
-            // Keep shared runtime discovery for an unscoped notebook command.
-            let command = if options.enabled && options.explicit_channel {
-                EntryPoint::Nteract.action_command()
-            } else if options.enabled {
-                "nteract"
-            } else {
-                "runt"
-            };
+            let command = observation_command(&options);
             eprintln!("Use '{command} notebooks' to see open notebooks.");
             std::process::exit(1)
         }

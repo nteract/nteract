@@ -166,7 +166,7 @@ RUNTIMED_SOCKET_PATH="$(./target/debug/runt daemon status --json | python3 -c 'i
 
 ## MCP Server
 
-The MCP server ships as `nteract mcp` (Rust; `runt mcp` remains a compatibility alias). Run via `cargo xtask run-mcp` for development.
+Use `nteract mcp` for the supervised MCP server. `runt mcp` remains available to run the worker directly. Run via `cargo xtask run-mcp` for development.
 
 **Advertised tools** (`all_tools()`): `list_active_notebooks`, `list_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `disconnect_notebook`, `create_cell`, `set_cell`, `delete_cell`, `move_cell`, `execute_cell`, `run_all_cells`, `get_results`, `interrupt_kernel`, `restart_kernel`, `manage_dependencies`, `replace_match`, `replace_regex`.
 

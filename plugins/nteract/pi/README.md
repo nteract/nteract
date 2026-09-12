@@ -35,7 +35,7 @@ See [`packages/runtimed-node/README.md`](../../packages/runtimed-node/README.md)
 The daemon is controlled by the `nteract` CLI (installed with nteract). Use it to inspect active sessions, open notebooks in the desktop app, or troubleshoot:
 
 ```bash
-# List active Python sessions
+# List open notebooks and their kernel status
 nteract notebooks
 
 # Open a notebook in nteract Desktop

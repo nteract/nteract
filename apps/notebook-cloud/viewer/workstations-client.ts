@@ -243,8 +243,8 @@ export function cloudWorkstationPairingCommands(
       id: "path",
       label: "Use installed CLI in this shell",
       command: CLOUD_WORKSTATION_PATH_EXPORT_COMMAND,
-      // Only needed in the same shell you ran the installer in — a fresh
-      // terminal already has `nteract` on PATH.
+      // The installer links into ~/.local/bin and does not edit shell startup
+      // files, so this is needed whenever the shell cannot find `nteract`.
       optional: true,
     },
     {
