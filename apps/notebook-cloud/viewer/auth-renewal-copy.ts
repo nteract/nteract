@@ -1,22 +1,56 @@
-/**
- * A network/timeout failure means no server ever answered: the refresh token
- * itself is not implicated, and the same background refresh will likely
- * succeed on its next tick (every 60s, or sooner on focus/visibility). Never
- * tell the user to sign in again for this case - that is only true when a
- * server or local storage actually confirmed the session is gone.
- */
-export function isCloudOidcNetworkError(error: unknown): boolean {
+import { isTransientOidcHttpStatus } from "./oidc-auth";
+
+function errorName(error: unknown): string | null {
   if (!error || typeof error !== "object") {
-    return false;
+    return null;
   }
   const name = (error as { name?: unknown }).name;
-  return name === "OidcNetworkError" || name === "OidcTimeoutError";
+  return typeof name === "string" ? name : null;
+}
+
+function tokenRefreshFailureStatus(message: string): number | null {
+  // The only OIDC HTTP failure this function's callers ever see is a token
+  // *refresh* failure: `cloudOidcRenewalFailureMessage` only runs on the
+  // background renewal path (`cloud-auth-store.ts: runRefreshOidc`), which
+  // calls `refreshStoredOidcToken`, never the initial-login code exchange.
+  const match = /^OIDC token refresh failed:\s*(\d+)\b/.exec(message);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * True when the failure says nothing about whether the stored session is
+ * still good: the browser got no usable response (`OidcNetworkError`,
+ * `OidcTimeoutError`) or the token endpoint answered with a transient
+ * service error (429, 5xx via `OidcHttpError.status`, or the historical
+ * message shape for callers/tests that predate that type). The same
+ * background refresh on the next 60s tick, or the next focus/visibility
+ * trigger, is likely to succeed without the user doing anything - never tell
+ * the user to sign in again for this case. That is only warranted when a
+ * server explicitly rejected the request or local storage confirmed the
+ * session is gone.
+ */
+export function isTransientCloudOidcError(error: unknown): boolean {
+  const name = errorName(error);
+  if (name === "OidcNetworkError" || name === "OidcTimeoutError") {
+    return true;
+  }
+  if (name === "OidcHttpError") {
+    const status = (error as { status?: unknown }).status;
+    return typeof status === "number" && isTransientOidcHttpStatus(status);
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  const status = tokenRefreshFailureStatus(detail);
+  return status !== null && isTransientOidcHttpStatus(status);
 }
 
 export function cloudOidcRenewalFailureMessage(error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
-  if (isCloudOidcNetworkError(error)) {
+  const name = errorName(error);
+  if (name === "OidcNetworkError" || name === "OidcTimeoutError") {
     return "Couldn't reach the sign-in service. Retrying automatically.";
+  }
+  if (isTransientCloudOidcError(error)) {
+    return "The sign-in service is temporarily unavailable. Retrying automatically.";
   }
   if (isStaleOidcSessionError(detail)) {
     return "Sign in again to continue. Your browser session could not be refreshed.";
@@ -24,9 +58,16 @@ export function cloudOidcRenewalFailureMessage(error: unknown): string {
   return `Unable to refresh sign-in: ${detail}`;
 }
 
+/**
+ * A token-endpoint status counts as a confirmed rejection only outside the
+ * transient range (429/5xx already handled above): 400 (most commonly
+ * `invalid_grant`), 401, and 403 mean the server looked at the refresh token
+ * and refused it, not that the service is temporarily down.
+ */
 function isStaleOidcSessionError(message: string): boolean {
-  return (
-    /^OIDC token refresh failed:\s*\d+\b/.test(message) ||
-    /^Stored OIDC session (?:is|cannot|could not|was|has|missing)/.test(message)
-  );
+  const status = tokenRefreshFailureStatus(message);
+  if (status !== null) {
+    return !isTransientOidcHttpStatus(status);
+  }
+  return /^Stored OIDC session (?:is|cannot|could not|was|has|missing)/.test(message);
 }

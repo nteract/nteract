@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY,
   NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+  OidcHttpError,
+  OidcNetworkError,
   OidcTimeoutError,
   beginOidcLogin,
   buildOidcAuthorizationUrl,
@@ -306,6 +308,83 @@ describe("cloud OIDC browser auth", () => {
     assert.equal(storedOidcTokenNeedsRefresh(storage, 450), true);
     assert.equal(storedOidcTokenNeedsRefresh(storage, 100), false);
     assert.equal(readStoredOidcToken(storage, 100).token?.accessToken, refreshedAccessToken);
+  });
+
+  it("carries the status through a token-refresh HTTP failure instead of a generic Error", async () => {
+    const storage = new MemoryStorage();
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: jwt({ sub: "anaconda-user-123" }),
+        refreshToken: "refresh-secret",
+        expiresAt: 100,
+        claims: { sub: "anaconda-user-123" },
+      }),
+    );
+
+    await assert.rejects(
+      () =>
+        refreshStoredOidcToken(authConfig, {
+          storage,
+          nowSeconds: 200,
+          fetchImpl: async (input) => {
+            const url = String(input);
+            if (url.endsWith("/.well-known/openid-configuration")) {
+              return discoveryResponse();
+            }
+            return new Response("service unavailable", { status: 503 });
+          },
+        }),
+      (error) => {
+        assert.ok(error instanceof OidcHttpError);
+        assert.equal(error.status, 503);
+        assert.equal(error.phase, "token-exchange");
+        return true;
+      },
+    );
+  });
+
+  it("reclassifies a dropped connection while reading the token response body as a network failure", async () => {
+    const storage = new MemoryStorage();
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: jwt({ sub: "anaconda-user-123" }),
+        refreshToken: "refresh-secret",
+        expiresAt: 100,
+        claims: { sub: "anaconda-user-123" },
+      }),
+    );
+
+    await assert.rejects(
+      () =>
+        refreshStoredOidcToken(authConfig, {
+          storage,
+          nowSeconds: 200,
+          fetchImpl: async (input) => {
+            const url = String(input);
+            if (url.endsWith("/.well-known/openid-configuration")) {
+              return discoveryResponse();
+            }
+            // A response that resolved (status 200, headers present) but whose
+            // body stream drops mid-read - indistinguishable to the caller
+            // from never getting a response, per `readOidcJsonBody`.
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.error(new TypeError("terminated"));
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          },
+        }),
+      (error) => {
+        assert.ok(error instanceof OidcNetworkError);
+        assert.equal(error.phase, "token-exchange");
+        return true;
+      },
+    );
   });
 
   it("treats expired non-refreshable OIDC tokens as unusable without invalidating auth", () => {

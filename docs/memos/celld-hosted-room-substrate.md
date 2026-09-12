@@ -8,7 +8,8 @@ Workers runtime. It follows a two-day proof (`~/projects/sandbox/celld-lab`,
 field notes in `NOTES-celld.md`) that ran the real `apps/notebook-cloud`
 Workers — app, output-frame shell, renderer-asset sidecar — on a single lab box
 behind a Cloudflare Tunnel at `app.runt.run`, with Anaconda OIDC as the identity
-provider and S3 as the only external dependency.
+provider; S3 was the only external *storage* dependency (the proof still
+depends on Cloudflare Tunnel for public ingress and Anaconda for identity).
 
 Related:
 
@@ -28,8 +29,10 @@ Objects, D1, and R2 bindings against workerd-compatible semantics on a plain
 box, with a bucket as the only durable dependency. The proof shipped the
 unmodified `apps/notebook-cloud` build (minus a project-layout export step) and
 got working Durable Objects with SQLite storage and hibernatable WebSockets, D1
-via `prepare/bind/run/batch`, R2 streaming, and content-addressed deploys in
-0.17s. That is a substrate swap, not a rewrite: the document engine, ACL model,
+via `prepare/bind/run/batch`, R2 streaming, and content-addressed deploys: a
+0.17s bundle step, one PUT, and a pointer move (the field notes measure the
+bundle step, not wall-clock time for the full deploy-and-adopt cycle). That is
+a substrate swap, not a rewrite: the document engine, ACL model,
 frame protocol, and route contracts in `deployment-topology.md` Decision 1
 still hold. Nothing in this memo asks to revisit that decision's ownership
 model — it asks where the same document engine can physically run.
@@ -81,24 +84,6 @@ None of these are blocking for a lab proof. Several are blocking for treating
 `app.runt.run` as more than a demo box: single-node means unattended-upgrade
 restarts are an outage (observed 2026-09-11, 16s down), and the 3–4s/30s
 failover numbers are unmeasured on this deployment's Cloudflare Tunnel path.
-
-## An unrelated finding this proof surfaced
-
-Running a real deployment that a human actually revisits after a day exposed a
-UX bug in the existing OIDC session-renewal flow that a fresh `wrangler dev`
-session never would: the "Session expired" state is derived synchronously from
-the stored access token's `expiresAt` at page load
-(`collaborator-auth.ts:170-178`), before the background refresh
-(`cloud-auth-store.ts: runRefreshOidc`) gets a chance to try the still-possibly-
-valid refresh token. On a box that restarts overnight (unattended upgrades,
-per `NOTES-celld.md`), a returning user's first paint can show the scary
-full-page "sign in again" state and a duplicate red banner
-(`notebook-list-view.tsx:480-488` renders `authRenewal.message` unconditionally
-alongside the `oidc_expired`-driven header pill and notice) even when the
-refresh would have succeeded silently a second later, and the code has no way
-to tell "the network hiccuped" from "the refresh token is actually dead." This
-is tracked as a standalone fix, not part of the celld decision, but it is the
-kind of finding that only shows up once a deployment is left running.
 
 ## Open questions
 
