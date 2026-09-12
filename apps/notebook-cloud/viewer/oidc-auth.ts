@@ -28,6 +28,26 @@ export class OidcTimeoutError extends Error {
   }
 }
 
+/**
+ * The request never reached a server: DNS failure, connection refused, tunnel
+ * down, offline. Distinct from `OidcTimeoutError` (a response never arrived in
+ * time) and from an HTTP-status or stored-session error (a server or storage
+ * actually answered). Callers use this to tell "the network is unreliable
+ * right now" from "the session is actually gone" without string-matching a
+ * caught error's message.
+ */
+export class OidcNetworkError extends Error {
+  readonly phase: OidcFetchPhase;
+
+  constructor(phase: OidcFetchPhase, cause: unknown) {
+    const subject = phase === "discovery" ? "OIDC discovery" : "OIDC token endpoint";
+    super(`${subject} could not be reached.`);
+    this.name = "OidcNetworkError";
+    this.phase = phase;
+    this.cause = cause;
+  }
+}
+
 export interface CloudOidcAuthConfig {
   issuer: string;
   clientId: string;
@@ -514,6 +534,9 @@ async function fetchWithTimeout(
     if (isTimeoutAbortError(error)) {
       throw new OidcTimeoutError(phase);
     }
+    if (isNetworkFetchError(error)) {
+      throw new OidcNetworkError(phase, error);
+    }
     throw error;
   }
 }
@@ -528,6 +551,16 @@ function isTimeoutAbortError(error: unknown): boolean {
   }
   const name = (error as { name?: unknown }).name;
   return name === "TimeoutError" || name === "AbortError";
+}
+
+/**
+ * `fetch` rejects with a `TypeError` when it never reaches a server (DNS,
+ * connection refused, offline, mixed content, CORS preflight failure). A
+ * non-OK HTTP response resolves normally and is handled by the caller, so a
+ * `TypeError` here always means no response arrived at all.
+ */
+function isNetworkFetchError(error: unknown): boolean {
+  return error instanceof TypeError;
 }
 
 function readOidcRequestState(
