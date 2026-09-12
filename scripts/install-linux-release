@@ -12,7 +12,7 @@
 # installs the signed .app bundle (which carries the same sidecars in
 # Contents/MacOS) into ~/Applications and links the commands from there.
 # Desktop installs repair/install the per-user daemon service with
-# `runt daemon doctor --fix` (systemd on Linux, launchd on macOS) and start
+# `nteract daemon doctor --fix` (systemd on Linux, launchd on macOS) and start
 # it by default. CLI-only installs leave runtime services alone.
 
 set -euo pipefail
@@ -451,7 +451,7 @@ install_compatibility_link "$DAEMON_NAME" "$DAEMON_BIN"
 install_compatibility_link "$MCP_NAME" "$MCP_BIN"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-  echo "Note: $BIN_DIR is not on PATH for this shell. Add it to use nteract/runt commands directly." >&2
+  echo "Note: $BIN_DIR is not on PATH for this shell. Add it to use the nteract command directly." >&2
 fi
 
 # Avoid accidentally installing a per-worktree dev daemon when the installer is
@@ -479,19 +479,21 @@ echo "CLI:      $GLOBAL_CLI_BIN"
 echo "Command:  $GLOBAL_CLI_LINK"
 echo "Daemon:   $DAEMON_BIN"
 echo "MCP:      $MCP_BIN"
+# Printed hints address the public command. When this install owns the shared
+# `nteract` link, scope it to this channel; otherwise point at the backend.
+CLI_INVOCATION="\"$GLOBAL_CLI_BIN\""
+if [[ "$managed_cli" == "1" ]]; then
+  CLI_INVOCATION="\"$GLOBAL_CLI_LINK\" --channel $CHANNEL"
+fi
 if [[ "$HEADLESS" == "1" ]]; then
   echo "CLI-only install: no daemon service was installed, repaired, or started."
 elif [[ "$NO_START" == "1" ]]; then
-  echo "Daemon was installed/repaired but not started (--no-start). Start with: \"$RUNT_BIN\" daemon start"
+  echo "Daemon was installed/repaired but not started (--no-start). Start with: $CLI_INVOCATION daemon start"
 else
   env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$RUNT_DIR:$BIN_DIR:$PATH" \
     "$RUNT_BIN" daemon status || true
 fi
 if [[ "$HEADLESS" == "1" ]]; then
-  CLI_INVOCATION="\"$GLOBAL_CLI_BIN\""
-  if [[ "$managed_cli" == "1" ]]; then
-    CLI_INVOCATION="\"$GLOBAL_CLI_LINK\" --channel $CHANNEL"
-  fi
   echo
   echo "Headless workstation install. To offer this machine's compute to a hosted"
   echo "notebook, mint a pairing code from the notebook's workstation panel, then:"
@@ -505,6 +507,6 @@ if [[ "$HEADLESS" == "1" ]]; then
     echo "  $CLI_INVOCATION workstation run"
     echo "Persistent workstation service management starts with Linux user systemd."
   fi
-  echo "(Releases without '$CLI_NAME workstation' can use the cloud-runtime-agent flow"
+  echo "(Releases without 'nteract workstation' can use the cloud-runtime-agent flow"
   echo "in docs/runbooks/remote-workstation.md.)"
 fi

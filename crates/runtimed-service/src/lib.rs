@@ -242,7 +242,7 @@ fn linux_user_systemd_unavailable_message(detail: &str) -> String {
          The daemon service cannot be installed or started automatically here.\n\
          Use a normal login session with XDG_RUNTIME_DIR/DBus available, or ask an admin to enable lingering with `loginctl enable-linger $USER` if the daemon should stay available after logout.\n\
          For headless workstation sessions, use foreground mode: `{} workstation run`.",
-        runt_workspace::cli_command_name()
+        runt_workspace::public_cli_invocation()
     )
 }
 
@@ -1335,7 +1335,7 @@ mod tests {
             linux_user_systemd_unavailable_message("systemctl was not found on this host");
         let fallback = format!(
             "For headless workstation sessions, use foreground mode: `{} workstation run`.",
-            runt_workspace::cli_command_name()
+            runt_workspace::public_cli_invocation()
         );
 
         assert!(message.contains(

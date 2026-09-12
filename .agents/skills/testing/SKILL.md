@@ -172,14 +172,14 @@ Other: `[data-cell-type="code"]`, `[data-cell-type="markdown"]`, `.cm-content[co
 
 ### Collecting
 
-Use `env -i` for system diagnostics to avoid dev env vars (`RUNTIMED_DEV`, `RUNTIMED_WORKSPACE_PATH`) leaking through.
+Use `env -i` for system diagnostics to avoid dev env vars (`RUNTIMED_DEV`, `RUNTIMED_WORKSPACE_PATH`) leaking through. `env -i` also clears `PATH`, so use the installed `nteract` link (`~/.local/bin` by default) and `--channel` to pick the installation.
 
 ```bash
 # Nightly (system)
-env -i HOME=$HOME /usr/local/bin/runt-nightly diagnostics
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel nightly diagnostics
 
 # Stable (system)
-env -i HOME=$HOME /usr/local/bin/runt diagnostics
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel stable diagnostics
 
 # Dev daemon (no env -i needed)
 RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$(pwd)" ./target/debug/runt diagnostics
@@ -187,9 +187,9 @@ RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$(pwd)" ./target/debug/runt diagnostics
 
 Other system commands follow the same `env -i` pattern:
 ```bash
-env -i HOME=$HOME /usr/local/bin/runt-nightly daemon status
-env -i HOME=$HOME /usr/local/bin/runt-nightly daemon logs -f
-env -i HOME=$HOME /usr/local/bin/runt ps
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel nightly daemon status
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel nightly daemon logs -f
+env -i HOME=$HOME "$HOME/.local/bin/nteract" --channel stable ps
 ```
 
 Read files from tarball without extracting:

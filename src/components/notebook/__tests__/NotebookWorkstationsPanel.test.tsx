@@ -94,18 +94,18 @@ const cloudPairingCommands = [
   {
     id: "connect",
     label: "Pair this workstation",
-    command: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+    command: "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
   },
   {
     id: "run",
     label: "Linux user systemd service",
-    command: "runt workstation service install --start",
+    command: "nteract workstation service install --start",
     recommended: true,
   },
   {
     id: "foreground-run",
     label: "macOS/non-systemd fallback",
-    command: "runt workstation run",
+    command: "nteract workstation run",
     optional: true,
   },
 ];
@@ -926,7 +926,7 @@ describe("NotebookWorkstationsPanel", () => {
         <WorkstationPairingDialog
           pairing={{
             code: "ABCD-EFGH-JKMN",
-            connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+            connectCommand: "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
             expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
             status: "pending",
             workstationName: null,
@@ -938,7 +938,7 @@ describe("NotebookWorkstationsPanel", () => {
           selection={selection}
           pairing={{
             code: "ABCD-EFGH-JKMN",
-            connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+            connectCommand: "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
             expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
             status: "pending",
             workstationName: null,
@@ -959,7 +959,7 @@ describe("NotebookWorkstationsPanel", () => {
       <WorkstationPairingDialog
         pairing={{
           code: "ABCD-EFGH-JKMN",
-          connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+          connectCommand: "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
           commands: cloudPairingCommands,
           expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
           status: "pending",
@@ -984,8 +984,8 @@ describe("NotebookWorkstationsPanel", () => {
     const commands = screen.getAllByTestId("workstation-pairing-command");
     expect(commands.map((command) => command.textContent)).toEqual([
       "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
-      "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
-      "runt workstation service install --start",
+      "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+      "nteract workstation service install --start",
     ]);
     expect(screen.getByText("(recommended)")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Show additional setup options" }));
@@ -1003,13 +1003,13 @@ describe("NotebookWorkstationsPanel", () => {
     ).toEqual([
       "sudo apt update && sudo apt install -y curl tmux",
       'export PATH="$HOME/.local/bin:$PATH"',
-      "runt workstation run",
+      "nteract workstation run",
     ]);
     // Each folded-away step explains why it's conditional, not a generic blurb.
     expect(
       additionalCommands.getByText(/Fresh Debian\/Ubuntu hosts may need curl and tmux/),
     ).toBeVisible();
-    expect(additionalCommands.getByText(/a new terminal already has it on PATH/)).toBeVisible();
+    expect(additionalCommands.getByText(/add it to PATH for the current session/)).toBeVisible();
     expect(additionalCommands.getByText(/foreground fallback in tmux/)).toBeVisible();
     expect(screen.getByTestId("workstation-pairing-status")).toHaveTextContent(
       /Waiting for this machine to connect/,
@@ -1030,8 +1030,8 @@ describe("NotebookWorkstationsPanel", () => {
     expect(writeText).toHaveBeenCalledWith(
       [
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --headless",
-        "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
-        "runt workstation service install --start",
+        "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+        "nteract workstation service install --start",
       ].join("\n"),
     );
   });
@@ -1041,7 +1041,7 @@ describe("NotebookWorkstationsPanel", () => {
       <WorkstationPairingDialog
         pairing={{
           code: "ABCD-EFGH-JKMN",
-          connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+          connectCommand: "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
           expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
           status: "pending",
           workstationName: null,
@@ -1054,14 +1054,14 @@ describe("NotebookWorkstationsPanel", () => {
     expect(screen.getByText("ABCD-EFGH-JKMN")).toBeVisible();
     expect(
       screen.getAllByTestId("workstation-pairing-command").map((node) => node.textContent),
-    ).toEqual(["runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN"]);
+    ).toEqual(["nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN"]);
   });
 
   it("announces redemption and registration, and Done dismisses", () => {
     const dismissed: number[] = [];
     const pairingBase = {
       code: "ABCD-EFGH-JKMN",
-      connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+      connectCommand: "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       commands: cloudPairingCommands,
       workstationName: null,
@@ -1094,7 +1094,7 @@ describe("NotebookWorkstationsPanel", () => {
       <WorkstationPairingDialog
         pairing={{
           code: "ABCD-EFGH-JKMN",
-          connectCommand: "runt workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
+          connectCommand: "nteract workstation connect https://cloud.test --code ABCD-EFGH-JKMN",
           expiresAt: new Date(Date.now() - 1_000).toISOString(),
           status: "expired",
           workstationName: null,

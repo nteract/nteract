@@ -729,7 +729,7 @@ describe("CloudWorkstationsStore pairing", () => {
     assert.equal(pairing?.code, "ABCD-EFGH");
     assert.equal(
       pairing?.connectCommand,
-      "runt workstation connect https://viewer.test --code ABCD-EFGH",
+      "nteract workstation connect https://viewer.test --code ABCD-EFGH",
     );
     assert.ok((pairing?.commands.length ?? 0) > 0);
 

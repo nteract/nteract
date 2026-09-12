@@ -212,15 +212,15 @@ export async function fetchCloudWorkstationPairingStatus(
 }
 
 export function cloudWorkstationConnectCommand(origin: string, code: string): string {
-  return `runt workstation connect ${origin} --code ${code}`;
+  return `nteract workstation connect ${origin} --code ${code}`;
 }
 
 export function cloudWorkstationRunCommand(): string {
-  return "runt workstation run";
+  return "nteract workstation run";
 }
 
 export function cloudWorkstationServiceInstallCommand(): string {
-  return "runt workstation service install --start";
+  return "nteract workstation service install --start";
 }
 
 export function cloudWorkstationPairingCommands(
@@ -243,8 +243,8 @@ export function cloudWorkstationPairingCommands(
       id: "path",
       label: "Use installed CLI in this shell",
       command: CLOUD_WORKSTATION_PATH_EXPORT_COMMAND,
-      // Only needed in the same shell you ran the installer in — a fresh
-      // terminal already has `runt` on PATH.
+      // The installer links into ~/.local/bin and does not edit shell startup
+      // files, so this is needed whenever the shell cannot find `nteract`.
       optional: true,
     },
     {

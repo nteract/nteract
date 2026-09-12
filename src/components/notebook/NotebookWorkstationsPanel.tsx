@@ -403,7 +403,7 @@ function additionalSetupHelpText(
   }
   if (ids.has("path")) {
     notes.push(
-      "Only needed in the same terminal you ran the install command in — a new terminal already has it on PATH.",
+      "If your shell can't find nteract, run this command to add it to PATH for the current session.",
     );
   }
   if (ids.has("foreground-run")) {

@@ -169,8 +169,30 @@ pub fn daemon_launchd_label() -> &'static str {
 }
 
 /// Channel-specific CLI command name.
+///
+/// This is the compatibility binary name (`runt` / `runt-nightly`) used for
+/// install paths and symlinks. For text that tells a user what to type, use
+/// [`public_cli_invocation`].
 pub fn cli_command_name() -> &'static str {
     cli_command_name_for(build_channel())
+}
+
+/// The public command for this installation, pinned to its channel:
+/// `nteract --channel stable` or `nteract --channel nightly`.
+///
+/// Use this in guidance strings ("Check daemon status with: ...") so that
+/// installation-scoped actions target the same channel that produced the
+/// message. `runt` and `runt-nightly` remain accepted aliases.
+pub fn public_cli_invocation_for(channel: BuildChannel) -> &'static str {
+    match channel {
+        BuildChannel::Stable => "nteract --channel stable",
+        BuildChannel::Nightly => "nteract --channel nightly",
+    }
+}
+
+/// See [`public_cli_invocation_for`].
+pub fn public_cli_invocation() -> &'static str {
+    public_cli_invocation_for(build_channel())
 }
 
 /// Channel-specific nteract-mcp binary base name (without extension).
@@ -264,7 +286,7 @@ pub fn daemon_unavailable_guidance() -> String {
     } else {
         format!(
             "Check daemon status with: {} daemon status",
-            cli_command_name()
+            public_cli_invocation()
         )
     }
 }

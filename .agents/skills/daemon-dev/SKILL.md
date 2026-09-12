@@ -166,7 +166,7 @@ RUNTIMED_SOCKET_PATH="$(./target/debug/runt daemon status --json | python3 -c 'i
 
 ## MCP Server
 
-The MCP server ships as `runt mcp` (Rust). Run via `cargo xtask run-mcp` for development.
+Use `nteract mcp` for the supervised MCP server. `runt mcp` remains available to run the worker directly. Run via `cargo xtask run-mcp` for development.
 
 **Advertised tools** (`all_tools()`): `list_active_notebooks`, `list_notebooks`, `connect_notebook`, `create_notebook`, `save_notebook`, `show_notebook`, `disconnect_notebook`, `create_cell`, `set_cell`, `delete_cell`, `move_cell`, `execute_cell`, `run_all_cells`, `get_results`, `interrupt_kernel`, `restart_kernel`, `manage_dependencies`, `replace_match`, `replace_regex`.
 
@@ -225,7 +225,7 @@ Each open notebook has a room (`NotebookRoom`), keyed by UUID. A `PathIndex` map
 
 ## Troubleshooting
 
-**Daemon lock held:** Inspect the selected endpoint with `runt daemon status` and check its `daemon.lock` with `lsof`. The OS releases the advisory lock when its owner exits; an existing file is not proof of a live owner. Do not delete the lock file to bypass contention, since replacing its inode can allow two owners. Filesystem failures are separate errors, and live socket metadata is the discovery source.
+**Daemon lock held:** Inspect the selected endpoint with `nteract daemon status` and check its `daemon.lock` with `lsof`. The OS releases the advisory lock when its owner exits; an existing file is not proof of a live owner. Do not delete the lock file to bypass contention, since replacing its inode can allow two owners. Filesystem failures are separate errors, and live socket metadata is the discovery source.
 
 **Pool not replenishing:** Verify `uv --version` and check `~/.cache/runt/envs/`.
 
@@ -235,7 +235,7 @@ Each open notebook has a room (`NotebookRoom`), keyed by UUID. A `PathIndex` map
 
 ## Shipped App / System Daemon
 
-Production daemon installs as a system service (macOS: launchd, Linux: systemd user). Manage with `runt daemon {status,stop,start,logs,uninstall}`.
+Production daemon installs as a system service (macOS: launchd, Linux: systemd user). Manage with `nteract daemon {status,stop,start,logs,uninstall}`.
 
 **Key paths (macOS):** Binary at `~/Library/Application Support/runt/bin/runtimed`, socket at `~/Library/Caches/runt/runtimed.sock`, logs at `~/Library/Caches/runt/runtimed.log`.
 

@@ -288,9 +288,9 @@ directory, and environment policy.
 
 ```bash
 nteract workstation status     # workstations the credential can see
-runt daemon status          # daemon state, pool sizes
-runt daemon logs -f         # tail the daemon log
-runt diagnostics            # bundle logs + system info into an archive
+nteract daemon status          # daemon state, pool sizes
+nteract daemon logs -f         # tail the daemon log
+nteract diagnostics            # bundle logs + system info into an archive
 journalctl --user -u nteract-workstation      # agent service logs
 ```
 

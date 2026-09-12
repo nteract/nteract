@@ -57,7 +57,7 @@ pub async fn recv_preamble<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Res
         let direction = if version > PROTOCOL_VERSION {
             "The daemon is newer than this client. Please update the CLI (or reinstall the app)."
         } else {
-            "The daemon is older than this client. Please update the daemon: runt daemon doctor --fix"
+            "The daemon is older than this client. Please update the daemon: nteract doctor --fix"
         };
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,

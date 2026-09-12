@@ -139,12 +139,24 @@ impl EntryPoint {
     /// observation hints preserve unscoped selection unless --channel was explicit.
     fn action_command(self) -> &'static str {
         match self {
-            Self::Nteract => match runt_workspace::build_channel() {
-                runt_workspace::BuildChannel::Stable => "nteract --channel stable",
-                runt_workspace::BuildChannel::Nightly => "nteract --channel nightly",
-            },
+            Self::Nteract => runt_workspace::public_cli_invocation(),
             Self::Runt => "runt",
         }
+    }
+}
+
+/// Command to show in hints for shared-runtime observation (`notebooks`,
+/// `ps`). An unscoped `nteract` discovers notebooks across channels, so the
+/// hint stays unscoped unless the user passed `--channel` explicitly;
+/// otherwise following it would show a different list than the command the
+/// user just ran.
+fn observation_command(options: &local_runtime::LocalRuntimeOptions) -> &'static str {
+    if options.enabled && options.explicit_channel {
+        EntryPoint::Nteract.action_command()
+    } else if options.enabled {
+        "nteract"
+    } else {
+        "runt"
     }
 }
 
@@ -966,11 +978,16 @@ async fn async_main(
         }
 
         Some(Commands::Pool { command }) => {
-            eprintln!("Warning: 'runt pool' is deprecated. Use 'runt daemon' instead.");
+            eprintln!(
+                "Warning: '{command_name} pool' is deprecated. Use '{command_name} daemon' instead."
+            );
             pool_command(command).await?
         }
         Some(Commands::Rooms { json }) => {
-            eprintln!("Warning: 'runt rooms' is deprecated. Use 'runt notebooks' instead.");
+            let observe = observation_command(&local_runtime);
+            eprintln!(
+                "Warning: '{observe} rooms' is deprecated. Use '{observe} notebooks' instead."
+            );
             list_notebooks(json, local_runtime).await?
         }
 
@@ -5117,14 +5134,7 @@ async fn shutdown_notebook(
         }
         Ok(false) => {
             eprintln!("Notebook not found: {}", notebook_id);
-            // Keep shared runtime discovery for an unscoped notebook command.
-            let command = if options.enabled && options.explicit_channel {
-                EntryPoint::Nteract.action_command()
-            } else if options.enabled {
-                "nteract"
-            } else {
-                "runt"
-            };
+            let command = observation_command(&options);
             eprintln!("Use '{command} notebooks' to see open notebooks.");
             std::process::exit(1)
         }

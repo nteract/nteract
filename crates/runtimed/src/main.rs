@@ -43,8 +43,10 @@ fn daemon_service_name() -> &'static str {
     runt_workspace::daemon_service_basename()
 }
 
+/// Public command to show in "use ... instead" hints, pinned to this build's
+/// channel. Every caller here is user-facing guidance, not a path.
 fn cli_command_name() -> &'static str {
-    runt_workspace::cli_command_name()
+    runt_workspace::public_cli_invocation()
 }
 
 #[derive(Subcommand, Debug)]

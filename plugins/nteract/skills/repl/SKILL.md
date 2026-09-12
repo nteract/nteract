@@ -33,7 +33,7 @@ Start a new Codex session after reinstalling; running sessions do not hot-load n
 If tools still don't appear after restarting Codex:
 
 - Confirm the nteract desktop app/daemon is running.
-- Run `runt doctor` to check the installation. (`runt-nightly` if this is the nightly release)
+- Run `nteract doctor` to check the installation (`nteract --channel nightly doctor` for the Nightly install).
 - Share any error messages from the session.
 
 ## Quick Start (direct pi tools)
