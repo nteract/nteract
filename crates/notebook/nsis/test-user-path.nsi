@@ -6,7 +6,9 @@ ${StrLoc}
 !ifndef TEST_KEY
   !error "TEST_KEY must name a disposable HKCU test subkey"
 !endif
-!define PRODUCTNAME "nteract PATH regression fixture"
+!ifndef PRODUCTNAME
+  !define PRODUCTNAME "nteract PATH regression fixture"
+!endif
 !include "bootstrap.nsh"
 
 Name "nteract PATH regression fixture"
@@ -15,6 +17,8 @@ RequestExecutionLevel user
 SilentInstall silent
 
 Section
+  !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "PATH fixture started"
   WriteRegDWORD HKCU "${TEST_KEY}" "StringLimit" ${NSIS_MAX_STRLEN}
   !insertmacro NTERACT_APPEND_USER_PATH "${TEST_KEY}" "C:\nteract-path-test\bin"
+  !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "PATH fixture complete"
 SectionEnd

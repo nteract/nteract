@@ -6,16 +6,24 @@ $noExpand = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
 $stringKind = [Microsoft.Win32.RegistryValueKind]::String
 $expandKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
 $key = $null
+$productName = 'nteract PATH fixture-' + [guid]::NewGuid().ToString('N')
+$logDirectory = Join-Path $env:LOCALAPPDATA $productName
+$logFile = Join-Path $logDirectory 'install-bootstrap.log'
 
-function Invoke-Fixture {
+function Invoke-Fixture($expectedWarning = '') {
+    $previousLog = if (Test-Path $logFile) { [IO.File]::ReadAllText($logFile) } else { '' }
     $process = Start-Process -FilePath (Join-Path $PSScriptRoot 'test-user-path.exe') -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Fixture exited with $($process.ExitCode)" }
+    $expectedLog = $previousLog + "PATH fixture started`r`n" + $expectedWarning + "PATH fixture complete`r`n"
+    if ([IO.File]::ReadAllText($logFile) -cne $expectedLog) {
+        throw 'Bootstrap log lost or changed an earlier message'
+    }
 }
 
-function Assert-Path($name, $initial, $kind, $expected, $expectedKind) {
+function Assert-Path($name, $initial, $kind, $expected, $expectedKind, $expectedWarning = '') {
     $key.DeleteValue('Path', $false)
     if ($null -ne $initial) { $key.SetValue('Path', $initial, $kind) }
-    Invoke-Fixture
+    Invoke-Fixture $expectedWarning
     $actual = $key.GetValue('Path', $null, $noExpand)
     if ($actual -cne $expected -or $key.GetValueKind('Path') -ne $expectedKind) {
         throw "${name}: PATH content or registry type changed unexpectedly"
@@ -25,7 +33,7 @@ function Assert-Path($name, $initial, $kind, $expected, $expectedKind) {
 
 Push-Location $PSScriptRoot
 try {
-    & makensis /V2 "/DTEST_KEY=$testKey" test-user-path.nsi
+    & makensis /V2 "/DTEST_KEY=$testKey" "/DPRODUCTNAME=$productName" test-user-path.nsi
     if ($LASTEXITCODE -ne 0) { throw 'NSIS fixture compilation failed' }
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($testKey)
     Invoke-Fixture
@@ -41,14 +49,17 @@ try {
     $fits = 'x' * ($limit - $directory.Length - 2)
     Assert-Path 'append just fits' $fits $expandKind "$fits;$directory" $expandKind
     $overflows = $fits + 'x'
-    Assert-Path 'append would truncate' $overflows $expandKind $overflows $expandKind
+    $overflowWarning = "Preserved user PATH: appending would exceed the installer string limit. Add $directory to PATH manually.`r`n"
+    $readWarning = "Preserved user PATH: the installer could not safely read it. Add $directory to PATH manually.`r`n"
+    Assert-Path 'append would truncate' $overflows $expandKind $overflows $expandKind $overflowWarning
     $long = '%USERPROFILE%\tools;' + ('x' * ($limit * 2)) + ';C:\last-entry'
-    Assert-Path 'oversized PATH' $long $expandKind $long $expandKind
-    Assert-Path 'oversized literal PATH' $long $stringKind $long $stringKind
-    Assert-Path 'unsupported value type' 42 ([Microsoft.Win32.RegistryValueKind]::DWord) 42 ([Microsoft.Win32.RegistryValueKind]::DWord)
+    Assert-Path 'oversized PATH' $long $expandKind $long $expandKind $readWarning
+    Assert-Path 'oversized literal PATH' $long $stringKind $long $stringKind $readWarning
+    Assert-Path 'unsupported value type' 42 ([Microsoft.Win32.RegistryValueKind]::DWord) 42 ([Microsoft.Win32.RegistryValueKind]::DWord) $readWarning
 } finally {
     if ($null -ne $key) { $key.Dispose() }
     [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($testKey, $false)
     Remove-Item (Join-Path $PSScriptRoot 'test-user-path.exe') -ErrorAction SilentlyContinue
+    Remove-Item $logDirectory -Recurse -Force -ErrorAction SilentlyContinue
     Pop-Location
 }

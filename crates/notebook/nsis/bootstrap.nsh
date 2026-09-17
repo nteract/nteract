@@ -128,6 +128,7 @@ Var NteractCliOwned
   CreateDirectory "$LOCALAPPDATA\${PRODUCTNAME}"
   FileOpen $R0 "$LOCALAPPDATA\${PRODUCTNAME}\install-bootstrap.log" a
   ${IfNot} ${Errors}
+    FileSeek $R0 0 END
     FileWrite $R0 "${TEXT}$\r$\n"
     FileClose $R0
   ${EndIf}
