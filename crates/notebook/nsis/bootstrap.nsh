@@ -126,6 +126,7 @@ Var NteractCliOwned
 
 !macro NTERACT_APPEND_BOOTSTRAP_LOG TEXT
   CreateDirectory "$LOCALAPPDATA\${PRODUCTNAME}"
+  ClearErrors
   FileOpen $R0 "$LOCALAPPDATA\${PRODUCTNAME}\install-bootstrap.log" a
   ${IfNot} ${Errors}
     FileSeek $R0 0 END

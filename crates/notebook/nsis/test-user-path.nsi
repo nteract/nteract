@@ -17,6 +17,8 @@ RequestExecutionLevel user
 SilentInstall silent
 
 Section
+  ; Logging must work when called from a failed installer operation.
+  SetErrors
   !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "PATH fixture started"
   WriteRegDWORD HKCU "${TEST_KEY}" "StringLimit" ${NSIS_MAX_STRLEN}
   !insertmacro NTERACT_APPEND_USER_PATH "${TEST_KEY}" "C:\nteract-path-test\bin"
