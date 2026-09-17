@@ -1,6 +1,8 @@
 # The Document Split
 
-**Status:** Draft, 2026-05-22.
+**Status:** Draft, updated 2026-09-17 to describe the current document set and
+local persistence behavior. Recovery follows
+[room source lifecycle](room-source-lifecycle-and-file-recovery.md).
 
 **Update, 2026-06-07:** ADR 0002 intentionally supersedes the original
 three-document model by extracting mutable widget comm state into `CommsDoc`.
@@ -8,6 +10,9 @@ This document remains the historical baseline for the original split and its
 document-boundary reasoning. Do not use the document count as the concept:
 current notebook rooms sync `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, and
 `CommentsDoc`; `PoolDoc` is daemon-scoped and sync-adjacent.
+
+The [runtime writer proposal](../memos/runtime-writer-decomposition.md) explores
+internal write APIs without changing these document boundaries.
 
 ## Context
 
@@ -26,7 +31,7 @@ The current documents are:
 - **`NotebookDoc`** (`crates/notebook-doc/src/lib.rs`) - one per notebook room. Carries cells, source text, notebook metadata, attachments. Schema version 5. Wire frame `0x00` (AutomergeSync).
 - **`RuntimeStateDoc`** (`crates/runtime-doc/src/doc.rs`) - one per runtime state surface; today each notebook room creates one. Carries kernel lifecycle, execution queue, executions and their outputs, env-sync state, trust state, project-file context, and widget comm topology/routing. Mutable widget comm state moved to `CommsDoc`. Schema version 2. Wire frame `0x05` (RuntimeStateSync).
 - **`CommsDoc`** (`crates/runtime-doc/src/comms.rs`) - one per notebook room. Carries mutable widget comm state keyed by comm id; `RuntimeStateDoc` remains the topology and membership source of truth. Schema version 1. Wire frame `0x09` (CommsDocSync).
-- **`CommentsDoc`** (`crates/comments-doc/src/lib.rs`) - one per notebook room. Carries notebook comments as a durable collaboration sidecar. The daemon persists CommentsDoc separately from the notebook, applies optimistic rendering, and finalizes authority-policy fields. Schema version 1. Wire frame `0x0a` (CommentsDocSync).
+- **`CommentsDoc`** (`crates/comments-doc/src/lib.rs`) - one per notebook room. Carries notebook comments as a durable collaboration sidecar. The daemon persists CommentsDoc separately from the notebook. Clients render optimistic local changes. Ingress validates actor labels and scope; there is no daemon finalization step. Attribution comes from admitted change actors. Schema version 1. Wire frame `0x0a` (CommentsDocSync).
 - **`PoolDoc`** (`crates/notebook-doc/src/pool_state.rs`) - one per daemon (not per room). Carries UV / Conda / Pixi prewarm pool counters, errors, retry timers. No schema version. Wire frame `0x06` (PoolStateSync).
 
 A connecting peer subscribes through one of the typed-frame handshake channels.
@@ -220,8 +225,17 @@ runtime-agent actor, while the shared policy filters what each scope may mutate.
 
 ## Decision 4: Persistence is per-document and asymmetric
 
-- **`NotebookDoc`** is persisted. For file-backed rooms, the canonical form is the `.ipynb` on disk; the Automerge doc is rebuilt from `.ipynb` on load and saved back on Cmd+S. For untitled rooms, the doc is persisted as a debounced `.automerge` blob to a daemon-managed directory (`crates/runtimed/src/notebook_sync_server/persist.rs::spawn_persist_debouncer`). The persisted file is deleted on save-as (it transitions to file-backed) and on room eviction without save (the untitled doc is gone).
-- **`RuntimeStateDoc`** is **not** persisted to disk separately. The comment in `crates/runtimed/src/daemon.rs:4419-4422` records this: "Outputs live in RuntimeStateDoc (not persisted to disk), once evicted, those outputs are discarded." On room eviction, the entire doc is dropped. On daemon restart, it is rebuilt from the schema seed.
+In local rooms, persistence differs by document. Hosted room checkpoints save
+all four room documents through `apps/notebook-cloud/src/room-materializer.ts`.
+
+- **`NotebookDoc`** recovers from an append-only recovery journal for persistent
+  rooms, including untitled notebooks. The `.ipynb` file is a checkpoint;
+  legacy `.automerge` files are an untitled migration fallback. Explicitly
+  ephemeral rooms use volatile durability. See
+  [room source lifecycle](room-source-lifecycle-and-file-recovery.md).
+- **`RuntimeStateDoc`** is not persisted as a standalone Automerge document in
+  local rooms. Execution records and notebook outputs provide separate durable
+  storage; the live document is rebuilt when the room loads.
 - **`CommsDoc`** is **not** persisted to disk as a standalone Automerge doc in
   desktop rooms. Save/load reconstructs widget state from the notebook's widget
   metadata and the runtime/comms projection; the live CommsDoc is dropped on
@@ -234,19 +248,19 @@ runtime-agent actor, while the shared policy filters what each scope may mutate.
   (`crates/runtimed/src/notebook_sync_server/peer_comments_sync.rs`).
 - **`PoolDoc`** is **not** persisted. It is built fresh from `PoolDoc::new()` on daemon startup, hydrated from in-process pool state on each daemon tick (`Daemon::update_pool_doc`). On daemon restart it is empty until the pools come back online.
 
-Output durability is the asymmetry that needs the most attention. `RuntimeStateDoc` outputs are the live record of the most recent execution; they are also what the frontend renders. If the room evicts before a save, those outputs are gone. The compensating mechanism:
+`RuntimeStateDoc` contains the live outputs rendered by clients. Local output storage also includes:
 
 - A separate `ExecutionStore` (`crates/runtimed-client/src/execution_store.rs`) persists terminal execution records to disk on each terminal transition (`peer_runtime_sync.rs::persist_terminal_execution_records`).
 - On save to `.ipynb`, the daemon walks `RuntimeStateDoc.executions[cell.execution_id].outputs` and writes them into the nbformat output array on disk.
 - Blob payloads (image bytes, large text) are stored in a content-addressed `BlobStore` keyed by SHA-256, separate from any of the docs. Manifests in `executions/*/outputs` reference blobs by hash. Blobs survive across executions and rooms; the blob GC walks live rooms plus persisted notebook docs for resolved-asset and attachment refs.
 
-So the durable footprint of one notebook is: the `.ipynb` (or untitled `.automerge`), the per-execution records in `ExecutionStore`, and the blob store. `RuntimeStateDoc` is the in-memory join of these for the lifetime of the room.
+A persistent local notebook therefore has a recovery journal, an optional `.ipynb` checkpoint, a comments sidecar, execution records, and referenced blobs. The live runtime document is not itself the recovery journal.
 
 ## Decision 5: Lifecycle and identity per document
 
 | Document | Created when | Identity | GC'd when |
 |---|---|---|---|
-| `NotebookDoc` | On room load (either from `.ipynb` or fresh) | Per-notebook UUID; schema seed actor `nteract:notebook-schema:v5` | On room eviction; persisted file deleted on save-as transition |
+| `NotebookDoc` | On room load, using recovery, file import, or a fresh seed as appropriate | Per-notebook UUID; schema seed actor `nteract:notebook-schema:v5` | Live document dropped on room eviction; durable recovery follows room source lifecycle |
 | `RuntimeStateDoc` | On room load (fresh from schema seed; load code populates synthetic executions when the `.ipynb` carries legacy outputs, `crates/runtimed/src/notebook_sync_server/load.rs:709, :731, :741`) | Runtime-state document id referenced by `NotebookDoc.runtime_state_doc_id`; schema seed actor `nteract:runtime-state-schema:v2`; daemon writes under actor `runtimed:state`; runtime-agent peer writes under its own actor (`crates/runtimed/src/runtime_agent.rs:96`) | On room eviction |
 | `CommsDoc` | On room load (fresh from schema seed; load code hydrates widget state when `.ipynb` widget metadata is present) | Per-notebook side document; schema seed actor `nteract:comms-doc-schema:v1` | On room eviction |
 | `CommentsDoc` | On room load (loaded from disk or fresh from schema seed) | Per-notebook sidecar document; schema seed actor `nteract:comments-doc-schema:v1`; ingress validates change actor labels and scope | On room eviction; persisted sidecar survives eviction |
@@ -264,7 +278,7 @@ scaffolds the runtime tree; regular clients remain read-only, the
 coordinator/room host owns intent and room facts, and runtime peers may only
 mutate policy-allowed runtime progress/output/topology state.
 
-Room eviction is driven by "last peer disconnected." `peer_eviction.rs` runs the teardown: stop kernel, optionally clean up env, save `.ipynb` if file-backed and dirty, drop the room from the registry. Room-scoped live docs go out of scope. Re-opening the room recreates `RuntimeStateDoc` and `CommsDoc` fresh from seed.
+Peer disconnect schedules kernel teardown; it does not immediately evict the room. `peer_eviction.rs` preserves the room, file binding, and save services. A separate resident-room reaper in `daemon.rs` checks idle rooms and durability before removing them. See [room source lifecycle](room-source-lifecycle-and-file-recovery.md) for the recovery and eviction contract.
 
 ## Decision 6: Sync read-only enforcement is per-document
 
@@ -299,8 +313,8 @@ cause Automerge to evaluate the changes; the strip happens before any apply.
 
 1. User hits Cmd+S. Daemon walks `RuntimeStateDoc.executions` keyed by each cell's current `execution_id` in `NotebookDoc`, materializes outputs into nbformat, writes `.ipynb` to disk.
 2. Daemon sets `RuntimeStateDoc.last_saved` to the ISO timestamp.
-3. User quits. Room evicts. Both notebook docs are dropped. `.automerge` for untitled paths is not used here because the doc is file-backed.
-4. User reopens the notebook. Daemon loads `.ipynb` into a fresh `NotebookDoc`. `RuntimeStateDoc` is rebuilt from schema seed, then the loader walks cells that carry legacy `execution_count` or outputs and creates **one synthetic execution entry per such cell** so the new `RuntimeStateDoc` can route them through the same `executions/*/outputs` shape (`crates/runtimed/src/notebook_sync_server/load.rs:709-741`). The cell's `execution_id` is set to the synthetic entry's id at the same time.
+3. User closes the notebook. The room may remain resident after kernel teardown. If the room is later reaped or the daemon restarts, its live documents are dropped; durable recovery data remains.
+4. User reopens the notebook. A resident room can be rejoined. A cold load follows the source lifecycle to reconcile the recovery journal and file checkpoint. When importing `.ipynb` outputs, the loader creates synthetic execution entries in RuntimeStateDoc and links cells to them (`crates/runtimed/src/notebook_sync_server/load.rs`).
 5. If the `.ipynb` carries `metadata.widgets["application/vnd.jupyter.widget-state+json"]`, the loader imports widget topology into `RuntimeStateDoc.comms` and mutable model state into `CommsDoc`. Large widget buffers are externalized through the blob store before the comm state is written. That means a publish snapshot can carry widget models even when no live kernel has reopened those comms.
 
 ### Kernel crash and relaunch
@@ -323,7 +337,7 @@ cause Automerge to evaluate the changes; the strip happens before any apply.
 3. **Is `cells[cell_id].execution_count` in the right document?** Today it lives in `NotebookDoc` as a JSON-encoded string ("5", "null") for nbformat round-trip. Live execution counts live in `RuntimeStateDoc.executions[execution_id].execution_count`. The frontend has to know to consult the live source first and fall back to the legacy field. Splitting one concept across two documents creates a stale-on-reload hazard.
 4. **`comms/*/outputs` is inline manifests, not blob refs.** Most output payloads in `RuntimeStateDoc.executions/*/outputs` go through the blob store; comm outputs (the OutputModel widget) inline their manifests. The reason is that comm outputs are scoped to a widget, not a cell, and don't go through the cell output path. Whether the comm-outputs storage should converge with execution outputs is open.
 5. **`PoolDoc` per-pool-type vs per-pool-instance.** UV / Conda / Pixi are hard-coded top-level keys. Adding a new env manager (mamba, rattler, future) requires a schema change, not data. A keyed map `pools/{kind}` would be more extensible; the trade-off is that schema-versioned hard-coded keys make pool absence explicit in the type rather than a missing entry. Note also that `PoolDoc` has no `schema_version` field at all (`NotebookDoc` is v5, `RuntimeStateDoc` is v2); a future incompatible change has no version pin to negotiate against.
-6. **What happens to `RuntimeStateDoc` on schema bump?** v2 today. The bump path is "discard and re-seed" because there is no persisted state. That works as long as no consumer treats `RuntimeStateDoc` as durable. If a future feature (e.g., persistent execution history across daemon restart) adds a persistence layer, the schema-bump strategy needs a migration story.
+6. **How should a future RuntimeStateDoc schema change handle hosted checkpoints?** Local rooms reconstruct the live document, but hosted rooms persist its bytes. A schema change must account for those snapshots as well as local execution records and file imports.
 7. **Cross-document heads correlation belongs to the publish boundary, not the live docs.** A snapshot for replay or audit needs (`NotebookDoc` heads, `RuntimeStateDoc` heads) as a pair. The desktop daemon does not produce or store this pair anywhere, and that is probably correct: forcing the live docs to reference each other's heads buys nothing for editing and adds a write-amplification path on every change. The natural home for the pair is publish metadata — the hosted-room prototype already stores both hashes together in its D1 catalog row alongside `latest_revision_id`, and a desktop "export snapshot" or "save versioned" feature would write the same pair into the export artifact. Leaving it out of the live documents keeps the cleavage line clean.
 8. **`PoolDoc` does not participate in the v1 clone-preview validator.** Because all changes are stripped on ingress, the principal-forgery problem doesn't arise. But the validator's absence means a malicious peer's stripped changes still contribute to the bloom-filter handshake. Probably benign; worth noting.
 
@@ -332,7 +346,7 @@ cause Automerge to evaluate the changes; the strip happens before any apply.
 The split was designed for the desktop topology (one daemon per user, same-UID trust). In a hosted multi-user deployment:
 
 - **`PoolDoc` does not make sense per-room or per-user.** Pool state is a property of the host's prewarm infrastructure. Hosted deployments either replace `PoolDoc` with a deployment-level "pools and quotas" doc, or drop it entirely if hosted runtimes don't prewarm on the user's behalf.
-- **`RuntimeStateDoc`'s ephemeral semantics fit hibernating rooms badly.** A room that hibernates and rehydrates wants its execution history back. Either `RuntimeStateDoc` persists, or `ExecutionStore` becomes the canonical source and `RuntimeStateDoc` is a projection. The desktop's "throw it away on eviction" choice has to flip.
+- **Hosted rooms persist RuntimeStateDoc.** `RoomMaterializer.checkpoint` saves all four room documents, including runtime and widget state. The local daemon's storage model does not describe hosted checkpoint durability.
 - **`NotebookDoc`'s multi-writer model already fits.** Multi-user editing of cells is what the trust model carves out for editor-scope peers.
 - **CommsDoc membership is a security-critical path.** On desktop, same-UID
   trust means a misbehaving editor is the user's own problem. In a multi-user
@@ -354,5 +368,6 @@ The split was designed for the desktop topology (one daemon per user, same-UID t
 - `crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs:80-107` - RuntimeStateDoc clone-preview validator and save-fingerprint comparison.
 - `crates/runtimed/src/notebook_sync_server/peer_pool_sync.rs` - PoolDoc fan-out across all connected peers.
 - `crates/runtimed/src/notebook_sync_server/persist.rs` - NotebookDoc `.automerge` debouncer.
-- `crates/runtimed/src/daemon.rs:4419-4422` - the comment that records "RuntimeStateDoc is not persisted."
+- `crates/runtimed/src/notebook_sync_server/recovery.rs` - recovery journal implementation.
+- `apps/notebook-cloud/src/room-materializer.ts` - hosted checkpoints for all four room documents.
 - `docs/adr/identity-and-trust.md` - the trust scopes that the document split makes expressible.

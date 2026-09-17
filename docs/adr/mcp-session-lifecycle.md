@@ -9,7 +9,7 @@ initialize-based MCP implementation, not conformance with the upstream
 **Neighbors:**
 - `docs/adr/room-source-lifecycle-and-file-recovery.md` - the room-owned source states, recovery journal, and progressive capability gates observed by MCP sessions.
 - `docs/adr/typed-frame-v4-wire-protocol.md` - the wire that backs every `DocHandle` the MCP server holds.
-- `docs/adr/document-split.md` - what `NotebookSession.handle` actually points at (`NotebookDoc`, `RuntimeStateDoc`, plus the runtime broadcast).
+- `docs/adr/document-split.md` - the room document set a session rejoins (`NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, `CommentsDoc`), plus daemon-scoped `PoolDoc`.
 - `docs/adr/execution-pipeline.md` - why a stale `DocHandle` is so painful for the agent: `required_heads`, output sync, and broadcast replay all run through it.
 - `docs/adr/blob-storage-and-content-addressing.md` - the blob HTTP port belongs to the daemon, not the stdio MCP transport.
 - `docs/adr/identity-and-trust.md` - local peer credentials establish the principal; the MCP client identity supplies the agent operator suffix for attribution.

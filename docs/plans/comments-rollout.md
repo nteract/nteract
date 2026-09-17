@@ -1,7 +1,9 @@
 # Comments Rollout
 
-This plan tracks the remaining work to support notebook comments in the app,
-agents, and hosted notebooks. See
+**Status:** In progress, 2026-09-17. Remaining work covers desktop interactions
+and the policy for including comments in published notebooks.
+
+This plan tracks the remaining work on notebook comments. See
 [Notebook Comments Document](../adr/notebook-comments-document.md) for the design.
 
 ## Current Baseline
@@ -13,8 +15,12 @@ The core comments architecture has landed:
 - `COMMENTS_DOC_SYNC` is part of the typed-frame protocol.
 - `runtimed-wasm`, the TypeScript sync engine, and the local daemon include
   CommentsDoc sync and projection code.
-- The desktop app projects comments and provides highlighting and selection UI.
+- The desktop app and the hosted viewer project comments and provide a comments
+  panel.
+- MCP comment tools can create, reply, resolve, and reopen threads.
 - Elements contains comment fixtures for trying out UI changes.
+- Hosted room ingress rejects comment writes from scopes without comment
+  authority (`RoomHost.receive_peer_frame` in `crates/runtimed-wasm/src/lib.rs`).
 
 ## Remaining Work
 
@@ -22,12 +28,6 @@ The core comments architecture has landed:
   source/rich-rendered selection repair against live `CommentsDoc` projections.
 - **Publish boundary.** Exclude private review comments from public artifacts by
   default; add an explicit opt-in policy before publishing comments.
-
-Note: Hosted room ingress validates comment writes by scope
-(`apps/notebook-cloud/src/room-materializer.ts:139-148` passes
-`canWriteAllNotebookChanges` to `receive_peer_frame`;
-`crates/runtimed-wasm/src/lib.rs:1063` rejects CommentsDoc changes when the
-flag is false).
 
 ## Guardrail
 
