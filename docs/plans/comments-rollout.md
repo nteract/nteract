@@ -1,10 +1,9 @@
 # Comments Rollout
 
-**Status:** Active product polish, 2026-09-17. Not the next structural move.
-Writer decomposition is tracked in
-[runtime writer decomposition](runtime-writer-decomposition.md).
+**Status:** In progress, 2026-09-17. Remaining work covers desktop interactions
+and the policy for including comments in published notebooks.
 
-This plan tracks the remaining comment product work. See
+This plan tracks the remaining work on notebook comments. See
 [Notebook Comments Document](../adr/notebook-comments-document.md) for the design.
 
 ## Current Baseline
@@ -21,7 +20,7 @@ The core comments architecture has landed:
 - MCP comment tools can create, reply, resolve, and reopen threads.
 - Elements contains comment fixtures for trying out UI changes.
 - Hosted room ingress rejects comment writes from scopes without comment
-  authority. That is shipped behavior, not remaining work.
+  authority (`RoomHost.receive_peer_frame` in `crates/runtimed-wasm/src/lib.rs`).
 
 ## Remaining Work
 

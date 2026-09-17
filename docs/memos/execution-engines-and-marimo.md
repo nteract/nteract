@@ -2,9 +2,7 @@
 
 **Status:** Draft memo, 2026-07-13. Architecture proposal and implementation
 framing; no execution-engine interface or marimo integration has been accepted
-yet. Not the next structural move. See
-[runtime writer decomposition](runtime-writer-decomposition.md). Tracked by
-[issue #4002](https://github.com/nteract/nteract/issues/4002).
+yet. Tracked by [issue #4002](https://github.com/nteract/nteract/issues/4002).
 
 Neighbors:
 

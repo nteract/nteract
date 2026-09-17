@@ -1,106 +1,88 @@
 # Runtime writer decomposition
 
-**Status:** Memo, 2026-09-17. Direction for the next structural move. Not a
-decision, and not authorization to split the daemon process.
+**Status:** Proposal, 2026-09-17. Refactor internal write entry points while
+preserving the existing documents, authorization policy, and process layout.
 
-Related:
+## Current implementation
 
-- [The Document Split](../adr/document-split.md) — the split principle. The
-  original three-document count is historical.
-- [ADR 0002: CommsDoc](../adr/0002-comms-document-split.md) — rejected shipping
-  a further document split as one program.
-- [Room source lifecycle and file recovery](../adr/room-source-lifecycle-and-file-recovery.md)
-  — the recovery authority. Clients observe it. They do not own it.
-- [Runtime principal promotion](../adr/runtime-principal-promotion.md) — still
-  Draft. Hosted authority is not settled.
-- [MCP session lifecycle](../adr/mcp-session-lifecycle.md) — the agent client
-  contract. It is not a second room model.
-- [Runtime writer decomposition plan](../plans/runtime-writer-decomposition.md)
-  — the sequenced work.
+A notebook room syncs `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, and
+`CommentsDoc`. `PoolDoc` is daemon-scoped. The
+[document split ADR](../adr/document-split.md) describes their ownership.
 
-## Diagnosis
+The daemon coordinates room lifecycle, recovery, file saves, environment
+selection, and execution intent. Each kernel already has a separate
+`runtimed runtime-agent` process. The agent discovers accepted executions through
+RuntimeStateDoc sync and writes execution progress, outputs, and widget topology.
+See `crates/runtimed/src/runtime_agent_handle.rs` and
+`crates/runtimed/src/runtime_agent.rs`.
 
-The documents already encode authority. The process that writes them does not.
+Local and hosted runtime ingress already share the Rust policy in
+`crates/runtime-doc/src/policy.rs`. The daemon calls
+`validate_runtime_state_sync_scope` from
+`crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs`. The TypeScript
+host calls `RoomHost.receive_peer_frame` through
+`apps/notebook-cloud/src/room-materializer.ts`; the Rust WASM implementation in
+`crates/runtimed-wasm/src/lib.rs` calls the same validator. A separate TypeScript
+policy implementation is unnecessary.
 
-A notebook room syncs four documents: `NotebookDoc`, `RuntimeStateDoc`,
-`CommsDoc`, and `CommentsDoc`. `PoolDoc` is daemon-scoped and fanned out. That
-split is an authority boundary. Regular clients read runtime state. They do not
-author it. Execution names a synced `cell_id`. The `.ipynb` file is a
-checkpoint, not the live record.
+Shared validation does not make every ingress behavior identical. For example,
+the daemon strips RuntimeStateDoc changes from ordinary clients, while the
+hosted receive path returns an error. Both prevent those changes from being
+applied. Tests should distinguish that authorization outcome from the transport
+response.
 
-`runtimed` is still one writer for almost all of that. Room lifecycle, recovery,
-save, the environment pool, kernel launch, output commit, and hosted attach
-live in the same process, mostly under `crates/runtimed/src/daemon.rs` and
-`crates/runtimed/src/notebook_sync_server/`. The crate split around wire,
-document schema, and protocol is real. It does not split the writer.
+## Proposed change
 
-Hosted rooms already stretch the desktop sentence "the daemon owns runtime."
-Locally, one daemon writes runtime state. In a hosted room, the room host, the
-runtime agent, and a workstation can each write a policy-scoped slice. That
-policy exists. It is not a module boundary both hosts are forced to share.
+Review the internal coordinator and runtime-agent write paths, then introduce
+separate entry points where that makes ownership easier to enforce. Incoming
+peer validation already distinguishes their rights; internal room-host writes
+can call document methods directly. The useful question is whether a narrower
+internal API would prevent mistakes in those trusted write paths.
 
-MCP is a peer of the document model, and it is growing client machinery:
-handles, parked sessions, subscriptions, request-scoped cancellation. That
-machinery has to rejoin a room. It must not become a second room.
+| Responsibility | Current owner | Document or storage |
+| --- | --- | --- |
+| Notebook content | Authorized clients, subject to ingress checks | `NotebookDoc` |
+| Execution intent, path/save, trust, environment, schema and root fields | Local coordinator or hosted room host | `RuntimeStateDoc` |
+| Execution progress, outputs, and widget topology | Runtime peer within the shared write policy; room host also handles lifecycle recovery | `RuntimeStateDoc` |
+| Mutable widget values | Runtime agent and authorized clients | `CommsDoc` |
+| Comments | Authorized editors and owners; attribution uses admitted change actors | `CommentsDoc` |
+| Environment pool counters | Daemon | `PoolDoc` |
+| Notebook recovery and file checkpoints | Room source lifecycle | Recovery journal and `.ipynb` checkpoint |
 
-## What to decompose
+The first change should be small enough to demonstrate a specific improvement:
+identify an internal write path with unclear ownership, route it through a
+scoped API, and test the allowed and rejected mutations. Keep the existing
+shared ingress validator.
 
-Decompose the writer along the authority lines the documents already have.
-Do not add a document to express a boundary the current documents already have.
+## Scope
 
-| Authority | Document | Who may commit | Where the code lives today |
-| --- | --- | --- | --- |
-| Notebook content | `NotebookDoc` | Editor and owner clients, after ingress checks | WASM peer; daemon ingress in `peer_notebook_sync.rs` |
-| Execution intent, path, save, trust, environment, schema and root facts | `RuntimeStateDoc` | Local daemon or hosted room host | `daemon.rs`, `notebook_sync_server/` |
-| Accepted runtime progress, outputs, topology | `RuntimeStateDoc` | Runtime peer, policy-scoped | `runtime_agent.rs`, `peer_runtime_sync.rs`, output committers |
-| Widget values | `CommsDoc` | Runtime agent and authorized frontend deltas | `peer_comms_sync.rs`, `runtime_agent/` |
-| Comments | `CommentsDoc` | Authorized editors; attribution from admitted actors | `peer_comments_sync.rs`, `comments-doc` |
-| Pool counters | `PoolDoc` | Daemon only | `warm_env.rs`, `peer_pool_sync.rs` |
-| Recovery and file checkpoint | Not a fifth document | Room source lifecycle | `recovery.rs`, `file_checkpoint.rs`, `persist.rs` |
+This proposal does not require a document migration, another process, or changes
+to MCP's session model. Execution continues to reference synced `cell_id` values.
+Recovery remains governed by
+[room source lifecycle and file recovery](../adr/room-source-lifecycle-and-file-recovery.md).
 
-The first extraction is a module boundary inside the current process: coordinator
-facts versus runtime progress. Both the local daemon and the hosted room host
-must reject the same unauthorized write. A process split is a later decision,
-after that shared rejection exists.
+[ADR 0002](../adr/0002-comms-document-split.md) separated the CommsDoc work from a
+possible NotebookDoc cells/metadata split. It did not prohibit future document
+splits. Any such change needs its own compatibility and migration design.
 
-## Holds
+The hosting proposals for [celld](celld-hosted-room-substrate.md) and
+[AWS](aws-rust-room-host.md), the
+[execution-engine proposal](execution-engines-and-marimo.md), and existing UI
+and release work retain their own scope. This memo does not establish a new
+prerequisite for them.
 
-These are sequencing constraints, not new product decisions.
+## Questions to resolve
 
-- No fifth room document. ADR 0002 already rejected shipping a further document
-  split as one program. Its gated `NotebookDoc` cells-versus-metadata move stays
-  gated.
-- No new client surface. MCP handles and subscriptions stay a client of the
-  room lifecycle. They do not own recovery, execution intent, or another
-  document set.
-- `PoolDoc` stays daemon-scoped.
-- Do not start a substrate rewrite, a new execution engine, or a new host shell
-  as a substitute for this split. Those memos stay research.
-  [celld](celld-hosted-room-substrate.md),
-  [the AWS room host](aws-rust-room-host.md), and
-  [execution engines](execution-engines-and-marimo.md) are not the next move.
-- Execute by synced `cell_id`. A client that sends a code string has introduced
-  a correctness bug.
-- One recovery story. [Room source lifecycle](../adr/room-source-lifecycle-and-file-recovery.md)
-  is the authority. Document-split Decision 4 is not.
+1. Which internal write paths would benefit from separate coordinator and
+   runtime-progress APIs? Identify concrete call sites before choosing a module
+   or crate boundary.
+2. Which host-owned recovery operations legitimately update runtime progress,
+   and how should the API represent them?
+3. Which differences between local and hosted ingress are intentional? Compare
+   authorization, actor checks, and document state after rejection, as well as
+   error handling and reconnect behavior.
 
-## Open questions
-
-1. The hosted room host is TypeScript. The daemon policy is Rust. The first
-   shared boundary can be a Rust library both call, or a Rust policy with a
-   tested TypeScript mirror. Which one can fail closed when the two drift is
-   not decided here.
-2. A process split may still be right after the module boundary exists. It is
-   not the first slice. Shipping it first concentrates failure in process
-   supervision instead of in the write policy.
-3. [Runtime principal promotion](../adr/runtime-principal-promotion.md) asks
-   what a local runtime becomes when it attaches to a hosted room. That ADR
-   stays Draft until this writer boundary can name the promoted principal's
-   commit rights without a field-level carve-out.
-
-## What would make this an ADR
-
-An ADR is justified after one shared ingress boundary has landed, with a test
-that local and hosted reject the same unauthorized write, and after the open
-question about Rust-versus-mirror is answered by that implementation. Until
-then this memo is the direction, and the plan is the sequence.
+The [implementation plan](../plans/runtime-writer-decomposition.md) starts with
+that audit. Record an ADR once the proposed API and its tradeoffs are reviewed.
+[Runtime principal promotion](../adr/runtime-principal-promotion.md) remains a
+separate draft about hosted identity and authority.

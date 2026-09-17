@@ -1,96 +1,74 @@
 # Runtime writer decomposition
 
-**Status:** Active plan, 2026-09-17.
+**Status:** Proposed plan, 2026-09-17.
 
-This is the sequenced work for
-[Runtime writer decomposition](../memos/runtime-writer-decomposition.md).
-The memo holds the direction and the open questions. This plan holds the
-order and the stop rules.
+This plan follows the
+[runtime writer decomposition proposal](../memos/runtime-writer-decomposition.md).
+It builds on the existing runtime-agent process and the shared Rust ingress
+policy. The audit below determines whether an internal API refactor is useful
+and which call sites it should cover.
 
-Do not treat a slice as permission to add a room document, a client surface,
-or a daemon process.
+## 1. Map current write paths
 
-## Stop rules
+Trace coordinator, runtime-agent, and hosted room-host writes to
+`RuntimeStateDoc`. Record which writes go through peer validation and which call
+document methods directly. Include host-owned recovery, kernel shutdown, and
+execution failure handling.
 
-- No fifth room document. ADR 0002's gated `NotebookDoc` split stays gated.
-- No new MCP session model, host shell, or execution engine.
-- No substrate rewrite as a stand-in for the writer split.
-- `PoolDoc` stays daemon-scoped.
-- Execution requests name a synced `cell_id`.
-- Recovery changes go through
-  [room source lifecycle](../adr/room-source-lifecycle-and-file-recovery.md),
-  not a second checkpoint design.
+Start with:
 
-## Sequence
+- `crates/runtime-doc/src/policy.rs`: shared runtime-peer write policy.
+- `crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs`: daemon ingress.
+- `crates/runtimed-wasm/src/lib.rs`: hosted ingress and direct room-host writes.
+- `apps/notebook-cloud/src/room-materializer.ts`: TypeScript calls into the WASM host.
+- `crates/runtimed/src/runtime_agent.rs`: runtime-agent execution and progress.
 
-### 1. Register the current writer
+Complete this step with a list of call sites and a concrete example of a mistake
+that a narrower internal API would prevent. Documentation status changes alone
+are not evidence that a code boundary is missing.
 
-Done when the document split, comments ADR, and the competing plans say the
-same thing as the code: four room documents, one recovery authority, and this
-plan as the next structural move.
+## 2. Compare ingress behavior
 
-Evidence: the status lines in `docs/adr/document-split.md`,
-`docs/adr/notebook-comments-document.md`, and `docs/README.md`.
+Use existing policy tests as the baseline, then identify missing coverage at the
+actual local and hosted ingress paths. Cover unauthorized writes to each room
+document, actor attribution, and allowed runtime progress for accepted work.
 
-### 2. Prove ingress parity before moving code
+Check that rejected mutations leave the authoritative document unchanged.
+Record intentional differences in responses: the local runtime ingress strips
+ordinary-client changes, while hosted ingress returns an error. Do not require
+identical errors to establish equivalent write permissions.
 
-Write one unauthorized-write case per room document. Run it against the local
-daemon ingress and the hosted room-host ingress. Record where they already
-disagree.
+## 3. Refactor one internal write path
 
-Do not extract a module to hide a disagreement. The test is the map.
+If the audit identifies a useful boundary, route one group of internal writes
+through an API that expresses its owner and permitted changes. Preserve the
+shared ingress validator and existing process layout.
 
-Likely surfaces: `crates/runtimed/src/notebook_sync_server/peer_runtime_sync.rs`
-and the hosted receive path in `apps/notebook-cloud`. The exact hosted function
-has to be named from the checkout at implementation time. Do not trust a line
-number from this plan.
+Tests should cover the internal API, including a permitted operation and the
+invalid operation identified in step 1. Existing tests already reject
+runtime-peer creation of unknown executions and writes to widget values inside
+RuntimeStateDoc; rerunning them alone would not demonstrate the new API's value.
 
-### 3. Separate coordinator facts from runtime progress
+## 4. Apply the API where both hosts need it
 
-Inside `runtimed`, make coordinator commits and runtime-progress commits call
-different module entry points. Coordinator facts are execution intent, path,
-save, trust, environment, and schema or root fields. Runtime progress is
-lifecycle, outputs, and topology for accepted work.
+Reuse Rust code through the hosted WASM implementation where applicable. Avoid
+a second policy implementation in TypeScript. Keep legitimate room-host
+recovery operations explicit and verify that they still work.
 
-Stay in one process. `daemon.rs` may keep the task, but it should not keep
-both policies inline.
+Complete this step when the affected local and hosted paths pass their
+integration tests and any remaining host differences are documented.
 
-Done when a runtime-peer change that creates an unknown execution is rejected
-by the progress entry point, and a coordinator change that writes widget values
-is rejected by the coordinator entry point.
+## Constraints and follow-up
 
-### 4. Make the hosted host use that boundary
+- Preserve the existing room documents and daemon-scoped `PoolDoc`.
+- Keep execution tied to synced `cell_id` values.
+- Preserve the recovery and checkpoint contract in
+  [room source lifecycle](../adr/room-source-lifecycle-and-file-recovery.md).
+- Keep MCP reconnect and cancellation behavior intact when changing shared APIs.
+- Propose further process separation only for a demonstrated lifecycle or
+  isolation need; kernel execution is already in a runtime-agent subprocess.
 
-The hosted room host must fail the slice 2 cases the same way as the daemon.
-If the host cannot call the Rust policy, add a mirror and a parity test that
-fails when the two policies diverge. A comment that says they match is not
-the boundary.
-
-Done when slice 2 is green on both hosts without a per-host exception.
-
-### 5. Keep MCP a client of the room
-
-MCP may park a session, rejoin a room, and wait on a subscription. It may not
-own recovery, mint execution intent, or keep a document set the room does not
-have.
-
-Done when a lost MCP response cannot replay a mutation the room did not
-commit, and a reconnect reads the room's source lifecycle instead of a private
-ready flag.
-
-### 6. Only then choose a process split
-
-If slices 3 and 4 are landed and the remaining bugs are still process-lifetime
-bugs, write an ADR for a process split. Do not start that ADR from this plan.
-
-## Not in this sequence
-
-- Desktop comment polish and publish opt-in. Tracked in
-  [comments rollout](comments-rollout.md).
-- The unified CLI release. Tracked in
-  [unified CLI release](unified-cli-release.md). The source has merged. The
-  release has not shipped. Checked base is still 2.7.6.
-- Shared UI store convergence. The
-  [surface checklist](notebook-surface-library-refactor-checklist.md) stays
-  open, and it does not grow a new host surface ahead of slice 4.
-- celld, an AWS room host, and a marimo execution engine.
+[Comments](comments-rollout.md), the [CLI release](unified-cli-release.md),
+[shared UI work](notebook-surface-library-refactor-checklist.md), and hosting or
+execution-engine proposals have their own plans. This refactor does not add a
+new dependency to them.

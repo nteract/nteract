@@ -1,8 +1,6 @@
 # Runtime Principal Promotion
 
-**Status:** Draft, 2026-06-06. Not the next structural move. Writer
-decomposition comes first; see
-[runtime writer decomposition](../memos/runtime-writer-decomposition.md).
+**Status:** Draft, 2026-06-06.
 
 ## Context
 

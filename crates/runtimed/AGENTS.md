@@ -48,9 +48,9 @@ Scope: `crates/runtimed/**`, `crates/runt/**`, `crates/runtimed-client/**`, `cra
 
 The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to daemon requests and manages the socket relay. It does not own protocol types or document operations.
 
-Do not add a room document or a client surface to fix a writer problem. The
-next structural move is to split coordinator facts from runtime progress inside
-this crate. See `docs/memos/runtime-writer-decomposition.md`.
+Local and hosted runtime ingress share the policy in `runtime-doc::policy`.
+Preserve that shared validation when refactoring write paths. Proposed internal
+API work is described in `docs/memos/runtime-writer-decomposition.md`.
 
 ## State ownership
 

@@ -2,9 +2,8 @@
 
 **Status:** Proposed release sequence, rechecked 2026-09-17. No release or
 version bump is authorized by this document. Unified CLI source has merged,
-including path and directory launch. The checked base is still 2.7.6. This is
-not the next structural move; see
-[runtime writer decomposition](runtime-writer-decomposition.md).
+including path and directory launch. The checked-in app version is still 2.7.6;
+that source version does not establish which changes are in published artifacts.
 
 Ship the unified `nteract` CLI through Nightly first, qualify the actual installed
 artifacts, then promote that qualified source revision to Stable. Propose **2.8.0**
