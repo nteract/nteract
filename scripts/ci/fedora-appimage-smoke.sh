@@ -20,6 +20,16 @@ cd "$WORKDIR"
 echo "Extracting AppImage"
 "$APPIMAGE_COPY" --appimage-extract > appimage-extract.log
 
+# Inspect the actual shipped artifact, including symlinks and nested lib dirs.
+# Bundling these alongside host Mesa/EGL can abort WebKit on newer distros.
+bundled_wayland=$(find "$WORKDIR/squashfs-root" \
+  \( -name 'libwayland-client.so*' -o -name 'libwayland-server.so*' \
+     -o -name 'libwayland-egl.so*' -o -name 'libwayland-cursor.so*' \) -print)
+if [[ -n "$bundled_wayland" ]]; then
+  printf 'AppImage must use host Wayland libraries; found:\n%s\n' "$bundled_wayland" >&2
+  exit 1
+fi
+
 BIN_DIR="$WORKDIR/squashfs-root/usr/bin"
 
 find_executable() {

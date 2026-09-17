@@ -808,6 +808,8 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      # Mesa/EGL come from the host and must use the host's Wayland libraries.
+      LINUXDEPLOY_EXCLUDED_LIBRARIES: "libwayland-client.so*;libwayland-server.so*;libwayland-egl.so*;libwayland-cursor.so*"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -910,6 +912,9 @@ jobs:
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
           cp target/release/nteract-cli "crates/notebook/binaries/nteract-cli-$TARGET"
           cp target/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
+
+      - name: Install linuxdeploy with library exclusion support
+        run: bash scripts/ci/install-linuxdeploy.sh
 
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
