@@ -1,7 +1,9 @@
 # Notebook Comments Document
 
-**Status:** In progress, 2026-06-07. Core `CommentsDoc` structure landed;
-presence and UI surfaces remain open. Trimmed 2026-06-29.
+**Status:** In progress, 2026-09-17. Core `CommentsDoc`, sync, desktop and
+hosted panels, and MCP comment tools have landed. Remaining work is desktop
+polish and the publish opt-in, tracked in
+[comments rollout](../plans/comments-rollout.md). Trimmed 2026-06-29.
 
 This ADR records the durable architecture for notebook comments. Historical
 phase plans and file-by-file implementation checklists were removed once the

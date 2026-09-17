@@ -1,7 +1,10 @@
 # Unified CLI release plan
 
-Status: proposed release sequence; no release or version bump is authorized by
-this document. Source and PR status checked on 2026-09-10.
+**Status:** Proposed release sequence, rechecked 2026-09-17. No release or
+version bump is authorized by this document. Unified CLI source has merged,
+including path and directory launch. The checked base is still 2.7.6. This is
+not the next structural move; see
+[runtime writer decomposition](runtime-writer-decomposition.md).
 
 Ship the unified `nteract` CLI through Nightly first, qualify the actual installed
 artifacts, then promote that qualified source revision to Stable. Propose **2.8.0**
@@ -14,7 +17,7 @@ contract while retaining the legacy commands. The checked-in base is currently
 | Change | Release relationship |
 | --- | --- |
 | [Unified CLI #4231](https://github.com/nteract/nteract/pull/4231) | Merged; independently releasable. Introduces `nteract open`, notebook operations, supervised `nteract mcp`, workstation commands, and safe command installation. Its release does not depend on the path shorthand follow-up. |
-| Path and directory launch follow-up | Separate feature gate for directory semantics (including `nteract open <directory>`) and `nteract .`, `nteract <directory>`, and notebook paths without `open`. Include only after its own source and installed Desktop acceptance passes; otherwise release the unified CLI with explicit `nteract open <notebook.ipynb>`. |
+| Path and directory launch ([#4233](https://github.com/nteract/nteract/pull/4233)) | Merged on main. Still a release-qualification gate: include the shorthand only after installed Desktop acceptance passes; otherwise release the unified CLI with explicit `nteract open <notebook.ipynb>`. |
 | [Runtime lock errors #4230](https://github.com/nteract/nteract/pull/4230) | Independent improvement, not a prerequisite established by current evidence. Open at this audit, head `e5f5188650c690625c66a0a4aa0d43e8cc24ea2c`. Its reported Python kernel-readiness failure still needs disposition. The change distinguishes lock contention from I/O errors; it does not solve Desktop's service-install race. Recheck status before selecting the release SHA. |
 | Atomic Desktop bootstrap | Separate service-lifecycle work. Desktop probes compatibility, but an endpoint appearing after the absence check can race with service installation. Do not describe this release as providing atomic, non-replacing Desktop startup. |
 

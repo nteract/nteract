@@ -1,6 +1,9 @@
 # The Document Split
 
-**Status:** Draft, 2026-05-22.
+**Status:** Accepted, 2026-09-17. The split principle and the current room set
+below are load-bearing. Decision 4's untitled persistence and eviction story
+is not current; recovery authority is
+[room source lifecycle](room-source-lifecycle-and-file-recovery.md).
 
 **Update, 2026-06-07:** ADR 0002 intentionally supersedes the original
 three-document model by extracting mutable widget comm state into `CommsDoc`.
@@ -8,6 +11,10 @@ This document remains the historical baseline for the original split and its
 document-boundary reasoning. Do not use the document count as the concept:
 current notebook rooms sync `NotebookDoc`, `RuntimeStateDoc`, `CommsDoc`, and
 `CommentsDoc`; `PoolDoc` is daemon-scoped and sync-adjacent.
+
+**Update, 2026-09-17:** The next structural move is the writer, not another
+document. See [runtime writer decomposition](../memos/runtime-writer-decomposition.md).
+Do not add a fifth room document to express a boundary this split already has.
 
 ## Context
 
@@ -26,7 +33,7 @@ The current documents are:
 - **`NotebookDoc`** (`crates/notebook-doc/src/lib.rs`) - one per notebook room. Carries cells, source text, notebook metadata, attachments. Schema version 5. Wire frame `0x00` (AutomergeSync).
 - **`RuntimeStateDoc`** (`crates/runtime-doc/src/doc.rs`) - one per runtime state surface; today each notebook room creates one. Carries kernel lifecycle, execution queue, executions and their outputs, env-sync state, trust state, project-file context, and widget comm topology/routing. Mutable widget comm state moved to `CommsDoc`. Schema version 2. Wire frame `0x05` (RuntimeStateSync).
 - **`CommsDoc`** (`crates/runtime-doc/src/comms.rs`) - one per notebook room. Carries mutable widget comm state keyed by comm id; `RuntimeStateDoc` remains the topology and membership source of truth. Schema version 1. Wire frame `0x09` (CommsDocSync).
-- **`CommentsDoc`** (`crates/comments-doc/src/lib.rs`) - one per notebook room. Carries notebook comments as a durable collaboration sidecar. The daemon persists CommentsDoc separately from the notebook, applies optimistic rendering, and finalizes authority-policy fields. Schema version 1. Wire frame `0x0a` (CommentsDocSync).
+- **`CommentsDoc`** (`crates/comments-doc/src/lib.rs`) - one per notebook room. Carries notebook comments as a durable collaboration sidecar. The daemon persists CommentsDoc separately from the notebook. Clients render optimistic local changes. Ingress validates actor labels and scope; there is no daemon finalization step. Attribution comes from admitted change actors. Schema version 1. Wire frame `0x0a` (CommentsDocSync).
 - **`PoolDoc`** (`crates/notebook-doc/src/pool_state.rs`) - one per daemon (not per room). Carries UV / Conda / Pixi prewarm pool counters, errors, retry timers. No schema version. Wire frame `0x06` (PoolStateSync).
 
 A connecting peer subscribes through one of the typed-frame handshake channels.
@@ -219,6 +226,15 @@ runtime-agent actor, while the shared policy filters what each scope may mutate.
 `RuntimeStateDoc` exposes two ingress APIs internally: `receive_sync_message` (read-only, strips changes for clone-preview validation) and `receive_sync_message_with_changes_recovering` (writable, applies changes after validation). The server uses the read-only API in the clone-preview pass and the writable one for committed application; library callers use the writable API directly (`crates/runtime-doc/src/doc.rs:2720`, `:2789`).
 
 ## Decision 4: Persistence is per-document and asymmetric
+
+**Correction, 2026-09-17:** The untitled `.automerge` eviction story below is
+historical. Persistent rooms, including untitled notebooks, recover through the
+append-only recovery journal. Legacy `.automerge` files are a migration
+fallback. Use
+[room source lifecycle](room-source-lifecycle-and-file-recovery.md) for
+recovery and file-checkpoint behavior. The per-document asymmetry still holds:
+`CommentsDoc` is a durable sidecar; `RuntimeStateDoc` and `CommsDoc` are not
+the recovery record.
 
 - **`NotebookDoc`** is persisted. For file-backed rooms, the canonical form is the `.ipynb` on disk; the Automerge doc is rebuilt from `.ipynb` on load and saved back on Cmd+S. For untitled rooms, the doc is persisted as a debounced `.automerge` blob to a daemon-managed directory (`crates/runtimed/src/notebook_sync_server/persist.rs::spawn_persist_debouncer`). The persisted file is deleted on save-as (it transitions to file-backed) and on room eviction without save (the untitled doc is gone).
 - **`RuntimeStateDoc`** is **not** persisted to disk separately. The comment in `crates/runtimed/src/daemon.rs:4419-4422` records this: "Outputs live in RuntimeStateDoc (not persisted to disk), once evicted, those outputs are discarded." On room eviction, the entire doc is dropped. On daemon restart, it is rebuilt from the schema seed.

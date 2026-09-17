@@ -1,6 +1,10 @@
 # Notebook Surface Library Refactor Checklist
 
-**Status:** Active checklist, 2026-06-14.
+**Status:** Active checklist, 2026-06-14. Rechecked 2026-09-17. Not the next
+structural move. Do not grow a new host surface from this list until the
+runtime writer plan has landed its shared ingress boundary. Existing items
+stay open. See
+[runtime writer decomposition](runtime-writer-decomposition.md).
 
 This checklist coordinates the multi-PR effort to make Desktop, Cloud, and
 Elements render from stable shared notebook libraries instead of app-to-app

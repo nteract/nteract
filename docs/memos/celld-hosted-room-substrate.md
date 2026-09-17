@@ -1,6 +1,8 @@
 # celld as a Hosted Room Substrate
 
-**Status:** Memo / proposal, 2026-09-11. Not an accepted deployment decision.
+**Status:** Memo / proposal, 2026-09-11. Not an accepted deployment decision,
+and not the next structural move. See
+[runtime writer decomposition](runtime-writer-decomposition.md).
 
 This memo looks at what changes, and what doesn't, if hosted notebook rooms run
 on [celld](https://github.com/denoland/celld) instead of Cloudflare's own

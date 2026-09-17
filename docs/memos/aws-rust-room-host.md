@@ -1,6 +1,8 @@
 # AWS Rust Room Host
 
-**Status:** Memo / proposal, 2026-06-10. Trimmed 2026-06-29.
+**Status:** Memo / proposal, 2026-06-10. Trimmed 2026-06-29. Not the next
+structural move. See
+[runtime writer decomposition](../memos/runtime-writer-decomposition.md).
 
 This memo explores what it would look like to run hosted notebook rooms outside
 Cloudflare with a native Rust room host. It is not an accepted deployment ADR.
