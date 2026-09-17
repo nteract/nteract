@@ -134,6 +134,74 @@ Var NteractCliOwned
   DetailPrint "${TEXT}"
 !macroend
 
+; Keep the registry subkey explicit so the regression fixture never touches
+; the test user's Environment key. DIRECTORY must be a literal or an $R register.
+!macro NTERACT_APPEND_USER_PATH SUBKEY DIRECTORY
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  ; RRF_NOEXPAND | RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ. Query the value's
+  ; type without expanding %VARIABLES% or copying PATH into an NSIS string.
+  System::Call 'advapi32::RegGetValueW(p 0x80000001, w "${SUBKEY}", w "Path", i 0x10000006, *i .r1, p 0, *i .r2) i.r0'
+  ${If} $0 == 2 ; ERROR_FILE_NOT_FOUND: genuinely absent, not an oversized value.
+    StrCpy $3 ""
+    StrCpy $1 2 ; REG_EXPAND_SZ for a new value.
+  ${ElseIf} $0 == 0
+    IntOp $4 ${NSIS_MAX_STRLEN} * 2 ; Unicode buffer size in bytes.
+    ${If} $2 > $4
+      StrCpy $0 1
+    ${Else}
+      ClearErrors
+      ReadRegStr $3 HKCU "${SUBKEY}" "Path"
+      ${If} ${Errors}
+        StrCpy $0 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  ${If} $0 == 0
+  ${OrIf} $0 == 2
+    ${StrLoc} $4 "$3" "${DIRECTORY}" ">"
+    ${If} $4 == ""
+      ; Check BEFORE concatenating: NSIS silently truncates oversized strings.
+      StrLen $0 $3
+      StrLen $2 "${DIRECTORY}"
+      ${If} $0 != 0
+        IntOp $2 $2 + 1 ; separator
+      ${EndIf}
+      IntOp $2 $2 + $0
+      ${If} $2 < ${NSIS_MAX_STRLEN}
+        ${If} $0 == 0
+          StrCpy $3 "${DIRECTORY}"
+        ${Else}
+          StrCpy $3 "$3;${DIRECTORY}"
+        ${EndIf}
+        ClearErrors
+        ${If} $1 == 1 ; Preserve REG_SZ rather than enabling expansion.
+          WriteRegStr HKCU "${SUBKEY}" "Path" "$3"
+        ${Else}
+          WriteRegExpandStr HKCU "${SUBKEY}" "Path" "$3"
+        ${EndIf}
+        ${If} ${Errors}
+          !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "Could not update user PATH. Add ${DIRECTORY} to PATH manually."
+        ${Else}
+          SendMessage ${NTERACT_HWND_BROADCAST} ${NTERACT_WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+        ${EndIf}
+      ${Else}
+        !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "Preserved user PATH: appending would exceed the installer string limit. Add ${DIRECTORY} to PATH manually."
+      ${EndIf}
+    ${EndIf}
+  ${Else}
+    !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "Preserved user PATH: the installer could not safely read it. Add ${DIRECTORY} to PATH manually."
+  ${EndIf}
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+!macroend
+
 !macro NTERACT_SELECT_CLI_DIR
   StrCpy $R6 ""
   StrCpy $R5 "$LOCALAPPDATA\Microsoft\WindowsApps"
@@ -154,16 +222,7 @@ Var NteractCliOwned
   ${If} $R6 == ""
     StrCpy $R6 "$PROFILE\.local\bin"
     CreateDirectory "$R6"
-    ReadRegStr $R4 HKCU "Environment" "Path"
-    ${StrLoc} $R3 "$R4" "$R6" ">"
-    ${If} $R3 == ""
-      ${If} $R4 == ""
-        WriteRegExpandStr HKCU "Environment" "Path" "$R6"
-      ${Else}
-        WriteRegExpandStr HKCU "Environment" "Path" "$R4;$R6"
-      ${EndIf}
-      SendMessage ${NTERACT_HWND_BROADCAST} ${NTERACT_WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
-    ${EndIf}
+    !insertmacro NTERACT_APPEND_USER_PATH "Environment" "$R6"
   ${EndIf}
 !macroend
 

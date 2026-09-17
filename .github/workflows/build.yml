@@ -274,7 +274,7 @@ jobs:
   # run for relevant paths or ci:* labels, but branch protection does not require
   # them.
   nsis-bootstrap:
-    name: NSIS Bootstrap Syntax
+    name: NSIS Bootstrap (${{ matrix.os }})
     needs: [changes]
     if: |
       needs.changes.outputs.source_changed == 'true' && (
@@ -284,13 +284,17 @@ jobs:
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
         contains(github.event.pull_request.labels.*.name, 'ci:windows')
       )
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
 
       - name: Install NSIS
+        if: runner.os == 'Linux'
         run: |
           sudo flock /var/lock/nteract-ci-apt.lock bash -euo pipefail <<'APT'
           apt-get -o DPkg::Lock::Timeout=120 update -qq
@@ -298,9 +302,26 @@ jobs:
           APT
 
       - name: Compile bootstrap hook fixture
+        if: runner.os == 'Linux'
         run: |
           cd crates/notebook/nsis
           makensis -V4 validate-bootstrap.nsi
+
+      - name: Check Windows PATH preservation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          $env:PATH += ';C:\Program Files (x86)\NSIS'
+          Push-Location crates/notebook/nsis
+          try {
+            & makensis /V2 validate-bootstrap.nsi
+            if ($LASTEXITCODE -ne 0) { throw 'NSIS bootstrap compilation failed' }
+            ./test-user-path.ps1
+          } finally {
+            Pop-Location
+          }
 
   windows-clippy:
     name: Windows (clippy)
@@ -1601,7 +1622,7 @@ jobs:
             echo "| Python Unit Tests | ${{ needs.python-unit-tests.result }} | GitHub-hosted | Python package unit tests without live daemon | Python package behavior |"
             echo "| WASM + Deno Tests | ${{ needs.wasm-deno.result }} | GitHub-hosted | runtimed-wasm, sift-wasm, renderer-plugin coherence | WASM binding / renderer artifact drift |"
             echo "| Windows (clippy) | ${{ needs.windows-clippy.result }} | GitHub-hosted | Windows cross-target clippy | Windows compile/lint drift |"
-            echo "| NSIS Bootstrap Syntax | ${{ needs.nsis-bootstrap.result }} | GitHub-hosted | NSIS bootstrap fixture compile | Windows installer script syntax |"
+            echo "| NSIS Bootstrap | ${{ needs.nsis-bootstrap.result }} | GitHub-hosted | Linux compilation and Windows registry regression tests | Installer syntax and user PATH preservation |"
             echo
             echo "## Post-merge long-tail lanes"
             echo
