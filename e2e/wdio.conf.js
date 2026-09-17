@@ -44,16 +44,26 @@ const NON_DEFAULT_NATIVE_SPECS = [
 
 /**
  * Create settings file to skip onboarding screen in E2E tests.
+ *
+ * The config namespace follows the build channel (crates/runt-workspace,
+ * `config_namespace_for`): a source build is nightly unless it was compiled
+ * with RUNT_BUILD_CHANNEL=stable, so the app under test reads
+ * `nteract-nightly/settings.json`, not `nteract/settings.json`. Seeding the
+ * stable path leaves the nightly app in onboarding and every spec fails with
+ * "toolbar not found".
+ *
  * Settings path varies by platform:
- * - Linux: ~/.config/nteract/settings.json
- * - macOS: ~/Library/Application Support/nteract/settings.json
+ * - Linux: ~/.config/<namespace>/settings.json
+ * - macOS: ~/Library/Application Support/<namespace>/settings.json
  */
 function ensureOnboardingSkipped() {
   const homeDir = process.env.HOME || process.env.USERPROFILE;
+  const namespace =
+    process.env.RUNT_BUILD_CHANNEL === "stable" ? "nteract" : "nteract-nightly";
   const settingsDir =
     process.platform === "darwin"
-      ? path.join(homeDir, "Library", "Application Support", "nteract")
-      : path.join(homeDir, ".config", "nteract");
+      ? path.join(homeDir, "Library", "Application Support", namespace)
+      : path.join(homeDir, ".config", namespace);
   const settingsPath = path.join(settingsDir, "settings.json");
 
   fs.mkdirSync(settingsDir, { recursive: true });
