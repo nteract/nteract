@@ -1436,6 +1436,50 @@ fn cmd_e2e_build() {
 ///
 /// Spawns a dev daemon and the notebook app, waits for WebDriver on port
 /// 4445, runs `pnpm test:e2e`, then cleans everything up.
+/// settings.json of the app under test. Follows the same channel rule as the
+/// app build: an explicit RUNT_BUILD_CHANNEL wins, otherwise xtask's own
+/// compile-time channel (see `apply_build_channel_env`).
+fn e2e_settings_json_path() -> PathBuf {
+    match env::var("RUNT_BUILD_CHANNEL").ok().as_deref() {
+        Some("stable") => dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("nteract")
+            .join("settings.json"),
+        Some(_) => dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("nteract-nightly")
+            .join("settings.json"),
+        None => runt_workspace::settings_json_path(),
+    }
+}
+
+/// Mark onboarding complete before the daemon and app start. The app opens the
+/// onboarding window when `onboarding_completed` is false at startup, and the
+/// daemon treats settings.json as the source of truth once it is running, so
+/// the seed has to land before either process reads the file. wdio's
+/// `onPrepare` also writes it, but that runs after the app is already up.
+fn seed_e2e_onboarding_completed() {
+    let path = e2e_settings_json_path();
+    let mut settings = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    settings["onboarding_completed"] = serde_json::Value::Bool(true);
+    let write = path
+        .parent()
+        .map(fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|_| {
+            let json = serde_json::to_string_pretty(&settings).map_err(std::io::Error::other)?;
+            fs::write(&path, json)
+        });
+    match write {
+        Ok(()) => println!("Seeded onboarding_completed=true in {}", path.display()),
+        Err(e) => eprintln!("warning: could not seed {}: {e}", path.display()),
+    }
+}
+
 fn run_e2e_session(
     notebook_path: Option<&str>,
     spec_path: Option<&str>,
@@ -1445,6 +1489,8 @@ fn run_e2e_session(
     if !cargo_debug_binary_path("notebook").exists() {
         cmd_e2e_build();
     }
+
+    seed_e2e_onboarding_completed();
 
     // Start daemon
     let mut daemon = if let Some(ws) = workspace_dir {
