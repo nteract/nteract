@@ -75,16 +75,39 @@ pub const UV_BASE_PACKAGES: &[&str] = &[
     "ipywidgets",
     "anywidget",
     "nbformat",
-    // Required by `nteract_kernel_launcher`'s Arrow/DataFrame formatters.
+    // Required by `nteract_kernel_launcher`'s Arrow/DataFrame formatters
+    // except on Windows ARM64, where PyPI has no usable wheel. See
+    // [`omit_default_pyarrow`].
     "pyarrow>=14",
     "uv",
 ];
 
-/// Return [`UV_BASE_PACKAGES`] as owned package spec strings for install paths.
-pub fn uv_base_packages() -> Vec<String> {
+/// Exact PyArrow spec in [`UV_BASE_PACKAGES`]. Comparisons and install lists
+/// must use this string, not the bare name `pyarrow`.
+pub const PYARROW_SPEC: &str = "pyarrow>=14";
+
+/// Windows ARM64 UV kernels omit default PyArrow. Kernels still launch;
+/// Sift/Arrow table rendering degrades unless the user installs it.
+pub fn omit_default_pyarrow() -> bool {
+    cfg!(all(target_os = "windows", target_arch = "aarch64"))
+}
+
+/// Effective UV base specs for this target. Same as [`UV_BASE_PACKAGES`]
+/// except PyArrow is dropped on Windows ARM64. Use this for install lists
+/// and [`crate::strip_base`] so capture matches what was actually installed.
+pub fn uv_base_packages_for_strip() -> Vec<&'static str> {
     UV_BASE_PACKAGES
         .iter()
-        .map(|package| (*package).to_string())
+        .copied()
+        .filter(|spec| *spec != PYARROW_SPEC || !omit_default_pyarrow())
+        .collect()
+}
+
+/// Return the effective UV base set as owned package spec strings for install paths.
+pub fn uv_base_packages() -> Vec<String> {
+    uv_base_packages_for_strip()
+        .into_iter()
+        .map(str::to_string)
         .collect()
 }
 
@@ -1206,6 +1229,26 @@ fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uv_base_packages_constant_keeps_pyarrow() {
+        assert!(UV_BASE_PACKAGES.contains(&PYARROW_SPEC));
+    }
+
+    #[test]
+    fn uv_base_packages_omit_pyarrow_only_on_windows_arm64() {
+        let packages = uv_base_packages();
+        let has_pyarrow = packages.iter().any(|pkg| pkg == PYARROW_SPEC);
+        if omit_default_pyarrow() {
+            assert!(!has_pyarrow);
+            assert_eq!(packages.len(), UV_BASE_PACKAGES.len() - 1);
+        } else {
+            assert!(has_pyarrow);
+            assert_eq!(packages.len(), UV_BASE_PACKAGES.len());
+        }
+        assert!(packages.iter().any(|pkg| pkg == "ipykernel"));
+        assert!(packages.iter().any(|pkg| pkg == "uv"));
+    }
 
     /// Lock in the channel-namespaced cache path shape. Tests build with
     /// the default channel (nightly for source builds), so the helper

@@ -7707,7 +7707,6 @@ dependencies = [
  "rattler_cache",
  "rattler_conda_types",
  "rattler_solve",
- "rattler_virtual_packages",
  "regex",
  "reqwest 0.12.28",
  "reqwest-middleware",

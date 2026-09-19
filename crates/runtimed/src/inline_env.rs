@@ -190,12 +190,19 @@ fn has_dep_named(deps: &[String], name: &str) -> bool {
 /// Return inline deps plus the managed runtime packages expected by notebook
 /// display helpers. User-provided versions win by package name.
 pub(crate) fn inline_deps_with_required_packages(deps: &[String]) -> Vec<String> {
+    inline_deps_with_required_packages_inner(deps, !kernel_env::omit_default_pyarrow())
+}
+
+fn inline_deps_with_required_packages_inner(
+    deps: &[String],
+    include_default_pyarrow: bool,
+) -> Vec<String> {
     let mut effective = deps.to_vec();
     if !has_dep_named(&effective, "nbformat") {
         effective.push("nbformat".to_string());
     }
-    if !has_dep_named(&effective, "pyarrow") {
-        effective.push("pyarrow>=14".to_string());
+    if include_default_pyarrow && !has_dep_named(&effective, "pyarrow") {
+        effective.push(kernel_env::uv::PYARROW_SPEC.to_string());
     }
     effective
 }
@@ -203,8 +210,9 @@ pub(crate) fn inline_deps_with_required_packages(deps: &[String]) -> Vec<String>
 /// Return inline deps plus the managed packages expected in Conda/Pixi
 /// environments. `pip` is explicit so `%pip` uses the running environment's
 /// interpreter rather than depending on a package-manager default.
+/// Conda/Pixi keep default PyArrow even on Windows ARM64 (emulated `win-64`).
 pub(crate) fn inline_deps_with_conda_required_packages(deps: &[String]) -> Vec<String> {
-    let mut effective = inline_deps_with_required_packages(deps);
+    let mut effective = inline_deps_with_required_packages_inner(deps, true);
     if !has_dep_named(&effective, "pip") {
         effective.push("pip".to_string());
     }
@@ -1039,15 +1047,15 @@ mod tests {
     #[test]
     fn test_inline_deps_with_required_packages_adds_display_deps() {
         let deps = vec!["pandas".to_string(), "numpy".to_string()];
-        assert_eq!(
-            inline_deps_with_required_packages(&deps),
-            vec![
-                "pandas".to_string(),
-                "numpy".to_string(),
-                "nbformat".to_string(),
-                "pyarrow>=14".to_string()
-            ]
-        );
+        let mut expected = vec![
+            "pandas".to_string(),
+            "numpy".to_string(),
+            "nbformat".to_string(),
+        ];
+        if !kernel_env::omit_default_pyarrow() {
+            expected.push(kernel_env::uv::PYARROW_SPEC.to_string());
+        }
+        assert_eq!(inline_deps_with_required_packages(&deps), expected);
     }
 
     #[test]

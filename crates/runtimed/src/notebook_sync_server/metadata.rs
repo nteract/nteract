@@ -1534,10 +1534,8 @@ pub(crate) fn effective_user_deps_from_launched(
     match runtime {
         CapturedEnvRuntime::Uv => {
             let deps = launched.uv_deps.as_ref()?;
-            Some(kernel_env::strip_base(
-                deps,
-                kernel_env::uv::UV_BASE_PACKAGES,
-            ))
+            let base = kernel_env::uv_base_packages_for_strip();
+            Some(kernel_env::strip_base(deps, &base))
         }
         CapturedEnvRuntime::Conda => {
             let deps = launched.conda_deps.as_ref()?;
@@ -2248,8 +2246,8 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
 
     match runtime {
         CapturedEnvRuntime::Uv => {
-            let user_defaults =
-                kernel_env::strip_base(&env.prewarmed_packages, kernel_env::UV_BASE_PACKAGES);
+            let base = kernel_env::uv_base_packages_for_strip();
+            let user_defaults = kernel_env::strip_base(&env.prewarmed_packages, &base);
             let prewarmed = kernel_env::uv::UvEnvironment {
                 venv_path: env.venv_path.clone(),
                 python_path: env.python_path.clone(),

@@ -39,6 +39,8 @@ pub mod launcher;
 pub mod lock;
 #[cfg(feature = "runtime")]
 pub mod pixi;
+#[cfg(feature = "runtime")]
+pub mod platform;
 pub mod progress;
 #[cfg(feature = "runtime")]
 pub use kernel_launch::CommandOutputExt;
@@ -51,9 +53,17 @@ pub mod warmup;
 // Re-export key types
 #[cfg(feature = "runtime")]
 pub use conda::{conda_base_packages, CondaDependencies, CondaEnvironment, CONDA_BASE_PACKAGES};
+#[cfg(feature = "runtime")]
+pub use platform::{
+    conda_solve_platform, conda_solve_platform_for, detect_solve_virtual_packages,
+    virtual_package_overrides_for_solve,
+};
 pub use progress::{EnvProgressPhase, LogHandler, ProgressHandler};
 #[cfg(feature = "runtime")]
-pub use uv::{uv_base_packages, UvDependencies, UvEnvironment, UV_BASE_PACKAGES};
+pub use uv::{
+    omit_default_pyarrow, uv_base_packages, uv_base_packages_for_strip, UvDependencies,
+    UvEnvironment, UV_BASE_PACKAGES,
+};
 
 /// Return the subset of `installed` that isn't in `base`, preserving input order.
 ///
@@ -349,21 +359,29 @@ mod strip_base_tests {
 
     #[test]
     fn strips_uv_base_leaves_user_defaults() {
-        let installed: Vec<String> = [
-            "ipykernel",
-            "ipywidgets",
-            "anywidget",
-            "nbformat",
-            "pyarrow>=14",
-            "uv",
-            "pandas",
-            "numpy",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let result = strip_base(&installed, UV_BASE_PACKAGES);
+        let base = uv_base_packages_for_strip();
+        let mut installed: Vec<String> = base.iter().map(|s| (*s).to_string()).collect();
+        installed.push("pandas".to_string());
+        installed.push("numpy".to_string());
+        let result = strip_base(&installed, &base);
         assert_eq!(result, vec!["pandas".to_string(), "numpy".to_string()]);
+    }
+
+    #[test]
+    fn strip_uv_base_keeps_pyarrow_as_user_dep_when_omitted_from_default() {
+        let base = uv_base_packages_for_strip();
+        let installed = vec![
+            "ipykernel".to_string(),
+            "pyarrow>=14".to_string(),
+            "pandas".to_string(),
+        ];
+        let result = strip_base(&installed, &base);
+        if omit_default_pyarrow() {
+            assert!(result.contains(&"pyarrow>=14".to_string()));
+        } else {
+            assert!(!result.contains(&"pyarrow>=14".to_string()));
+        }
+        assert!(result.contains(&"pandas".to_string()));
     }
 
     #[test]
@@ -387,13 +405,15 @@ mod strip_base_tests {
     #[test]
     fn empty_installed_returns_empty() {
         let installed: Vec<String> = vec![];
-        assert!(strip_base(&installed, UV_BASE_PACKAGES).is_empty());
+        let base = uv_base_packages_for_strip();
+        assert!(strip_base(&installed, &base).is_empty());
     }
 
     #[test]
     fn installed_all_base_returns_empty() {
-        let installed: Vec<String> = UV_BASE_PACKAGES.iter().map(|s| s.to_string()).collect();
-        assert!(strip_base(&installed, UV_BASE_PACKAGES).is_empty());
+        let base = uv_base_packages_for_strip();
+        let installed: Vec<String> = base.iter().map(|s| (*s).to_string()).collect();
+        assert!(strip_base(&installed, &base).is_empty());
     }
 
     #[test]
@@ -408,8 +428,9 @@ mod strip_base_tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
+        let base = uv_base_packages_for_strip();
         assert_eq!(
-            strip_base(&installed, UV_BASE_PACKAGES),
+            strip_base(&installed, &base),
             vec![
                 "pandas".to_string(),
                 "numpy".to_string(),

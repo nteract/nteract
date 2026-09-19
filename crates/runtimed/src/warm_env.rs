@@ -671,9 +671,7 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
 
 async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) {
     use rattler::install::Installer;
-    use rattler_conda_types::{
-        Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, Platform,
-    };
+    use rattler_conda_types::{Channel, ChannelConfig, MatchSpec, ParseMatchSpecOptions, Platform};
     use rattler_solve::{resolvo, SolverImpl, SolverTask};
 
     #[cfg(target_os = "windows")]
@@ -774,7 +772,7 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         }
     };
 
-    let install_platform = Platform::current();
+    let install_platform = kernel_env::conda_solve_platform();
     let platforms = vec![install_platform, Platform::NoArch];
     let progress_handler = std::sync::Arc::new(kernel_env::LogHandler);
 
@@ -802,14 +800,9 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         }
     };
 
-    // Detect virtual packages
-    let virtual_packages = match rattler_virtual_packages::VirtualPackage::detect(
-        &rattler_virtual_packages::VirtualPackageOverrides::default(),
-    ) {
-        Ok(vps) => vps
-            .iter()
-            .map(|vpkg| GenericVirtualPackage::from(vpkg.clone()))
-            .collect::<Vec<_>>(),
+    // Virtual packages match the solve platform, not the host.
+    let virtual_packages = match kernel_env::detect_solve_virtual_packages() {
+        Ok(vps) => vps,
         Err(e) => {
             emit_failure(
                 format!("Failed to detect virtual packages: {e}"),

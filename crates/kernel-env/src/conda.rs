@@ -8,8 +8,8 @@ use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
 use rattler::{default_cache_dir, install::Installer};
 use rattler_conda_types::{
-    ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, ParseStrictness,
-    Platform, PrefixRecord, Version, VersionSpec,
+    ChannelConfig, MatchSpec, ParseMatchSpecOptions, ParseStrictness, Platform, PrefixRecord,
+    Version, VersionSpec,
 };
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use serde::{Deserialize, Serialize};
@@ -498,7 +498,7 @@ async fn install_conda_env(
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
     // Parse channels, including Conda's special `defaults` multichannel.
-    let install_platform = Platform::current();
+    let install_platform = crate::conda_solve_platform();
     let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
     let channel_names: Vec<String> = channels.iter().map(|c| c.name().to_string()).collect();
@@ -564,13 +564,9 @@ async fn install_conda_env(
     )
     .await?;
 
-    // Virtual packages
-    let virtual_packages = rattler_virtual_packages::VirtualPackage::detect(
-        &rattler_virtual_packages::VirtualPackageOverrides::default(),
-    )?
-    .iter()
-    .map(|vpkg| GenericVirtualPackage::from(vpkg.clone()))
-    .collect::<Vec<_>>();
+    // Virtual packages match the solve platform, not the host. On Windows
+    // ARM64 that means x86_64 archspec for the emulated win-64 solve.
+    let virtual_packages = crate::detect_solve_virtual_packages()?;
 
     // Solve
     handler.on_progress(
@@ -933,7 +929,7 @@ pub async fn sync_dependencies(
         .to_path_buf();
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
-    let install_platform = Platform::current();
+    let install_platform = crate::conda_solve_platform();
     let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
     let match_spec_options = ParseMatchSpecOptions::strict();
@@ -1005,12 +1001,7 @@ pub async fn sync_dependencies(
     )
     .await?;
 
-    let virtual_packages = rattler_virtual_packages::VirtualPackage::detect(
-        &rattler_virtual_packages::VirtualPackageOverrides::default(),
-    )?
-    .iter()
-    .map(|vpkg| GenericVirtualPackage::from(vpkg.clone()))
-    .collect::<Vec<_>>();
+    let virtual_packages = crate::detect_solve_virtual_packages()?;
 
     let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
 

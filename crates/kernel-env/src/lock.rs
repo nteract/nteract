@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use log::{info, warn};
-use rattler_conda_types::{Platform, RepoDataRecord};
+use rattler_conda_types::RepoDataRecord;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -40,7 +40,7 @@ impl LockFile {
     pub fn new(specs: Vec<String>, channels: Vec<String>, packages: Vec<RepoDataRecord>) -> Self {
         Self {
             version: 1,
-            platform: Platform::current().to_string(),
+            platform: crate::conda_solve_platform().to_string(),
             specs,
             channels,
             packages,
@@ -73,7 +73,7 @@ impl LockFile {
     /// Check if this lock matches the given specs and channels (order-independent).
     pub fn matches(&self, specs: &[String], channels: &[String]) -> bool {
         self.version == 1
-            && self.platform == Platform::current().to_string()
+            && self.platform == crate::conda_solve_platform().to_string()
             && sorted_eq(&self.specs, specs)
             && sorted_eq(&self.channels, channels)
     }
@@ -102,14 +102,13 @@ pub async fn install_from_lock(
     env_type: &str,
 ) -> Result<()> {
     use rattler::install::Installer;
-    use rattler_conda_types::Platform;
 
     handler.on_progress(env_type, crate::progress::EnvProgressPhase::LockFileHit);
 
     let download_client = reqwest::Client::builder().build()?;
     let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
 
-    let install_platform = Platform::current();
+    let install_platform = crate::conda_solve_platform();
 
     handler.on_progress(
         env_type,
@@ -172,6 +171,7 @@ mod tests {
         assert_eq!(loaded.version, 1);
         assert_eq!(loaded.specs, lock.specs);
         assert_eq!(loaded.channels, lock.channels);
+        assert_eq!(loaded.platform, crate::conda_solve_platform().to_string());
     }
 
     #[tokio::test]
