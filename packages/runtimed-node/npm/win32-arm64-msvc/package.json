@@ -1,0 +1,44 @@
+{
+  "name": "@runtimed/node-win32-arm64-msvc",
+  "version": "0.5.6",
+  "description": "Windows ARM64 MSVC native N-API binding for @runtimed/node.",
+  "type": "commonjs",
+  "main": "./runtimed-node.win32-arm64-msvc.node",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/nteract.git",
+    "directory": "packages/runtimed-node/npm/win32-arm64-msvc"
+  },
+  "homepage": "https://github.com/nteract/nteract/tree/main/packages/runtimed-node#readme",
+  "bugs": {
+    "url": "https://github.com/nteract/nteract/issues"
+  },
+  "keywords": [
+    "nteract",
+    "runtimed",
+    "notebook",
+    "native",
+    "napi-rs",
+    "win32",
+    "arm64",
+    "msvc"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "README.md",
+    "runtimed-node.win32-arm64-msvc.node"
+  ],
+  "scripts": {
+    "prepack": "node -e \"const fs = require('node:fs'); if (!fs.existsSync('runtimed-node.win32-arm64-msvc.node')) { console.error('Run pnpm --dir packages/runtimed-node assemble:platform before packing @runtimed/node-win32-arm64-msvc.'); process.exit(1); }\"",
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

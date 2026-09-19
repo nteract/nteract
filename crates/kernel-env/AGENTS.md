@@ -102,6 +102,8 @@ Pool warmer and capture step strip a base set so captured metadata records only 
 | `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, pyarrow>=14, uv]` |
 | `kernel_env::conda::CONDA_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, pip, nbformat, pyarrow>=14]` |
 
+On Windows ARM64, UV install/strip/prewarm/inline lists drop `pyarrow>=14` (`uv_base_packages()` / `omit_default_pyarrow()`). Conda and Pixi keep PyArrow and solve managed/prewarmed/inline envs as emulated `win-64` via `conda_solve_platform()`. User-owned `pixi.toml` / `environment.yml` platforms are not rewritten.
+
 ## Prewarming and daemon pool
 
 The daemon maintains pre-created environments (base set + user's `default_packages`):

@@ -84,6 +84,34 @@ fn is_owned_windows_cmd_shim(contents: &str) -> bool {
         || contents.starts_with(&format!("@echo off\nrem {WINDOWS_CMD_SHIM_MARKER}\n"))
 }
 
+fn host_target_triple() -> &'static str {
+    if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            "aarch64-apple-darwin"
+        } else {
+            "x86_64-apple-darwin"
+        }
+    } else if cfg!(target_os = "linux") {
+        if cfg!(target_arch = "aarch64") {
+            "aarch64-unknown-linux-gnu"
+        } else {
+            "x86_64-unknown-linux-gnu"
+        }
+    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+        "aarch64-pc-windows-msvc"
+    } else {
+        "x86_64-pc-windows-msvc"
+    }
+}
+
+fn sidecar_binary_name(stem: &str, triple: &str) -> String {
+    if triple.contains("windows") {
+        format!("{stem}-{triple}.exe")
+    } else {
+        format!("{stem}-{triple}")
+    }
+}
+
 fn bundled_runt_candidates(
     resource_dir: Option<&Path>,
     current_exe: Option<&Path>,
@@ -118,27 +146,8 @@ fn bundled_runt_candidates(
         }
     }
 
-    let target = if cfg!(target_os = "macos") {
-        if cfg!(target_arch = "aarch64") {
-            "aarch64-apple-darwin"
-        } else {
-            "x86_64-apple-darwin"
-        }
-    } else if cfg!(target_os = "linux") {
-        if cfg!(target_arch = "aarch64") {
-            "aarch64-unknown-linux-gnu"
-        } else {
-            "x86_64-unknown-linux-gnu"
-        }
-    } else {
-        "x86_64-pc-windows-msvc"
-    };
-
-    let binary_name = if cfg!(windows) {
-        format!("runt-{}.exe", target)
-    } else {
-        format!("runt-{}", target)
-    };
+    let target = host_target_triple();
+    let binary_name = sidecar_binary_name("runt", target);
 
     if let Some(exe_path) = current_exe {
         if let Some(exe_dir) = exe_path.parent() {
@@ -1937,6 +1946,28 @@ mod tests {
     fn windows_cmd_names_are_batch_files() {
         assert_eq!(windows_cmd_name("runt-nightly"), "runt-nightly.cmd");
         assert_eq!(windows_cmd_name("nb-nightly"), "nb-nightly.cmd");
+    }
+
+    #[test]
+    fn windows_arm64_runt_sidecar_name() {
+        assert_eq!(
+            sidecar_binary_name("runt", "aarch64-pc-windows-msvc"),
+            "runt-aarch64-pc-windows-msvc.exe"
+        );
+        assert_eq!(
+            sidecar_binary_name("runtimed", "aarch64-pc-windows-msvc"),
+            "runtimed-aarch64-pc-windows-msvc.exe"
+        );
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    #[test]
+    fn windows_arm64_host_triple_is_msvc_aarch64() {
+        assert_eq!(host_target_triple(), "aarch64-pc-windows-msvc");
+        assert_eq!(
+            sidecar_binary_name("runt", host_target_triple()),
+            "runt-aarch64-pc-windows-msvc.exe"
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | macOS ARM64 updater | `nteract-{channel}-darwin-arm64.app.tar.gz` + `.sig` |
 | macOS x64 updater | `nteract-{channel}-darwin-x64.app.tar.gz` + `.sig` |
 | Windows x64 | `nteract-{channel}-windows-x64.exe` + `.sig` |
+| Windows ARM64 | `nteract-{channel}-windows-arm64.exe` + `.sig` |
 | Linux x64 AppImage | `nteract-{channel}-linux-x64.AppImage` + `.sig` |
 | Installer script (Linux x64, macOS) | `install-linux-release` |
 | CLI (macOS ARM64) | `runt-darwin-arm64` |
@@ -37,6 +38,7 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | Standalone daemon (macOS ARM64) | `runtimed-darwin-arm64` |
 | Standalone daemon (macOS x64) | `runtimed-darwin-x64` |
 | Standalone daemon (Windows x64) | `runtimed-windows-x64.exe` |
+| Standalone daemon (Windows ARM64) | `runtimed-windows-arm64.exe` |
 | Standalone MCP server (Linux x64) | `nteract-mcp-linux-x64` |
 | Updater manifest | `latest.json` |
 

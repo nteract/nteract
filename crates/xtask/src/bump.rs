@@ -301,6 +301,11 @@ const TARGETS: &[Target] = &[
         matches: 1,
     },
     Target {
+        path: "packages/runtimed-node/npm/win32-arm64-msvc/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
+    Target {
         path: "plugins/nteract/pi/package.json",
         format: Format::Json,
         matches: 1,

@@ -4172,12 +4172,16 @@ fn build_external_binary(package: &str, binary_name: &str, release: bool) {
     let mode = if release { "release" } else { "debug" };
     println!("Building {binary_name} ({mode})...");
 
-    // Build with appropriate profile
+    let mut args = vec!["build".to_string(), "-p".to_string(), package.to_string()];
     if release {
-        run_cmd("cargo", &["build", "--release", "-p", package]);
-    } else {
-        run_cmd("cargo", &["build", "-p", package]);
+        args.push("--release".to_string());
     }
+    if let Some(target) = requested_cargo_target() {
+        args.push("--target".to_string());
+        args.push(target);
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_cmd("cargo", &arg_refs);
 
     copy_sidecar_binary(binary_name, release);
 }
@@ -4186,9 +4190,9 @@ fn build_external_binary(package: &str, binary_name: &str, release: bool) {
 /// Copies to both `crates/notebook/binaries/` (for bundle builds) and
 /// the resolved debug profile's `binaries/` dir (for no-bundle dev builds).
 fn copy_sidecar_binary(binary_name: &str, release: bool) {
-    let target = get_host_target();
+    let target = sidecar_target_triple();
     let profile = if release { "release" } else { "debug" };
-    let source = cargo_binary_path(profile, binary_name);
+    let source = sidecar_binary_source(profile, binary_name, &target);
 
     let dest_name = if cfg!(windows) {
         format!("{binary_name}-{target}.exe")
@@ -4218,6 +4222,48 @@ fn copy_sidecar_binary(binary_name: &str, release: bool) {
         exit(1);
     });
     println!("{binary_name} dev ready: {}", dev_dest.display());
+}
+
+/// Explicit `--target` / `CARGO_BUILD_TARGET` when cross-compiling sidecars.
+fn requested_cargo_target() -> Option<String> {
+    let args: Vec<String> = env::args().collect();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--target" {
+            return args.get(i + 1).cloned().filter(|t| !t.is_empty());
+        }
+        if let Some(target) = args[i].strip_prefix("--target=") {
+            if !target.is_empty() {
+                return Some(target.to_string());
+            }
+        }
+        i += 1;
+    }
+    env::var("CARGO_BUILD_TARGET")
+        .ok()
+        .filter(|target| !target.is_empty())
+}
+
+fn sidecar_target_triple() -> String {
+    requested_cargo_target().unwrap_or_else(get_host_target)
+}
+
+fn sidecar_binary_source(profile: &str, binary_name: &str, target: &str) -> PathBuf {
+    if requested_cargo_target().is_some() {
+        let workspace = workspace_root_or_exit();
+        let file_name = if cfg!(windows) {
+            format!("{binary_name}.exe")
+        } else {
+            binary_name.to_string()
+        };
+        workspace
+            .join("target")
+            .join(target)
+            .join(profile)
+            .join(file_name)
+    } else {
+        cargo_binary_path(profile, binary_name)
+    }
 }
 
 /// Get the host target triple (e.g., aarch64-apple-darwin).
