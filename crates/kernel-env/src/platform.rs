@@ -2,9 +2,11 @@
 //!
 //! Managed, prewarmed, and inline Conda/Pixi environments solve for
 //! [`conda_solve_platform`], not necessarily the host. On Windows ARM64 that
-//! is emulated `win-64` because conda-forge still lacks `win-arm64` PyZMQ.
-//! User-owned `pixi.toml` / `environment.yml` files keep their declared
-//! platforms and must not be rewritten here.
+//! is emulated `win-64` because conda-forge still lacks `win-arm64`
+//! `ipykernel` / `pyzmq`. Drop the mapping once those packages exist and a
+//! native ARM64 kernel launch is proven. User-owned `pixi.toml` /
+//! `environment.yml` files keep their declared platforms and must not be
+//! rewritten here.
 
 use anyhow::Result;
 use rattler_conda_types::{GenericVirtualPackage, Platform};

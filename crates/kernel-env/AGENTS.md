@@ -104,6 +104,19 @@ Pool warmer and capture step strip a base set so captured metadata records only 
 
 On Windows ARM64, UV install/strip/prewarm/inline lists drop `pyarrow>=14` (`uv_base_packages()` / `omit_default_pyarrow()`). Conda and Pixi keep PyArrow and solve managed/prewarmed/inline envs as emulated `win-64` via `conda_solve_platform()`. User-owned `pixi.toml` / `environment.yml` platforms are not rewritten.
 
+### Windows ARM64 Conda/Pixi emulation
+
+Managed Conda/Pixi solves cannot use native `win-arm64` yet: conda-forge does not publish `win-arm64` `ipykernel` / `pyzmq` (and the rest of the Jupyter kernel stack). Without those packages a native ARM64 Conda or Pixi env cannot launch a kernel, so `conda_solve_platform()` maps `WinArm64` → `Win64` and rattler virtual packages override `__archspec` to `x86_64`. Those envs run as x64 under Windows ARM emulation.
+
+To drop the emulation:
+
+1. Wait until conda-forge (or the configured channels) ship `win-arm64` builds of `ipykernel`, `pyzmq`, and their runtime deps.
+2. Remove the `Platform::WinArm64 => Platform::Win64` arm in `conda_solve_platform_for`.
+3. Stop forcing the x86_64 archspec override for that host/solve pair.
+4. Prove a native ARM64 Conda/Pixi kernel launch (`ipykernel` import + ZMQ connect) on `windows-11-vs2026-arm`.
+
+Do not rewrite user-owned project platforms as part of that change. If a project asks for `win-arm64` before the channel can satisfy it, fail clearly instead of silently mapping to `win-64`.
+
 ## Prewarming and daemon pool
 
 The daemon maintains pre-created environments (base set + user's `default_packages`):
