@@ -4,16 +4,10 @@
 
 ## Communication
 
-Write like you're talking with a colleague you know. Use everyday language and
-precise technical terms where they help. Contractions, humor, and a little
-informality are welcome when they fit. Give the explanation enough room to make
-sense. Let the conversation determine the structure, and use the user's examples
-as guidance rather than a script.
-
-Keep shared writing guidance here; subsystem instructions should add only what
-their task needs. Templates for saved technical records and structured tool
-outputs retain their required fields. Chat replies should fit the question,
-with evidence and limitations that matter to the answer.
+Write like you're talking with a colleague: use everyday language, precise
+technical terms, and enough evidence to explain the result and its limitations.
+Keep shared writing guidance here; subsystem guides should add only what their
+task needs. Preserve required fields in structured outputs and record templates.
 
 ## Start here
 
@@ -23,7 +17,8 @@ with evidence and limitations that matter to the answer.
   when they apply.
 - Use the repository skills in `.agents/skills/` for subsystem workflows.
   Claude sees the same skills through `.claude/skills`.
-- Run `cargo xtask help` for the current build and test commands.
+- Run `cargo xtask help` for the current build and test commands. If Cargo is
+  unavailable, follow the tool recovery guidance below before proceeding.
 - Discover files from the checkout. Keep paths in this guide only when they are
   canonical entry points; do not maintain subsystem file inventories here.
 
@@ -55,19 +50,26 @@ inventing product labels.
 
 ## Development environment
 
+Use working tools as-is. If Cargo is missing from `PATH`, source
+`${CARGO_HOME:-$HOME/.cargo}/env` if it exists, then retry from the repo root.
+Repeat this in fresh shells that need Cargo. If tools or build dependencies are
+still missing, install what the task needs within existing permissions and
+retry validation; routine setup needs no extra confirmation when permitted.
+Honor `rust-toolchain.toml` and leave working installations, shell profiles, and
+global toolchain defaults alone. See `CONTRIBUTING.md` for platform prerequisites.
+Only report validation blocked after attempting recovery, with the failing
+command, error, and checks left unverified.
+
 Use `nteract-dev` for development against this worktree. The `nteract` and
 `nteract-nightly` servers are for inspecting installed builds, not source
 changes. If `nteract-dev` is unavailable, use `cargo xtask`; do not substitute
 an installed notebook server. Full server details are in the scoped MCP rules.
 
-For desktop source work, prefer `cargo xtask dev`. It starts the worktree-local
-daemon and hot-reload app together and stops the daemon it started when the app
-exits. On macOS, each worktree launches with a distinct `nteract Dev <hash>`
-name and bundle identifier so it does not alias an installed stable or Nightly
-app. Use `cargo xtask dev status` for the exact app PID, executable, identity,
-Vite URL, and daemon socket; use `cargo xtask dev focus` to activate that exact
-process. Accessibility automation must select the reported `Automation PID`,
-not resolve an application named `nteract` through LaunchServices.
+For desktop source work, use `cargo xtask dev` for the worktree-local daemon
+and hot-reload app. It stops the daemon it started when the app exits. Use
+`cargo xtask dev status` to identify this worktree's app and daemon, and
+`cargo xtask dev focus` to activate its app. On macOS, accessibility automation
+must select the reported `Automation PID`, not resolve `nteract` by name.
 
 After changing Tauri bootstrap or listener setup, use `cargo xtask dev --fresh`
 to reset and relaunch this worktree's app and daemon. Use
@@ -93,14 +95,8 @@ validation.
 
 ## Commits and reviews
 
-Use Conventional Commits for commit and PR titles:
-
-```text
-<type>(<optional-scope>)!: <short imperative summary>
-```
-
-Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`,
-`build`, `perf`, `revert`.
+Use [Conventional Commits](CONTRIBUTING.md#commit-message-format) for commit
+and PR titles.
 
 For reviews started on a developer workstation, use the repository-independent
 Kilo review workflow. Repository-hosted Pullfrog reviews remain supported. Give
