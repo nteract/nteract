@@ -1,0 +1,4 @@
+# GitHub-hosted label not recognized by actionlint 1.7.12.
+self-hosted-runner:
+  labels:
+    - windows-11-vs2026-arm
