@@ -5,6 +5,50 @@
 - **macOS** - see [docs/runbooks/macos-setup.md](docs/runbooks/macos-setup.md)
 - **Linux** - see the Linux development dependencies in [README.md](README.md)
 
+### Rust tool recovery
+
+Run `cargo --version` and `rustc --version` from the repository root first.
+If both work with the repository's toolchain, no setup is needed. This recovery
+recipe is for Bash-compatible shells, including disposable Linux cloud sessions.
+
+If Cargo or rustc is not found, check for an existing rustup environment before
+installing anything:
+
+```bash
+if [ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]; then
+  . "${CARGO_HOME:-$HOME/.cargo}/env"
+fi
+cargo --version
+rustc --version
+```
+
+If rustup is installed, invoking Cargo from this checkout lets rustup install
+the toolchain and components declared in `rust-toolchain.toml` when missing.
+Investigate any installation error rather than reinstalling rustup or changing
+the global default to `stable`.
+
+Only if Rust and rustup are absent, install rustup without changing shell
+profiles or selecting a global default toolchain, then use the repository pin:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+  sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+. "${CARGO_HOME:-$HOME/.cargo}/env"
+cargo --version
+rustc --version
+cargo xtask help
+```
+
+Sourcing the environment affects only the current shell and its children.
+Agents whose terminal calls start fresh shells should source it again in calls
+that need Cargo. Do not assume an `export` in a setup script persists into a
+later agent shell.
+
+Install additional native dependencies only when the task needs them. A missing
+C linker or `pkg-config` is separate from a missing Rust toolchain; use the
+platform prerequisites above and the build error to identify the needed
+packages. Retry the original build or test after setup.
+
 ## 2. Build commands
 
 | Task | Command |

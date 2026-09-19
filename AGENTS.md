@@ -23,7 +23,8 @@ with evidence and limitations that matter to the answer.
   when they apply.
 - Use the repository skills in `.agents/skills/` for subsystem workflows.
   Claude sees the same skills through `.claude/skills`.
-- Run `cargo xtask help` for the current build and test commands.
+- Run `cargo xtask help` for the current build and test commands. If Cargo is
+  unavailable, follow the tool recovery guidance below before proceeding.
 - Discover files from the checkout. Keep paths in this guide only when they are
   canonical entry points; do not maintain subsystem file inventories here.
 
@@ -54,6 +55,26 @@ inventing product labels.
   document for notes that belong only to the current patch or PR.
 
 ## Development environment
+
+Verify the tools needed for the task before making changes. If they work, use
+them as-is; do not run bootstrap scripts, reinstall tools, or upgrade a working
+local environment just because a session started.
+
+If a tool is unavailable, attempt routine recovery within the environment's
+existing permissions before declaring validation blocked. For Rust, first
+check whether Cargo is simply missing from `PATH`: source
+`${CARGO_HOME:-$HOME/.cargo}/env` if it exists, then retry from the repository
+root. Follow [Rust tool recovery](CONTRIBUTING.md#rust-tool-recovery) if setup is
+still needed. Honor `rust-toolchain.toml`; do not change the user's global
+default toolchain or replace a working installation.
+
+Install missing build dependencies needed for the actual command, using the
+platform setup linked from `CONTRIBUTING.md`. Routine setup does not need an
+extra confirmation when already permitted. Retry the relevant build or test
+after recovery. If setup fails because of network, permissions, or another
+concrete restriction, report the attempted command and error, and identify
+which checks remain unverified. A missing executable alone is not a reason to
+stop validation.
 
 Use `nteract-dev` for development against this worktree. The `nteract` and
 `nteract-nightly` servers are for inspecting installed builds, not source
