@@ -53,7 +53,9 @@
     "src/session.cjs",
     "src/napi-observables.cjs",
     "src/binding.cjs",
-    "src/binding.d.ts"
+    "src/binding.d.ts",
+    "src/execution-store.cjs",
+    "src/execution-store.d.cts"
   ],
   "napi": {
     "binaryName": "runtimed-node",
@@ -65,14 +67,16 @@
   },
   "scripts": {
     "assemble:platform": "node scripts/assemble-platform-package.mjs",
-    "build": "napi build --platform --release --js binding.cjs --dts binding.d.ts --manifest-path ../../crates/runtimed-node/Cargo.toml --output-dir src",
-    "build:debug": "napi build --platform --js binding.cjs --dts binding.d.ts --manifest-path ../../crates/runtimed-node/Cargo.toml --output-dir src",
+    "build": "pnpm build:stores && napi build --platform --release --js binding.cjs --dts binding.d.ts --manifest-path ../../crates/runtimed-node/Cargo.toml --output-dir src",
+    "build:debug": "pnpm build:stores && napi build --platform --js binding.cjs --dts binding.d.ts --manifest-path ../../crates/runtimed-node/Cargo.toml --output-dir src",
     "pack:platform:dry-run": "node scripts/assemble-platform-package.mjs --pack-dry-run",
-    "prepack": "node -e \"const fs = require('node:fs'); const files = fs.readdirSync('src'); if (!files.includes('binding.cjs') || !files.includes('binding.d.ts')) { console.error('Run pnpm --dir packages/runtimed-node build before packing @runtimed/node.'); process.exit(1); }\"",
+    "prepack": "pnpm check:stores && node -e \"const fs = require('node:fs'); const files = fs.readdirSync('src'); if (!files.includes('binding.cjs') || !files.includes('binding.d.ts')) { console.error('Run pnpm --dir packages/runtimed-node build before packing @runtimed/node.'); process.exit(1); }\"",
     "pack:dry-run": "pnpm pack --dry-run",
     "smoke": "node -e \"const m = require('./src/index.cjs'); console.log('defaultSocketPath:', m.defaultSocketPath());\"",
     "smoke:relay": "node scripts/smoke-relay.cjs",
-    "smoke:api": "node scripts/smoke-api.cjs"
+    "smoke:api": "node scripts/smoke-api.cjs",
+    "build:stores": "node scripts/build-execution-store.mjs",
+    "check:stores": "node scripts/build-execution-store.mjs --check"
   },
   "dependencies": {
     "rxjs": "^7.8.2"
@@ -86,6 +90,7 @@
     "access": "public"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3.6.2"
+    "@napi-rs/cli": "^3.6.2",
+    "typescript": "~5.8.3"
   }
 }

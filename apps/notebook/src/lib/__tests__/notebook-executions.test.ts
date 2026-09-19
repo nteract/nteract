@@ -35,7 +35,8 @@ describe("notebook-executions store", () => {
   it("stores and retrieves executions by id", () => {
     const s = snap();
     setExecution("exec-1", s);
-    expect(getExecutionById("exec-1")).toBe(s);
+    expect(getExecutionById("exec-1")).toEqual(s);
+    expect(getExecutionById("exec-1")).not.toBe(s);
   });
 
   it("does NOT auto-update the cell pointer from setExecution", () => {

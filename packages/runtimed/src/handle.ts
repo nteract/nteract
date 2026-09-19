@@ -50,29 +50,12 @@ export interface TextAttribution {
   actors: string[];
 }
 
-export interface ExecutionViewSnapshot {
-  execution_count: number | null;
-  status: "queued" | "running" | "done" | "error" | "cancelled" | (string & {});
-  success: boolean | null;
-  output_ids: string[];
-  submitted_by_actor_label?: string | null;
-}
-
-export interface ExecutionQueueProjection {
-  executing_execution_id?: string | null;
-  queued_execution_ids: string[];
-  notebook?: {
-    executing_cell_id?: string | null;
-    queued_cell_ids: string[];
-  } | null;
-}
-
-export interface ExecutionViewChangeset {
-  cell_pointer_changes?: Array<[cell_id: string, execution_id: string | null]>;
-  execution_upserts?: Array<[execution_id: string, snapshot: ExecutionViewSnapshot]>;
-  removed_execution_ids?: string[];
-  queue?: ExecutionQueueProjection;
-}
+import type { ExecutionViewChangeset } from "./execution-store";
+export type {
+  ExecutionViewSnapshot,
+  ExecutionQueueProjection,
+  ExecutionViewChangeset,
+} from "./execution-store";
 
 export interface CommsState {
   comms: Record<string, Record<string, unknown>>;

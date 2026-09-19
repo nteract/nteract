@@ -297,3 +297,48 @@ installed through `@runtimed/node`:
 - `@runtimed/node-linux-x64-gnu`
 
 They contain only the compiled native `.node` binary for their target platform.
+
+
+### Shared execution state
+
+Each `Session` owns `session.executions`, the same synchronous execution-store
+implementation used by the React frontend. Native execution changesets update
+this store before `executionViewChanges$` emits. Command APIs and pi's existing
+changeset subscription are unchanged. Construction adds no readiness promise,
+transport, timer, or WASM instance.
+
+```js
+const store = session.executions;
+const unsubscribe = store.subscribeExecutionById(executionId)(() => {
+  console.log(store.getExecutionById(executionId));
+});
+console.log(store.getExecutionById(executionId)); // initial read
+// Later:
+unsubscribe();
+```
+
+`getExecutionView()` now returns a cached, immutable snapshot, not a mutable
+copy. Entity snapshots and output-ID arrays are owned and frozen by the store;
+unchanged output membership retains its array identity. Make an explicit copy
+if mutable data is needed. Retained snapshots do not change after later events.
+Removing an execution also clears its current cell pointer, even if its snapshot
+has not arrived. An explicit queue update without a notebook projection clears
+the notebook queue; an absent queue field leaves it unchanged.
+
+Subscriptions invalidate synchronously per write. A changeset is applied in
+upsert, removal, pointer, then queue order; it is not one atomic notification.
+Listeners added during delivery begin on a subsequent notification, unsubscribed
+listeners are skipped, and listener errors do not stop other listeners.
+`close()` disposes native subscriptions and completes the RxJS streams; owners
+must release their store subscriptions too. The last state remains readable.
+
+The implementation source is `packages/runtimed/src/execution-store.ts`.
+`build:stores` generates this package's CommonJS module and declarations;
+`check:stores` checks freshness and runs before packing. The published package
+does not depend on the private TypeScript workspace package.
+
+A small framework-neutral readable adapter in
+`packages/runtimed/examples/execution-readable.ts` demonstrates Svelte's initial
+value and unsubscribe contract. It wraps the same instance and holds no second
+copy of notebook state. Cells, output content, and a complete Svelte shell are
+separate follow-ups.

@@ -1,5 +1,6 @@
 "use strict";
 
+const { createNotebookExecutionStore } = require("./execution-store.cjs");
 const { Subject } = require("rxjs");
 const { parseJsonEvent } = require("./napi-observables.cjs");
 
@@ -7,7 +8,7 @@ class Session {
   constructor(nativeSession) {
     this._native = nativeSession;
     this._subscriptions = [];
-    this._executionView = emptyExecutionView();
+    this.executions = createNotebookExecutionStore();
     this._runtimeStateSubject = new Subject();
     this._executionTransitionsSubject = new Subject();
     this._executionViewChangesSubject = new Subject();
@@ -56,7 +57,7 @@ class Session {
       this._subscriptions.push(
         nativeSession.onExecutionViewChange((json) => {
           const changeset = parseJsonEvent(json);
-          applyExecutionViewChangeset(this._executionView, changeset);
+          this.executions.applyChangeset(changeset);
           this._executionViewChangesSubject.next(changeset);
         }),
       );
@@ -202,7 +203,7 @@ class Session {
   }
 
   getExecutionView() {
-    return cloneExecutionView(this._executionView);
+    return this.executions.getSnapshot();
   }
 
   close() {
@@ -231,71 +232,6 @@ function normalizeDependencyOptions(options) {
     return undefined;
   }
   return { packageManager: options.packageManager };
-}
-
-function emptyExecutionView() {
-  return {
-    cell_execution_ids: {},
-    executions: {},
-    queue: null,
-  };
-}
-
-function applyExecutionViewChangeset(view, changeset) {
-  for (const [cellId, executionId] of changeset?.cell_pointer_changes ?? []) {
-    if (executionId == null) {
-      delete view.cell_execution_ids[cellId];
-    } else {
-      view.cell_execution_ids[cellId] = executionId;
-    }
-  }
-
-  for (const [executionId, snapshot] of changeset?.execution_upserts ?? []) {
-    view.executions[executionId] = cloneExecutionSnapshot(snapshot);
-  }
-
-  for (const executionId of changeset?.removed_execution_ids ?? []) {
-    delete view.executions[executionId];
-  }
-
-  if (Object.hasOwn(changeset ?? {}, "queue")) {
-    view.queue = cloneQueueProjection(changeset.queue ?? null);
-  }
-}
-
-function cloneExecutionView(view) {
-  return {
-    cell_execution_ids: { ...view.cell_execution_ids },
-    executions: Object.fromEntries(
-      Object.entries(view.executions).map(([executionId, snapshot]) => [
-        executionId,
-        cloneExecutionSnapshot(snapshot),
-      ]),
-    ),
-    queue: cloneQueueProjection(view.queue),
-  };
-}
-
-function cloneExecutionSnapshot(snapshot) {
-  return {
-    ...snapshot,
-    output_ids: Array.from(snapshot?.output_ids ?? []),
-  };
-}
-
-function cloneQueueProjection(queue) {
-  if (queue == null) return null;
-  return {
-    executing_execution_id: queue.executing_execution_id ?? null,
-    queued_execution_ids: Array.from(queue.queued_execution_ids ?? []),
-    notebook:
-      queue.notebook == null
-        ? queue.notebook
-        : {
-            executing_cell_id: queue.notebook.executing_cell_id ?? null,
-            queued_cell_ids: Array.from(queue.notebook.queued_cell_ids ?? []),
-          },
-  };
 }
 
 module.exports = {

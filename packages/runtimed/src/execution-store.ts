@@ -1,0 +1,429 @@
+export interface ExecutionViewSnapshot {
+  execution_count: number | null;
+  status: "queued" | "running" | "done" | "error" | "cancelled" | (string & {});
+  success: boolean | null;
+  output_ids: string[];
+  submitted_by_actor_label?: string | null;
+}
+
+export interface ExecutionQueueProjection {
+  executing_execution_id?: string | null;
+  queued_execution_ids: string[];
+  notebook?: {
+    executing_cell_id?: string | null;
+    queued_cell_ids: string[];
+  } | null;
+}
+
+export interface ExecutionViewChangeset {
+  cell_pointer_changes?: Array<[cell_id: string, execution_id: string | null]>;
+  execution_upserts?: Array<[execution_id: string, snapshot: ExecutionViewSnapshot]>;
+  removed_execution_ids?: string[];
+  queue?: ExecutionQueueProjection | null;
+}
+
+/** Immutable consumer snapshots; wire payload types above remain mutable. */
+export type ExecutionSnapshot = Readonly<Omit<ExecutionViewSnapshot, "output_ids">> & {
+  readonly output_ids: readonly string[];
+};
+export interface NotebookQueueProjectionSnapshot {
+  readonly executing_cell_id: string | null;
+  readonly queued_cell_ids: readonly string[];
+}
+export interface ExecutionQueueSnapshot {
+  readonly executing_execution_id: string | null;
+  readonly queued_execution_ids: readonly string[];
+  readonly notebook?: NotebookQueueProjectionSnapshot | null;
+}
+export interface ExecutionView {
+  readonly cell_execution_ids: Readonly<Record<string, string>>;
+  readonly executions: Readonly<Record<string, ExecutionSnapshot>>;
+  readonly queue: ExecutionQueueSnapshot | null;
+}
+const EMPTY_NOTEBOOK_QUEUE: NotebookQueueProjectionSnapshot = Object.freeze({
+  executing_cell_id: null,
+  queued_cell_ids: Object.freeze([] as string[]),
+});
+
+/** Independent synchronous notebook state. Construction performs no I/O. */
+export function createNotebookExecutionStore() {
+  const _executionMap: Map<string, ExecutionSnapshot> = new Map();
+  const _runtimeOwnedExecutionIds = new Set<string>();
+
+  /** Per-cell reverse index: cell_id -> latest execution_id. */
+  const _cellToExecution: Map<string, string> = new Map();
+  const _executionToCell: Map<string, string> = new Map();
+  let _notebookQueueProjection = EMPTY_NOTEBOOK_QUEUE;
+  let _queue: ExecutionQueueSnapshot | null = null;
+  let _snapshot: ExecutionView | undefined;
+
+  const _subscribers = new Map<string, Set<() => void>>();
+  const _cellExecutionSubscribers = new Map<string, Set<() => void>>();
+  const _queueProjectionSubscribers = new Set<() => void>();
+  let _executionStructureVersion = 0;
+  const _executionStructureVersionSubscribers = new Set<() => void>();
+
+  function emitExecutionChange(execution_id: string): void {
+    const subs = _subscribers.get(execution_id);
+    if (!subs) return;
+    // Snapshot listeners so subscriptions added during delivery wait for the next notification.
+    // eslint-disable-next-line unicorn/no-useless-spread
+    for (const cb of [...subs]) {
+      if (!subs.has(cb)) continue;
+      try {
+        cb();
+      } catch {
+        // subscriber errors must not break the dispatch loop
+      }
+    }
+  }
+
+  function emitCellExecutionPointerChange(cell_id: string): void {
+    const subs = _cellExecutionSubscribers.get(cell_id);
+    if (!subs) return;
+    // Snapshot listeners so subscriptions added during delivery wait for the next notification.
+    // eslint-disable-next-line unicorn/no-useless-spread
+    for (const cb of [...subs]) {
+      if (!subs.has(cb)) continue;
+      try {
+        cb();
+      } catch {}
+    }
+  }
+
+  function emitQueueProjectionChange(): void {
+    // Snapshot listeners so subscriptions added during delivery wait for the next notification.
+    // eslint-disable-next-line unicorn/no-useless-spread
+    for (const cb of [..._queueProjectionSubscribers]) {
+      if (!_queueProjectionSubscribers.has(cb)) continue;
+      try {
+        cb();
+      } catch {}
+    }
+  }
+
+  function emitExecutionStructureChange(): void {
+    _executionStructureVersion = (_executionStructureVersion + 1) | 0;
+    // Snapshot listeners so subscriptions added during delivery wait for the next notification.
+    // eslint-disable-next-line unicorn/no-useless-spread
+    for (const cb of [..._executionStructureVersionSubscribers]) {
+      if (!_executionStructureVersionSubscribers.has(cb)) continue;
+      try {
+        cb();
+      } catch {}
+    }
+  }
+
+  // ── Subscription helpers ────────────────────────────────────────────────
+
+  function subscribeExecutionById(execution_id: string): (cb: () => void) => () => void {
+    return (callback: () => void) => {
+      let subs = _subscribers.get(execution_id);
+      if (!subs) {
+        subs = new Set();
+        _subscribers.set(execution_id, subs);
+      }
+      const set = subs;
+      set.add(callback);
+      return () => {
+        set.delete(callback);
+        if (set.size === 0 && _subscribers.get(execution_id) === set)
+          _subscribers.delete(execution_id);
+      };
+    };
+  }
+
+  function getExecutionSnapshotGetter(execution_id: string): () => ExecutionSnapshot | undefined {
+    return () => (execution_id ? _executionMap.get(execution_id) : undefined);
+  }
+
+  function subscribeCellExecutionPointer(cell_id: string): (cb: () => void) => () => void {
+    return (callback: () => void) => {
+      let subs = _cellExecutionSubscribers.get(cell_id);
+      if (!subs) {
+        subs = new Set();
+        _cellExecutionSubscribers.set(cell_id, subs);
+      }
+      const set = subs;
+      set.add(callback);
+      return () => {
+        set.delete(callback);
+        if (set.size === 0 && _cellExecutionSubscribers.get(cell_id) === set)
+          _cellExecutionSubscribers.delete(cell_id);
+      };
+    };
+  }
+
+  function getCellExecutionIdGetter(cell_id: string): () => string | null {
+    return () => _cellToExecution.get(cell_id) ?? null;
+  }
+
+  function subscribeNotebookQueueProjection(callback: () => void): () => void {
+    _queueProjectionSubscribers.add(callback);
+    return () => {
+      _queueProjectionSubscribers.delete(callback);
+    };
+  }
+
+  function getNotebookQueueProjection(): NotebookQueueProjectionSnapshot {
+    return _notebookQueueProjection;
+  }
+
+  function subscribeExecutionStructureVersion(callback: () => void): () => void {
+    _executionStructureVersionSubscribers.add(callback);
+    return () => {
+      _executionStructureVersionSubscribers.delete(callback);
+    };
+  }
+
+  function getExecutionStructureVersionSnapshot(): number {
+    return _executionStructureVersion;
+  }
+
+  // ── Write operations ────────────────────────────────────────────────────
+
+  /**
+   * Upsert an execution snapshot. Notifies only that execution's subscribers.
+   *
+   * Does NOT update the cell -> execution pointer. `RuntimeStateDoc` keeps
+   * historical executions per cell, so iterating it cannot reliably pick
+   * the current one. Callers set the cell pointer explicitly via
+   * `setCellExecutionPointer`, driven by the canonical `cells/{id}/execution_id`
+   * field in the notebook doc.
+   */
+  function setExecution(execution_id: string, snap: ExecutionSnapshot): void {
+    const prev = _executionMap.get(execution_id);
+    const sameOutputs = prev !== undefined && stringArraysEqual(prev.output_ids, snap.output_ids);
+    if (
+      prev &&
+      sameOutputs &&
+      prev.execution_count === snap.execution_count &&
+      prev.status === snap.status &&
+      prev.success === snap.success &&
+      (prev.submitted_by_actor_label ?? null) === (snap.submitted_by_actor_label ?? null)
+    )
+      return;
+    const owned = Object.freeze({
+      ...snap,
+      output_ids: sameOutputs ? prev!.output_ids : Object.freeze([...snap.output_ids]),
+    });
+    _executionMap.set(execution_id, owned);
+    _snapshot = undefined;
+    emitExecutionChange(execution_id);
+    if (!prev || prev.execution_count !== snap.execution_count || !sameOutputs)
+      emitExecutionStructureChange();
+  }
+
+  /**
+   * Mark execution snapshots whose authoritative source is RuntimeStateDoc.
+   *
+   * Projection placeholders can seed the same execution id before runtime sync
+   * catches up. Runtime upserts call this even when the snapshot is unchanged so
+   * projector cleanup can release ownership without deleting the runtime record.
+   */
+  function markExecutionsRuntimeOwned(execution_ids: Iterable<string>): void {
+    for (const execution_id of execution_ids) {
+      _runtimeOwnedExecutionIds.add(execution_id);
+    }
+  }
+
+  function isExecutionRuntimeOwned(execution_id: string): boolean {
+    return _runtimeOwnedExecutionIds.has(execution_id);
+  }
+
+  /**
+   * Explicitly set the active execution_id for a cell.
+   *
+   * Used on execution_started broadcasts and on clearOutputs (pass null).
+   */
+  function setCellExecutionPointer(cell_id: string, execution_id: string | null): void {
+    const prev = _cellToExecution.get(cell_id) ?? null;
+    if (prev === execution_id) return;
+    if (prev !== null && _executionToCell.get(prev) === cell_id) {
+      _executionToCell.delete(prev);
+    }
+    if (execution_id === null) {
+      _cellToExecution.delete(cell_id);
+    } else {
+      _cellToExecution.set(cell_id, execution_id);
+      _executionToCell.set(execution_id, cell_id);
+    }
+    _snapshot = undefined;
+    emitCellExecutionPointerChange(cell_id);
+    emitExecutionStructureChange();
+  }
+
+  function setNotebookQueueProjection(projection: NotebookQueueProjectionSnapshot): void {
+    if (
+      _notebookQueueProjection.executing_cell_id === projection.executing_cell_id &&
+      stringArraysEqual(_notebookQueueProjection.queued_cell_ids, projection.queued_cell_ids)
+    ) {
+      return;
+    }
+    _notebookQueueProjection = Object.freeze({
+      executing_cell_id: projection.executing_cell_id,
+      queued_cell_ids: Object.freeze([...projection.queued_cell_ids]),
+    });
+    emitQueueProjectionChange();
+  }
+
+  /**
+   * Drop a batch of executions from the store.
+   *
+   * Notifies per-execution subscribers with `undefined` and clears any cell
+   * pointer that referenced one of the removed ids. Used by the projection
+   * when the daemon trims an execution out of `RuntimeStateDoc` so the
+   * store doesn't drift monotonically larger.
+   */
+  function deleteExecutions(execution_ids: Iterable<string>): void {
+    for (const eid of execution_ids) {
+      const existed = _executionMap.delete(eid);
+      _runtimeOwnedExecutionIds.delete(eid);
+      const cellId = _executionToCell.get(eid);
+      _executionToCell.delete(eid);
+      const cleared = cellId !== undefined && _cellToExecution.get(cellId) === eid;
+      if (cleared) _cellToExecution.delete(cellId);
+      if (!existed && !cleared) continue;
+      _snapshot = undefined;
+      if (existed) emitExecutionChange(eid);
+      if (cleared) emitCellExecutionPointerChange(cellId);
+      emitExecutionStructureChange();
+    }
+  }
+
+  /** Read a snapshot without subscribing. */
+  function getExecutionById(execution_id: string): ExecutionSnapshot | undefined {
+    return _executionMap.get(execution_id);
+  }
+
+  /** Read the cell's current execution_id without subscribing. */
+  function getCellExecutionId(cell_id: string): string | null {
+    return _cellToExecution.get(cell_id) ?? null;
+  }
+
+  /** Read the current cell id for an execution pointer without subscribing. */
+  function getCellIdForExecutionId(execution_id: string): string | null {
+    return _executionToCell.get(execution_id) ?? null;
+  }
+
+  /** Reset the entire store. Called on notebook switch or full reset. */
+  function resetNotebookExecutions(): void {
+    const eids = [..._executionMap.keys()];
+    const cells = [..._cellToExecution.keys()];
+    _executionMap.clear();
+    _runtimeOwnedExecutionIds.clear();
+    _cellToExecution.clear();
+    _executionToCell.clear();
+    _notebookQueueProjection = EMPTY_NOTEBOOK_QUEUE;
+    _queue = null;
+    _snapshot = undefined;
+    for (const eid of eids) emitExecutionChange(eid);
+    for (const cid of cells) emitCellExecutionPointerChange(cid);
+    emitQueueProjectionChange();
+    if (eids.length > 0 || cells.length > 0) {
+      emitExecutionStructureChange();
+    }
+  }
+
+  function stringArraysEqual(a: readonly string[], b: readonly string[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
+  /** Lazily materialize a stable, immutable aggregate for headless consumers. */
+  function getSnapshot(): ExecutionView {
+    return (_snapshot ??= Object.freeze({
+      cell_execution_ids: Object.freeze(Object.fromEntries(_cellToExecution)),
+      executions: Object.freeze(Object.fromEntries(_executionMap)),
+      queue: _queue,
+    }));
+  }
+
+  /**
+   * Apply Rust's projection in frontend order: upserts, removals, pointers, queue.
+   * Notifications are synchronous per write, not an atomic changeset batch.
+   * Reads inside notifications are current; retained snapshots never change.
+   */
+  function applyChangeset(
+    changeset: ExecutionViewChangeset | null | undefined,
+    options: { onExecutionSnapshot?: (id: string, snapshot: ExecutionSnapshot) => void } = {},
+  ): void {
+    if (!changeset) return;
+    for (const [id, snapshot] of changeset.execution_upserts ?? []) {
+      markExecutionsRuntimeOwned([id]);
+      setExecution(id, snapshot);
+      options.onExecutionSnapshot?.(id, getExecutionById(id)!);
+    }
+    deleteExecutions(changeset.removed_execution_ids ?? []);
+    for (const [cell, id] of changeset.cell_pointer_changes ?? [])
+      setCellExecutionPointer(cell, id);
+    if (Object.prototype.hasOwnProperty.call(changeset, "queue")) {
+      const queue = changeset.queue;
+      const next: ExecutionQueueSnapshot | null =
+        queue == null
+          ? null
+          : Object.freeze({
+              executing_execution_id: queue.executing_execution_id ?? null,
+              queued_execution_ids: Object.freeze([...queue.queued_execution_ids]),
+              notebook:
+                queue.notebook == null
+                  ? queue.notebook
+                  : Object.freeze({
+                      executing_cell_id: queue.notebook.executing_cell_id ?? null,
+                      queued_cell_ids: Object.freeze([...queue.notebook.queued_cell_ids]),
+                    }),
+            });
+      if (!queuesEqual(_queue, next)) {
+        _queue = next;
+        _snapshot = undefined;
+      }
+      setNotebookQueueProjection(next?.notebook ?? EMPTY_NOTEBOOK_QUEUE);
+    }
+  }
+
+  function queuesEqual(
+    a: ExecutionQueueSnapshot | null,
+    b: ExecutionQueueSnapshot | null,
+  ): boolean {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    if (
+      a.executing_execution_id !== b.executing_execution_id ||
+      !stringArraysEqual(a.queued_execution_ids, b.queued_execution_ids)
+    )
+      return false;
+    if (a.notebook === b.notebook) return true;
+    if (!a.notebook || !b.notebook) return false;
+    return (
+      a.notebook.executing_cell_id === b.notebook.executing_cell_id &&
+      stringArraysEqual(a.notebook.queued_cell_ids, b.notebook.queued_cell_ids)
+    );
+  }
+
+  return {
+    subscribeNotebookQueueProjection,
+    getNotebookQueueProjection,
+    setExecution,
+    markExecutionsRuntimeOwned,
+    isExecutionRuntimeOwned,
+    setCellExecutionPointer,
+    setNotebookQueueProjection,
+    deleteExecutions,
+    getExecutionById,
+    getCellExecutionId,
+    getCellIdForExecutionId,
+    resetNotebookExecutions,
+    subscribeExecutionById,
+    getExecutionSnapshotGetter,
+    subscribeCellExecutionPointer,
+    getCellExecutionIdGetter,
+    subscribeExecutionStructureVersion,
+    getExecutionStructureVersionSnapshot,
+    getSnapshot,
+    applyChangeset,
+  };
+}
+export type NotebookExecutionStore = ReturnType<typeof createNotebookExecutionStore>;
