@@ -5,57 +5,13 @@
 - **macOS** - see [docs/runbooks/macos-setup.md](docs/runbooks/macos-setup.md)
 - **Linux** - see the Linux development dependencies in [README.md](README.md)
 
-### Rust tool recovery
-
-Run `cargo --version` and `rustc --version` from the repository root first.
-If both work with the repository's toolchain, no setup is needed. This recovery
-recipe is for Bash-compatible shells, including disposable Linux cloud sessions.
-
-If Cargo or rustc is not found, check for an existing rustup environment before
-installing anything:
-
-```bash
-if [ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]; then
-  . "${CARGO_HOME:-$HOME/.cargo}/env"
-fi
-cargo --version
-rustc --version
-```
-
-If rustup is installed, invoking Cargo from this checkout lets rustup install
-the toolchain and components declared in `rust-toolchain.toml` when missing.
-Investigate any installation error rather than reinstalling rustup or changing
-the global default to `stable`.
-
-Only if Rust and rustup are absent, install rustup without changing shell
-profiles or selecting a global default toolchain, then use the repository pin:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-  sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
-. "${CARGO_HOME:-$HOME/.cargo}/env"
-cargo --version
-rustc --version
-cargo xtask help
-```
-
-Sourcing the environment affects only the current shell and its children.
-Agents whose terminal calls start fresh shells should source it again in calls
-that need Cargo. Do not assume an `export` in a setup script persists into a
-later agent shell.
-
-Install additional native dependencies only when the task needs them. A missing
-C linker or `pkg-config` is separate from a missing Rust toolchain; use the
-platform prerequisites above and the build error to identify the needed
-packages. Retry the original build or test after setup.
-
 ## 2. Build commands
 
 | Task | Command |
 |------|---------|
 | Full dev launch | `cargo xtask dev` |
-| Skip pnpm install | `cargo xtask dev --skip-install` |
-| Reuse existing artifacts | `cargo xtask dev --skip-build` |
+| Skip JS/Python dependency install | `cargo xtask dev --skip-install` |
+| Skip sidecar build | `cargo xtask dev --skip-build` |
 | Debug build only | `cargo xtask build` |
 | Rust only (skip frontend) | `cargo xtask build --rust-only` |
 | Rebuild WASM targets | `cargo xtask wasm` |
@@ -65,24 +21,8 @@ packages. Retry the original build or test after setup.
 
 ## 3. Development workflow
 
-### Project structure
-
-```
-apps/notebook/          Tauri desktop app (React + Vite frontend)
-apps/notebook-cloud/    Hosted notebook worker (Cloudflare)
-apps/elements/          Elements design system catalog
-packages/               Shared JS/TS packages
-plugins/nteract/        Agent plugin distribution (Codex)
-crates/                 Rust workspace
-  runtimed/             Daemon (owns kernels and document state)
-  notebook/             Tauri application shell
-  runt-mcp/             MCP server
-  notebook-doc/         CRDT document model (Automerge)
-  xtask/                Build task runner
-python/                 Python workspace (uv)
-  runtimed/             Python bindings
-  nteract/              MCP launcher
-```
+See the [project structure](README.md#project-structure) for the directory map
+and [docs/README.md](docs/README.md) for subsystem documentation.
 
 ### Frontend
 
@@ -109,7 +49,8 @@ cargo run -p runt -- daemon logs -f
 
 ### WASM artifacts
 
-WASM build outputs are gitignored and must exist before the frontend or Rust builds. `cargo xtask dev` ensures them automatically. To rebuild manually:
+WASM build outputs are gitignored. The frontend and Rust crates that embed them
+need these artifacts; `cargo xtask dev` ensures them automatically. To rebuild:
 
 ```bash
 cargo xtask wasm              # rebuild all WASM targets
@@ -119,9 +60,8 @@ cargo xtask wasm sift         # rebuild sift-wasm only
 
 ### Python bindings
 
-`uv sync` is run automatically by `cargo xtask dev`. Python bindings are no
-longer part of the default build (the MCP server is Rust-native). To build them
-manually:
+`cargo xtask dev` syncs the Python environment unless `--skip-install` is set.
+Python bindings are built separately:
 
 ```bash
 uv sync
@@ -134,7 +74,8 @@ cd crates/runtimed-py && VIRTUAL_ENV=../../.venv uv run --directory ../../python
 cargo xtask notebook
 ```
 
-This opens the GUI and blocks until you quit. Run it from your own terminal.
+Use this app-only loop when the worktree daemon is already running; otherwise
+use `cargo xtask dev`. Both open a GUI and block until you quit.
 
 ## 4. Testing
 
@@ -161,13 +102,15 @@ cargo xtask integration
 
 ## 5. Before opening a PR
 
-### Lint and format (CI will reject failures)
+### Lint and format
 
 ```bash
 cargo xtask lint --fix
 ```
 
-This auto-fixes Rust (`rustfmt`), JS/TS (`biome`), and Python (`ruff`). To check without fixing:
+This runs Rust formatting, source control-byte checks, JS/TS checks (`vp check`),
+and, when `uv` is available, Python lint/format (`ruff`) and type checks (`ty`).
+`--fix` applies available formatting and lint fixes. To check without fixing:
 
 ```bash
 cargo xtask lint
@@ -176,7 +119,8 @@ cargo xtask clippy
 
 ### Commit message format
 
-[Conventional Commits](https://www.conventionalcommits.org/): `<type>(<optional-scope>): <short imperative summary>`
+[Conventional Commits](https://www.conventionalcommits.org/): `<type>(<optional-scope>)!: <short imperative summary>`
+The scope is optional; use `!` only for breaking changes.
 
 Types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`, `build`, `perf`, `revert`
 
@@ -186,12 +130,9 @@ fix(sync): handle empty changeset in merge path
 docs: update contributing guide
 ```
 
-### CI-enforced invariants
+### Design invariants
 
-**Tokio mutex guards:** Hold a `tokio::sync::Mutex` or `RwLock` guard only within a synchronous block; release before any `.await`. Use block scoping, not `drop()`.
-
-**Cell rendering order:** In `NotebookView.tsx`, always iterate `stableDomOrder`, never `cellIds` directly. Visual order is controlled by CSS `order`; iterating `cellIds` directly causes React to call `insertBefore` on reorder, destroying iframes and losing widget state.
-
-**Execution references synced cell IDs:** Execution requests must reference a `cell_id` from the Automerge document, not a side-channel code string.
-
-**Control-plane signals use a separate transport:** Kernel lifecycle signals (`KernelIdle`, `ExecutionDone`, `CellError`) must not share the bounded output transport with stdout or display data.
+Follow the [repository-wide rules](AGENTS.md#repository-wide-rules),
+[frontend invariants](apps/notebook/src/AGENTS.md#invariants), and
+[daemon lifecycle ordering](crates/runtimed/AGENTS.md#lifecycle-and-output-ordering)
+for the code you change.

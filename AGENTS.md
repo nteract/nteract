@@ -4,16 +4,10 @@
 
 ## Communication
 
-Write like you're talking with a colleague you know. Use everyday language and
-precise technical terms where they help. Contractions, humor, and a little
-informality are welcome when they fit. Give the explanation enough room to make
-sense. Let the conversation determine the structure, and use the user's examples
-as guidance rather than a script.
-
-Keep shared writing guidance here; subsystem instructions should add only what
-their task needs. Templates for saved technical records and structured tool
-outputs retain their required fields. Chat replies should fit the question,
-with evidence and limitations that matter to the answer.
+Write like you're talking with a colleague: use everyday language, precise
+technical terms, and enough evidence to explain the result and its limitations.
+Keep shared writing guidance here; subsystem guides should add only what their
+task needs. Preserve required fields in structured outputs and record templates.
 
 ## Start here
 
@@ -56,39 +50,26 @@ inventing product labels.
 
 ## Development environment
 
-Verify the tools needed for the task before making changes. If they work, use
-them as-is; do not run bootstrap scripts, reinstall tools, or upgrade a working
-local environment just because a session started.
-
-If a tool is unavailable, attempt routine recovery within the environment's
-existing permissions before declaring validation blocked. For Rust, first
-check whether Cargo is simply missing from `PATH`: source
-`${CARGO_HOME:-$HOME/.cargo}/env` if it exists, then retry from the repository
-root. Follow [Rust tool recovery](CONTRIBUTING.md#rust-tool-recovery) if setup is
-still needed. Honor `rust-toolchain.toml`; do not change the user's global
-default toolchain or replace a working installation.
-
-Install missing build dependencies needed for the actual command, using the
-platform setup linked from `CONTRIBUTING.md`. Routine setup does not need an
-extra confirmation when already permitted. Retry the relevant build or test
-after recovery. If setup fails because of network, permissions, or another
-concrete restriction, report the attempted command and error, and identify
-which checks remain unverified. A missing executable alone is not a reason to
-stop validation.
+Use working tools as-is. If Cargo is missing from `PATH`, source
+`${CARGO_HOME:-$HOME/.cargo}/env` if it exists, then retry from the repo root.
+Repeat this in fresh shells that need Cargo. If tools or build dependencies are
+still missing, install what the task needs within existing permissions and
+retry validation; routine setup needs no extra confirmation when permitted.
+Honor `rust-toolchain.toml` and leave working installations, shell profiles, and
+global toolchain defaults alone. See `CONTRIBUTING.md` for platform prerequisites.
+Only report validation blocked after attempting recovery, with the failing
+command, error, and checks left unverified.
 
 Use `nteract-dev` for development against this worktree. The `nteract` and
 `nteract-nightly` servers are for inspecting installed builds, not source
 changes. If `nteract-dev` is unavailable, use `cargo xtask`; do not substitute
 an installed notebook server. Full server details are in the scoped MCP rules.
 
-For desktop source work, prefer `cargo xtask dev`. It starts the worktree-local
-daemon and hot-reload app together and stops the daemon it started when the app
-exits. On macOS, each worktree launches with a distinct `nteract Dev <hash>`
-name and bundle identifier so it does not alias an installed stable or Nightly
-app. Use `cargo xtask dev status` for the exact app PID, executable, identity,
-Vite URL, and daemon socket; use `cargo xtask dev focus` to activate that exact
-process. Accessibility automation must select the reported `Automation PID`,
-not resolve an application named `nteract` through LaunchServices.
+For desktop source work, use `cargo xtask dev` for the worktree-local daemon
+and hot-reload app. It stops the daemon it started when the app exits. Use
+`cargo xtask dev status` to identify this worktree's app and daemon, and
+`cargo xtask dev focus` to activate its app. On macOS, accessibility automation
+must select the reported `Automation PID`, not resolve `nteract` by name.
 
 After changing Tauri bootstrap or listener setup, use `cargo xtask dev --fresh`
 to reset and relaunch this worktree's app and daemon. Use
@@ -114,14 +95,8 @@ validation.
 
 ## Commits and reviews
 
-Use Conventional Commits for commit and PR titles:
-
-```text
-<type>(<optional-scope>)!: <short imperative summary>
-```
-
-Allowed types: `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `ci`,
-`build`, `perf`, `revert`.
+Use [Conventional Commits](CONTRIBUTING.md#commit-message-format) for commit
+and PR titles.
 
 For reviews started on a developer workstation, use the repository-independent
 Kilo review workflow. Repository-hosted Pullfrog reviews remain supported. Give
