@@ -15,6 +15,7 @@ on:
           - linux
           - macos
           - windows
+          - windows-arm64
 
 permissions:
   contents: read
@@ -66,9 +67,9 @@ jobs:
             core.setOutput("artifact_prefix", artifactPrefix);
 
   build:
-    name: Build ${{ inputs.target_os == 'linux' && 'Linux x64' || inputs.target_os == 'macos' && 'macOS' || 'Windows x64' }} binary
+    name: Build ${{ inputs.target_os == 'linux' && 'Linux x64' || inputs.target_os == 'macos' && 'macOS' || inputs.target_os == 'windows-arm64' && 'Windows ARM64' || 'Windows x64' }} binary
     needs: [resolve-pr]
-    runs-on: ${{ inputs.target_os == 'linux' && 'ubuntu-22.04' || inputs.target_os == 'macos' && 'macos-15' || 'windows-2025' }}
+    runs-on: ${{ inputs.target_os == 'linux' && 'ubuntu-22.04' || inputs.target_os == 'macos' && 'macos-15' || inputs.target_os == 'windows-arm64' && 'windows-11-vs2026-arm' || 'windows-2025' }}
     env:
       NTERACT_BUILD_GIT_HASH: ${{ needs.resolve-pr.outputs.head_sha }}
 
@@ -226,7 +227,7 @@ jobs:
         id: upload-artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ needs.resolve-pr.outputs.artifact_prefix }}-${{ inputs.target_os == 'linux' && 'linux-x64' || inputs.target_os == 'macos' && 'macos' || 'windows-x64' }}
+          name: ${{ needs.resolve-pr.outputs.artifact_prefix }}-${{ inputs.target_os == 'linux' && 'linux-x64' || inputs.target_os == 'macos' && 'macos' || inputs.target_os == 'windows-arm64' && 'windows-arm64' || 'windows-x64' }}
           path: pr-binary/
           retention-days: 14
 
@@ -237,7 +238,7 @@ jobs:
           TARGET_OS: ${{ inputs.target_os }}
           COMMIT_SHORT_SHA: ${{ needs.resolve-pr.outputs.head_short_sha }}
           VERSION: ${{ steps.version.outputs.version }}
-          ARTIFACT_NAME: ${{ needs.resolve-pr.outputs.artifact_prefix }}-${{ inputs.target_os == 'linux' && 'linux-x64' || inputs.target_os == 'macos' && 'macos' || 'windows-x64' }}
+          ARTIFACT_NAME: ${{ needs.resolve-pr.outputs.artifact_prefix }}-${{ inputs.target_os == 'linux' && 'linux-x64' || inputs.target_os == 'macos' && 'macos' || inputs.target_os == 'windows-arm64' && 'windows-arm64' || 'windows-x64' }}
           ARTIFACT_URL: ${{ steps.upload-artifact.outputs.artifact-url }}
           ARTIFACT_ID: ${{ steps.upload-artifact.outputs.artifact-id }}
         with:

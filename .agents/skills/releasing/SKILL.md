@@ -111,7 +111,7 @@ Schema changes don't require a protocol bump because the wire format for sync fr
 - `github_release_prerelease: true`: applies PEP 440 alpha stamp to Python version
 - `github_release_prerelease: false`: stamps Python version from `crates/runt/Cargo.toml`
 
-Python wheels are always built (macOS arm64, macOS x64, Linux x64, Windows x64) and published.
+Python wheels are always built (macOS arm64, macOS x64, Linux x64, Windows x64, Windows ARM64) and published.
 
 Desktop version: `{runt version}-{suffix}.{timestamp}` stamped into `tauri.conf.json` and `Cargo.toml` at build time (not committed).
 

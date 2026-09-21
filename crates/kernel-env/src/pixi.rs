@@ -16,9 +16,7 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
 use rattler::{default_cache_dir, install::Installer};
-use rattler_conda_types::{
-    ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, Platform,
-};
+use rattler_conda_types::{ChannelConfig, MatchSpec, ParseMatchSpecOptions, Platform};
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,7 +63,7 @@ pub fn default_cache_dir_pixi() -> PathBuf {
 /// channels, and platform. The environment can later be extended by pixi CLI
 /// or pixi API if needed.
 fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) -> String {
-    let platform = Platform::current().to_string();
+    let platform = crate::conda_solve_platform().to_string();
 
     let channels_str = channels
         .iter()
@@ -211,7 +209,7 @@ async fn install_pixi_env(
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
     // Parse channels, including Conda's special `defaults` multichannel.
-    let install_platform = Platform::current();
+    let install_platform = crate::conda_solve_platform();
     let channels = parse_channels(channels, &channel_config, install_platform)?;
 
     // Build specs -- always include python
@@ -247,13 +245,8 @@ async fn install_pixi_env(
     )
     .await?;
 
-    // Virtual packages
-    let virtual_packages = rattler_virtual_packages::VirtualPackage::detect(
-        &rattler_virtual_packages::VirtualPackageOverrides::default(),
-    )?
-    .iter()
-    .map(|vpkg| GenericVirtualPackage::from(vpkg.clone()))
-    .collect::<Vec<_>>();
+    // Virtual packages match the solve platform, not the host.
+    let virtual_packages = crate::detect_solve_virtual_packages()?;
 
     // Solve
     handler.on_progress(
@@ -491,7 +484,7 @@ mod tests {
             &["conda-forge".to_string()],
         );
 
-        let platform = Platform::current().to_string();
+        let platform = crate::conda_solve_platform().to_string();
         assert!(manifest.contains(&format!("platforms = [\"{}\"]", platform)));
     }
 }

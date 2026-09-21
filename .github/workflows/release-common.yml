@@ -722,10 +722,14 @@ jobs:
         run: |
           # Find signtool.exe from the Windows SDK
           $sdkRoot = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots" -Name KitsRoot10).KitsRoot10
-          $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
-            Where-Object { $_.FullName -match "\\x64\\" } |
-            Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
-            Select-Object -First 1
+          $signtool = $null
+          foreach ($arch in @("arm64", "x64")) {
+            $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
+              Where-Object { $_.FullName -match "\\$arch\\" } |
+              Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
+              Select-Object -First 1
+            if ($signtool) { break }
+          }
           if (-not $signtool) { throw "signtool.exe not found" }
           Write-Host "Found signtool: $($signtool.FullName)"
           "SIGNTOOL_PATH=$($signtool.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
@@ -799,6 +803,214 @@ jobs:
         with:
           name: runtimed-windows-executable
           path: daemon/runtimed-windows-x64.exe
+          if-no-files-found: error
+
+  build-notebook-windows-arm64:
+    name: Build Windows ARM64 Notebook
+    runs-on: windows-11-vs2026-arm
+    needs: [compute-version, build-wasm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "windows-notebook-arm64"
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: wasm-artifacts
+
+      - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
+          include-mcp-widget: true
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Install cargo-binstall
+        shell: pwsh
+        run: |
+          $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+          New-Item -ItemType Directory -Force -Path $cargoBin | Out-Null
+          $zip = Join-Path $env:TEMP "cargo-binstall.zip"
+          $urls = @(
+            "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.18.1/cargo-binstall-aarch64-pc-windows-msvc.zip",
+            "https://github.com/cargo-bins/cargo-binstall/releases/download/v1.18.1/cargo-binstall-x86_64-pc-windows-msvc.zip"
+          )
+          $downloaded = $false
+          foreach ($url in $urls) {
+            try {
+              Invoke-WebRequest $url -OutFile $zip
+              Expand-Archive $zip -DestinationPath $cargoBin -Force
+              $downloaded = $true
+              break
+            } catch {
+              Write-Host "Failed to download $url"
+            }
+          }
+          if (-not $downloaded) {
+            Write-Host "cargo-binstall unavailable; cargo install will be used as fallback"
+          }
+
+      - name: Install Tauri CLI
+        uses: ./.github/actions/install-tauri-cli
+
+      - name: Install trusted-signing-cli
+        shell: bash
+        run: |
+          if command -v cargo-binstall >/dev/null 2>&1; then
+            cargo binstall trusted-signing-cli --no-confirm --locked --force
+          else
+            cargo install trusted-signing-cli --locked --force
+          fi
+
+      - name: Set version in tauri.conf.json
+        shell: pwsh
+        run: |
+          $version = "${{ needs.compute-version.outputs.version }}"
+          $channel = "${{ env.RUNT_BUILD_CHANNEL }}".ToLowerInvariant()
+          switch ($channel) {
+            "nightly" {
+              $productName = "nteract Nightly"
+              $bundleId = "org.nteract.desktop.nightly"
+            }
+            default {
+              $productName = "nteract"
+              $bundleId = "org.nteract.desktop"
+            }
+          }
+          Write-Host "Setting version to: $version"
+          $tauriConf = Get-Content crates/notebook/tauri.conf.json -Raw
+          $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
+          $tauriConf = $tauriConf -replace '"productName": "[^"]+"', "`"productName`": `"$productName`""
+          $tauriConf = $tauriConf -replace '"identifier": "[^"]+"', "`"identifier`": `"$bundleId`""
+          $tauriConf = $tauriConf -replace 'https://github.com/nteract/nteract/releases/download/stable-latest/latest.json', 'https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
+          Set-Content crates/notebook/tauri.conf.json $tauriConf
+          $runtCargo = Get-Content crates/runt/Cargo.toml -Raw
+          $runtCargo = $runtCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
+          Set-Content crates/runt/Cargo.toml $runtCargo
+          $notebookCargo = Get-Content crates/notebook/Cargo.toml -Raw
+          $notebookCargo = $notebookCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
+          Set-Content crates/notebook/Cargo.toml $notebookCargo
+
+      - name: Generate Icons
+        shell: pwsh
+        run: |
+          $channel = "${{ env.RUNT_BUILD_CHANNEL }}".ToLowerInvariant()
+          $iconSource = "crates/notebook/icons/source.png"
+          if ($channel -eq "nightly" -and (Test-Path "crates/notebook/icons/source-nightly.png")) {
+            $iconSource = "crates/notebook/icons/source-nightly.png"
+          }
+          cargo xtask icons $iconSource
+
+      - name: Build external binaries
+        shell: bash
+        run: |
+          cargo build --release -p runtimed -p runt -p nteract-mcp
+          TARGET=$(rustc --print host-tuple)
+          mkdir -p crates/notebook/binaries
+          cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
+          cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
+          cp target/release/nteract-cli.exe "crates/notebook/binaries/nteract-cli-$TARGET.exe"
+          cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
+          if [[ "$TARGET" != "aarch64-pc-windows-msvc" ]]; then
+            echo "::error::Expected aarch64-pc-windows-msvc host, got $TARGET"
+            exit 1
+          fi
+
+      - name: Locate signing tools
+        shell: pwsh
+        run: |
+          $sdkRoot = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots" -Name KitsRoot10).KitsRoot10
+          $signtool = $null
+          foreach ($arch in @("arm64", "x64")) {
+            $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
+              Where-Object { $_.FullName -match "\\$arch\\" } |
+              Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
+              Select-Object -First 1
+            if ($signtool) { break }
+          }
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Write-Host "Found signtool: $($signtool.FullName)"
+          "SIGNTOOL_PATH=$($signtool.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
+          $azCmd = (Get-Command az -ErrorAction SilentlyContinue).Source
+          if (-not $azCmd) { throw "Azure CLI not found" }
+          Write-Host "Found Azure CLI: $azCmd"
+          "AZURE_CLI_PATH=$azCmd" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
+      - name: Build with tauri-action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        with:
+          projectPath: crates/notebook
+          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
+          includeUpdaterJson: false
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          shopt -s nullglob
+          NSIS_BINARIES=(target/release/bundle/nsis/*.exe)
+          shopt -u nullglob
+
+          if [ ${#NSIS_BINARIES[@]} -eq 0 ]; then
+            echo "::error::No NSIS installer (.exe) found in target/release/bundle/nsis"
+            exit 1
+          fi
+
+          NSIS_PATH="${NSIS_BINARIES[0]}"
+          cp "$NSIS_PATH" "artifacts/nteract-${CHANNEL}-windows-arm64.exe"
+
+          NSIS_SIG_PATH="${NSIS_PATH}.sig"
+          if [ -f "$NSIS_SIG_PATH" ]; then
+            cp "$NSIS_SIG_PATH" "artifacts/nteract-${CHANNEL}-windows-arm64.exe.sig"
+          else
+            echo "::error::Missing updater signature for $NSIS_PATH"
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nteract-windows-arm64
+          path: artifacts/
+
+      - name: Upload raw nteract-mcp binary for plugin distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: plugin-nteract-mcp-aarch64-pc-windows-msvc
+          path: crates/notebook/binaries/nteract-mcp-aarch64-pc-windows-msvc.exe
+          if-no-files-found: error
+
+      - name: Stage standalone runtimed binary
+        shell: bash
+        run: |
+          mkdir -p daemon
+          cp crates/notebook/binaries/runtimed-aarch64-pc-windows-msvc.exe daemon/runtimed-windows-arm64.exe
+
+      - name: Upload standalone runtimed binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtimed-windows-arm64
+          path: daemon/runtimed-windows-arm64.exe
           if-no-files-found: error
 
   build-notebook-linux-x64:
@@ -1002,6 +1214,9 @@ jobs:
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
             sccache: true
+          - runner: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            sccache: false
     steps:
       - uses: actions/checkout@v6
         with:
@@ -1110,6 +1325,16 @@ jobs:
             echo "sccache is not available on PATH"
           fi
 
+      - name: Smoke Windows ARM64 wheel
+        if: matrix.platform.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          python -m pip install --find-links python/runtimed/dist runtimed
+          python -c "import runtimed; print('imported', runtimed.__file__)"
+          $bin = Get-ChildItem -Path python/runtimed -Recurse -Filter runtimed.exe | Select-Object -First 1
+          if (-not $bin) { throw "runtimed.exe not found after wheel install" }
+          & $bin.FullName --help
+
       - name: Upload wheels
         uses: actions/upload-artifact@v7
         with:
@@ -1135,6 +1360,7 @@ jobs:
         build-notebook-macos-arm64,
         build-notebook-macos-x64,
         build-notebook-windows-x64,
+        build-notebook-windows-arm64,
         build-notebook-linux-x64,
       ]
     steps:
@@ -1241,6 +1467,7 @@ jobs:
         build-notebook-macos-arm64,
         build-notebook-macos-x64,
         build-notebook-windows-x64,
+        build-notebook-windows-arm64,
         build-notebook-linux-x64,
         smoke-fedora-appimage,
         build-python-wheels,
@@ -1298,6 +1525,12 @@ jobs:
           name: runtimed-windows-executable
           path: ./executables
 
+      - name: Download Windows ARM64 runtimed executable
+        uses: actions/download-artifact@v8
+        with:
+          name: runtimed-windows-arm64
+          path: ./executables
+
       - name: Download macOS ARM64 notebook
         uses: actions/download-artifact@v8
         with:
@@ -1315,6 +1548,12 @@ jobs:
         with:
           name: nteract-windows-x64
           path: ./notebook-windows-x64
+
+      - name: Download Windows ARM64 notebook
+        uses: actions/download-artifact@v8
+        with:
+          name: nteract-windows-arm64
+          path: ./notebook-windows-arm64
 
       - name: Download Linux x64 notebook
         uses: actions/download-artifact@v8
@@ -1336,6 +1575,7 @@ jobs:
             notebook-macos-arm64 \
             notebook-macos-x64 \
             notebook-windows-x64 \
+            notebook-windows-arm64 \
             notebook-linux-x64 \
             notebook-ui
           echo ""
@@ -1345,6 +1585,7 @@ jobs:
             notebook-macos-arm64 \
             notebook-macos-x64 \
             notebook-windows-x64 \
+            notebook-windows-arm64 \
             notebook-linux-x64 \
             notebook-ui \
             -type f -printf "%12s  %p\n" | sort -nr
@@ -1377,6 +1618,7 @@ jobs:
           cp executables/runtimed-darwin-arm64 "release-assets/${DAEMON_NAME}-darwin-arm64"
           cp executables/runtimed-darwin-x64 "release-assets/${DAEMON_NAME}-darwin-x64"
           cp executables/runtimed-windows-x64.exe "release-assets/${DAEMON_NAME}-windows-x64.exe"
+          cp executables/runtimed-windows-arm64.exe "release-assets/${DAEMON_NAME}-windows-arm64.exe"
           sed \
             -e "s/^DEFAULT_CHANNEL=\"stable\"$/DEFAULT_CHANNEL=\"${CHANNEL}\"/" \
             -e "s/^DEFAULT_TAG=\"\"$/DEFAULT_TAG=\"v${{ needs.compute-version.outputs.version }}\"/" \
@@ -1388,6 +1630,7 @@ jobs:
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.dmg" release-assets/
           cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.dmg" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe" release-assets/
+          cp "notebook-windows-arm64/nteract-${CHANNEL}-windows-arm64.exe" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage" release-assets/
           # Platform-neutral production notebook frontend for embedding hosts.
           cp "notebook-ui/nteract-${CHANNEL}-notebook-ui.tar.gz" release-assets/
@@ -1398,6 +1641,7 @@ jobs:
           cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.app.tar.gz" release-assets/
           cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe.sig" release-assets/
+          cp "notebook-windows-arm64/nteract-${CHANNEL}-windows-arm64.exe.sig" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage.sig" release-assets/ 2>/dev/null || true
 
       - name: Generate updater manifest (latest.json)
@@ -1430,16 +1674,19 @@ jobs:
           require_file "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz"
           require_file "release-assets/nteract-${CHANNEL}-linux-x64.AppImage"
           require_file "release-assets/nteract-${CHANNEL}-windows-x64.exe"
+          require_file "release-assets/nteract-${CHANNEL}-windows-arm64.exe"
           require_file "release-assets/install-linux-release"
           require_sig "release-assets/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig"
           require_sig "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig"
           require_sig "release-assets/nteract-${CHANNEL}-linux-x64.AppImage.sig"
           require_sig "release-assets/nteract-${CHANNEL}-windows-x64.exe.sig"
+          require_sig "release-assets/nteract-${CHANNEL}-windows-arm64.exe.sig"
 
           SIG_DARWIN_ARM64=$(read_sig "release-assets/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig")
           SIG_DARWIN_X64=$(read_sig "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig")
           SIG_LINUX_X64=$(read_sig "release-assets/nteract-${CHANNEL}-linux-x64.AppImage.sig")
           SIG_WINDOWS_X64=$(read_sig "release-assets/nteract-${CHANNEL}-windows-x64.exe.sig")
+          SIG_WINDOWS_ARM64=$(read_sig "release-assets/nteract-${CHANNEL}-windows-arm64.exe.sig")
 
           jq -n \
             --arg version "$VERSION" \
@@ -1453,6 +1700,8 @@ jobs:
             --arg url_linux_x64 "$RELEASE_BASE/nteract-${CHANNEL}-linux-x64.AppImage" \
             --arg sig_windows_x64 "$SIG_WINDOWS_X64" \
             --arg url_windows_x64 "$RELEASE_BASE/nteract-${CHANNEL}-windows-x64.exe" \
+            --arg sig_windows_arm64 "$SIG_WINDOWS_ARM64" \
+            --arg url_windows_arm64 "$RELEASE_BASE/nteract-${CHANNEL}-windows-arm64.exe" \
             '{
               version: $version,
               notes: $notes,
@@ -1461,7 +1710,8 @@ jobs:
                 "darwin-aarch64": { signature: $sig_darwin_arm64, url: $url_darwin_arm64 },
                 "darwin-x86_64": { signature: $sig_darwin_x64, url: $url_darwin_x64 },
                 "linux-x86_64": { signature: $sig_linux_x64, url: $url_linux_x64 },
-                "windows-x86_64": { signature: $sig_windows_x64, url: $url_windows_x64 }
+                "windows-x86_64": { signature: $sig_windows_x64, url: $url_windows_x64 },
+                "windows-aarch64": { signature: $sig_windows_arm64, url: $url_windows_arm64 }
               }
             }' > release-assets/latest.json
 
@@ -1558,6 +1808,7 @@ jobs:
             echo "| macOS | ARM64 (Apple Silicon) | \`nteract-${VERSION_SUFFIX}-darwin-arm64.dmg\` |"
             echo "| macOS | x64 (Intel) | \`nteract-${VERSION_SUFFIX}-darwin-x64.dmg\` |"
             echo "| Windows | x64 | \`nteract-${VERSION_SUFFIX}-windows-x64.exe\` |"
+            echo "| Windows | ARM64 | \`nteract-${VERSION_SUFFIX}-windows-arm64.exe\` |"
             echo "| Linux | x64 | \`nteract-${VERSION_SUFFIX}-linux-x64.AppImage\` |"
             echo ''
             echo "macOS and Windows builds are signed. macOS builds are also notarized. Linux AppImage: \`chmod +x\` and run. DEB/RPM packages are not currently supported because runtimed is a per-user daemon managed by the app and CLI, not by system package-manager scripts."
@@ -1618,6 +1869,7 @@ jobs:
             echo "| macOS | x64 (Intel) | \`${CLI_NAME}-darwin-x64\` |"
             echo "| macOS | x64 (Intel) | \`${DAEMON_NAME}-darwin-x64\` |"
             echo "| Windows | x64 | \`${DAEMON_NAME}-windows-x64.exe\` |"
+            echo "| Windows | ARM64 | \`${DAEMON_NAME}-windows-arm64.exe\` |"
             echo ''
             echo '## Release highlights'
             echo ''
@@ -1654,6 +1906,7 @@ jobs:
             ./release-assets/runt*-darwin-arm64
             ./release-assets/runt*-darwin-x64
             ./release-assets/runtimed*-windows-x64.exe
+            ./release-assets/runtimed*-windows-arm64.exe
             ./release-assets/install-linux-release
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage.sig
@@ -1664,9 +1917,11 @@ jobs:
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-x64.app.tar.gz
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-x64.app.tar.gz.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe
+            ./release-assets/nteract-${{ inputs.version_suffix }}-windows-arm64.exe
             ./release-assets/nteract-${{ inputs.version_suffix }}-notebook-ui.tar.gz
             ./release-assets/nteract-${{ inputs.version_suffix }}-notebook-ui.tar.gz.sha256
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe.sig
+            ./release-assets/nteract-${{ inputs.version_suffix }}-windows-arm64.exe.sig
             ./release-assets/latest.json
             ./wheels/*.whl
 

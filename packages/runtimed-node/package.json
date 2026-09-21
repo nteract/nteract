@@ -60,7 +60,8 @@
     "targets": [
       "aarch64-apple-darwin",
       "x86_64-unknown-linux-gnu",
-      "x86_64-pc-windows-msvc"
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc"
     ]
   },
   "scripts": {
@@ -80,7 +81,8 @@
   "optionalDependencies": {
     "@runtimed/node-darwin-arm64": "workspace:*",
     "@runtimed/node-linux-x64-gnu": "workspace:*",
-    "@runtimed/node-win32-x64-msvc": "workspace:*"
+    "@runtimed/node-win32-x64-msvc": "workspace:*",
+    "@runtimed/node-win32-arm64-msvc": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

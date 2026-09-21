@@ -39,9 +39,19 @@ env:
 
 jobs:
   windows-app-launch-smoke:
-    name: Windows app launch smoke
-    runs-on: windows-latest
+    name: Windows ${{ matrix.arch }} app launch smoke
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            installer_re: '^nteract-(stable|nightly)-windows-x64\.exe$'
+          - arch: arm64
+            runner: windows-11-vs2026-arm
+            installer_re: '^nteract-(stable|nightly)-windows-arm64\.exe$'
     if: |
       (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')) ||
       (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
@@ -53,6 +63,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+          INSTALLER_RE: ${{ matrix.installer_re }}
         run: |
           if (-not $env:RELEASE_TAG) {
             Write-Error "RELEASE_TAG was not resolved"
@@ -70,7 +81,7 @@ jobs:
 
             $assets = ($releaseJson | ConvertFrom-Json).assets
             $asset = $assets |
-              Where-Object { $_.name -match '^nteract-(stable|nightly)-windows-x64\.exe$' } |
+              Where-Object { $_.name -match $env:INSTALLER_RE } |
               Select-Object -First 1
 
             if ($asset) {
@@ -82,7 +93,7 @@ jobs:
           }
 
           if (-not $asset) {
-            Write-Error "Release $env:RELEASE_TAG does not contain a Windows x64 nteract installer"
+            Write-Error "Release $env:RELEASE_TAG does not contain a Windows $($env:INSTALLER_RE) nteract installer"
             exit 1
           }
 
@@ -299,9 +310,17 @@ jobs:
           }" "$DISCORD_WEBHOOK_WINDOWS"
 
   windows-smoke:
-    name: Windows (build + install + smoke)
-    runs-on: windows-latest
+    name: Windows ${{ matrix.arch }} (build + install + smoke)
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-vs2026-arm
     if: github.event_name != 'release' && (github.event_name != 'workflow_dispatch' || inputs.release_tag == '')
     # The Windows leg currently runs ~32 minutes (cargo build + NSIS bundling
     # + smoke). Gating PRs on it would tax every diff, including frontend-only
@@ -318,7 +337,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: windows-smoke
+          shared-key: windows-smoke-${{ matrix.arch }}
 
       - name: Build runtime artifacts (wasm + renderer plugins + MCP widget)
         uses: ./.github/actions/build-runtime-artifacts
@@ -341,6 +360,30 @@ jobs:
           cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
           cp target/release/nteract-cli.exe "crates/notebook/binaries/nteract-cli-$TARGET.exe"
           cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
+          if [[ "${{ matrix.arch }}" == "arm64" && "$TARGET" != "aarch64-pc-windows-msvc" ]]; then
+            echo "::error::Expected aarch64-pc-windows-msvc host, got $TARGET"
+            exit 1
+          fi
+
+      - name: Assert ARM64 PE sidecars
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $files = @(
+            "crates/notebook/binaries/runtimed-aarch64-pc-windows-msvc.exe",
+            "crates/notebook/binaries/runt-aarch64-pc-windows-msvc.exe",
+            "crates/notebook/binaries/nteract-cli-aarch64-pc-windows-msvc.exe",
+            "crates/notebook/binaries/nteract-mcp-aarch64-pc-windows-msvc.exe"
+          )
+          foreach ($path in $files) {
+            $bytes = [System.IO.File]::ReadAllBytes($path)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0xAA64) {
+              throw "$path is not ARM64 PE (machine=0x$($machine.ToString('X')))"
+            }
+            Write-Host "$path is ARM64 PE"
+          }
 
       - name: Generate throwaway updater keypair
         # tauri.conf.json declares an updater pubkey for production releases,

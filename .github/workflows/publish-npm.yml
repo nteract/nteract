@@ -13,6 +13,7 @@ name: Publish npm packages
 # - @runtimed/node-darwin-arm64
 # - @runtimed/node-linux-x64-gnu
 # - @runtimed/node-win32-x64-msvc
+# - @runtimed/node-win32-arm64-msvc
 # - @nteract/pi
 
 on:
@@ -53,6 +54,8 @@ jobs:
             runner: ubuntu-latest
           - target: win32-x64-msvc
             runner: windows-latest
+          - target: win32-arm64-msvc
+            runner: windows-11-vs2026-arm
     steps:
       - uses: actions/checkout@v6
         with:
@@ -78,6 +81,12 @@ jobs:
 
       - name: Assemble platform package
         run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
+
+      - name: Smoke native binding
+        if: matrix.target == 'win32-arm64-msvc'
+        run: |
+          pnpm --dir packages/runtimed-node smoke
+          pnpm --dir packages/runtimed-node smoke:api
 
       - name: Verify platform package
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
@@ -105,7 +114,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [darwin-arm64, linux-x64-gnu, win32-x64-msvc]
+        target: [darwin-arm64, linux-x64-gnu, win32-x64-msvc, win32-arm64-msvc]
     steps:
       - uses: actions/setup-node@v6
         with:

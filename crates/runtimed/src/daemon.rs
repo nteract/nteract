@@ -587,6 +587,7 @@ fn extend_default_packages(
     packages: &mut Vec<String>,
     extra: &[String],
     install_default_data_packages: bool,
+    include_default_pyarrow: bool,
 ) {
     for pkg in extra {
         packages.push(pkg.clone());
@@ -601,8 +602,8 @@ fn extend_default_packages(
     if !has_package_named(packages, "nbformat") {
         packages.push("nbformat".to_string());
     }
-    if !has_package_named(packages, "pyarrow") {
-        packages.push("pyarrow>=14".to_string());
+    if include_default_pyarrow && !has_package_named(packages, "pyarrow") {
+        packages.push(kernel_env::uv::PYARROW_SPEC.to_string());
     }
 }
 
@@ -618,17 +619,23 @@ fn base_packages_without_display_overrides(base_packages: Vec<String>) -> Vec<St
 }
 
 fn uv_prewarmed_packages(extra: &[String], install_default_data_packages: bool) -> Vec<String> {
-    // The launcher package is vendored post-creation. pyarrow and nbformat are
-    // part of the managed notebook runtime so rich display formatters work by
-    // default; user defaults can still override either package by name.
+    // The launcher package is vendored post-creation. nbformat is part of the
+    // managed notebook runtime so rich display formatters work by default.
+    // PyArrow is too, except on Windows ARM64 where the default UV set omits
+    // it. User defaults can still override either package by name.
     let mut packages = base_packages_without_display_overrides(kernel_env::uv_base_packages());
-    extend_default_packages(&mut packages, extra, install_default_data_packages);
+    extend_default_packages(
+        &mut packages,
+        extra,
+        install_default_data_packages,
+        !kernel_env::omit_default_pyarrow(),
+    );
     packages
 }
 
 fn conda_prewarmed_packages(extra: &[String], install_default_data_packages: bool) -> Vec<String> {
     let mut packages = base_packages_without_display_overrides(kernel_env::conda_base_packages());
-    extend_default_packages(&mut packages, extra, install_default_data_packages);
+    extend_default_packages(&mut packages, extra, install_default_data_packages, true);
     packages
 }
 
@@ -639,7 +646,7 @@ fn pixi_prewarmed_packages(extra: &[String], install_default_data_packages: bool
         "anywidget".to_string(),
         "pip".to_string(),
     ];
-    extend_default_packages(&mut packages, extra, install_default_data_packages);
+    extend_default_packages(&mut packages, extra, install_default_data_packages, true);
     packages
 }
 
@@ -7894,17 +7901,17 @@ mod tests {
 
     #[test]
     fn test_prewarmed_packages_derive_from_kernel_env_base_constants() {
-        assert_eq!(
-            uv_prewarmed_packages(&[], false),
-            vec![
-                "ipykernel".to_string(),
-                "ipywidgets".to_string(),
-                "anywidget".to_string(),
-                "uv".to_string(),
-                "nbformat".to_string(),
-                "pyarrow>=14".to_string(),
-            ]
-        );
+        let mut expected_uv = vec![
+            "ipykernel".to_string(),
+            "ipywidgets".to_string(),
+            "anywidget".to_string(),
+            "uv".to_string(),
+            "nbformat".to_string(),
+        ];
+        if !kernel_env::omit_default_pyarrow() {
+            expected_uv.push(kernel_env::uv::PYARROW_SPEC.to_string());
+        }
+        assert_eq!(uv_prewarmed_packages(&[], false), expected_uv);
         assert_eq!(
             conda_prewarmed_packages(&[], false),
             kernel_env::conda_base_packages()
@@ -7915,7 +7922,14 @@ mod tests {
     fn test_uv_prewarmed_packages_include_required_display_deps() {
         let packages = uv_prewarmed_packages(&[], true);
         assert!(packages.iter().any(|pkg| pkg == "nbformat"));
-        assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+        let has_pyarrow = packages
+            .iter()
+            .any(|pkg| pkg == kernel_env::uv::PYARROW_SPEC);
+        if kernel_env::omit_default_pyarrow() {
+            assert!(!has_pyarrow);
+        } else {
+            assert!(has_pyarrow);
+        }
         for pkg in DEFAULT_DATA_PACKAGES {
             assert!(packages.iter().any(|candidate| candidate == pkg));
         }
@@ -7928,7 +7942,22 @@ mod tests {
             assert!(!packages.iter().any(|candidate| candidate == pkg));
         }
         assert!(packages.iter().any(|pkg| pkg == "nbformat"));
-        assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+        let has_pyarrow = packages
+            .iter()
+            .any(|pkg| pkg == kernel_env::uv::PYARROW_SPEC);
+        if kernel_env::omit_default_pyarrow() {
+            assert!(!has_pyarrow);
+        } else {
+            assert!(has_pyarrow);
+        }
+    }
+
+    #[test]
+    fn test_conda_prewarmed_packages_keep_pyarrow_on_windows_arm64() {
+        let packages = conda_prewarmed_packages(&[], false);
+        assert!(packages
+            .iter()
+            .any(|pkg| pkg == kernel_env::uv::PYARROW_SPEC));
     }
 
     /// `DEFAULT_TRUSTED_EXTRA_PACKAGES` are seeded into the allowlist on

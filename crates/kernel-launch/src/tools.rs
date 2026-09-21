@@ -42,6 +42,13 @@ struct GithubPlatform {
     platform: &'static str,
 }
 
+impl GithubPlatform {
+    fn asset_name(&self, tool: &str, zip: bool) -> String {
+        let ext = if zip { "zip" } else { "tar.gz" };
+        format!("{tool}-{}-{}.{ext}", self.arch, self.platform)
+    }
+}
+
 /// Cache directory for bootstrapped tools.
 ///
 /// Channel-aware via [`runt_workspace::daemon_base_dir`]: stable uses
@@ -386,15 +393,9 @@ async fn download_ruff_from_github(version: &str) -> Result<BootstrappedTool> {
 
     // Ruff uses tar.gz on Unix, zip on Windows
     let (asset_name, is_zip) = if cfg!(windows) {
-        (
-            format!("ruff-{}-{}.zip", platform.arch, platform.platform),
-            true,
-        )
+        (platform.asset_name("ruff", true), true)
     } else {
-        (
-            format!("ruff-{}-{}.tar.gz", platform.arch, platform.platform),
-            false,
-        )
+        (platform.asset_name("ruff", false), false)
     };
 
     // Build URLs — ruff tags have NO `v` prefix
@@ -630,7 +631,7 @@ fn extract_deno_zip(zip_bytes: &[u8], dest_dir: &Path) -> Result<PathBuf> {
 /// Download and verify the deno binary from GitHub releases.
 async fn download_deno_from_github(version: &str) -> Result<BootstrappedTool> {
     let platform = get_github_platform()?;
-    let asset_name = format!("deno-{}-{}.zip", platform.arch, platform.platform);
+    let asset_name = platform.asset_name("deno", true);
 
     // Build URLs
     let zip_url = format!(
@@ -806,15 +807,9 @@ async fn download_uv_from_github(version: &str) -> Result<BootstrappedTool> {
 
     // UV uses tar.gz on Unix, zip on Windows
     let (asset_name, is_zip) = if cfg!(windows) {
-        (
-            format!("uv-{}-{}.zip", platform.arch, platform.platform),
-            true,
-        )
+        (platform.asset_name("uv", true), true)
     } else {
-        (
-            format!("uv-{}-{}.tar.gz", platform.arch, platform.platform),
-            false,
-        )
+        (platform.asset_name("uv", false), false)
     };
 
     // Build URLs
@@ -994,15 +989,9 @@ async fn download_pixi_from_github(version: &str) -> Result<BootstrappedTool> {
 
     // Pixi uses tar.gz on Unix, zip on Windows
     let (asset_name, is_zip) = if cfg!(windows) {
-        (
-            format!("pixi-{}-{}.zip", platform.arch, platform.platform),
-            true,
-        )
+        (platform.asset_name("pixi", true), true)
     } else {
-        (
-            format!("pixi-{}-{}.tar.gz", platform.arch, platform.platform),
-            false,
-        )
+        (platform.asset_name("pixi", false), false)
     };
 
     // Build URLs — pixi tags have a `v` prefix
@@ -1852,6 +1841,34 @@ mod tests {
             assert_eq!(p.arch, "x86_64");
             assert_eq!(p.platform, "pc-windows-msvc");
         }
+
+        #[cfg(all(target_arch = "aarch64", target_os = "windows"))]
+        {
+            let p = get_github_platform().unwrap();
+            assert_eq!(p.arch, "aarch64");
+            assert_eq!(p.platform, "pc-windows-msvc");
+        }
+    }
+
+    #[test]
+    fn windows_arm64_github_asset_names() {
+        let p = GithubPlatform {
+            arch: "aarch64",
+            platform: "pc-windows-msvc",
+        };
+        assert_eq!(
+            p.asset_name("deno", true),
+            "deno-aarch64-pc-windows-msvc.zip"
+        );
+        assert_eq!(p.asset_name("uv", true), "uv-aarch64-pc-windows-msvc.zip");
+        assert_eq!(
+            p.asset_name("ruff", true),
+            "ruff-aarch64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            p.asset_name("pixi", true),
+            "pixi-aarch64-pc-windows-msvc.zip"
+        );
     }
 
     #[test]

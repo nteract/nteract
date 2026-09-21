@@ -366,6 +366,53 @@ jobs:
         # and matrix clippy steps still cover runtimed-node natively.
         run: cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --all-targets -- -D warnings
 
+  windows-arm64:
+    name: Windows ARM64 (compile)
+    needs: [changes]
+    if: |
+      needs.changes.outputs.source_changed == 'true' && (
+        github.event_name != 'pull_request' ||
+        needs.changes.outputs.ci_changed == 'true' ||
+        needs.changes.outputs.windows_changed == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+        contains(github.event.pull_request.labels.*.name, 'ci:windows')
+      )
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-arm64
+
+      - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          include-mcp-widget: true
+
+      - name: Clippy (native ARM64)
+        run: cargo clippy -p runtimed -p runt -p nteract-mcp -p notebook --all-targets -- -D warnings
+
+      - name: Build sidecars
+        shell: bash
+        run: |
+          cargo build --release -p runtimed -p runt -p nteract-mcp
+          TARGET=$(rustc --print host-tuple)
+          mkdir -p crates/notebook/binaries
+          cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
+          cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
+          cp target/release/nteract-cli.exe "crates/notebook/binaries/nteract-cli-$TARGET.exe"
+          cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
+          if [[ "$TARGET" != "aarch64-pc-windows-msvc" ]]; then
+            echo "::error::Expected aarch64-pc-windows-msvc host, got $TARGET"
+            exit 1
+          fi
+
   wasm-deno:
     name: WASM + Deno Tests
     needs: [changes]
@@ -1523,6 +1570,7 @@ jobs:
       - lint
       - nsis-bootstrap
       - windows-clippy
+      - windows-arm64
       - wasm-deno
       - build-ui
       - js-tests
@@ -1622,6 +1670,7 @@ jobs:
             echo "| Python Unit Tests | ${{ needs.python-unit-tests.result }} | GitHub-hosted | Python package unit tests without live daemon | Python package behavior |"
             echo "| WASM + Deno Tests | ${{ needs.wasm-deno.result }} | GitHub-hosted | runtimed-wasm, sift-wasm, renderer-plugin coherence | WASM binding / renderer artifact drift |"
             echo "| Windows (clippy) | ${{ needs.windows-clippy.result }} | GitHub-hosted | Windows cross-target clippy | Windows compile/lint drift |"
+            echo "| Windows ARM64 (compile) | ${{ needs.windows-arm64.result }} | GitHub-hosted windows-11-vs2026-arm | Native ARM64 clippy and sidecar build | aws-lc-sys / MSVC ARM64 compile |"
             echo "| NSIS Bootstrap | ${{ needs.nsis-bootstrap.result }} | GitHub-hosted | Linux compilation and Windows registry regression tests | Installer syntax and user PATH preservation |"
             echo
             echo "## Post-merge long-tail lanes"
