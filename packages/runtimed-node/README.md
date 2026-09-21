@@ -324,11 +324,17 @@ if mutable data is needed. Retained snapshots do not change after later events.
 Removing an execution also clears its current cell pointer, even if its snapshot
 has not arrived. An explicit queue update without a notebook projection clears
 the notebook queue; an absent queue field leaves it unchanged.
+`setNotebookQueueProjection()` updates the notebook projection in an existing
+aggregate queue before notifying subscribers. Before any runtime queue arrives,
+the aggregate queue stays `null`; a cell-only projection cannot infer execution
+queue membership.
 
 Subscriptions invalidate synchronously per write. A changeset is applied in
 upsert, removal, pointer, then queue order; it is not one atomic notification.
 Listeners added during delivery begin on a subsequent notification, unsubscribed
 listeners are skipped, and listener errors do not stop other listeners.
+Unsubscribe functions are idempotent, including when the same callback is later
+registered again.
 `close()` disposes native subscriptions and completes the RxJS streams; owners
 must release their store subscriptions too. The last state remains readable.
 
@@ -342,3 +348,21 @@ A small framework-neutral readable adapter in
 value and unsubscribe contract. It wraps the same instance and holds no second
 copy of notebook state. Cells, output content, and a complete Svelte shell are
 separate follow-ups.
+
+### Native session verification
+
+Build the native binding and daemon, then run the callback and shared-store
+contract against an isolated daemon. CI runs this check without a Python kernel:
+
+```bash
+pnpm --dir packages/runtimed-node build:debug
+cargo xtask artifacts ensure runtime,sift,renderer
+cargo build -p runtimed
+RUNTIMED_NODE_NATIVE_INTEGRATION=1 \
+  pnpm test:run packages/runtimed-node/tests/native-session.test.ts
+```
+
+Add `RUNTIMED_NODE_EXECUTION_INTEGRATION=1` to exercise Python execution,
+reruns, progress callbacks, and retained snapshots too. This creates a notebook
+environment with `ipykernel` and may download Python packages. The suite starts
+and stops its own daemon and disables background environment pools.

@@ -125,7 +125,10 @@ export function createNotebookExecutionStore() {
       }
       const set = subs;
       set.add(callback);
+      let active = true;
       return () => {
+        if (!active) return;
+        active = false;
         set.delete(callback);
         if (set.size === 0 && _subscribers.get(execution_id) === set)
           _subscribers.delete(execution_id);
@@ -146,7 +149,10 @@ export function createNotebookExecutionStore() {
       }
       const set = subs;
       set.add(callback);
+      let active = true;
       return () => {
+        if (!active) return;
+        active = false;
         set.delete(callback);
         if (set.size === 0 && _cellExecutionSubscribers.get(cell_id) === set)
           _cellExecutionSubscribers.delete(cell_id);
@@ -160,7 +166,10 @@ export function createNotebookExecutionStore() {
 
   function subscribeNotebookQueueProjection(callback: () => void): () => void {
     _queueProjectionSubscribers.add(callback);
+    let active = true;
     return () => {
+      if (!active) return;
+      active = false;
       _queueProjectionSubscribers.delete(callback);
     };
   }
@@ -171,7 +180,10 @@ export function createNotebookExecutionStore() {
 
   function subscribeExecutionStructureVersion(callback: () => void): () => void {
     _executionStructureVersionSubscribers.add(callback);
+    let active = true;
     return () => {
+      if (!active) return;
+      active = false;
       _executionStructureVersionSubscribers.delete(callback);
     };
   }
@@ -254,16 +266,25 @@ export function createNotebookExecutionStore() {
   }
 
   function setNotebookQueueProjection(projection: NotebookQueueProjectionSnapshot): void {
-    if (
-      _notebookQueueProjection.executing_cell_id === projection.executing_cell_id &&
-      stringArraysEqual(_notebookQueueProjection.queued_cell_ids, projection.queued_cell_ids)
-    ) {
-      return;
+    const next = notebookQueuesEqual(_notebookQueueProjection, projection)
+      ? _notebookQueueProjection
+      : Object.freeze({
+          executing_cell_id: projection.executing_cell_id,
+          queued_cell_ids: Object.freeze([...projection.queued_cell_ids]),
+        });
+    // A cell-only projection cannot invent execution queue membership, but it
+    // must keep an existing aggregate queue current before notifying readers.
+    if (_queue && !notebookQueuesEqual(_queue.notebook, next)) {
+      _queue = Object.freeze({ ..._queue, notebook: next });
+      _snapshot = undefined;
     }
-    _notebookQueueProjection = Object.freeze({
-      executing_cell_id: projection.executing_cell_id,
-      queued_cell_ids: Object.freeze([...projection.queued_cell_ids]),
-    });
+    updateNotebookQueueProjection(next);
+  }
+
+  /** Accept an owned projection; wire updates preserve absent/null adapters. */
+  function updateNotebookQueueProjection(projection: NotebookQueueProjectionSnapshot): void {
+    if (notebookQueuesEqual(_notebookQueueProjection, projection)) return;
+    _notebookQueueProjection = projection;
     emitQueueProjectionChange();
   }
 
@@ -380,7 +401,7 @@ export function createNotebookExecutionStore() {
         _queue = next;
         _snapshot = undefined;
       }
-      setNotebookQueueProjection(next?.notebook ?? EMPTY_NOTEBOOK_QUEUE);
+      updateNotebookQueueProjection(next?.notebook ?? EMPTY_NOTEBOOK_QUEUE);
     }
   }
 
@@ -395,11 +416,18 @@ export function createNotebookExecutionStore() {
       !stringArraysEqual(a.queued_execution_ids, b.queued_execution_ids)
     )
       return false;
-    if (a.notebook === b.notebook) return true;
-    if (!a.notebook || !b.notebook) return false;
+    return notebookQueuesEqual(a.notebook, b.notebook);
+  }
+
+  function notebookQueuesEqual(
+    a: NotebookQueueProjectionSnapshot | null | undefined,
+    b: NotebookQueueProjectionSnapshot | null | undefined,
+  ): boolean {
+    if (a === b) return true;
+    if (!a || !b) return false;
     return (
-      a.notebook.executing_cell_id === b.notebook.executing_cell_id &&
-      stringArraysEqual(a.notebook.queued_cell_ids, b.notebook.queued_cell_ids)
+      a.executing_cell_id === b.executing_cell_id &&
+      stringArraysEqual(a.queued_cell_ids, b.queued_cell_ids)
     );
   }
 

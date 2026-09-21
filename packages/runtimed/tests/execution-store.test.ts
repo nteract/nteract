@@ -160,6 +160,86 @@ describe.each([
     expect(late).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps queue reads consistent inside callbacks and preserves retained snapshots", () => {
+    const store = create();
+    store.applyChangeset({
+      queue: {
+        executing_execution_id: "e",
+        queued_execution_ids: ["e2"],
+        notebook: { executing_cell_id: "c", queued_cell_ids: ["c2"] },
+      },
+    });
+    const before = store.getSnapshot();
+    const reads: unknown[] = [];
+    store.subscribeNotebookQueueProjection(() => {
+      reads.push([store.getSnapshot().queue?.notebook, store.getNotebookQueueProjection()]);
+    });
+    const projection = { executing_cell_id: null, queued_cell_ids: [] as string[] };
+    store.setNotebookQueueProjection(projection);
+    const after = store.getSnapshot();
+    expect(reads).toEqual([[projection, projection]]);
+    expect(after).not.toBe(before);
+    expect(after.queue?.queued_execution_ids).toBe(before.queue?.queued_execution_ids);
+    expect(after.queue?.executing_execution_id).toBe("e");
+    expect(before.queue?.notebook?.queued_cell_ids).toEqual(["c2"]);
+    projection.queued_cell_ids.push("external");
+    expect(after.queue?.notebook?.queued_cell_ids).toEqual([]);
+    store.setNotebookQueueProjection({ executing_cell_id: null, queued_cell_ids: [] });
+    expect(store.getSnapshot()).toBe(after);
+    expect(reads).toHaveLength(1);
+  });
+
+  it.each([undefined, null])("preserves an explicit wire queue adapter of %s", (notebook) => {
+    const store = create();
+    store.setNotebookQueueProjection({ executing_cell_id: "c", queued_cell_ids: [] });
+    // A cell-only write cannot infer an execution queue before runtime sync.
+    expect(store.getSnapshot().queue).toBeNull();
+    store.applyChangeset({ queue: { queued_execution_ids: [], notebook } });
+    const withoutAdapter = store.getSnapshot();
+    expect(withoutAdapter.queue?.notebook).toBe(notebook);
+    expect(store.getNotebookQueueProjection().executing_cell_id).toBeNull();
+    store.applyChangeset({ queue: { queued_execution_ids: [], notebook } });
+    expect(store.getSnapshot()).toBe(withoutAdapter);
+    // An explicit local setter supplies an adapter even when its values are empty.
+    store.setNotebookQueueProjection({ executing_cell_id: null, queued_cell_ids: [] });
+    expect(store.getSnapshot().queue?.notebook).toEqual(store.getNotebookQueueProjection());
+    expect(store.getSnapshot()).not.toBe(withoutAdapter);
+    store.applyChangeset({ queue: null });
+    expect(store.getSnapshot().queue).toBeNull();
+  });
+
+  it.each(["execution", "pointer", "queue", "structure"] as const)(
+    "keeps a re-registered %s callback when an old cleanup runs again",
+    (kind) => {
+      const store = create();
+      const subscribe = {
+        execution: store.subscribeExecutionById("e"),
+        pointer: store.subscribeCellExecutionPointer("c"),
+        queue: store.subscribeNotebookQueueProjection,
+        structure: store.subscribeExecutionStructureVersion,
+      }[kind];
+      const write = {
+        execution: () => store.setExecution("e", snap()),
+        pointer: () => store.setCellExecutionPointer("c", "e"),
+        queue: () =>
+          store.setNotebookQueueProjection({ executing_cell_id: "c", queued_cell_ids: [] }),
+        structure: () => store.setCellExecutionPointer("c", "e"),
+      }[kind];
+      const seen = vi.fn();
+      const keepSetAlive = subscribe(() => {});
+      const old = subscribe(seen);
+      old();
+      const current = subscribe(seen);
+      old();
+      write();
+      expect(seen).toHaveBeenCalledTimes(1);
+      current();
+      store.resetNotebookExecutions();
+      expect(seen).toHaveBeenCalledTimes(1);
+      keepSetAlive();
+    },
+  );
+
   it("retains a newer subscription when an older unsubscribe is called twice", () => {
     const store = create(),
       seen = vi.fn();
