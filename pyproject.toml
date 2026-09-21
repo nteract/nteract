@@ -68,7 +68,8 @@ dev = [
     "narwhals>=1.0",
     "anywidget>=0.9.21",
     "ruff==0.15.10",
-    "ty>=0.0.22",
+    # Keep CI reproducible: ty 0.0.83 was published without Linux x86-64 wheels.
+    "ty==0.0.82",
     "pytest>=8.0",
     "pyzmq>=26.0",
     "matplotlib>=3.8",
