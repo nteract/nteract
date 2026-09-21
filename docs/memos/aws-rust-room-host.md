@@ -61,10 +61,13 @@ and runtime-state handling.
 - `crates/notebook-protocol` defines the frame transport abstractions.
 - `crates/notebook-cloud-transport` already speaks the hosted WebSocket frame
   shape for runtime/workstation peers.
-- `crates/runtimed-wasm::RoomHostHandle` is the closest reference for hosted
-  room behavior: per-peer sync state, scope validation, execution queue
-  handling, workstation attachment publication, and runtime-peer gone
-  reconciliation.
+- `crates/notebook-room-host::RoomHostEngine` owns host-neutral room behavior:
+  document materialization, per-peer sync state, scope validation, execution
+  queue handling, workstation attachment publication, and runtime-peer gone
+  reconciliation. It performs no network or storage I/O.
+- `crates/runtimed-wasm::RoomHostHandle` is the thin JavaScript/WASM adapter for
+  that engine. A native service can call the same engine directly instead of
+  porting the room behavior.
 - `apps/notebook-cloud` is the reference for API routes, app sessions, ACLs,
   sharing, workstation metadata, and materialization policy.
 

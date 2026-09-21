@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 automerge = { workspace = true }
 comments-doc = { path = "../comments-doc" }
 notebook-doc = { path = "../notebook-doc" }
+notebook-room-host = { path = "../notebook-room-host" }
 notebook-wire = { path = "../notebook-wire" }
 nteract-identity = { path = "../nteract-identity", default-features = false }
 nteract-markdown-wasm = { path = "../nteract-markdown-wasm" }
