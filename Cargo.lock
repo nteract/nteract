@@ -4971,7 +4971,7 @@ dependencies = [
 name = "notebook-room-host"
 version = "0.1.0"
 dependencies = [
- "automerge",
+ "automerge 0.11.0",
  "comments-doc",
  "hex",
  "notebook-doc",
