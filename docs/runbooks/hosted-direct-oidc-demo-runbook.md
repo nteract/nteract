@@ -78,6 +78,48 @@ Missing or different client IDs are rejected. Leave this optional setting unset
 for providers whose access tokens do not carry `client_id`, including the existing
 Anaconda configuration.
 
+Providers whose access tokens omit profile claims can opt into standard OIDC
+UserInfo with `NOTEBOOK_CLOUD_OIDC_USERINFO = "true"`. After verifying the access
+JWT, the Worker sends it by bearer-authenticated POST to the discovery document's
+`userinfo_endpoint`. The response subject must exactly match the signed subject.
+The endpoint must share the issuer's HTTPS origin; if a provider uses another
+origin, explicitly trust that origin with `NOTEBOOK_CLOUD_OIDC_USERINFO_ORIGIN`
+(an origin only, without a path). Same-origin loopback HTTP remains available for
+local development. Requests reject redirects, limit JSON responses to 16 KiB,
+and have a five-second deadline covering both headers and body.
+
+Only validated profile fields are retained. Email account linking and pending
+invitations require `email_verified: true`; an unverified UserInfo email cannot
+inherit verification from a different JWT email. Successful lookups coalesce in
+an in-memory cache of at most 256 token fingerprints for 60 seconds, capped by
+the token's expiry. Failures are retried on the next request. Raw access tokens
+and provider response bodies are not stored in that cache or logged.
+
+When enabled, UserInfo failures block new bearer logins before profile writes or
+cookie creation: a mismatched subject or provider token rejection returns 401,
+while provider outages, invalid responses, and configuration errors return 503.
+Existing app sessions continue to use their last verified stored profile without
+calling the provider, including on WebSocket joins; profile/email changes at the
+provider become visible after a successful bearer login (subject to the cache).
+This does not add continuous provider revocation or email freshness checks to
+existing app sessions. Their normal session lifetime and renewal rules still
+apply, including sliding renewals. Separately, a successful OIDC exchange with a
+verified email signs an opaque email binding and `identity_verified_at` into the
+cookie. Cookie renewals preserve this proof unchanged. Profile-sensitive features
+can require proof younger than six hours and bound to the stored verified email;
+legacy, stale, or missing proof does not invalidate notebook access. The binding
+does not expose the email in the cookie and prevents a failed profile write from
+associating fresh proof with a previously stored, different email.
+When UserInfo is enabled, accepting new pending email invitations from a stored
+app session requires this fresh, matching proof. Existing notebook ACLs remain
+usable; a fresh successful OIDC exchange can accept pending invitations again.
+
+The transport principal and namespace stay unchanged, and the existing
+verified-email account-linking transaction preserves prior notebook ownership
+and ACLs when a profile first gains a verified email. Leave UserInfo disabled for
+the existing Anaconda flow; pinned `NOTEBOOK_CLOUD_OIDC_JWKS_JSON` still skips
+remote keys, but enabled UserInfo requires discovery and a reachable endpoint.
+
 `NOTEBOOK_CLOUD_DEV_TOKEN` may remain for local-only smoke tests and emergency
 prototype diagnostics. It is not the browser auth path and it is not the hosted
 publishing credential path.

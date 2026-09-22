@@ -11,6 +11,7 @@ import {
   isLoopbackWorkerRequest,
   trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
+import { loadOidcUserInfo, OidcUserInfoError } from "./oidc-userinfo.ts";
 
 export {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -47,6 +48,8 @@ export interface IdentityEnvironment {
   NOTEBOOK_CLOUD_OIDC_ISSUER?: string;
   NOTEBOOK_CLOUD_OIDC_JWKS_JSON?: string;
   NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?: string;
+  NOTEBOOK_CLOUD_OIDC_USERINFO?: string;
+  NOTEBOOK_CLOUD_OIDC_USERINFO_ORIGIN?: string;
 }
 
 export interface AuthenticatedConnectionMetadata {
@@ -73,6 +76,8 @@ export interface AuthenticatedConnectionMetadata {
   avatarUrl?: string;
   email?: string;
   emailVerified?: boolean;
+  identityVerifiedAt?: number;
+  verifiedEmailBinding?: string;
   workstationCredentialId?: string;
   workstationPairingCodeId?: string;
 }
@@ -112,6 +117,8 @@ interface OidcConfig {
   issuer: string;
   jwksJson?: string;
   principalNamespace: string;
+  userInfoEnabled: boolean;
+  userInfoOrigin?: string;
 }
 
 interface AnacondaApiKeyConfig {
@@ -181,6 +188,12 @@ const jwksCache = new Map<
     ready: Promise<JsonWebKeySet>;
   }
 >();
+interface OidcMetadata {
+  issuer: string;
+  jwks_uri?: unknown;
+  userinfo_endpoint?: unknown;
+}
+const discoveryCache = new Map<string, { expiresAt: number; ready: Promise<OidcMetadata> }>();
 const anacondaApiKeyUserInfoCache = new Map<
   string,
   {
@@ -290,13 +303,41 @@ export async function authenticateOidcRequest(
     throw new AuthError("OIDC auth is not configured", 503);
   }
 
-  const payload = await verifyOidcJwt(credential.token, config);
-  const subject = payload.sub?.trim();
+  let payload = await verifyOidcJwt(credential.token, config);
+  const subject = typeof payload.sub === "string" ? payload.sub.trim() : undefined;
   if (!subject) {
     throw new AuthError("OIDC token is missing sub", 401);
   }
   if (subject.length > IDENTITY_SUBJECT_MAX_LENGTH) {
     throw new AuthError("OIDC token sub is too long", 401);
+  }
+  if (config.userInfoEnabled) {
+    const metadata = loadOidcMetadata(config.issuer);
+    let endpoint: string;
+    try {
+      endpoint = oidcUserInfoUrl((await metadata).userinfo_endpoint, config);
+    } catch (error) {
+      // A repaired discovery document should be usable on the next login.
+      if (discoveryCache.get(config.issuer)?.ready === metadata)
+        discoveryCache.delete(config.issuer);
+      throw error;
+    }
+    try {
+      const profile = await loadOidcUserInfo({
+        token: credential.token,
+        endpoint,
+        // OIDC requires an exact match to the signed subject, without normalization.
+        subject: payload.sub!,
+        expiresAt: payload.exp! * 1000,
+        cacheScope: JSON.stringify(config),
+      });
+      // Keep email and its verification flag together. An unverified UserInfo
+      // email must never inherit a JWT's verification flag for another address.
+      payload = { ...payload, ...profile };
+    } catch (error) {
+      if (error instanceof OidcUserInfoError) throw new AuthError(error.message, error.status);
+      throw new AuthError("OIDC UserInfo request failed", 503);
+    }
   }
 
   const url = new URL(request.url);
@@ -1006,6 +1047,8 @@ function oidcConfigFromEnv(env: IdentityEnvironment): OidcConfig | undefined {
     issuer: normalizeOidcIssuer(rawIssuer),
     jwksJson: env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON,
     principalNamespace: normalizePrincipalNamespace(env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE),
+    userInfoEnabled: env.NOTEBOOK_CLOUD_OIDC_USERINFO === "true",
+    userInfoOrigin: env.NOTEBOOK_CLOUD_OIDC_USERINFO_ORIGIN?.trim() || undefined,
   };
 }
 
@@ -1108,19 +1151,26 @@ async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
     return parseJwks(config.jwksJson, "OIDC");
   }
 
-  // Cache discovery and its key set together so endpoint changes are picked up
-  // with key refreshes, and concurrent authentication requests share one fetch.
+  // Both JWT verification and optional UserInfo enrichment share discovery.
   const cached = jwksCache.get(config.issuer);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.ready;
   }
 
-  const ready = discoverOidcJwks(config.issuer).catch((error: unknown) => {
-    if (jwksCache.get(config.issuer)?.ready === ready) {
-      jwksCache.delete(config.issuer);
-    }
-    throw error;
-  });
+  const metadata = loadOidcMetadata(config.issuer);
+  const ready = metadata
+    .then(async (document) => {
+      const jwksUrl = oidcJwksUrl(document.jwks_uri, config.issuer);
+      return parseJwks(await fetchOidcDocument(jwksUrl, "JWKS"), "OIDC");
+    })
+    .catch((error: unknown) => {
+      if (jwksCache.get(config.issuer)?.ready === ready) {
+        jwksCache.delete(config.issuer);
+      }
+      if (discoveryCache.get(config.issuer)?.ready === metadata)
+        discoveryCache.delete(config.issuer);
+      throw error;
+    });
   jwksCache.set(config.issuer, {
     expiresAt: Date.now() + JWKS_CACHE_TTL_MS,
     ready,
@@ -1128,12 +1178,23 @@ async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
   return ready;
 }
 
-async function discoverOidcJwks(issuer: string): Promise<JsonWebKeySet> {
+function loadOidcMetadata(issuer: string): Promise<OidcMetadata> {
+  const cached = discoveryCache.get(issuer);
+  if (cached && cached.expiresAt > Date.now()) return cached.ready;
+  const ready = discoverOidcMetadata(issuer).catch((error: unknown) => {
+    if (discoveryCache.get(issuer)?.ready === ready) discoveryCache.delete(issuer);
+    throw error;
+  });
+  discoveryCache.set(issuer, { expiresAt: Date.now() + JWKS_CACHE_TTL_MS, ready });
+  return ready;
+}
+
+async function discoverOidcMetadata(issuer: string): Promise<OidcMetadata> {
   const discovery = await fetchOidcDocument(
     `${issuer}/.well-known/openid-configuration`,
     "discovery",
   );
-  let metadata: { issuer?: unknown; jwks_uri?: unknown } | null;
+  let metadata: OidcMetadata | null;
   try {
     metadata = JSON.parse(discovery);
   } catch {
@@ -1142,8 +1203,38 @@ async function discoverOidcJwks(issuer: string): Promise<JsonWebKeySet> {
   if (!metadata || metadata.issuer !== issuer) {
     throw new AuthError("OIDC discovery issuer is invalid", 503);
   }
-  const jwksUrl = oidcJwksUrl(metadata.jwks_uri, issuer);
-  return parseJwks(await fetchOidcDocument(jwksUrl, "JWKS"), "OIDC");
+  return metadata;
+}
+
+function oidcUserInfoUrl(value: unknown, config: OidcConfig): string {
+  let endpoint: URL;
+  let trusted: URL;
+  try {
+    if (typeof value !== "string") throw new Error("missing endpoint");
+    endpoint = new URL(value);
+    trusted = new URL(config.userInfoOrigin ?? new URL(config.issuer).origin);
+  } catch {
+    throw new AuthError("OIDC UserInfo endpoint or trusted origin is invalid", 503);
+  }
+  const localHttp =
+    trusted.origin === new URL(config.issuer).origin &&
+    trusted.protocol === "http:" &&
+    isLoopbackHostname(trusted.hostname);
+  if (
+    (trusted.protocol !== "https:" && !localHttp) ||
+    trusted.username ||
+    trusted.password ||
+    trusted.pathname !== "/" ||
+    trusted.search ||
+    trusted.hash ||
+    endpoint.origin !== trusted.origin ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.hash
+  ) {
+    throw new AuthError("OIDC UserInfo endpoint must use its trusted https origin", 503);
+  }
+  return endpoint.href;
 }
 
 function oidcJwksUrl(value: unknown, issuer: string): string {

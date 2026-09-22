@@ -166,6 +166,7 @@ import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
   appSessionConfigured,
+  appSessionHasFreshVerifiedEmail,
   appSessionRenewalCookie,
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
@@ -1211,6 +1212,12 @@ function appSessionConnectionIdentity(
       transport: "app-session-cookie",
       principalNamespace: session.principalNamespace,
       ...(session.displayName ? { displayName: session.displayName } : {}),
+      ...(session.identityVerifiedAt !== undefined
+        ? { identityVerifiedAt: session.identityVerifiedAt }
+        : {}),
+      ...(session.verifiedEmailBinding
+        ? { verifiedEmailBinding: session.verifiedEmailBinding }
+        : {}),
     },
   };
 }
@@ -5743,6 +5750,18 @@ async function syncStoredAppSessionProfile(env: Env, session: CloudAppSession): 
     ) {
       return;
     }
+
+    // Sliding notebook sessions must not keep accepting new email-derived grants
+    // indefinitely. Existing ACLs remain usable without a provider lookup.
+    if (
+      env.NOTEBOOK_CLOUD_OIDC_USERINFO === "true" &&
+      !(await appSessionHasFreshVerifiedEmail(
+        env,
+        appSessionConnectionIdentity(session, "browser:profile", "viewer"),
+        profile.email_normalized,
+      ))
+    )
+      return;
 
     const resolution = await resolveNotebookInvitesForLogin(env, {
       principal: session.principal,

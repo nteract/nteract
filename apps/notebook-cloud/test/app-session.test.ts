@@ -5,9 +5,11 @@ import {
   NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
   appSessionRenewalCookie,
+  appSessionHasFreshVerifiedEmail,
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
   readCloudAppSession,
+  type CloudAppSession,
 } from "../src/app-session";
 import type { AuthenticatedConnection } from "../src/identity";
 
@@ -149,6 +151,149 @@ describe("cloud app session cookies", () => {
     assert.equal(await appSessionRenewalCookie(env, session, beforeHalfLife), null);
   });
 
+  it("preserves verified-email proof through repeated renewal without refreshing its age", async () => {
+    const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
+    const issuedAt = 10_000;
+    let now = issuedAt;
+    let cookie = await createCloudAppSessionCookie(env, oidcIdentity(), now);
+    const first = await readCloudAppSession(
+      env,
+      new Request("https://cloud.test/n", { headers: { Cookie: cookie } }),
+      now,
+    );
+    assert.ok(first);
+    assert.equal(first.identityVerifiedAt, issuedAt);
+    assert.match(first.verifiedEmailBinding ?? "", /^[A-Za-z0-9_-]{43}$/);
+    const payload = JSON.parse(
+      Buffer.from(cookie.split("=")[1]!.split(".")[0]!, "base64url").toString(),
+    );
+    assert.doesNotMatch(JSON.stringify(payload), /user@example\.test/);
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        env,
+        sessionIdentity(first),
+        " USER@example.test ",
+        now,
+      ),
+      true,
+    );
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        env,
+        sessionIdentity(first),
+        "changed@example.test",
+        now,
+      ),
+      false,
+    );
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        env,
+        { ...sessionIdentity(first), principal: "other:person" },
+        "user@example.test",
+        now,
+      ),
+      false,
+    );
+    for (let renewal = 0; renewal < 3; renewal++) {
+      now += NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS / 2 + 1;
+      const session = await readCloudAppSession(
+        env,
+        new Request("https://cloud.test/n", { headers: { Cookie: cookie } }),
+        now,
+      );
+      assert.ok(session);
+      cookie = (await appSessionRenewalCookie(env, session, now))!;
+      const renewed = await readCloudAppSession(
+        env,
+        new Request("https://cloud.test/n", { headers: { Cookie: cookie } }),
+        now,
+      );
+      assert.ok(renewed, "notebook session still renews");
+      assert.equal(renewed.issuedAt, now);
+      assert.equal(renewed.identityVerifiedAt, issuedAt);
+      assert.equal(renewed.verifiedEmailBinding, first.verifiedEmailBinding);
+    }
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        env,
+        sessionIdentity(first),
+        "user@example.test",
+        issuedAt + 21_599,
+      ),
+      true,
+    );
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        env,
+        sessionIdentity(first),
+        "user@example.test",
+        issuedAt + 21_600,
+      ),
+      false,
+    );
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        env,
+        sessionIdentity(first),
+        "user@example.test",
+        issuedAt - 1,
+      ),
+      false,
+    );
+    assert.equal(
+      await appSessionHasFreshVerifiedEmail(
+        env,
+        {
+          ...sessionIdentity(first),
+          metadata: {
+            ...sessionIdentity(first).metadata,
+            verifiedEmailBinding: "tampered",
+          },
+        },
+        "user@example.test",
+        issuedAt,
+      ),
+      false,
+    );
+  });
+
+  it("keeps legacy or unverified sessions usable without creating verified-email proof on renewal", async () => {
+    const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
+    for (const email of [undefined, "user@example.test"]) {
+      const identity = oidcIdentity();
+      identity.metadata.email = email;
+      identity.metadata.emailVerified = false;
+      const cookie = await createCloudAppSessionCookie(env, identity, 20_000);
+      const now = 20_000 + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS / 2 + 1;
+      const session = await readCloudAppSession(
+        env,
+        new Request("https://cloud.test/n", { headers: { Cookie: cookie } }),
+        now,
+      );
+      assert.ok(session);
+      assert.equal(session.identityVerifiedAt, undefined);
+      assert.equal(session.verifiedEmailBinding, undefined);
+      const renewedCookie = await appSessionRenewalCookie(env, session, now);
+      const renewed = await readCloudAppSession(
+        env,
+        new Request("https://cloud.test/n", { headers: { Cookie: renewedCookie! } }),
+        now,
+      );
+      assert.ok(renewed);
+      assert.equal(renewed.identityVerifiedAt, undefined);
+      assert.equal(
+        await appSessionHasFreshVerifiedEmail(
+          env,
+          sessionIdentity(renewed),
+          "user@example.test",
+          now,
+        ),
+        false,
+      );
+    }
+  });
+
   it("does not renew expired or invalid sessions", async () => {
     const env = { NOTEBOOK_CLOUD_APP_SESSION_SECRET: SESSION_SECRET };
     const issuedAt = 6_000;
@@ -207,6 +352,22 @@ describe("cloud app session cookies", () => {
     assert.match(cookie, /SameSite=Lax/);
   });
 });
+
+function sessionIdentity(session: CloudAppSession): AuthenticatedConnection {
+  return {
+    principal: session.principal,
+    operator: "browser:test",
+    actorLabel: `${session.principal}/browser:test`,
+    scope: "viewer",
+    metadata: {
+      provider: "app-session",
+      transport: "app-session-cookie",
+      principalNamespace: session.principalNamespace,
+      identityVerifiedAt: session.identityVerifiedAt,
+      verifiedEmailBinding: session.verifiedEmailBinding,
+    },
+  };
+}
 
 function oidcIdentity(overrides: { displayName?: string } = {}): AuthenticatedConnection {
   return {
