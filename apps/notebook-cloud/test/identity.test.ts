@@ -883,21 +883,26 @@ describe("OIDC identity", () => {
   it("rejects OIDC credentials when OIDC env is partially configured", async () => {
     const { env, token } = await oidcTokenFixture({ subject: "alice" });
 
-    await assert.rejects(
-      () =>
-        authenticateRequestWithProviders(
-          new Request("https://cloud.test/n/demo/sync", {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }),
-          { NOTEBOOK_CLOUD_OIDC_ISSUER: env.NOTEBOOK_CLOUD_OIDC_ISSUER },
-        ),
-      (error) =>
-        error instanceof AuthError &&
-        error.status === 503 &&
-        /not fully configured/.test(error.message),
-    );
+    for (const partialEnv of [
+      { NOTEBOOK_CLOUD_OIDC_ISSUER: env.NOTEBOOK_CLOUD_OIDC_ISSUER },
+      { NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID: "preview-a" },
+    ]) {
+      await assert.rejects(
+        () =>
+          authenticateRequestWithProviders(
+            new Request("https://cloud.test/n/demo/sync", {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            }),
+            partialEnv,
+          ),
+        (error) =>
+          error instanceof AuthError &&
+          error.status === 503 &&
+          /not fully configured/.test(error.message),
+      );
+    }
   });
 
   it("rejects OIDC tokens with the wrong audience", async () => {
@@ -964,6 +969,48 @@ describe("OIDC identity", () => {
 
     assert.equal(identity.actorLabel, "user:anaconda:alice/browser:tab");
     assert.equal(identity.metadata.transport, "oidc-bearer");
+  });
+
+  it("binds a shared resource audience to an optional OAuth client for HTTP and WebSocket auth", async () => {
+    for (const transport of ["bearer", "websocket"]) {
+      for (const clientId of ["preview-a", "preview-b", undefined]) {
+        const { env, token } = await oidcTokenFixture({
+          audience: "preview-resource",
+          subject: "alice",
+          extraPayload: clientId ? { client_id: clientId } : {},
+        });
+        const headers = new Headers();
+        if (transport === "bearer") {
+          headers.set("Authorization", `Bearer ${token}`);
+        } else {
+          headers.set(
+            "Sec-WebSocket-Protocol",
+            `${NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL}, ${BEARER_AUTH_TOKEN_PROTOCOL_PREFIX}${base64Url(token)}`,
+          );
+        }
+        const authenticate = () =>
+          authenticateRequestWithProviders(
+            new Request("https://cloud.test/n/demo/sync", { headers }),
+            {
+              ...env,
+              NOTEBOOK_CLOUD_OIDC_AUDIENCE: "preview-resource",
+              NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID: "preview-a",
+            },
+          );
+        if (clientId === "preview-a") {
+          const identity = await authenticate();
+          assert.equal(identity.metadata.provider, "oidc");
+        } else {
+          await assert.rejects(
+            authenticate,
+            (error) =>
+              error instanceof AuthError &&
+              error.status === 401 &&
+              /client is invalid/.test(error.message),
+          );
+        }
+      }
+    }
   });
 
   it("accepts OIDC tokens matching any configured migration audience", async () => {

@@ -62,6 +62,14 @@ be replaced gradually. Use
 `NOTEBOOK_CLOUD_OIDC_JWKS_JSON` only for pinned/offline tests or an emergency
 where fetching the provider JWKS is intentionally disabled.
 
+For providers that share a resource audience across OAuth clients, set
+`NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID` to this deployment's OAuth client ID.
+The verifier then requires a matching signed `client_id` claim in addition to
+the issuer and audience checks, for both bearer and WebSocket credentials.
+Missing or different client IDs are rejected. Leave this optional setting unset
+for providers whose access tokens do not carry `client_id`, including the existing
+Anaconda configuration.
+
 `NOTEBOOK_CLOUD_DEV_TOKEN` may remain for local-only smoke tests and emergency
 prototype diagnostics. It is not the browser auth path and it is not the hosted
 publishing credential path.

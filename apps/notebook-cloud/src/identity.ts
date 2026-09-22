@@ -43,6 +43,7 @@ export interface IdentityEnvironment {
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?: string;
   NOTEBOOK_CLOUD_OIDC_AUDIENCE?: string;
   NOTEBOOK_CLOUD_OIDC_CLIENT_ID?: string;
+  NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID?: string;
   NOTEBOOK_CLOUD_OIDC_ISSUER?: string;
   NOTEBOOK_CLOUD_OIDC_JWKS_JSON?: string;
   NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE?: string;
@@ -107,6 +108,7 @@ interface AnacondaApiKeyCredential {
 interface OidcConfig {
   audiences: string[];
   clientId: string;
+  requiredClientId?: string;
   issuer: string;
   jwksJson?: string;
   principalNamespace: string;
@@ -150,6 +152,7 @@ interface JwtHeader {
 interface JwtPayload {
   aud?: string | string[];
   azp?: string;
+  client_id?: string;
   email?: string;
   email_verified?: boolean;
   exp?: number;
@@ -981,7 +984,8 @@ function hasPartialOidcConfig(env: IdentityEnvironment): boolean {
   const clientId = env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID?.trim();
   const audience = env.NOTEBOOK_CLOUD_OIDC_AUDIENCE?.trim();
   const jwksJson = env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON?.trim();
-  if (!issuer && !clientId && !audience && !jwksJson) {
+  const requiredClientId = env.NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID?.trim();
+  if (!issuer && !clientId && !audience && !jwksJson && !requiredClientId) {
     return false;
   }
   return !issuer || !clientId;
@@ -997,6 +1001,7 @@ function oidcConfigFromEnv(env: IdentityEnvironment): OidcConfig | undefined {
   return {
     audiences: oidcAudiencesFromEnv(env.NOTEBOOK_CLOUD_OIDC_AUDIENCE, clientId),
     clientId,
+    requiredClientId: env.NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID?.trim() || undefined,
     issuer: normalizeOidcIssuer(rawIssuer),
     jwksJson: env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON,
     principalNamespace: normalizePrincipalNamespace(env.NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE),
@@ -1213,6 +1218,13 @@ function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
   }
   if (audiences.length > 1 && payload.azp !== config.clientId) {
     throw new AuthError("OIDC token authorized party is invalid", 401);
+  }
+  // Some issuers share a resource audience across multiple OAuth clients. A
+  // deployment can additionally bind access tokens to its own client so sibling
+  // previews cannot reuse one another's credentials. This is opt-in because
+  // existing providers need not include a client_id claim.
+  if (config.requiredClientId && payload.client_id !== config.requiredClientId) {
+    throw new AuthError("OIDC token client is invalid", 401);
   }
 
   const now = Math.floor(Date.now() / 1000);
