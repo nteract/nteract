@@ -8,12 +8,8 @@ import {
   type OutputManifest,
 } from "@/components/isolated/output-manifest";
 import {
-  deleteExecutions,
-  markExecutionsRuntimeOwned,
+  notebookExecutionStore,
   resetNotebookExecutions,
-  setCellExecutionPointer,
-  setExecution,
-  setNotebookQueueProjection,
   type ExecutionSnapshot,
 } from "./execution-store";
 import { deleteOutputs, resetNotebookOutputs, setOutput } from "./output-store";
@@ -261,29 +257,7 @@ export function applyExecutionViewChangeset(
   changeset: ExecutionViewChangeset | null | undefined,
   options: ApplyExecutionViewChangesetOptions = {},
 ): void {
-  if (!changeset) return;
-
-  for (const [executionId, snapshot] of changeset.execution_upserts ?? []) {
-    markExecutionsRuntimeOwned([executionId]);
-    setExecution(executionId, snapshot);
-    options.onExecutionSnapshot?.(executionId, snapshot);
-  }
-
-  const removedExecutionIds = changeset.removed_execution_ids ?? [];
-  if (removedExecutionIds.length > 0) {
-    deleteExecutions(removedExecutionIds);
-  }
-
-  for (const [cellId, executionId] of changeset.cell_pointer_changes ?? []) {
-    setCellExecutionPointer(cellId, executionId);
-  }
-
-  if (changeset.queue?.notebook) {
-    setNotebookQueueProjection({
-      executing_cell_id: changeset.queue.notebook.executing_cell_id ?? null,
-      queued_cell_ids: changeset.queue.notebook.queued_cell_ids,
-    });
-  }
+  notebookExecutionStore.applyChangeset(changeset, options);
 }
 
 export function resetRuntimeStoresProjection(): void {

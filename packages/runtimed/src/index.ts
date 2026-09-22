@@ -612,3 +612,12 @@ export { DEFAULT_MIME_PRIORITY } from "./mime-priority";
 // Testing
 export { DirectTransport } from "./direct-transport";
 export type { ServerHandle } from "./direct-transport";
+
+export { createNotebookExecutionStore } from "./execution-store";
+export type {
+  NotebookExecutionStore,
+  ExecutionSnapshot,
+  NotebookQueueProjectionSnapshot,
+  ExecutionQueueSnapshot,
+  ExecutionView,
+} from "./execution-store";

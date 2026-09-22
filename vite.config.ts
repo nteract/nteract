@@ -1,6 +1,8 @@
 import { defineConfig } from "vite-plus";
 
 const ignoreNonSource = [
+  "packages/runtimed-node/src/execution-store.cjs",
+  "packages/runtimed-node/src/execution-store.d.cts",
   ".claude/**",
   ".codex/**",
   ".github/**",

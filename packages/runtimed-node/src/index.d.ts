@@ -32,41 +32,20 @@ export interface ExecutionTransition {
   execution_count: number | null;
 }
 
-export interface ExecutionViewSnapshot {
-  execution_count: number | null;
-  status: "queued" | "running" | "done" | "error" | (string & {});
-  success: boolean | null;
-  output_ids: string[];
-  submitted_by_actor_label?: string | null;
-}
-
-export interface ExecutionQueueProjection {
-  executing_execution_id?: string | null;
-  queued_execution_ids: string[];
-  notebook?: {
-    executing_cell_id?: string | null;
-    queued_cell_ids: string[];
-  } | null;
-}
-
-export interface ExecutionViewChangeset {
-  cell_pointer_changes?: Array<[cell_id: string, execution_id: string | null]>;
-  execution_upserts?: Array<[execution_id: string, snapshot: ExecutionViewSnapshot]>;
-  removed_execution_ids?: string[];
-  queue?: ExecutionQueueProjection;
-}
-
-export interface ExecutionView {
-  /**
-   * Current non-null NotebookDoc cell -> execution_id pointers.
-   *
-   * Cleared or deleted cells are omitted. Subscribe to `executionViewChanges$`
-   * when null pointer transitions matter.
-   */
-  cell_execution_ids: Record<string, string>;
-  executions: Record<string, ExecutionViewSnapshot>;
-  queue: ExecutionQueueProjection | null;
-}
+import type {
+  ExecutionViewChangeset,
+  ExecutionView,
+  NotebookExecutionStore,
+} from "./execution-store.cjs";
+export type {
+  ExecutionViewSnapshot,
+  ExecutionQueueProjection,
+  ExecutionViewChangeset,
+  ExecutionSnapshot,
+  ExecutionQueueSnapshot,
+  ExecutionView,
+  NotebookExecutionStore,
+} from "./execution-store.cjs";
 
 export type RuntimeState = Record<string, unknown>;
 
@@ -265,7 +244,9 @@ export class Session {
   removeDependencies(packages: string[], options?: DependencyEditOptions): Promise<number>;
   getDependencyStatus(): Promise<DependencyStatus>;
   getRuntimeStatus(): Promise<RuntimeStatus>;
+  /** Stable immutable state; explicitly copy it if mutable ownership is needed. */
   getExecutionView(): ExecutionView;
+  readonly executions: NotebookExecutionStore;
   dependencyFingerprint(): Promise<string | null>;
   approveTrust(observedHeads?: string[]): Promise<void>;
   syncEnvironment(): Promise<void>;

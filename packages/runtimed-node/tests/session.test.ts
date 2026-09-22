@@ -14,6 +14,7 @@ const { Session } = require("../src/session.cjs") as {
         unsubscribe: () => void;
       };
     };
+    executions: import("../../runtimed/src/execution-store").NotebookExecutionStore;
     getExecutionView: () => unknown;
     runCell: (source: string, options?: Record<string, unknown>) => Promise<unknown>;
     exportSnapshotPair: () => Promise<unknown>;
@@ -140,7 +141,7 @@ describe("@runtimed/node Session wrapper", () => {
     });
   });
 
-  it("materializes execution view updates and returns defensive snapshots", () => {
+  it("materializes execution view updates and returns stable immutable snapshots", () => {
     let viewCallback: ((json: string) => void) | null = null;
     const native = {
       notebookId: "nb-1",
@@ -230,9 +231,12 @@ describe("@runtimed/node Session wrapper", () => {
       },
     });
 
-    view.cell_execution_ids["cell-3"] = "exec-3";
-    view.executions["exec-2"].output_ids.push("mutated");
-    view.queue.queued_execution_ids.push("exec-3");
+    expect(session.getExecutionView()).toBe(view);
+    expect(() => {
+      view.cell_execution_ids["cell-3"] = "exec-3";
+    }).toThrow();
+    expect(() => view.executions["exec-2"].output_ids.push("mutated")).toThrow();
+    expect(() => view.queue.queued_execution_ids.push("exec-3")).toThrow();
 
     expect(session.getExecutionView()).toEqual({
       cell_execution_ids: {
@@ -318,4 +322,42 @@ describe("@runtimed/node Session wrapper", () => {
     await expect(session.exportSnapshotPair()).resolves.toBe(snapshot);
     expect(native.exportSnapshotPair).toHaveBeenCalledTimes(1);
   });
+});
+
+it("updates session-owned state before emitting mutable native events", () => {
+  let emit = (_json: string) => {};
+  const session = new Session({
+    onExecutionViewChange(callback: (json: string) => void) {
+      emit = callback;
+      callback(
+        JSON.stringify({
+          execution_upserts: [
+            ["e", { execution_count: 1, status: "running", success: null, output_ids: ["o"] }],
+          ],
+        }),
+      );
+      return { dispose() {} };
+    },
+  });
+  const other = new Session({});
+  expect(session.executions.getExecutionById("e")?.status).toBe("running");
+  const states: string[] = [];
+  session.executionViewChanges$.subscribe({
+    next(value) {
+      states.push(session.executions.getExecutionById("e")!.status);
+      (
+        value as { execution_upserts: [string, { output_ids: string[] }][] }
+      ).execution_upserts[0][1].output_ids.push("external");
+    },
+  });
+  emit(
+    JSON.stringify({
+      execution_upserts: [
+        ["e", { execution_count: 1, status: "done", success: true, output_ids: ["o"] }],
+      ],
+    }),
+  );
+  expect(states).toEqual(["done"]);
+  expect(session.executions.getExecutionById("e")?.output_ids).toEqual(["o"]);
+  expect(other.executions.getExecutionById("e")).toBeUndefined();
 });
