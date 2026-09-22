@@ -139,6 +139,13 @@ import {
   type PrincipalProfile,
 } from "./sharing.ts";
 import {
+  directoryCallerEmail,
+  parsePeopleDirectory,
+  PeopleDirectoryConfigurationError,
+  resolveDirectoryPerson,
+  searchPeopleDirectory,
+} from "./people-directory.ts";
+import {
   createNotebookAccessRequest,
   getLatestNotebookAccessRequestForRequester,
   listNotebookAccessRequests,
@@ -271,6 +278,11 @@ type SnapshotPairValidationResult =
     };
 
 const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
+  {
+    match: exactPath("/api/people"),
+    methods: ["GET"],
+    handler: async (_match, request, env) => withNoStore(await routePeopleDirectory(request, env)),
+  },
   {
     match: exactPath("/api/health"),
     methods: ["GET"],
@@ -3953,6 +3965,7 @@ async function routeRuntimeSnapshot(
 
 interface PendingInvitePayload {
   email?: unknown;
+  directoryPersonId?: unknown;
   provider_hint?: unknown;
   providerHint?: unknown;
   scope?: unknown;
@@ -3965,6 +3978,24 @@ interface ParsedPendingInviteInput {
   provider_hint: string | null;
   scope: "viewer" | "editor";
   expires_at: string | null;
+}
+
+async function routePeopleDirectory(request: Request, env: Env): Promise<Response> {
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "viewer");
+  if (identity instanceof Response) return identity;
+  if (isAnonymousViewer(identity)) return json({ error: "authentication required" }, 401);
+  const query = new URL(request.url).searchParams.get("q") ?? "";
+  if (query.length > 80) return json({ error: "people query must be at most 80 characters" }, 400);
+  try {
+    const directory = parsePeopleDirectory(env.NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON);
+    const callerEmail = directory ? await directoryCallerEmail(env, identity) : null;
+    return json(searchPeopleDirectory(directory, callerEmail, query));
+  } catch (error) {
+    if (error instanceof PeopleDirectoryConfigurationError) {
+      return json({ error: "people directory is unavailable" }, 503);
+    }
+    throw error;
+  }
 }
 
 async function routeNotebookInvites(
@@ -4004,7 +4035,7 @@ async function routeNotebookInvites(
     return json({ error: "method not allowed" }, 405);
   }
 
-  const inviteInput = await parsePendingInviteInput(request);
+  const inviteInput = await parsePendingInviteInput(request, env, identity);
   if (inviteInput instanceof Response) {
     return inviteInput;
   }
@@ -4557,6 +4588,8 @@ async function tryAuthorizeNotebookAccess(
 
 async function parsePendingInviteInput(
   request: Request,
+  env: Env,
+  identity: AuthenticatedConnection,
 ): Promise<ParsedPendingInviteInput | Response> {
   let payload: PendingInvitePayload;
   try {
@@ -4565,7 +4598,30 @@ async function parsePendingInviteInput(
     return json({ error: "invite body must be JSON" }, 400);
   }
 
-  const email = stringField(payload.email, "email");
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return json({ error: "invite body must be a JSON object" }, 400);
+  }
+  let recipientEmail = payload.email;
+  if (payload.directoryPersonId !== undefined) {
+    if (payload.email !== undefined) {
+      return json({ error: "provide either email or directoryPersonId" }, 400);
+    }
+    const personId = stringField(payload.directoryPersonId, "directoryPersonId");
+    if (personId instanceof Response) return personId;
+    try {
+      const directory = parsePeopleDirectory(env.NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON);
+      const callerEmail = directory ? await directoryCallerEmail(env, identity) : null;
+      const person = resolveDirectoryPerson(directory, callerEmail, personId);
+      if (!person) return json({ error: "directory person is unavailable" }, 404);
+      recipientEmail = person.email;
+    } catch (error) {
+      if (error instanceof PeopleDirectoryConfigurationError) {
+        return json({ error: "people directory is unavailable" }, 503);
+      }
+      throw error;
+    }
+  }
+  const email = stringField(recipientEmail, "email");
   if (email instanceof Response) {
     return email;
   }

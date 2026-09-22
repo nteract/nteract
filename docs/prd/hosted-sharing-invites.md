@@ -177,6 +177,85 @@ These routes require owner authorization and use the same mutation-origin
 checks as ACL changes. They do not send email, expose `token_hash`, or insert
 email strings into `notebook_acl`.
 
+## Optional Company Directory
+
+The default deployment has no directory configuration. Owners can invite a full
+email address without an account lookup or indication of whether that person
+has logged in. Company discovery is an explicit deployment option; it does not
+change notebook authorization or canonical-account linking.
+
+An administrator may set the server-only `NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON`
+binding to a trusted roster, including people who have never signed in:
+
+```json
+{
+  "allowedDomains": ["example.com"],
+  "people": [
+    {
+      "id": "54dd56fb-68fb-4361-bba9-033aee41b2a7",
+      "email": "bob@example.com",
+      "displayName": "Bob Example"
+    }
+  ]
+}
+```
+
+Keep real rosters out of source control and public build metadata. Roster IDs
+are administrator-assigned opaque UUIDs, not provider subjects or email hashes.
+They must be stable for the same person and must not be reassigned. Domains
+are normalized by trimming and lowercasing, then matched exactly; wildcards,
+trailing dots, subdomain lookalikes, and suffix lookalikes do not qualify. A
+verified email in one allowed domain never exposes another allowed domain.
+This temporary domain rule establishes discoverability, not employment or
+organization membership. Restrict sign-in separately if stronger membership
+proof is required.
+
+The roster is a separate source from authenticated profile records. Sign-in
+does not add someone to it. Remove someone by deleting their roster entry;
+every query and invitation selection uses the current configuration, so a
+previously returned ID stops resolving once the updated app configuration is
+deployed. Removing the binding or allowed domain disables the corresponding
+discovery on that deployment. This does not revoke
+existing pending invitations, accepted notebook access, or login sessions;
+those retain their explicit sharing/authentication controls.
+
+Configuration limits are 32 domains, 1,000 people, and 128 KiB. IDs and normalized
+emails must be unique, all roster emails must belong to an allowed domain, and
+display names must contain 1–128 characters after trimming. Optional `avatarUrl`
+values must be HTTPS URLs without embedded credentials (2,048 characters max).
+Only use a trusted image host: displaying its images sends browser requests to
+that host. Omitting avatars gives `null` and avoids those requests. Any invalid
+configuration fails closed as a whole; it never exposes a partial roster.
+
+`GET /api/people?q=bo` requires authentication and returns at most ten prefix
+matches with only `id`, `displayName`, `avatarUrl`, and `source: "directory"`.
+It returns no email, provider principal, login status, total count, or pagination
+cursor. Blank or one-character queries return no people and may be used to
+check `directoryEnabled`; queries over 80 characters are rejected. The entire
+response is `Cache-Control: no-store`. An absent configuration or ineligible
+caller returns `directoryEnabled: false` and an empty result. Invalid
+configuration returns 503. Eligibility requires a current verified provider
+email, or a still-verified server profile for an authenticated app session.
+Development identities and unverified email claims never qualify.
+Cookie queries use the last server-verified profile rather than calling the
+identity provider on every search. Fresh credential authentication updates
+that profile; cookie validity and renewal follow the existing app-session
+policy. This is not a fresh employment or company-membership check.
+
+An owner can submit `directoryPersonId` instead of `email` to the existing
+invitation endpoint. The server rechecks domain eligibility and current roster
+membership, resolves the email, and creates the ordinary pending invitation.
+It does not immediately create an ACL grant. The selected recipient email then
+appears in the existing owner-only invitation response/list, as it does for
+typed-email invitations. Merely opening or searching the directory performs no
+invitation, account linking, or message delivery.
+
+Prior-collaborator suggestions are separate follow-up work. Sending an invite
+or co-visiting a public notebook must not create a suggestion relationship.
+That feature needs evidence of accepted private collaboration, current access
+checks, and a per-user hide control that does not revoke notebook access. A
+removed membership must exclude a candidate even if past collaboration exists.
+
 ## First Login Resolution
 
 When a user authenticates:

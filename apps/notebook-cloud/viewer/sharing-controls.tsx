@@ -3,6 +3,8 @@ import { Share2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
+import { peopleSearchAuthKey, type CloudDirectoryPerson } from "./cloud-people-search-store";
+import { useCloudPeopleSearch } from "./use-cloud-people-search";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
 import {
   CloudSharingFactsStore,
@@ -55,6 +57,18 @@ export function CloudSharingControls({
   const [message, setMessage] = useState<string | null>(null);
   const [messageKind, setMessageKind] = useState<CloudSharingMessageKind>("info");
   const [inviteEmail, setInviteEmail] = useState("");
+  const [personSelection, setPersonSelection] = useState<{
+    authKey: string;
+    person: CloudDirectoryPerson;
+  } | null>(null);
+  const authKey = peopleSearchAuthKey(authState);
+  const selectedPerson = personSelection?.authKey === authKey ? personSelection.person : null;
+  const peopleSearch = useCloudPeopleSearch({
+    auth: authState,
+    open,
+    query: selectedPerson ? "" : inviteEmail,
+  });
+  const directoryPerson = peopleSearch.directoryEnabled ? selectedPerson : null;
   const [inviteScope, setInviteScope] = useState<CloudShareInviteScope>("viewer");
   const [formError, setFormError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -74,7 +88,17 @@ export function CloudSharingControls({
   const sharingFacts = useCloudSharingFactsProjection(sharingSourceFacts);
   const accessProjection = sharingFacts.access;
   const publicEnabled = sharingFacts.publicEnabled;
-  const inviteReady = sharingFacts.inviteReady;
+  const inviteReady = directoryPerson !== null || sharingFacts.inviteReady;
+  const inviteContext = useMemo(() => ({ authKey, invitesEndpoint }), [authKey, invitesEndpoint]);
+  const inviteContextRef = useRef(inviteContext);
+  inviteContextRef.current = inviteContext;
+
+  useEffect(() => {
+    setPersonSelection(null);
+    setInviteEmail("");
+    setFormError(null);
+    setMessage(null);
+  }, [inviteContext]);
 
   const loadSharingState = useCallback(
     async (options?: { preserveMessage?: boolean; signal?: AbortSignal }) => {
@@ -100,7 +124,7 @@ export function CloudSharingControls({
             authState,
           ),
         ]);
-        if (options?.signal?.aborted) {
+        if (options?.signal?.aborted || inviteContextRef.current !== inviteContext) {
           return;
         }
         if (!aclResponse.ok) {
@@ -132,6 +156,7 @@ export function CloudSharingControls({
         const accessRequestsBody = (await accessRequestsResponse.json()) as {
           access_requests?: CloudNotebookAccessRequest[];
         };
+        if (options?.signal?.aborted || inviteContextRef.current !== inviteContext) return;
         setAcl(Array.isArray(aclBody.acl) ? aclBody.acl : []);
         setInvites(Array.isArray(invitesBody.invites) ? invitesBody.invites : []);
         setAccessRequests(
@@ -141,7 +166,7 @@ export function CloudSharingControls({
         );
         setLoadState("ready");
       } catch (error) {
-        if (options?.signal?.aborted) {
+        if (options?.signal?.aborted || inviteContextRef.current !== inviteContext) {
           return;
         }
         setLoadState("error");
@@ -149,7 +174,7 @@ export function CloudSharingControls({
         setMessage(error instanceof Error ? error.message : String(error));
       }
     },
-    [accessRequestsEndpoint, aclEndpoint, authState, invitesEndpoint],
+    [accessRequestsEndpoint, aclEndpoint, authState, invitesEndpoint, inviteContext],
   );
 
   useEffect(() => {
@@ -178,10 +203,16 @@ export function CloudSharingControls({
       return;
     }
     const email = normalizeShareInviteEmail(inviteEmail);
-    if (!email) {
-      setFormError("Enter a valid email address.");
+    if (!directoryPerson && !email) {
+      setFormError(
+        peopleSearch.directoryEnabled
+          ? "Select a person or enter a full email address."
+          : "Enter a valid email address.",
+      );
       return;
     }
+    const issue = inviteContext;
+    const current = () => inviteContextRef.current === issue;
 
     inviteSubmitLockRef.current = true;
     setBusyAction("invite");
@@ -196,19 +227,25 @@ export function CloudSharingControls({
             Accept: "application/json",
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ email, scope: inviteScope }),
+          body: JSON.stringify(
+            directoryPerson
+              ? { directoryPersonId: directoryPerson.id, scope: inviteScope }
+              : { email, scope: inviteScope },
+          ),
         },
         authState,
       );
+      if (!current()) return;
       if (!response.ok) {
         throw await cloudResponseError(response, "Unable to create invite");
       }
       setInviteEmail("");
+      setPersonSelection(null);
       setMessageKind("info");
-      setMessage(`Invite created for ${email}.`);
+      setMessage(`Invite created for ${directoryPerson?.displayName ?? email}.`);
       await loadSharingState({ preserveMessage: true });
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : String(error));
+      if (current()) setFormError(error instanceof Error ? error.message : String(error));
     } finally {
       inviteSubmitLockRef.current = false;
       setBusyAction(null);
@@ -365,6 +402,7 @@ export function CloudSharingControls({
           messageKind={messageKind}
           onCopyLink={() => void copyPublicLink()}
           onInviteEmailChange={(value) => {
+            setPersonSelection(null);
             setInviteEmail(value);
             setFormError(null);
           }}
@@ -376,6 +414,13 @@ export function CloudSharingControls({
           publicBusy={busyAction === "public" || loadState === "loading"}
           publicEnabled={publicEnabled}
           showInitialAccessLoading={sharingFacts.showInitialAccessLoading}
+          peopleSearch={peopleSearch}
+          selectedPerson={directoryPerson}
+          onSelectPerson={(person) => {
+            setPersonSelection({ authKey, person });
+            setInviteEmail(person.displayName);
+            setFormError(null);
+          }}
         />
       </PopoverContent>
     </Popover>

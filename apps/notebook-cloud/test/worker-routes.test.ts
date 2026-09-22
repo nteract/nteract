@@ -155,6 +155,194 @@ describe("catalog schema runtime initialization", () => {
   });
 });
 
+describe("company people discovery routes", () => {
+  const personId = "54dd56fb-68fb-4361-bba9-033aee41b2a7";
+  const roster = JSON.stringify({
+    allowedDomains: ["example.com", "other.example"],
+    people: [
+      { id: personId, email: "bob@example.com", displayName: "Bob Example" },
+      {
+        id: "536013b1-1ed1-4726-b44c-5bf7843f936d",
+        email: "bob@other.example",
+        displayName: "Bob Elsewhere",
+      },
+    ],
+  });
+
+  it("requires authentication and keeps discovery disabled on default deployments", async () => {
+    const anonymous = await worker.fetch(
+      new Request("https://cloud.test/api/people?q=bo"),
+      fakeEnv(),
+      fakeContext(),
+    );
+    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.headers.get("cache-control"), "no-store");
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "directory-owner",
+      email: "alice@example.com",
+      extraPayload: { email_verified: true },
+    });
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/people?q=bo", {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      fakeEnv(oidcEnv),
+      fakeContext(),
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { directoryEnabled: false, people: [] });
+  });
+
+  it("only searches the verified caller's exact domain and never returns roster email or login status", async () => {
+    for (const [callerEmail, verified, allowed] of [
+      ["alice@example.com", true, true],
+      ["alice@example.com", false, false],
+      ["alice@sub.example.com", true, false],
+      ["alice@example.com.evil.test", true, false],
+    ] as const) {
+      const { env: oidcEnv, token } = await oidcTokenFixture({
+        subject: "directory-owner",
+        email: callerEmail,
+        extraPayload: { email_verified: verified },
+      });
+      const env = fakeEnv({ ...oidcEnv, NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON: roster });
+      const response = await worker.fetch(
+        new Request("https://cloud.test/api/people?q=bo", {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), {
+        directoryEnabled: allowed,
+        people: allowed
+          ? [{ id: personId, displayName: "Bob Example", avatarUrl: null, source: "directory" }]
+          : [],
+      });
+      assert.equal(response.headers.get("cache-control"), "no-store");
+    }
+  });
+
+  it("checks the current stored verified profile for app-session callers", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "directory-owner",
+      email: "alice@example.com",
+      extraPayload: { email_verified: true },
+    });
+    const env = fakeEnv({
+      ...oidcEnv,
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+      NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON: roster,
+    });
+    const cookie = await oidcAppSessionCookie(env, token);
+    const request = () =>
+      new Request("https://cloud.test/api/people?q=bo", { headers: { Cookie: cookie } });
+    const initial = await worker.fetch(request(), env, fakeContext());
+    assert.equal(initial.status, 200);
+    assert.equal(((await initial.json()) as { people: unknown[] }).people.length, 1);
+    const profile = env.DB.profiles.get("user:anaconda:directory-owner");
+    assert.ok(profile);
+    profile.email_verified = 0;
+    const revoked = await worker.fetch(request(), env, fakeContext());
+    assert.deepEqual(await revoked.json(), { directoryEnabled: false, people: [] });
+  });
+
+  it("resolves a directory selection only for an authorized notebook owner and creates a pending invite", async () => {
+    const { env: oidcEnv, token } = await oidcTokenFixture({
+      subject: "directory-owner",
+      email: "alice@example.com",
+      extraPayload: { email_verified: true },
+    });
+    const env = fakeEnv({ ...oidcEnv, NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON: roster });
+    seedNotebook(env, "directory-notebook");
+    seedAcl(env, {
+      notebookId: "directory-notebook",
+      subject: "user:anaconda:directory-owner",
+      scope: "owner",
+    });
+    const invite = (body: unknown) =>
+      worker.fetch(
+        new Request("https://cloud.test/api/n/directory-notebook/invites", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Origin: "https://cloud.test",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        }),
+        env,
+        fakeContext(),
+      );
+    const created = await invite({ directoryPersonId: personId, scope: "editor" });
+    assert.equal(created.status, 201);
+    const result = (await created.json()) as { invite: { email: string; status: string } };
+    assert.equal(result.invite.email, "bob@example.com");
+    assert.equal(result.invite.status, "pending");
+    assert.equal(
+      (await getNotebookAclRows(env, "directory-notebook")).some((row) =>
+        row.subject.includes("bob"),
+      ),
+      false,
+    );
+    assert.equal(env.DB.profiles.has("bob@example.com"), false);
+    assert.equal(
+      (await invite({ directoryPersonId: personId, email: "mallory@example.com", scope: "editor" }))
+        .status,
+      400,
+    );
+    assert.equal(
+      (await invite({ directoryPersonId: "536013b1-1ed1-4726-b44c-5bf7843f936d", scope: "editor" }))
+        .status,
+      404,
+    );
+    env.NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON = JSON.stringify({
+      allowedDomains: ["example.com"],
+      people: [],
+    });
+    assert.equal((await invite({ directoryPersonId: personId, scope: "editor" })).status, 404);
+    // Explicit full-email invites remain available independently of roster membership.
+    assert.equal((await invite({ email: "outside@unknown.example", scope: "viewer" })).status, 201);
+    assert.equal(env.DB.invites.size, 2);
+  });
+
+  it("does not let an editor or an out-of-domain owner use an opaque roster ID", async () => {
+    for (const [scope, callerEmail, expectedStatus] of [
+      ["editor", "alice@example.com", 403],
+      ["owner", "alice@outside.example", 404],
+    ] as const) {
+      const { env: oidcEnv, token } = await oidcTokenFixture({
+        subject: "directory-owner",
+        email: callerEmail,
+        extraPayload: { email_verified: true },
+      });
+      const env = fakeEnv({ ...oidcEnv, NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON: roster });
+      seedNotebook(env, "directory-notebook");
+      seedAcl(env, {
+        notebookId: "directory-notebook",
+        subject: "user:anaconda:directory-owner",
+        scope,
+      });
+      const response = await worker.fetch(
+        new Request("https://cloud.test/api/n/directory-notebook/invites", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Origin: "https://cloud.test",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ directoryPersonId: personId, scope: "viewer" }),
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(response.status, expectedStatus);
+      assert.equal(env.DB.invites.size, 0);
+    }
+  });
+});
+
 describe("Worker artifact routes", () => {
   it("reports direct OIDC readiness without exposing configured values", async () => {
     const env = fakeEnv({

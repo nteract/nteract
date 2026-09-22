@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import type { CloudDirectoryPerson, CloudPeopleSearchState } from "./cloud-people-search-store";
 import type {
   CloudShareAccessProjection,
   CloudShareAccessRow,
@@ -45,6 +46,9 @@ export interface CloudSharingPanelProps {
   publicBusy: boolean;
   publicEnabled: boolean;
   showInitialAccessLoading: boolean;
+  peopleSearch?: CloudPeopleSearchState;
+  selectedPerson?: CloudDirectoryPerson | null;
+  onSelectPerson?: (person: CloudDirectoryPerson) => void;
 }
 
 /**
@@ -74,7 +78,11 @@ export function CloudSharingPanel({
   publicBusy,
   publicEnabled,
   showInitialAccessLoading,
+  peopleSearch,
+  selectedPerson,
+  onSelectPerson,
 }: CloudSharingPanelProps) {
+  const directoryEnabled = peopleSearch?.directoryEnabled === true;
   return (
     <>
       <header className="flex items-start justify-between gap-3 border-b px-4 py-3">
@@ -131,15 +139,17 @@ export function CloudSharingPanel({
       >
         <div className="grid gap-1.5">
           <Label htmlFor="cloud-share-invite-email" className="text-xs text-muted-foreground">
-            Invite by email
+            {directoryEnabled ? "Name or email" : "Invite by email"}
           </Label>
           <Input
             id="cloud-share-invite-email"
             name="invite-email"
-            type="email"
+            type={directoryEnabled ? "text" : "email"}
             value={inviteEmail}
-            placeholder="name@example.com"
-            autoComplete="email"
+            placeholder={
+              directoryEnabled ? "Search people or enter full email" : "name@example.com"
+            }
+            autoComplete={directoryEnabled ? "off" : "email"}
             onChange={(event) => onInviteEmailChange(event.target.value)}
           />
         </div>
@@ -168,6 +178,55 @@ export function CloudSharingPanel({
           <Mail />
           Invite
         </Button>
+        {selectedPerson ? (
+          <p className="col-span-full text-xs text-muted-foreground">
+            {selectedPerson.displayName} selected. Choose access, then invite them to this notebook.
+          </p>
+        ) : directoryEnabled ? (
+          <div className="col-span-full" aria-live="polite">
+            {peopleSearch.people.length > 0 ? (
+              <section aria-label="Company directory results">
+                <p className="mb-1 text-xs text-muted-foreground">Company directory</p>
+                <ul className="divide-y divide-border/70">
+                  {peopleSearch.people.map((person) => (
+                    <li key={person.id}>
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() => onSelectPerson?.(person)}
+                        aria-label={`Select ${person.displayName}`}
+                      >
+                        {person.avatarUrl ? (
+                          <img
+                            src={person.avatarUrl}
+                            alt=""
+                            className="size-6 rounded-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <UserRound className="size-4 text-muted-foreground" aria-hidden="true" />
+                        )}
+                        <span className="min-w-0 truncate">{person.displayName}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {peopleSearch.status === "error"
+                  ? "People search is unavailable. You can still invite by full email."
+                  : peopleSearch.query.length > 80
+                    ? "Use 80 characters or fewer to search, or enter a full email."
+                    : peopleSearch.status === "loading" && peopleSearch.query
+                      ? "Searching people…"
+                      : peopleSearch.query
+                        ? "No matching people. You can invite by full email."
+                        : "Type at least two characters to find people, or enter a full email."}
+              </p>
+            )}
+          </div>
+        ) : null}
         {formError ? (
           <div
             className="col-span-full rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive"

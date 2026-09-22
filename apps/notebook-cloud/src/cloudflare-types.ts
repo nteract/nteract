@@ -8,6 +8,8 @@ export interface Env {
   DEPLOYMENT_ENV?: string;
   NOTEBOOK_CLOUD_BUILD_SHA?: string;
   NOTEBOOK_CLOUD_ALLOWED_ORIGINS?: string;
+  /** Explicit administrator roster; absent on public/default deployments. */
+  NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON?: string;
   /**
    * Origin browsers and runtime peers use to reach this deployment, for
    * example `https://app.example.com`. Set it when a TLS-terminating proxy
