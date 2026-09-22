@@ -609,7 +609,7 @@ function CloudNotebookSignedOutPanel({
         <p>
           {localMode
             ? "Use local auth to create notebooks and test the live room on this machine."
-            : "Sign in to create live notebooks, share work with colleagues, and attach compute."}
+            : "Sign in to create live notebooks, share work with colleagues, and attach compute. Warm-cache preview check."}
         </p>
       </div>
       <div className="cloud-notebook-signed-out-actions">
