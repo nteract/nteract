@@ -141,6 +141,9 @@ export class CloudHiddenPeopleStore extends ObservableStore<CloudHiddenPeopleSta
           hidden: [],
           nextCursor: null,
           status: "loading",
+          // The temporary confirmation may contain a name the server now
+          // redacts. Once the list opens, its fresh rows own profile display.
+          lastHidden: null,
           error: page.preserveError ? this.snapshot.error : null,
         });
         return defer(() =>

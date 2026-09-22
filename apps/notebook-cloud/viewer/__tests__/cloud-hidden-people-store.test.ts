@@ -113,6 +113,28 @@ describe("CloudHiddenPeopleStore", () => {
     expect(store.snapshot.lastHidden).toBeNull();
   });
 
+  it("does not retain a previous name after loading a redacted hidden profile", async () => {
+    const redacted = { ...HIDDEN, displayName: "Hidden person", avatarUrl: null };
+    const request = vi.fn(async (_url: string, init: RequestInit) =>
+      init.method === "POST"
+        ? Response.json({ id: HIDDEN.id })
+        : Response.json({ hidden: [redacted], nextCursor: null }),
+    );
+    const { store, inputs } = setup(request);
+    await store.hide(PERSON);
+    expect(store.snapshot.lastHidden?.displayName).toBe("Alice Example");
+
+    inputs.next({ auth: AUTH, open: true });
+    expect(store.snapshot.lastHidden).toBeNull();
+    await settle();
+    expect(store.snapshot.hidden).toEqual([redacted]);
+    expect(store.snapshot.lastHidden).toBeNull();
+
+    inputs.next({ auth: AUTH, open: false });
+    expect(store.snapshot.lastHidden).toBeNull();
+    expect(store.snapshot.hidden).toEqual([]);
+  });
+
   it("does not show success after a rejected hide and re-enables search", async () => {
     const request = vi.fn(async () => Response.json({ error: "unavailable" }, { status: 404 }));
     const { store, endMutation } = setup(request);
