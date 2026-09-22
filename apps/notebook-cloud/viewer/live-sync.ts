@@ -502,12 +502,14 @@ export function normalizeConnectionScope(value: string): ConnectionScope {
 export function startCloudBootstrapSync(
   engine: Pick<SyncEngine, "start" | "resetForBootstrap" | "flush">,
 ): void {
-  engine.start();
   // Match the desktop `useAutomergeNotebook` bootstrap path: a newly-created
   // bootstrap handle must initiate the sync exchange before it can materialize
   // the room. Viewer-scope peers still use normal sync state so incoming
   // changes apply locally; the room host rejects any viewer-authored changes.
+  // Reset before start: attaching the transport can synchronously apply its
+  // queued frames, whose readiness and runtime projections must survive.
   engine.resetForBootstrap();
+  engine.start();
   engine.flush();
 }
 

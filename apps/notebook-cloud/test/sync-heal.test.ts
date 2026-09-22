@@ -293,10 +293,10 @@ describe("cloud session sync-heal wiring", () => {
     );
   });
 
-  it("feeds the caught-up confirmation from notebookSyncApplied$", () => {
+  it("observes current catch-up state as well as future applied sync frames", () => {
     assert.match(
       sessionSource,
-      /notebookSyncApplied\$\.subscribe[\s\S]{0,400}?cloudNotebookHandleCaughtUp\(liveRuntime\.handle\);[\s\S]{0,400}?syncHeal\.noteVerification\(NOTEBOOK_DOC_HEAL_KEY, caughtUp\);/,
+      /observeCloudNotebookCatchUp\([\s\S]{0,200}?liveRuntime\.engine\.notebookSyncApplied\$,[\s\S]{0,100}?liveRuntime\.handle,[\s\S]{0,100}?\.subscribe\(\(caughtUp\) =>[\s\S]{0,400}?syncHeal\.noteVerification\(NOTEBOOK_DOC_HEAL_KEY, caughtUp\);/,
     );
   });
 

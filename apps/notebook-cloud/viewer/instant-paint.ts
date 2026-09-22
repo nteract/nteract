@@ -36,6 +36,7 @@ import {
   type StorageAdapter,
 } from "runtimed";
 import { withReadyTimeout } from "./live-sync";
+import { map, startWith, type Observable } from "rxjs";
 
 export { cloudInstantPaintPrincipalMatcher } from "./cloud-principal";
 
@@ -85,6 +86,21 @@ export function cloudNotebookHandleCaughtUp(handle: {
   } catch {
     return false;
   }
+}
+
+/**
+ * Read current peer-head convergence when attaching, then after each applied
+ * room frame. Bootstrap can drain queued frames before the session subscribes;
+ * that settled state must not depend on another (possibly unnecessary) reply.
+ */
+export function observeCloudNotebookCatchUp(
+  syncApplied$: Observable<void>,
+  handle: Parameters<typeof cloudNotebookHandleCaughtUp>[0],
+): Observable<boolean> {
+  return syncApplied$.pipe(
+    startWith(undefined),
+    map(() => cloudNotebookHandleCaughtUp(handle)),
+  );
 }
 
 export type CloudInstantPaintOutcome =

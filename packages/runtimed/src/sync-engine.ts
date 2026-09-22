@@ -559,12 +559,6 @@ export class SyncEngine {
     const sub = (this.subscription = new Subscription());
     const log = this.opts.logger;
 
-    // Wire transport frames into the internal subject
-    const unlisten = this.opts.transport.onFrame((payload) => {
-      this.frameIn$.next(payload);
-    });
-    sub.add(() => unlisten());
-
     const sendHeartbeat = () => {
       let payload: Uint8Array;
       try {
@@ -1069,6 +1063,14 @@ export class SyncEngine {
           this.flush();
         }),
     );
+
+    // A transport may synchronously replay buffered frames from onFrame().
+    // Install every processing pipeline first so bootstrap frames cannot
+    // drain into a Subject with no subscribers.
+    const unlisten = this.opts.transport.onFrame((payload) => {
+      this.frameIn$.next(payload);
+    });
+    sub.add(() => unlisten());
   }
 
   /**
