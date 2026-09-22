@@ -11,10 +11,37 @@ export interface CloudDirectoryPerson {
   source: "directory";
 }
 
+export interface CloudCollaboratorPerson {
+  id: string;
+  displayName: string;
+  avatarUrl: string | null;
+  source: "collaborator";
+}
+
+export type CloudSearchPerson = CloudDirectoryPerson | CloudCollaboratorPerson;
+
+export interface CloudHiddenPerson {
+  id: string;
+  personId: string;
+  displayName: string;
+  avatarUrl: string | null;
+}
+
+export interface CloudHiddenPeopleState {
+  authKey: string | null;
+  hidden: readonly CloudHiddenPerson[];
+  nextCursor: string | null;
+  status: "idle" | "loading" | "ready" | "error";
+  busyId: string | null;
+  error: string | null;
+  lastHidden: CloudHiddenPerson | null;
+}
+
 export interface CloudPeopleSearchResult {
   directoryEnabled: boolean;
+  collaboratorsEnabled?: boolean;
   requiresReverification?: boolean;
-  people: readonly CloudDirectoryPerson[];
+  people: readonly CloudSearchPerson[];
 }
 
 export interface CloudPeopleSearchState extends CloudPeopleSearchResult {

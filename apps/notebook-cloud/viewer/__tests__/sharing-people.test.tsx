@@ -70,6 +70,99 @@ afterEach(() => {
 });
 
 describe("sharing people discovery", () => {
+  function collaboratorApi() {
+    let hidden = false;
+    const posts: { url: string; body: unknown }[] = [];
+    const requests: string[] = [];
+    vi.mocked(fetchWithCloudPrototypeAuth).mockImplementation(async (input, init) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "/api/people/hidden" && init?.method === "POST") {
+        posts.push({ url, body: JSON.parse(String(init.body)) });
+        hidden = true;
+        return Response.json({ id: "hidden-a" });
+      }
+      if (url.startsWith("/api/people/hidden/") && init?.method === "DELETE") {
+        hidden = false;
+        return new Response(null, { status: 204 });
+      }
+      if (url.startsWith("/api/people/hidden")) {
+        return Response.json({
+          hidden: [
+            { id: "hidden-a", personId: PERSON.id, displayName: "Hidden person", avatarUrl: null },
+          ],
+          nextCursor: null,
+        });
+      }
+      if (url.startsWith("/api/people?")) {
+        return Response.json({
+          directoryEnabled: false,
+          collaboratorsEnabled: true,
+          people: hidden ? [] : [{ ...PERSON, source: "collaborator" }],
+        });
+      }
+      if (init?.method === "POST") {
+        posts.push({ url, body: JSON.parse(String(init.body)) });
+        return Response.json({});
+      }
+      return Response.json({ acl: [], invites: [], access_requests: [] });
+    });
+    return { posts, requests };
+  }
+
+  it("shares with an eligible collaborator only after explicit selection and confirmation", async () => {
+    const api = collaboratorApi();
+    render(<Sharing user={new CloudUserStore()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Select Alice Example" }));
+    expect(api.posts).toEqual([]);
+    expect(screen.queryByLabelText("Company directory results")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Share with Alice Example" }));
+    await waitFor(() =>
+      expect(api.posts).toEqual([
+        { url: "/api/n/example/acl", body: { collaboratorPersonId: PERSON.id, scope: "viewer" } },
+      ]),
+    );
+    expect(await screen.findByText("Alice Example can now view this notebook.")).toBeTruthy();
+    expect(api.requests.filter((url) => url.startsWith("/api/people/hidden"))).toHaveLength(0);
+  });
+
+  it("hides both-way suggestions with inline undo without changing notebook access", async () => {
+    const api = collaboratorApi();
+    render(<Sharing user={new CloudUserStore()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Hide collaboration suggestion for Alice Example",
+      }),
+    );
+    expect(
+      await screen.findByText(/Collaboration suggestions between you and Alice Example are hidden/),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Select Alice Example" })).toBeNull();
+    expect(api.posts).toEqual([{ url: "/api/people/hidden", body: { personId: PERSON.id } }]);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByRole("button", { name: "Select Alice Example" })).toBeTruthy();
+    expect(screen.queryByText(/Collaboration suggestions between/)).toBeNull();
+    expect(api.posts.some((post) => post.url.includes("/api/n/"))).toBe(false);
+    expect(api.requests.filter((url) => url.startsWith("/api/people?q="))).toHaveLength(3);
+  });
+
+  it("loads hidden suggestions only on demand and can undo a generic hidden person", async () => {
+    const api = collaboratorApi();
+    render(<Sharing user={new CloudUserStore()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    const disclosure = await screen.findByRole("button", { name: "Hidden suggestions" });
+    expect(api.requests.filter((url) => url.startsWith("/api/people/hidden"))).toHaveLength(0);
+    fireEvent.click(disclosure);
+    expect(await screen.findByText("Hidden person")).toBeTruthy();
+    expect(screen.queryByText("hidden-a")).toBeNull();
+    expect(screen.queryByText(PERSON.id)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Undo hiding Hidden person" }));
+    await waitFor(() => expect(api.requests).toContain("/api/people/hidden/hidden-a"));
+    expect(api.posts).toEqual([]);
+  });
+
   it("explains reverification without extra auth calls and clears the hint on account change", async () => {
     const api = mockApi(false, false, true);
     const user = new CloudUserStore();

@@ -192,7 +192,11 @@ describe("company people discovery routes", () => {
       fakeContext(),
     );
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { directoryEnabled: false, people: [] });
+    assert.deepEqual(await response.json(), {
+      directoryEnabled: false,
+      collaboratorsEnabled: true,
+      people: [],
+    });
   });
 
   it("only searches the verified caller's exact domain and never returns roster email or login status", async () => {
@@ -218,6 +222,7 @@ describe("company people discovery routes", () => {
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), {
         directoryEnabled: allowed,
+        collaboratorsEnabled: true,
         people: allowed
           ? [{ id: personId, displayName: "Bob Example", avatarUrl: null, source: "directory" }]
           : [],
@@ -247,7 +252,11 @@ describe("company people discovery routes", () => {
     assert.ok(profile);
     profile.email_verified = 0;
     const revoked = await worker.fetch(request(), env, fakeContext());
-    assert.deepEqual(await revoked.json(), { directoryEnabled: false, people: [] });
+    assert.deepEqual(await revoked.json(), {
+      directoryEnabled: false,
+      collaboratorsEnabled: true,
+      people: [],
+    });
   });
 
   it("keeps notebook access but requests reverification for legacy or renewed stale directory proof", async () => {
@@ -305,6 +314,7 @@ describe("company people discovery routes", () => {
       );
       assert.deepEqual(await search.json(), {
         directoryEnabled: false,
+        collaboratorsEnabled: true,
         people: [],
         requiresReverification: true,
       });
@@ -372,6 +382,7 @@ describe("company people discovery routes", () => {
       );
       assert.deepEqual(await response.json(), {
         directoryEnabled: false,
+        collaboratorsEnabled: true,
         people: [],
         requiresReverification: true,
       });

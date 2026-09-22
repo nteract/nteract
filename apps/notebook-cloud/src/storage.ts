@@ -1,5 +1,6 @@
 import type { AuthenticatedConnection } from "./identity.ts";
 import type { D1PreparedStatement, Env } from "./cloudflare-types.ts";
+import { PEOPLE_DISCOVERY_SCHEMA } from "./people-discovery-schema.ts";
 
 export interface NotebookCatalog {
   notebook: NotebookRow;
@@ -239,6 +240,7 @@ const WORKSTATION_ATTACH_JOBS_ACTIVE_UNIQUE_INDEX = `CREATE UNIQUE INDEX IF NOT 
     WHERE status IN ('pending', 'accepted', 'running')`;
 
 const SCHEMA_STATEMENTS = [
+  ...PEOPLE_DISCOVERY_SCHEMA,
   `CREATE TABLE IF NOT EXISTS notebooks (
     id TEXT PRIMARY KEY,
     owner_principal TEXT NOT NULL,

@@ -50,6 +50,60 @@ function setup(fetchPeople = vi.fn(async (_url: string, _signal: AbortSignal) =>
 }
 
 describe("CloudPeopleSearchStore", () => {
+  it("shows bounded prior collaborators on blank query without enabling company directory", async () => {
+    const person = { ...PERSON, source: "collaborator" };
+    const fetchPeople = vi.fn(async (_url: string) =>
+      Response.json({
+        directoryEnabled: false,
+        collaboratorsEnabled: true,
+        people: [person, PERSON],
+      }),
+    );
+    const app = setup(fetchPeople);
+    await settle();
+    expect(app.store.snapshot.directoryEnabled).toBe(false);
+    expect(app.store.snapshot.people).toEqual([person]);
+    app.update({ query: "al" });
+    app.advance(250);
+    await settle();
+    expect(fetchPeople).toHaveBeenCalledTimes(2);
+    expect(fetchPeople.mock.calls[1]?.[0]).toBe("/api/people?q=al");
+  });
+
+  it("aborts search and invalidates every cached query across hide or undo", async () => {
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      finish = resolve;
+    });
+    const fetchPeople = vi.fn(async (url: string, _signal: AbortSignal) =>
+      url.endsWith("=bea") ? pending : enabled(url.endsWith("=") ? [] : [PERSON]),
+    );
+    const app = setup(fetchPeople);
+    await settle();
+    app.update({ query: "al" });
+    app.advance(250);
+    await settle();
+    app.update({ query: "bea" });
+    app.advance(250);
+    await settle();
+    const signal = fetchPeople.mock.calls[2]![1];
+    const token = app.store.beginMutation();
+    expect(signal.aborted).toBe(true);
+    expect(app.store.snapshot.people).toEqual([]);
+    finish(enabled([PERSON]));
+    await settle();
+    app.update({ query: "al" });
+    app.advance(250);
+    await settle();
+    expect(fetchPeople).toHaveBeenCalledTimes(3);
+    expect(app.store.snapshot.people).toEqual([]);
+    app.store.endMutation(token);
+    app.advance(250);
+    await settle();
+    expect(fetchPeople).toHaveBeenCalledTimes(4);
+    expect(app.store.snapshot.people).toEqual([PERSON]);
+  });
+
   it("keeps the self-only reverification flag with no people until credentials change", async () => {
     let requiresReverification = true;
     const fetchPeople = vi.fn(async () =>

@@ -255,11 +255,45 @@ appears in the existing owner-only invitation response/list, as it does for
 typed-email invitations. Merely opening or searching the directory performs no
 invitation, account linking, or message delivery.
 
-Prior-collaborator suggestions are separate follow-up work. Sending an invite
-or co-visiting a public notebook must not create a suggestion relationship.
-That feature needs evidence of accepted private collaboration, current access
-checks, and a per-user hide control that does not revoke notebook access. A
-removed membership must exclude a candidate even if past collaboration exists.
+### Previous collaborators
+
+Authenticated people can also find previous collaborators without a company
+directory. Both people must have successfully joined the same private notebook
+through an authorized WebSocket upgrade, and both must still have explicit
+viewer, editor, or owner ACL access to at least one such notebook. A sent or
+accepted invitation alone, public co-visits, and runtime-peer connections do not
+qualify. Making the shared notebook public or removing either person's access
+filters the relationship at both search and selection time. Recorded joins are
+not retroactively inferred from old notebook activity.
+
+`GET /api/people` includes `collaboratorsEnabled` independently of company policy
+and returns at most ten combined results. An empty query can return previous
+collaborators, but never an unfiltered company roster. Collaborator results
+contain opaque IDs, names, a null avatar, and `source: "collaborator"`; they have
+no email or provider principal. Names are prefix-matched without wildcard
+expansion. Selection posts `collaboratorPersonId` and viewer/editor scope to the
+existing owner-only notebook ACL endpoint, which rechecks the relationship
+before granting access. This is distinct from a company-roster pending invite.
+
+Hiding a collaboration suggestion suppresses that pair in both directions.
+Notebook access and separately configured company-directory discovery remain
+unchanged. New joins never silently undo the suppression. Each person can undo
+only their own suppression; the other person's independent choice remains.
+
+`POST /api/people/hidden` accepts `personId` and returns an opaque suppression
+`id`. `GET /api/people/hidden?after=<cursor>` returns up to twenty caller-owned
+records and a next cursor. It is loaded only when the sharing panel's hidden
+suggestions disclosure is opened. A hidden person whose current private
+relationship no longer qualifies appears as "Hidden person" without a profile.
+`DELETE /api/people/hidden/{id}` is an idempotent undo of a caller-owned record.
+All queries and mutations authorize on the server and disable response caching.
+
+Migration `0009_people_discovery.sql` adds opaque person IDs, private notebook
+participation, and suggestion suppressions. The Worker applies the same schema
+at initialization. A successful join performs two statements in one D1 batch;
+room frames perform no discovery queries. Existing authenticated account aliases
+are honored for current participation, ACLs, and suppressions. This feature
+never creates account links or compares emails to merge people across providers.
 
 ## First Login Resolution
 

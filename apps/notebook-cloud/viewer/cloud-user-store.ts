@@ -30,6 +30,7 @@ import {
 } from "./comment-author-profiles";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import { CloudPeopleSearchStore } from "./cloud-people-search-store";
+import { CloudHiddenPeopleStore } from "./cloud-hidden-people-store";
 import type { CloudViewerPresenceState, CloudViewerPresenceStore } from "./presence";
 
 export interface CloudResolvedProfile {
@@ -221,6 +222,7 @@ function parseProfilesResponse(value: unknown): ParsedProfileEntry[] {
 
 export class CloudUserStore extends ObservableStore<CloudUserDirectoryState> {
   readonly peopleSearch = new CloudPeopleSearchStore();
+  readonly hiddenPeople = new CloudHiddenPeopleStore();
   /** Principal-keyed profile directory. */
   readonly profiles$: Observable<ReadonlyMap<string, CloudResolvedProfile>>;
 
@@ -268,6 +270,7 @@ export class CloudUserStore extends ObservableStore<CloudUserDirectoryState> {
     subscription.add(
       inputs$.subscribe((inputs) => {
         this.peopleSearch.syncAuth(inputs.auth);
+        this.hiddenPeople.syncAuth(inputs.auth);
         this.latestInputs = inputs;
         if (inputs.authorProfilesEndpoint !== this.lastEndpoint) {
           // Unresolved is a per-relationship fact: a new notebook may resolve

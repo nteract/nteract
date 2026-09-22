@@ -12,7 +12,12 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import type { CloudDirectoryPerson, CloudPeopleSearchState } from "./people-search-types";
+import type {
+  CloudCollaboratorPerson,
+  CloudSearchPerson,
+  CloudPeopleSearchState,
+} from "./people-search-types";
+import { HiddenPeoplePanel, type HiddenPeoplePanelProps } from "./hidden-people-panel";
 import type {
   CloudShareAccessProjection,
   CloudShareAccessRow,
@@ -47,8 +52,10 @@ export interface CloudSharingPanelProps {
   publicEnabled: boolean;
   showInitialAccessLoading: boolean;
   peopleSearch?: CloudPeopleSearchState;
-  selectedPerson?: CloudDirectoryPerson | null;
-  onSelectPerson?: (person: CloudDirectoryPerson) => void;
+  selectedPerson?: CloudSearchPerson | null;
+  onSelectPerson?: (person: CloudSearchPerson) => void;
+  onHidePerson?: (person: CloudCollaboratorPerson) => void;
+  hiddenSuggestions?: HiddenPeoplePanelProps;
 }
 
 /**
@@ -81,8 +88,15 @@ export function CloudSharingPanel({
   peopleSearch,
   selectedPerson,
   onSelectPerson,
+  onHidePerson,
+  hiddenSuggestions,
 }: CloudSharingPanelProps) {
-  const directoryEnabled = peopleSearch?.directoryEnabled === true;
+  const directoryEnabled =
+    peopleSearch?.directoryEnabled === true || peopleSearch?.collaboratorsEnabled === true;
+  const peopleGroups = [
+    { source: "collaborator", label: "Previous collaborators" },
+    { source: "directory", label: "Company directory" },
+  ] as const;
   return (
     <>
       <header className="flex items-start justify-between gap-3 border-b px-4 py-3">
@@ -172,46 +186,82 @@ export function CloudSharingPanel({
         </div>
         <Button
           type="submit"
+          aria-label={
+            selectedPerson?.source === "collaborator"
+              ? `Share with ${selectedPerson.displayName}`
+              : undefined
+          }
           className="self-end"
           disabled={!inviteReady || busyAction === "invite"}
         >
-          <Mail />
-          Invite
+          {selectedPerson?.source === "collaborator" ? <UserRound /> : <Mail />}
+          {selectedPerson?.source === "collaborator" ? "Share" : "Invite"}
         </Button>
         {selectedPerson ? (
           <p className="col-span-full text-xs text-muted-foreground">
-            {selectedPerson.displayName} selected. Choose access, then invite them to this notebook.
+            {selectedPerson.displayName} selected. Choose access, then{" "}
+            {selectedPerson.source === "collaborator"
+              ? "share this notebook."
+              : "invite them to this notebook."}
           </p>
         ) : directoryEnabled ? (
           <div className="col-span-full" aria-live="polite">
             {peopleSearch.people.length > 0 ? (
-              <section aria-label="Company directory results">
-                <p className="mb-1 text-xs text-muted-foreground">Company directory</p>
-                <ul className="divide-y divide-border/70">
-                  {peopleSearch.people.map((person) => (
-                    <li key={person.id}>
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={() => onSelectPerson?.(person)}
-                        aria-label={`Select ${person.displayName}`}
-                      >
-                        {person.avatarUrl ? (
-                          <img
-                            src={person.avatarUrl}
-                            alt=""
-                            className="size-6 rounded-full object-cover"
-                            referrerPolicy="no-referrer"
-                          />
-                        ) : (
-                          <UserRound className="size-4 text-muted-foreground" aria-hidden="true" />
-                        )}
-                        <span className="min-w-0 truncate">{person.displayName}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
+              peopleGroups.map((group) =>
+                peopleSearch.people.some((person) => person.source === group.source) ? (
+                  <section key={group.source} aria-label={`${group.label} results`}>
+                    <p className="mb-1 text-xs text-muted-foreground">{group.label}</p>
+                    <ul className="divide-y divide-border/70">
+                      {peopleSearch.people
+                        .filter((person) => person.source === group.source)
+                        .map((person) => (
+                          <li
+                            key={`${person.source}:${person.id}`}
+                            className="flex items-center gap-1"
+                          >
+                            <button
+                              type="button"
+                              className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-2 py-2 text-left text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              onClick={() => onSelectPerson?.(person)}
+                              aria-label={`Select ${person.displayName}`}
+                            >
+                              {person.avatarUrl ? (
+                                <img
+                                  src={person.avatarUrl}
+                                  alt=""
+                                  className="size-6 rounded-full object-cover"
+                                  referrerPolicy="no-referrer"
+                                />
+                              ) : (
+                                <UserRound
+                                  className="size-4 text-muted-foreground"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span className="min-w-0 truncate">{person.displayName}</span>
+                            </button>
+                            {person.source === "collaborator" ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                title="Hide collaboration suggestion"
+                                aria-label={`Hide collaboration suggestion for ${person.displayName}`}
+                                disabled={
+                                  hiddenSuggestions?.state.busyId !== null &&
+                                  hiddenSuggestions?.state.busyId !== undefined
+                                }
+                                onClick={() => onHidePerson?.(person)}
+                              >
+                                Hide
+                              </Button>
+                            ) : null}
+                          </li>
+                        ))}
+                    </ul>
+                  </section>
+                ) : null,
+              )
             ) : (
               <p className="text-xs text-muted-foreground">
                 {peopleSearch.status === "error"
@@ -227,6 +277,7 @@ export function CloudSharingPanel({
             )}
           </div>
         ) : null}
+        {hiddenSuggestions ? <HiddenPeoplePanel {...hiddenSuggestions} /> : null}
         {peopleSearch?.requiresReverification ? (
           <p className="col-span-full text-xs text-muted-foreground" role="status">
             Sign in again to search the company directory. You can still invite by full email.

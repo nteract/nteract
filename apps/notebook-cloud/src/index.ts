@@ -146,6 +146,16 @@ import {
   searchPeopleDirectory,
 } from "./people-directory.ts";
 import {
+  collaboratorsEnabled,
+  hideCollaborator,
+  listHiddenCollaborators,
+  recordPrivateNotebookParticipation,
+  resolveCollaborator,
+  searchCollaborators,
+  unhideCollaborator,
+  validPeopleId,
+} from "./collaborator-suggestions.ts";
+import {
   createNotebookAccessRequest,
   getLatestNotebookAccessRequestForRequester,
   listNotebookAccessRequests,
@@ -278,6 +288,18 @@ type SnapshotPairValidationResult =
     };
 
 const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
+  {
+    match: exactPath("/api/people/hidden"),
+    methods: ["GET", "POST"],
+    handler: async (_match, request, env) =>
+      withNoStore(await routeHiddenPeople(request, env, null)),
+  },
+  {
+    match: routePath("/api/people/hidden/:id"),
+    methods: ["DELETE"],
+    handler: async (match, request, env) =>
+      withNoStore(await routeHiddenPeople(request, env, match.params.id)),
+  },
   {
     match: exactPath("/api/people"),
     methods: ["GET"],
@@ -826,7 +848,15 @@ async function routeRoomSync(request: Request, env: Env, ctx: ExecutionContext):
 
   const id = env.NOTEBOOK_ROOMS.idFromName(notebookId);
   const room = env.NOTEBOOK_ROOMS.get(id);
-  return room.fetch(stampTrustedIdentity(request, authorizedIdentity));
+  const response = await room.fetch(stampTrustedIdentity(request, authorizedIdentity));
+  if (response.status === 101) {
+    ctx.waitUntil(
+      recordPrivateNotebookParticipation(env, authorizedIdentity, notebookId).catch(() => {
+        cloudLog("warn", "people.participation.failed", { notebook_id: notebookId });
+      }),
+    );
+  }
+  return response;
 }
 
 async function appSessionIdentityFromWebSocketRequest(
@@ -3989,8 +4019,12 @@ async function routePeopleDirectory(request: Request, env: Env): Promise<Respons
   try {
     const directory = parsePeopleDirectory(env.NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON);
     const access = await directoryCallerAccess(env, identity, directory);
+    const roster = searchPeopleDirectory(directory, access.email, query);
+    const previous = await searchCollaborators(env, identity, query, 10 - roster.people.length);
     return json({
-      ...searchPeopleDirectory(directory, access.email, query),
+      ...roster,
+      collaboratorsEnabled: collaboratorsEnabled(env, identity),
+      people: [...roster.people, ...previous],
       ...(access.requiresReverification ? { requiresReverification: true } : {}),
     });
   } catch (error) {
@@ -3999,6 +4033,46 @@ async function routePeopleDirectory(request: Request, env: Env): Promise<Respons
     }
     throw error;
   }
+}
+
+async function routeHiddenPeople(request: Request, env: Env, id: string | null): Promise<Response> {
+  if (request.method !== "GET") {
+    const rejection = rejectUntrustedMutationOrigin(request, env);
+    if (rejection) return rejection;
+  }
+  const identity = await authenticateRequestOrAppSessionOrResponse(request, env, "viewer");
+  if (identity instanceof Response) return identity;
+  if (isAnonymousViewer(identity)) return json({ error: "authentication required" }, 401);
+  if (request.method === "GET" && id === null) {
+    const after = new URL(request.url).searchParams.get("after");
+    if (after !== null && !validPeopleId(after))
+      return json({ error: "invalid hidden suggestion cursor" }, 400);
+    return json(await listHiddenCollaborators(env, identity, after));
+  }
+  if (request.method === "DELETE" && id !== null) {
+    if (!validPeopleId(id)) return json({ error: "invalid hidden suggestion id" }, 400);
+    await unhideCollaborator(env, identity, id);
+    return new Response(null, { status: 204 });
+  }
+  if (request.method === "POST" && id === null) {
+    let payload: unknown;
+    try {
+      payload = await request.json();
+    } catch {
+      return json({ error: "people body must be JSON" }, 400);
+    }
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      !("personId" in payload) ||
+      !validPeopleId(payload.personId)
+    ) {
+      return json({ error: "personId must be an opaque person id" }, 400);
+    }
+    const hiddenId = await hideCollaborator(env, identity, payload.personId);
+    return hiddenId ? json({ id: hiddenId }) : json({ error: "collaborator is unavailable" }, 404);
+  }
+  return json({ error: "method not allowed" }, 405);
 }
 
 async function routeNotebookInvites(
@@ -4781,7 +4855,7 @@ async function routeNotebookAcl(request: Request, env: Env, notebookId: string):
     return json({ error: "method not allowed" }, 405);
   }
 
-  const aclInput = await parseNotebookAclInput(request);
+  const aclInput = await parseNotebookAclInput(request, env, identity);
   if (aclInput instanceof Response) {
     return aclInput;
   }
@@ -5510,6 +5584,7 @@ function blobCacheKey(request: Request): Request {
 }
 
 interface NotebookAclPayload {
+  collaboratorPersonId?: unknown;
   subject_kind?: unknown;
   subjectKind?: unknown;
   subject?: unknown;
@@ -5522,12 +5597,40 @@ interface ParsedNotebookAclInput {
   scope: NotebookAclRow["scope"];
 }
 
-async function parseNotebookAclInput(request: Request): Promise<ParsedNotebookAclInput | Response> {
+async function parseNotebookAclInput(
+  request: Request,
+  env: Env,
+  identity: AuthenticatedConnection,
+): Promise<ParsedNotebookAclInput | Response> {
   let payload: NotebookAclPayload;
   try {
     payload = (await request.json()) as NotebookAclPayload;
   } catch {
     return json({ error: "ACL mutation body must be JSON" }, 400);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return json({ error: "ACL mutation body must be an object" }, 400);
+  }
+  if (payload.collaboratorPersonId !== undefined) {
+    if (
+      request.method !== "POST" ||
+      payload.subject !== undefined ||
+      payload.subject_kind !== undefined ||
+      payload.subjectKind !== undefined ||
+      !validPeopleId(payload.collaboratorPersonId) ||
+      (payload.scope !== "viewer" && payload.scope !== "editor")
+    ) {
+      return json(
+        {
+          error:
+            "collaborator selection requires only collaboratorPersonId and viewer/editor scope",
+        },
+        400,
+      );
+    }
+    const principal = await resolveCollaborator(env, identity, payload.collaboratorPersonId);
+    if (!principal) return json({ error: "collaborator is unavailable" }, 404);
+    return { subject_kind: "principal", subject: principal, scope: payload.scope };
   }
 
   const subjectKind = stringField(payload.subject_kind ?? payload.subjectKind, "subject_kind");

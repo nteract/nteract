@@ -4,8 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
 import { peopleSearchAuthKey } from "./cloud-people-search-store";
-import type { CloudDirectoryPerson } from "./people-search-types";
+import type { CloudSearchPerson } from "./people-search-types";
 import { useCloudPeopleSearch } from "./use-cloud-people-search";
+import { useCloudHiddenPeople } from "./use-cloud-hidden-people";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
 import {
   CloudSharingFactsStore,
@@ -60,7 +61,7 @@ export function CloudSharingControls({
   const [inviteEmail, setInviteEmail] = useState("");
   const [personSelection, setPersonSelection] = useState<{
     authKey: string;
-    person: CloudDirectoryPerson;
+    person: CloudSearchPerson;
   } | null>(null);
   const authKey = peopleSearchAuthKey(authState);
   const selectedPerson = personSelection?.authKey === authKey ? personSelection.person : null;
@@ -69,7 +70,15 @@ export function CloudSharingControls({
     open,
     query: selectedPerson ? "" : inviteEmail,
   });
-  const directoryPerson = peopleSearch.directoryEnabled ? selectedPerson : null;
+  const directoryPerson =
+    selectedPerson &&
+    (selectedPerson.source === "directory"
+      ? peopleSearch.directoryEnabled
+      : peopleSearch.collaboratorsEnabled)
+      ? selectedPerson
+      : null;
+  const [hiddenOpen, setHiddenOpen] = useState(false);
+  const hiddenPeople = useCloudHiddenPeople(authState, open && hiddenOpen);
   const [inviteScope, setInviteScope] = useState<CloudShareInviteScope>("viewer");
   const [formError, setFormError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -96,6 +105,7 @@ export function CloudSharingControls({
 
   useEffect(() => {
     setPersonSelection(null);
+    setHiddenOpen(false);
     setInviteEmail("");
     setFormError(null);
     setMessage(null);
@@ -206,7 +216,7 @@ export function CloudSharingControls({
     const email = normalizeShareInviteEmail(inviteEmail);
     if (!directoryPerson && !email) {
       setFormError(
-        peopleSearch.directoryEnabled
+        peopleSearch.directoryEnabled || peopleSearch.collaboratorsEnabled
           ? "Select a person or enter a full email address."
           : "Enter a valid email address.",
       );
@@ -221,7 +231,7 @@ export function CloudSharingControls({
     setMessage(null);
     try {
       const response = await fetchWithCloudPrototypeAuth(
-        invitesEndpoint,
+        directoryPerson?.source === "collaborator" ? aclEndpoint : invitesEndpoint,
         {
           method: "POST",
           headers: {
@@ -230,7 +240,9 @@ export function CloudSharingControls({
           },
           body: JSON.stringify(
             directoryPerson
-              ? { directoryPersonId: directoryPerson.id, scope: inviteScope }
+              ? directoryPerson.source === "collaborator"
+                ? { collaboratorPersonId: directoryPerson.id, scope: inviteScope }
+                : { directoryPersonId: directoryPerson.id, scope: inviteScope }
               : { email, scope: inviteScope },
           ),
         },
@@ -243,7 +255,11 @@ export function CloudSharingControls({
       setInviteEmail("");
       setPersonSelection(null);
       setMessageKind("info");
-      setMessage(`Invite created for ${directoryPerson?.displayName ?? email}.`);
+      setMessage(
+        directoryPerson?.source === "collaborator"
+          ? `${directoryPerson.displayName} can now ${inviteScope === "editor" ? "edit" : "view"} this notebook.`
+          : `Invite created for ${directoryPerson?.displayName ?? email}.`,
+      );
       await loadSharingState({ preserveMessage: true });
     } catch (error) {
       if (current()) setFormError(error instanceof Error ? error.message : String(error));
@@ -422,6 +438,24 @@ export function CloudSharingControls({
             setInviteEmail(person.displayName);
             setFormError(null);
           }}
+          onHidePerson={(person) => {
+            setPersonSelection(null);
+            void hiddenPeople.hide(person);
+          }}
+          hiddenSuggestions={
+            peopleSearch.collaboratorsEnabled || hiddenPeople.state.lastHidden
+              ? {
+                  open: hiddenOpen,
+                  state: hiddenPeople.state,
+                  onOpenChange: setHiddenOpen,
+                  onUndo: (id) => {
+                    setPersonSelection(null);
+                    void hiddenPeople.undo(id);
+                  },
+                  onLoadPage: hiddenPeople.loadPage,
+                }
+              : undefined
+          }
         />
       </PopoverContent>
     </Popover>

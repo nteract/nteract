@@ -1,10 +1,13 @@
 import {
   EMPTY,
+  BehaviorSubject,
   Subject,
   catchError,
+  combineLatest,
   defer,
   distinctUntilChanged,
   from,
+  map,
   of,
   switchMap,
   takeUntil,
@@ -15,6 +18,10 @@ import {
 import { fetchLatest, ObservableStore, stableCacheKey } from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
 import type { CloudPeopleSearchResult, CloudPeopleSearchState } from "./people-search-types";
+
+function searchEnabled(result: CloudPeopleSearchResult | undefined): boolean {
+  return result?.directoryEnabled === true || result?.collaboratorsEnabled === true;
+}
 
 export interface CloudPeopleSearchInputs {
   auth: CloudPrototypeAuthState;
@@ -81,22 +88,24 @@ function parseResult(body: unknown): CloudPeopleSearchResult {
   }
   return {
     directoryEnabled: result.directoryEnabled,
+    collaboratorsEnabled: result.collaboratorsEnabled === true,
     ...(!result.directoryEnabled && result.requiresReverification === true
       ? { requiresReverification: true }
       : {}),
-    people: result.directoryEnabled
+    people: searchEnabled(result as CloudPeopleSearchResult)
       ? result.people.slice(0, 10).flatMap((person) =>
           person &&
           typeof person.id === "string" &&
           typeof person.displayName === "string" &&
-          person.source === "directory" &&
+          ((person.source === "directory" && result.directoryEnabled) ||
+            (person.source === "collaborator" && result.collaboratorsEnabled === true)) &&
           (person.avatarUrl === null || typeof person.avatarUrl === "string")
             ? [
                 {
                   id: person.id,
                   displayName: person.displayName,
                   avatarUrl: person.avatarUrl,
-                  source: "directory" as const,
+                  source: person.source,
                 },
               ]
             : [],
@@ -110,6 +119,9 @@ export class CloudPeopleSearchStore extends ObservableStore<CloudPeopleSearchSta
   private authKey: string | null = null;
   private epoch = 0;
   private readonly invalidated$ = new Subject<void>();
+  private readonly refresh$ = new BehaviorSubject(0);
+  private readonly mutations = new Set<symbol>();
+  private capabilities: CloudPeopleSearchResult | undefined;
   private readonly cache = new Map<string, { at: number; result: CloudPeopleSearchResult }>();
 
   constructor() {
@@ -123,13 +135,37 @@ export class CloudPeopleSearchStore extends ObservableStore<CloudPeopleSearchSta
     this.epoch += 1;
     this.invalidated$.next();
     this.cache.clear();
+    this.capabilities = undefined;
+    this.mutations.clear();
     this.resetState(EMPTY_PEOPLE_SEARCH);
+  }
+
+  /** Freeze results while hide/undo is in flight so an older search cannot restore a row. */
+  beginMutation(): symbol {
+    const token = Symbol("people mutation");
+    this.mutations.add(token);
+    this.invalidate();
+    return token;
+  }
+
+  endMutation(token: symbol): void {
+    if (this.mutations.delete(token)) this.invalidate();
+  }
+
+  private invalidate(): void {
+    this.epoch += 1;
+    this.invalidated$.next();
+    this.cache.clear();
+    this.setState({ ...this.snapshot, people: [], status: "idle" });
+    this.refresh$.next(this.refresh$.value + 1);
   }
 
   activate(inputs$: Observable<CloudPeopleSearchInputs>, deps: CloudPeopleSearchDeps): () => void {
     const now = deps.now ?? Date.now;
     const subscription = fetchLatest(
-      inputs$.pipe(distinctUntilChanged(inputsEqual)),
+      combineLatest([inputs$.pipe(distinctUntilChanged(inputsEqual)), this.refresh$]).pipe(
+        map(([input]) => input),
+      ),
       (input, signal) => {
         this.syncAuth(input.auth);
         const authKey = peopleSearchAuthKey(input.auth);
@@ -139,17 +175,14 @@ export class CloudPeopleSearchStore extends ObservableStore<CloudPeopleSearchSta
           this.resetState(EMPTY_PEOPLE_SEARCH);
           return EMPTY;
         }
+        if (this.mutations.size > 0) return EMPTY;
         const current = () => !signal.aborted && epoch === this.epoch && authKey === this.authKey;
         const cached = (key: string) => {
           const entry = this.cache.get(key);
-          // Eligibility lasts for this authenticated session. Query results
-          // expire independently; a server policy change also clears them.
-          return entry && (key === "" || now() - entry.at < CACHE_TTL_MS)
-            ? entry.result
-            : undefined;
+          return entry && now() - entry.at < CACHE_TTL_MS ? entry.result : undefined;
         };
-        const known = cached("");
-        const hit = known?.directoryEnabled === false ? known : cached(query);
+        const known = this.capabilities;
+        const hit = known && !searchEnabled(known) ? known : cached(query);
         if (hit) {
           this.setState({ ...hit, authKey, query, status: "ready" });
           return EMPTY;
@@ -159,6 +192,8 @@ export class CloudPeopleSearchStore extends ObservableStore<CloudPeopleSearchSta
           query,
           status: "loading",
           directoryEnabled: known?.directoryEnabled ?? false,
+          collaboratorsEnabled: known?.collaboratorsEnabled ?? false,
+          requiresReverification: known?.requiresReverification,
           people: [],
         });
         const fetchQuery = async (search: string): Promise<CloudPeopleSearchResult | null> => {
@@ -171,7 +206,8 @@ export class CloudPeopleSearchStore extends ObservableStore<CloudPeopleSearchSta
           const body: unknown = await response.json();
           if (!current()) return null;
           const result = parseResult(body);
-          if (!result.directoryEnabled) {
+          this.capabilities = { ...result, people: [] };
+          if (!searchEnabled(result)) {
             this.cache.clear();
             this.cache.set("", { at: now(), result });
           }
@@ -188,12 +224,15 @@ export class CloudPeopleSearchStore extends ObservableStore<CloudPeopleSearchSta
             defer(() =>
               from(
                 (async () => {
-                  const eligibility = known ?? (await fetchQuery(""));
+                  const initial = known ? null : await fetchQuery("");
+                  const eligibility = known ?? initial;
                   if (!current() || !eligibility) return;
                   const result =
-                    eligibility.directoryEnabled && query && query.length <= 80
+                    searchEnabled(eligibility) && query && query.length <= 80
                       ? await fetchQuery(query)
-                      : { ...eligibility, people: [] };
+                      : !query && eligibility.collaboratorsEnabled
+                        ? (initial ?? (await fetchQuery("")))
+                        : { ...eligibility, people: [] };
                   if (!current() || !result) return;
                   this.setState({ ...result, authKey, query, status: "ready" });
                 })(),
@@ -203,11 +242,13 @@ export class CloudPeopleSearchStore extends ObservableStore<CloudPeopleSearchSta
           catchError(() => {
             if (current()) {
               this.cache.clear();
+              this.capabilities = undefined;
               this.setState({
                 authKey,
                 query,
                 status: "error",
                 directoryEnabled: known?.directoryEnabled ?? false,
+                collaboratorsEnabled: known?.collaboratorsEnabled ?? false,
                 people: [],
               });
             }
