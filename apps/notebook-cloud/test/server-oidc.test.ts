@@ -38,8 +38,13 @@ const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
 
 class SqliteD1 implements D1Database {
   readonly sqlite = new DatabaseSync(":memory:");
+  afterNextRead?: () => Promise<void>;
   prepare(sql: string): D1PreparedStatement {
-    return new SqliteD1Statement(this.sqlite.prepare(sql));
+    return new SqliteD1Statement(this.sqlite.prepare(sql), [], async () => {
+      const afterRead = this.afterNextRead;
+      this.afterNextRead = undefined;
+      await afterRead?.();
+    });
   }
   async exec(sql: string): Promise<D1Result> {
     this.sqlite.exec(sql);
@@ -63,6 +68,7 @@ class SqliteD1Statement implements D1PreparedStatement {
   constructor(
     private readonly statement: SqliteStatement,
     private readonly values: SqliteValue[] = [],
+    private readonly afterRead?: () => Promise<void>,
   ) {}
   bind(...values: D1Value[]): D1PreparedStatement {
     return new SqliteD1Statement(
@@ -74,10 +80,12 @@ class SqliteD1Statement implements D1PreparedStatement {
             ? new Uint8Array(value)
             : value,
       ),
+      this.afterRead,
     );
   }
   async first<T>(column?: string): Promise<T | null> {
     const row = this.statement.get(...this.values);
+    await this.afterRead?.();
     return ((column ? row?.[column] : row) as T | undefined) ?? null;
   }
   async run<T>(): Promise<D1Result<T>> {
@@ -118,7 +126,10 @@ function hasSessionCookie(response: Response): boolean {
     );
 }
 
-async function fixture(t: TestContext, options: { publicClient?: boolean } = {}) {
+async function fixture(
+  t: TestContext,
+  options: { publicClient?: boolean; tokenTtlSeconds?: number } = {},
+) {
   const db = new SqliteD1();
   const issuerUrl = `https://issuer-${crypto.randomUUID()}.example/auth`;
   const issuer = createLocalOidcIssuer({
@@ -127,7 +138,7 @@ async function fixture(t: TestContext, options: { publicClient?: boolean } = {})
     audience: "notebook-resource",
     users: { sub: "alice", email: "alice@example.com", name: "Alice" },
     allowRedirectUri: (uri) => uri === `${ORIGIN}/oidc`,
-    defaultTokenTtlSeconds: 300,
+    defaultTokenTtlSeconds: options.tokenTtlSeconds ?? 300,
   });
   const env: Env = {
     NOTEBOOK_ROOMS: {
@@ -154,7 +165,7 @@ async function fixture(t: TestContext, options: { publicClient?: boolean } = {})
   const calls: { grant: string; form: URLSearchParams; authorization: string | null }[] = [];
   const secrets: string[] = [CLIENT_SECRET, env.NOTEBOOK_CLOUD_APP_SESSION_SECRET!];
   const refreshTokens = new Map<string, string>();
-  let refreshFailure: "unavailable" | "invalid_grant" | undefined;
+  let refreshFailure: "unavailable" | "invalid_grant" | "auth_required" | undefined;
   let refreshGate:
     | { entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> }
     | undefined;
@@ -187,6 +198,8 @@ async function fixture(t: TestContext, options: { publicClient?: boolean } = {})
         }
         if (refreshFailure === "unavailable")
           return new Response("provider unavailable", { status: 503 });
+        if (refreshFailure === "auth_required")
+          return Response.json({ error: { code: "auth_required" } }, { status: 403 });
         const opaque = form.get("refresh_token") ?? "";
         const providerToken = refreshTokens.get(opaque);
         if (refreshFailure === "invalid_grant" || !providerToken) {
@@ -604,6 +617,126 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.equal(recovered.status, 200);
     assert.ok((await recovered.json()).session);
     assert.ok(await readCloudAppSession(f.env, request));
+  });
+
+  it("extends active idle sessions with long access tokens without refreshing their identity proof", async (t) => {
+    const f = await fixture(t, { tokenTtlSeconds: 12 * 60 * 60 });
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    const original = await readCloudAppSession(f.env, request);
+    assert.ok(original);
+    assert.ok(original.identityVerifiedAt);
+    const originalRow = f.db.sqlite.prepare("SELECT * FROM oidc_server_sessions").get()!;
+    const nearIdleExpiry = Number(originalRow.idle_expires_at) - 30;
+    t.mock.method(Date, "now", () => nearIdleExpiry * 1000);
+
+    assert.ok(await readCloudAppSession(f.env, request));
+    assert.equal(
+      f.db.sqlite.prepare("SELECT idle_expires_at FROM oidc_server_sessions").get()!
+        .idle_expires_at,
+      originalRow.idle_expires_at,
+      "the common authorization read must not slide idle expiry",
+    );
+    const response = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const updated = await readCloudAppSession(f.env, request);
+    assert.ok(updated);
+    assert.equal(updated.expiresAt, nearIdleExpiry + 6 * 60 * 60);
+    assert.equal(body.session.expires_at, updated.expiresAt);
+    assert.equal(updated.cacheKey, original.cacheKey);
+    assert.equal(updated.issuedAt, original.issuedAt);
+    assert.equal(updated.identityVerifiedAt, original.identityVerifiedAt);
+    assert.equal(updated.verifiedEmailBinding, original.verifiedEmailBinding);
+    assert.equal(
+      f.calls.length,
+      1,
+      "an unexpired long-lived access token needs no provider exchange",
+    );
+    assert.equal(
+      f.db.sqlite.prepare("SELECT idle_expires_at FROM oidc_server_sessions").get()!
+        .idle_expires_at,
+      nearIdleExpiry + 6 * 60 * 60,
+    );
+  });
+
+  it("bounds idle extension by absolute expiry and cannot resurrect an already idle-expired session", async (t) => {
+    const f = await fixture(t, { tokenTtlSeconds: 12 * 60 * 60 });
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    const originalRow = f.db.sqlite.prepare("SELECT * FROM oidc_server_sessions").get()!;
+    let current = Number(originalRow.idle_expires_at) - 30;
+    t.mock.method(Date, "now", () => current * 1000);
+    const absoluteExpiry = current + 300;
+    f.db.sqlite
+      .prepare("UPDATE oidc_server_sessions SET absolute_expires_at = ?")
+      .run(absoluteExpiry);
+    const renewed = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(renewed.status, 200);
+    assert.equal((await renewed.json()).session.expires_at, absoluteExpiry);
+    assert.equal(
+      f.db.sqlite.prepare("SELECT idle_expires_at FROM oidc_server_sessions").get()!
+        .idle_expires_at,
+      absoluteExpiry,
+    );
+
+    // Restore a later absolute bound to distinguish idle expiry from absolute expiry.
+    f.db.sqlite
+      .prepare("UPDATE oidc_server_sessions SET absolute_expires_at = ?")
+      .run(absoluteExpiry + 3600);
+    current = absoluteExpiry + 1;
+    assert.equal(await readCloudAppSession(f.env, request), null);
+    const expired = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(expired.status, 200);
+    assert.equal((await expired.json()).session, null);
+    assert.equal(hasSessionCookie(expired), false);
+    assert.equal(
+      f.db.sqlite.prepare("SELECT idle_expires_at FROM oidc_server_sessions").get()!
+        .idle_expires_at,
+      absoluteExpiry,
+    );
+    assert.equal(f.calls.length, 1);
+  });
+
+  it("does not renew or restore a session when logout races an idle extension", async (t) => {
+    const f = await fixture(t, { tokenTtlSeconds: 12 * 60 * 60 });
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    const row = f.db.sqlite.prepare("SELECT idle_expires_at FROM oidc_server_sessions").get()!;
+    t.mock.method(Date, "now", () => (Number(row.idle_expires_at) - 30) * 1000);
+    const read = deferred();
+    const resume = deferred();
+    f.db.afterNextRead = async () => {
+      read.resolve();
+      await resume.promise;
+    };
+    const pending = serverOidcSessionStatus(request, f.env, noopProfile);
+    await read.promise;
+    assert.equal((await deleteServerOidcSession(request, f.env)).status, 200);
+    assert.equal(f.countRows(), 0);
+    resume.resolve();
+    const response = await pending;
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).session, null);
+    assert.equal(hasSessionCookie(response), false);
+    assert.equal(await readCloudAppSession(f.env, request), null);
+    assert.equal(f.countRows(), 0);
+    assert.equal(f.calls.length, 1);
+  });
+
+  it("treats Anaconda auth_required as rejected refresh authority rather than a temporary outage", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    const request = f.request(undefined, sessionCookie);
+    f.expireAccess();
+    f.setRefreshFailure("auth_required");
+    const response = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).session, null);
+    assert.equal(f.countRows(), 0);
+    assert.equal(await readCloudAppSession(f.env, request), null);
+    assert.equal(hasSessionCookie(response), false);
+    assert.equal(f.calls.filter((call) => call.grant === "refresh_token").length, 1);
   });
 
   it("revokes rejected refresh grants and rejects origin/client/issuer session transplantation", async (t) => {

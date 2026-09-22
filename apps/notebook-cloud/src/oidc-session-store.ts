@@ -103,6 +103,35 @@ export async function readServerAppSession(
   return session.expiresAt > now ? session : null;
 }
 
+/** Status requests renew idle time without manufacturing new identity proof. */
+export async function touchServerSession(
+  env: ServerSessionEnvironment,
+  request: Request,
+  row: ServerSessionRow,
+  now: number,
+): Promise<ServerSessionRow | null> {
+  if (row.access_expires_at <= now || row.idle_expires_at > now + SERVER_SESSION_IDLE_SECONDS / 2)
+    return row;
+  const expiresAt = Math.min(now + SERVER_SESSION_IDLE_SECONDS, row.absolute_expires_at);
+  const session: CloudAppSession = JSON.parse(row.session_json);
+  const db = await oidcDatabase(env);
+  await db
+    .prepare(`UPDATE oidc_server_sessions SET idle_expires_at = ?, session_json = ?
+    WHERE id = ? AND generation = ? AND idle_expires_at > ? AND absolute_expires_at > ? AND idle_expires_at < ?`)
+    .bind(
+      expiresAt,
+      JSON.stringify({ ...session, expiresAt: Math.min(row.access_expires_at, expiresAt) }),
+      row.id,
+      row.generation,
+      now,
+      now,
+      expiresAt,
+    )
+    .run();
+  // Logout, refresh or another touch may have won while we were awaiting D1.
+  return loadServerSession(env, request, now);
+}
+
 export async function revokeServerSession(
   env: ServerSessionEnvironment,
   request: Request,

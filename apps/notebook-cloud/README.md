@@ -468,7 +468,8 @@ that secret requires signing in again. Do not bake it or the client secret into
 the viewer or public build artifacts.
 
 Login transactions are browser-bound and single-use for ten minutes. Sessions
-have a six-hour idle limit and a seven-day absolute limit. Provider access-token
+have a six-hour idle limit and a seven-day absolute limit. Authenticated session
+status requests extend idle time without extending the age of identity proof. Provider access-token
 expiry bounds request authorization; `/api/auth/session` refreshes near expiry
 with a database lease across Worker instances. Logout deletes the durable
 record, preventing new HTTP requests and WebSocket handshakes with that cookie.
@@ -476,6 +477,8 @@ Already-open WebSockets retain the existing room connection lifecycle; this
 change does not claim immediate revocation of established connections.
 Temporary provider failures return a retryable status without erasing session
 state; an expired refresh lease or rejected refresh grant requires sign-in.
+Failure logs include only the phase, failure category and optional provider HTTP
+status; they exclude token bodies, exception text, credentials and user claims.
 
 Server mode ignores old browser tokens and signed stateless cookies. Enable it
 first on a separate deployment, especially when changing issuer or principal

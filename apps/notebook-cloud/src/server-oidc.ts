@@ -19,15 +19,19 @@ import {
   serverSessionContext,
   serverSessionId,
   serverSessionCookie,
+  touchServerSession,
   SERVER_SESSION_COOKIE,
   SERVER_SESSION_IDLE_SECONDS,
   SERVER_SESSION_ABSOLUTE_SECONDS,
   type ServerSessionRow,
 } from "./oidc-session-store.ts";
+import { cloudLog } from "./observability.ts";
 
 const LOGIN_COOKIE = "__Host-nteract_cloud_oidc_login";
 const LOGIN_SECONDS = 600;
-const REFRESH_WINDOW_SECONDS = 60;
+// The browser checks once a minute. Leave another minute for scheduling/network
+// delay rather than waiting until a request is already about to lose authority.
+const REFRESH_WINDOW_SECONDS = 120;
 
 interface Config {
   issuer: string;
@@ -58,8 +62,28 @@ interface ProviderMetadata {
   authorization_endpoint: string;
   token_endpoint: string;
 }
-class ProviderUnavailable extends Error {}
+class ProviderUnavailable extends Error {
+  constructor(readonly status?: number) {
+    super("Provider unavailable");
+  }
+}
 class InvalidGrant extends Error {}
+
+function logFailure(event: string, phase: string, error: unknown): void {
+  // Provider bodies, exception messages, URLs, subjects and tokens never enter logs.
+  cloudLog("warn", event, {
+    phase,
+    kind:
+      error instanceof InvalidGrant
+        ? "grant_rejected"
+        : error instanceof ProviderUnavailable
+          ? "provider_unavailable"
+          : "validation_or_storage",
+    ...(error instanceof ProviderUnavailable && error.status
+      ? { provider_status: error.status }
+      : {}),
+  });
+}
 
 function configFor(env: Env, request: Request): Config {
   const issuer = env.NOTEBOOK_CLOUD_OIDC_ISSUER?.trim();
@@ -119,7 +143,7 @@ async function providerMetadata(config: Config): Promise<ProviderMetadata> {
   const response = await providerFetch(
     `${config.issuer.replace(/\/$/, "")}/.well-known/openid-configuration`,
   );
-  if (!response.ok) throw new ProviderUnavailable();
+  if (!response.ok) throw new ProviderUnavailable(response.status);
   const metadata = (await response.json()) as Record<string, unknown>;
   if (metadata.issuer !== config.issuer) throw new Error("OIDC discovery issuer mismatch");
   const endpoint = (key: string): string => {
@@ -168,6 +192,7 @@ function safeReturnTo(value: string | null, origin: string): string {
 }
 
 export async function beginServerOidcLogin(request: Request, env: Env): Promise<Response> {
+  let phase = "configuration";
   try {
     const config = configFor(env, request);
     const origin = request.headers.get("Origin");
@@ -177,7 +202,9 @@ export async function beginServerOidcLogin(request: Request, env: Env): Promise<
     ) {
       return privateResponse("Start sign-in from this notebook site.", 403);
     }
+    phase = "discovery";
     const metadata = await providerMetadata(config);
+    phase = "login_transaction";
     const db = await oidcDatabase(env);
     const now = Math.floor(Date.now() / 1000);
     const state = randomSecret(),
@@ -219,7 +246,8 @@ export async function beginServerOidcLogin(request: Request, env: Env): Promise<
       code_challenge: await secretHash(transaction.verifier),
     }).toString();
     return privateResponse(null, 302, { Location: url.href, "Set-Cookie": loginCookie(binding) });
-  } catch {
+  } catch (error) {
+    logFailure("auth.server_login.failed", phase, error);
     return privateResponse("Sign-in is temporarily unavailable. Please try again.", 503);
   }
 }
@@ -245,18 +273,24 @@ async function exchangeToken(
     params.set("client_secret", env.NOTEBOOK_CLOUD_OIDC_CLIENT_SECRET!);
   }
   const response = await providerFetch(endpoint, { method: "POST", headers, body: params });
-  if (response.status === 429 || response.status >= 500) throw new ProviderUnavailable();
+  if (response.status === 429 || response.status >= 500)
+    throw new ProviderUnavailable(response.status);
   const value = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   if (!response.ok) {
+    const code =
+      typeof value?.error === "object" && value.error !== null && "code" in value.error
+        ? value.error.code
+        : value?.error;
+    // Anaconda's production Auth Service uses auth_required for an unknown or
+    // expired refresh session. Other client/configuration errors remain retryable.
     if (
-      value?.error === "invalid_grant" ||
-      (typeof value?.error === "object" &&
-        value.error !== null &&
-        "code" in value.error &&
-        value.error.code === "invalid_grant")
+      code === "invalid_grant" ||
+      (response.status === 403 &&
+        code === "auth_required" &&
+        params.get("grant_type") === "refresh_token")
     )
       throw new InvalidGrant();
-    throw new ProviderUnavailable();
+    throw new ProviderUnavailable(response.status);
   }
   if (
     !value ||
@@ -313,8 +347,10 @@ export async function completeServerOidcLogin(
 ): Promise<Response> {
   if (request.method !== "GET") return privateResponse(null, 405);
   let response: Response;
+  let phase = "configuration";
   try {
     const config = configFor(env, request);
+    phase = "callback_transaction";
     const params = new URL(request.url).searchParams;
     const state = params.get("state"),
       code = params.get("code"),
@@ -345,7 +381,9 @@ export async function completeServerOidcLogin(
       row.sealed,
       `login:${stateHash}:${config.context}`,
     );
+    phase = "discovery";
     const metadata = await providerMetadata(config);
+    phase = "token_exchange";
     const tokens = await exchangeToken(
       env,
       config,
@@ -357,7 +395,9 @@ export async function completeServerOidcLogin(
         code_verifier: transaction.verifier,
       }),
     );
+    phase = "identity_validation";
     const verified = await validatedIdentity(env, config, tokens, transaction.nonce);
+    phase = "session_storage";
     await syncProfile(verified.identity);
     const sessionToken = randomSecret(),
       id = await serverSessionId(env, sessionToken);
@@ -391,7 +431,8 @@ export async function completeServerOidcLogin(
       Location: safeReturnTo(transaction.returnTo, config.origin),
       "Set-Cookie": serverSessionCookie(sessionToken),
     });
-  } catch {
+  } catch (error) {
+    logFailure("auth.server_callback.failed", phase, error);
     response = privateResponse(
       "Sign-in could not be completed. Return to the notebook site and try signing in again.",
       400,
@@ -412,6 +453,7 @@ export async function serverOidcSessionStatus(
     if (row && row.access_expires_at <= now + REFRESH_WINDOW_SECONDS)
       row = await refreshSession(request, env, row, syncProfile);
     const current = Math.floor(Date.now() / 1000);
+    if (row) row = await touchServerSession(env, request, row, current);
     const session: CloudAppSession | null =
       row && row.access_expires_at > current ? JSON.parse(row.session_json) : null;
     const response = privateResponse(
@@ -438,7 +480,8 @@ export async function serverOidcSessionStatus(
       );
     else response.headers.append("Set-Cookie", serverSessionCookie("", 0));
     return response;
-  } catch {
+  } catch (error) {
+    logFailure("auth.server_session.failed", "session_renewal", error);
     return privateResponse(
       JSON.stringify({ error: "Sign-in renewal is temporarily unavailable" }),
       503,
@@ -529,6 +572,7 @@ async function refreshSession(
     return saved ? loadServerSession(env, request, refreshedAt) : null;
   } catch (error) {
     if (error instanceof InvalidGrant) {
+      logFailure("auth.server_session.expired", "refresh", error);
       await db
         .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
         .bind(initial.id, initial.generation, lease)
