@@ -51,7 +51,28 @@ describe("cloud app session client", () => {
     assert.equal(cloudAppSessionNeedsRenewal(null, 1_000), true);
   });
 
-  it("rejects identity-bearing status payloads", () => {
+  it("accepts only a bounded optional display name from private session status", () => {
+    for (const display_name of ["Alice Example", "a".repeat(128)]) {
+      assert.equal(
+        isCloudAppSessionStatus({
+          ok: true,
+          session: { ...session(1_800), display_name },
+        }),
+        true,
+      );
+    }
+    for (const display_name of [null, 3, {}, "", "   ", "a".repeat(129)]) {
+      assert.equal(
+        isCloudAppSessionStatus({
+          ok: true,
+          session: { ...session(1_800), display_name },
+        }),
+        false,
+      );
+    }
+  });
+
+  it("still rejects email and credential-bearing status payloads", () => {
     assert.equal(
       isCloudAppSessionStatus({
         ok: true,
@@ -71,7 +92,7 @@ describe("cloud app session client", () => {
           provider: "oidc",
           expires_at: 1_800,
           cache_key: "cache-a",
-          display_name: "Private User",
+          access_token: "private-token",
         },
       }),
       false,

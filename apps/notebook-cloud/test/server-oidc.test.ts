@@ -521,6 +521,13 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.equal(status.status, 200);
     const body = await status.json();
     assert.equal(body.session.cache_key, identity?.cacheKey);
+    assert.equal(body.session.display_name, "Alice");
+    assert.deepEqual(Object.keys(body.session).sort(), [
+      "cache_key",
+      "display_name",
+      "expires_at",
+      "provider",
+    ]);
     assert.equal(f.calls.length, 1, "reading a fresh session never exchanges tokens again");
 
     const visible =

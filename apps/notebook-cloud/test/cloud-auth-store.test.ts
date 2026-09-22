@@ -235,6 +235,63 @@ describe("CloudAuthStore hosted catalog auth projection", () => {
 });
 
 describe("CloudAuthStore OIDC refresh driver", () => {
+  it("hydrates the server display name once without provider refresh or room reconnection", async () => {
+    const scheduler = newScheduler();
+    const bootstrap = appSession({ expires_at: 100_000 });
+    let namedSession = { ...bootstrap, display_name: "Alice Example" };
+    let getCalls = 0;
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const sessions: (CloudAppSession | null)[] = [];
+    const keys: string[] = [];
+    const sessionSub = store.appSession$.subscribe((session) => sessions.push(session));
+    const keySub = store.syncAuthConnectionKey$.subscribe((key) => keys.push(key));
+    const dispose = store.activate(
+      {
+        authConfig: { oidc: { ...oidcConfig, flow: "server" }, localDev: null },
+        initialSession: bootstrap,
+      },
+      baseDeps({
+        scheduler,
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          return { ok: true, session: namedSession };
+        },
+        refreshOidcToken: async () =>
+          assert.fail("display hydration must not refresh browser tokens"),
+        establishAppSession: async () => assert.fail("display hydration must not exchange tokens"),
+      }),
+    );
+    const connectionKeys = [...keys];
+    assert.equal(
+      store.appSessionSnapshot.session,
+      bootstrap,
+      "bootstrap remains usable while hydration is pending",
+    );
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+    assert.equal(getCalls, 1);
+    assert.equal(store.appSessionSnapshot.session?.display_name, "Alice Example");
+    assert.equal(sessions.length, 3, "the name-only change must reach subscribers");
+    assert.deepEqual(keys, connectionKeys);
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(getCalls, 1);
+
+    namedSession = { ...namedSession };
+    store.refreshAppSessionStatus();
+    await drainMicrotasks();
+    assert.equal(sessions.length, 3, "equivalent display metadata remains deduplicated");
+    namedSession = { ...namedSession, display_name: "Alice Updated" };
+    store.refreshAppSessionStatus();
+    await drainMicrotasks();
+    assert.equal(store.appSessionSnapshot.session?.display_name, "Alice Updated");
+    assert.equal(sessions.length, 4);
+    assert.deepEqual(keys, connectionKeys);
+    sessionSub.unsubscribe();
+    keySub.unsubscribe();
+    dispose();
+  });
+
   it("ignores legacy tokens and every browser refresh trigger for server sessions", async () => {
     const scheduler = newScheduler();
     const focus$ = new Subject<void>();

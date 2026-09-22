@@ -456,7 +456,15 @@ export class CloudAuthStore {
       ).subscribe(() => this.renewIfNeeded()),
     );
 
-    if (!cloudAppSessionIsFresh(config.initialSession, this.nowSeconds())) {
+    // HTML bootstrap intentionally omits personal profile fields. Hydrate a
+    // fresh server session once through the private status API. Sessions already
+    // in their renewal window use the existing boot timer's GET instead.
+    const hydrateServerDisplay =
+      this.authConfig.oidc?.flow === "server" &&
+      config.initialSession &&
+      !config.initialSession.display_name &&
+      !cloudAppSessionNeedsRenewal(config.initialSession, this.nowSeconds());
+    if (hydrateServerDisplay || !cloudAppSessionIsFresh(config.initialSession, this.nowSeconds())) {
       this._appSessionFetch$.next();
     }
 

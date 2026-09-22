@@ -547,6 +547,7 @@ export async function serverOidcSessionStatus(
               provider: session.provider,
               expires_at: session.expiresAt,
               cache_key: session.cacheKey,
+              ...(session.displayName ? { display_name: session.displayName } : {}),
             }
           : null,
       }),
