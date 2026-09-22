@@ -44,6 +44,7 @@ for (const deliverInitialFrames of [true, false]) {
       const originalWebSocket = globalThis.WebSocket;
       const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
       const results: Array<{ type: number; changed: boolean; replies: number }> = [];
+      const replayedFrameTypes: number[] = [];
       let runtime: CloudSyncRuntime | undefined;
       let releasePersistence!: () => void;
       const persistenceGate = new Promise<void>((resolve) => {
@@ -125,6 +126,18 @@ for (const deliverInitialFrames of [true, false]) {
           }),
           runtimedWasmModulePath: "/runtime.js",
           runtimedWasmPath: "/runtime.wasm",
+          onTransportCreated: (transport) => {
+            const register = transport.onFrame.bind(transport);
+            t.mock.method(transport, "onFrame", (listener: (frame: number[]) => void) => {
+              let registering = true;
+              const unsubscribe = register((frame) => {
+                if (registering) replayedFrameTypes.push(frame[0]);
+                listener(frame);
+              });
+              registering = false;
+              return unsubscribe;
+            });
+          },
           persistence: {
             loadPersisted: async () => {
               await persistenceGate;
@@ -169,6 +182,15 @@ for (const deliverInitialFrames of [true, false]) {
         await drainMicrotasks();
         releasePersistence();
         runtime = await pending;
+        assert.deepEqual(
+          replayedFrameTypes,
+          deliverInitialFrames
+            ? initial.outbound
+                .filter((frame) => frame.peer_id === PEER)
+                .map((frame) => frame.frame_type)
+            : [],
+          "the regression must exercise synchronous replay, not later frame arrival",
+        );
         const caughtUpWhenAttached = runtime.handle.notebook_doc_caught_up();
         let stalled = false;
         heal = new SyncHealScheduler({
