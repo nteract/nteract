@@ -59,3 +59,21 @@ that operation and never repeats its POST after an uncertain response.
 Use **Re-run all jobs** after resolving a failed run so the build and deployment
 belong to the same attempt. If capacity is exhausted, close an unused preview PR
 or ask an operator to free a slot before rerunning.
+
+## Using a preview
+
+For an eligible PR targeting `main`, opening or reopening the PR starts the
+**PR preview** workflow. Its authorization job runs before the application build.
+The deployment job reports readiness and links to `https://pr-N.runtimed.run`,
+where `N` is the PR number. The job summary and GitHub deployment environment also
+link to that URL. Sign in normally to use the preview.
+
+Pushing to the same PR updates the existing preview at the same URL. An older
+run cannot deploy after its source head becomes stale. Closing or merging the PR
+withdraws the preview and its login registration; notebook data is retained for
+an operator or a later reopen. Other PR previews remain separate.
+
+If the workflow fails, check the failed job and its summary to distinguish
+authorization, build, capacity, and deployment failures. After fixing the cause,
+use **Re-run all jobs**. A failed or skipped deployment does not mean the latest
+source revision is live, even if the URL still serves an earlier successful build.
