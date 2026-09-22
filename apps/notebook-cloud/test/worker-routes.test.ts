@@ -709,6 +709,131 @@ describe("Worker artifact routes", () => {
     assert.match(serverTiming, /(^|, )total;dur=\d+/);
   });
 
+  it("enriches UserInfo profiles without losing old notebooks or sessions during an outage", async (t) => {
+    const issuer = "https://userinfo-sessions.auth.test";
+    const principal = "user:anaconda:userinfo-session-user";
+    const signed = await oidcTokenFixture({
+      subject: "userinfo-session-user",
+      tokenIssuer: issuer,
+    });
+    const retry = await oidcTokenFixture({ subject: "userinfo-session-user", tokenIssuer: issuer });
+    const env = fakeEnv({
+      ...signed.env,
+      NOTEBOOK_CLOUD_OIDC_ISSUER: issuer,
+      NOTEBOOK_CLOUD_OIDC_USERINFO: "true",
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "before-userinfo");
+    env.DB.notebooks.get("before-userinfo")!.owner_principal = principal;
+    seedAcl(env, { notebookId: "before-userinfo", subject: principal, scope: "owner" });
+    seedNotebook(env, "invited-with-userinfo");
+    seedPendingInvite(env, {
+      id: "userinfo-invite",
+      notebookId: "invited-with-userinfo",
+      email: "userinfo@example.test",
+      providerHint: null,
+      scope: "editor",
+    });
+    const fetch = t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) =>
+      Response.json(
+        String(input).endsWith("openid-configuration")
+          ? { issuer, userinfo_endpoint: `${issuer}/userinfo` }
+          : {
+              sub: "userinfo-session-user",
+              email: "userinfo@example.test",
+              email_verified: true,
+              name: "UserInfo Person",
+            },
+      ),
+    );
+    const cookie = await oidcAppSessionCookie(env, signed.token);
+    const account = await canonicalAccountPrincipalForProfile({
+      provider: "oidc",
+      principalNamespace: "user:anaconda",
+      email: "userinfo@example.test",
+      emailVerified: true,
+    });
+    assert.ok(account);
+    assert.equal(env.DB.accountLinks.get(principal)?.canonical_principal, account);
+    assert.equal(env.DB.notebooks.get("before-userinfo")?.owner_principal, account);
+    assert.ok(
+      env.DB.acl.some(
+        (row) =>
+          row.notebook_id === "before-userinfo" && row.subject === account && row.scope === "owner",
+      ),
+    );
+    assert.equal(env.DB.invites.get("userinfo-invite")?.status, "accepted");
+    const profile = structuredClone(env.DB.profiles.get(principal));
+    assert.equal(profile?.display_name, "UserInfo Person");
+    assert.equal(profile?.email_verified, 1);
+
+    fetch.mock.mockImplementation(
+      async () => new Response("provider unavailable", { status: 503 }),
+    );
+    // A different, valid token forces fresh enrichment; an outage must return
+    // before profile synchronization or issuing/replacing a browser cookie.
+    env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON = retry.env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON;
+    const failed = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${retry.token}`,
+          Origin: "https://cloud.test",
+          Cookie: cookie,
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(failed.status, 503);
+    assert.equal(failed.headers.get("Set-Cookie"), null);
+    assert.deepEqual(env.DB.profiles.get(principal), profile);
+    assert.equal(env.DB.notebooks.get("before-userinfo")?.owner_principal, account);
+    const fetchCount = fetch.mock.callCount();
+    const listing = await worker.fetch(
+      new Request("https://cloud.test/api/n", { headers: { Cookie: cookie } }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(listing.status, 200);
+    const body = (await listing.json()) as { notebooks: { notebook_id: string; scope: string }[] };
+    assert.deepEqual(body.notebooks.map((row) => [row.notebook_id, row.scope]).sort(), [
+      ["before-userinfo", "owner"],
+      ["invited-with-userinfo", "editor"],
+    ]);
+    assert.equal(fetch.mock.callCount(), fetchCount);
+  });
+
+  it("does not link accounts or accept invites for an unverified UserInfo email", async (t) => {
+    const issuer = "https://userinfo-unverified.auth.test";
+    const signed = await oidcTokenFixture({ subject: "unverified-userinfo", tokenIssuer: issuer });
+    const env = fakeEnv({
+      ...signed.env,
+      NOTEBOOK_CLOUD_OIDC_ISSUER: issuer,
+      NOTEBOOK_CLOUD_OIDC_USERINFO: "true",
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    seedNotebook(env, "unverified-invite");
+    seedPendingInvite(env, {
+      id: "unverified-userinfo-invite",
+      notebookId: "unverified-invite",
+      email: "unverified@example.test",
+      providerHint: null,
+      scope: "editor",
+    });
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) =>
+      Response.json(
+        String(input).endsWith("openid-configuration")
+          ? { issuer, userinfo_endpoint: `${issuer}/userinfo` }
+          : { sub: "unverified-userinfo", email: "unverified@example.test", email_verified: false },
+      ),
+    );
+    await oidcAppSessionCookie(env, signed.token);
+    assert.equal(env.DB.profiles.get("user:anaconda:unverified-userinfo")?.email_verified, 0);
+    assert.equal(env.DB.accountLinks.has("user:anaconda:unverified-userinfo"), false);
+    assert.equal(env.DB.invites.get("unverified-userinfo-invite")?.status, "pending");
+  });
+
   it("reads app session cookie status without exposing identity credentials", async () => {
     const { env: oidcEnv, token } = await oidcTokenFixture({
       subject: "session-status-user",

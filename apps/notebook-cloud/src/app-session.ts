@@ -1,4 +1,5 @@
 import type { AuthenticatedConnection } from "./identity.ts";
+import { normalizeInviteEmail } from "./sharing.ts";
 
 export interface AppSessionEnvironment {
   NOTEBOOK_CLOUD_APP_SESSION_SECRET?: string;
@@ -9,6 +10,8 @@ export interface CloudAppSession {
   displayName?: string;
   expiresAt: number;
   issuedAt: number;
+  identityVerifiedAt?: number;
+  verifiedEmailBinding?: string;
   principal: string;
   principalNamespace: string;
   provider: "oidc";
@@ -18,6 +21,8 @@ interface CloudAppSessionPayload {
   display_name?: string;
   exp: number;
   iat: number;
+  identity_verified_at?: number;
+  verified_email_binding?: string;
   ns: string;
   principal: string;
   provider: "oidc";
@@ -28,6 +33,7 @@ interface CloudAppSessionPayload {
 export const NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME = "__Host-nteract_cloud_app_session";
 export const NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH = 128;
 export const NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS = 6 * 60 * 60;
+export const NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS = 6 * 60 * 60;
 export const NOTEBOOK_CLOUD_APP_SESSION_SECRET_MIN_LENGTH = 32;
 
 const SESSION_SIGNING_ALGORITHM = { name: "HMAC", hash: "SHA-256" };
@@ -53,6 +59,7 @@ export async function createCloudAppSessionCookie(
     iat: nowSeconds,
     exp: nowSeconds + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
     sid: crypto.randomUUID(),
+    ...(await verifiedEmailProof(env, identity, nowSeconds)),
     ...(displayName ? { display_name: displayName } : {}),
   };
   const value = await signCloudAppSession(env, payload);
@@ -80,6 +87,13 @@ export async function appSessionRenewalCookie(
     iat: nowSeconds,
     exp: nowSeconds + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
     sid: crypto.randomUUID(),
+    // Cookie renewal extends notebook access, never the age of identity proof.
+    ...(session.identityVerifiedAt !== undefined && session.verifiedEmailBinding
+      ? {
+          identity_verified_at: session.identityVerifiedAt,
+          verified_email_binding: session.verifiedEmailBinding,
+        }
+      : {}),
     ...(session.displayName ? { display_name: session.displayName } : {}),
   };
   const value = await signCloudAppSession(env, payload);
@@ -112,8 +126,92 @@ export async function readCloudAppSession(
     principalNamespace: payload.ns,
     issuedAt: payload.iat,
     expiresAt: payload.exp,
+    ...(validIdentityProof(payload, nowSeconds)
+      ? {
+          identityVerifiedAt: payload.identity_verified_at,
+          verifiedEmailBinding: payload.verified_email_binding,
+        }
+      : {}),
     ...(payload.display_name ? { displayName: payload.display_name } : {}),
   };
+}
+
+/** Stronger proof for profile-sensitive features, independent of notebook session renewal. */
+export async function appSessionHasFreshVerifiedEmail(
+  env: AppSessionEnvironment,
+  identity: AuthenticatedConnection,
+  email: string,
+  nowSeconds = currentEpochSeconds(),
+): Promise<boolean> {
+  const { identityVerifiedAt, verifiedEmailBinding } = identity.metadata;
+  if (
+    identity.metadata.provider !== "app-session" ||
+    !Number.isSafeInteger(identityVerifiedAt) ||
+    identityVerifiedAt === undefined ||
+    identityVerifiedAt <= 0 ||
+    identityVerifiedAt > nowSeconds ||
+    nowSeconds - identityVerifiedAt >= NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS ||
+    !verifiedEmailBinding
+  )
+    return false;
+  try {
+    const expected = await verifiedEmailBindingBytes(env, identity, email, identityVerifiedAt);
+    const actual = base64UrlDecodeBytes(verifiedEmailBinding);
+    return actual !== null && timingSafeBytesEqual(expected, actual);
+  } catch {
+    return false;
+  }
+}
+
+async function verifiedEmailProof(
+  env: AppSessionEnvironment,
+  identity: AuthenticatedConnection,
+  nowSeconds: number,
+): Promise<Pick<CloudAppSessionPayload, "identity_verified_at" | "verified_email_binding">> {
+  if (identity.metadata.emailVerified !== true || !identity.metadata.email) return {};
+  let email: string;
+  try {
+    email = normalizeInviteEmail(identity.metadata.email);
+  } catch {
+    return {};
+  }
+  return {
+    identity_verified_at: nowSeconds,
+    verified_email_binding: base64UrlEncodeBytes(
+      await verifiedEmailBindingBytes(env, identity, email, nowSeconds),
+    ),
+  };
+}
+
+function verifiedEmailBindingBytes(
+  env: AppSessionEnvironment,
+  identity: AuthenticatedConnection,
+  email: string,
+  verifiedAt: number,
+): Promise<Uint8Array> {
+  return hmacSha256(
+    env,
+    JSON.stringify([
+      "app-session-verified-email:v1",
+      "oidc",
+      identity.metadata.principalNamespace,
+      identity.principal,
+      normalizeInviteEmail(email),
+      verifiedAt,
+    ]),
+  );
+}
+
+function validIdentityProof(payload: CloudAppSessionPayload, nowSeconds: number): boolean {
+  return (
+    Number.isSafeInteger(payload.identity_verified_at) &&
+    payload.identity_verified_at !== undefined &&
+    payload.identity_verified_at > 0 &&
+    payload.identity_verified_at <= payload.iat &&
+    payload.identity_verified_at <= nowSeconds &&
+    typeof payload.verified_email_binding === "string" &&
+    /^[A-Za-z0-9_-]{43}$/.test(payload.verified_email_binding)
+  );
 }
 
 async function signCloudAppSession(

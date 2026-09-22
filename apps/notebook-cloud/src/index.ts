@@ -1211,6 +1211,12 @@ function appSessionConnectionIdentity(
       transport: "app-session-cookie",
       principalNamespace: session.principalNamespace,
       ...(session.displayName ? { displayName: session.displayName } : {}),
+      ...(session.identityVerifiedAt !== undefined
+        ? { identityVerifiedAt: session.identityVerifiedAt }
+        : {}),
+      ...(session.verifiedEmailBinding
+        ? { verifiedEmailBinding: session.verifiedEmailBinding }
+        : {}),
     },
   };
 }
