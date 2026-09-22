@@ -48,7 +48,7 @@ export function HiddenPeoplePanel({
         <section aria-label="Hidden suggestions">
           <p className="mb-2">
             Hiding stops prior collaborator suggestions in both directions. Notebook access and the
-            company directory are unchanged. Undo removes only the suggestion you hid.
+            company directory are unchanged. Undo reverses only your own hide.
           </p>
           {state.status === "loading" ? <p role="status">Loading hidden suggestions…</p> : null}
           {state.status === "ready" && state.hidden.length === 0 ? (
