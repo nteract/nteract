@@ -87,7 +87,7 @@ describe("cloud live sync", () => {
       },
     });
 
-    assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
+    assert.deepEqual(calls, ["resetForBootstrap", "start", "flush"]);
   });
 
   it("uses the same bootstrap exchange for passive viewer sync", () => {
@@ -105,7 +105,7 @@ describe("cloud live sync", () => {
       },
     });
 
-    assert.deepEqual(calls, ["start", "resetForBootstrap", "flush"]);
+    assert.deepEqual(calls, ["resetForBootstrap", "start", "flush"]);
   });
 
   it("treats rejected materialized sync-divergence frames as recoverable bootstrap failures", () => {

@@ -58,6 +58,7 @@ import {
   cloudInstantPaintPrincipalMatcher,
   cloudInstantPaintStorageOptions,
   cloudNotebookHandleCaughtUp,
+  observeCloudNotebookCatchUp,
   resolveCloudInstantPaintHandle,
   runCloudInstantPaint,
   shouldDisplayEmptyLiveNotebook,
@@ -1488,8 +1489,10 @@ export function useCloudViewerSession({
           // the room's advertised heads, run one full materialization so
           // live truth INCLUDING EMPTINESS displaces painted or preserved
           // cells (see the zero-cell guard above).
-          liveRuntime.engine.notebookSyncApplied$.subscribe(() => {
-            const caughtUp = cloudNotebookHandleCaughtUp(liveRuntime.handle);
+          observeCloudNotebookCatchUp(
+            liveRuntime.engine.notebookSyncApplied$,
+            liveRuntime.handle,
+          ).subscribe((caughtUp) => {
             // Confirmation is just another sync: caught_up === true means
             // the previous exchange provably landed — it settles the heal
             // loop (and clears a standing stall notice).
