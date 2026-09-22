@@ -17,6 +17,7 @@ import {
   serverOidcSessionStatus,
 } from "../src/server-oidc.ts";
 import { SERVER_SESSION_COOKIE } from "../src/oidc-session-store.ts";
+import { AuthError } from "../src/identity.ts";
 
 // The repository's Node 20 type definitions predate node:sqlite, while the
 // Node 22 test runtime provides it. This adapter executes actual SQLite SQL;
@@ -170,6 +171,7 @@ async function fixture(
     | { entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> }
     | undefined;
   let tamperVerifier = false;
+  let transformTokens: ((tokens: Record<string, string | number>) => Promise<void>) | undefined;
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     assert.equal(
@@ -226,6 +228,7 @@ async function fixture(
       refreshTokens.set(opaque, String(tokens.refresh_token));
       tokens.refresh_token = opaque;
       secrets.push(String(tokens.access_token), String(tokens.id_token), opaque);
+      await transformTokens?.(tokens);
       return Response.json(tokens);
     }
     const response = await issuer.handle(request);
@@ -299,6 +302,10 @@ async function fixture(
     login,
     countRows,
     expireAccess,
+    mintToken: issuer.mintToken,
+    setTokenTransform(transform: typeof transformTokens) {
+      transformTokens = transform;
+    },
     setRefreshFailure(value: typeof refreshFailure) {
       refreshFailure = value;
     },
@@ -313,6 +320,128 @@ async function fixture(
 }
 
 describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
+  it("logs only static reasons for rejected provider identity proofs", async (t) => {
+    const f = await fixture(t);
+    const records: Record<string, unknown>[] = [];
+    t.mock.method(console, "warn", (_prefix: unknown, record: Record<string, unknown>) => {
+      records.push(record);
+    });
+    for (const reason of [
+      "id_token_missing",
+      "id_token_nonce_invalid",
+      "id_token_audience_invalid",
+      "id_token_issuer_invalid",
+      "id_token_expiry_invalid",
+      "token_subject_mismatch",
+      "token_signature_invalid",
+    ]) {
+      const started = await f.start();
+      const nonce = started.authorizationUrl.searchParams.get("nonce")!;
+      const sensitiveSubject = "private-provider-subject";
+      f.setTokenTransform(async (tokens) => {
+        if (reason === "id_token_missing") {
+          delete tokens.id_token;
+          return;
+        }
+        if (reason === "token_signature_invalid") {
+          const pieces = String(tokens.id_token).split(".");
+          pieces[2] = (pieces[2]!.startsWith("A") ? "B" : "A") + pieces[2]!.slice(1);
+          tokens.id_token = pieces.join(".");
+          return;
+        }
+        tokens.id_token = await f.mintToken(
+          {
+            sub: reason === "token_subject_mismatch" ? sensitiveSubject : "alice",
+            aud: reason === "id_token_audience_invalid" ? "wrong-private-client" : CLIENT_ID,
+            nonce: reason === "id_token_nonce_invalid" ? "wrong-private-nonce" : nonce,
+            ...(reason === "id_token_issuer_invalid"
+              ? { iss: "https://private-issuer.example" }
+              : {}),
+          },
+          { ttlSeconds: reason === "id_token_expiry_invalid" ? -180 : 300 },
+        );
+      });
+      const callback = await f.authorize(started.authorizationUrl);
+      assert.equal((await f.finish(callback, started.cookie)).status, 400);
+      const record = records.at(-1)!;
+      assert.equal(record.event, "auth.server_callback.failed");
+      assert.equal(record.phase, "identity_validation");
+      assert.equal(record.kind, "validation_or_storage");
+      assert.equal(record.reason, reason);
+      assert.equal(f.countRows(), 0);
+      const logged = JSON.stringify(record);
+      for (const secret of [
+        ...f.secrets,
+        nonce,
+        sensitiveSubject,
+        callback.href,
+        "wrong-private-client",
+        "wrong-private-nonce",
+        "https://private-issuer.example",
+      ])
+        assert.equal(logged.includes(secret), false);
+    }
+  });
+
+  it("classifies a UserInfo subject rejection without logging its response claims", async (t) => {
+    const f = await fixture(t);
+    f.env.NOTEBOOK_CLOUD_OIDC_USERINFO = "true";
+    const records: Record<string, unknown>[] = [];
+    t.mock.method(console, "warn", (_prefix: unknown, record: Record<string, unknown>) => {
+      records.push(record);
+    });
+    const original = globalThis.fetch;
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      new URL(String(input)).pathname.endsWith("/userinfo")
+        ? Response.json({ sub: "private-different-subject", email: "private-person@example.com" })
+        : original(input, init),
+    );
+    const started = await f.start();
+    const callback = await f.authorize(started.authorizationUrl);
+    assert.equal((await f.finish(callback, started.cookie)).status, 400);
+    const record = records.at(-1)!;
+    assert.equal(record.phase, "identity_validation");
+    assert.equal(record.reason, "userinfo_subject_invalid");
+    assert.equal(f.countRows(), 0);
+    assert.doesNotMatch(
+      JSON.stringify(record),
+      /private-different-subject|private-person@example.com/,
+    );
+  });
+
+  it("never logs arbitrary exception messages or matches a secret-bearing message prefix", async (t) => {
+    const f = await fixture(t);
+    const records: Record<string, unknown>[] = [];
+    t.mock.method(console, "warn", (_prefix: unknown, record: Record<string, unknown>) => {
+      records.push(record);
+    });
+    const privateText = "token=private-bearer profile=private-person@example.com";
+    for (const error of [
+      new Error(`OIDC ID token nonce is invalid: ${privateText}`),
+      new AuthError(`OIDC token contains invalid JSON: ${privateText}`, 401),
+    ]) {
+      const started = await f.start();
+      const callback = await f.authorize(started.authorizationUrl);
+      const response = await completeServerOidcLogin(
+        new Request(callback, { headers: { Cookie: started.cookie } }),
+        f.env,
+        async () => {
+          throw error;
+        },
+      );
+      assert.equal(response.status, 400);
+      const record = records.at(-1)!;
+      assert.equal(record.phase, "session_storage");
+      assert.equal(
+        record.reason,
+        error instanceof AuthError ? "oidc_auth_validation_failed" : undefined,
+      );
+      assert.equal(JSON.stringify(record).includes(privateText), false);
+      assert.equal(JSON.stringify(record).includes(error.message), false);
+      assert.equal(f.countRows(), 0);
+    }
+  });
+
   it("rejects discovery redirects and returns a readable private error", async (t) => {
     const f = await fixture(t);
     const redirected = t.mock.method(

@@ -1,11 +1,13 @@
 import type { Env } from "./cloudflare-types.ts";
 import { createServerAppSession, type CloudAppSession } from "./app-session.ts";
 import {
+  AuthError,
   authenticateOidcRequest,
   encodePrincipalComponent,
   verifyOidcIdToken,
   type AuthenticatedConnection,
 } from "./identity.ts";
+import { OidcUserInfoError } from "./oidc-userinfo.ts";
 import {
   cookieValue,
   conditionalSessionUpdate,
@@ -69,8 +71,69 @@ class ProviderUnavailable extends Error {
 }
 class InvalidGrant extends Error {}
 
+// Match only complete, source-owned messages. Prefix matching or logging an
+// exception itself could expose a token, provider response, or identity claim.
+const VALIDATION_FAILURE_REASONS = new Map<string, string>([
+  ["Missing ID token", "id_token_missing"],
+  ["OIDC subject mismatch", "token_subject_mismatch"],
+  ["OIDC ID token issuer is invalid", "id_token_issuer_invalid"],
+  ["OIDC ID token token use is invalid", "id_token_use_invalid"],
+  ["OIDC ID token audience is invalid", "id_token_audience_invalid"],
+  ["OIDC ID token authorized party is invalid", "id_token_authorized_party_invalid"],
+  ["OIDC ID token subject is invalid", "id_token_subject_invalid"],
+  ["OIDC ID token issued-at time is invalid", "id_token_issued_at_invalid"],
+  ["OIDC ID token expiry is invalid", "id_token_expiry_invalid"],
+  ["OIDC ID token not-before time is invalid", "id_token_not_before_invalid"],
+  ["OIDC ID token expected nonce is invalid", "id_token_expected_nonce_invalid"],
+  ["OIDC ID token nonce is invalid", "id_token_nonce_invalid"],
+  ["OIDC token must use RS256", "token_algorithm_invalid"],
+  ["OIDC token signature is invalid", "token_signature_invalid"],
+  ["OIDC signing key was not found", "token_signing_key_missing"],
+  ["OIDC token must be a JWT", "token_format_invalid"],
+  ["OIDC token contains invalid base64url JSON", "token_encoding_invalid"],
+  ["OIDC token issuer is invalid", "access_token_issuer_invalid"],
+  ["OIDC token is not an access token", "access_token_use_invalid"],
+  ["OIDC token audience is invalid", "access_token_audience_invalid"],
+  ["OIDC token authorized party is invalid", "access_token_authorized_party_invalid"],
+  ["OIDC token client is invalid", "access_token_client_invalid"],
+  ["OIDC token is expired", "access_token_expired"],
+  ["OIDC token is not valid yet", "access_token_not_before_invalid"],
+  ["OIDC token is missing sub", "access_token_subject_missing"],
+  ["OIDC token sub is too long", "access_token_subject_invalid"],
+  ["missing OIDC token", "access_token_missing"],
+  ["OIDC auth is not configured", "oidc_not_configured"],
+  ["OIDC discovery document is invalid", "discovery_document_invalid"],
+  ["OIDC discovery issuer is invalid", "discovery_issuer_invalid"],
+  ["OIDC discovery issuer mismatch", "discovery_issuer_invalid"],
+  ["OIDC discovery JWKS URL is invalid", "jwks_url_invalid"],
+  ["OIDC discovery JWKS URL must use https without credentials or fragments", "jwks_url_untrusted"],
+  ["OIDC UserInfo endpoint or trusted origin is invalid", "userinfo_endpoint_invalid"],
+  ["OIDC UserInfo endpoint must use its trusted https origin", "userinfo_endpoint_untrusted"],
+  ["OIDC access token is expired", "userinfo_access_token_expired"],
+  ["OIDC UserInfo request failed", "userinfo_request_failed"],
+  ["OIDC UserInfo request timed out", "userinfo_request_timeout"],
+  ["OIDC UserInfo response must be JSON", "userinfo_content_type_invalid"],
+  ["OIDC UserInfo response is empty", "userinfo_response_empty"],
+  ["OIDC UserInfo response is too large", "userinfo_response_too_large"],
+  ["OIDC UserInfo response is invalid", "userinfo_response_invalid"],
+  ["OIDC UserInfo subject is invalid", "userinfo_subject_invalid"],
+  ["OIDC UserInfo profile claim is invalid", "userinfo_profile_invalid"],
+  ["OIDC UserInfo email verification claim is invalid", "userinfo_email_verification_invalid"],
+  ["OIDC UserInfo email is invalid", "userinfo_email_invalid"],
+  ["OIDC UserInfo picture is invalid", "userinfo_picture_invalid"],
+]);
+
 function logFailure(event: string, phase: string, error: unknown): void {
   // Provider bodies, exception messages, URLs, subjects and tokens never enter logs.
+  const reason =
+    error instanceof Error
+      ? (VALIDATION_FAILURE_REASONS.get(error.message) ??
+        (error instanceof AuthError
+          ? "oidc_auth_validation_failed"
+          : error instanceof OidcUserInfoError
+            ? "oidc_userinfo_validation_failed"
+            : undefined))
+      : undefined;
   cloudLog("warn", event, {
     phase,
     kind:
@@ -79,6 +142,7 @@ function logFailure(event: string, phase: string, error: unknown): void {
         : error instanceof ProviderUnavailable
           ? "provider_unavailable"
           : "validation_or_storage",
+    ...(reason ? { reason } : {}),
     ...(error instanceof ProviderUnavailable && error.status
       ? { provider_status: error.status }
       : {}),
