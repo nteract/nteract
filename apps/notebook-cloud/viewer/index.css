@@ -321,7 +321,7 @@ body {
 .cloud-room-toolbar {
   min-height: 3.75rem;
   border-bottom: 1px solid #0d9488;
-  background: color-mix(in srgb, #0d9488 12%, var(--background));
+  background: tomato;
   padding-inline: 0 clamp(0.5rem, 2vw, 1rem);
 }
 
