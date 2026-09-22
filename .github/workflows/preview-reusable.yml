@@ -1,0 +1,172 @@
+name: Trusted PR preview
+
+on:
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: runtimed-preview-${{ github.repository_id }}-${{ github.event.number }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize PR preview
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    outputs:
+      pr: ${{ steps.authorize.outputs.pr }}
+      sha: ${{ steps.authorize.outputs.sha }}
+      preview_id: ${{ steps.authorize.outputs.preview_id }}
+      action: ${{ steps.authorize.outputs.action }}
+    steps:
+      - name: Check out reviewed preview helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: nteract/nteract
+          ref: ebfb17962f0f926f5f5edebc80402c93beb8dd89 # Reviewed preview helpers
+          persist-credentials: false
+          sparse-checkout: .github/preview
+      - name: Authorize the current PR revision before building
+        id: authorize
+        run: node .github/preview/authorize.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  build:
+    name: Build preview
+    needs: authorize
+    if: needs.authorize.outputs.action == 'deploy'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      bundle_sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - name: Check out reviewed packaging tools
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: nteract/nteract
+          ref: ebfb17962f0f926f5f5edebc80402c93beb8dd89 # Reviewed preview helpers
+          path: helpers
+          persist-credentials: false
+          sparse-checkout: .github/preview
+      - name: Check out the authorized application revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: nteract/nteract
+          ref: ${{ needs.authorize.outputs.sha }}
+          path: source
+          lfs: true
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          working-directory: source
+          version: '0.1.16'
+          node-version: '22'
+          run-install: false
+          cache: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: '11.9.0'
+          package_json_file: source/package.json
+          run_install: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install Rust and the WASM builder
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal --target wasm32-unknown-unknown
+          echo "CARGO=$(rustup which --toolchain 1.94.0 cargo)" >> "$GITHUB_ENV"
+          echo "RUSTC=$(rustup which --toolchain 1.94.0 rustc)" >> "$GITHUB_ENV"
+          curl --fail --location --show-error --retry 5 --output "$RUNNER_TEMP/wasm-pack.tar.gz" \
+            https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+          echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  $RUNNER_TEMP/wasm-pack.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/preview-wasm-pack"
+          tar -xzf "$RUNNER_TEMP/wasm-pack.tar.gz" -C "$RUNNER_TEMP/preview-wasm-pack" --strip-components=1
+          echo "$RUNNER_TEMP/preview-wasm-pack" >> "$GITHUB_PATH"
+      - name: Install application dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Build and export application
+        working-directory: source
+        run: |
+          pnpm --dir apps/notebook-cloud build
+          node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/preview-export"
+      - name: Package compiled code, static assets, and migrations
+        id: pack
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+        run: |
+          node helpers/.github/preview/pack.mjs "$RUNNER_TEMP/preview-export" "$SOURCE_SHA" "$RUNNER_TEMP/preview.bundle.gz"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/preview.bundle.gz" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Upload preview bundle
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: preview-bundle
+          path: ${{ runner.temp }}/preview.bundle.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+
+  deploy:
+    name: Request trusted deployment
+    needs: [authorize, build]
+    if: needs.authorize.outputs.action == 'deploy'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    environment:
+      name: runtimed-${{ needs.authorize.outputs.preview_id }}
+      url: https://${{ needs.authorize.outputs.preview_id }}.runtimed.run
+    steps:
+      - name: Check out reviewed deployment client
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: nteract/nteract
+          ref: ebfb17962f0f926f5f5edebc80402c93beb8dd89 # Reviewed preview helpers
+          persist-credentials: false
+          sparse-checkout: .github/preview
+      - name: Deploy and wait for readiness
+        run: node .github/preview/send-deployment.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.build.outputs.artifact_digest }}
+          BUNDLE_SHA256: ${{ needs.build.outputs.bundle_sha256 }}
+
+  stop:
+    name: Stop closed PR preview
+    needs: authorize
+    if: needs.authorize.outputs.action == 'stop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - name: Check out reviewed deployment client
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: nteract/nteract
+          ref: ebfb17962f0f926f5f5edebc80402c93beb8dd89 # Reviewed preview helpers
+          persist-credentials: false
+          sparse-checkout: .github/preview
+      - name: Stop preview and retain notebook data
+        run: node .github/preview/send-deployment.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
