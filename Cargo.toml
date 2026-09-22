@@ -15,6 +15,7 @@ members = [
     "crates/notebook-doc",
     "crates/runtime-doc",
     "crates/notebook-protocol",
+    "crates/notebook-room-host",
     "crates/notebook-cloud-transport",
     "crates/notebook-sync",
     "crates/nteract-identity",

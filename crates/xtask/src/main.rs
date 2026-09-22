@@ -4499,6 +4499,8 @@ const RUNTIMED_WASM_INPUTS: &[&str] = &[
     "crates/notebook-doc/Cargo.toml",
     "crates/notebook-doc/assets",
     "crates/notebook-doc/src",
+    "crates/notebook-room-host/Cargo.toml",
+    "crates/notebook-room-host/src",
     "crates/notebook-wire/Cargo.toml",
     "crates/notebook-wire/src",
     "crates/nteract-markdown-engine/Cargo.toml",

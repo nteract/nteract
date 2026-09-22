@@ -4968,6 +4968,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook-room-host"
+version = "0.1.0"
+dependencies = [
+ "automerge 0.11.0",
+ "comments-doc",
+ "hex",
+ "notebook-doc",
+ "notebook-wire",
+ "nteract-identity",
+ "runtime-doc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "notebook-sync"
 version = "0.6.6"
 dependencies = [
@@ -7861,6 +7878,7 @@ dependencies = [
  "getrandom 0.4.2",
  "hex",
  "notebook-doc",
+ "notebook-room-host",
  "notebook-wire",
  "nteract-identity",
  "nteract-markdown-wasm",
