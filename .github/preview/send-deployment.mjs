@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 import {appendFile} from "node:fs/promises";
 import {resolveRequest} from "./github.mjs";
-import {controllerClient} from "./client.mjs";
+import {controllerClient, reportProgress} from "./client.mjs";
 import {artifactFields} from "./protocol.mjs";
 
 try {
   // Resolve again on this fresh runner: authorization can change during a build.
   const request = await resolveRequest(process.env);
   if (request.action === "deploy") Object.assign(request, artifactFields(process.env));
-  await controllerClient(process.env).deploy(request);
+  const client = controllerClient(process.env);
+  await reportProgress(client, request);
+  await client.deploy(request);
+  await reportProgress(client, request);
   const message = `${request.action === "deploy" ? "Deployed" : "Stopped"} ${request.previewId} at ${request.sourceSha}`;
   console.log(message);
   if (process.env.GITHUB_STEP_SUMMARY) {

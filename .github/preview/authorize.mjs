@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import {appendFile} from "node:fs/promises";
 import {resolveRequest} from "./github.mjs";
-import {controllerClient} from "./client.mjs";
+import {controllerClient, reportProgress} from "./client.mjs";
 
 try {
   const request = await resolveRequest(process.env);
-  await controllerClient(process.env).authorize(request);
+  const client = controllerClient(process.env);
+  await reportProgress(client, request);
+  await client.authorize(request);
   const values = {pr: request.pr, sha: request.sourceSha, preview_id: request.previewId, action: request.action};
   await appendFile(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(""));
   const message = `Authorized ${request.action} for ${request.previewId} at ${request.sourceSha}`;

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {controllerClient} from "./client.mjs";
+import {controllerClient, reportProgress} from "./client.mjs";
 import {CONTROLLER} from "./protocol.mjs";
 
 const env = {ACTIONS_ID_TOKEN_REQUEST_TOKEN: "test-oidc-request-token",
   ACTIONS_ID_TOKEN_REQUEST_URL: "https://pipelines.actions.githubusercontent.com/idtoken?api-version=2"};
-const body = {action: "deploy", previewId: "pr-123", pr: 123, sourceSha: "a".repeat(40),
+const body = {repository: "nteract/nteract", action: "deploy", previewId: "pr-123", pr: 123, sourceSha: "a".repeat(40),
   runId: "42", runAttempt: "1", githubToken: "test-github-token"};
 const operationId = "11111111-2222-4333-8444-555555555555";
 
@@ -25,6 +25,81 @@ function mock(responses, options = {}) {
   }, {sleep: async () => {}, ...options});
   return {client, calls, tokenCount: () => tokenCount};
 }
+
+test("status reports use fresh OIDC and send only request identity to the fixed controller", async () => {
+  const {client, calls, tokenCount} = mock([
+    Response.json({...body, updated: true, status: "building"}),
+    Response.json({...body, updated: true, status: "ready"}),
+  ]);
+  await client.status(body);
+  await client.status(body);
+  const reports = calls.filter(call => call.url === `${CONTROLLER}/status`);
+  assert.equal(reports.length, 2);
+  assert.equal(tokenCount(), 2);
+  for (const call of reports) {
+    assert.equal(call.request.method, "POST");
+    assert.equal(call.request.redirect, "error");
+    assert.deepEqual(JSON.parse(call.request.body), body);
+  }
+});
+
+test("status accepts controller-derived outcomes and stale no-ops without claiming deployment", async () => {
+  for (const status of ["building", "deploying", "ready", "failed", "closed", "stale"]) {
+    const updated = status !== "stale";
+    const {client} = mock([Response.json({...body, updated, status})]);
+    assert.equal((await client.status(body)).status, status);
+  }
+});
+
+test("status strips artifacts and caller status or error text before forwarding credentials", async () => {
+  const {client, calls} = mock([Response.json({...body, updated: true, status: "deploying"})]);
+  await client.status({...body, artifactId: "123", status: "ready", error: "untrusted build output"});
+  assert.deepEqual(JSON.parse(calls.find(call => call.url === `${CONTROLLER}/status`).request.body), body);
+});
+
+test("status rejects substituted identity, unknown state, and a stale mutation", async () => {
+  for (const change of [{previewId: "pr-124"}, {pr: 124}, {sourceSha: "b".repeat(40)},
+    {updated: "yes"}, {status: "unknown"}, {status: "stale", updated: true}]) {
+    const {client} = mock([Response.json({...body, updated: true, status: "building", ...change})]);
+    await assert.rejects(client.status(body), /response does not match|Stale preview/);
+  }
+});
+
+test("status failure never echoes upstream content or repeats an uncertain comment request", async () => {
+  for (const response of [new Response("secret echoed by upstream", {status: 503}),
+    new Response("secret echoed by upstream", {status: 200})]) {
+    const {client, calls} = mock([response]);
+    await assert.rejects(client.status(body), error => !error.message.includes("secret"));
+    assert.equal(calls.filter(call => call.url === `${CONTROLLER}/status`).length, 1);
+  }
+});
+
+test("failed progress reporting warns safely and does not prevent authorization", async () => {
+  const warnings = [];
+  const {client, calls} = mock([new Error("secret echoed by upstream"), Response.json({...body, authorized: true})]);
+  assert.equal(await reportProgress(client, body, message => warnings.push(message)), null);
+  assert.equal((await client.authorize(body)).authorized, true);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /^::warning::Preview comment could not be updated;/);
+  assert.ok(!warnings[0].includes("secret"));
+  assert.deepEqual(calls.filter(call => call.url.startsWith(CONTROLLER)).map(call => call.url),
+    [`${CONTROLLER}/status`, `${CONTROLLER}/authorize`]);
+});
+
+test("failed pre and post progress reports do not block deployment or closed PR cleanup", async () => {
+  for (const action of ["deploy", "stop"]) {
+    const request = {...body, action};
+    const warnings = [];
+    const {client, calls} = mock([new Response(null, {status: 404}), Response.json({operationId}, {status: 202}),
+      Response.json({status: "succeeded"}), new Response("secret echoed by upstream", {status: 503})]);
+    await reportProgress(client, request, message => warnings.push(message));
+    assert.equal((await client.deploy(request)).status, "succeeded");
+    await reportProgress(client, request, message => warnings.push(message));
+    assert.equal(warnings.length, 2);
+    assert.ok(warnings.every(message => !message.includes("secret")));
+    assert.equal(calls.filter(call => call.url === `${CONTROLLER}/deploy`).length, 1);
+  }
+});
 
 test("authorization requests the fixed audience and validates the controller response", async () => {
   const {client, calls} = mock([Response.json({...body, authorized: true})]);
