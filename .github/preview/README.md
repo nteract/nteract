@@ -1,0 +1,53 @@
+# PR preview workflow helpers
+
+These dependency-free Node.js helpers support automatic previews on an existing
+celld deployment on EC2. They do not activate any GitHub event workflow by
+themselves. The private `nteract/preview-infra` controller owns deployment policy,
+credentials, domains, OAuth registration, and preview lifecycle.
+
+The publication sequence deliberately separates three reviewed revisions:
+
+1. Merge the helpers and tests (revision A).
+2. Publish a reusable workflow whose trusted jobs check out A. Review and merge
+   that workflow (revision B).
+3. Install B in the controller's reusable-workflow trust policy, then publish a
+   thin PR-event caller pinned to B. Never use a caller-supplied helper revision
+   or `github.workflow_sha` to choose trusted code: those describe the caller.
+
+The reusable workflow accepts no caller inputs or inherited secrets. It derives
+the PR number and action from the original event and checks live GitHub metadata.
+Only same-repository PRs from the explicitly configured maintainers are eligible
+for deployment: Kyle (`836375`) and Utkarsh (`107147005`). Both the original actor
+and rerun initiator must also be eligible. The controller independently enforces
+its current policy before a build and again before deployment.
+
+The source revision must equal both the event run's `head_sha` and the current
+open PR head. GitHub's `run.pull_requests[].head.sha` can change after a later push,
+so it is used only for PR linkage, never historical revision provenance. Closure
+cleanup checks the current closed state and leaves deployed-revision lookup to
+the controller; it remains available after a final undeployed push or removal of
+an author from the approved list.
+
+PR code builds on a separate GitHub-hosted runner with only repository read
+permissions. It has no OIDC token or infrastructure credentials. Trusted jobs use
+GitHub OIDC plus a short-lived `GITHUB_TOKEN` to call `deploy.runtimed.run`; no
+GitHub PAT or App private key is needed. The controller never executes scripts
+from the uploaded application bundle. Exporter `wrangler.json` files, which can
+contain generated session secrets, are excluded from the bundle.
+
+Run the focused tests with:
+
+```sh
+node --test .github/preview/*.test.mjs
+```
+
+Tests cover authorization, stale heads, immutable repository identity, closure,
+credential destinations, controller polling, and bundle restrictions. Live
+acceptance additionally requires opening a real PR, pushing a visible change,
+verifying notebook state and preview isolation, then closing the PR and checking
+cleanup. Ordinary `pull_request` events can be suppressed by merge conflicts or
+GitHub-token-generated activity; retain the operator reconciliation/cleanup path.
+
+Keep per-PR workflow cancellation disabled until controller operations support
+explicit cancellation. Once the controller accepts an operation, the sender polls
+that operation and never repeats its POST after an uncertain response.
