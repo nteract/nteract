@@ -3,7 +3,8 @@ import { Share2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fetchWithCloudPrototypeAuth, type CloudPrototypeAuthState } from "./collaborator-auth";
-import { peopleSearchAuthKey, type CloudDirectoryPerson } from "./cloud-people-search-store";
+import { peopleSearchAuthKey } from "./cloud-people-search-store";
+import type { CloudDirectoryPerson } from "./people-search-types";
 import { useCloudPeopleSearch } from "./use-cloud-people-search";
 import { appendEndpointPathSegment, cloudResponseError } from "./cloud-response";
 import {

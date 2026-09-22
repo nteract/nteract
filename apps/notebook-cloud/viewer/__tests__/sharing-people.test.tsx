@@ -40,7 +40,7 @@ function Sharing({ user, auth = AUTH }: { user: CloudUserStore; auth?: CloudProt
   );
 }
 
-function mockApi(directoryEnabled: boolean, inviteFailure = false) {
+function mockApi(directoryEnabled: boolean, inviteFailure = false, requiresReverification = false) {
   const posts: unknown[] = [];
   const requests: string[] = [];
   vi.mocked(fetchWithCloudPrototypeAuth).mockImplementation(async (input, init) => {
@@ -49,6 +49,7 @@ function mockApi(directoryEnabled: boolean, inviteFailure = false) {
     if (url.startsWith("/api/people?")) {
       return Response.json({
         directoryEnabled,
+        ...(requiresReverification ? { requiresReverification: true } : {}),
         people: directoryEnabled && url.endsWith("=ali") ? [PERSON] : [],
       });
     }
@@ -69,6 +70,27 @@ afterEach(() => {
 });
 
 describe("sharing people discovery", () => {
+  it("explains reverification without extra auth calls and clears the hint on account change", async () => {
+    const api = mockApi(false, false, true);
+    const user = new CloudUserStore();
+    const view = render(<Sharing user={user} />);
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    expect(await screen.findByText(/Sign in again to search the company directory/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Invite by email"), {
+      target: { value: "recipient@example.test" },
+    });
+    expect(screen.getByRole("button", { name: "Invite" })).toHaveProperty("disabled", false);
+    expect(api.requests.filter((url) => url.startsWith("/api/people"))).toHaveLength(1);
+    expect(
+      api.requests.every((url) => url.startsWith("/api/n/") || url.startsWith("/api/people?")),
+    ).toBe(true);
+    mockApi(false);
+    view.rerender(
+      <Sharing user={user} auth={{ ...AUTH, token: "session-b", user: "other@example.test" }} />,
+    );
+    expect(screen.queryByText(/Sign in again to search the company directory/)).toBeNull();
+  });
+
   it("keeps the default full-email invitation without directory suggestions", async () => {
     const api = mockApi(false);
     render(<Sharing user={new CloudUserStore()} />);

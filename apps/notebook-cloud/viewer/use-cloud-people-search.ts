@@ -6,8 +6,8 @@ import {
   normalizePeopleQuery,
   peopleSearchAuthKey,
   type CloudPeopleSearchInputs,
-  type CloudPeopleSearchState,
 } from "./cloud-people-search-store";
+import type { CloudPeopleSearchState } from "./people-search-types";
 import { useCloudStores } from "./cloud-stores-context";
 import { fetchWithCloudPrototypeAuth } from "./collaborator-auth";
 

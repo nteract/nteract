@@ -14,25 +14,7 @@ import {
 } from "rxjs";
 import { fetchLatest, ObservableStore, stableCacheKey } from "runtimed";
 import type { CloudPrototypeAuthState } from "./collaborator-auth";
-
-/** A roster ID is not an actor principal and must never seed actor profiles. */
-export interface CloudDirectoryPerson {
-  id: string;
-  displayName: string;
-  avatarUrl: string | null;
-  source: "directory";
-}
-
-export interface CloudPeopleSearchResult {
-  directoryEnabled: boolean;
-  people: readonly CloudDirectoryPerson[];
-}
-
-export interface CloudPeopleSearchState extends CloudPeopleSearchResult {
-  authKey: string | null;
-  query: string;
-  status: "idle" | "loading" | "ready" | "error";
-}
+import type { CloudPeopleSearchResult, CloudPeopleSearchState } from "./people-search-types";
 
 export interface CloudPeopleSearchInputs {
   auth: CloudPrototypeAuthState;
@@ -99,6 +81,9 @@ function parseResult(body: unknown): CloudPeopleSearchResult {
   }
   return {
     directoryEnabled: result.directoryEnabled,
+    ...(!result.directoryEnabled && result.requiresReverification === true
+      ? { requiresReverification: true }
+      : {}),
     people: result.directoryEnabled
       ? result.people.slice(0, 10).flatMap((person) =>
           person &&

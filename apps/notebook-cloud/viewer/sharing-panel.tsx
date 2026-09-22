@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
-import type { CloudDirectoryPerson, CloudPeopleSearchState } from "./cloud-people-search-store";
+import type { CloudDirectoryPerson, CloudPeopleSearchState } from "./people-search-types";
 import type {
   CloudShareAccessProjection,
   CloudShareAccessRow,
@@ -226,6 +226,11 @@ export function CloudSharingPanel({
               </p>
             )}
           </div>
+        ) : null}
+        {peopleSearch?.requiresReverification ? (
+          <p className="col-span-full text-xs text-muted-foreground" role="status">
+            Sign in again to search the company directory. You can still invite by full email.
+          </p>
         ) : null}
         {formError ? (
           <div

@@ -106,6 +106,19 @@ describe("explicit people directory", () => {
     assert.equal(resolveDirectoryPerson(removed, "alice@example.com", bob.id), null);
   });
 
+  it("does not reveal hidden email local parts through prefix matching", () => {
+    const directory = parsePeopleDirectory(
+      JSON.stringify({
+        allowedDomains: ["example.com"],
+        people: [{ ...bob, email: "private-address@example.com", displayName: "Robert Example" }],
+      }),
+    );
+    assert.equal(searchPeopleDirectory(directory, "alice@example.com", "rob").people.length, 1);
+    for (const query of ["pri", "private-address", "private-address@example.com"]) {
+      assert.deepEqual(searchPeopleDirectory(directory, "alice@example.com", query).people, []);
+    }
+  });
+
   it("only accepts current verified provider email, never dev identity or an unverified claim", async () => {
     const env: Env = {
       NOTEBOOK_ROOMS: {

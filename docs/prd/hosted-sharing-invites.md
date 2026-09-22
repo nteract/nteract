@@ -227,10 +227,11 @@ Only use a trusted image host: displaying its images sends browser requests to
 that host. Omitting avatars gives `null` and avoids those requests. Any invalid
 configuration fails closed as a whole; it never exposes a partial roster.
 
-`GET /api/people?q=bo` requires authentication and returns at most ten prefix
+`GET /api/people?q=bo` requires authentication and returns at most ten name-prefix
 matches with only `id`, `displayName`, `avatarUrl`, and `source: "directory"`.
 It returns no email, provider principal, login status, total count, or pagination
-cursor. Blank or one-character queries return no people and may be used to
+cursor. It does not match hidden email prefixes; full-email invitations stay
+separate from directory search. Blank or one-character queries return no people and may be used to
 check `directoryEnabled`; queries over 80 characters are rejected. The entire
 response is `Cache-Control: no-store`. An absent configuration or ineligible
 caller returns `directoryEnabled: false` and an empty result. Invalid

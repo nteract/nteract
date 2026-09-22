@@ -50,6 +50,32 @@ function setup(fetchPeople = vi.fn(async (_url: string, _signal: AbortSignal) =>
 }
 
 describe("CloudPeopleSearchStore", () => {
+  it("keeps the self-only reverification flag with no people until credentials change", async () => {
+    let requiresReverification = true;
+    const fetchPeople = vi.fn(async () =>
+      Response.json({
+        directoryEnabled: false,
+        ...(requiresReverification ? { requiresReverification: true } : {}),
+        people: [],
+      }),
+    );
+    const app = setup(fetchPeople);
+    await settle();
+    expect(app.store.snapshot.requiresReverification).toBe(true);
+    app.update({ query: "Ali" });
+    app.advance(250);
+    await settle();
+    expect(fetchPeople).toHaveBeenCalledTimes(1);
+    expect(app.store.snapshot.people).toEqual([]);
+    requiresReverification = false;
+    app.update({ auth: { ...AUTH, token: "renewed-session" } });
+    expect(app.store.snapshot.requiresReverification).toBeUndefined();
+    app.advance(250);
+    await settle();
+    expect(fetchPeople).toHaveBeenCalledTimes(2);
+    expect(app.store.snapshot.requiresReverification).toBeUndefined();
+  });
+
   it("probes disabled policy once and never searches on typing or reopen", async () => {
     const fetchPeople = vi.fn(async (_url: string) => disabled());
     const app = setup(fetchPeople);

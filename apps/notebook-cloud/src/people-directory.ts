@@ -184,8 +184,7 @@ export function searchPeopleDirectory(
           .toLowerCase()
           .split(/\s+/)
           .some((part) => part.startsWith(normalized)) ||
-        person.displayName.toLowerCase().startsWith(normalized) ||
-        person.email.startsWith(normalized),
+        person.displayName.toLowerCase().startsWith(normalized),
     )
     .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.id.localeCompare(b.id))
     .slice(0, MAX_RESULTS)
