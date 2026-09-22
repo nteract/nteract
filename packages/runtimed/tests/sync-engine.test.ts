@@ -226,6 +226,23 @@ describe("SyncEngine", () => {
   // ── Lifecycle ──────────────────────────────────────────────────
 
   describe("lifecycle", () => {
+    it("processes frames synchronously replayed when the transport listener attaches", () => {
+      const frame = [FrameType.AUTOMERGE_SYNC, 1, 2, 3];
+      vi.mocked(handle.receive_frame).mockReturnValue([syncAppliedEvent()]);
+      vi.spyOn(transport, "onFrame").mockImplementation((listener) => {
+        listener(frame);
+        return () => {};
+      });
+      const engine = createEngine();
+      const applied = vi.fn();
+      const subscription = engine.notebookSyncApplied$.subscribe(applied);
+      engine.start();
+      expect(handle.receive_frame).toHaveBeenCalledExactlyOnceWith(new Uint8Array(frame));
+      expect(applied).toHaveBeenCalledTimes(1);
+      subscription.unsubscribe();
+      engine.stop();
+    });
+
     it("starts and stops cleanly", () => {
       const engine = createEngine();
       expect(engine.running).toBe(false);
