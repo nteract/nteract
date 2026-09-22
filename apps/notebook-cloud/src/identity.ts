@@ -165,14 +165,43 @@ interface JwtPayload {
   exp?: number;
   family_name?: string;
   given_name?: string;
+  iat?: number;
   iss?: string;
   name?: string;
   nbf?: number;
+  nonce?: string;
   picture?: string;
   preferred_username?: string;
   sub?: string;
   token_use?: string;
   ver?: string;
+}
+
+/** Claims returned only after signature, client binding, and login checks pass. */
+export interface VerifiedOidcIdTokenClaims {
+  iss: string;
+  aud: string | string[];
+  sub: string;
+  iat: number;
+  exp: number;
+  nonce?: string;
+  email?: string;
+  email_verified?: boolean;
+  name?: string;
+  given_name?: string;
+  family_name?: string;
+  preferred_username?: string;
+  picture?: string;
+}
+
+export interface OidcIdTokenVerificationOptions {
+  /** Required for initial login; always supply the nonce from its transaction. */
+  nonce?: string;
+  /** Refresh responses may omit nonce, but a returned nonce must still match. */
+  allowMissingNonce?: boolean;
+  /** On refresh, require the original authenticated subject without normalization. */
+  subject?: string;
+  nowSeconds?: number;
 }
 
 const JWT_CLOCK_TOLERANCE_SECONDS = 60;
@@ -1104,6 +1133,101 @@ function normalizePrincipalNamespace(value: string | undefined): string {
 }
 
 async function verifyOidcJwt(token: string, config: OidcConfig): Promise<JwtPayload> {
+  const payload = await verifyOidcJwtSignature(token, config);
+  validateOidcJwtClaims(payload, config);
+  return payload;
+}
+
+/**
+ * ID tokens bind login to this OAuth client, independently of the resource
+ * audiences accepted by bearer authentication. Never use unverified JWT decode
+ * output to create an app session.
+ */
+export async function verifyOidcIdToken(
+  env: IdentityEnvironment,
+  token: string,
+  options: OidcIdTokenVerificationOptions = {},
+): Promise<VerifiedOidcIdTokenClaims> {
+  const config = oidcConfigFromEnv(env);
+  if (!config) throw new AuthError("OIDC auth is not configured", 503);
+  const payload = await verifyOidcJwtSignature(token, config);
+  const reject = (claim: string): never => {
+    throw new AuthError(`OIDC ID token ${claim} is invalid`, 401);
+  };
+
+  if (payload.iss !== config.issuer) reject("issuer");
+  if (payload.token_use === "access" || payload.token_use === "refresh") reject("token use");
+  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (
+    !audiences.length ||
+    !audiences.every((audience) => typeof audience === "string" && audience.length > 0) ||
+    !audiences.includes(config.clientId)
+  )
+    reject("audience");
+  if ((audiences.length > 1 || payload.azp !== undefined) && payload.azp !== config.clientId)
+    reject("authorized party");
+  if (
+    typeof payload.sub !== "string" ||
+    !payload.sub.trim() ||
+    payload.sub.length > IDENTITY_SUBJECT_MAX_LENGTH ||
+    (options.subject !== undefined && payload.sub !== options.subject)
+  )
+    reject("subject");
+
+  const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
+  if (
+    typeof payload.iat !== "number" ||
+    !Number.isSafeInteger(payload.iat) ||
+    payload.iat <= 0 ||
+    payload.iat > now + JWT_CLOCK_TOLERANCE_SECONDS
+  )
+    reject("issued-at time");
+  if (
+    typeof payload.exp !== "number" ||
+    !Number.isSafeInteger(payload.exp) ||
+    payload.exp <= now - JWT_CLOCK_TOLERANCE_SECONDS ||
+    payload.exp <= payload.iat!
+  )
+    reject("expiry");
+  if (
+    payload.nbf !== undefined &&
+    (!Number.isSafeInteger(payload.nbf) || payload.nbf > now + JWT_CLOCK_TOLERANCE_SECONDS)
+  )
+    reject("not-before time");
+  if (options.nonce !== undefined && !options.nonce) reject("expected nonce");
+  if (
+    payload.nonce !== undefined
+      ? typeof payload.nonce !== "string" || !payload.nonce || payload.nonce !== options.nonce
+      : options.nonce !== undefined && options.allowMissingNonce !== true
+  )
+    reject("nonce");
+
+  const claims: VerifiedOidcIdTokenClaims = {
+    iss: config.issuer,
+    aud: Array.isArray(payload.aud) ? [...payload.aud] : payload.aud!,
+    sub: payload.sub!,
+    iat: payload.iat!,
+    exp: payload.exp!,
+    ...(payload.nonce !== undefined ? { nonce: payload.nonce } : {}),
+  };
+  for (const key of [
+    "email",
+    "name",
+    "given_name",
+    "family_name",
+    "preferred_username",
+    "picture",
+  ] as const) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) claims[key] = value;
+  }
+  if (claims.email && typeof payload.email_verified === "boolean") {
+    claims.email_verified = payload.email_verified;
+  }
+  return claims;
+}
+
+async function verifyOidcJwtSignature(token: string, config: OidcConfig): Promise<JwtPayload> {
   const { header, payload, signingInput, signature } = decodeJwt(token, "OIDC");
   if (header.alg !== "RS256") {
     throw new AuthError("OIDC token must use RS256", 401);
@@ -1115,7 +1239,6 @@ async function verifyOidcJwt(token: string, config: OidcConfig): Promise<JwtPayl
     throw new AuthError("OIDC token signature is invalid", 401);
   }
 
-  validateOidcJwtClaims(payload, config);
   return payload;
 }
 
@@ -1344,11 +1467,9 @@ function validateOidcJwtClaims(payload: JwtPayload, config: OidcConfig): void {
     throw new AuthError("OIDC token issuer is invalid", 401);
   }
 
-  // A refresh token must not stand in for an access token. Providers that stamp
-  // `token_use` (including the local dev issuer) mark refresh tokens explicitly;
-  // a real access token carries "access" or omits the claim, so this only
-  // rejects a token that declares itself a refresh token.
-  if (payload.token_use === "refresh") {
+  // Tokens explicitly issued for refresh or login must not stand in for an
+  // access token. Providers that omit token_use remain supported.
+  if (payload.token_use === "refresh" || payload.token_use === "id") {
     throw new AuthError("OIDC token is not an access token", 401);
   }
 

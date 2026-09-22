@@ -28,6 +28,10 @@ export interface Env {
   NOTEBOOK_CLOUD_LOCAL_OIDC_TTL_SECONDS?: string;
   NOTEBOOK_CLOUD_OIDC_AUDIENCE?: string;
   NOTEBOOK_CLOUD_OIDC_CLIENT_ID?: string;
+  /** Opt-in server exchange/refresh; browser PKCE remains the default. */
+  NOTEBOOK_CLOUD_OIDC_FLOW?: string;
+  NOTEBOOK_CLOUD_OIDC_CLIENT_SECRET?: string;
+  NOTEBOOK_CLOUD_OIDC_TOKEN_AUTH_METHOD?: string;
   NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID?: string;
   NOTEBOOK_CLOUD_OIDC_ISSUER?: string;
   NOTEBOOK_CLOUD_OIDC_JWKS_JSON?: string;

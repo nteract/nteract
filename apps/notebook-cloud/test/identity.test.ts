@@ -20,8 +20,155 @@ import {
   stampTrustedIdentity,
   validateOperator,
   validatePrincipal,
+  verifyOidcIdToken,
 } from "../src/identity.ts";
 import { base64Url, oidcTokenFixture } from "./oidc-jwt-fixture.ts";
+
+describe("OIDC ID token verification", () => {
+  const now = Math.floor(Date.now() / 1000);
+  const nonce = "server-login-nonce";
+  const subject = "alice";
+  const claims = { iat: now, exp: now + 300, nonce };
+
+  it("verifies login claims without accepting arbitrary profile fields", async () => {
+    const fixture = await oidcTokenFixture({
+      subject,
+      extraPayload: {
+        ...claims,
+        name: "Alice",
+        email: "alice@example.com",
+        email_verified: true,
+        picture: { unsafe: "not a URL string" },
+        custom: "not exposed",
+      },
+    });
+    const result = await verifyOidcIdToken(fixture.env, fixture.token, { nonce, nowSeconds: now });
+    assert.deepEqual(result, {
+      iss: fixture.env.NOTEBOOK_CLOUD_OIDC_ISSUER,
+      aud: fixture.env.NOTEBOOK_CLOUD_OIDC_CLIENT_ID,
+      sub: subject,
+      ...claims,
+      name: "Alice",
+      email: "alice@example.com",
+      email_verified: true,
+    });
+  });
+
+  it("requires the client audience independently of accepted resource audiences", async () => {
+    const fixture = await oidcTokenFixture({
+      subject,
+      audience: "resource-api",
+      extraPayload: claims,
+    });
+    await assert.rejects(
+      verifyOidcIdToken(
+        { ...fixture.env, NOTEBOOK_CLOUD_OIDC_AUDIENCE: "resource-api" },
+        fixture.token,
+        { nonce, nowSeconds: now },
+      ),
+      /ID token audience is invalid/,
+    );
+  });
+
+  it("rejects invalid signatures, issuers, authorized parties and token roles", async () => {
+    const invalid = [
+      { excludeMatchingKey: true },
+      { tokenIssuer: "https://other-issuer.example" },
+      { authorizedParty: "other-client" },
+      { audience: ["notebook-cloud-oidc-client", "resource-api"] },
+      { extraPayload: { ...claims, token_use: "access" } },
+      { extraPayload: { ...claims, token_use: "refresh" } },
+    ];
+    for (const options of invalid) {
+      const fixture = await oidcTokenFixture({ subject, extraPayload: claims, ...options });
+      await assert.rejects(
+        verifyOidcIdToken(fixture.env, fixture.token, { nonce, nowSeconds: now }),
+        AuthError,
+      );
+    }
+    const fixture = await oidcTokenFixture({
+      subject,
+      audience: ["notebook-cloud-oidc-client", "resource-api"],
+      authorizedParty: "notebook-cloud-oidc-client",
+      extraPayload: claims,
+    });
+    assert.equal((await verifyOidcIdToken(fixture.env, fixture.token, { nonce })).sub, subject);
+  });
+
+  it("rejects missing, expired, future, malformed and inconsistent timestamps", async () => {
+    for (const invalid of [
+      { iat: undefined },
+      { iat: "123" },
+      { iat: now + 61 },
+      { iat: -1 },
+      { exp: now - 61 },
+      { exp: "123" },
+      { exp: now - 1, iat: now },
+      { nbf: "123" },
+      { nbf: now + 61 },
+    ]) {
+      const fixture = await oidcTokenFixture({ subject, extraPayload: { ...claims, ...invalid } });
+      await assert.rejects(
+        verifyOidcIdToken(fixture.env, fixture.token, { nonce, nowSeconds: now }),
+        AuthError,
+      );
+    }
+  });
+
+  it("requires initial nonce and checks any nonce returned on refresh", async () => {
+    for (const returnedNonce of [undefined, "wrong", 123]) {
+      const fixture = await oidcTokenFixture({
+        subject,
+        extraPayload: { ...claims, nonce: returnedNonce },
+      });
+      await assert.rejects(verifyOidcIdToken(fixture.env, fixture.token, { nonce }), /nonce/);
+      if (returnedNonce !== undefined) {
+        await assert.rejects(
+          verifyOidcIdToken(fixture.env, fixture.token, {
+            nonce,
+            allowMissingNonce: true,
+            subject,
+          }),
+          /nonce/,
+        );
+      } else {
+        assert.equal(
+          (
+            await verifyOidcIdToken(fixture.env, fixture.token, {
+              nonce,
+              allowMissingNonce: true,
+              subject,
+            })
+          ).sub,
+          subject,
+        );
+      }
+    }
+    const fixture = await oidcTokenFixture({ subject, extraPayload: claims });
+    await assert.rejects(verifyOidcIdToken(fixture.env, fixture.token), /nonce/);
+    assert.equal(
+      (
+        await verifyOidcIdToken(fixture.env, fixture.token, {
+          nonce,
+          allowMissingNonce: true,
+          subject,
+        })
+      ).sub,
+      subject,
+    );
+    await assert.rejects(
+      verifyOidcIdToken(fixture.env, fixture.token, { nonce, subject: "different-user" }),
+      /subject/,
+    );
+  });
+
+  it("rejects absent, blank and non-string subjects", async () => {
+    for (const invalidSubject of [undefined, " ", 123]) {
+      const fixture = await oidcTokenFixture({ extraPayload: { ...claims, sub: invalidSubject } });
+      await assert.rejects(verifyOidcIdToken(fixture.env, fixture.token, { nonce }), /subject/);
+    }
+  });
+});
 
 describe("dev identity", () => {
   it("uses explicit anonymous viewer auth when no dev credential is presented", () => {
@@ -937,27 +1084,29 @@ describe("OIDC identity", () => {
     );
   });
 
-  it("rejects a refresh token presented as an access bearer credential", async () => {
-    const { env, token } = await oidcTokenFixture({
-      subject: "alice",
-      extraPayload: { token_use: "refresh" },
-    });
+  it("rejects refresh and ID tokens presented as access bearer credentials", async () => {
+    for (const tokenUse of ["refresh", "id"]) {
+      const { env, token } = await oidcTokenFixture({
+        subject: "alice",
+        extraPayload: { token_use: tokenUse },
+      });
 
-    await assert.rejects(
-      () =>
-        authenticateRequestWithProviders(
-          new Request("https://cloud.test/n/demo/sync", {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          }),
-          env,
-        ),
-      (error) =>
-        error instanceof AuthError &&
-        error.status === 401 &&
-        /not an access token/.test(error.message),
-    );
+      await assert.rejects(
+        () =>
+          authenticateRequestWithProviders(
+            new Request("https://cloud.test/n/demo/sync", {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            }),
+            env,
+          ),
+        (error) =>
+          error instanceof AuthError &&
+          error.status === 401 &&
+          /not an access token/.test(error.message),
+      );
+    }
   });
 
   it("accepts OIDC tokens with a configured resource audience", async () => {

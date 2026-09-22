@@ -443,6 +443,45 @@ an anonymous viewer instead, and shows a visible diagnostic with a reset button.
 
 ## Browser app-session cookies
 
+Deployments can opt into server-managed OAuth with
+`NOTEBOOK_CLOUD_OIDC_FLOW=server`. This uses Authorization Code + PKCE through
+`/api/auth/oidc/login` and `/oidc`; discovery, token exchange, UserInfo and refresh
+run in the Worker, so the provider does not need browser CORS permission for
+each deployment. The provider must still register each callback, or an allowed
+wildcard such as `https://*.example.com/oidc`.
+
+Keep the existing issuer, client ID, audience and principal namespace settings.
+Server mode additionally requires `DB` and a strong
+`NOTEBOOK_CLOUD_APP_SESSION_SECRET` of at least 32 characters. Supply
+`NOTEBOOK_CLOUD_OIDC_CLIENT_SECRET` as a runtime secret for confidential clients;
+the default token authentication method is `client_secret_basic` when present,
+otherwise `none`. `NOTEBOOK_CLOUD_OIDC_TOKEN_AUTH_METHOD` can explicitly select
+`none`, `client_secret_basic`, or `client_secret_post`. PKCE is used in all three
+cases. The public origin must be correct behind a proxy. Discovery endpoints
+must stay on the configured issuer's origin.
+
+Migration `0009_server_oidc.sql` adds login transactions and durable sessions;
+the server also initializes these tables lazily for celld. The browser receives
+an opaque HttpOnly host cookie. PKCE verifiers and refresh tokens are encrypted
+in D1 using a purpose-separated key derived from the session secret. Rotating
+that secret requires signing in again. Do not bake it or the client secret into
+the viewer or public build artifacts.
+
+Login transactions are browser-bound and single-use for ten minutes. Sessions
+have a six-hour idle limit and a seven-day absolute limit. Provider access-token
+expiry bounds request authorization; `/api/auth/session` refreshes near expiry
+with a database lease across Worker instances. Logout deletes the durable
+record, preventing new HTTP requests and WebSocket handshakes with that cookie.
+Already-open WebSockets retain the existing room connection lifecycle; this
+change does not claim immediate revocation of established connections.
+Temporary provider failures return a retryable status without erasing session
+state; an expired refresh lease or rejected refresh grant requires sign-in.
+
+Server mode ignores old browser tokens and signed stateless cookies. Enable it
+first on a separate deployment, especially when changing issuer or principal
+namespace, since those settings determine notebook ownership. Unset the flow
+setting to retain the existing browser PKCE integration described below.
+
 `preview.runt.run` uses direct OIDC against Anaconda stage only to bootstrap a
 first-party app session. The Worker injects the issuer, client id, and redirect
 URI into the viewer shell, the browser completes an Authorization Code + PKCE

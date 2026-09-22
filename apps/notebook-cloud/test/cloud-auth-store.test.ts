@@ -235,6 +235,172 @@ describe("CloudAuthStore hosted catalog auth projection", () => {
 });
 
 describe("CloudAuthStore OIDC refresh driver", () => {
+  it("ignores legacy tokens and every browser refresh trigger for server sessions", async () => {
+    const scheduler = newScheduler();
+    const focus$ = new Subject<void>();
+    const visible$ = new Subject<boolean>();
+    const storage$ = new Subject<StorageEvent>();
+    let refreshCalls = 0;
+    let establishCalls = 0;
+    let storageReads = 0;
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+    const dispose = store.activate(
+      { authConfig: { oidc: { ...oidcConfig, flow: "server" }, localDev: null } },
+      baseDeps({
+        scheduler,
+        windowFocus$: focus$,
+        documentVisible$: visible$,
+        cloudAuthStorage$: storage$,
+        oidcStorage: {
+          ...refreshableOidcStorage(),
+          getItem: () => {
+            storageReads += 1;
+            return null;
+          },
+        },
+        refreshOidcToken: async () => {
+          refreshCalls += 1;
+          throw new Error("must not refresh a browser token");
+        },
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    await drainMicrotasks();
+    advanceBy(scheduler, 60_000);
+    focus$.next();
+    visible$.next(false);
+    visible$.next(true);
+    storage$.next({} as StorageEvent);
+    await drainMicrotasks();
+
+    assert.equal(store.authSnapshot.mode, "anonymous");
+    assert.equal(store.authSnapshot.token, null);
+    assert.equal(store.authSnapshot.oidcClaims, null);
+    assert.equal(store.renewalSnapshot.kind, "idle");
+    assert.equal(refreshCalls, 0);
+    assert.equal(establishCalls, 0);
+    assert.equal(storageReads, 0);
+    dispose();
+  });
+
+  it("renews a server session through the cookie without requiring a browser token", async () => {
+    const scheduler = newScheduler();
+    let getCalls = 0;
+    let establishCalls = 0;
+    const renewed = appSession({ expires_at: 100_000 });
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      {
+        authConfig: { oidc: { ...oidcConfig, flow: "server" }, localDev: null },
+        initialSession: appSession({ expires_at: 1_000 }),
+      },
+      baseDeps({
+        scheduler,
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          return { ok: true, session: renewed };
+        },
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+    assert.equal(getCalls, 1);
+    assert.equal(establishCalls, 0);
+    assert.equal(store.appSessionSnapshot.session, renewed);
+
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(getCalls, 1);
+    dispose();
+  });
+
+  it("retries server-session bootstrap failures on cadence without a request loop or token fallback", async () => {
+    const scheduler = newScheduler();
+    let getCalls = 0;
+    let establishCalls = 0;
+    const session = appSession({ expires_at: 100_000 });
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+    const dispose = store.activate(
+      { authConfig: { oidc: { ...oidcConfig, flow: "server" }, localDev: null } },
+      baseDeps({
+        scheduler,
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          if (getCalls <= 2) throw new Error("Unable to read app session: 503");
+          return { ok: true, session };
+        },
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    // The boot cadence tick arrives while the initial GET is still pending.
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+    assert.equal(getCalls, 1);
+    assert.equal(store.appSessionSnapshot.status, "error");
+    assert.equal(store.appSessionSnapshot.session, null);
+
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(getCalls, 2, "a failed retry must not trigger a synchronous loop");
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(getCalls, 3);
+    assert.equal(store.appSessionSnapshot.session, session);
+    assert.equal(store.appSessionSnapshot.status, "ready");
+    assert.equal(establishCalls, 0);
+    dispose();
+  });
+
+  it("keeps a server session through an outage and drops it only after a confirmed missing session", async () => {
+    const scheduler = newScheduler();
+    const focus$ = new Subject<void>();
+    const session = appSession({ expires_at: 1_000 });
+    let getCalls = 0;
+    let establishCalls = 0;
+    const store = new CloudAuthStore({ readAuthState: oidcAuth });
+    const dispose = store.activate(
+      {
+        authConfig: { oidc: { ...oidcConfig, flow: "server" }, localDev: null },
+        initialSession: session,
+      },
+      baseDeps({
+        scheduler,
+        windowFocus$: focus$,
+        readAppSessionStatus: async () => {
+          getCalls += 1;
+          if (getCalls === 1) throw new Error("Unable to read app session: 503");
+          return { ok: true, session: null };
+        },
+        establishAppSession: async () => {
+          establishCalls += 1;
+        },
+      }),
+    );
+    advanceBy(scheduler, 0);
+    await drainMicrotasks();
+    assert.equal(getCalls, 1);
+    assert.equal(store.appSessionSnapshot.session, session);
+    assert.equal(store.appSessionSnapshot.status, "error");
+
+    focus$.next();
+    await drainMicrotasks();
+    assert.equal(getCalls, 2);
+    assert.equal(store.appSessionSnapshot.session, null);
+    assert.equal(store.appSessionSnapshot.status, "ready");
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(getCalls, 2, "a confirmed missing session awaits server login");
+    assert.equal(establishCalls, 0);
+    dispose();
+  });
+
   it("refreshes on cadence and drops a trigger that lands mid-refresh (single-flight)", async () => {
     const scheduler = newScheduler();
     const focus$ = new Subject<void>();

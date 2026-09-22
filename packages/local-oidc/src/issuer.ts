@@ -112,6 +112,7 @@ interface AuthorizationCodeEntry {
   user: LocalOidcUser;
   redirectUri: string;
   codeChallenge: string | null;
+  nonce: string | null;
   expiresAt: number;
 }
 
@@ -152,18 +153,26 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
   async function issueTokenSet(
     user: LocalOidcUser,
     key: SigningKey,
+    nonce: string | null = null,
   ): Promise<LocalOidcTokenResponse> {
     const claims = profileClaims(user);
-    // This dev issuer mints one profile-bearing RS256 token and reuses it as the
-    // id_token; the refresh token carries the same claims with a longer ttl. The
-    // `token_use` claim distinguishes the two so a refresh token cannot stand in
-    // for an access token at a resource server, and an access token cannot be
-    // replayed at the refresh grant. Both consumption paths enforce it.
+    // Access tokens target the resource audience; ID tokens target this client
+    // and bind the authorization request's nonce. Refresh retains that binding.
     const accessToken = await sign({ ...claims, token_use: "access" }, accessTtl, key);
-    const refreshToken = await sign({ ...claims, token_use: "refresh" }, refreshTtl, key);
+    const nonceClaim = nonce === null ? {} : { nonce };
+    const idToken = await sign(
+      { ...claims, ...nonceClaim, aud: clientId, token_use: "id" },
+      accessTtl,
+      key,
+    );
+    const refreshToken = await sign(
+      { ...claims, ...nonceClaim, token_use: "refresh" },
+      refreshTtl,
+      key,
+    );
     return {
       access_token: accessToken,
-      id_token: accessToken,
+      id_token: idToken,
       refresh_token: refreshToken,
       token_type: "Bearer",
       expires_in: accessTtl,
@@ -205,7 +214,10 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     // Auto-grant: no login challenge, just hand back a code for the dev user.
     const user = selectUser(users, params.get("login_hint"));
     const location = new URL(redirectUri);
-    location.searchParams.set("code", issueAuthorizationCode(user, redirectUri, codeChallenge));
+    location.searchParams.set(
+      "code",
+      issueAuthorizationCode(user, redirectUri, codeChallenge, params.get("nonce")),
+    );
     const state = params.get("state");
     if (state !== null) {
       location.searchParams.set("state", state);
@@ -261,7 +273,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
           return errorResponse("invalid_grant", "code_verifier does not match", 400);
         }
       }
-      return jsonResponse(await issueTokenSet(entry.user, key));
+      return jsonResponse(await issueTokenSet(entry.user, key, entry.nonce));
     }
 
     if (grantType === "refresh_token") {
@@ -270,16 +282,18 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
         return errorResponse("invalid_request", "missing refresh_token", 400);
       }
       let user: LocalOidcUser;
+      let nonce: string | null = null;
       try {
         const { payload } = await jose.jwtVerify(refreshToken, key.verify, { issuer, audience });
         if (payload.token_use !== "refresh") {
           throw new Error("token is not a refresh token");
         }
         user = userFromClaims(payload);
+        nonce = typeof payload.nonce === "string" ? payload.nonce : null;
       } catch {
         return errorResponse("invalid_grant", "refresh_token is invalid", 400);
       }
-      return jsonResponse(await issueTokenSet(user, key));
+      return jsonResponse(await issueTokenSet(user, key, nonce));
     }
 
     return errorResponse("unsupported_grant_type", "unknown grant_type", 400);
@@ -297,9 +311,8 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     } catch {
       return unauthorized("access token is invalid");
     }
-    // userinfo takes an access token, not a refresh token. Reject a token that
-    // declares itself a refresh token so the two roles stay distinct here too.
-    if (payload.token_use === "refresh") {
+    // userinfo accepts access tokens, never ID or refresh tokens.
+    if (payload.token_use === "refresh" || payload.token_use === "id") {
       return unauthorized("access token is invalid");
     }
     return jsonResponse(userinfoClaims(payload));
@@ -392,6 +405,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
     user: LocalOidcUser,
     redirectUri: string,
     codeChallenge: string | null,
+    nonce: string | null,
   ): string {
     const now = Date.now();
     pruneExpiredAuthorizationCodes(now);
@@ -403,6 +417,7 @@ export function createLocalOidcIssuer(options: LocalOidcOptions): LocalOidcIssue
       user,
       redirectUri,
       codeChallenge,
+      nonce,
       expiresAt: now + authorizationCodeTtl * 1000,
     });
     return code;

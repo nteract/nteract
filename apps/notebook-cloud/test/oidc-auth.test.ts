@@ -47,6 +47,66 @@ describe("cloud OIDC browser auth", () => {
     assert.equal(normalizeOidcAuthConfig({ issuer: authConfig.issuer }), null);
   });
 
+  it("retains the server flow while leaving the browser default unchanged", () => {
+    assert.equal(normalizeOidcAuthConfig({ ...authConfig, flow: "server" })?.flow, "server");
+    assert.equal(normalizeOidcAuthConfig(authConfig)?.flow, undefined);
+  });
+
+  it("starts server login without reading storage, writing tokens, or contacting the provider", async () => {
+    const fail = () => {
+      assert.fail("server login must not access browser token storage or fetch the provider");
+    };
+    const url = await beginOidcLogin(
+      { ...authConfig, flow: "server" },
+      {
+        currentUrl: "https://preview.runt.run/n/demo/Notebook?mode=edit#cell-123",
+        storage: { getItem: fail, setItem: fail, removeItem: fail },
+        fetchImpl: fail,
+      },
+    );
+    assert.equal(url.origin, "https://preview.runt.run");
+    assert.equal(url.pathname, "/api/auth/oidc/login");
+    assert.equal(url.searchParams.get("return_to"), "/n/demo/Notebook?mode=edit#cell-123");
+    assert.deepEqual([...url.searchParams.keys()], ["return_to"]);
+  });
+
+  it("rejects off-origin and protocol-relative server-login return destinations", async () => {
+    for (const currentUrl of [
+      "https://other.test/n/demo",
+      "//other.test/n/demo",
+      "https://preview.runt.run//other.test/n/demo",
+      "https://preview.runt.run/\\\\other.test/n/demo",
+      "javascript:alert(1)",
+    ]) {
+      const url = await beginOidcLogin(
+        { ...authConfig, flow: "server" },
+        { currentUrl, storage: new MemoryStorage() },
+      );
+      assert.equal(url.origin, "https://preview.runt.run");
+      assert.equal(url.searchParams.get("return_to"), "/", currentUrl);
+    }
+  });
+
+  it("rejects browser callback exchange and refresh for server OIDC sessions", async () => {
+    const fail = () => {
+      assert.fail("server sessions must not access browser token storage or provider endpoints");
+    };
+    const storage = { getItem: fail, setItem: fail, removeItem: fail };
+    const config = { ...authConfig, flow: "server" as const };
+    await assert.rejects(
+      completeOidcRedirect(config, {
+        callbackUrl: "https://preview.runt.run/oidc?code=code&state=state",
+        storage,
+        fetchImpl: fail,
+      }),
+      /must be completed by the server/,
+    );
+    await assert.rejects(
+      refreshStoredOidcToken(config, { storage, fetchImpl: fail }),
+      /do not use browser token refresh/,
+    );
+  });
+
   it("builds the provider discovery URL under the issuer path", () => {
     assert.equal(
       oidcDiscoveryUrl("https://auth.stage.anaconda.com/api/auth/"),
