@@ -83,6 +83,13 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
+      # Cache only package downloads, never node_modules or application output.
+      # Keep this namespace separate from release and privileged job caches.
+      - name: Cache pnpm dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/preview-pnpm-store
+          key: nteract-pr-preview-pnpm-v1-${{ runner.os }}-${{ runner.arch }}-node22-pnpm11.9.0-${{ hashFiles('source/pnpm-lock.yaml', 'source/pnpm-workspace.yaml', 'source/.npmrc') }}
       - name: Install Rust and the WASM builder
         run: |
           rustup toolchain install 1.94.0 --profile minimal --target wasm32-unknown-unknown
@@ -94,9 +101,22 @@ jobs:
           mkdir "$RUNNER_TEMP/preview-wasm-pack"
           tar -xzf "$RUNNER_TEMP/wasm-pack.tar.gz" -C "$RUNNER_TEMP/preview-wasm-pack" --strip-components=1
           echo "$RUNNER_TEMP/preview-wasm-pack" >> "$GITHUB_PATH"
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: nteract-pr-preview-rust-v1
+          # The source checkout is nested; include its toolchain/config in the
+          # prefix so even a lockfile fallback cannot cross those settings.
+          key: cloud-wasm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('source/rust-toolchain.toml', 'source/.cargo/config.toml') }}
+          workspaces: source -> target
+          cmd-format: rustup run 1.94.0 {0}
+          cache-workspace-crates: false
+          cache-all-crates: false
+          cache-bin: false
+          cache-on-failure: false
       - name: Install application dependencies
         working-directory: source
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --store-dir "$RUNNER_TEMP/preview-pnpm-store" --verify-store-integrity
       - name: Build and export application
         working-directory: source
         run: |

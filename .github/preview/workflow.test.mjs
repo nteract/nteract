@@ -64,3 +64,38 @@ test("the strict finalizer runs after every predecessor even after failure or sk
   assert.doesNotMatch(body, /needs\.[a-z]+\.outputs/);
   assert.match(workflow, /^  cancel-in-progress: false$/m);
 });
+
+test("dependency caches stay outside every job with deployment or PR-write authority", () => {
+  const cacheAction = /uses: (?:actions\/cache(?:\/[a-z-]+)?|Swatinem\/rust-cache)@/;
+  assert.match(jobs.get("build"), cacheAction);
+  for (const id of Object.keys(trustedJobs)) assert.doesNotMatch(jobs.get(id), cacheAction);
+  assert.deepEqual(permissions(jobs.get("build")), {contents: "read"});
+});
+
+test("preview caches exclude workspace crates, installed tools, and generated application outputs", () => {
+  const build = jobs.get("build");
+  const caches = [...build.matchAll(/^      - name: Cache [^\n]+\n([\s\S]*?)(?=^      - |$(?![\s\S]))/gm)].map(match => match[1]);
+  assert.equal(caches.length, 2);
+  for (const cache of caches) assert.match(cache, /uses: [^\n]+@[a-f0-9]{40} #/);
+  const [pnpm, rust] = caches;
+  assert.match(pnpm, /^          path: \$\{\{ runner\.temp \}\}\/preview-pnpm-store$/m);
+  assert.match(pnpm, /key: nteract-pr-preview-pnpm-v1-.*hashFiles\('source\/pnpm-lock\.yaml', 'source\/pnpm-workspace\.yaml', 'source\/\.npmrc'\)/);
+  assert.doesNotMatch(pnpm, /restore-keys:|node_modules|dist/);
+  assert.match(rust, /^          prefix-key: nteract-pr-preview-rust-v1$/m);
+  assert.match(rust, /^          workspaces: source -> target$/m);
+  for (const option of ["cache-workspace-crates", "cache-all-crates", "cache-bin", "cache-on-failure"]) {
+    assert.match(rust, new RegExp(`^          ${option}: false$`, "m"));
+  }
+  assert.doesNotMatch(rust, /cache-directories:/);
+  assert.match(rust, /key: cloud-wasm-.*hashFiles\('source\/rust-toolchain\.toml', 'source\/\.cargo\/config\.toml'\)/);
+  assert.match(rust, /^          cmd-format: rustup run 1\.94\.0 \{0\}$/m);
+});
+
+test("a dependency cache hit never skips installation, source compilation, or bundle export", () => {
+  const build = jobs.get("build");
+  assert.doesNotMatch(build, /cache-hit|lookup-only|sccache|SCCACHE/);
+  assert.match(build, /run: pnpm install --frozen-lockfile --store-dir "\$RUNNER_TEMP\/preview-pnpm-store" --verify-store-integrity/);
+  assert.match(build, /pnpm --dir apps\/notebook-cloud build\n          node apps\/notebook-cloud\/scripts\/celld-local\.mjs export/);
+  assert.ok(build.indexOf("name: Cache Rust dependencies") > build.indexOf("name: Install Rust and the WASM builder"));
+  assert.ok(build.indexOf("name: Cache Rust dependencies") < build.indexOf("name: Build and export application"));
+});
