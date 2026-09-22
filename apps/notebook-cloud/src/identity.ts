@@ -1389,7 +1389,9 @@ async function fetchOidcDocument(url: string, label: "discovery" | "JWKS"): Prom
         Accept: "application/json",
         "User-Agent": "nteract-notebook-cloud/1.0",
       },
-      redirect: "error",
+      // celld only disables automatic redirects in manual mode. Reject the
+      // resulting 3xx below instead of trusting an unconfigured destination.
+      redirect: "manual",
       signal: AbortSignal.timeout(OIDC_DOCUMENT_FETCH_TIMEOUT_MS),
     });
     if (!response.ok) {

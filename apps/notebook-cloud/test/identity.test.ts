@@ -971,6 +971,79 @@ describe("OIDC identity", () => {
     assert.equal(identity.metadata.email, "alice@example.com");
   });
 
+  for (const redirectedPhase of ["discovery", "JWKS"] as const) {
+    it(`rejects ${redirectedPhase} redirects without requesting an untrusted destination`, async (t) => {
+      for (const status of [301, 302, 303, 307, 308]) {
+        const issuer = `https://${crypto.randomUUID()}.issuer.test`;
+        const { env, token } = await oidcTokenFixture({ subject: "alice", tokenIssuer: issuer });
+        const discoveryUrl = `${issuer}/.well-known/openid-configuration`;
+        const jwksUrl = `${issuer}/keys.json`;
+        const requests: string[] = [];
+        let repaired = false;
+        const fetchMock = t.mock.method(
+          globalThis,
+          "fetch",
+          async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            requests.push(url);
+            assert.equal(
+              init?.redirect,
+              "manual",
+              "celld must return rather than follow a redirect",
+            );
+            assert.equal(
+              new Headers(init?.headers).get("User-Agent"),
+              "nteract-notebook-cloud/1.0",
+            );
+            assert.ok(url === discoveryUrl || url === jwksUrl);
+            const discovery = url === discoveryUrl;
+            const body = discovery
+              ? JSON.stringify({ issuer, jwks_uri: jwksUrl })
+              : env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON;
+            const redirect =
+              !repaired && (redirectedPhase === "discovery" ? discovery : !discovery);
+            return new Response(body, {
+              status: redirect ? status : 200,
+              headers: {
+                "Content-Type": "application/json",
+                ...(redirect ? { Location: "https://untrusted.test/keys" } : {}),
+              },
+            });
+          },
+        );
+        const authenticate = () =>
+          authenticateRequestWithProviders(
+            new Request("https://cloud.test/api/n", {
+              headers: { Authorization: `Bearer ${token}` },
+            }),
+            {
+              ...env,
+              NOTEBOOK_CLOUD_OIDC_ISSUER: issuer,
+              NOTEBOOK_CLOUD_OIDC_JWKS_JSON: undefined,
+            },
+          );
+        await assert.rejects(
+          authenticate(),
+          (error: unknown) =>
+            error instanceof AuthError &&
+            error.status === 503 &&
+            error.message === `OIDC ${redirectedPhase} fetch failed: ${status}`,
+        );
+        assert.deepEqual(
+          requests,
+          redirectedPhase === "discovery" ? [discoveryUrl] : [discoveryUrl, jwksUrl],
+        );
+        repaired = true;
+        assert.equal(
+          (await authenticate()).principal,
+          "user:anaconda:alice",
+          "a rejected redirect must not poison the metadata cache",
+        );
+        fetchMock.mock.restore();
+      }
+    });
+  }
+
   it("fetches remote OIDC JWKS with Anaconda-compatible headers", async (t) => {
     const { env, token } = await oidcTokenFixture({ subject: "remote-jwks-user" });
     const calls: Array<{ accept: string | null; url: string; userAgent: string | null }> = [];

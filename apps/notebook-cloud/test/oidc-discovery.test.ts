@@ -35,7 +35,7 @@ describe("OIDC signing key discovery", () => {
     t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       calls.push(request.url);
-      assert.equal(request.redirect, "error");
+      assert.equal(request.redirect, "manual");
       assert.ok(init?.signal instanceof AbortSignal);
       if (request.url === `${issuer}/.well-known/openid-configuration`) {
         return Response.json({ issuer, jwks_uri: keyUrl });
@@ -189,7 +189,7 @@ describe("OIDC signing key discovery", () => {
     });
     let failure: Error = new DOMException("timed out", "TimeoutError");
     t.mock.method(globalThis, "fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
-      assert.equal(init?.redirect, "error");
+      assert.equal(init?.redirect, "manual");
       assert.equal(init?.signal?.aborted, true);
       throw failure;
     });

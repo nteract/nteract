@@ -63,7 +63,7 @@ describe("optional OIDC UserInfo", () => {
     const calls: string[] = [];
     t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push(String(input));
-      assert.equal(init?.redirect, "error");
+      assert.equal(init?.redirect, "manual");
       if (String(input).endsWith("openid-configuration"))
         return Response.json({
           issuer,
@@ -220,6 +220,47 @@ describe("optional OIDC UserInfo", () => {
 });
 
 describe("UserInfo validation and bounded cache", () => {
+  it("rejects provider redirects without forwarding bearer credentials or caching their bodies", async (t) => {
+    for (const status of [301, 302, 303, 307, 308]) {
+      const input = cachedInput();
+      const requests: string[] = [];
+      let repaired = false;
+      const fetchMock = t.mock.method(
+        globalThis,
+        "fetch",
+        async (url: RequestInfo | URL, init?: RequestInit) => {
+          requests.push(String(url));
+          assert.equal(String(url), input.endpoint);
+          assert.equal(
+            init?.redirect,
+            "manual",
+            "celld must not forward the bearer token on redirects",
+          );
+          assert.equal(new Headers(init?.headers).get("Authorization"), `Bearer ${input.token}`);
+          return new Response(JSON.stringify({ sub: "person", name: "Expected User" }), {
+            status: repaired ? 200 : status,
+            headers: {
+              "Content-Type": "application/json",
+              ...(!repaired ? { Location: "https://untrusted.test/userinfo" } : {}),
+            },
+          });
+        },
+      );
+      await assert.rejects(
+        loadOidcUserInfo(input),
+        (error: unknown) =>
+          error instanceof OidcUserInfoError &&
+          error.status === 503 &&
+          error.message === "OIDC UserInfo request failed",
+      );
+      assert.deepEqual(requests, [input.endpoint]);
+      repaired = true;
+      assert.equal((await loadOidcUserInfo(input)).name, "Expected User");
+      assert.deepEqual(requests, [input.endpoint, input.endpoint]);
+      fetchMock.mock.restore();
+    }
+  });
+
   for (const sub of [undefined, "other", " person", 7]) {
     it(`requires exact verified subject: ${sub}`, async (t) => {
       t.mock.method(globalThis, "fetch", async () =>

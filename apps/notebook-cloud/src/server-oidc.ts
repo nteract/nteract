@@ -163,8 +163,24 @@ async function providerMetadata(config: Config): Promise<ProviderMetadata> {
 
 async function providerFetch(url: string, init: RequestInit = {}): Promise<Response> {
   try {
-    return await fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(10_000) });
-  } catch {
+    const headers = new Headers(init.headers);
+    headers.set("Accept", "application/json");
+    headers.set("User-Agent", "nteract-notebook-cloud/1.0");
+    // celld honors manual redirect handling. Never let a runtime forward an
+    // authorization code, verifier, refresh token or client secret elsewhere.
+    const response = await fetch(url, {
+      ...init,
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status >= 300 && response.status < 400) {
+      void response.body?.cancel().catch(() => {});
+      throw new ProviderUnavailable(response.status);
+    }
+    return response;
+  } catch (error) {
+    if (error instanceof ProviderUnavailable) throw error;
     throw new ProviderUnavailable();
   }
 }
@@ -174,7 +190,10 @@ function privateResponse(
   status: number,
   headers: HeadersInit = {},
 ): Response {
-  const response = new Response(body, { status, headers });
+  const responseHeaders = new Headers(headers);
+  if (typeof body === "string" && !responseHeaders.has("Content-Type"))
+    responseHeaders.set("Content-Type", "text/plain; charset=utf-8");
+  const response = new Response(body, { status, headers: responseHeaders });
   response.headers.set("Cache-Control", "no-store");
   response.headers.set("Referrer-Policy", "no-referrer");
   response.headers.set("X-Content-Type-Options", "nosniff");

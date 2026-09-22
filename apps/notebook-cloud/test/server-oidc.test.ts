@@ -177,7 +177,9 @@ async function fixture(
       new URL(issuerUrl).origin,
       "unexpected network request",
     );
-    assert.equal(init?.redirect, "error", "provider requests must refuse redirects");
+    assert.equal(init?.redirect, "manual", "provider requests must not follow redirects");
+    assert.equal(request.headers.get("User-Agent"), "nteract-notebook-cloud/1.0");
+    assert.equal(request.headers.get("Accept"), "application/json");
     if (new URL(request.url).pathname.endsWith("/token")) {
       const form = new URLSearchParams(await request.text());
       const grant = form.get("grant_type") ?? "";
@@ -311,6 +313,58 @@ async function fixture(
 }
 
 describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
+  it("rejects discovery redirects and returns a readable private error", async (t) => {
+    const f = await fixture(t);
+    const redirected = t.mock.method(
+      globalThis,
+      "fetch",
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        assert.equal(init?.redirect, "manual");
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://untrusted.example/" },
+        });
+      },
+    );
+    const response = await beginServerOidcLogin(f.request("/api/auth/oidc/login"), f.env);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("Content-Type"), "text/plain; charset=utf-8");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.equal(response.headers.get("Location"), null);
+    assert.equal(response.headers.get("Set-Cookie"), null);
+    assert.equal(redirected.mock.callCount(), 1);
+    assert.equal(
+      f.db.sqlite.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table'").get()!.n,
+      0,
+    );
+  });
+
+  it("never forwards code-exchange credentials through a provider redirect", async (t) => {
+    const f = await fixture(t);
+    const started = await f.start();
+    const callback = await f.authorize(started.authorizationUrl);
+    const original = globalThis.fetch;
+    let exchanges = 0;
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input)).pathname.endsWith("/token")) {
+        exchanges += 1;
+        assert.equal(init?.redirect, "manual");
+        assert.ok(new Headers(init?.headers).get("Authorization"));
+        return new Response(null, {
+          status: 307,
+          headers: { Location: "https://untrusted.example/token" },
+        });
+      }
+      return original(input, init);
+    });
+    const response = await f.finish(callback, started.cookie);
+    assert.equal(response.status, 400);
+    assert.equal(hasSessionCookie(response), false);
+    assert.equal(response.headers.get("Location"), null);
+    assert.equal(exchanges, 1);
+    assert.equal(f.countRows(), 0);
+  });
+
   it("completes PKCE login and reads the same identity through the app session gate", async (t) => {
     const f = await fixture(t);
     const login = await f.login();
