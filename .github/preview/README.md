@@ -16,7 +16,7 @@ The publication sequence deliberately separates three reviewed revisions:
 
 The reusable workflow accepts no caller inputs or inherited secrets. It derives
 the PR number and action from the original event and checks live GitHub metadata.
-Only same-repository PRs from the explicitly configured maintainers are eligible
+Only same-repository PRs targeting `main` from the explicitly configured maintainers are eligible
 for deployment: Kyle (`836375`) and Utkarsh (`107147005`). Both the original actor
 and rerun initiator must also be eligible. The controller independently enforces
 its current policy before a build and again before deployment.
@@ -27,6 +27,11 @@ so it is used only for PR linkage, never historical revision provenance. Closure
 cleanup checks the current closed state and leaves deployed-revision lookup to
 the controller; it remains available after a final undeployed push or removal of
 an author from the approved list.
+
+Closed PRs can disappear from a run's PR-link array. An unmerged closure falls
+back to the exact PR ref plus its head SHA. A merged closure requires the `main`
+base ref, an exact head or merge commit, and GitHub's commit-to-PR association. These
+fallbacks never authorize deployment or another PR's cleanup.
 
 PR code builds on a separate GitHub-hosted runner with only repository read
 permissions. It has no OIDC token or infrastructure credentials. Trusted jobs use
@@ -51,3 +56,6 @@ GitHub-token-generated activity; retain the operator reconciliation/cleanup path
 Keep per-PR workflow cancellation disabled until controller operations support
 explicit cancellation. Once the controller accepts an operation, the sender polls
 that operation and never repeats its POST after an uncertain response.
+Use **Re-run all jobs** after resolving a failed run so the build and deployment
+belong to the same attempt. If capacity is exhausted, close an unused preview PR
+or ask an operator to free a slot before rerunning.

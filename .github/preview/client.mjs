@@ -1,5 +1,7 @@
 import {check, CONTROLLER, responseJson} from "./protocol.mjs";
 
+const CAPACITY_MESSAGE = "Preview capacity reached. Close an unused preview PR or ask an operator to free a slot, then rerun all jobs.";
+
 export function controllerClient(env, fetcher = fetch, {
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now,
 } = {}) {
@@ -31,6 +33,10 @@ export function controllerClient(env, fetcher = fetch, {
   return {
     async authorize(body) {
       const response = await request("/authorize", body);
+      if (response.status === 429) {
+        const result = await responseJson(response, "Preview controller");
+        check(result?.code !== "PREVIEW_CAPACITY_REACHED", CAPACITY_MESSAGE);
+      }
       check(response.ok, `Preview authorization failed (${response.status}); inspect run ${body.runId}`);
       const result = await responseJson(response, "Preview controller");
       check(result?.authorized === true && ["action", "previewId", "pr", "sourceSha"].every(key => result[key] === body[key]),
@@ -53,6 +59,7 @@ export function controllerClient(env, fetcher = fetch, {
         check(response.ok, `Preview status request failed (${response.status}); inspect operation ${operationId}`);
         const result = await responseJson(response, "Preview controller");
         check(["running", "succeeded", "failed"].includes(result?.status), "Invalid controller operation status");
+        check(!(result.status === "failed" && result.errorCode === "PREVIEW_CAPACITY_REACHED"), CAPACITY_MESSAGE);
         check(result.status !== "failed", `Preview operation ${operationId} failed; inspect run ${body.runId}`);
         if (result.status === "succeeded") return result;
       }

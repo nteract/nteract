@@ -1,5 +1,5 @@
 import {readFile} from "node:fs/promises";
-import {check, eventRequest, REPOSITORY, responseJson, workflowContext} from "./protocol.mjs";
+import {check, eventRequest, REPOSITORY, responseJson, sourceSha, workflowContext} from "./protocol.mjs";
 
 export async function github(path, token, fetcher = fetch) {
   check(path.startsWith(`/repos/${REPOSITORY}/`), "Unexpected GitHub API path");
@@ -20,5 +20,11 @@ export async function resolveRequest(env, fetcher = fetch, event) {
     github(`/repos/${REPOSITORY}/actions/runs/${context.runId}`, env.GITHUB_TOKEN, fetcher),
     github(`/repos/${REPOSITORY}/pulls/${event.number}`, env.GITHUB_TOKEN, fetcher),
   ]);
-  return {...eventRequest(event, env, run, pr), githubToken: env.GITHUB_TOKEN};
+  let associatedPrs = [];
+  if (event.action === "closed" && pr.state === "closed" && pr.merged === true &&
+    Array.isArray(run.pull_requests) && run.pull_requests.length === 0) {
+    associatedPrs = await github(`/repos/${REPOSITORY}/commits/${sourceSha(run.head_sha)}/pulls?per_page=100`, env.GITHUB_TOKEN, fetcher);
+    check(Array.isArray(associatedPrs), "Invalid GitHub commit association response");
+  }
+  return {...eventRequest(event, env, run, pr, associatedPrs), githubToken: env.GITHUB_TOKEN};
 }

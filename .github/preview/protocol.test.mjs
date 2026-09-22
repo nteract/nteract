@@ -10,7 +10,7 @@ function fixture(action = "opened") {
     GITHUB_REPOSITORY_ID: REPOSITORY_ID, GITHUB_REPOSITORY_OWNER_ID: OWNER_ID,
     GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "1", GITHUB_ACTOR_ID: "836375", GITHUB_TOKEN: "test-ephemeral-token"};
   const pr = {number: 123, state: action === "closed" ? "closed" : "open", user: {id: 836375},
-    base: {repo}, head: {repo, sha}};
+    base: {repo, ref: "main"}, head: {repo, sha}, merged: false};
   const event = {action, number: pr.number, repository: repo, pull_request: structuredClone(pr)};
   const run = {id: 42, run_attempt: 1, event: "pull_request", status: "in_progress", head_sha: sha,
     repository: repo, head_repository: repo, actor: {id: 836375}, triggering_actor: {id: 836375},
@@ -70,6 +70,7 @@ test("rejects forged PR linkage, run attempts, event contexts and closed deploys
     f => {f.run.event = "workflow_dispatch";},
     f => {f.env.GITHUB_EVENT_NAME = "workflow_dispatch";},
     f => {f.pr.state = "closed";},
+    f => {f.pr.base.ref = "other";},
     f => {f.event.action = "edited";},
   ];
   for (const mutate of mutations) {const f = fixture(); mutate(f); assert.throws(() => request(f));}
@@ -102,6 +103,90 @@ test("cleanup refuses a reopened PR", () => {
   const f = fixture("closed");
   f.pr.state = "open";
   assert.throws(() => request(f), /remain closed/);
+});
+
+test("closed run linkage tolerates missing head metadata without accepting a foreign head", () => {
+  const f = fixture("closed");
+  f.run.pull_requests[0].head.repo = null;
+  assert.equal(request(f).action, "stop");
+  f.run.pull_requests[0].head.repo = {id: 999};
+  f.env.GITHUB_REF = "refs/pull/123/merge";
+  assert.throws(() => request(f), /unexpected repository/);
+});
+
+test("closed unmerged PR without run links requires its exact signed ref and head", () => {
+  const f = fixture("closed");
+  f.run.pull_requests = [];
+  f.env.GITHUB_REF = "refs/pull/123/merge";
+  assert.equal(request(f).action, "stop");
+  f.env.GITHUB_REF = "refs/pull/124/merge";
+  assert.throws(() => request(f), /not linked/);
+  f.env.GITHUB_REF = "refs/pull/123/merge";
+  f.run.head_sha = "b".repeat(40);
+  assert.throws(() => request(f), /not linked/);
+});
+
+test("closed merged PR without run links requires GitHub commit association", () => {
+  const f = fixture("closed");
+  f.run.pull_requests = [];
+  f.pr.merged = true;
+  f.pr.merge_commit_sha = "b".repeat(40);
+  f.env.GITHUB_REF = "refs/heads/main";
+  const resolve = associations => eventRequest(f.event, f.env, f.run, f.pr, associations);
+  assert.throws(() => resolve([]), /not linked/);
+  assert.equal(resolve([f.pr]).action, "stop");
+  f.run.head_sha = f.pr.merge_commit_sha;
+  assert.equal(resolve([f.pr]).sourceSha, f.pr.merge_commit_sha);
+  f.run.head_sha = "c".repeat(40);
+  assert.throws(() => resolve([f.pr]), /not linked/);
+});
+
+test("missing run linkage never enables deployment even with a matching PR ref", () => {
+  const f = fixture();
+  f.run.pull_requests = [];
+  f.env.GITHUB_REF = "refs/pull/123/merge";
+  assert.throws(() => request(f), /not linked/);
+});
+
+test("closure fallback requires an empty link array and a known merge state", () => {
+  const f = fixture("closed");
+  f.env.GITHUB_REF = "refs/pull/123/merge";
+  f.run.pull_requests[0].number = 124;
+  assert.throws(() => request(f), /not linked/);
+  delete f.run.pull_requests;
+  assert.throws(() => request(f), /not linked/);
+  f.run.pull_requests = [];
+  delete f.pr.merged;
+  assert.throws(() => request(f), /not linked/);
+});
+
+test("merged fallback rejects another base branch and foreign association authority", () => {
+  const f = fixture("closed");
+  f.run.pull_requests = [];
+  f.pr.merged = true;
+  f.env.GITHUB_REF = "refs/heads/other";
+  f.pr.base.ref = "other";
+  assert.throws(() => eventRequest(f.event, f.env, f.run, f.pr, [f.pr]), /not linked/);
+  f.pr.base.ref = "main";
+  f.env.GITHUB_REF = "refs/heads/main";
+  const association = structuredClone(f.pr);
+  association.base.repo.owner.id = 999;
+  assert.throws(() => eventRequest(f.event, f.env, f.run, f.pr, [association]), /repository owner/);
+});
+
+test("merged closure fetches bounded commit associations only when run links are absent", async () => {
+  const f = fixture("closed");
+  f.run.pull_requests = [];
+  f.pr.merged = true;
+  f.env.GITHUB_REF = "refs/heads/main";
+  const urls = [];
+  const result = await resolveRequest(f.env, async url => {
+    urls.push(url);
+    return Response.json(url.includes("/commits/") ? [f.pr] : url.endsWith("/pulls/123") ? f.pr : f.run);
+  }, f.event);
+  assert.equal(result.action, "stop");
+  assert.equal(urls.length, 3);
+  assert.equal(urls[2], `https://api.github.com/repos/${REPOSITORY}/commits/${f.run.head_sha}/pulls?per_page=100`);
 });
 
 test("resolves live GitHub metadata using only fixed same-repository endpoints", async () => {

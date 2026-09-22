@@ -42,6 +42,24 @@ test("authorization rejects substituted request metadata", async () => {
   }
 });
 
+test("capacity exhaustion is actionable without echoing the upstream error", async () => {
+  const {client} = mock([Response.json({code: "PREVIEW_CAPACITY_REACHED", error: "secret echoed by upstream"}, {status: 429})]);
+  await assert.rejects(client.authorize(body), error => error.message.startsWith("Preview capacity reached.") &&
+    error.message.includes("rerun all jobs") && !error.message.includes("secret"));
+});
+
+test("unknown rate limits stay generic and never surface arbitrary upstream text", async () => {
+  const {client} = mock([Response.json({code: "OTHER", error: "secret echoed by upstream"}, {status: 429})]);
+  await assert.rejects(client.authorize(body), error => error.message === "Preview authorization failed (429); inspect run 42");
+});
+
+test("a capacity race after preflight gives the same safe rerun-all guidance", async () => {
+  const {client} = mock([Response.json({operationId}, {status: 202}),
+    Response.json({status: "failed", errorCode: "PREVIEW_CAPACITY_REACHED", error: "secret echoed by upstream"})]);
+  await assert.rejects(client.deploy(body), error => error.message.startsWith("Preview capacity reached.") &&
+    error.message.includes("rerun all jobs") && !error.message.includes("secret"));
+});
+
 test("refreshes OIDC on busy retry and every poll, with one accepted POST", async () => {
   const {client, calls, tokenCount} = mock([
     new Response(null, {status: 409}), Response.json({operationId}, {status: 202}),
