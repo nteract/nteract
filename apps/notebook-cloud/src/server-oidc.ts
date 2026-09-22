@@ -166,8 +166,8 @@ async function providerFetch(url: string, init: RequestInit = {}): Promise<Respo
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
     headers.set("User-Agent", "nteract-notebook-cloud/1.0");
-    // celld honors manual redirect handling. Never let a runtime forward an
-    // authorization code, verifier, refresh token or client secret elsewhere.
+    // Inspect redirects without following them. Authorization codes, verifiers,
+    // refresh tokens and client secrets must stay at the configured endpoint.
     const response = await fetch(url, {
       ...init,
       headers,

@@ -88,8 +88,7 @@ async function fetchUserInfo(input: {
         Authorization: `Bearer ${input.token}`,
         "User-Agent": "nteract-notebook-cloud/1.0",
       },
-      // celld only disables automatic redirects in manual mode. A 3xx must
-      // never forward this bearer token to the redirect destination.
+      // Reject redirects explicitly; never forward this bearer token elsewhere.
       redirect: "manual",
       signal: controller.signal,
     });
