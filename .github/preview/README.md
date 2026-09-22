@@ -40,6 +40,34 @@ GitHub PAT or App private key is needed. The controller never executes scripts
 from the uploaded application bundle. Exporter `wrangler.json` files, which can
 contain generated session secrets, are excluded from the bundle.
 
+## Dependency caching
+
+The reusable workflow caches pnpm's package store and Cargo's downloaded and
+compiled dependencies in preview-specific namespaces. pnpm's key includes the
+platform, package-manager version, lockfile, workspace configuration, and npm
+configuration. Installation still checks the frozen lockfile and store integrity.
+Rust caching keys include the compiler, build environment, dependency manifests,
+and the nested source checkout's toolchain and Cargo configuration. Cargo can
+reuse unchanged dependencies after a lockfile update; workspace crates and
+installed tool binaries are excluded.
+
+Every run still installs dependencies, builds the current authorized source,
+exports the application, and uploads a new revision-bound bundle. Generated
+WASM packages, frontend bundles, export directories, and deployment configuration
+are not cached. Caches are restored only in the unprivileged build job; trusted
+authorization, deployment, cleanup, and status jobs never restore them. GitHub
+scopes caches written by PR runs to that PR's merge ref, so repeated pushes to
+the same PR can benefit without warming other PRs. A cache miss is a normal
+cold build.
+
+Changing this reusable workflow does not activate caching by itself. After
+review and merge, install the new workflow revision in the controller's trust
+policy and update the caller pin using the publication sequence above. Qualify
+the rollout with a cold run and a later push to the same PR: confirm cache hits,
+the new revision and visible application change, and preserved notebook state.
+Also check that a lockfile change installs the new dependencies. Report measured
+warm and cold timings separately; cache hits do not establish deployment success.
+
 Run the focused tests with:
 
 ```sh
