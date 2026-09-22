@@ -1,0 +1,19 @@
+name: PR preview
+run-name: Preview pr-${{ github.event.number }} (${{ github.event.action }})
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  preview:
+    name: PR preview
+    # Deployment authority is the reviewed reusable workflow, not this caller.
+    uses: nteract/nteract/.github/workflows/preview-reusable.yml@80d520bb26c124d462a1376eb31a1de45a256ab2
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
