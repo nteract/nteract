@@ -110,6 +110,9 @@ can require proof younger than six hours and bound to the stored verified email;
 legacy, stale, or missing proof does not invalidate notebook access. The binding
 does not expose the email in the cookie and prevents a failed profile write from
 associating fresh proof with a previously stored, different email.
+When UserInfo is enabled, accepting new pending email invitations from a stored
+app session requires this fresh, matching proof. Existing notebook ACLs remain
+usable; a fresh successful OIDC exchange can accept pending invitations again.
 
 The transport principal and namespace stay unchanged, and the existing
 verified-email account-linking transaction preserves prior notebook ownership
