@@ -64,9 +64,12 @@ or ask an operator to free a slot before rerunning.
 
 For an eligible PR targeting `main`, opening or reopening the PR starts the
 **PR preview** workflow. Its authorization job runs before the application build.
-The deployment job reports readiness and links to `https://pr-N.runtimed.run`,
-where `N` is the PR number. The job summary and GitHub deployment environment also
-link to that URL. Sign in normally to use the preview.
+One automatically maintained PR comment links to `https://pr-N.runtimed.run`,
+where `N` is the PR number, and shows building, deploying, ready, failed, or closed
+status with a workflow link. It distinguishes the requested commit from the
+revision currently live, so a failed update does not claim the new code deployed.
+The job summary and GitHub deployment environment also link to the preview.
+Sign in normally to use it.
 
 Pushing to the same PR updates the existing preview at the same URL. An older
 run cannot deploy after its source head becomes stale. Closing or merging the PR
@@ -99,8 +102,9 @@ are ignored so they cannot replace a newer status. The status-only resolver may
 report an outdated run for that decision; it must never replace the strict
 deployment authorization resolver.
 
-Enable these helpers through a newly reviewed reusable workflow revision, with
-`pull-requests: write` only on its trusted jobs, then update the caller's permission
-ceiling and pin after the controller trusts that revision. The application build
-keeps `contents: read` only. Existing pinned workflow revisions continue to use
-their original helpers until that rollout completes.
+The caller pins the reviewed reusable workflow; `pull-requests: write` is granted
+only to its trusted jobs. The application build keeps `contents: read` only.
+Future updates follow the same publication sequence: reviewed helpers, reviewed
+reusable workflow, controller trust installation, then the caller pin. If the
+comment is missing or stale, inspect the **Update preview comment** job; a comment
+outage does not change whether the preview deployment itself succeeded.
