@@ -2,6 +2,17 @@ import {check, CONTROLLER, responseJson} from "./protocol.mjs";
 
 const CAPACITY_MESSAGE = "Preview capacity reached. Close an unused preview PR or ask an operator to free a slot, then rerun all jobs.";
 
+export async function reportProgress(client, body, warn = console.warn) {
+  try {
+    return await client.status(body);
+  } catch {
+    // Comment availability must not block cleanup or turn a completed deployment
+    // into a failure. The separate finalizer reports comment failures strictly.
+    warn("::warning::Preview comment could not be updated; the preview operation will continue. See the final status job.");
+    return null;
+  }
+}
+
 export function controllerClient(env, fetcher = fetch, {
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now,
 } = {}) {

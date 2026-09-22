@@ -88,6 +88,11 @@ permissions. The controller derives the comment from live GitHub jobs and its
 deployment registry; helpers send only run and PR identity, never a requested
 status or application logs.
 
+Progress reports are best-effort: a comment failure emits a warning and cannot
+block deployment or cleanup, or turn a successful deployment into a failure.
+The separate finalizer fails visibly if its comment update fails, so reporting
+problems stay visible without changing the deployment result.
+
 The comment distinguishes the requested revision from the confirmed deployed
 revision. A failed update can leave an earlier deployment live. Obsolete runs
 are ignored so they cannot replace a newer status. The status-only resolver may

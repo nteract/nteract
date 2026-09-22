@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {controllerClient} from "./client.mjs";
+import {controllerClient, reportProgress} from "./client.mjs";
 import {CONTROLLER} from "./protocol.mjs";
 
 const env = {ACTIONS_ID_TOKEN_REQUEST_TOKEN: "test-oidc-request-token",
@@ -71,6 +71,33 @@ test("status failure never echoes upstream content or repeats an uncertain comme
     const {client, calls} = mock([response]);
     await assert.rejects(client.status(body), error => !error.message.includes("secret"));
     assert.equal(calls.filter(call => call.url === `${CONTROLLER}/status`).length, 1);
+  }
+});
+
+test("failed progress reporting warns safely and does not prevent authorization", async () => {
+  const warnings = [];
+  const {client, calls} = mock([new Error("secret echoed by upstream"), Response.json({...body, authorized: true})]);
+  assert.equal(await reportProgress(client, body, message => warnings.push(message)), null);
+  assert.equal((await client.authorize(body)).authorized, true);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /^::warning::Preview comment could not be updated;/);
+  assert.ok(!warnings[0].includes("secret"));
+  assert.deepEqual(calls.filter(call => call.url.startsWith(CONTROLLER)).map(call => call.url),
+    [`${CONTROLLER}/status`, `${CONTROLLER}/authorize`]);
+});
+
+test("failed pre and post progress reports do not block deployment or closed PR cleanup", async () => {
+  for (const action of ["deploy", "stop"]) {
+    const request = {...body, action};
+    const warnings = [];
+    const {client, calls} = mock([new Response(null, {status: 404}), Response.json({operationId}, {status: 202}),
+      Response.json({status: "succeeded"}), new Response("secret echoed by upstream", {status: 503})]);
+    await reportProgress(client, request, message => warnings.push(message));
+    assert.equal((await client.deploy(request)).status, "succeeded");
+    await reportProgress(client, request, message => warnings.push(message));
+    assert.equal(warnings.length, 2);
+    assert.ok(warnings.every(message => !message.includes("secret")));
+    assert.equal(calls.filter(call => call.url === `${CONTROLLER}/deploy`).length, 1);
   }
 });
 
