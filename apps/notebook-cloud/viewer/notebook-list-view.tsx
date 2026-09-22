@@ -419,7 +419,7 @@ export function CloudNotebookListView({
         <div className="nb-header-inner">
           <a className="nb-brand" href="/n">
             <span className="nb-brand-mark" aria-hidden="true" />
-            <span className="nb-brand-name">nteract</span>
+            <span className="nb-brand-name">nteract · PR preview revision 2</span>
             <span className="nb-brand-sep">/</span>
             <span className="nb-brand-scope">{headerDetail}</span>
           </a>
