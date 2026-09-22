@@ -62,6 +62,14 @@ be replaced gradually. Use
 `NOTEBOOK_CLOUD_OIDC_JWKS_JSON` only for pinned/offline tests or an emergency
 where fetching the provider JWKS is intentionally disabled.
 
+Remote signing keys are loaded from the issuer's standard
+`/.well-known/openid-configuration` discovery document and its `jwks_uri`.
+The discovery issuer must match the configured issuer exactly. The advertised
+key URL must use HTTPS; local development also permits HTTP on the same loopback
+origin as the issuer. Discovery and key fetches reject redirects, have a ten-second
+timeout each, and share a five-minute cache. A failed fetch or invalid discovery
+document fails authentication closed and is retried on the next request.
+
 For providers that share a resource audience across OAuth clients, set
 `NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID` to this deployment's OAuth client ID.
 The verifier then requires a matching signed `client_id` claim in addition to

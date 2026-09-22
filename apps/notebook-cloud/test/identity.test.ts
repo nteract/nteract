@@ -834,6 +834,12 @@ describe("OIDC identity", () => {
         url: request.url,
         userAgent: request.headers.get("user-agent"),
       });
+      if (request.url.endsWith("/.well-known/openid-configuration")) {
+        return Response.json({
+          issuer: env.NOTEBOOK_CLOUD_OIDC_ISSUER,
+          jwks_uri: `${env.NOTEBOOK_CLOUD_OIDC_ISSUER}/.well-known/jwks.json`,
+        });
+      }
       return new Response(env.NOTEBOOK_CLOUD_OIDC_JWKS_JSON, {
         headers: { "Content-Type": "application/json" },
       });
@@ -853,6 +859,11 @@ describe("OIDC identity", () => {
 
     assert.equal(identity.actorLabel, "user:anaconda:remote-jwks-user/browser:tab");
     assert.deepEqual(calls, [
+      {
+        accept: "application/json",
+        url: "https://auth.stage.anaconda.com/api/auth/.well-known/openid-configuration",
+        userAgent: "nteract-notebook-cloud/1.0",
+      },
       {
         accept: "application/json",
         url: "https://auth.stage.anaconda.com/api/auth/.well-known/jwks.json",

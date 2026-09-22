@@ -170,6 +170,7 @@ interface JwtPayload {
 
 const JWT_CLOCK_TOLERANCE_SECONDS = 60;
 const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
+const OIDC_DOCUMENT_FETCH_TIMEOUT_MS = 10_000;
 const ANACONDA_API_KEY_CACHE_MAX_ENTRIES = 256;
 const ANACONDA_API_KEY_CACHE_TTL_MS = 60 * 1000;
 export const IDENTITY_SUBJECT_MAX_LENGTH = 256;
@@ -1107,36 +1108,84 @@ async function loadOidcJwks(config: OidcConfig): Promise<JsonWebKeySet> {
     return parseJwks(config.jwksJson, "OIDC");
   }
 
-  return loadRemoteJwks(`${config.issuer}/.well-known/jwks.json`, "OIDC");
-}
-
-async function loadRemoteJwks(url: string, label: "OIDC"): Promise<JsonWebKeySet> {
-  const cached = jwksCache.get(url);
+  // Cache discovery and its key set together so endpoint changes are picked up
+  // with key refreshes, and concurrent authentication requests share one fetch.
+  const cached = jwksCache.get(config.issuer);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.ready;
   }
 
-  const ready = fetch(url, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "nteract-notebook-cloud/1.0",
-    },
-  })
-    .then(async (response) => {
-      if (!response.ok) {
-        throw new AuthError(`${label} JWKS fetch failed: ${response.status}`, 503);
-      }
-      return parseJwks(await response.text(), label);
-    })
-    .catch((error: unknown) => {
-      jwksCache.delete(url);
-      throw error;
-    });
-  jwksCache.set(url, {
+  const ready = discoverOidcJwks(config.issuer).catch((error: unknown) => {
+    if (jwksCache.get(config.issuer)?.ready === ready) {
+      jwksCache.delete(config.issuer);
+    }
+    throw error;
+  });
+  jwksCache.set(config.issuer, {
     expiresAt: Date.now() + JWKS_CACHE_TTL_MS,
     ready,
   });
   return ready;
+}
+
+async function discoverOidcJwks(issuer: string): Promise<JsonWebKeySet> {
+  const discovery = await fetchOidcDocument(
+    `${issuer}/.well-known/openid-configuration`,
+    "discovery",
+  );
+  let metadata: { issuer?: unknown; jwks_uri?: unknown } | null;
+  try {
+    metadata = JSON.parse(discovery);
+  } catch {
+    throw new AuthError("OIDC discovery document is invalid", 503);
+  }
+  if (!metadata || metadata.issuer !== issuer) {
+    throw new AuthError("OIDC discovery issuer is invalid", 503);
+  }
+  const jwksUrl = oidcJwksUrl(metadata.jwks_uri, issuer);
+  return parseJwks(await fetchOidcDocument(jwksUrl, "JWKS"), "OIDC");
+}
+
+function oidcJwksUrl(value: unknown, issuer: string): string {
+  let url: URL;
+  try {
+    if (typeof value !== "string") throw new Error("missing URL");
+    url = new URL(value);
+  } catch {
+    throw new AuthError("OIDC discovery JWKS URL is invalid", 503);
+  }
+  const issuerUrl = new URL(issuer);
+  const localHttp =
+    issuerUrl.protocol === "http:" &&
+    isLoopbackHostname(issuerUrl.hostname) &&
+    url.origin === issuerUrl.origin;
+  if ((url.protocol !== "https:" && !localHttp) || url.username || url.password || url.hash) {
+    throw new AuthError(
+      "OIDC discovery JWKS URL must use https without credentials or fragments",
+      503,
+    );
+  }
+  return url.href;
+}
+
+async function fetchOidcDocument(url: string, label: "discovery" | "JWKS"): Promise<string> {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "nteract-notebook-cloud/1.0",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(OIDC_DOCUMENT_FETCH_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new AuthError(`OIDC ${label} fetch failed: ${response.status}`, 503);
+    }
+    return await response.text();
+  } catch (error) {
+    if (error instanceof AuthError) throw error;
+    throw new AuthError(`OIDC ${label} fetch failed`, 503);
+  }
 }
 
 function parseJwks(value: string, label: "OIDC"): JsonWebKeySet {
