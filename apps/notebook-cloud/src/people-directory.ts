@@ -1,3 +1,4 @@
+import { appSessionHasFreshVerifiedEmail } from "./app-session.ts";
 import type { Env } from "./cloudflare-types.ts";
 import type { AuthenticatedConnection } from "./identity.ts";
 import { getPrincipalProfile } from "./sharing-storage.ts";
@@ -18,6 +19,7 @@ export interface PeopleDirectory {
 
 export interface PeopleDirectoryResult {
   directoryEnabled: boolean;
+  requiresReverification?: true;
   people: Array<{
     id: string;
     displayName: string;
@@ -136,25 +138,36 @@ export function parsePeopleDirectory(raw: string | undefined): PeopleDirectory |
   return { allowedDomains, people };
 }
 
-/** Only provider-verified claims or the current server-stored session profile qualify. */
-export async function directoryCallerEmail(
+/** Cookie-backed discovery needs fresh proof bound to the stored verified email. */
+export async function directoryCallerAccess(
   env: Env,
   identity: AuthenticatedConnection,
-): Promise<string | null> {
+  directory: PeopleDirectory | null,
+): Promise<{ email: string | null; requiresReverification?: true }> {
+  if (!directory) return { email: null };
   if (identity.metadata.provider === "oidc") {
-    return identity.metadata.emailVerified === true ? email(identity.metadata.email) : null;
+    return {
+      email: identity.metadata.emailVerified === true ? email(identity.metadata.email) : null,
+    };
   }
   if (identity.metadata.provider === "anaconda-api-key") {
     // The existing whoami contract also backs verified-email invite resolution.
-    return email(identity.metadata.email);
+    return { email: email(identity.metadata.email) };
   }
   if (identity.metadata.provider === "app-session") {
     const profile = await getPrincipalProfile(env, identity.principal);
-    return profile?.provider === "oidc" && profile.email_verified === 1
-      ? email(profile.email_normalized)
-      : null;
+    const storedEmail =
+      profile?.provider === "oidc" && profile.email_verified === 1
+        ? email(profile.email_normalized)
+        : null;
+    if (!storedEmail || !directory.allowedDomains.has(storedEmail.split("@")[1])) {
+      return { email: null };
+    }
+    return (await appSessionHasFreshVerifiedEmail(env, identity, storedEmail))
+      ? { email: storedEmail }
+      : { email: null, requiresReverification: true };
   }
-  return null;
+  return { email: null };
 }
 
 function eligiblePeople(directory: PeopleDirectory | null, callerEmail: string | null) {

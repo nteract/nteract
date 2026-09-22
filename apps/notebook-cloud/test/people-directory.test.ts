@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  directoryCallerEmail,
+  directoryCallerAccess,
   parsePeopleDirectory,
   PeopleDirectoryConfigurationError,
   resolveDirectoryPerson,
@@ -139,20 +139,33 @@ describe("explicit people directory", () => {
         emailVerified: true,
       },
     };
-    assert.equal(await directoryCallerEmail(env, identity), "alice@example.com");
-    assert.equal(
-      await directoryCallerEmail(env, {
-        ...identity,
-        metadata: { ...identity.metadata, emailVerified: false },
-      }),
-      null,
+    const directory = parsePeopleDirectory(
+      JSON.stringify({ allowedDomains: ["example.com"], people: [] }),
     );
-    assert.equal(
-      await directoryCallerEmail(env, {
-        ...identity,
-        metadata: { ...identity.metadata, provider: "dev" },
-      }),
-      null,
+    assert.deepEqual(await directoryCallerAccess(env, identity, directory), {
+      email: "alice@example.com",
+    });
+    assert.deepEqual(
+      await directoryCallerAccess(
+        env,
+        {
+          ...identity,
+          metadata: { ...identity.metadata, emailVerified: false },
+        },
+        directory,
+      ),
+      { email: null },
+    );
+    assert.deepEqual(
+      await directoryCallerAccess(
+        env,
+        {
+          ...identity,
+          metadata: { ...identity.metadata, provider: "dev" },
+        },
+        directory,
+      ),
+      { email: null },
     );
   });
 });

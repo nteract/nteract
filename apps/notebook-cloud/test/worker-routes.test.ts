@@ -4,7 +4,9 @@ import { readFile } from "node:fs/promises";
 import worker, { snapshotBlobRefsOverCap } from "../src/index.ts";
 import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
+  appSessionRenewalCookie,
   createCloudAppSessionCookie,
+  readCloudAppSession,
 } from "../src/app-session.ts";
 import {
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -246,6 +248,134 @@ describe("company people discovery routes", () => {
     profile.email_verified = 0;
     const revoked = await worker.fetch(request(), env, fakeContext());
     assert.deepEqual(await revoked.json(), { directoryEnabled: false, people: [] });
+  });
+
+  it("keeps notebook access but requests reverification for legacy or renewed stale directory proof", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    for (const freshProof of [false, true]) {
+      const env = fakeEnv({
+        NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+        NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON: roster,
+      });
+      const principal = "user:anaconda:directory-owner";
+      env.DB.profiles.set(
+        principal,
+        principalProfileRow({
+          principal,
+          provider: "oidc",
+          email_normalized: "alice@example.com",
+          email_verified: 1,
+        }),
+      );
+      seedNotebook(env, "directory-notebook");
+      seedAcl(env, { notebookId: "directory-notebook", subject: principal, scope: "owner" });
+      const issuedAt = freshProof ? now - 6 * 60 * 60 - 10 : now;
+      let cookie = await createCloudAppSessionCookie(
+        env,
+        {
+          principal,
+          actorLabel: `${principal}/browser:test`,
+          operator: "browser:test",
+          scope: "owner",
+          metadata: {
+            provider: "oidc",
+            transport: "oidc-bearer",
+            principalNamespace: "user:anaconda",
+            email: "alice@example.com",
+            emailVerified: freshProof,
+          },
+        },
+        issuedAt,
+      );
+      if (freshProof) {
+        const renewalAt = now - 3 * 60 * 60;
+        const session = await readCloudAppSession(
+          env,
+          new Request("https://cloud.test", { headers: { Cookie: cookie } }),
+          renewalAt,
+        );
+        assert.ok(session);
+        cookie = (await appSessionRenewalCookie(env, session, renewalAt))!;
+        assert.ok(cookie);
+      }
+      const search = await worker.fetch(
+        new Request("https://cloud.test/api/people?q=bo", { headers: { Cookie: cookie } }),
+        env,
+        fakeContext(),
+      );
+      assert.deepEqual(await search.json(), {
+        directoryEnabled: false,
+        people: [],
+        requiresReverification: true,
+      });
+      const notebook = await worker.fetch(
+        new Request("https://cloud.test/api/n/directory-notebook", { headers: { Cookie: cookie } }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(notebook.status, 200);
+      const selection = await worker.fetch(
+        new Request("https://cloud.test/api/n/directory-notebook/invites", {
+          method: "POST",
+          headers: {
+            Cookie: cookie,
+            Origin: "https://cloud.test",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ directoryPersonId: personId, scope: "viewer" }),
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(selection.status, 404);
+      assert.equal(env.DB.invites.size, 0);
+    }
+  });
+
+  it("does not bind fresh cookie proof to an old company email after profile storage fails", async (t) => {
+    for (const [currentEmail, verified] of [
+      ["alice@outside.example", true],
+      ["alice@example.com", false],
+    ] as const) {
+      const { env: oidcEnv, token } = await oidcTokenFixture({
+        subject: "directory-owner",
+        email: currentEmail,
+        extraPayload: { email_verified: verified },
+      });
+      const env = fakeEnv({
+        ...oidcEnv,
+        NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+        NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON: roster,
+      });
+      const principal = "user:anaconda:directory-owner";
+      env.DB.profiles.set(
+        principal,
+        principalProfileRow({
+          principal,
+          provider: "oidc",
+          email_normalized: "alice@example.com",
+          email_verified: 1,
+        }),
+      );
+      const prepare = env.DB.prepare.bind(env.DB);
+      t.mock.method(env.DB, "prepare", (query: string) => {
+        if (query.includes("INSERT INTO principal_profiles"))
+          throw new Error("profile storage unavailable");
+        return prepare(query);
+      });
+      const cookie = await oidcAppSessionCookie(env, token);
+      assert.equal(env.DB.profiles.get(principal)?.email_normalized, "alice@example.com");
+      const response = await worker.fetch(
+        new Request("https://cloud.test/api/people?q=bo", { headers: { Cookie: cookie } }),
+        env,
+        fakeContext(),
+      );
+      assert.deepEqual(await response.json(), {
+        directoryEnabled: false,
+        people: [],
+        requiresReverification: true,
+      });
+    }
   });
 
   it("resolves a directory selection only for an authorized notebook owner and creates a pending invite", async () => {

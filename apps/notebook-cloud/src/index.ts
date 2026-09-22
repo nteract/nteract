@@ -139,7 +139,7 @@ import {
   type PrincipalProfile,
 } from "./sharing.ts";
 import {
-  directoryCallerEmail,
+  directoryCallerAccess,
   parsePeopleDirectory,
   PeopleDirectoryConfigurationError,
   resolveDirectoryPerson,
@@ -3988,8 +3988,11 @@ async function routePeopleDirectory(request: Request, env: Env): Promise<Respons
   if (query.length > 80) return json({ error: "people query must be at most 80 characters" }, 400);
   try {
     const directory = parsePeopleDirectory(env.NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON);
-    const callerEmail = directory ? await directoryCallerEmail(env, identity) : null;
-    return json(searchPeopleDirectory(directory, callerEmail, query));
+    const access = await directoryCallerAccess(env, identity, directory);
+    return json({
+      ...searchPeopleDirectory(directory, access.email, query),
+      ...(access.requiresReverification ? { requiresReverification: true } : {}),
+    });
   } catch (error) {
     if (error instanceof PeopleDirectoryConfigurationError) {
       return json({ error: "people directory is unavailable" }, 503);
@@ -4610,8 +4613,8 @@ async function parsePendingInviteInput(
     if (personId instanceof Response) return personId;
     try {
       const directory = parsePeopleDirectory(env.NOTEBOOK_CLOUD_PEOPLE_DIRECTORY_JSON);
-      const callerEmail = directory ? await directoryCallerEmail(env, identity) : null;
-      const person = resolveDirectoryPerson(directory, callerEmail, personId);
+      const access = await directoryCallerAccess(env, identity, directory);
+      const person = resolveDirectoryPerson(directory, access.email, personId);
       if (!person) return json({ error: "directory person is unavailable" }, 404);
       recipientEmail = person.email;
     } catch (error) {

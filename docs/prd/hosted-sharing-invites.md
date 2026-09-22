@@ -231,17 +231,21 @@ configuration fails closed as a whole; it never exposes a partial roster.
 matches with only `id`, `displayName`, `avatarUrl`, and `source: "directory"`.
 It returns no email, provider principal, login status, total count, or pagination
 cursor. It does not match hidden email prefixes; full-email invitations stay
-separate from directory search. Blank or one-character queries return no people and may be used to
-check `directoryEnabled`; queries over 80 characters are rejected. The entire
+separate from directory search. Blank or one-character queries return no people
+and may be used to check `directoryEnabled`; queries over 80 characters are rejected. The entire
 response is `Cache-Control: no-store`. An absent configuration or ineligible
 caller returns `directoryEnabled: false` and an empty result. Invalid
 configuration returns 503. Eligibility requires a current verified provider
-email, or a still-verified server profile for an authenticated app session.
+email, or a still-verified server profile bound to fresh authenticated app-session proof.
 Development identities and unverified email claims never qualify.
-Cookie queries use the last server-verified profile rather than calling the
-identity provider on every search. Fresh credential authentication updates
-that profile; cookie validity and renewal follow the existing app-session
-policy. This is not a fresh employment or company-membership check.
+Cookie queries require signed proof from a real OIDC exchange less than six
+hours ago, bound to the normalized stored verified email and session identity.
+Sliding cookie renewals preserve the proof timestamp and cannot extend directory
+eligibility. A missing, stale, future, or mismatched proof leaves notebook access
+unchanged but denies directory search and selection. Otherwise eligible callers
+receive `requiresReverification: true` with no people and a sign-in hint; ordinary
+full-email invitations remain available. This avoids a provider request on each
+search and is not a fresh employment or company-membership check.
 
 An owner can submit `directoryPersonId` instead of `email` to the existing
 invitation endpoint. The server rechecks domain eligibility and current roster
