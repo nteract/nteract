@@ -12,8 +12,9 @@ jobs:
   preview:
     name: PR preview
     # Deployment authority is the reviewed reusable workflow, not this caller.
-    uses: nteract/nteract/.github/workflows/preview-reusable.yml@80d520bb26c124d462a1376eb31a1de45a256ab2
+    uses: nteract/nteract/.github/workflows/preview-reusable.yml@29607f933c85f5f53f1c213f093224e16cf2b7ad
     permissions:
       contents: read
       actions: read
       id-token: write
+      pull-requests: write
