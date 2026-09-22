@@ -198,6 +198,77 @@ describe("createLocalOidcIssuer", () => {
     await expectOAuthError(reusedResponse, "invalid_grant");
   });
 
+  it("issues nonce-bound ID tokens for the client separately from resource access tokens", async () => {
+    const issuer = makeIssuer({ audience: "notebook-resource" });
+    const nonce = "test-login-nonce";
+    const code = await authorizeCode(issuer, { nonce });
+    const tokens = await readJson(await exchangeCode(issuer, code));
+    const verify = await verifierFor(issuer);
+    const id = await jose.jwtVerify(tokens.id_token, verify, {
+      issuer: ISSUER_URL,
+      audience: CLIENT_ID,
+    });
+    const access = await jose.jwtVerify(tokens.access_token, verify, {
+      issuer: ISSUER_URL,
+      audience: "notebook-resource",
+    });
+    expect(id.payload.nonce).toBe(nonce);
+    expect(id.payload.sub).toBe(access.payload.sub);
+    expect(id.payload.token_use).toBe("id");
+    expect(access.payload.token_use).toBe("access");
+    expect(access.payload.nonce).toBeUndefined();
+    expect(tokens.id_token).not.toBe(tokens.access_token);
+
+    const refreshed = await readJson(
+      expectResponse(
+        await issuer.handle(
+          tokenRequest({
+            grant_type: "refresh_token",
+            client_id: CLIENT_ID,
+            refresh_token: tokens.refresh_token,
+          }),
+        ),
+      ),
+    );
+    const refreshedId = await jose.jwtVerify(refreshed.id_token, verify, {
+      issuer: ISSUER_URL,
+      audience: CLIENT_ID,
+    });
+    expect(refreshedId.payload.nonce).toBe(nonce);
+    expect(refreshedId.payload.sub).toBe(id.payload.sub);
+  });
+
+  it("does not issue a nonce when the authorization request omitted it", async () => {
+    const issuer = makeIssuer();
+    const tokens = await exchange(issuer);
+    expect(jose.decodeJwt(tokens.id_token).nonce).toBeUndefined();
+  });
+
+  it("rejects ID tokens at userinfo and refresh even when resource and client audiences match", async () => {
+    const issuer = makeIssuer();
+    const tokens = await exchange(issuer);
+    const response = expectResponse(
+      await issuer.handle(
+        new Request(`${ISSUER_URL}/userinfo`, {
+          headers: { authorization: `Bearer ${tokens.id_token}` },
+        }),
+      ),
+    );
+    expect(response.status).toBe(401);
+    await expectOAuthError(
+      expectResponse(
+        await issuer.handle(
+          tokenRequest({
+            grant_type: "refresh_token",
+            client_id: CLIENT_ID,
+            refresh_token: tokens.id_token,
+          }),
+        ),
+      ),
+      "invalid_grant",
+    );
+  });
+
   it("rejects an unknown authorization code", async () => {
     const issuer = makeIssuer();
     const response = await exchangeCode(issuer, "garbage-code");

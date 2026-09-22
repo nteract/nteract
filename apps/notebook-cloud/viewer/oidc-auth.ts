@@ -1,9 +1,8 @@
 // Browser-side OIDC client for the cloud viewer.
 //
-// The PKCE verifier lives in localStorage, so the viewer performs discovery and
-// token exchange itself. Every network request in this module is bounded by the
-// same timeout path so callback completion, login start, and token renewal fail
-// into recoverable UI instead of leaving a pending browser promise forever.
+// The legacy flow keeps its PKCE verifier in localStorage and performs provider
+// requests here, bounded by a shared timeout. Server flow only returns a login
+// URL on the viewer origin; discovery, PKCE, and tokens stay with the Worker.
 
 export const NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY = "nteract:notebook-cloud:oidc-request";
 export const NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY = "nteract:notebook-cloud:oidc-token";
@@ -81,6 +80,8 @@ export interface CloudOidcAuthConfig {
   issuer: string;
   clientId: string;
   redirectUri: string;
+  /** Omit for the legacy browser PKCE flow; server keeps tokens out of browser storage. */
+  flow?: "server";
   providerLabel?: string;
   scope?: string;
   /**
@@ -151,6 +152,7 @@ export function normalizeOidcAuthConfig(
     issuer,
     clientId,
     redirectUri,
+    ...(input?.flow === "server" ? { flow: "server" as const } : {}),
     ...(providerLabel ? { providerLabel } : {}),
     ...(localOidc ? { localOidc: true } : {}),
     scope: input?.scope?.trim() || DEFAULT_OIDC_SCOPE,
@@ -201,6 +203,9 @@ export function refreshStoredOidcToken(
     nowSeconds?: number;
   } & OidcFetchTimeoutOptions,
 ): Promise<CloudOidcTokenState> {
+  if (config.flow === "server") {
+    return Promise.reject(new Error("Server OIDC sessions do not use browser token refresh."));
+  }
   const refreshKey = oidcRefreshKey(config);
   let storageRefreshes = refreshesByStorage.get(input.storage);
   if (!storageRefreshes) {
@@ -340,6 +345,14 @@ export async function beginOidcLogin(
     fetchImpl?: typeof fetch;
   } & OidcFetchTimeoutOptions,
 ): Promise<URL> {
+  if (config.flow === "server") {
+    const loginUrl = new URL("/api/auth/oidc/login", config.redirectUri);
+    const returnUrl = safeSameOriginReturnUrl(input.currentUrl, loginUrl.origin);
+    // A path beginning with two slashes becomes a different origin when it is
+    // used as a redirect Location, even if it came from a same-origin URL.
+    loginUrl.searchParams.set("return_to", returnUrl.startsWith("//") ? "/" : returnUrl);
+    return loginUrl;
+  }
   const requestState = await createOidcRequestState(input.currentUrl);
   const endpoints = await discoverOidcEndpoints(config, input.fetchImpl, input);
   input.storage.setItem(NOTEBOOK_CLOUD_OIDC_REQUEST_STORAGE_KEY, JSON.stringify(requestState));
@@ -376,6 +389,9 @@ export async function completeOidcRedirect(
     fetchImpl?: typeof fetch;
   } & OidcFetchTimeoutOptions,
 ): Promise<{ returnUrl: string; token: CloudOidcTokenState }> {
+  if (config.flow === "server") {
+    throw new Error("Server OIDC callbacks must be completed by the server.");
+  }
   const callbackUrl = new URL(input.callbackUrl);
   const error = callbackUrl.searchParams.get("error");
   if (error) {

@@ -68,6 +68,68 @@ before(async () => {
   await initializeTestRuntimedWasm();
 });
 
+describe("server OIDC route boundaries", () => {
+  const settings = {
+    NOTEBOOK_CLOUD_OIDC_FLOW: "server",
+    NOTEBOOK_CLOUD_OIDC_ISSUER: "https://issuer.example.test",
+    NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "public-client-id",
+    NOTEBOOK_CLOUD_OIDC_CLIENT_SECRET: "private-client-secret-never-publish",
+    NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+  };
+
+  it("publishes the server flow but never the client secret", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/n"),
+      fakeEnv(settings),
+      fakeContext(),
+    );
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /"flow":"server"/);
+    assert.doesNotMatch(html, /private-client-secret-never-publish/);
+  });
+
+  it("does not accept browser bearer-session establishment in server mode", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        method: "POST",
+        headers: { Origin: "https://cloud.test", Authorization: "Bearer old-browser-token" },
+      }),
+      fakeEnv(settings),
+      fakeContext(),
+    );
+    assert.equal(response.status, 405);
+  });
+
+  it("requires a trusted origin for server-cookie WebSocket handshakes", async () => {
+    for (const origin of [undefined, "https://other-preview.test"]) {
+      const headers = new Headers({
+        Cookie: `__Host-nteract_cloud_server_session=${"a".repeat(43)}`,
+        Upgrade: "websocket",
+      });
+      if (origin) headers.set("Origin", origin);
+      const response = await worker.fetch(
+        new Request("https://cloud.test/n/demo/sync", { headers }),
+        fakeEnv(settings),
+        fakeContext(),
+      );
+      assert.equal(response.status, 403);
+    }
+  });
+
+  it("rejects cross-origin logout before accessing durable session state", async () => {
+    const response = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        method: "DELETE",
+        headers: { Origin: "https://other-preview.test" },
+      }),
+      fakeEnv(settings),
+      fakeContext(),
+    );
+    assert.equal(response.status, 403);
+  });
+});
+
 describe("catalog schema runtime initialization", () => {
   it("dedupes duplicate active attach jobs before creating the owner unique index", async () => {
     const db = new FakeD1();

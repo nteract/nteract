@@ -14,6 +14,8 @@ export interface CloudAppSession {
   provider: "oidc";
   expires_at: number;
   cache_key: string;
+  /** Validated display name returned by the private server-session status API. */
+  display_name?: string;
 }
 
 export interface CloudAppSessionStatus {
@@ -140,8 +142,13 @@ export function isCloudAppSession(value: unknown): value is CloudAppSession {
     candidate.provider === "oidc" &&
     Number.isFinite(candidate.expires_at) &&
     typeof candidate.cache_key === "string" &&
+    (candidate.display_name === undefined ||
+      (typeof candidate.display_name === "string" &&
+        candidate.display_name.trim().length > 0 &&
+        candidate.display_name.length <= 128)) &&
     Object.keys(candidate).every(
-      (key) => key === "provider" || key === "expires_at" || key === "cache_key",
+      (key) =>
+        key === "provider" || key === "expires_at" || key === "cache_key" || key === "display_name",
     )
   );
 }

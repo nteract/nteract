@@ -81,16 +81,31 @@ async function fetchUserInfo(input: {
     }, FETCH_TIMEOUT_MS);
   });
   const request = async () => {
-    const response = await fetch(input.endpoint, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${input.token}`,
-        "User-Agent": "nteract-notebook-cloud/1.0",
-      },
-      redirect: "error",
-      signal: controller.signal,
-    });
+    const fetchProfile = (method: "GET" | "POST") =>
+      fetch(input.endpoint, {
+        method,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${input.token}`,
+          "User-Agent": "nteract-notebook-cloud/1.0",
+        },
+        // Reject redirects explicitly; never forward this bearer token elsewhere.
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    let response = await fetchProfile("POST");
+    // Keep compatibility with POST-only providers. Retry only when the same
+    // endpoint explicitly allows GET, within the original request deadline.
+    if (
+      response.status === 405 &&
+      response.headers
+        .get("allow")
+        ?.split(",")
+        .some((method) => method.trim().toUpperCase() === "GET")
+    ) {
+      void response.body?.cancel().catch(() => {});
+      response = await fetchProfile("GET");
+    }
     if (!response.ok) {
       void response.body?.cancel().catch(() => {});
       throw new OidcUserInfoError(
@@ -177,7 +192,9 @@ function parseUserInfo(body: string, subject: string): OidcUserInfo {
     "email",
   ] as const) {
     const claim = claims[field];
-    if (claim === undefined) continue;
+    // Providers sometimes represent an absent optional claim as JSON null.
+    // It contributes no profile data or authority, just like an omitted claim.
+    if (claim === undefined || claim === null) continue;
     const limit = field === "picture" ? 2048 : field === "email" ? 320 : 256;
     if (
       typeof claim !== "string" ||
@@ -190,7 +207,11 @@ function parseUserInfo(body: string, subject: string): OidcUserInfo {
     }
     if (claim.trim()) profile[field] = claim.trim();
   }
-  if (claims.email_verified !== undefined && typeof claims.email_verified !== "boolean") {
+  if (
+    claims.email_verified !== undefined &&
+    claims.email_verified !== null &&
+    typeof claims.email_verified !== "boolean"
+  ) {
     throw new OidcUserInfoError("OIDC UserInfo email verification claim is invalid");
   }
   if (profile.email) {

@@ -18,6 +18,7 @@ import {
   clearCloudOidcAuth,
   oidcDisplayName,
   readStoredOidcToken,
+  type CloudOidcAuthConfig,
   type CloudOidcClaims,
 } from "./oidc-auth";
 
@@ -109,7 +110,18 @@ export function cloudPrototypeAuthFromWindow(): CloudPrototypeAuthState {
     if (!window.localStorage) {
       return anonymousAuthState();
     }
-    return readCloudPrototypeAuth(window.localStorage);
+    // Read the server's bootstrap policy before the store's synchronous first
+    // paint and for legacy callers such as live-sync. Do not import the full
+    // viewer config loader here: this module also ships in the small callback
+    // bundle, which must not acquire notebook/dashboard dependencies.
+    const element =
+      typeof document === "undefined"
+        ? null
+        : document.querySelector<HTMLScriptElement>("#nteract-cloud-auth-config");
+    const config = element
+      ? (JSON.parse(element.textContent ?? "{}") as { oidc?: Pick<CloudOidcAuthConfig, "flow"> })
+      : null;
+    return readCloudPrototypeAuth(window.localStorage, config?.oidc);
   } catch {
     return anonymousAuthState();
   }
@@ -142,11 +154,17 @@ export function shouldShowCloudHeaderSignIn(
 
 export function readCloudPrototypeAuth(
   storage: Pick<CloudPrototypeAuthStorage, "getItem">,
+  oidc?: Pick<CloudOidcAuthConfig, "flow"> | null,
 ): CloudPrototypeAuthState {
   const token = storage.getItem(NOTEBOOK_CLOUD_DEV_TOKEN_STORAGE_KEY)?.trim() ?? "";
   const requestedScope = parseStoredScope(storage.getItem(NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY));
-  const oidcSession = readStoredOidcToken(storage);
   if (!token) {
+    // Server sessions are represented only by the HttpOnly app-session cookie.
+    // A previous deployment's localStorage token is not identity authority.
+    if (oidc?.flow === "server") {
+      return anonymousAuthState();
+    }
+    const oidcSession = readStoredOidcToken(storage);
     if (oidcSession.token) {
       return {
         mode: "oidc",

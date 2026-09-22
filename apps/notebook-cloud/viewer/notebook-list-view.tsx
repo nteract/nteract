@@ -401,17 +401,23 @@ export function CloudNotebookListView({
     auth.refreshAuthState();
   };
 
-  const headerDetail = cloudNotebookListHeaderDetail(authState, hasAppSession, authConfig);
   const [currentUserDisplay, setCurrentUserDisplay] = useState<string | null>(null);
   const [currentUserAvatar, setCurrentUserAvatar] = useState<string | null>(null);
-  // Prefer the unified user store's display name (delivered with the list
-  // response) over auth-claim parsing for the header identity.
+  const displayName = appSessionStatus.session?.display_name ?? currentUserDisplay;
+  const headerDetail = cloudNotebookListHeaderDetail(
+    authState,
+    hasAppSession,
+    authConfig,
+    displayName,
+  );
+  // Cookie-only boots hydrate the validated name through session status. The
+  // list response remains a fallback for browser-token and local-dev flows.
   const currentUserActor = cloudNotebookListCurrentUserActor(
     authState,
-    currentUserDisplay,
+    displayName,
     currentUserAvatar,
   );
-  const currentUserAccountDetail = cloudNotebookListAccountDetail(authState, currentUserDisplay);
+  const currentUserAccountDetail = cloudNotebookListAccountDetail(authState, displayName);
 
   return (
     <main className="cloud-notebook-list-page nb-app">
@@ -459,7 +465,7 @@ export function CloudNotebookListView({
                 </Button>
                 <NotebookAccountMenu
                   actor={currentUserActor}
-                  detail={currentUserDisplay ?? headerDetail}
+                  detail={displayName ?? headerDetail}
                   accountDetail={currentUserAccountDetail}
                 >
                   <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
@@ -722,6 +728,7 @@ function cloudNotebookListHeaderDetail(
   authState: CloudPrototypeAuthState,
   hasAppSession: boolean,
   authConfig: CloudViewerAuthConfig,
+  displayName: string | null,
 ): string {
   if (authState.mode === "oidc_expired" && !hasAppSession) {
     return "Session expired";
@@ -732,7 +739,7 @@ function cloudNotebookListHeaderDetail(
   if (authState.mode === "dev") {
     return authState.user ? `Local: ${authState.user}` : "Local auth";
   }
-  const firstName = cloudNotebookListFirstName(authState);
+  const firstName = cloudNotebookListFirstName(authState, displayName);
   return firstName ? `by ${firstName}` : "Signed in";
 }
 
@@ -773,9 +780,15 @@ function cloudNotebookListAccountDetail(
   return email === label ? null : email;
 }
 
-function cloudNotebookListFirstName(authState: CloudPrototypeAuthState): string | null {
+function cloudNotebookListFirstName(
+  authState: CloudPrototypeAuthState,
+  displayName: string | null,
+): string | null {
   const claimName =
-    authState.oidcClaims?.given_name?.trim() || authState.oidcClaims?.name?.trim() || "";
+    displayName?.trim() ||
+    authState.oidcClaims?.given_name?.trim() ||
+    authState.oidcClaims?.name?.trim() ||
+    "";
   if (!claimName || claimName.includes("@")) {
     return null;
   }

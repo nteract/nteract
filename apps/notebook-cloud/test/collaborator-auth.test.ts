@@ -8,6 +8,7 @@ import {
   NOTEBOOK_CLOUD_SCOPE_STORAGE_KEY,
   NOTEBOOK_CLOUD_USER_STORAGE_KEY,
   cloudBrowserCanUseAuthenticatedApi,
+  cloudPrototypeAuthFromWindow,
   cloudHttpHeadersFromPrototypeAuthState,
   cloudNotebookSignInCopy,
   clearCloudPrototypeDevAuth,
@@ -28,6 +29,66 @@ import {
 } from "../viewer/collaborator-auth.ts";
 
 describe("cloud collaborator auth", () => {
+  it("ignores legacy OIDC storage when the server owns the session", () => {
+    const storage: Pick<CloudPrototypeAuthStorage, "getItem"> = {
+      getItem(key) {
+        assert.notEqual(key, NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY);
+        return null;
+      },
+    };
+    const state = readCloudPrototypeAuth(storage, { flow: "server" });
+    assert.equal(state.mode, "anonymous");
+    assert.equal(state.token, null);
+    assert.equal(state.oidcClaims, null);
+    assert.deepEqual(cloudSyncAuthFromPrototypeAuthState(state).headers, {});
+  });
+
+  it("applies server flow before the store seed and direct live-sync reads", (t) => {
+    const descriptors = ["window", "document"].map((key) => ({
+      key,
+      descriptor: Object.getOwnPropertyDescriptor(globalThis, key),
+    }));
+    t.after(() => {
+      for (const { key, descriptor } of descriptors) {
+        if (descriptor) {
+          Object.defineProperty(globalThis, key, descriptor);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+    });
+    const storage = new MemoryStorage();
+    storage.setItem(
+      NOTEBOOK_CLOUD_OIDC_TOKEN_STORAGE_KEY,
+      JSON.stringify({
+        accessToken: "legacy-access-token",
+        refreshToken: "legacy-refresh-token",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        claims: { sub: "old-provider-user" },
+      }),
+    );
+    assert.equal(readCloudPrototypeAuth(storage).mode, "oidc");
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { localStorage: storage },
+    });
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        querySelector(selector: string) {
+          assert.equal(selector, "#nteract-cloud-auth-config");
+          return { textContent: JSON.stringify({ oidc: { flow: "server" } }) };
+        },
+      },
+    });
+
+    const state = cloudPrototypeAuthFromWindow();
+    assert.equal(state.mode, "anonymous");
+    assert.equal(state.token, null);
+    assert.equal(state.user, null);
+    assert.deepEqual(cloudSyncAuthFromPrototypeAuthState(state).protocols, []);
+  });
+
   it("uses anonymous viewer auth when no prototype token is stored", () => {
     const state = readCloudPrototypeAuth(new MemoryStorage());
 

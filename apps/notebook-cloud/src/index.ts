@@ -185,6 +185,13 @@ import {
   trustsLoopbackRequestHeaders,
 } from "./loopback.ts";
 import { handleLocalOidcRequest, localOidcEnabled } from "./dev-oidc.ts";
+import { SERVER_SESSION_COOKIE, serverOidcEnabled } from "./oidc-session-store.ts";
+import {
+  beginServerOidcLogin,
+  completeServerOidcLogin,
+  deleteServerOidcSession,
+  serverOidcSessionStatus,
+} from "./server-oidc.ts";
 
 export { NotebookRoom, WorkstationEvents, OwnerComputeIndex };
 
@@ -272,6 +279,14 @@ type SnapshotPairValidationResult =
 
 const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
+    match: exactPath("/api/auth/oidc/login"),
+    methods: ["GET"],
+    handler: (_match, request, env) =>
+      serverOidcEnabled(env)
+        ? beginServerOidcLogin(request, env)
+        : json({ error: "not found" }, 404),
+  },
+  {
     match: exactPath("/api/health"),
     methods: ["GET"],
     handler: routeHealth,
@@ -310,7 +325,12 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
   {
     match: exactPath("/oidc"),
     methods: ["GET", "HEAD"],
-    handler: (_match, request, env) => oidcCallbackViewer(request, env),
+    handler: (_match, request, env) =>
+      serverOidcEnabled(env)
+        ? completeServerOidcLogin(request, env, (identity) =>
+            syncAuthenticatedProfile(env, identity),
+          )
+        : oidcCallbackViewer(request, env),
   },
   {
     match: routePath("/n/:notebookId/sync", { trailingSlash: "optional" }),
@@ -1025,7 +1045,11 @@ function hasAppSessionCookie(request: Request): boolean {
   }
   return cookie
     .split(";")
-    .some((part) => part.trim().startsWith(`${NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME}=`));
+    .some((part) =>
+      [NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME, SERVER_SESSION_COOKIE].some((name) =>
+        part.trim().startsWith(`${name}=`),
+      ),
+    );
 }
 
 function applicationWebSocketProtocolFromHeader(value: string | null): string | undefined {
@@ -1099,6 +1123,17 @@ async function routeAppSession(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const timing = appSessionServerTiming();
+
+  if (serverOidcEnabled(env)) {
+    if (request.method === "GET")
+      return serverOidcSessionStatus(request, env, (identity) =>
+        syncAuthenticatedProfile(env, identity),
+      );
+    const rejection = rejectUntrustedMutationOrigin(request, env);
+    if (rejection) return rejection;
+    if (request.method === "DELETE") return deleteServerOidcSession(request, env);
+    return json({ error: "Use the server sign-in redirect" }, 405);
+  }
 
   if (request.method === "GET") {
     const existingSession = appSessionConfigured(env)
@@ -6518,6 +6553,7 @@ function oidcAuthConfigForRequest(request: Request, env: Env): Record<string, st
   return {
     issuer,
     clientId,
+    ...(serverOidcEnabled(env) ? { flow: "server" } : {}),
     redirectUri:
       env.NOTEBOOK_CLOUD_OIDC_REDIRECT_URI?.trim() ||
       new URL("/oidc", publicOrigin(request, env)).href,

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { CloudAuthStoreProvider } from "../cloud-auth-context";
@@ -192,6 +192,73 @@ describe("CloudNotebookListView", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText("342 notebooks · showing 2 · 0 active now")).toBeTruthy();
     dispose();
+  });
+
+  it("shows the private session display name on a bootstrap-only server login", async () => {
+    const session = { provider: "oidc" as const, expires_at: 99_999, cache_key: "session-a" };
+    const bootstrap = document.createElement("script");
+    bootstrap.id = "nteract-cloud-bootstrap";
+    bootstrap.type = "application/json";
+    bootstrap.textContent = JSON.stringify({
+      kind: "notebook-list",
+      saved_at: "2026-09-22T20:00:00Z",
+      session,
+      notebooks: [notebook("nb-a", "Notebook A")],
+    });
+    document.body.append(bootstrap);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const serverConfig: CloudViewerAuthConfig = {
+      localDev: null,
+      oidc: {
+        flow: "server",
+        issuer: "https://issuer.test",
+        clientId: "client-id",
+        redirectUri: `${window.location.origin}/oidc`,
+      },
+    };
+    const store = new CloudAuthStore({
+      readAuthState: () => ({
+        mode: "anonymous",
+        token: null,
+        user: null,
+        oidcClaims: null,
+        requestedScope: null,
+        problem: null,
+      }),
+    });
+    const readSession = vi.fn(async () => ({
+      ok: true as const,
+      session: { ...session, display_name: "Alice Example" },
+    }));
+    const dispose = store.activate(
+      { authConfig: serverConfig, initialSession: session },
+      { now: () => 0, readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={serverConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      expect(screen.getByText("Notebook A")).toBeTruthy();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("by Alice")).toBeTruthy();
+      const trigger = screen.getByRole("button", { name: "Alice Example" });
+      fireEvent.keyDown(trigger, { key: "Enter", code: "Enter" });
+      expect(screen.getByRole("menu").textContent).toContain("Alice Example");
+      expect(screen.queryByText("You")).toBeNull();
+      expect(readSession).toHaveBeenCalledTimes(1);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(storage.getItem("nteract:notebook-cloud:oidc-token")).toBeNull();
+      expect(bootstrap.textContent).not.toContain("Alice Example");
+    } finally {
+      dispose();
+      bootstrap.remove();
+    }
   });
 
   it("keeps cached notebooks visible when revalidation fails", async () => {

@@ -1,7 +1,12 @@
 import type { AuthenticatedConnection } from "./identity.ts";
 import { normalizeInviteEmail } from "./sharing.ts";
+import {
+  readServerAppSession,
+  serverOidcEnabled,
+  type ServerSessionEnvironment,
+} from "./oidc-session-store.ts";
 
-export interface AppSessionEnvironment {
+export interface AppSessionEnvironment extends ServerSessionEnvironment {
   NOTEBOOK_CLOUD_APP_SESSION_SECRET?: string;
 }
 
@@ -71,6 +76,7 @@ export async function appSessionRenewalCookie(
   session: CloudAppSession | null | undefined,
   nowSeconds = currentEpochSeconds(),
 ): Promise<string | null> {
+  if (serverOidcEnabled(env)) return null;
   if (!session || session.expiresAt <= nowSeconds) {
     return null;
   }
@@ -109,6 +115,7 @@ export async function readCloudAppSession(
   request: Request,
   nowSeconds = currentEpochSeconds(),
 ): Promise<CloudAppSession | null> {
+  if (serverOidcEnabled(env)) return readServerAppSession(env, request, nowSeconds);
   const value = cookieValue(request.headers.get("Cookie"), NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME);
   if (!value) {
     return null;
@@ -133,6 +140,34 @@ export async function readCloudAppSession(
         }
       : {}),
     ...(payload.display_name ? { displayName: payload.display_name } : {}),
+  };
+}
+
+/** Server sessions project the same identity without putting tokens in cookies. */
+export async function createServerAppSession(
+  env: AppSessionEnvironment,
+  identity: AuthenticatedConnection,
+  cacheKey: string,
+  expiresAt: number,
+  nowSeconds: number,
+): Promise<CloudAppSession> {
+  const proof = await verifiedEmailProof(env, identity, nowSeconds);
+  return {
+    provider: "oidc",
+    cacheKey,
+    principal: identity.principal,
+    principalNamespace: identity.metadata.principalNamespace,
+    issuedAt: nowSeconds,
+    expiresAt,
+    ...(identity.metadata.displayName
+      ? { displayName: appSessionDisplayName(identity.metadata.displayName) }
+      : {}),
+    ...(proof.identity_verified_at !== undefined
+      ? {
+          identityVerifiedAt: proof.identity_verified_at,
+          verifiedEmailBinding: proof.verified_email_binding,
+        }
+      : {}),
   };
 }
 

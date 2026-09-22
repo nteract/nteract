@@ -63,7 +63,7 @@ describe("optional OIDC UserInfo", () => {
     const calls: string[] = [];
     t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push(String(input));
-      assert.equal(init?.redirect, "error");
+      assert.equal(init?.redirect, "manual");
       if (String(input).endsWith("openid-configuration"))
         return Response.json({
           issuer,
@@ -220,7 +220,136 @@ describe("optional OIDC UserInfo", () => {
 });
 
 describe("UserInfo validation and bounded cache", () => {
-  for (const sub of [undefined, "other", " person", 7]) {
+  it("accepts a GET-only provider while keeping credentials and the deadline on the same endpoint", async (t) => {
+    const input = cachedInput();
+    const methods: string[] = [];
+    let signal: AbortSignal | null | undefined;
+    t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, init?: RequestInit) => {
+      assert.equal(String(url), input.endpoint);
+      assert.equal(init?.redirect, "manual");
+      assert.equal(init?.body, undefined);
+      assert.equal(new Headers(init?.headers).get("Authorization"), `Bearer ${input.token}`);
+      methods.push(init?.method ?? "");
+      if (init?.method === "POST") {
+        signal = init.signal;
+        return new Response(null, { status: 405, headers: { Allow: "HEAD, GET" } });
+      }
+      assert.equal(init?.signal, signal);
+      return Response.json({ sub: "person", name: "GET provider" });
+    });
+    assert.equal((await loadOidcUserInfo(input)).name, "GET provider");
+    assert.equal((await loadOidcUserInfo(input)).name, "GET provider");
+    assert.deepEqual(methods, ["POST", "GET"]);
+  });
+
+  it("does not retry authentication errors, outages, redirects or a 405 without GET permission", async (t) => {
+    for (const [status, allow] of [
+      [401, "GET"],
+      [403, "GET"],
+      [500, "GET"],
+      [307, "GET"],
+      [405, ""],
+      [405, "POST"],
+    ] as const) {
+      const fetch = t.mock.method(
+        globalThis,
+        "fetch",
+        async () => new Response(null, { status, headers: { Allow: allow } }),
+      );
+      await assert.rejects(loadOidcUserInfo(cachedInput()), OidcUserInfoError);
+      assert.equal(fetch.mock.callCount(), 1);
+      fetch.mock.restore();
+    }
+  });
+
+  it("still rejects redirects and mismatched subjects after a GET retry", async (t) => {
+    for (const response of [
+      new Response(null, { status: 302, headers: { Location: "https://untrusted.test/" } }),
+      Response.json({ sub: "other-person" }),
+    ]) {
+      const input = cachedInput();
+      const fetch = t.mock.method(
+        globalThis,
+        "fetch",
+        async (url: RequestInfo | URL, init?: RequestInit) => {
+          assert.equal(String(url), input.endpoint);
+          assert.equal(init?.redirect, "manual");
+          return init?.method === "POST"
+            ? new Response(null, { status: 405, headers: { Allow: "GET" } })
+            : response;
+        },
+      );
+      await assert.rejects(loadOidcUserInfo(input), OidcUserInfoError);
+      assert.equal(fetch.mock.callCount(), 2);
+      fetch.mock.restore();
+    }
+  });
+
+  it("rejects provider redirects without forwarding bearer credentials or caching their bodies", async (t) => {
+    for (const status of [301, 302, 303, 307, 308]) {
+      const input = cachedInput();
+      const requests: string[] = [];
+      let repaired = false;
+      const fetchMock = t.mock.method(
+        globalThis,
+        "fetch",
+        async (url: RequestInfo | URL, init?: RequestInit) => {
+          requests.push(String(url));
+          assert.equal(String(url), input.endpoint);
+          assert.equal(
+            init?.redirect,
+            "manual",
+            "celld must not forward the bearer token on redirects",
+          );
+          assert.equal(new Headers(init?.headers).get("Authorization"), `Bearer ${input.token}`);
+          return new Response(JSON.stringify({ sub: "person", name: "Expected User" }), {
+            status: repaired ? 200 : status,
+            headers: {
+              "Content-Type": "application/json",
+              ...(!repaired ? { Location: "https://untrusted.test/userinfo" } : {}),
+            },
+          });
+        },
+      );
+      await assert.rejects(
+        loadOidcUserInfo(input),
+        (error: unknown) =>
+          error instanceof OidcUserInfoError &&
+          error.status === 503 &&
+          error.message === "OIDC UserInfo request failed",
+      );
+      assert.deepEqual(requests, [input.endpoint]);
+      repaired = true;
+      assert.equal((await loadOidcUserInfo(input)).name, "Expected User");
+      assert.deepEqual(requests, [input.endpoint, input.endpoint]);
+      fetchMock.mock.restore();
+    }
+  });
+
+  it("treats null optional profile claims as absent without granting email verification", async (t) => {
+    const profile = {
+      sub: "person",
+      name: null,
+      given_name: null,
+      family_name: null,
+      preferred_username: null,
+      picture: null,
+      email: null,
+      email_verified: null,
+    };
+    t.mock.method(globalThis, "fetch", async () => Response.json(profile));
+    assert.deepEqual(await loadOidcUserInfo(cachedInput()), { sub: "person" });
+    t.mock.method(globalThis, "fetch", async () =>
+      Response.json({ ...profile, email: "person@example.test" }),
+    );
+    assert.deepEqual(await loadOidcUserInfo(cachedInput()), {
+      sub: "person",
+      email: "person@example.test",
+      email_verified: false,
+    });
+  });
+
+  for (const sub of [undefined, null, "other", " person", 7]) {
     it(`requires exact verified subject: ${sub}`, async (t) => {
       t.mock.method(globalThis, "fetch", async () =>
         Response.json({ sub, email: "person@example.test", email_verified: true }),

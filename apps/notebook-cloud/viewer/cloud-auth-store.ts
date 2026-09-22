@@ -319,7 +319,12 @@ export class CloudAuthStore {
 
   /** Re-read auth from storage. The access-request reducer and drivers call this. */
   refreshAuthState(): void {
-    this._authState$.next(this.readAuthState());
+    const authState = this.readAuthState();
+    this._authState$.next(
+      this.authConfig?.oidc?.flow === "server"
+        ? cloudBrowserApiAuthStateForFetch(authState)
+        : authState,
+    );
     // A renewal failure is only meaningful while a refresh is still owed. When
     // storage no longer needs one (sign-out, cross-tab token replacement) or a
     // fresh app session covers us, the notice clears with the re-read.
@@ -358,6 +363,12 @@ export class CloudAuthStore {
     this.establishAppSessionOp = deps.establishAppSession ?? establishCloudAppSession;
     this.refreshOidcTokenOp =
       deps.refreshOidcToken ?? ((oidc, input) => refreshStoredOidcToken(oidc, input));
+    // A deployment can switch from browser tokens to server sessions while
+    // legacy tokens remain in localStorage. They must not establish a new
+    // session or supply the viewer's identity after this change.
+    if (this.authConfig.oidc?.flow === "server") {
+      this.refreshAuthState();
+    }
 
     const scheduler = deps.scheduler;
     const focus$ = deps.windowFocus$ ?? windowFocus$;
@@ -393,17 +404,21 @@ export class CloudAuthStore {
     // OIDC refresh: interval, focus, visibility rise, and cross-tab storage
     // writes all funnel through one `exhaustMap`, so a trigger landing mid
     // refresh is dropped rather than starting a second refresh.
-    subscription.add(
-      merge(
-        timer(0, AUTH_REFRESH_INTERVAL_MS, scheduler),
-        focus$,
-        visibleRise$,
-        appSessionSettled$,
-        storage$.pipe(tap(() => this.refreshAuthState())),
-      )
-        .pipe(exhaustMap(() => from(this.runRefreshOidc())))
-        .subscribe(),
-    );
+    if (this.authConfig.oidc?.flow === "server") {
+      subscription.add(storage$.subscribe(() => this.refreshAuthState()));
+    } else {
+      subscription.add(
+        merge(
+          timer(0, AUTH_REFRESH_INTERVAL_MS, scheduler),
+          focus$,
+          visibleRise$,
+          appSessionSettled$,
+          storage$.pipe(tap(() => this.refreshAuthState())),
+        )
+          .pipe(exhaustMap(() => from(this.runRefreshOidc())))
+          .subscribe(),
+      );
+    }
 
     // App-session fetch: a newer trigger `switchMap`s away the in-flight fetch.
     subscription.add(
@@ -436,12 +451,20 @@ export class CloudAuthStore {
         timer(0, AUTH_REFRESH_INTERVAL_MS, scheduler),
         focus$,
         visibleRise$,
-        appSessionSettled$,
-        oidcTokenChanged$,
+        this.authConfig.oidc?.flow === "server" ? EMPTY : appSessionSettled$,
+        this.authConfig.oidc?.flow === "server" ? EMPTY : oidcTokenChanged$,
       ).subscribe(() => this.renewIfNeeded()),
     );
 
-    if (!cloudAppSessionIsFresh(config.initialSession, this.nowSeconds())) {
+    // HTML bootstrap intentionally omits personal profile fields. Hydrate a
+    // fresh server session once through the private status API. Sessions already
+    // in their renewal window use the existing boot timer's GET instead.
+    const hydrateServerDisplay =
+      this.authConfig.oidc?.flow === "server" &&
+      config.initialSession &&
+      !config.initialSession.display_name &&
+      !cloudAppSessionNeedsRenewal(config.initialSession, this.nowSeconds());
+    if (hydrateServerDisplay || !cloudAppSessionIsFresh(config.initialSession, this.nowSeconds())) {
       this._appSessionFetch$.next();
     }
 
@@ -569,6 +592,21 @@ export class CloudAuthStore {
    * OIDC token.
    */
   private renewIfNeeded(): void {
+    if (this.authConfig?.oidc?.flow === "server") {
+      this.establishedToken = null;
+      const view = this._appSession$.getValue();
+      // The cookie remains the sole authority. GET slides an existing app
+      // session; a missing session requires a new server login, never a POST
+      // backed by a token left over from the browser flow.
+      if (
+        view.status !== "loading" &&
+        (view.status === "error" ||
+          (view.session && cloudAppSessionNeedsRenewal(view.session, this.nowSeconds())))
+      ) {
+        this.refreshAppSessionStatus();
+      }
+      return;
+    }
     const authState = this._authState$.getValue();
     if (authState.mode !== "oidc" || !authState.token) {
       this.establishedToken = null;
@@ -617,6 +655,9 @@ export class CloudAuthStore {
   }
 
   private shouldRefreshStoredOidc(): boolean {
+    if (this.authConfig?.oidc?.flow === "server") {
+      return false;
+    }
     try {
       return Boolean(storedOidcTokenNeedsRefresh(this.oidcStorage, this.nowSeconds()));
     } catch {
