@@ -192,7 +192,9 @@ function parseUserInfo(body: string, subject: string): OidcUserInfo {
     "email",
   ] as const) {
     const claim = claims[field];
-    if (claim === undefined) continue;
+    // Providers sometimes represent an absent optional claim as JSON null.
+    // It contributes no profile data or authority, just like an omitted claim.
+    if (claim === undefined || claim === null) continue;
     const limit = field === "picture" ? 2048 : field === "email" ? 320 : 256;
     if (
       typeof claim !== "string" ||
@@ -205,7 +207,11 @@ function parseUserInfo(body: string, subject: string): OidcUserInfo {
     }
     if (claim.trim()) profile[field] = claim.trim();
   }
-  if (claims.email_verified !== undefined && typeof claims.email_verified !== "boolean") {
+  if (
+    claims.email_verified !== undefined &&
+    claims.email_verified !== null &&
+    typeof claims.email_verified !== "boolean"
+  ) {
     throw new OidcUserInfoError("OIDC UserInfo email verification claim is invalid");
   }
   if (profile.email) {

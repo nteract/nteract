@@ -326,7 +326,30 @@ describe("UserInfo validation and bounded cache", () => {
     }
   });
 
-  for (const sub of [undefined, "other", " person", 7]) {
+  it("treats null optional profile claims as absent without granting email verification", async (t) => {
+    const profile = {
+      sub: "person",
+      name: null,
+      given_name: null,
+      family_name: null,
+      preferred_username: null,
+      picture: null,
+      email: null,
+      email_verified: null,
+    };
+    t.mock.method(globalThis, "fetch", async () => Response.json(profile));
+    assert.deepEqual(await loadOidcUserInfo(cachedInput()), { sub: "person" });
+    t.mock.method(globalThis, "fetch", async () =>
+      Response.json({ ...profile, email: "person@example.test" }),
+    );
+    assert.deepEqual(await loadOidcUserInfo(cachedInput()), {
+      sub: "person",
+      email: "person@example.test",
+      email_verified: false,
+    });
+  });
+
+  for (const sub of [undefined, null, "other", " person", 7]) {
     it(`requires exact verified subject: ${sub}`, async (t) => {
       t.mock.method(globalThis, "fetch", async () =>
         Response.json({ sub, email: "person@example.test", email_verified: true }),
