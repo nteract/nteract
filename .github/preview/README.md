@@ -77,3 +77,25 @@ If the workflow fails, check the failed job and its summary to distinguish
 authorization, build, capacity, and deployment failures. After fixing the cause,
 use **Re-run all jobs**. A failed or skipped deployment does not mean the latest
 source revision is live, even if the URL still serves an earlier successful build.
+
+## Maintained PR comment
+
+Comment reporting uses the controller's `/status` endpoint. Trusted helpers call
+it before authorization, before deployment or cleanup, and after a successful
+operation. A separate trusted finalizer runs after failures or skipped jobs so a
+failed build can be reflected without giving the application build PR-write
+permissions. The controller derives the comment from live GitHub jobs and its
+deployment registry; helpers send only run and PR identity, never a requested
+status or application logs.
+
+The comment distinguishes the requested revision from the confirmed deployed
+revision. A failed update can leave an earlier deployment live. Obsolete runs
+are ignored so they cannot replace a newer status. The status-only resolver may
+report an outdated run for that decision; it must never replace the strict
+deployment authorization resolver.
+
+Enable these helpers through a newly reviewed reusable workflow revision, with
+`pull-requests: write` only on its trusted jobs, then update the caller's permission
+ceiling and pin after the controller trusts that revision. The application build
+keeps `contents: read` only. Existing pinned workflow revisions continue to use
+their original helpers until that rollout completes.

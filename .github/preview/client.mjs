@@ -31,6 +31,21 @@ export function controllerClient(env, fetcher = fetch, {
   }
 
   return {
+    async status(body) {
+      // The controller derives status from GitHub and its deployment registry.
+      // Do not forward artifacts, caller-supplied phases, or error/log text.
+      const identity = Object.fromEntries(["repository", "runId", "runAttempt", "pr", "previewId", "sourceSha", "action", "githubToken"]
+        .map(key => [key, body[key]]));
+      const response = await request("/status", identity);
+      check(response.ok, `Preview comment update failed (${response.status}); inspect run ${body.runId}`);
+      const result = await responseJson(response, "Preview controller");
+      check(typeof result?.updated === "boolean" &&
+        ["building", "deploying", "ready", "failed", "closed", "stale"].includes(result.status) &&
+        ["previewId", "pr", "sourceSha"].every(key => result[key] === body[key]),
+      "Preview status response does not match this request");
+      check(result.status !== "stale" || result.updated === false, "Stale preview status must not update the comment");
+      return result;
+    },
     async authorize(body) {
       const response = await request("/authorize", body);
       if (response.status === 429) {

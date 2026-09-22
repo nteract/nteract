@@ -8,7 +8,10 @@ try {
   // Resolve again on this fresh runner: authorization can change during a build.
   const request = await resolveRequest(process.env);
   if (request.action === "deploy") Object.assign(request, artifactFields(process.env));
-  await controllerClient(process.env).deploy(request);
+  const client = controllerClient(process.env);
+  await client.status(request);
+  await client.deploy(request);
+  await client.status(request);
   const message = `${request.action === "deploy" ? "Deployed" : "Stopped"} ${request.previewId} at ${request.sourceSha}`;
   console.log(message);
   if (process.env.GITHUB_STEP_SUMMARY) {
