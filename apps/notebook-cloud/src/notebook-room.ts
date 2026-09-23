@@ -2287,8 +2287,13 @@ export class NotebookRoom {
     if (!notebook || !workstationId || !runtimeSessionId) {
       return;
     }
+    const ownerPrincipal =
+      workstationId === MANAGED_PYTHON_WORKSTATION
+        ? await managedPythonSessionOwner(this.env, notebookId, runtimeSessionId)
+        : notebook.owner_principal;
+    if (!ownerPrincipal) return;
     const job = await updateWorkstationAttachJobStatus(this.env, {
-      ownerPrincipal: notebook.owner_principal,
+      ownerPrincipal,
       workstationId,
       jobId: runtimeSessionId,
       status: "completed",

@@ -246,6 +246,26 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
   );
   while (tasks.size) await Promise.all(tasks);
   assert.equal(calls.filter((call) => call.path === "/open").length, 2);
+  const resumed = await materializer.getWorkstationAttachment();
+  await room.markSelectedRuntimeSessionCompletedForIdle("coowner");
+  assert.equal(
+    sqlite
+      .prepare("SELECT status FROM workstation_attach_jobs WHERE id = ?")
+      .get(resumed.runtime_session_id).status,
+    "completed",
+  );
+  assert.equal(
+    await room.requestRuntimeResumeForExecution(
+      "coowner",
+      { ...resumed, status: "idle" },
+      "execute_cell",
+    ),
+    true,
+  );
+  while (tasks.size) await Promise.all(tasks);
+  const afterIdle = await materializer.getWorkstationAttachment();
+  assert.notEqual(afterIdle.runtime_session_id, resumed.runtime_session_id);
+  assert.equal(calls.filter((call) => call.path === "/open").length, 3);
   assert.ok(calls.every((call) => call.ownerPrincipal === "user:dev:bob"));
   await room.managedPython.get("coowner").runtime.close();
   while (tasks.size) await Promise.all(tasks);

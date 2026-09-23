@@ -115,7 +115,12 @@ export class RoomMaterializer {
         });
         this.notebookChangeWaiters.add(notify);
         try {
-          if (await this.withHost((host) => host.contains_notebook_heads(heads))) return true;
+          const present = await Promise.race([
+            this.withHost((host) => !expired && host.contains_notebook_heads(heads)),
+            timeout,
+          ]);
+          if (expired) return false;
+          if (present) return true;
           if (!(await Promise.race([changed, timeout]))) return false;
         } finally {
           this.notebookChangeWaiters.delete(notify);

@@ -644,6 +644,31 @@ describe("RoomHostHandle", () => {
 });
 
 describe("RoomMaterializer", () => {
+  it("times out a causal fence even while checkpoint I/O blocks the host queue", async () => {
+    const materializer = new RoomMaterializer("blocked", fakeState(), {} as Env);
+    let release!: () => void;
+    (materializer as unknown as { operationQueue: Promise<void> }).operationQueue = new Promise(
+      (resolve) => {
+        release = resolve;
+      },
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waiting = materializer.waitForNotebookHeads([], 1);
+    try {
+      const result = await Promise.race([
+        waiting,
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve("still blocked"), 100);
+        }),
+      ]);
+      assert.equal(result, false);
+    } finally {
+      release();
+      clearTimeout(timer);
+      await waiting;
+    }
+  });
+
   it("waits for causal notebook edits without blocking the sync that supplies them", async () => {
     const materializer = new RoomMaterializer("causal", fakeState(), {} as Env);
     const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:causal");
