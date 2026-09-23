@@ -1,5 +1,6 @@
 /** Real local celld cloud UI smoke; requires the opt-in managed Python provider. */
 import { chromium, expect } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { storageStateForDevIdentity } from "./hosted-collab-smoke-env.mjs";
 
 const origin = new URL(
@@ -19,6 +20,29 @@ const response = await fetch(fixtureUrl, {
 });
 if (!response.ok) throw new Error(`Create notebook: ${response.status} ${await response.text()}`);
 const notebook = await response.json();
+const blobBytes = `concurrent immutable output ${notebook.notebook_id}`;
+const blobHash = createHash("sha256").update(blobBytes).digest("hex");
+const blobUrl = new URL(`/api/n/${notebook.notebook_id}/blobs/${blobHash}`, origin);
+blobUrl.search = fixtureUrl.search;
+const uploads = await Promise.all(
+  Array.from({ length: 8 }, async (_, index) => {
+    const contentType = index % 2 ? "text/html" : "text/plain";
+    const response = await fetch(blobUrl, {
+      method: "PUT",
+      headers: { "content-type": contentType },
+      body: blobBytes,
+      signal: AbortSignal.timeout(30_000),
+    });
+    return { status: response.status, contentType };
+  }),
+);
+expect(uploads.filter((upload) => upload.status === 201)).toHaveLength(1);
+expect(uploads.filter((upload) => upload.status === 200)).toHaveLength(7);
+const storedBlob = await fetch(blobUrl, { signal: AbortSignal.timeout(30_000) });
+expect(storedBlob.headers.get("content-type")).toBe(
+  uploads.find((upload) => upload.status === 201).contentType,
+);
+expect(await storedBlob.text()).toBe(blobBytes);
 const browser = await chromium.launch({ headless: true });
 const started = performance.now();
 const measurements = {};
@@ -258,6 +282,7 @@ try {
         notebook: notebook.viewer_url,
         measurements,
         checks: [
+          "concurrent_blob_upload_preserves_first_writer_metadata",
           explicitAttach ? "first_attach_without_reconnect" : "first_run_allocates_without_attach",
           "persistent_variables",
           "viewer_convergence",

@@ -5916,7 +5916,7 @@ describe("Worker artifact routes", () => {
     assert.equal(env.DB.blobs.has(`runtime-demo:${hash}`), false);
 
     const response = await scopedPut(env, `/api/n/runtime-demo/blobs/${hash}`, body, {
-      "Content-Type": "image/png",
+      "Content-Type": "text/html",
       "X-Scope": "runtime_peer",
       "X-User": "runtime-service",
       "X-Operator": "runtime:py-3.12",
@@ -11916,13 +11916,14 @@ class FakeR2Bucket implements R2Bucket {
     key: string,
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
     options?: R2PutOptions,
-  ): Promise<R2Object> {
+  ): Promise<R2Object | null> {
     const object = new FakeR2Object(
       key,
       await toBytes(value),
       options?.httpMetadata,
       options?.customMetadata,
     );
+    if (options?.onlyIf?.etagDoesNotMatch === "*" && this.objects.has(key)) return null;
     this.objects.set(key, object);
     return object;
   }

@@ -142,7 +142,7 @@ export interface R2Bucket {
     key: string,
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
     options?: R2PutOptions,
-  ): Promise<R2Object>;
+  ): Promise<R2Object | null>;
   delete(key: string): Promise<void>;
 }
 
@@ -165,6 +165,7 @@ export interface R2ObjectBody extends R2Object {
 }
 
 export interface R2PutOptions {
+  onlyIf?: { etagDoesNotMatch: string };
   httpMetadata?: R2HTTPMetadata;
   customMetadata?: Record<string, string>;
 }

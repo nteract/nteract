@@ -81,8 +81,12 @@ test(
       },
       NOTEBOOK_SNAPSHOTS: {
         head: async (key) => blobs.get(key) ?? null,
-        put: async (key, bytes, metadata) =>
-          blobs.set(key, { bytes, size: bytes.byteLength, ...metadata }),
+        put: async (key, bytes, metadata) => {
+          if (blobs.has(key)) return null;
+          const object = { bytes, size: bytes.byteLength, ...metadata };
+          blobs.set(key, object);
+          return object;
+        },
       },
     };
     const materializer = {

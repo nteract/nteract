@@ -1,4 +1,5 @@
 import { normalizedBlobUploadContentType } from "./blob-content-type.ts";
+import { storeNotebookBlob } from "./blob-storage.ts";
 import type {
   DurableObjectStub,
   Env,
@@ -52,7 +53,6 @@ import {
   listActiveWorkstationAttachJobs,
   listNotebooksForPrincipal,
   listWorkstationsForPrincipal,
-  recordBlob,
   recordRevision,
   registerWorkstation,
   revokeNotebookAclRow,
@@ -5380,19 +5380,12 @@ async function routeBlob(
     return authorizedIdentity;
   }
 
-  // Content-addressed first-writer-wins: an existing object already holds
-  // these exact bytes (the hash was verified above), and its stored metadata
-  // (Content-Type) must not be rewritable by later writers. Skip the R2 write;
-  // recordBlob is idempotent and heals a missing catalog row.
-  const existing = await env.NOTEBOOK_SNAPSHOTS.head(key);
-  if (existing) {
-    await recordBlob(env, {
-      notebookId,
-      hash,
-      size: body.byteLength,
-      contentType,
-      r2Key: key,
-    });
+  const { deduplicated } = await storeNotebookBlob(env, notebookId, {
+    hash,
+    bytes: body,
+    contentType,
+  });
+  if (deduplicated) {
     cloudLog("info", "blob.upload.deduplicated", {
       notebook_id: notebookId,
       hash,
@@ -5405,23 +5398,6 @@ async function routeBlob(
     return json({ ok: true, key, size: body.byteLength, deduplicated: true }, 200);
   }
 
-  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
-    httpMetadata: {
-      contentType,
-      cacheControl: "public, max-age=31536000, immutable",
-    },
-    customMetadata: {
-      notebook_id: notebookId,
-      hash,
-    },
-  });
-  await recordBlob(env, {
-    notebookId,
-    hash,
-    size: body.byteLength,
-    contentType,
-    r2Key: key,
-  });
   cloudLog("info", "blob.upload.completed", {
     notebook_id: notebookId,
     hash,

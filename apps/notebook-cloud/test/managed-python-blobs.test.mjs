@@ -38,8 +38,12 @@ test("managed blobs normalize metadata, retain first writer and heal catalog ent
       NOTEBOOK_SNAPSHOTS: {
         head: async (key) => objects.get(key) ?? null,
         put: async (key, bytes, options) => {
+          assert.deepEqual(options.onlyIf, { etagDoesNotMatch: "*" });
+          if (objects.has(key)) return null;
           writes++;
-          objects.set(key, { size: bytes.length, ...options });
+          const stored = { size: bytes.length, ...options };
+          objects.set(key, stored);
+          return stored;
         },
       },
     };
@@ -79,6 +83,25 @@ test("managed blobs normalize metadata, retain first writer and heal catalog ent
       "image/png",
     );
     assert.equal(normalizedBlobUploadContentType("application/xml"), null);
+    const previousWrites = writes;
+    await Promise.all([
+      storeManagedPythonBlob(env, "notebook", {
+        hash: "concurrent",
+        bytes,
+        mediaType: "text/plain",
+      }),
+      storeManagedPythonBlob(env, "notebook", {
+        hash: "concurrent",
+        bytes,
+        mediaType: "text/html",
+      }),
+    ]);
+    assert.equal(writes, previousWrites + 1, "the conditional write admits exactly one writer");
+    assert.equal(
+      sqlite.prepare("SELECT content_type FROM notebook_blobs WHERE hash='concurrent'").get()
+        .content_type,
+      "text/plain",
+    );
   } finally {
     sqlite.close();
   }
