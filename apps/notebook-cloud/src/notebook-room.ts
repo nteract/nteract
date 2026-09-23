@@ -408,7 +408,7 @@ export class NotebookRoom {
       peer_id: peer.id,
       principal: identity.principal,
       scope: identity.scope,
-      room_peer_count: this.peers.size,
+      room_peer_count: this.peers.size + this.managedPython.size,
       counter: "connections_accepted",
       counter_delta: 1,
     });
@@ -425,7 +425,7 @@ export class NotebookRoom {
       principal_namespace: identity.metadata.principalNamespace,
       display_name: identity.metadata.displayName,
       email: identity.metadata.email,
-      room_peer_count: this.peers.size,
+      room_peer_count: this.peers.size + this.managedPython.size,
       runtime_peer_count: this.runtimePeerCount(),
       peers: this.roomPeerRoster(),
       timestamp: peer.connectedAt,
@@ -441,7 +441,7 @@ export class NotebookRoom {
         connection_scope: identity.scope,
         participant_key: roomPeerParticipantKey(peer),
         display_name: identity.metadata.displayName,
-        room_peer_count: this.peers.size,
+        room_peer_count: this.peers.size + this.managedPython.size,
         runtime_peer_count: this.runtimePeerCount(),
         timestamp: peer.connectedAt,
       },
@@ -511,6 +511,7 @@ export class NotebookRoom {
             attachment.runtime_session_id !== existing.runtime.sessionId)
         ) {
           this.managedPython.delete(notebookId);
+          this.broadcastManagedPythonPresence(notebookId, existing.runtime, false);
           this.state.waitUntil(existing.runtime.close());
         }
         if (
@@ -1694,6 +1695,7 @@ export class NotebookRoom {
     const managed = this.managedPython.get(notebookId);
     if (managed) {
       this.managedPython.delete(notebookId);
+      this.broadcastManagedPythonPresence(notebookId, managed.runtime, false);
       this.state.waitUntil(managed.runtime.close());
     }
     for (const peer of Array.from(this.peers.values())) {
@@ -1904,6 +1906,7 @@ export class NotebookRoom {
     if (concurrent?.runtime.sessionId === sessionId) return concurrent.ready;
     if (concurrent) {
       this.managedPython.delete(notebookId);
+      this.broadcastManagedPythonPresence(notebookId, concurrent.runtime, false);
       await concurrent.runtime.close();
     }
     const materializer = this.materializerFor(notebookId);
@@ -1927,6 +1930,7 @@ export class NotebookRoom {
     );
     const entry = { runtime, ready: Promise.resolve() };
     this.managedPython.set(notebookId, entry);
+    this.broadcastManagedPythonPresence(notebookId, runtime, true);
     entry.ready = runtime
       .start()
       .then(async () => {
@@ -1965,6 +1969,7 @@ export class NotebookRoom {
     const entry = this.managedPython.get(notebookId);
     if (entry?.runtime !== runtime) return;
     this.managedPython.delete(notebookId);
+    this.broadcastManagedPythonPresence(notebookId, runtime, false);
     // Invalidate synchronously before awaiting persistence. Any late output
     // must lose its authority before a replacement can attach.
     const closing = runtime.close().catch((closeError) => {
@@ -2383,7 +2388,7 @@ export class NotebookRoom {
         reason,
         consecutive_rejected_frame_count: policy.consecutiveRejectedFrames,
         consecutive_rejected_frame_limit: policy.limit,
-        room_peer_count: this.peers.size,
+        room_peer_count: this.peers.size + this.managedPython.size,
         counter: "peers_closed_for_rejected_frames",
         counter_delta: 1,
       });
@@ -2404,7 +2409,7 @@ export class NotebookRoom {
       counts_toward_rejected_frame_streak: countsTowardStreak,
       consecutive_rejected_frame_count: policy.consecutiveRejectedFrames,
       consecutive_rejected_frame_limit: policy.limit,
-      room_peer_count: this.peers.size,
+      room_peer_count: this.peers.size + this.managedPython.size,
       counter: "rejected_frames",
       counter_delta: 1,
     });
@@ -2430,7 +2435,25 @@ export class NotebookRoom {
   }
 
   private roomPeerRoster(): CloudRoomPeerRosterEntry[] {
-    return Array.from(this.peers.values(), (peer) => this.roomPeerRosterEntry(peer));
+    return [
+      ...Array.from(this.peers.values(), (peer) => this.roomPeerRosterEntry(peer)),
+      ...Array.from(this.managedPython.values(), ({ runtime }) => runtime.presence),
+    ];
+  }
+
+  private broadcastManagedPythonPresence(
+    notebookId: string,
+    runtime: ManagedPythonRoom,
+    joined: boolean,
+  ): void {
+    this.broadcastControl(notebookId, {
+      type: joined ? "cloud_peer_joined" : "cloud_peer_left",
+      notebook_id: notebookId,
+      ...runtime.presence,
+      room_peer_count: this.peers.size + this.managedPython.size,
+      runtime_peer_count: this.runtimePeerCount(),
+      timestamp: new Date().toISOString(),
+    });
   }
 
   private roomPeerRosterEntry(peer: Peer): CloudRoomPeerRosterEntry {
@@ -2568,7 +2591,7 @@ export class NotebookRoom {
       peer_id: peer.id,
       principal: peer.identity.principal,
       scope: peer.identity.scope,
-      room_peer_count: this.peers.size,
+      room_peer_count: this.peers.size + this.managedPython.size,
       counter: "connections_closed",
       counter_delta: 1,
     });
@@ -2581,7 +2604,7 @@ export class NotebookRoom {
       actor_label: peer.identity.actorLabel,
       connection_scope: peer.identity.scope,
       participant_key: roomPeerParticipantKey(peer),
-      room_peer_count: this.peers.size,
+      room_peer_count: this.peers.size + this.managedPython.size,
       runtime_peer_count: this.runtimePeerCount(),
       timestamp: new Date().toISOString(),
     });

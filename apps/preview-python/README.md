@@ -14,8 +14,9 @@ Its public Worker entrypoint returns 404. The cloud discovery integration is
 disabled unless `NOTEBOOK_CLOUD_PYTHON_PROVIDER=celld` and the private
 `PREVIEW_PYTHON_SESSIONS` namespace binding are both configured. Discovery
 registers an owner-scoped managed workstation and fills an absent default;
-it never replaces an existing default. Provider attachment/room transport is
-still being wired: this configuration is not ready for live deployment yet.
+it never replaces an existing default. The cloud room attaches a private compute
+session as an Automerge runtime peer. This remains experimental and is not ready
+for live deployment yet.
 
 ## Build
 
@@ -46,8 +47,8 @@ stdin, widgets, progressive output streaming and full IPython history semantics
 are not currently supported. The trusted adapter bounds response bytes and
 validates output records, stripping unknown properties and rejecting guest
 supplied internal blob/widget references. Conversion into canonical runtime
-output manifests and blob storage remains to be implemented. Python-side limits
-alone are not a security boundary.
+output manifests uses the shared Rust MIME classifier, with notebook-scoped blob
+storage. Python-side limits alone are not a security boundary.
 
 Execution has independent CPU and wall deadlines. Expiration destroys the
 interpreter, so variables are lost; it is not a resumable Python interrupt.
@@ -71,4 +72,20 @@ CELLD_BIN=/absolute/path/to/celld pnpm --filter @nteract/preview-python test
 The tests own temporary ports/storage/processes and save measurements under
 `.scratch/`. This requires the Python Workers branch's hard-termination fixes;
 unmodified celld 0.5.1 is not qualified for safe interpreter reuse after a CPU
-limit. Current measurements cover interpreter calls, not the cloud UI.
+limit.
+
+For the full cloud browser path, build the provider and cloud viewer, then start
+the local fleet with `NOTEBOOK_CLOUD_CELLD_PYTHON=1` and
+`NOTEBOOK_CLOUD_CELLD_BIN=/absolute/path/to/celld` using
+`apps/notebook-cloud/scripts/celld-local.mjs`. Run:
+
+```sh
+NOTEBOOK_CLOUD_MANAGED_PYTHON_ORIGIN=http://127.0.0.1:9876 \
+  node apps/notebook-cloud/scripts/managed-python-browser-smoke.mjs
+```
+
+The smoke requires loopback dev authentication. It creates a notebook fixture
+and tests first attachment, persistent variables, a viewing collaborator,
+restart, and reconnect. Fixtures remain in local storage; stop/restart the local
+fleet between repeated runs to release its bounded in-memory compute pool.
+Its timings are single browser observations, not latency distributions or RSS.

@@ -20,6 +20,18 @@ export class ManagedPythonRoom {
   private active = true;
   private syncing: Promise<void> = Promise.resolve();
   private pumping: Promise<void> | undefined;
+  private readonly connectedAt = new Date().toISOString();
+
+  get presence() {
+    return {
+      peer_id: this.peer.id,
+      actor_label: this.peer.identity.actorLabel,
+      connection_scope: "runtime_peer",
+      participant_key: this.peer.id,
+      display_name: "Preview Python",
+      connected_at: this.connectedAt,
+    };
+  }
 
   constructor(
     private readonly env: Env,
