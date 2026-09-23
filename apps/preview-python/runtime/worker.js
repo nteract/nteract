@@ -34,6 +34,14 @@ async function initialize(env) {
 }
 export default {
   async fetch(request, env) {
+    // Internal supervisor-only endpoint. Deliberately cross the caller's tiny
+    // CPU budget to make celld invalidate this entire isolate, including tasks
+    // suspended in Python. Loader fetch currently ignores AbortSignal.
+    if (new URL(request.url).pathname === "/terminate") {
+      while (true) {
+        /* celld's host CPU limiter terminates this isolate */
+      }
+    }
     const { python, evaluate } = await (ready ??= initialize(env));
     if (new URL(request.url).pathname === "/ready") {
       return Response.json({ instanceId, linearMemory: python._module.HEAPU8.byteLength });

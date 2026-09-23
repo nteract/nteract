@@ -10,6 +10,35 @@ import sentinel from "../dist/sentinel.wasm";
 
 export default {
   async fetch(request, env) {
+    if (new URL(request.url).pathname === "/deadline") {
+      const pool = new SessionPool({
+        create: () => createCelldRuntime(env, { wallMs: 150 }),
+        maxSessions: 1,
+        warmCount: 0,
+      });
+      try {
+        const original = await pool.open("deadline/1");
+        const started = Date.now();
+        let error;
+        try {
+          await pool.execute("deadline/1", {
+            execution_id: "sleep",
+            source: "import asyncio\nawait asyncio.sleep(60)",
+          });
+        } catch (failure) {
+          error = String(failure);
+        }
+        const elapsedMs = Date.now() - started;
+        const replacement = await pool.open("deadline/2");
+        const result = await pool.execute("deadline/2", {
+          execution_id: "after",
+          source: "21 * 2",
+        });
+        return Response.json({ original, error, elapsedMs, replacement, result });
+      } finally {
+        await pool.close();
+      }
+    }
     if (new URL(request.url).pathname === "/pool") {
       const pool = new SessionPool({ create: () => createCelldRuntime(env), maxSessions: 2 });
       try {

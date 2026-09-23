@@ -84,7 +84,23 @@ test(
       new URL("../.scratch/pool-evidence.json", import.meta.url),
       JSON.stringify(pool, null, 2),
     );
-    t.diagnostic(JSON.stringify({ warmAllocationMs: pool.allocationMs }));
+    const deadlineResponse = await fetch(server.url + "/deadline", {
+      signal: AbortSignal.timeout(60000),
+    });
+    const deadlineText = await deadlineResponse.text();
+    assert.equal(deadlineResponse.status, 200, deadlineText);
+    const deadline = JSON.parse(deadlineText);
+    assert.match(deadline.error, /execution deadline exceeded/);
+    assert.ok(deadline.elapsedMs < 2000, JSON.stringify(deadline));
+    assert.notEqual(deadline.original.instanceId, deadline.replacement.instanceId);
+    assert.equal(deadline.result.outputs.at(-1).data["text/plain"], "42");
+    await writeFile(
+      new URL("../.scratch/deadline-evidence.json", import.meta.url),
+      JSON.stringify(deadline, null, 2),
+    );
+    t.diagnostic(
+      JSON.stringify({ warmAllocationMs: pool.allocationMs, deadlineMs: deadline.elapsedMs }),
+    );
     t.diagnostic(
       JSON.stringify({
         coldMs: result.coldMs,

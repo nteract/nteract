@@ -30,20 +30,16 @@ export class SessionPool {
       .then(this.#create)
       .then(
         (runtime) => {
-          let disposed = false;
+          let disposal;
           return {
             runtime: {
               info: runtime.info,
               execute: (execution) => runtime.execute(execution),
-              dispose: async () => {
-                if (disposed) return;
-                disposed = true;
-                try {
+              dispose: () =>
+                (disposal ??= Promise.resolve().then(async () => {
                   await runtime.dispose();
-                } finally {
                   this.#runtimeCount--;
-                }
-              },
+                })),
             },
           };
         },

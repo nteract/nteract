@@ -19,8 +19,8 @@ local interpreter/stdlib assets; runtime startup does not fetch from a CDN.
 The compiled-Wasm bootstrap follows the local celld Python Workers experiment
 (branch `quod/python-workers`, based on celld 0.5.1). The execution/display
 separation is informed by runtimed/runtime-agents' Pyodide agent used by anode.
-The current evaluator is newly implemented; IPython formatting, scientific
-packages, output bounds and the managed provider remain implementation gates.
+The current evaluator is newly implemented; the managed provider and its
+notebook integration remain implementation gates.
 No notebook readiness or tenant-isolation claim follows from the build alone.
 
 ## Scientific environment and isolation
@@ -34,9 +34,22 @@ remains disabled. Package assets contain no user data or credentials.
 The direct evaluator uses IPython formatters and display publishing, while code
 uses Python AST evaluation with top-level await. IPython magics, shell escapes,
 stdin, widgets, progressive output streaming and full IPython history semantics
-are not currently supported. The trusted supervisor must validate output types
-before publishing them into runtime documents. Python-side limits alone are not
-a security boundary.
+are not currently supported. The trusted adapter bounds response bytes and
+validates output records, stripping unknown properties and rejecting guest
+supplied internal blob/widget references. Conversion into canonical runtime
+output manifests and blob storage remains to be implemented. Python-side limits
+alone are not a security boundary.
+
+Execution has independent CPU and wall deadlines. Expiration destroys the
+interpreter, so variables are lost; it is not a resumable Python interrupt.
+The current celld loader does not forward fetch cancellation and registry
+disposal waits for outstanding calls. The adapter therefore invokes a private
+termination endpoint with a tiny CPU budget to trigger celld's isolate
+invalidation. Disposal also invalidates idle sessions because Python can leave
+background tasks running after an execution returns. Failed termination retains
+the capacity reservation. A native host termination API should replace this
+mechanism when available. Startup currently has a CPU budget but still needs an
+independent wall deadline.
 
 Run the real isolated-server test with a qualified experimental celld binary:
 

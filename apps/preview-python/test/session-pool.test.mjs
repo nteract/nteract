@@ -113,3 +113,20 @@ test("cancelled pending allocation retains capacity until its isolate is dispose
   await assert.rejects(allocation, /expired/);
   await pool.close();
 });
+
+test("failed termination retains admission capacity", async () => {
+  const pool = new SessionPool({
+    maxSessions: 1,
+    warmCount: 0,
+    create: async () => ({
+      info: {},
+      execute: async () => ({}),
+      dispose: async () => {
+        throw new Error("host termination failed");
+      },
+    }),
+  });
+  await pool.open("a");
+  await assert.rejects(pool.release("a"), /host termination failed/);
+  await assert.rejects(pool.open("b"), /capacity/);
+});
