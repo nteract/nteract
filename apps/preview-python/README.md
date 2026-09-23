@@ -101,3 +101,39 @@ notebook selections and other default workstations are preserved. Editors and
 viewers cannot trigger this selection or execute. The browser smoke uses this
 first-run path by default; set `NOTEBOOK_CLOUD_PYTHON_EXPLICIT_ATTACH=1` to
 exercise the separate Start compute path.
+
+Run the isolated provider benchmark after building:
+
+```sh
+CELLD_BIN=/path/to/qualified/celld node apps/preview-python/test/benchmark.mjs
+```
+
+It writes `.scratch/benchmark-evidence.json` with raw samples, process RSS,
+capacity rejection and four concurrent isolated namespaces. `PYTHON_BENCH_TRIALS`
+defaults to five. The measurement boundary is loopback `/open` through a complete
+`/execute` response, excluding fleet boot, asset build, browser and room sync.
+Warm trials explicitly await a clean standby. Cold trials use fresh host
+processes but share the operating system's file cache.
+
+On an Apple M3 Max (macOS arm64, 2026-09-23), five trials measured:
+
+| First output | Minimum | Median | Maximum |
+| --- | ---: | ---: | ---: |
+| Cold provider | 4387 ms | 4433 ms | 5135 ms |
+| Prepared interpreter | 10.1 ms | 10.9 ms | 11.1 ms |
+
+These small samples are observations, not production latency estimates.
+Summed supervisor/child-process RSS was 355 MiB before interpreter creation,
+966 MiB with one clean standby after the latency trials, and 1696 MiB with
+four ready interpreters. Adding the second through fourth interpreters increased
+RSS by 197, 294 and 239 MiB respectively. The fourth assignment consumed the
+standby rather than creating a fifth interpreter. Four simultaneous executions
+preserved separate namespaces; a fifth allocation returned capacity exhaustion,
+and terminating a session allowed a replacement.
+
+RSS includes the provider, compiler/native caches, allocator retention and
+shared-page accounting; it is not a per-interpreter heap measurement. After all
+sessions were terminated, RSS remained 1218 MiB in this immediate sample.
+Disposal releases admission capacity but does not promise immediate RSS return
+to the operating system. This scientific package set therefore needs hundreds
+of MiB per additional ready interpreter, even though warm execution is fast.
