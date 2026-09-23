@@ -2047,11 +2047,7 @@ export class NotebookRoom {
       notebookId,
       notebook.owner_principal,
       sessionId,
-      (result) => {
-        this.deliverRoomHostFrames(notebookId, result);
-        if (result.changed)
-          this.scheduleRoomHostCheckpoint(notebookId, materializer, "managed_python");
-      },
+      (result) => this.deliverManagedPythonPublication(notebookId, result),
     );
     const entry = { runtime, ready: Promise.resolve() };
     this.managedPython.set(notebookId, entry);
@@ -3007,6 +3003,24 @@ export class NotebookRoom {
         notebook_id: notebookId,
         error: errorMessage(error),
       });
+    }
+  }
+
+  private deliverManagedPythonPublication(notebookId: string, result: RoomHostFrameResult): void {
+    this.deliverRoomHostFrames(notebookId, result);
+    if (result.changed)
+      this.scheduleRoomHostCheckpoint(
+        notebookId,
+        this.materializerFor(notebookId),
+        "managed_python",
+      );
+    if (result.runtime_state_changed) {
+      this.refreshRuntimeIdleWatch(notebookId);
+      this.state.waitUntil(
+        this.publishCurrentComputeSessionSummary(notebookId, undefined, {
+          onlyIfQueueDepthChanged: true,
+        }),
+      );
     }
   }
 

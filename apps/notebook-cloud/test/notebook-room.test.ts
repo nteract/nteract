@@ -4436,6 +4436,39 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     assert.equal(await state.getAlarm(), null);
   });
 
+  it("rearms idle cleanup when managed Python publishes completion", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    harness.peers.set("rt", peerWithScope("rt", "runtime_peer"));
+    let executing = true;
+    harness.materializers.set("demo", {
+      getRuntimeExecutionActivity: async () => ({ executing, queueDepth: executing ? 1 : 0 }),
+    } as never);
+    const publish = () =>
+      (
+        room as unknown as {
+          deliverManagedPythonPublication(
+            notebookId: string,
+            result: ReturnType<typeof noopMaterializedResult>,
+          ): void;
+        }
+      ).deliverManagedPythonPublication("demo", {
+        ...noopMaterializedResult(),
+        runtime_state_changed: true,
+      });
+    publish();
+    await state.drain();
+    assert.equal(await state.getAlarm(), null);
+    executing = false;
+    const completedAt = Date.now();
+    publish();
+    await state.drain();
+    const deadline = await state.getAlarm();
+    assert.ok(deadline! >= completedAt + RUNTIME_IDLE_TTL_MS);
+    assert.ok(deadline! <= Date.now() + RUNTIME_IDLE_TTL_MS);
+  });
+
   it("does not arm idle teardown while execution is active or queued", async () => {
     const state = alarmCapableState();
     const room = new NotebookRoom(state.state, {} as Env);
