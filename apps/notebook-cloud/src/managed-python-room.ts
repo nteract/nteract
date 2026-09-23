@@ -4,7 +4,7 @@ import { RuntimeStatePeerHandle } from "./runtimed-wasm.ts";
 import { prepare_output_content } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 import { FrameType, encodeTypedFrame } from "./protocol.ts";
 import { managedPythonStub, MANAGED_PYTHON_WORKSTATION } from "./managed-python.ts";
-import { blobKey } from "./storage.ts";
+import { storeManagedPythonBlob } from "./managed-python-blobs.ts";
 import {
   PythonRuntimePeer,
   type PythonExecutionResult,
@@ -75,10 +75,7 @@ export class ManagedPythonRoom {
         prepareContent: prepare_output_content,
         putBlob: async ({ hash, bytes, mediaType }) => {
           if (!this.active) throw new Error("Managed session expired");
-          if (!env.NOTEBOOK_SNAPSHOTS) throw new Error("Notebook blob storage unavailable");
-          await env.NOTEBOOK_SNAPSHOTS.put(blobKey(notebookId, hash), bytes, {
-            httpMetadata: { contentType: mediaType },
-          });
+          await storeManagedPythonBlob(env, notebookId, { hash, bytes, mediaType });
         },
       }),
     });

@@ -79,7 +79,11 @@ test(
             }),
         }),
       },
-      NOTEBOOK_SNAPSHOTS: { put: async (key, bytes) => blobs.set(key, { bytes }) },
+      NOTEBOOK_SNAPSHOTS: {
+        head: async (key) => blobs.get(key) ?? null,
+        put: async (key, bytes, metadata) =>
+          blobs.set(key, { bytes, size: bytes.byteLength, ...metadata }),
+      },
     };
     const materializer = {
       syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
