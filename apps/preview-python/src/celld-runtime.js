@@ -1,3 +1,4 @@
+import { runWithDeadline } from "./runtime-deadline.js";
 import { validateExecutionResult } from "./execution-result.js";
 import source from "../dist/session.js";
 import interpreter from "../dist/pyodide.asm.wasm";
@@ -7,9 +8,11 @@ import libraries from "../dist/library-modules.js";
 /** Called only by the trusted supervisor, never directly by a browser. */
 export async function createCelldRuntime(
   env,
-  { cpuMs = 3000, wallMs = 30_000, maxOutputBytes = 3 * 1024 * 1024 } = {},
+  { cpuMs = 3000, wallMs = 30_000, startupWallMs = 60_000, maxOutputBytes = 3 * 1024 * 1024 } = {},
 ) {
   if (!Number.isFinite(wallMs) || wallMs <= 0) throw new Error("Invalid execution deadline");
+  if (!Number.isFinite(startupWallMs) || startupWallMs <= 0)
+    throw new Error("Invalid startup deadline");
   const stub = env.LOADER.load({
     mainModule: "session.js",
     compatibilityDate: "2026-09-21",
@@ -53,11 +56,20 @@ export async function createCelldRuntime(
   };
   try {
     const started = Date.now();
-    const response = await stub
-      .getEntrypoint(null, { limits: { cpuMs: 30_000, subRequests: 100 } })
-      .fetch("https://session.invalid/ready");
-    if (!response.ok) throw new Error("Python initialization failed");
-    const info = { ...(await response.json()), startupMs: Date.now() - started };
+    const info = await runWithDeadline(
+      async () => {
+        const response = await stub
+          .getEntrypoint(null, { limits: { cpuMs: 30_000, subRequests: 100 } })
+          .fetch("https://session.invalid/ready");
+        if (!response.ok) throw new Error("Python initialization failed");
+        return { ...(await response.json()), startupMs: Date.now() - started };
+      },
+      {
+        timeoutMs: startupWallMs,
+        terminate,
+        message: "Preview Python initialization deadline exceeded",
+      },
+    );
     return {
       info,
       dispose,
@@ -73,16 +85,6 @@ export async function createCelldRuntime(
           throw new Error("Invalid accepted execution");
         }
         active = true;
-        let timer;
-        let deadlineError;
-        const timeout = new Promise((_, reject) => {
-          timer = setTimeout(() => {
-            deadlineError = new Error(
-              "Preview Python execution deadline exceeded; session restarted",
-            );
-            terminate().then(() => reject(deadlineError), reject);
-          }, wallMs);
-        });
         const invoke = async () => {
           const response = await stub
             .getEntrypoint(null, { limits: { cpuMs, subRequests: 0 } })
@@ -120,23 +122,27 @@ export async function createCelldRuntime(
           return validateExecutionResult(result, execution.execution_id);
         };
         try {
-          return await Promise.race([invoke(), timeout]);
-        } catch (error) {
-          // A pending guest call often rejects from invalidation before the
-          // termination RPC completes. Preserve the user-facing timeout reason.
-          if (deadlineError) {
-            await terminate();
-            throw deadlineError;
-          }
-          throw error;
+          return await runWithDeadline(invoke, {
+            timeoutMs: wallMs,
+            terminate,
+            message: "Preview Python execution deadline exceeded; restart required",
+          });
         } finally {
-          clearTimeout(timer);
           active = false;
         }
       },
     };
   } catch (error) {
-    await dispose();
+    try {
+      await dispose();
+    } catch (cleanupError) {
+      const retained = new Error(
+        "Python initialization failed and the host could not confirm termination",
+        { cause: cleanupError },
+      );
+      retained.runtimeRetained = true;
+      throw retained;
+    }
     throw error;
   }
 }

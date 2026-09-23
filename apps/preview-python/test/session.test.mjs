@@ -38,6 +38,11 @@ test(
         worker_loaders: [{ binding: "LOADER" }],
         services: [
           { binding: "PACKAGES", service: "python-runtime-probe", entrypoint: "PackageAssets" },
+          {
+            binding: "SLOW_PACKAGES",
+            service: "python-runtime-probe",
+            entrypoint: "SlowPackageAssets",
+          },
         ],
       },
     );
@@ -94,6 +99,16 @@ test(
     assert.ok(deadline.elapsedMs < 2000, JSON.stringify(deadline));
     assert.notEqual(deadline.original.instanceId, deadline.replacement.instanceId);
     assert.equal(deadline.result.outputs.at(-1).data["text/plain"], "42");
+    const startup = await (
+      await fetch(server.url + "/startup-deadline", { signal: AbortSignal.timeout(60000) })
+    ).json();
+    assert.match(startup.error, /initialization deadline exceeded/);
+    assert.ok(startup.elapsedMs < 5000, JSON.stringify(startup));
+    assert.equal(startup.result.outputs.at(-1).data["text/plain"], "42");
+    await writeFile(
+      new URL("../.scratch/startup-deadline-evidence.json", import.meta.url),
+      JSON.stringify(startup, null, 2),
+    );
     await writeFile(
       new URL("../.scratch/deadline-evidence.json", import.meta.url),
       JSON.stringify(deadline, null, 2),

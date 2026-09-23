@@ -130,3 +130,17 @@ test("failed termination retains admission capacity", async () => {
   await assert.rejects(pool.release("a"), /host termination failed/);
   await assert.rejects(pool.open("b"), /capacity/);
 });
+
+test("failed startup with uncertain cleanup quarantines its capacity reservation", async () => {
+  const pool = new SessionPool({
+    maxSessions: 1,
+    warmCount: 0,
+    create: async () => {
+      const error = new Error("termination not confirmed");
+      error.runtimeRetained = true;
+      throw error;
+    },
+  });
+  await assert.rejects(pool.open("failed"), /termination not confirmed/);
+  await assert.rejects(pool.open("replacement"), /capacity/);
+});

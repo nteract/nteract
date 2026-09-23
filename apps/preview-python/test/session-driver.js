@@ -12,6 +12,35 @@ let bridgePool;
 
 export default {
   async fetch(request, env) {
+    if (new URL(request.url).pathname === "/startup-deadline") {
+      let attempt = 0;
+      const pool = new SessionPool({
+        maxSessions: 1,
+        warmCount: 0,
+        create: () =>
+          createCelldRuntime(attempt++ === 0 ? { ...env, PACKAGES: env.SLOW_PACKAGES } : env, {
+            startupWallMs: attempt === 1 ? 250 : 60_000,
+          }),
+      });
+      try {
+        const started = Date.now();
+        let error;
+        try {
+          await pool.open("slow");
+        } catch (failure) {
+          error = String(failure);
+        }
+        const elapsedMs = Date.now() - started;
+        await pool.open("replacement");
+        const result = await pool.execute("replacement", {
+          execution_id: "ready",
+          source: "6 * 7",
+        });
+        return Response.json({ error, elapsedMs, result });
+      } finally {
+        await pool.close();
+      }
+    }
     if (new URL(request.url).pathname.startsWith("/private/")) {
       bridgePool ??= new SessionPool({
         create: () => createCelldRuntime(env),
@@ -208,5 +237,12 @@ export class PackageAssets extends WorkerEntrypoint {
     const filename = new URL(request.url).pathname.slice(1);
     const bytes = Object.hasOwn(packages, filename) ? packages[filename] : null;
     return bytes ? new Response(bytes) : new Response("Unknown package", { status: 404 });
+  }
+}
+
+export class SlowPackageAssets extends PackageAssets {
+  async fetch(request) {
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+    return super.fetch(request);
   }
 }

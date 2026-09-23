@@ -44,7 +44,9 @@ export class SessionPool {
           };
         },
         (error) => {
-          this.#runtimeCount--;
+          // Trusted factory reports uncertain host cleanup; quarantine the
+          // reservation rather than admitting beyond the deployment limit.
+          if (error?.runtimeRetained !== true) this.#runtimeCount--;
           return { error };
         },
       );

@@ -57,8 +57,10 @@ termination endpoint with a tiny CPU budget to trigger celld's isolate
 invalidation. Disposal also invalidates idle sessions because Python can leave
 background tasks running after an execution returns. Failed termination retains
 the capacity reservation. A native host termination API should replace this
-mechanism when available. Startup currently has a CPU budget but still needs an
-independent wall deadline.
+mechanism when available. Startup has independent CPU and wall budgets too.
+The wall deadline initiates host termination; synchronous initialization may
+delay completion (a 250 ms test deadline completed in about 1.05 seconds).
+Unconfirmed startup cleanup quarantines its admission slot.
 
 Run the real isolated-server test with a qualified experimental celld binary:
 
