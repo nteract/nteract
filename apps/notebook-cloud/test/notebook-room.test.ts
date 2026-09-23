@@ -71,12 +71,13 @@ describe("NotebookRoom presence rewrite", () => {
     const headsArrived = new Promise<boolean>((resolve) => {
       releaseHeads = resolve;
     });
-    let executed = false;
+    const executed: string[] = [];
     harness.materializers.set("demo", {
       waitForNotebookHeads: () => headsArrived,
-      receiveFrame: async (_peer: unknown, frame: { type: number }) => {
+      receiveFrame: async (_peer: unknown, frame: { type: number; payload: Uint8Array }) => {
         if (frame.type === FrameType.AUTOMERGE_SYNC) releaseHeads(true);
-        if (frame.type === FrameType.REQUEST) executed = true;
+        if (frame.type === FrameType.REQUEST)
+          executed.push(JSON.parse(new TextDecoder().decode(frame.payload)).id);
         return noopMaterializedResult();
       },
     } as never);
@@ -105,13 +106,24 @@ describe("NotebookRoom presence rewrite", () => {
         true,
         "the socket reader must be allowed to receive the required sync",
       );
-      assert.equal(executed, false);
+      assert.deepEqual(executed, []);
+      await room.webSocketMessage(
+        peer.socket,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({ id: "later", action: "execute_cell", cell_id: "code" }),
+          ),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(executed, [], "later requests cannot overtake the causal wait");
       await room.webSocketMessage(
         peer.socket,
         encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([0])),
       );
       await state.drain();
-      assert.equal(executed, true);
+      assert.deepEqual(executed, ["causal", "later"]);
     } finally {
       clearTimeout(timer);
       releaseHeads(false);

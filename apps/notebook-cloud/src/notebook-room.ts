@@ -290,6 +290,10 @@ export class NotebookRoom {
   >();
   private managedPythonStartup: Promise<void> = Promise.resolve();
   private readonly peers = new Map<string, Peer>();
+  private readonly socketRequests = new WeakMap<
+    CloudflareWebSocket,
+    { tail: Promise<void>; pending: number }
+  >();
   private readonly pendingRemovals = new Map<
     string,
     { notebookId: string; peer: Peer; closeOptions: PeerCloseOptions }
@@ -768,6 +772,14 @@ export class NotebookRoom {
     }
 
     await this.restoredPeersReady;
+    return this.dispatchSocketMessage(attachment.notebookId, peer, message);
+  }
+
+  private async dispatchSocketMessage(
+    notebookId: string,
+    peer: Peer,
+    message: string | ArrayBuffer | ArrayBufferView,
+  ): Promise<void> {
     // celld reads the next socket message only after this handler returns.
     // Requests may wait for causal edits arriving on that same socket; keep
     // their work alive without holding up subsequent Automerge sync messages.
@@ -778,10 +790,29 @@ export class NotebookRoom {
           ? new Uint8Array(message)
           : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
     if (bytes?.[0] === FrameType.REQUEST) {
-      this.state.waitUntil(this.handleMessage(attachment.notebookId, peer, message));
+      const queue = this.socketRequests.get(peer.socket) ?? { tail: Promise.resolve(), pending: 0 };
+      if (queue.pending >= 128) {
+        this.rejectFrame(notebookId, peer, FrameType.REQUEST, "too many pending socket requests", {
+          countsTowardStreak: false,
+        });
+        return;
+      }
+      queue.pending++;
+      queue.tail = queue.tail
+        .catch(() => undefined)
+        .then(async () => {
+          try {
+            if (this.peers.get(peer.id) === peer)
+              await this.handleMessage(notebookId, peer, message);
+          } finally {
+            queue.pending--;
+          }
+        });
+      this.socketRequests.set(peer.socket, queue);
+      this.state.waitUntil(queue.tail);
       return;
     }
-    await this.handleMessage(attachment.notebookId, peer, message);
+    await this.handleMessage(notebookId, peer, message);
   }
 
   webSocketClose(
@@ -939,7 +970,7 @@ export class NotebookRoom {
 
     peer.socket.accept();
     peer.socket.addEventListener("message", (event) => {
-      this.state.waitUntil(this.handleMessage(notebookId, peer, event.data));
+      this.state.waitUntil(this.dispatchSocketMessage(notebookId, peer, event.data));
     });
     peer.socket.addEventListener("close", (event) => {
       this.removePeer(notebookId, peer, {
@@ -1313,18 +1344,6 @@ export class NotebookRoom {
         ? hostedExecutionRequestAction(requestMetadata?.action ?? null)
         : null;
     if (hostedExecutionAction) {
-      const managed = this.managedPython.get(notebookId);
-      if (
-        managed &&
-        !(await managedPythonOwnerCanExecute(this.env, notebookId, managed.runtime.ownerPrincipal))
-      ) {
-        const reason = "Compute owner's access was revoked; start a new managed Python session";
-        await this.failManagedPython(notebookId, managed.runtime, new Error(reason));
-        this.rejectFrame(notebookId, peer, normalizedFrame.type, reason, {
-          countsTowardStreak: false,
-        });
-        return;
-      }
       if (requestMetadata?.requiredHeads !== undefined) {
         try {
           const synced = await this.materializerFor(notebookId).waitForNotebookHeads(
@@ -1338,6 +1357,18 @@ export class NotebookRoom {
           });
           return;
         }
+      }
+      const managed = this.managedPython.get(notebookId);
+      if (
+        managed &&
+        !(await managedPythonOwnerCanExecute(this.env, notebookId, managed.runtime.ownerPrincipal))
+      ) {
+        const reason = "Compute owner's access was revoked; start a new managed Python session";
+        await this.failManagedPython(notebookId, managed.runtime, new Error(reason));
+        this.rejectFrame(notebookId, peer, normalizedFrame.type, reason, {
+          countsTowardStreak: false,
+        });
+        return;
       }
       const runtimePeer = await this.activeRuntimePeer(notebookId, peer.id);
       if (

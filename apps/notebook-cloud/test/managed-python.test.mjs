@@ -301,6 +301,22 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
     consecutiveRejectedFrames: 0,
   };
   room.peers.set(alice.id, alice);
+  await grantNotebookAclRow(env, {
+    notebookId: "coowner",
+    subjectKind: "principal",
+    subject: "user:dev:bob",
+    scope: "owner",
+    actorLabel: "user:dev:alice/browser",
+  });
+  materializer.waitForNotebookHeads = async () => {
+    await revokeNotebookAclRow(env, {
+      notebookId: "coowner",
+      subjectKind: "principal",
+      subject: "user:dev:bob",
+      scope: "owner",
+    });
+    return true;
+  };
   await room.handleMessage(
     "coowner",
     alice,
@@ -308,6 +324,7 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
       id: "after-revoke",
       action: "execute_cell",
       cell_id: "code",
+      required_heads: [],
     }),
   );
   assert.equal(
