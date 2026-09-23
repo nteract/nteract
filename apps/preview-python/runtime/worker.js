@@ -1,3 +1,4 @@
+import { wheels, libraries } from "preview-python:packages";
 import "pyodide/pyodide.asm.js";
 import { loadPyodide } from "pyodide";
 import lockFileContents from "pyodide/pyodide-lock.json";
@@ -8,19 +9,32 @@ import source from "./session.py";
 let ready;
 let busy = false;
 const instanceId = crypto.randomUUID();
-async function initialize() {
+async function initialize(env) {
   const python = await loadPyodide({
     indexURL: "https://python-runtime.invalid/",
     lockFileContents,
     stdout: () => {},
     stderr: () => {},
   });
+  for (const wheel of wheels) {
+    const response = await env.PACKAGES.fetch("https://packages.invalid/" + wheel.filename);
+    if (!response.ok) throw new Error("Pinned package unavailable: " + wheel.name);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (hash !== wheel.sha256) throw new Error("Pinned package hash mismatch: " + wheel.name);
+    python.unpackArchive(bytes, "zip", { extractDir: "/packages" });
+  }
+  python.runPython(
+    "import sys, os; sys.path.insert(0, '/packages'); os.environ['LD_LIBRARY_PATH'] = '/packages'; os.environ['MPLBACKEND'] = 'Agg'",
+  );
+  for (const library of libraries) await python._api.loadDynlib(library.path);
   python.runPython(source);
   return { python, evaluate: python.globals.get("evaluate") };
 }
 export default {
-  async fetch(request) {
-    const { python, evaluate } = await (ready ??= initialize());
+  async fetch(request, env) {
+    const { python, evaluate } = await (ready ??= initialize(env));
     if (new URL(request.url).pathname === "/ready") {
       return Response.json({ instanceId, linearMemory: python._module.HEAPU8.byteLength });
     }

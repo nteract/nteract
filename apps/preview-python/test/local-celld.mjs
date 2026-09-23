@@ -125,7 +125,7 @@ export async function startCelld(files, config = {}, environment = {}, { watch =
         child.once("error", done);
       });
       await new Promise((done, reject) => {
-        const timer = setTimeout(() => reject(new Error(`startup timeout\n${runLogs}`)), 20000);
+        const timer = setTimeout(() => reject(new Error(`startup timeout\n${runLogs}`)), 60000);
         child.once("error", (error) => {
           clearTimeout(timer);
           reject(error);

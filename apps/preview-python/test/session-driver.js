@@ -1,3 +1,8 @@
+import { SessionPool } from "../src/session-pool.js";
+import { createCelldRuntime } from "../src/celld-runtime.js";
+import { WorkerEntrypoint } from "cloudflare:workers";
+import packages from "../dist/package-assets.js";
+import libraries from "../dist/library-modules.js";
 // Test-only driver. Never deployed as the provider's public API.
 import source from "../dist/session.js";
 import interpreter from "../dist/pyodide.asm.wasm";
@@ -5,12 +10,50 @@ import sentinel from "../dist/sentinel.wasm";
 
 export default {
   async fetch(request, env) {
+    if (new URL(request.url).pathname === "/pool") {
+      const pool = new SessionPool({ create: () => createCelldRuntime(env), maxSessions: 2 });
+      try {
+        const warm = await pool.prewarm();
+        const started = Date.now();
+        const assigned = await pool.open("owner/notebook/generation-1");
+        const allocationMs = Date.now() - started;
+        const result = await pool.execute("owner/notebook/generation-1", {
+          execution_id: "pool-1",
+          source: "secret = 123\nsecret",
+        });
+        const sibling = await pool.open("owner/notebook-2/generation-1");
+        const isolated = await pool.execute("owner/notebook-2/generation-1", {
+          execution_id: "pool-2",
+          source: "'secret' in globals()",
+        });
+        await pool.release("owner/notebook/generation-1");
+        const replacement = await pool.open("owner/notebook/generation-2");
+        const reset = await pool.execute("owner/notebook/generation-2", {
+          execution_id: "pool-3",
+          source: "'secret' in globals()",
+        });
+        return Response.json({
+          warm,
+          assigned,
+          allocationMs,
+          result,
+          sibling,
+          isolated,
+          replacement,
+          reset,
+        });
+      } finally {
+        await pool.close();
+      }
+    }
     const code = {
       mainModule: "session.js",
       compatibilityDate: "2026-09-21",
       compatibilityFlags: ["python_workers"],
       globalOutbound: null,
+      env: { PACKAGES: env.PACKAGES },
       modules: {
+        ...libraries,
         "session.js": source,
         "pyodide.asm.wasm": { wasm: interpreter },
         "sentinel.wasm": { wasm: sentinel },
@@ -35,6 +78,7 @@ export default {
         .fetch("https://session.invalid/ready")
         .then((r) => r.json());
       const coldMs = Date.now() - started;
+      await second.getEntrypoint().fetch("https://session.invalid/ready");
       const assignment = await run(first, "value = 41\nprint('hello')\nvalue + 1", "first");
       const warmStart = Date.now();
       const persisted = await run(first, "value + 2", "second");
@@ -45,6 +89,17 @@ export default {
         first,
         "import asyncio\nawait asyncio.sleep(0)\nvalue",
         "recovery",
+      );
+      const rich = await run(first, "import pandas as pd\npd.DataFrame({'x': [1, 2]})", "rich");
+      const explicit = await run(
+        first,
+        "from IPython.display import display, HTML\ndisplay(HTML('<b>hello</b>'))",
+        "display",
+      );
+      const plot = await run(
+        first,
+        "import matplotlib.pyplot as plt\nplt.plot([1, 2], [3, 4])\nplt.show()",
+        "plot",
       );
       const denied = await run(
         second,
@@ -59,6 +114,9 @@ export default {
       }
       const sibling = await run(second, "6 * 7", "sibling");
       return Response.json({
+        rich,
+        explicit,
+        plot,
         ready,
         coldMs,
         warmMs,
@@ -77,3 +135,11 @@ export default {
     }
   },
 };
+
+export class PackageAssets extends WorkerEntrypoint {
+  fetch(request) {
+    const filename = new URL(request.url).pathname.slice(1);
+    const bytes = Object.hasOwn(packages, filename) ? packages[filename] : null;
+    return bytes ? new Response(bytes) : new Response("Unknown package", { status: 404 });
+  }
+}

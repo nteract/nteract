@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 
 test(
   "real celld Python sessions persist, isolate and contain termination",
-  { timeout: 60000 },
+  { timeout: 120000 },
   async (t) => {
     const bundle = await build({
       absWorkingDir: root,
@@ -18,7 +18,8 @@ test(
       format: "esm",
       platform: "browser",
       target: "es2022",
-      loader: { ".wasm": "binary" },
+      external: ["cloudflare:workers"],
+      loader: { ".wasm": "binary", ".whl": "binary" },
       plugins: [
         {
           name: "session-source",
@@ -33,17 +34,29 @@ test(
     });
     const server = await startCelld(
       { "index.js": bundle.outputFiles[0].text },
-      { worker_loaders: [{ binding: "LOADER" }] },
+      {
+        worker_loaders: [{ binding: "LOADER" }],
+        services: [
+          { binding: "PACKAGES", service: "python-runtime-probe", entrypoint: "PackageAssets" },
+        ],
+      },
     );
     t.after(server.close);
     const response = await fetch(server.url, { signal: AbortSignal.timeout(40000) });
     const text = await response.text();
     assert.equal(response.status, 200, text + server.logs());
     const result = JSON.parse(text);
-    assert.deepEqual(
-      result.assignment.outputs.map((o) => o.text ?? o.data["text/plain"]),
-      ["hello\n", "42"],
+    assert.equal(
+      result.assignment.outputs
+        .filter((o) => o.output_type === "stream")
+        .map((o) => o.text)
+        .join(""),
+      "hello\n",
     );
+    assert.equal(result.assignment.outputs.at(-1).data["text/plain"], "42");
+    assert.match(result.rich.outputs[0].data["text/html"], /<table/);
+    assert.equal(result.explicit.outputs[0].data["text/html"], "<b>hello</b>");
+    assert.ok(result.plot.outputs.some((o) => o.data?.["image/png"]?.startsWith("iVBOR")));
     assert.equal(result.persisted.outputs[0].data["text/plain"], "43");
     assert.equal(result.isolated.outputs[0].data["text/plain"], "False");
     assert.equal(result.error.success, false);
@@ -57,6 +70,21 @@ test(
       new URL("../.scratch/session-evidence.json", import.meta.url),
       JSON.stringify(result, null, 2),
     );
+    const poolResponse = await fetch(server.url + "/pool", { signal: AbortSignal.timeout(60000) });
+    const poolText = await poolResponse.text();
+    assert.equal(poolResponse.status, 200, poolText);
+    const pool = JSON.parse(poolText);
+    assert.equal(pool.assigned.instanceId, pool.warm[0].instanceId);
+    assert.notEqual(pool.sibling.instanceId, pool.assigned.instanceId);
+    assert.notEqual(pool.replacement.instanceId, pool.assigned.instanceId);
+    assert.equal(pool.result.outputs.at(-1).data["text/plain"], "123");
+    assert.equal(pool.isolated.outputs.at(-1).data["text/plain"], "False");
+    assert.equal(pool.reset.outputs.at(-1).data["text/plain"], "False");
+    await writeFile(
+      new URL("../.scratch/pool-evidence.json", import.meta.url),
+      JSON.stringify(pool, null, 2),
+    );
+    t.diagnostic(JSON.stringify({ warmAllocationMs: pool.allocationMs }));
     t.diagnostic(
       JSON.stringify({
         coldMs: result.coldMs,

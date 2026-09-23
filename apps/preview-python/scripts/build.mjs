@@ -1,3 +1,4 @@
+import { preparePackages } from "./packages.mjs";
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -24,6 +25,7 @@ if (createHash("sha256").update(sentinel).digest("hex") !== lock.assets["sentine
 await mkdir(resolve(root, "dist"), { recursive: true });
 await copyFile(resolve(runtime, "pyodide.asm.wasm"), resolve(root, "dist/pyodide.asm.wasm"));
 await writeFile(resolve(root, "dist/sentinel.wasm"), sentinel);
+const { wheels, libraries } = await preparePackages(root, runtime);
 await build({
   absWorkingDir: root,
   entryPoints: ["runtime/worker.js"],
@@ -32,7 +34,7 @@ await build({
   format: "esm",
   platform: "browser",
   target: "es2022",
-  external: ["node:*", "./pyodide.asm.wasm", "./sentinel.wasm"],
+  external: ["node:*", "./pyodide.asm.wasm", "./sentinel.wasm", "./library-*.wasm"],
   loader: { ".zip": "binary", ".py": "text" },
   define: { process: "undefined", location: '"https://python-runtime.invalid/"' },
   inject: ["runtime/assets.js"],
@@ -40,6 +42,36 @@ await build({
     {
       name: "pinned-sentinel",
       setup(builder) {
+        builder.onResolve({ filter: /^preview-python:packages$/ }, () => ({
+          path: "packages",
+          namespace: "packages",
+        }));
+        builder.onLoad({ filter: /.*/, namespace: "packages" }, () => ({
+          contents:
+            libraries
+              .map((item, i) => "import m" + i + ' from "./' + item.filename + '";')
+              .join("\n") +
+            "export const wheels = " +
+            JSON.stringify(
+              wheels.map(({ name, filename, sha256 }) => ({ name, filename, sha256 })),
+            ) +
+            ";\n" +
+            "export const libraries = [" +
+            libraries
+              .map(
+                (item, i) =>
+                  "{path:" +
+                  JSON.stringify(item.path) +
+                  ", module:m" +
+                  i +
+                  ", sha256:" +
+                  JSON.stringify(item.sha256) +
+                  "}",
+              )
+              .join(",") +
+            "];",
+          loader: "js",
+        }));
         builder.onResolve({ filter: /^preview-python:sentinel$/ }, () => ({
           path: "sentinel",
           namespace: "sentinel",
@@ -52,3 +84,21 @@ await build({
     },
   ],
 });
+
+await writeFile(
+  resolve(root, "dist/library-modules.js"),
+  libraries.map((item, i) => `import b${i} from "./${item.filename}";`).join("\n") +
+    "\nexport default {" +
+    libraries.map((item, i) => JSON.stringify(item.filename) + ": { wasm: b" + i + " }").join(",") +
+    "};\n",
+);
+
+await writeFile(
+  resolve(root, "dist/package-assets.js"),
+  wheels
+    .map((entry, i) => `import b${i} from "../.scratch/packages/${entry.filename}";`)
+    .join("\n") +
+    "\nexport default {" +
+    wheels.map((entry, i) => JSON.stringify(entry.filename) + ": b" + i).join(",") +
+    "};\n",
+);

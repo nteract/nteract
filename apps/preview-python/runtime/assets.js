@@ -1,3 +1,4 @@
+import { libraries } from "preview-python:packages";
 // Adapted from the celld Python Workers experiment's compiled-Wasm bootstrap.
 // These bindings are lexical to the bundle; never replace host globals.
 import interpreter from "./pyodide.asm.wasm";
@@ -32,6 +33,11 @@ WebAssembly.compile = async (input) => {
     bytes.every((byte, i) => byte === sentinelBytes[i])
   ) {
     return sentinel;
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  for (const entry of libraries) {
+    if (hash === entry.sha256) return entry.module;
   }
   throw new globalThis.WebAssembly.CompileError("Unbundled Python Wasm module");
 };
