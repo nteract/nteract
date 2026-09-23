@@ -124,21 +124,27 @@ On an Apple M3 Max (macOS arm64, 2026-09-23), five trials measured:
 
 | First output | Minimum | Median | Maximum |
 | --- | ---: | ---: | ---: |
-| Cold provider | 4387 ms | 4433 ms | 5135 ms |
-| Prepared interpreter | 10.1 ms | 10.9 ms | 11.1 ms |
+| Cold provider | 4414 ms | 4430 ms | 4463 ms |
+| Prepared interpreter | 10.0 ms | 10.2 ms | 13.1 ms |
+
+Five fresh-fleet browser runs separately measured Run-to-visible-output at
+4919–4929 ms (median 4923 ms), passing all 12 collaboration and lifecycle checks.
+The smoke deliberately sends an execution before releasing its source sync to
+verify causal ordering on the same socket. A prepared-standby browser observation
+measured 389 ms; that single observation is not a warm-browser distribution.
 
 These small samples are observations, not production latency estimates.
-Summed supervisor/child-process RSS was 355 MiB before interpreter creation,
-966 MiB with one clean standby after the latency trials, and 1696 MiB with
-four ready interpreters. Adding the second through fourth interpreters increased
-RSS by 197, 294 and 239 MiB respectively. The fourth assignment consumed the
+Summed supervisor/child-process RSS was 365 MiB before interpreter creation,
+973 MiB with one clean standby after the latency trials, and 1695 MiB with
+four ready interpreters. The first three assignments each triggered another clean standby, increasing
+RSS by 181, 238 and 279 MiB respectively. The fourth assignment consumed the
 standby rather than creating a fifth interpreter. Four simultaneous executions
 preserved separate namespaces; a fifth allocation returned capacity exhaustion,
 and terminating a session allowed a replacement.
 
 RSS includes the provider, compiler/native caches, allocator retention and
 shared-page accounting; it is not a per-interpreter heap measurement. After all
-sessions were terminated, RSS remained 1218 MiB in this immediate sample.
+sessions were terminated, RSS remained 1248 MiB in this immediate sample.
 Disposal releases admission capacity but does not promise immediate RSS return
 to the operating system. This scientific package set therefore needs hundreds
 of MiB per additional ready interpreter, even though warm execution is fast.
