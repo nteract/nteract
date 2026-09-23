@@ -117,7 +117,26 @@ pub fn compute_env_hash(deps: &CondaDependencies) -> String {
         hasher.update(py.as_bytes());
     }
 
-    hasher.update(b"python-abi:constraint-v2\n");
+    // Preserve cache identity for existing regular CPython environments. The
+    // optional ABI constraint has the same intent as the old GIL selector.
+    if crate::python::solve_specs(&build_spec_strings(deps))
+        .map(|(_, constraints)| !constraints.is_empty())
+        .unwrap_or(true)
+    {
+        hasher.update(b"python-abi:gil\n");
+    }
+    if deps
+        .channels
+        .iter()
+        .any(|channel| crate::channels::resolve_channel_alias(channel) != channel)
+        || deps.dependencies.iter().any(|dep| {
+            dep.split_once("::").is_some_and(|(channel, _)| {
+                crate::channels::resolve_channel_alias(channel.trim()) != channel.trim()
+            })
+        })
+    {
+        hasher.update(b"anaconda-channel-aliases:v1\n");
+    }
 
     if let Some(ref env_id) = deps.env_id {
         hasher.update(b"env_id:");
@@ -893,8 +912,6 @@ pub async fn sync_dependencies(
     let install_platform = crate::conda_solve_platform();
     let channels = parse_channels(&deps.channels, &channel_config, install_platform)?;
 
-    let match_spec_options = ParseMatchSpecOptions::strict();
-
     let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
     let installed_python = installed_packages
         .iter()
@@ -905,16 +922,14 @@ pub async fn sync_dependencies(
     // Keep the exact interpreter, including its ABI and channel. A version-only
     // pin can switch between regular and free-threaded builds. Requiring a
     // selector metapackage instead breaks channels which don't publish it.
-    let mut specs: Vec<MatchSpec> = CONDA_BASE_PACKAGES
-        .iter()
-        .map(|package| MatchSpec::from_str(package, match_spec_options))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    specs.push(MatchSpec::from_str("python", match_spec_options)?);
+    let mut packages = conda_base_packages();
+    packages.push("python".into());
     for dep in &deps.dependencies {
         if !is_conda_base_package(dep) {
-            specs.push(MatchSpec::from_str(dep, match_spec_options)?);
+            packages.push(dep.clone());
         }
     }
+    let specs = crate::python::parse_specs(&packages)?;
 
     let rattler_cache_dir = default_cache_dir()
         .map_err(|e| anyhow!("could not determine rattler cache directory: {}", e))?;
@@ -1316,6 +1331,20 @@ mod tests {
         };
 
         assert_eq!(compute_env_hash(&deps1), compute_env_hash(&deps2));
+    }
+
+    #[test]
+    fn existing_gil_environments_keep_their_cache_keys() {
+        let mut deps = CondaDependencies {
+            dependencies: vec!["numpy".into()],
+            channels: vec!["conda-forge".into()],
+            python: None,
+            env_id: None,
+        };
+        // Frozen outputs of the previous GIL-selector hash policy.
+        assert_eq!(compute_env_hash(&deps), "b3965a5d75ba0dc2");
+        deps.python = Some("3.14".into());
+        assert_eq!(compute_env_hash(&deps), "1bfe90f8ffbff370");
     }
 
     #[test]

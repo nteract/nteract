@@ -35,7 +35,7 @@ async fn conda_create_and_sync(channels: &[&str]) {
     let dir = tempfile::tempdir().unwrap();
     let mut deps = CondaDependencies {
         dependencies: if channels.contains(&"main-x") {
-            vec!["https://repo.anaconda.cloud/repo/main-x::a2wsgi".into()]
+            vec!["main-x::a2wsgi".into()]
         } else {
             vec![]
         },
@@ -67,7 +67,11 @@ async fn conda_create_and_sync(channels: &[&str]) {
         .find(|r| r.repodata_record.package_record.name.as_normalized() == "python")
         .unwrap()
         .repodata_record;
-    deps.dependencies.push("six".into());
+    deps.dependencies.push(if channels.contains(&"main") {
+        "main::six".into()
+    } else {
+        "six".into()
+    });
     conda::sync_dependencies(&env, &deps, Arc::new(LogHandler))
         .await
         .unwrap();

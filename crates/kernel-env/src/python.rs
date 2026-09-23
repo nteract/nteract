@@ -1,6 +1,6 @@
 //! Python defaults shared by managed Conda, Pixi, and pool environments.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rattler_conda_types::{MatchSpec, ParseMatchSpecOptions, ParseStrictness, VersionSpec};
 
 /// Default to regular CPython without requiring a channel-specific selector
@@ -9,18 +9,17 @@ use rattler_conda_types::{MatchSpec, ParseMatchSpecOptions, ParseStrictness, Ver
 /// conda-forge builds use e.g. `0_cp314` (GIL) or `0_cp314t` (free-threaded).
 const GIL_ABI_CONSTRAINT: &str = "python_abi[build='^.*_cp[0-9]+$']";
 
-/// Parse requested packages, adding a Python default only when none was given.
-/// Return required specs separately from optional ABI constraints.
-pub fn solve_specs(packages: &[String]) -> Result<(Vec<MatchSpec>, Vec<MatchSpec>)> {
+/// Normalize channel aliases and Python shorthand for creation and sync.
+pub(crate) fn parse_specs(packages: &[String]) -> Result<Vec<MatchSpec>> {
     let mut specs = packages
         .iter()
-        .map(|package| MatchSpec::from_str(package, ParseMatchSpecOptions::strict()))
+        .map(|package| crate::channels::parse_match_spec(package))
         .collect::<Result<Vec<_>, _>>()?;
     for spec in &mut specs {
         // Notebook metadata accepts bare pins such as 3.14t. Conda records
         // the version as 3.14.x and the free-threaded ABI in the build, so
-        // translate that shorthand before solving. Operator expressions and
-        // explicit build requests keep their normal MatchSpec semantics.
+        // translate that shorthand before solving. Reject operator expressions
+        // with this suffix rather than interpreting them as ordinary versions.
         if spec
             .name
             .as_exact()
@@ -46,9 +45,24 @@ pub fn solve_specs(packages: &[String]) -> Result<(Vec<MatchSpec>, Vec<MatchSpec
                         spec.build = Some(format!("*_cp{}{}t", parts[0], parts[1]).parse()?);
                     }
                 }
+                if spec.version.as_ref().is_some_and(|version| {
+                    version
+                        .to_string()
+                        .split([',', '|', '(', ')'])
+                        .any(|term| term.trim().trim_end_matches(".*").ends_with('t'))
+                }) {
+                    bail!("Unsupported free-threaded Python version expression {version:?}; use a bare pin such as python=3.14t or a normal version with python-freethreading");
+                }
             }
         }
     }
+    Ok(specs)
+}
+
+/// Parse requested packages, adding a Python default only when none was given.
+/// Return required specs separately from optional ABI constraints.
+pub fn solve_specs(packages: &[String]) -> Result<(Vec<MatchSpec>, Vec<MatchSpec>)> {
+    let mut specs = parse_specs(packages)?;
     if !specs.iter().any(|spec| {
         spec.name
             .as_exact()
@@ -87,6 +101,14 @@ mod tests {
     use super::*;
     use rattler_conda_types::{PackageRecord, RepoDataRecord};
     use rattler_solve::{resolvo, SolverImpl, SolverTask};
+
+    #[test]
+    fn operator_free_threading_expressions_fail_instead_of_selecting_gil() {
+        for package in ["python>=3.14t", "python==3.14t", "python>=3.14t,<3.15"] {
+            let error = solve_specs(&[package.into()]).unwrap_err();
+            assert!(error.to_string().contains("use a bare pin"), "{error}");
+        }
+    }
 
     fn record(name: &str, version: &str, build: &str, depends: &[&str]) -> RepoDataRecord {
         let package_record: PackageRecord = serde_json::from_value(serde_json::json!({

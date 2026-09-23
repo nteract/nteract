@@ -18,9 +18,13 @@ dependencies:
 
 The daemon adds the notebook runtime packages, including `ipykernel`, widgets,
 and PyArrow. It defaults to regular CPython using an optional `python_abi`
-constraint; it does not require the conda-forge-specific `python-gil` package.
+constraint; it does not require the `python-gil` selector package.
 Dependency synchronization preserves the installed Python package, including
 its version and build, so it cannot silently switch interpreter ABIs.
+For free-threaded Python, use a bare pin such as `python=3.14t`, an explicit
+build, or a regular version constraint plus `python-freethreading`. Operator
+expressions such as `python>=3.14t` are rejected rather than selecting a GIL
+build.
 
 ## Channels
 
@@ -37,6 +41,8 @@ Full repository URLs and other channel names also work. Declared order sets
 priority. Adding `main-x` does not implicitly add `main`; list both when using
 Anaconda's extended package collection. User-owned Pixi projects continue to
 use Pixi's own configuration and channel resolution.
+Package-specific channels also accept these aliases, for example `main::numpy`
+or `main-x::a2wsgi` alongside the corresponding channel in the channel list.
 
 ## Authentication for main-x
 
@@ -53,6 +59,9 @@ Then add `main-x` after `main` in your environment's channels. An existing
 conda-only login may not populate the rattler/Pixi store. `RATTLER_AUTH_FILE`
 can select a credential file for the daemon process; keep tokens out of
 notebooks and channel URLs.
+If the credential store cannot be loaded, the daemon logs a warning and
+continues without authentication so public channels remain usable. Repair the
+store before downloading packages that require authentication.
 
 See [Anaconda CLI's main-x setup](https://github.com/anaconda/anaconda-cli#configuring-conda-and-pixi-for-anaconda-channels)
 for authentication setup. Credentials must grant access to the requested

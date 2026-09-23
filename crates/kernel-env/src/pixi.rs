@@ -62,7 +62,7 @@ pub fn default_cache_dir_pixi() -> PathBuf {
 /// This produces a valid pixi manifest that records the installed packages,
 /// channels, and platform. The environment can later be extended by pixi CLI
 /// or pixi API if needed.
-fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) -> String {
+fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) -> Result<String> {
     let platform = crate::conda_solve_platform().to_string();
 
     let channels_str = channels
@@ -74,18 +74,47 @@ fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) 
     let deps_str = packages
         .iter()
         .map(|p| {
+            if p.contains("::") {
+                let specs = crate::python::parse_specs(std::slice::from_ref(p))?;
+                let spec = &specs[0];
+                let name = spec
+                    .name
+                    .as_exact()
+                    .context("Pixi dependencies need an exact package name")?;
+                let version = spec
+                    .version
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "*".into());
+                let channel = spec
+                    .channel
+                    .as_ref()
+                    .context("Missing dependency channel")?;
+                let build = spec
+                    .build
+                    .as_ref()
+                    .map(|build| format!(", build = \"{build}\""))
+                    .unwrap_or_default();
+                return Ok(format!(
+                    "{} = {{ version = \"{}\", channel = \"{}\"{} }}",
+                    name.as_normalized(),
+                    version,
+                    channel.base_url,
+                    build
+                ));
+            }
             // Split "package>=version" into name and version spec
             if let Some(idx) = p.find(['>', '<', '=', '!']) {
                 let (name, version) = p.split_at(idx);
-                format!("{} = \"{}\"", name.trim(), version.trim())
+                Ok(format!("{} = \"{}\"", name.trim(), version.trim()))
             } else {
-                format!("{} = \"*\"", p)
+                Ok(format!("{} = \"*\"", p))
             }
         })
-        .collect::<Vec<_>>()
+        .collect::<Result<Vec<_>>>()?
         .join("\n");
 
-    format!(
+    Ok(format!(
         r#"[workspace]
 channels = [{channels}]
 name = "{name}"
@@ -101,7 +130,7 @@ version = "0.1.0"
         name = name,
         platform = platform,
         deps = deps_str,
-    )
+    ))
 }
 
 /// Create a pixi-compatible environment using rattler.
@@ -155,7 +184,7 @@ pub async fn create_pixi_environment(
             .iter()
             .map(|channel| channel.base_url.to_string())
             .collect::<Vec<_>>();
-    let manifest = generate_pixi_manifest(&project_name, packages, &manifest_channels);
+    let manifest = generate_pixi_manifest(&project_name, packages, &manifest_channels)?;
 
     let manifest_path = project_dir.join("pixi.toml");
     tokio::fs::write(&manifest_path, &manifest).await?;
@@ -434,7 +463,8 @@ mod tests {
                 "numpy>=1.24".to_string(),
             ],
             &["conda-forge".to_string()],
-        );
+        )
+        .unwrap();
 
         assert!(manifest.contains("[workspace]"));
         assert!(manifest.contains("name = \"test-project\""));
@@ -452,7 +482,8 @@ mod tests {
             "test",
             &["pandas".to_string()],
             &["conda-forge".to_string(), "defaults".to_string()],
-        );
+        )
+        .unwrap();
 
         assert!(manifest.contains("\"conda-forge\", \"defaults\""));
     }
@@ -468,7 +499,8 @@ mod tests {
                 "matplotlib!=3.7".to_string(),
             ],
             &["conda-forge".to_string()],
-        );
+        )
+        .unwrap();
 
         assert!(manifest.contains("numpy = \">=1.24\""));
         assert!(manifest.contains("pandas = \"<2.0\""));
@@ -482,9 +514,29 @@ mod tests {
             "test",
             &["python".to_string()],
             &["conda-forge".to_string()],
-        );
+        )
+        .unwrap();
 
         let platform = crate::conda_solve_platform().to_string();
         assert!(manifest.contains(&format!("platforms = [\"{}\"]", platform)));
+    }
+
+    #[test]
+    fn manifest_records_qualified_channel_aliases() {
+        let manifest = generate_pixi_manifest(
+            "test",
+            &["main::numpy>=1.24".into(), "main-x::a2wsgi".into()],
+            &[
+                "https://repo.anaconda.com/pkgs/main/".into(),
+                "https://repo.anaconda.cloud/repo/main-x/".into(),
+            ],
+        )
+        .unwrap();
+        assert!(manifest.contains(
+            "numpy = { version = \">=1.24\", channel = \"https://repo.anaconda.com/pkgs/main/\" }"
+        ));
+        assert!(manifest.contains(
+            "a2wsgi = { version = \"*\", channel = \"https://repo.anaconda.cloud/repo/main-x/\" }"
+        ));
     }
 }
