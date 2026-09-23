@@ -144,3 +144,110 @@ test("failed startup with uncertain cleanup quarantines its capacity reservation
   await assert.rejects(pool.open("failed"), /termination not confirmed/);
   await assert.rejects(pool.open("replacement"), /capacity/);
 });
+
+test("owner limits reserve pending and retiring sessions without blocking other owners", async () => {
+  let finishStartup, finishDisposal;
+  let created = 0;
+  const pool = new SessionPool({
+    maxSessions: 4,
+    maxSessionsPerOwner: 1,
+    warmCount: 0,
+    create: async () => {
+      created++;
+      if (created === 1)
+        await new Promise((resolve) => {
+          finishStartup = resolve;
+        });
+      return {
+        info: {},
+        dispose: async () => {
+          if (created === 2)
+            await new Promise((resolve) => {
+              finishDisposal = resolve;
+            });
+        },
+      };
+    },
+  });
+  const starting = pool.open("alice/1", "alice");
+  await Promise.resolve();
+  await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
+  await pool.open("bob/1", "bob");
+  finishStartup();
+  await starting;
+  await assert.rejects(pool.open("alice/1", "bob"), /owner mismatch/);
+  const retiring = pool.release("alice/1");
+  await Promise.resolve();
+  await Promise.resolve();
+  await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
+  finishDisposal();
+  await retiring;
+  await pool.open("alice/2", "alice");
+  await pool.close();
+});
+
+for (const retained of [false, true])
+  test(`owner startup failure reservation retained=${retained}`, async () => {
+    let first = true;
+    const pool = new SessionPool({
+      maxSessions: 4,
+      maxSessionsPerOwner: 1,
+      warmCount: 0,
+      create: async () => {
+        if (first) {
+          first = false;
+          const error = new Error("startup failed");
+          error.runtimeRetained = retained;
+          throw error;
+        }
+        return { info: {}, dispose: async () => {} };
+      },
+    });
+    await assert.rejects(pool.open("alice/1", "alice"), /startup failed/);
+    if (retained) await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
+    else await pool.open("alice/2", "alice");
+    await pool.open("bob/1", "bob");
+    await pool.close();
+  });
+
+test("cancelled pending owner allocation stays reserved through confirmed cleanup", async () => {
+  let finish;
+  const pool = new SessionPool({
+    maxSessions: 4,
+    maxSessionsPerOwner: 1,
+    warmCount: 0,
+    create: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  const starting = pool.open("alice/1", "alice");
+  await Promise.resolve();
+  await pool.release("alice/1");
+  await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
+  finish({ info: {}, dispose: async () => {} });
+  await assert.rejects(starting, /expired/);
+  const next = pool.open("alice/2", "alice");
+  await Promise.resolve();
+  finish({ info: {}, dispose: async () => {} });
+  await next;
+  await pool.close();
+});
+
+test("unconfirmed disposal retains the owner's reservation", async () => {
+  const pool = new SessionPool({
+    maxSessions: 4,
+    maxSessionsPerOwner: 1,
+    warmCount: 0,
+    create: async () => ({
+      info: {},
+      dispose: async () => {
+        throw Error("termination unconfirmed");
+      },
+    }),
+  });
+  await pool.open("alice/1", "alice");
+  await assert.rejects(pool.release("alice/1"), /termination unconfirmed/);
+  await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
+  await pool.open("bob/1", "bob");
+});

@@ -30,7 +30,8 @@ export function createProviderService(pool) {
       }
       const key = JSON.stringify(parts);
       try {
-        if (path === "/open") return Response.json({ info: await pool.open(key) });
+        if (path === "/open")
+          return Response.json({ info: await pool.open(key, input.ownerPrincipal) });
         if (path === "/close") {
           await pool.release(key);
           return Response.json({ ok: true });

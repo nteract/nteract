@@ -33,6 +33,7 @@ export class PreviewPythonSessions {
         return pending;
       },
       maxSessions: 4,
+      maxSessionsPerOwner: 2,
       warmCount: 1,
       idleMs: PROVIDER_ORPHAN_IDLE_MS,
     });

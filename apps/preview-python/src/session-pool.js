@@ -9,12 +9,28 @@ export class SessionPool {
   #warmCount;
   #idleMs;
   #runtimeCount = 0;
+  #ownerCounts = new Map();
+  #maxSessionsPerOwner;
 
-  constructor({ create, maxSessions = 4, warmCount = 1, idleMs = 15 * 60_000, clock = Date.now }) {
+  constructor({
+    create,
+    maxSessions = 4,
+    warmCount = 1,
+    idleMs = 15 * 60_000,
+    clock = Date.now,
+    maxSessionsPerOwner = maxSessions,
+  }) {
     if (!Number.isInteger(maxSessions) || maxSessions < 1) throw new Error("Invalid session limit");
     if (!Number.isInteger(warmCount) || warmCount < 0 || warmCount > maxSessions)
       throw new Error("Invalid warm pool size");
     if (!Number.isFinite(idleMs) || idleMs <= 0) throw new Error("Invalid idle timeout");
+    if (
+      !Number.isInteger(maxSessionsPerOwner) ||
+      maxSessionsPerOwner < 1 ||
+      maxSessionsPerOwner > maxSessions
+    )
+      throw new Error("Invalid owner session limit");
+    this.#maxSessionsPerOwner = maxSessionsPerOwner;
     this.#create = create;
     this.#clock = clock;
     this.#maxSessions = maxSessions;
@@ -66,15 +82,35 @@ export class SessionPool {
     return results.map((result) => result.runtime.info);
   }
 
-  async open(key) {
+  async open(key, owner = key) {
     if (this.#closed) throw new Error("Provider is closed");
     if (typeof key !== "string" || !key) throw new Error("Missing session identity");
+    if (typeof owner !== "string" || !owner) throw new Error("Missing session owner");
     let session = this.#sessions.get(key);
-    if (session) return session.ready;
+    if (session) {
+      if (session.owner !== owner) throw new Error("Session owner mismatch");
+      return session.ready;
+    }
+    const owned = this.#ownerCounts.get(owner) ?? 0;
+    if (owned >= this.#maxSessionsPerOwner)
+      throw new Error(
+        "Your Preview Python session limit was reached; stop another notebook session",
+      );
     if (this.#sessions.size >= this.#maxSessions)
       throw new Error("Preview Python capacity reached");
     const candidate = this.#warm.shift() ?? this.#fresh();
+    this.#ownerCounts.set(owner, owned + 1);
+    let reserved = true;
+    const releaseOwner = () => {
+      if (!reserved) return;
+      reserved = false;
+      const remaining = this.#ownerCounts.get(owner) - 1;
+      if (remaining) this.#ownerCounts.set(owner, remaining);
+      else this.#ownerCounts.delete(owner);
+    };
     session = {
+      owner,
+      releaseOwner,
       runtime: null,
       ready: null,
       lastUsed: this.#clock(),
@@ -85,10 +121,12 @@ export class SessionPool {
     session.ready = candidate.then(async ({ runtime, error }) => {
       if (error) {
         if (this.#sessions.get(key) === session) this.#sessions.delete(key);
+        if (error?.runtimeRetained !== true) releaseOwner();
         throw error;
       }
       if (this.#sessions.get(key) !== session || this.#closed) {
         await runtime.dispose();
+        releaseOwner();
         throw new Error("Session expired during allocation");
       }
       session.runtime = runtime;
@@ -131,7 +169,10 @@ export class SessionPool {
     if (!expected || this.#sessions.get(key) !== expected) return;
     this.#sessions.delete(key);
     // A pending allocation disposes itself when it notices removal.
-    if (expected.runtime) await expected.runtime.dispose();
+    if (expected.runtime) {
+      await expected.runtime.dispose();
+      expected.releaseOwner();
+    }
   }
 
   async expire() {

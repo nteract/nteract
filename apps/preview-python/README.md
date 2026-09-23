@@ -151,3 +151,10 @@ output model. Display updates preserve output IDs and can update matching
 outputs from earlier executions. A deferred clear waits for the next output in
 that execution. Outputs are still delivered as a batch when execution completes;
 progressive streaming and widget comms are not implemented yet.
+
+The deployment admits at most four interpreters and each canonical notebook
+owner may hold at most two sessions. Pending allocations and retiring sessions
+count against the owner's limit until destruction is confirmed; uncertain
+cleanup keeps both owner and deployment reservations. A user at their limit
+must stop another notebook session before starting a third. Clean unassigned
+standbys count against deployment capacity, not an owner's allowance.

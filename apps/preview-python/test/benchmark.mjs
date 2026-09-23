@@ -57,7 +57,7 @@ for (let trial = 0; trial < trials; trial++) {
       return JSON.parse(text);
     }
     const identity = (sessionId) => ({
-      ownerPrincipal: "benchmark",
+      ownerPrincipal: `benchmark-${sessionId}`,
       notebookId: sessionId,
       sessionId,
     });
