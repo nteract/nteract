@@ -21,6 +21,7 @@ import { ManagedPythonRoom } from "./managed-python-room.ts";
 import {
   ensureManagedPythonWorkstation,
   managedPythonStub,
+  managedPythonSessionOwner,
   MANAGED_PYTHON_WORKSTATION,
 } from "./managed-python.ts";
 import {
@@ -2004,10 +2005,10 @@ export class NotebookRoom {
           );
           this.deliverRoomHostFrames(notebookId, result);
           await this.checkpointRoomHost(notebookId, materializer, "managed_python_start_failed");
-          const notebook = await getNotebookRow(this.env, notebookId);
-          if (notebook)
+          const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
+          if (ownerPrincipal)
             await updateWorkstationAttachJobStatus(this.env, {
-              ownerPrincipal: notebook.owner_principal,
+              ownerPrincipal,
               workstationId: MANAGED_PYTHON_WORKSTATION,
               jobId: sessionId,
               status: "failed",
@@ -2026,6 +2027,9 @@ export class NotebookRoom {
     if (existing?.runtime.sessionId === sessionId) return existing.ready;
     const notebook = await getNotebookRow(this.env, notebookId);
     if (!notebook) throw new Error("Managed Python notebook no longer exists");
+    const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
+    if (!ownerPrincipal)
+      throw new Error("Managed Python attachment has no authorized compute owner");
     // Recheck after storage I/O: concurrent requests can join the same startup.
     const concurrent = this.managedPython.get(notebookId);
     if (concurrent?.runtime.sessionId === sessionId) return concurrent.ready;
@@ -2045,7 +2049,7 @@ export class NotebookRoom {
       this.env,
       materializer,
       notebookId,
-      notebook.owner_principal,
+      ownerPrincipal,
       sessionId,
       (result) => this.deliverManagedPythonPublication(notebookId, result),
     );
@@ -2065,7 +2069,7 @@ export class NotebookRoom {
         if (result.ignored_stale) return;
         this.deliverRoomHostFrames(notebookId, result);
         await updateWorkstationAttachJobStatus(this.env, {
-          ownerPrincipal: notebook.owner_principal,
+          ownerPrincipal,
           workstationId: MANAGED_PYTHON_WORKSTATION,
           jobId: sessionId,
           status: "running",
@@ -2112,10 +2116,9 @@ export class NotebookRoom {
       );
       if (failed.ignored_stale) return;
       this.deliverRoomHostFrames(notebookId, failed);
-      const notebook = await getNotebookRow(this.env, notebookId);
-      if (notebook)
+      if (this.env.DB)
         await updateWorkstationAttachJobStatus(this.env, {
-          ownerPrincipal: notebook.owner_principal,
+          ownerPrincipal: runtime.ownerPrincipal,
           workstationId: MANAGED_PYTHON_WORKSTATION,
           jobId: runtime.sessionId,
           status: "failed",
@@ -2138,8 +2141,12 @@ export class NotebookRoom {
     if (!notebook) {
       return false;
     }
-    const ownerPrincipal = notebook.owner_principal;
     const workstationId = attachment.workstation_id.trim();
+    const ownerPrincipal =
+      workstationId === MANAGED_PYTHON_WORKSTATION && attachment.runtime_session_id
+        ? await managedPythonSessionOwner(this.env, notebookId, attachment.runtime_session_id)
+        : notebook.owner_principal;
+    if (!ownerPrincipal) return false;
     const workstation =
       workstationId === MANAGED_PYTHON_WORKSTATION
         ? await ensureManagedPythonWorkstation(this.env, ownerPrincipal)

@@ -1,11 +1,15 @@
 import test, { after } from "node:test";
 import { NotebookRoom } from "../src/notebook-room.ts";
 import { createNotebookWithOwnerAcl } from "../src/storage.ts";
+import { createWorkstationAttachJob, grantNotebookAclRow } from "../src/storage.ts";
+import { RoomMaterializer } from "../src/room-materializer.ts";
+import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import {
   ensureManagedPythonWorkstation,
   MANAGED_PYTHON_WORKSTATION,
+  managedPythonSessionOwner,
 } from "../src/managed-python.ts";
 import {
   registerWorkstation,
@@ -147,3 +151,102 @@ for (const scope of ["owner", "editor", "viewer"])
       );
       if (scope !== "owner") assert.equal(calls.length, 0);
     });
+
+test("managed startup, failure and resume charge the attach-job owner rather than notebook creator", async () => {
+  await initializeTestRuntimedWasm();
+  const storage = new Map();
+  const tasks = new Set();
+  const state = {
+    id: { toString: () => "coowner" },
+    storage: {
+      get: async (key) => storage.get(key),
+      put: async (key, value) => storage.set(key, value),
+      delete: async (key) => storage.delete(key),
+      list: async () => new Map(storage),
+    },
+    waitUntil(promise) {
+      tasks.add(promise);
+      promise.finally(() => tasks.delete(promise)).catch(() => {});
+    },
+  };
+  const calls = [];
+  const env = {
+    DB: database(sqlite),
+    NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+    PREVIEW_PYTHON_SESSIONS: {
+      idFromName: (name) => name,
+      get: () => ({
+        fetch: async (request) => {
+          const path = new URL(request.url).pathname;
+          if (path === "/health") return Response.json({ provider: "celld-pyodide", version: 1 });
+          calls.push({ path, ...(await request.json()) });
+          return Response.json({ ok: true, info: {} });
+        },
+      }),
+    },
+  };
+  await createNotebookWithOwnerAcl(env, "coowner", {
+    principal: "user:dev:alice",
+    actorLabel: "user:dev:alice/browser",
+    scope: "owner",
+  });
+  await ensureManagedPythonWorkstation(env, "user:dev:bob");
+  await grantNotebookAclRow(env, {
+    notebookId: "coowner",
+    subjectKind: "principal",
+    subject: "user:dev:bob",
+    scope: "owner",
+    actorLabel: "user:dev:alice/browser",
+  });
+  const job = await createWorkstationAttachJob(env, {
+    notebookId: "coowner",
+    ownerPrincipal: "user:dev:bob",
+    workstationId: MANAGED_PYTHON_WORKSTATION,
+    actorLabel: "user:dev:bob/browser",
+    replaceActive: true,
+  });
+  assert.ok(job);
+  assert.equal(await managedPythonSessionOwner(env, "different-notebook", job.job.id), null);
+  const room = new NotebookRoom(state, env);
+  const materializer = new RoomMaterializer("coowner", state, env);
+  room.materializers.set("coowner", materializer);
+  await materializer.setWorkstationAttachment({
+    workstation_id: MANAGED_PYTHON_WORKSTATION,
+    display_name: "Preview Python",
+    provider: "celld-pyodide",
+    default_environment_label: "Python",
+    environment_policy: "curated",
+    status: "connecting",
+    runtime_session_id: job.job.id,
+    updated_at: new Date().toISOString(),
+  });
+  await room.startManagedPython("coowner", job.job.id);
+  assert.equal(calls.find((call) => call.path === "/open").ownerPrincipal, "user:dev:bob");
+  assert.equal(
+    sqlite.prepare("SELECT status FROM workstation_attach_jobs WHERE id = ?").get(job.job.id)
+      .status,
+    "running",
+  );
+  const runtime = room.managedPython.get("coowner").runtime;
+  await room.failManagedPython("coowner", runtime, new Error("test reset"));
+  assert.equal(calls.find((call) => call.path === "/close").ownerPrincipal, "user:dev:bob");
+  assert.equal(
+    sqlite.prepare("SELECT status FROM workstation_attach_jobs WHERE id = ?").get(job.job.id)
+      .status,
+    "failed",
+  );
+  const selected = await materializer.getWorkstationAttachment();
+  assert.equal(
+    await room.requestRuntimeResumeForExecution(
+      "coowner",
+      { ...selected, status: "idle" },
+      "execute_cell",
+    ),
+    true,
+  );
+  while (tasks.size) await Promise.all(tasks);
+  assert.equal(calls.filter((call) => call.path === "/open").length, 2);
+  assert.ok(calls.every((call) => call.ownerPrincipal === "user:dev:bob"));
+  await room.managedPython.get("coowner").runtime.close();
+  while (tasks.size) await Promise.all(tasks);
+});

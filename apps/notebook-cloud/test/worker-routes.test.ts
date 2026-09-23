@@ -2968,6 +2968,30 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), { error: "sign in to list notebooks" });
   });
 
+  it("reserves the managed Python workstation ID for server registration", async () => {
+    const env = fakeEnv();
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:test",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "celld-preview-python",
+          display_name: "Pretend managed",
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(response.status, 409);
+    assert.match(((await response.json()) as { error: string }).error, /reserved/);
+    assert.equal(env.DB.workstations.size, 0);
+  });
+
   it("registers and lists user-owned workstations", async () => {
     const env = fakeEnv();
 

@@ -37,7 +37,7 @@ export class ManagedPythonRoom {
     private readonly env: Env,
     private readonly materializer: RoomMaterializer,
     private readonly notebookId: string,
-    private readonly ownerPrincipal: string,
+    readonly ownerPrincipal: string,
     readonly sessionId: string,
     private readonly deliver: (result: RoomHostFrameResult) => void,
   ) {

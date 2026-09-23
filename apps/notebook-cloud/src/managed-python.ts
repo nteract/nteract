@@ -1,8 +1,21 @@
 import type { Env } from "./cloudflare-types.ts";
-import { registerWorkstation, setDefaultWorkstation } from "./storage.ts";
+import { ensureCatalogSchema, registerWorkstation, setDefaultWorkstation } from "./storage.ts";
 import { upsertWorkstationLease } from "./compute-session-index.ts";
 
 export const MANAGED_PYTHON_WORKSTATION = "celld-preview-python";
+
+/** The authenticated attach job owns compute, which may differ from the notebook creator. */
+export async function managedPythonSessionOwner(env: Env, notebookId: string, sessionId: string) {
+  if (!env.DB) return null;
+  await ensureCatalogSchema(env);
+  const job = await env.DB.prepare(
+    `SELECT owner_principal FROM workstation_attach_jobs
+     WHERE id = ? AND notebook_id = ? AND workstation_id = ?`,
+  )
+    .bind(sessionId, notebookId, MANAGED_PYTHON_WORKSTATION)
+    .first<{ owner_principal: string }>();
+  return job?.owner_principal ?? null;
+}
 
 export function managedPythonStub(env: Env) {
   if (env.NOTEBOOK_CLOUD_PYTHON_PROVIDER !== "celld" || !env.PREVIEW_PYTHON_SESSIONS) return null;

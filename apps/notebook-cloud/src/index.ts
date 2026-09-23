@@ -1910,6 +1910,9 @@ async function routeWorkstations(
   if (registration instanceof Response) {
     return registration;
   }
+  if (registration.workstationId === MANAGED_PYTHON_WORKSTATION) {
+    return json({ error: "This workstation ID is reserved for deployment-managed Python" }, 409);
+  }
 
   const workstation = await registerWorkstation(env, ownerPrincipal, registration);
   if (!workstation) {
