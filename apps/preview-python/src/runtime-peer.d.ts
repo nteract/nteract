@@ -1,5 +1,6 @@
 export interface PythonExecution {
   execution_id: string;
+  cell_id: string;
   source: string;
 }
 export interface PythonExecutionResult {

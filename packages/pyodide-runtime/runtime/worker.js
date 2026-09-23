@@ -4,6 +4,7 @@ import "pyodide/pyodide.asm.js";
 import { loadPyodide } from "pyodide";
 import lockFileContents from "pyodide/pyodide-lock.json";
 import source from "./session.py";
+import bootstrap from "nteract:python-bootstrap";
 
 // The supervisor serializes this session. The guard also rejects accidental
 // concurrent admission rather than mixing Python globals/output attribution.
@@ -24,12 +25,15 @@ async function initialize(env) {
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
     const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
     if (hash !== wheel.sha256) throw new Error("Pinned package hash mismatch: " + wheel.name);
-    python.unpackArchive(bytes, "zip", { extractDir: "/packages" });
+    python.unpackArchive(bytes, "zip", { extractDir: "/packages/site-packages" });
   }
   python.runPython(
-    "import sys, os; sys.path.insert(0, '/packages'); os.environ['LD_LIBRARY_PATH'] = '/packages'; os.environ['MPLBACKEND'] = 'Agg'",
+    "import sys, os; sys.path.insert(0, '/packages/site-packages'); os.environ['LD_LIBRARY_PATH'] = '/packages/site-packages'; os.environ['MPLBACKEND'] = 'Agg'",
   );
   for (const library of libraries) await python._api.loadDynlib(library.path);
+  python.FS.mkdirTree("/packages/site-packages/nteract_kernel_launcher");
+  for (const [name, contents] of Object.entries(bootstrap))
+    python.FS.writeFile(`/packages/site-packages/nteract_kernel_launcher/${name}`, contents);
   python.runPython(source);
   return { python, evaluate: python.globals.get("evaluate") };
 }
@@ -44,10 +48,15 @@ export default {
     busy = true;
     try {
       const payload = await request.json();
-      if (typeof payload.source !== "string" || typeof payload.execution_id !== "string") {
-        return new Response("Expected accepted source and execution_id", { status: 400 });
+      if (
+        typeof payload.source !== "string" ||
+        typeof payload.execution_id !== "string" ||
+        typeof payload.cell_id !== "string" ||
+        !payload.cell_id
+      ) {
+        return new Response("Expected accepted source, execution_id and cell_id", { status: 400 });
       }
-      const pending = evaluate(payload.source, payload.execution_id);
+      const pending = evaluate(payload.source, payload.execution_id, payload.cell_id);
       try {
         return new Response(await pending, { headers: { "content-type": "application/json" } });
       } finally {

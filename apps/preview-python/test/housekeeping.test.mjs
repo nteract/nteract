@@ -64,12 +64,18 @@ test("provider retains idle compute through the room deadline and later reaps or
   now = CLOUD_RUNTIME_IDLE_MS + 1;
   await pool.expire();
   assert.equal(disposed, 0);
-  assert.deepEqual(await pool.execute("session", { execution_id: "still-valid" }), {
-    success: true,
-  });
+  assert.deepEqual(
+    await pool.execute("session", { cell_id: "test-cell", execution_id: "still-valid" }),
+    {
+      success: true,
+    },
+  );
   now += PROVIDER_ORPHAN_IDLE_MS;
   await pool.expire();
   assert.equal(disposed, 1);
-  await assert.rejects(pool.execute("session", { execution_id: "orphan" }), /expired/);
+  await assert.rejects(
+    pool.execute("session", { cell_id: "test-cell", execution_id: "orphan" }),
+    /expired/,
+  );
   await pool.close();
 });

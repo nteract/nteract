@@ -1,13 +1,13 @@
 import { SessionPool } from "../src/session-pool.js";
-import { createCelldRuntime } from "../src/celld-runtime.js";
+import { createCelldRuntime } from "@nteract/pyodide-runtime/celld";
 import { createProviderService } from "../src/provider-service.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import packages from "../dist/package-assets.js";
-import libraries from "../dist/library-modules.js";
+import packages from "@nteract/pyodide-runtime/assets/package-assets.js";
+import libraries from "@nteract/pyodide-runtime/assets/library-modules.js";
 // Test-only driver. Never deployed as the provider's public API.
-import source from "../dist/session.js";
-import interpreter from "../dist/pyodide.asm.wasm";
-import sentinel from "../dist/sentinel.wasm";
+import source from "@nteract/pyodide-runtime/assets/session.js";
+import interpreter from "@nteract/pyodide-runtime/assets/pyodide.asm.wasm";
+import sentinel from "@nteract/pyodide-runtime/assets/sentinel.wasm";
 let bridgePool;
 
 export default {
@@ -33,6 +33,7 @@ export default {
         const elapsedMs = Date.now() - started;
         await pool.open("replacement");
         const result = await pool.execute("replacement", {
+          cell_id: "test-cell",
           execution_id: "ready",
           source: "6 * 7",
         });
@@ -89,6 +90,7 @@ export default {
         let error;
         try {
           await pool.execute("deadline/1", {
+            cell_id: "test-cell",
             execution_id: "sleep",
             source: "import asyncio\nawait asyncio.sleep(60)",
           });
@@ -98,6 +100,7 @@ export default {
         const elapsedMs = Date.now() - started;
         const replacement = await pool.open("deadline/2");
         const result = await pool.execute("deadline/2", {
+          cell_id: "test-cell",
           execution_id: "after",
           source: "21 * 2",
         });
@@ -114,17 +117,20 @@ export default {
         const assigned = await pool.open("owner/notebook/generation-1");
         const allocationMs = Date.now() - started;
         const result = await pool.execute("owner/notebook/generation-1", {
+          cell_id: "test-cell",
           execution_id: "pool-1",
           source: "secret = 123\nsecret",
         });
         const sibling = await pool.open("owner/notebook-2/generation-1");
         const isolated = await pool.execute("owner/notebook-2/generation-1", {
+          cell_id: "test-cell",
           execution_id: "pool-2",
           source: "'secret' in globals()",
         });
         await pool.release("owner/notebook/generation-1");
         const replacement = await pool.open("owner/notebook/generation-2");
         const reset = await pool.execute("owner/notebook/generation-2", {
+          cell_id: "test-cell",
           execution_id: "pool-3",
           source: "'secret' in globals()",
         });
@@ -162,7 +168,7 @@ export default {
         .getEntrypoint(null, { limits: { cpuMs } })
         .fetch("https://session.invalid/execute", {
           method: "POST",
-          body: JSON.stringify({ source, execution_id }),
+          body: JSON.stringify({ source, execution_id, cell_id: "test-cell" }),
         });
       if (!response.ok) throw new Error(await response.text());
       return response.json();

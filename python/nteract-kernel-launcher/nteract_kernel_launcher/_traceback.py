@@ -160,7 +160,12 @@ def _current_execution_context(ip: Any | None) -> dict[str, Any]:
         "execution_id": _metadata_execution_id(metadata)
         or _coerce_metadata_str(header.get("msg_id")),
         "cell_id": _metadata_cell_id(metadata),
-        "execution_count": _current_input_count(ip),
+        "execution_count": _coerce_execution_count(
+            metadata.get("nteract", {}).get("execution_count")
+            if isinstance(metadata.get("nteract"), dict)
+            else None
+        )
+        or _current_input_count(ip),
     }
     return {key: value for key, value in context.items() if value}
 
@@ -183,17 +188,23 @@ def _cell_registry(ip: Any) -> dict[str, dict[str, Any]]:
     return registry
 
 
-def _register_cell_source(
+def register_cell_source(
     ip: Any,
     raw_cell: Any,
     *,
     execution_id: str | None,
     cell_id: str | None,
     execution_count: int | None,
+    compiled_filename: str | None = None,
 ) -> None:
+    """Register accepted source for traceback attribution without requiring ipykernel.
+
+    Alternate IPython transports pass their compiler's actual filename. The
+    desktop launcher keeps using ipykernel's filename convention by default.
+    """
     if not isinstance(raw_cell, str):
         return
-    filename = _filename_for_cell_source(raw_cell)
+    filename = compiled_filename or _filename_for_cell_source(raw_cell)
     if not filename:
         return
 
@@ -261,7 +272,7 @@ def _install_cell_registry_hook(ip: Any) -> None:
             )
             cell_id = _metadata_cell_id(metadata)
             execution_count = _execution_count_for_info(ip, info)
-            _register_cell_source(
+            register_cell_source(
                 ip,
                 getattr(info, "raw_cell", None),
                 execution_id=execution_id,

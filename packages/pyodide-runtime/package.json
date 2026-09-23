@@ -1,0 +1,16 @@
+{
+  "name": "@nteract/pyodide-runtime",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./celld": "./src/celld-runtime.js",
+    "./deployment": "./scripts/deployment.mjs",
+    "./assets/*": "./dist/*"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": { "pyodide": "0.28.3" },
+  "devDependencies": { "esbuild": "^0.28.0" }
+}

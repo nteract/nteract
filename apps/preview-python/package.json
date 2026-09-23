@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs && node scripts/build-provider.mjs",
+    "build": "pnpm --filter @nteract/pyodide-runtime build && node scripts/build-provider.mjs",
     "test": "node --test test/*.test.mjs"
   },
-  "dependencies": { "pyodide": "0.28.3" },
+  "dependencies": { "@nteract/pyodide-runtime": "workspace:*" },
   "devDependencies": { "esbuild": "^0.28.0" }
 }

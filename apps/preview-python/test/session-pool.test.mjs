@@ -11,7 +11,10 @@ function fixture(options = {}) {
       const runtime = {
         info: { id: runtimes.length },
         disposed: false,
-        execute: async (execution) => ({ execution_id: execution.execution_id }),
+        execute: async (execution) => ({
+          cell_id: "test-cell",
+          execution_id: execution.execution_id,
+        }),
         dispose: async () => {
           runtime.disposed = true;
         },
@@ -42,8 +45,11 @@ test("capacity and execution replay are rejected without rerunning code", async 
   await pool.open("a");
   await pool.open("b");
   await assert.rejects(pool.open("c"), /capacity/);
-  await pool.execute("a", { execution_id: "one", source: "1" });
-  await assert.rejects(pool.execute("a", { execution_id: "one", source: "1" }), /already accepted/);
+  await pool.execute("a", { cell_id: "test-cell", execution_id: "one", source: "1" });
+  await assert.rejects(
+    pool.execute("a", { cell_id: "test-cell", execution_id: "one", source: "1" }),
+    /already accepted/,
+  );
   await pool.close();
 });
 
@@ -55,7 +61,7 @@ test("release fences late output and preserves a replacement generation", async 
     new Promise((resolve) => {
       complete = resolve;
     });
-  const executing = pool.execute("a", { execution_id: "one" });
+  const executing = pool.execute("a", { cell_id: "test-cell", execution_id: "one" });
   await Promise.resolve();
   await pool.release("a");
   const next = await pool.open("a");
@@ -72,7 +78,7 @@ test("idle expiry disposes sessions and close fences pending allocation", async 
   now = 11;
   await pool.expire();
   assert.equal(runtimes[0].disposed, true);
-  await assert.rejects(pool.execute("a", { execution_id: "x" }), /expired/);
+  await assert.rejects(pool.execute("a", { cell_id: "test-cell", execution_id: "x" }), /expired/);
   await pool.close();
   let finish;
   let disposed = false;

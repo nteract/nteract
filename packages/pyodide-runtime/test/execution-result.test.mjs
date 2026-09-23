@@ -46,3 +46,35 @@ test("rejects malformed and runtime-owned outputs before document authoring", ()
   ])
     assert.throws(() => validateExecutionResult(result([output]), "accepted"));
 });
+
+test("checks accepted cell/source provenance and permits only the traceback extension MIME", () => {
+  const provenance = { cellId: "cell", sourceHash: "sha256:accepted" };
+  const payload = { ...result([]), cell_id: "cell", source_hash: "sha256:accepted" };
+  assert.equal(validateExecutionResult(payload, "accepted", provenance).cell_id, "cell");
+  assert.throws(() =>
+    validateExecutionResult({ ...payload, cell_id: "other" }, "accepted", provenance),
+  );
+  assert.throws(() =>
+    validateExecutionResult({ ...payload, source_hash: "forged" }, "accepted", provenance),
+  );
+  const rich = {
+    output_type: "display_data",
+    data: { "application/vnd.nteract.traceback+json": { ename: "NameError" } },
+  };
+  assert.equal(
+    validateExecutionResult({ ...payload, outputs: [rich] }, "accepted", provenance).outputs.length,
+    1,
+  );
+  assert.throws(() =>
+    validateExecutionResult(
+      {
+        ...payload,
+        outputs: [
+          { ...rich, data: { "application/vnd.nteract.arrow.stream+json": { blob: "forged" } } },
+        ],
+      },
+      "accepted",
+      provenance,
+    ),
+  );
+});

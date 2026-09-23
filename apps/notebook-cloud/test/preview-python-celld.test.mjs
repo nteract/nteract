@@ -152,6 +152,17 @@ test(
     sync(host, recoveredViewer, "recovery-viewer", "viewer", true);
     const recovered = Object.values(recoveredViewer.get_runtime_state().executions);
     assert.ok(recovered.some((execution) => execution.success === false));
+    const failed = recovered.find((execution) => execution.success === false);
+    const tracebackRef = failed.outputs.find(
+      (output) => output.data?.["application/vnd.nteract.traceback+json"],
+    ).data["application/vnd.nteract.traceback+json"];
+    const traceback = JSON.parse(
+      tracebackRef.inline ??
+        new TextDecoder().decode(blobs.get(blobKey("notebook", tracebackRef.blob)).bytes),
+    );
+    assert.equal(traceback.ename, "ValueError");
+    assert.equal(traceback.execution.cell_id, "code");
+    assert.ok(traceback.frames.some((frame) => frame.source_ref?.cell_id === "code"));
     const last = recovered.find((execution) => execution.source === "saved_after_error");
     assert.equal(last.success, true);
     assert.deepEqual(last.outputs.at(-1).data["text/plain"], { inline: "99" });

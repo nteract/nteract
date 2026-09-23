@@ -100,6 +100,8 @@ export async function createCelldRuntime(
         if (
           typeof execution.execution_id !== "string" ||
           !execution.execution_id ||
+          typeof execution.cell_id !== "string" ||
+          !execution.cell_id ||
           typeof execution.source !== "string" ||
           execution.source.length > 1_000_000
         ) {
@@ -140,7 +142,15 @@ export async function createCelldRuntime(
             offset += chunk.byteLength;
           }
           const result = JSON.parse(new TextDecoder().decode(bytes));
-          return validateExecutionResult(result, execution.execution_id);
+          const digest = new Uint8Array(
+            await crypto.subtle.digest("SHA-256", new TextEncoder().encode(execution.source)),
+          );
+          const sourceHash =
+            "sha256:" + Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+          return validateExecutionResult(result, execution.execution_id, {
+            cellId: execution.cell_id,
+            sourceHash,
+          });
         };
         try {
           return await runWithDeadline(invoke, {

@@ -68,6 +68,7 @@ for (let trial = 0; trial < trials; trial++) {
       const result = await request("/execute", {
         ...identity(sessionId),
         execution: {
+          cell_id: "test-cell",
           execution_id: "first",
           source: "import sys\nprint('hello', file=sys.stderr)\n40 + 2",
         },
@@ -112,6 +113,7 @@ for (let trial = 0; trial < trials; trial++) {
           const result = await request("/execute", {
             ...identity(`concurrent-${n}`),
             execution: {
+              cell_id: "test-cell",
               execution_id: "isolated",
               source: `import asyncio\nprivate_value = ${n}\nawait asyncio.sleep(0.1)\nprivate_value`,
             },

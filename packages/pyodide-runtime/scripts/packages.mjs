@@ -40,10 +40,12 @@ export async function preparePackages(root, runtime) {
   }
   const python = await loadPyodide({ indexURL: runtime + "/" });
   for (const wheel of wheels)
-    python.unpackArchive(new Uint8Array(wheel.bytes), "zip", { extractDir: "/packages" });
+    python.unpackArchive(new Uint8Array(wheel.bytes), "zip", {
+      extractDir: "/packages/site-packages",
+    });
   const paths = JSON.parse(
     python.runPython(
-      "import os, json\njson.dumps(sorted(os.path.join(d, n) for d, _, names in os.walk('/packages') for n in names if n.endswith('.so')))",
+      "import os, json\njson.dumps(sorted(os.path.join(d, n) for d, _, names in os.walk('/packages/site-packages') for n in names if n.endswith('.so')))",
     ),
   );
   const libraries = [];

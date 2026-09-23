@@ -26,6 +26,15 @@ await mkdir(resolve(root, "dist"), { recursive: true });
 await copyFile(resolve(runtime, "pyodide.asm.wasm"), resolve(root, "dist/pyodide.asm.wasm"));
 await writeFile(resolve(root, "dist/sentinel.wasm"), sentinel);
 const { wheels, libraries } = await preparePackages(root, runtime);
+// Reuse the launcher's transport-independent traceback formatter, not a fork.
+const launcher = new URL(
+  "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/",
+  import.meta.url,
+);
+const bootstrap = { "__init__.py": "" };
+for (const name of ["_traceback.py", "_redact.py"])
+  bootstrap[name] = await readFile(new URL(name, launcher), "utf8");
+await writeFile(resolve(root, "dist/bootstrap.json"), JSON.stringify(bootstrap));
 await build({
   absWorkingDir: root,
   entryPoints: ["runtime/worker.js"],
@@ -48,6 +57,14 @@ await build({
     {
       name: "pinned-sentinel",
       setup(builder) {
+        builder.onResolve({ filter: /^nteract:python-bootstrap$/ }, () => ({
+          path: "bootstrap",
+          namespace: "bootstrap",
+        }));
+        builder.onLoad({ filter: /.*/, namespace: "bootstrap" }, () => ({
+          contents: JSON.stringify(bootstrap),
+          loader: "json",
+        }));
         builder.onResolve({ filter: /^preview-python:packages$/ }, () => ({
           path: "packages",
           namespace: "packages",

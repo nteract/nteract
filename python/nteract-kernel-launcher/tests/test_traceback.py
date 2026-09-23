@@ -652,3 +652,33 @@ def test_original_also_failing_does_not_reraise(monkeypatch):
         raise ValueError("x")
     except BaseException as exc:
         ip._showtraceback(type(exc), exc, [])
+
+
+def test_alternate_transport_registers_actual_compiler_filename(monkeypatch):
+    def no_ipykernel(_source):
+        raise AssertionError("alternate transport must not need ipykernel")
+
+    monkeypatch.setattr(_traceback, "_filename_for_cell_source", no_ipykernel)
+    ip = _FakeKernelShell(
+        {
+            "metadata": {
+                "nteract": {
+                    "cell_id": "cell",
+                    "execution_id": "attempt",
+                    "execution_count": 7,
+                }
+            }
+        }
+    )
+    _traceback.register_cell_source(
+        ip,
+        "x + 1",
+        cell_id="cell",
+        execution_id="attempt",
+        execution_count=7,
+        compiled_filename="<notebook:attempt>",
+    )
+    provenance = _traceback._provenance_for_filename(ip, "<notebook:attempt>")
+    assert provenance["source_ref"]["cell_id"] == "cell"
+    assert provenance["source_ref"]["compiled_filename"] == "<notebook:attempt>"
+    assert _traceback._current_execution_context(ip)["execution_count"] == 7

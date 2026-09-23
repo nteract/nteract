@@ -439,7 +439,7 @@ async function copyProjectFiles(worker, projectDir) {
   await cp(path.join(appDir, worker.assets), assetsDir, { recursive: true, dereference: true });
   if (worker.name === "main" && process.env.NOTEBOOK_CLOUD_CELLD_PYTHON === "1") {
     const runtimeLock = JSON.parse(
-      await readFile(path.join(appDir, "../preview-python/runtime-lock.json"), "utf8"),
+      await readFile(path.join(appDir, "../preview-python/dist/runtime-lock.json"), "utf8"),
     );
     await writeFile(
       path.join(assetsDir, "__preview-python.json"),
