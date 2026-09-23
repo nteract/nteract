@@ -25,17 +25,44 @@ const measurements = {};
 let ownerPage;
 try {
   async function client(scope) {
+    const clientUser = scope === "owner" ? user : `${user}-${scope}`;
+    if (scope !== "owner") {
+      const aclUrl = new URL(`/api/n/${notebook.notebook_id}/acl`, origin);
+      aclUrl.search = fixtureUrl.search;
+      const granted = await fetch(aclUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          subject_kind: "principal",
+          subject: `user:dev:${clientUser}`,
+          scope,
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (granted.status !== 201)
+        throw Error(`Grant ${scope}: ${granted.status} ${await granted.text()}`);
+    }
     const context = await browser.newContext({
       storageState: storageStateForDevIdentity({
         origin: origin.origin,
         token: "local-dev-token",
-        user,
+        user: clientUser,
         scope,
       }),
     });
+    await context.addInitScript(() => {
+      const Original = window.WebSocket;
+      window.__smokeRoomSockets = [];
+      window.WebSocket = class extends Original {
+        constructor(...args) {
+          super(...args);
+          window.__smokeRoomSockets.push(this);
+        }
+      };
+    });
     const page = await context.newPage();
     page.setDefaultTimeout(60000);
-    await page.goto(`${notebook.viewer_url}?mode=${scope === "owner" ? "edit" : "view"}`);
+    await page.goto(`${notebook.viewer_url}?mode=${scope === "viewer" ? "view" : "edit"}`);
     return page;
   }
   const owner = await client("owner");
@@ -88,6 +115,54 @@ try {
   });
   await expect(viewer.getByRole("button", { name: "Restart kernel", exact: true })).toHaveCount(0);
   await expect(viewer.getByTestId("execute-button")).toHaveCount(0);
+  const editor = await client("editor");
+  await expect(editor.getByText("managed retained value 41", { exact: true })).toBeVisible();
+  const cellId = await owner.locator("[data-cell-id]").first().getAttribute("data-cell-id");
+  if (!cellId) throw Error("Missing synced cell identity");
+  for (const [scope, page] of [
+    ["viewer", viewer],
+    ["editor", editor],
+  ]) {
+    await expect(page.getByTestId("execute-button")).toHaveCount(0);
+    const denial = await page.evaluate(async (cellId) => {
+      const socket = window.__smokeRoomSockets.find(
+        (socket) => socket.readyState === 1 && new URL(socket.url).pathname.endsWith("/sync"),
+      );
+      if (!socket) throw Error("Missing notebook socket");
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          socket.removeEventListener("message", receive);
+          reject(Error("Missing server denial"));
+        }, 5000);
+        async function receive(event) {
+          if (typeof event.data === "string") return;
+          const bytes = new Uint8Array(
+            event.data instanceof Blob ? await event.data.arrayBuffer() : event.data,
+          );
+          if (bytes[0] !== 7) return;
+          const message = JSON.parse(new TextDecoder().decode(bytes.subarray(1)));
+          if (message.type !== "cloud_frame_rejected") return;
+          clearTimeout(timer);
+          socket.removeEventListener("message", receive);
+          resolve(message);
+        }
+        socket.addEventListener("message", receive);
+        const payload = new TextEncoder().encode(
+          JSON.stringify({ id: "forbidden-execution", action: "execute_cell", cell_id: cellId }),
+        );
+        const frame = new Uint8Array(payload.length + 1);
+        frame[0] = 1;
+        frame.set(payload, 1);
+        socket.send(frame);
+      });
+    }, cellId);
+    expect(denial.reason).toContain(`${scope} cannot write request frames`);
+    const attachment = await page.request.post(
+      new URL(`/api/n/${notebook.notebook_id}/workstation-attachments`, origin).href,
+      { data: { workstation_id: "celld-preview-python" } },
+    );
+    expect(attachment.status()).toBe(403);
+  }
   const replacement = owner.waitForResponse(
     (r) => r.request().method() === "POST" && r.url().endsWith("/workstation-attachments"),
   );
@@ -149,7 +224,8 @@ try {
           explicitAttach ? "first_attach_without_reconnect" : "first_run_allocates_without_attach",
           "persistent_variables",
           "viewer_convergence",
-          "viewer_cannot_execute",
+          "distinct_viewer_and_editor_converge",
+          "viewer_and_editor_server_reject_execution_and_attachment",
           "restart_clears_variables",
           "owner_reconnect",
           "interrupt_detaches_and_replacement_is_clean",
