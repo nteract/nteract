@@ -1,7 +1,14 @@
 import test, { after } from "node:test";
 import { NotebookRoom } from "../src/notebook-room.ts";
 import { createNotebookWithOwnerAcl } from "../src/storage.ts";
-import { createWorkstationAttachJob, grantNotebookAclRow } from "../src/storage.ts";
+import {
+  createWorkstationAttachJob,
+  grantNotebookAclRow,
+  revokeNotebookAclRow,
+  getNotebookAclRowsForPrincipal,
+} from "../src/storage.ts";
+import { authenticateDevRequest } from "../src/identity.ts";
+import { encodeJsonFrame, FrameType } from "../src/protocol.ts";
 import { RoomMaterializer } from "../src/room-materializer.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 import assert from "node:assert/strict";
@@ -267,6 +274,59 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
   assert.notEqual(afterIdle.runtime_session_id, resumed.runtime_session_id);
   assert.equal(calls.filter((call) => call.path === "/open").length, 3);
   assert.ok(calls.every((call) => call.ownerPrincipal === "user:dev:bob"));
-  await room.managedPython.get("coowner").runtime.close();
+  for (const scope of ["owner", "runtime_peer"]) {
+    await revokeNotebookAclRow(env, {
+      notebookId: "coowner",
+      subjectKind: "principal",
+      subject: "user:dev:bob",
+      scope,
+    });
+  }
+  assert.equal(
+    await room.requestRuntimeResumeForExecution(
+      "coowner",
+      { ...afterIdle, status: "idle" },
+      "execute_cell",
+    ),
+    false,
+  );
+  const sent = [];
+  const alice = {
+    id: "alice",
+    identity: authenticateDevRequest(
+      new Request("https://cloud.test/n/coowner/sync?user=alice&operator=browser:test&scope=owner"),
+    ),
+    socket: { send: (frame) => sent.push(new Uint8Array(frame)), close: () => {} },
+    connectedAt: new Date().toISOString(),
+    consecutiveRejectedFrames: 0,
+  };
+  room.peers.set(alice.id, alice);
+  await room.handleMessage(
+    "coowner",
+    alice,
+    encodeJsonFrame(FrameType.REQUEST, {
+      id: "after-revoke",
+      action: "execute_cell",
+      cell_id: "code",
+    }),
+  );
+  assert.equal(
+    room.managedPython.size,
+    0,
+    "revoked owner's runtime is closed before accepting work",
+  );
+  assert.ok(
+    sent.some(
+      (frame) =>
+        frame[0] === FrameType.SESSION_CONTROL &&
+        new TextDecoder().decode(frame.slice(1)).includes("access was revoked"),
+    ),
+  );
+  await assert.rejects(
+    room.startManagedPython("coowner", afterIdle.runtime_session_id),
+    /no longer has owner access/,
+  );
+  assert.equal(calls.filter((call) => call.path === "/open").length, 3);
+  assert.deepEqual(await getNotebookAclRowsForPrincipal(env, "coowner", "user:dev:bob"), []);
   while (tasks.size) await Promise.all(tasks);
 });

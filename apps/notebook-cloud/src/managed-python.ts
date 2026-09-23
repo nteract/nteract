@@ -1,8 +1,18 @@
 import type { Env } from "./cloudflare-types.ts";
-import { ensureCatalogSchema, registerWorkstation, setDefaultWorkstation } from "./storage.ts";
+import {
+  ensureCatalogSchema,
+  getNotebookAclRowsForPrincipal,
+  registerWorkstation,
+  setDefaultWorkstation,
+} from "./storage.ts";
+import { aclRowsCoverScope } from "./authorization.ts";
 import { upsertWorkstationLease } from "./compute-session-index.ts";
 
 export const MANAGED_PYTHON_WORKSTATION = "celld-preview-python";
+
+export async function managedPythonOwnerCanExecute(env: Env, notebookId: string, owner: string) {
+  return aclRowsCoverScope(await getNotebookAclRowsForPrincipal(env, notebookId, owner), "owner");
+}
 
 /** The authenticated attach job owns compute, which may differ from the notebook creator. */
 export async function managedPythonSessionOwner(env: Env, notebookId: string, sessionId: string) {

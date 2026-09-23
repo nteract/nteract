@@ -22,6 +22,7 @@ import {
   ensureManagedPythonWorkstation,
   managedPythonStub,
   managedPythonSessionOwner,
+  managedPythonOwnerCanExecute,
   MANAGED_PYTHON_WORKSTATION,
 } from "./managed-python.ts";
 import {
@@ -1312,6 +1313,18 @@ export class NotebookRoom {
         ? hostedExecutionRequestAction(requestMetadata?.action ?? null)
         : null;
     if (hostedExecutionAction) {
+      const managed = this.managedPython.get(notebookId);
+      if (
+        managed &&
+        !(await managedPythonOwnerCanExecute(this.env, notebookId, managed.runtime.ownerPrincipal))
+      ) {
+        const reason = "Compute owner's access was revoked; start a new managed Python session";
+        await this.failManagedPython(notebookId, managed.runtime, new Error(reason));
+        this.rejectFrame(notebookId, peer, normalizedFrame.type, reason, {
+          countsTowardStreak: false,
+        });
+        return;
+      }
       if (requestMetadata?.requiredHeads !== undefined) {
         try {
           const synced = await this.materializerFor(notebookId).waitForNotebookHeads(
@@ -2043,6 +2056,8 @@ export class NotebookRoom {
     const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
     if (!ownerPrincipal)
       throw new Error("Managed Python attachment has no authorized compute owner");
+    if (!(await managedPythonOwnerCanExecute(this.env, notebookId, ownerPrincipal)))
+      throw new Error("Managed Python compute owner no longer has owner access");
     // Recheck after storage I/O: concurrent requests can join the same startup.
     const concurrent = this.managedPython.get(notebookId);
     if (concurrent?.runtime.sessionId === sessionId) return concurrent.ready;
@@ -2160,6 +2175,11 @@ export class NotebookRoom {
         ? await managedPythonSessionOwner(this.env, notebookId, attachment.runtime_session_id)
         : notebook.owner_principal;
     if (!ownerPrincipal) return false;
+    if (
+      workstationId === MANAGED_PYTHON_WORKSTATION &&
+      !(await managedPythonOwnerCanExecute(this.env, notebookId, ownerPrincipal))
+    )
+      return false;
     const workstation =
       workstationId === MANAGED_PYTHON_WORKSTATION
         ? await ensureManagedPythonWorkstation(this.env, ownerPrincipal)
