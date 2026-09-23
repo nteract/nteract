@@ -800,6 +800,16 @@ impl RoomHostEngine {
             )));
         }
 
+        // Validate a caller-supplied ID even when the cell is already active.
+        let requested_id = request.get("execution_id").and_then(|v| v.as_str());
+        if let Some(id) = requested_id {
+            if uuid::Uuid::parse_str(id).is_err() {
+                return Err(RoomHostError::new(format!(
+                    "execution_id is not a valid UUID: {id}"
+                )));
+            }
+        }
+
         // Idempotency guard, mirroring the daemon's ExecuteCell AlreadyActive
         // check: if the cell already points at an execution that is still queued
         // or running, re-running is a no-op. Without this a double-click queues
@@ -811,6 +821,13 @@ impl RoomHostEngine {
                 .get_execution(&active_id)
                 .is_some_and(|e| e.status == "queued" || e.status == "running");
             if still_active {
+                // Match the daemon: explicit IDs cannot claim existing work,
+                // even when the supplied ID matches the active execution.
+                if requested_id.is_some() {
+                    return Err(RoomHostError::new(format!(
+                        "Cell already has an active execution: {active_id}"
+                    )));
+                }
                 // No-op: nothing changed. The room logs the materialized frame
                 // (notebook-room.ts room.materialized_frame.applied) with
                 // changed=false, which is the observable signal here.
@@ -823,17 +840,7 @@ impl RoomHostEngine {
             }
         }
 
-        // A client may supply an execution_id for idempotent retries; validate it
-        // as a UUID so a malformed or oversized value can't become a document key.
-        // Absent one, the room mints it.
-        let requested_id = request.get("execution_id").and_then(|v| v.as_str());
-        if let Some(id) = requested_id {
-            if uuid::Uuid::parse_str(id).is_err() {
-                return Err(RoomHostError::new(format!(
-                    "execution_id is not a valid UUID: {id}"
-                )));
-            }
-        }
+        // Absent a caller-supplied ID, the room mints it.
         let execution_id = requested_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -931,13 +938,6 @@ impl RoomHostEngine {
             .into_iter()
             .filter(|cell| cell.cell_type == "code")
             .collect();
-        if code_cells.is_empty() {
-            let mut result = RoomHostFrameResult::empty();
-            result.execution_response =
-                Some(RoomExecutionResponse::AllCellsQueued { queued: vec![] });
-            return Ok(result);
-        }
-
         let (existing_execution_ids, next_seq) = {
             let state = self.state_doc.read_state();
             let existing_execution_ids: HashSet<String> =
@@ -957,6 +957,13 @@ impl RoomHostEngine {
             &existing_execution_ids,
             &mut allocated_execution_ids,
         )?;
+
+        if code_cells.is_empty() {
+            let mut result = RoomHostFrameResult::empty();
+            result.execution_response =
+                Some(RoomExecutionResponse::AllCellsQueued { queued: vec![] });
+            return Ok(result);
+        }
 
         let mut entries = Vec::new();
         for cell in &code_cells {
@@ -3187,10 +3194,6 @@ mod tests {
         host.doc.update_source("cell-1", "1 + 1").expect("source");
 
         // A valid client-supplied UUID is used verbatim as the execution id.
-        // The rejection paths (missing/non-code cell, malformed execution_id)
-        // construct a RoomHostError, which wasm-bindgen cannot build off-wasm, so a
-        // native unit test panics on them; those are covered by review and the
-        // live integration path instead.
         let supplied = "11111111-1111-4111-8111-111111111111";
         host.handle_execute_cell(
             &json!({ "action": "execute_cell", "cell_id": "cell-1", "execution_id": supplied }),
@@ -3229,6 +3232,95 @@ mod tests {
         assert!(host
             .handle_execute_cell(&invalid, "peer", "user:dev:alice/client:a")
             .is_err());
+    }
+
+    #[test]
+    fn active_execution_rejects_supplied_ids_without_mutation() {
+        for running in [false, true] {
+            let mut host = RoomHostEngine::create_empty("receipt", "system/host").unwrap();
+            host.seed_initial_code_cell_if_empty("cell-1").unwrap();
+            let request = json!({"action":"execute_cell", "cell_id":"cell-1"});
+            let first = host
+                .handle_execute_cell(&request, "peer", "user:dev:alice/client:a")
+                .unwrap();
+            let active_id = host.doc.get_execution_id("cell-1").unwrap();
+            if running {
+                host.state_doc.set_execution_running(&active_id).unwrap();
+            }
+            let notebook_heads = host.doc.get_heads();
+            let runtime_heads = host.state_doc.get_heads();
+            for supplied in [
+                active_id.as_str(),
+                "11111111-1111-4111-8111-111111111111",
+                "invalid",
+            ] {
+                let error = host.handle_execute_cell(
+                    &json!({"action":"execute_cell", "cell_id":"cell-1", "execution_id":supplied}),
+                    "peer", "user:dev:alice/client:a",
+                ).unwrap_err();
+                assert!(
+                    error.to_string().contains("active execution")
+                        || error.to_string().contains("valid UUID")
+                );
+                assert_eq!(host.doc.get_heads(), notebook_heads);
+                assert_eq!(host.state_doc.get_heads(), runtime_heads);
+            }
+            // Requests without an ID still discover the existing execution.
+            let retry = host
+                .handle_execute_cell(&request, "peer", "user:dev:alice/client:a")
+                .unwrap();
+            assert_eq!(retry.execution_response, first.execution_response);
+            assert_eq!(host.state_doc.read_state().executions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn empty_run_all_validates_supplied_ids_without_mutation() {
+        let mut host = RoomHostEngine::create_empty("receipt", "system/host").unwrap();
+        host.seed_initial_code_cell_if_empty("cell-1").unwrap();
+        host.handle_execute_cell(
+            &json!({"cell_id":"cell-1"}),
+            "peer",
+            "user:dev:alice/client:a",
+        )
+        .unwrap();
+        let existing_id = host.doc.get_execution_id("cell-1").unwrap();
+        host.doc.delete_cell("cell-1").unwrap();
+        let fresh_id = "11111111-1111-4111-8111-111111111111";
+        let notebook_heads = host.doc.get_heads();
+        let runtime_heads = host.state_doc.get_heads();
+        for (ids, expected) in [
+            (json!({"missing":"invalid"}), "valid UUID"),
+            (json!({"missing":existing_id}), "already exists"),
+            (
+                json!({"one":fresh_id,"two":fresh_id}),
+                "duplicate execution_id",
+            ),
+        ] {
+            let error = host
+                .handle_run_all_cells(
+                    &json!({"cell_execution_ids":ids}),
+                    "peer",
+                    "user:dev:alice/client:a",
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+            assert_eq!(host.doc.get_heads(), notebook_heads);
+            assert_eq!(host.state_doc.get_heads(), runtime_heads);
+        }
+        let empty = host
+            .handle_run_all_cells(
+                &json!({"cell_execution_ids":{"missing":fresh_id}}),
+                "peer",
+                "user:dev:alice/client:a",
+            )
+            .unwrap();
+        assert_eq!(
+            empty.execution_response,
+            Some(RoomExecutionResponse::AllCellsQueued { queued: vec![] })
+        );
+        assert_eq!(host.doc.get_heads(), notebook_heads);
+        assert_eq!(host.state_doc.get_heads(), runtime_heads);
     }
 
     #[test]
