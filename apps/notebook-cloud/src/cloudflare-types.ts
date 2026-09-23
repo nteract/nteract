@@ -2,6 +2,9 @@ export interface Env {
   NOTEBOOK_ROOMS: DurableObjectNamespace;
   OWNER_COMPUTE_INDEX?: DurableObjectNamespace;
   WORKSTATION_EVENTS?: DurableObjectNamespace;
+  /** Explicit celld-only opt-in; absent from generic Cloudflare deployments. */
+  NOTEBOOK_CLOUD_PYTHON_PROVIDER?: "celld";
+  PREVIEW_PYTHON_SESSIONS?: DurableObjectNamespace;
   DB?: D1Database;
   NOTEBOOK_SNAPSHOTS?: R2Bucket;
   ASSETS?: WorkerAssets;

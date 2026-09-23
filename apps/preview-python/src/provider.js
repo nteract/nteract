@@ -1,0 +1,43 @@
+import { SessionPool } from "./session-pool.js";
+import { createCelldRuntime } from "./celld-runtime.js";
+import { createProviderService } from "./provider-service.js";
+import { WorkerEntrypoint } from "cloudflare:workers";
+import packages from "../dist/package-assets.js";
+
+/** Immutable package bytes only; this binding has no user data or credentials. */
+export class PackageAssets extends WorkerEntrypoint {
+  fetch(request) {
+    const name = new URL(request.url).pathname.slice(1);
+    return Object.hasOwn(packages, name)
+      ? new Response(packages[name])
+      : new Response("Not found", { status: 404 });
+  }
+}
+
+/** One explicitly configured celld deployment quota and clean warm pool. */
+export class PreviewPythonSessions {
+  constructor(state, env) {
+    this.state = state;
+    this.pool = new SessionPool({
+      create: () => createCelldRuntime(env),
+      maxSessions: 4,
+      warmCount: 1,
+    });
+    this.service = createProviderService(this.pool);
+  }
+  async fetch(request) {
+    // Alarms are only lifecycle housekeeping; no notebook code is replayed.
+    await this.state.storage.setAlarm(Date.now() + 60_000);
+    return this.service.fetch(request);
+  }
+  async alarm() {
+    await this.pool.expire();
+    await this.state.storage.setAlarm(Date.now() + 60_000);
+  }
+}
+
+export default {
+  fetch() {
+    return new Response("Not found", { status: 404 });
+  },
+};

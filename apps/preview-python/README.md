@@ -8,6 +8,15 @@ The initial adapter executes Python directly and returns notebook-shaped outputs
 without ZeroMQ. The trusted supervisor and cloud runtime-peer integration are
 under development. Do not expose the internal execution endpoint publicly.
 
+The private provider bundle exports `PreviewPythonSessions` (a Durable Object
+holding the deployment pool) and `PackageAssets` (immutable scientific wheels).
+Its public Worker entrypoint returns 404. The cloud discovery integration is
+disabled unless `NOTEBOOK_CLOUD_PYTHON_PROVIDER=celld` and the private
+`PREVIEW_PYTHON_SESSIONS` namespace binding are both configured. Discovery
+registers an owner-scoped managed workstation and fills an absent default;
+it never replaces an existing default. Provider attachment/room transport is
+still being wired: this configuration is not ready for live deployment yet.
+
 ## Build
 
 Run `pnpm --filter @nteract/preview-python build`. Runtime assets are pinned to

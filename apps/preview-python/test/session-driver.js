@@ -1,5 +1,6 @@
 import { SessionPool } from "../src/session-pool.js";
 import { createCelldRuntime } from "../src/celld-runtime.js";
+import { createProviderService } from "../src/provider-service.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import packages from "../dist/package-assets.js";
 import libraries from "../dist/library-modules.js";
@@ -17,8 +18,25 @@ export default {
         maxSessions: 1,
         warmCount: 0,
       });
-      await bridgePool.open("bridge");
-      return Response.json(await bridgePool.execute("bridge", await request.json()));
+      const service = createProviderService(bridgePool);
+      const identity = {
+        ownerPrincipal: "test-owner",
+        notebookId: "test-notebook",
+        sessionId: "bridge",
+      };
+      const opened = await service.fetch(
+        new Request("https://private.invalid/open", {
+          method: "POST",
+          body: JSON.stringify(identity),
+        }),
+      );
+      if (!opened.ok) return opened;
+      return service.fetch(
+        new Request("https://private.invalid/execute", {
+          method: "POST",
+          body: JSON.stringify({ ...identity, execution: await request.json() }),
+        }),
+      );
     }
     if (new URL(request.url).pathname === "/deadline") {
       const pool = new SessionPool({

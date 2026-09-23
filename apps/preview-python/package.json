@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && node scripts/build-provider.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": { "pyodide": "0.28.3" },

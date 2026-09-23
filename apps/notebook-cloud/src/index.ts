@@ -8,6 +8,7 @@ import type {
 import type { NotebookComputeSessionSummary } from "runtimed";
 import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
+import { ensureManagedPythonWorkstation } from "./managed-python.ts";
 import {
   AuthError,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -1893,6 +1894,11 @@ async function routeWorkstations(
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
 
   if (request.method === "GET") {
+    try {
+      await ensureManagedPythonWorkstation(env, ownerPrincipal);
+    } catch (error) {
+      cloudLog("warn", "managed_python.discovery_failed", { error: String(error) });
+    }
     const [workstations, defaultWorkstationId, leases, latestBuilds] = await Promise.all([
       listWorkstationsForPrincipal(env, ownerPrincipal),
       getDefaultWorkstationId(env, ownerPrincipal),
