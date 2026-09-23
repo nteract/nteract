@@ -66,6 +66,9 @@ mechanism when available. Startup has independent CPU and wall budgets too.
 The wall deadline initiates host termination; synchronous initialization may
 delay completion (a 250 ms test deadline completed in about 1.05 seconds).
 Unconfirmed startup cleanup quarantines its admission slot.
+If that failure occurs while preparing a standby, automatic warming stops until
+the provider restarts. Explicit notebook allocations can use remaining capacity;
+discovery polling cannot consume every slot with failed background starts.
 
 Run the real isolated-server test with a qualified experimental celld binary:
 
@@ -152,8 +155,11 @@ outputs from earlier executions. A deferred clear waits for the next output in
 that execution. Outputs are still delivered as a batch when execution completes;
 progressive streaming and widget comms are not implemented yet.
 
-The deployment admits at most four interpreters and each canonical notebook
-owner may hold at most two sessions. Pending allocations and retiring sessions
+The deployment admits at most four interpreters and each authenticated compute
+owner may hold at most two sessions. The server's attach job identifies that
+owner, who may differ from the notebook creator. Owner access is checked again
+before startup, resume and new execution; revoked access cannot be restored by
+resuming an old attachment. Pending allocations and retiring sessions
 count against the owner's limit until destruction is confirmed; uncertain
 cleanup keeps both owner and deployment reservations. A user at their limit
 must stop another notebook session before starting a third. Clean unassigned
