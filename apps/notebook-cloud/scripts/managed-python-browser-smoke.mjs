@@ -163,6 +163,17 @@ try {
     );
     expect(attachment.status()).toBe(403);
   }
+  await execute(
+    "from IPython.display import display, clear_output\nprint('managed discarded output')\nclear_output(wait=True)\nlive_display = display('managed display before', display_id=True)\nlive_display.update('managed display ' + 'after')",
+    "'managed display after'",
+  );
+  await expect(owner.getByText("managed discarded output", { exact: true })).toHaveCount(0);
+  await expect(viewer.getByText("'managed display after'", { exact: true })).toBeVisible();
+  await execute(
+    "display('managed clear ' + 'gone')\nclear_output(wait=False)\nprint('managed clear remains', persisted)",
+    "managed clear remains 41",
+  );
+  await expect(owner.getByText("'managed clear gone'", { exact: true })).toHaveCount(0);
   const replacement = owner.waitForResponse(
     (r) => r.request().method() === "POST" && r.url().endsWith("/workstation-attachments"),
   );
@@ -226,6 +237,7 @@ try {
           "viewer_convergence",
           "distinct_viewer_and_editor_converge",
           "viewer_and_editor_server_reject_execution_and_attachment",
+          "display_update_and_clear_preserve_session",
           "restart_clears_variables",
           "owner_reconnect",
           "interrupt_detaches_and_replacement_is_clean",

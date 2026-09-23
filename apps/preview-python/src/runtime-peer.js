@@ -95,8 +95,27 @@ export class PythonRuntimePeer {
       const manifests = await this.#prepare(result.outputs);
       this.#assertCurrent();
       this.#peer.set_execution_count(executionId, result.execution_count);
+      let clearBeforeNextOutput = false;
       for (const manifest of manifests) {
-        this.#peer.append_output_json(executionId, JSON.stringify(manifest));
+        if (manifest.output_type === "clear_output") {
+          if (manifest.wait) clearBeforeNextOutput = true;
+          else {
+            this.#peer.clear_execution_outputs(executionId);
+            clearBeforeNextOutput = false;
+          }
+          continue;
+        }
+        if (clearBeforeNextOutput) {
+          this.#peer.clear_execution_outputs(executionId);
+          clearBeforeNextOutput = false;
+        }
+        if (manifest.output_type === "update_display_data") {
+          this.#peer.update_display_data_json(
+            manifest.transient.display_id,
+            JSON.stringify(manifest.data),
+            JSON.stringify(manifest.metadata),
+          );
+        } else this.#peer.append_output_json(executionId, JSON.stringify(manifest));
       }
       this.#peer.set_execution_done(executionId, result.success);
       this.#peer.refresh_execution_queue();

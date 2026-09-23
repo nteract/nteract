@@ -17,6 +17,8 @@ export class PythonRuntimePeer {
       set_execution_cancelled(id: string): void;
       refresh_execution_queue(): void;
       set_kernel_error(details: string): void;
+      clear_execution_outputs(id: string): boolean;
+      update_display_data_json(displayId: string, data: string, metadata: string): number;
       append_output_json(id: string, manifest: string): unknown;
     };
     pool: {

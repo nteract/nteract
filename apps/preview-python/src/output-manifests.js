@@ -11,8 +11,19 @@ export function createOutputPreparer({ prepareContent, putBlob }) {
     return { blob: hash, size: bytes.byteLength };
   }
   return async (outputs) => {
-    const manifests = [];
+    const combined = [];
     for (const output of outputs) {
+      const previous = combined.at(-1);
+      if (
+        output.output_type === "stream" &&
+        previous?.output_type === "stream" &&
+        previous.name === output.name
+      ) {
+        previous.text += output.text;
+      } else combined.push({ ...output });
+    }
+    const manifests = [];
+    for (const output of combined) {
       const manifest = { ...output, output_id: crypto.randomUUID() };
       switch (output.output_type) {
         case "stream":
@@ -21,6 +32,9 @@ export function createOutputPreparer({ prepareContent, putBlob }) {
         case "error":
           manifest.traceback = await content("application/json", output.traceback);
           break;
+        case "clear_output":
+          break;
+        case "update_display_data":
         case "display_data":
         case "execute_result":
           manifest.data = {};

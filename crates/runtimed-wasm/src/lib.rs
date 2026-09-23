@@ -603,6 +603,44 @@ impl RuntimeStatePeerHandle {
             .map_err(|e| JsError::new(&format!("append output failed: {e}")))
     }
 
+    /// Clear one accepted execution while maintaining the display index.
+    pub fn clear_execution_outputs(&mut self, execution_id: &str) -> Result<bool, JsError> {
+        self.state_doc
+            .set_outputs(execution_id, &[])
+            .map_err(|e| JsError::new(&format!("clear execution outputs failed: {e}")))
+    }
+
+    /// Update every existing display with this ID, preserving output identity.
+    pub fn update_display_data_json(
+        &mut self,
+        display_id: &str,
+        data_json: &str,
+        metadata_json: &str,
+    ) -> Result<u32, JsError> {
+        let data: serde_json::Value = serde_json::from_str(data_json)
+            .map_err(|e| JsError::new(&format!("decode display data: {e}")))?;
+        let metadata: serde_json::Value = serde_json::from_str(metadata_json)
+            .map_err(|e| JsError::new(&format!("decode display metadata: {e}")))?;
+        if !data.is_object() || !metadata.is_object() {
+            return Err(JsError::new("display data and metadata must be objects"));
+        }
+        let mut changed = 0;
+        for (execution_id, output_id) in self.state_doc.get_display_index_entries(display_id) {
+            if let Some(mut manifest) = self.state_doc.get_output(&execution_id, &output_id) {
+                manifest["data"] = data.clone();
+                manifest["metadata"] = metadata.clone();
+                if self
+                    .state_doc
+                    .replace_output(&execution_id, &output_id, &manifest)
+                    .map_err(|e| JsError::new(&format!("update display failed: {e}")))?
+                {
+                    changed += 1;
+                }
+            }
+        }
+        Ok(changed)
+    }
+
     pub fn put_comm_json(
         &mut self,
         comm_id: &str,

@@ -143,3 +143,9 @@ it does not allocate a notebook session. The room transitions idle compute after
 30 minutes. The provider's orphan-session sweep waits 35 minutes, leaving time
 for the room to publish idle state and terminate normally. This fallback bounds
 orphan retention if room cleanup fails; discovery polling does not postpone it.
+
+IPython `clear_output` and display-handle updates are routed through the runtime
+output model. Display updates preserve output IDs and can update matching
+outputs from earlier executions. A deferred clear waits for the next output in
+that execution. Outputs are still delivered as a batch when execution completes;
+progressive streaming and widget comms are not implemented yet.

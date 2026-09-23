@@ -52,3 +52,24 @@ test("failed blob upload prevents returning publishable manifests", async () => 
     /storage unavailable/,
   );
 });
+
+test("adjacent stream writes coalesce without crossing stream or clear boundaries", async () => {
+  const prepare = createOutputPreparer({
+    prepareContent: prepare_output_content,
+    putBlob: async () => assert.fail("inline only"),
+  });
+  const stream = (text, name = "stdout") => ({ output_type: "stream", name, text });
+  const outputs = await prepare([
+    stream("hello"),
+    stream(" "),
+    stream("world\n"),
+    stream("warning", "stderr"),
+    { output_type: "clear_output", wait: true },
+    stream("next"),
+  ]);
+  assert.equal(outputs.length, 4);
+  assert.deepEqual(outputs[0].text, { inline: "hello world\n" });
+  assert.deepEqual(outputs[1].text, { inline: "warning" });
+  assert.equal(outputs[2].output_type, "clear_output");
+  assert.deepEqual(outputs[3].text, { inline: "next" });
+});

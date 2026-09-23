@@ -121,3 +121,77 @@ test("Python exception cancels queued work and permits a later explicit executio
   );
   await bridge.close();
 });
+
+test("display updates cross executions and clear wait preserves indexed output semantics", async (t) => {
+  const { host, owner, peer, request, publish } = await fixture(t);
+  for (const id of ["second", "third"]) {
+    owner.add_cell(0, id, "code");
+    owner.update_source(id, "pass");
+  }
+  sync(host, owner, "owner", "owner");
+  const display = (text, update = false) => ({
+    output_type: update ? "update_display_data" : "display_data",
+    transient: { display_id: "shared" },
+    data: { "text/plain": text },
+    metadata: { label: text },
+  });
+  const batches = [
+    [display("before"), display("before")],
+    [
+      display("after", true),
+      { output_type: "stream", name: "stdout", text: "discard" },
+      { output_type: "clear_output", wait: true },
+      { output_type: "stream", name: "stdout", text: "keep" },
+      { output_type: "clear_output", wait: true },
+    ],
+    [display("temporary"), { output_type: "clear_output", wait: false }, display("final", true)],
+  ];
+  let count = 0;
+  const bridge = new PythonRuntimePeer({
+    peer,
+    sessionKey: "display",
+    isCurrent: () => true,
+    publish,
+    pool: {
+      execute: async () => ({ execution_count: ++count, success: true, outputs: batches.shift() }),
+      release: async () => {},
+    },
+    prepareOutputs: createOutputPreparer({
+      prepareContent: prepare_output_content,
+      putBlob: async () => assert.fail("inline only"),
+    }),
+  });
+  await bridge.drain();
+  const first = Object.values(peer.get_runtime_state().executions)[0];
+  const outputIds = first.outputs.map((output) => output.output_id);
+  for (const cellId of ["second", "third"]) {
+    const accepted = request("owner", cellId);
+    sync(host, owner, "owner", "owner", false, accepted.outbound);
+    sync(host, peer, "runtime", "runtime_peer", true, accepted.outbound);
+    await bridge.drain();
+  }
+  const observer = new RuntimeStatePeerHandle("user:dev:display-observer/test");
+  t.after(() => observer.free());
+  sync(host, observer, "display-observer", "viewer", true);
+  const executions = Object.values(observer.get_runtime_state().executions);
+  const original = executions.find((e) => e.cell_id === "code");
+  assert.deepEqual(
+    original.outputs.map((o) => o.output_id),
+    outputIds,
+  );
+  assert.deepEqual(
+    original.outputs.map((o) => o.data["text/plain"]),
+    [{ inline: "final" }, { inline: "final" }],
+  );
+  assert.deepEqual(
+    original.outputs.map((o) => o.metadata),
+    [{ label: "final" }, { label: "final" }],
+  );
+  assert.deepEqual(
+    executions.find((e) => e.cell_id === "second").outputs.map((o) => o.text),
+    [{ inline: "keep" }],
+  );
+  assert.deepEqual(executions.find((e) => e.cell_id === "third").outputs, []);
+  assert.ok(executions.every((e) => e.status === "done" && e.success));
+  await bridge.close();
+});
