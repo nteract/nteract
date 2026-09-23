@@ -1,0 +1,30 @@
+{
+  "pyodide": "0.28.3",
+  "assets": {
+    "sentinel.wasm": {
+      "bytes": 83,
+      "sha256": "d22ea2a6a2cb1afea8157d6e4570887a06e5af9e388c5f0fa5a984a8e9bb1021",
+      "source": "embedded in pyodide.mjs"
+    },
+    "pyodide.mjs": {
+      "bytes": 16347,
+      "sha256": "635a6da3218fe4e5668da595acfe8b5ce77453d597d602f19a423dd250653441"
+    },
+    "pyodide.asm.js": {
+      "bytes": 1073033,
+      "sha256": "b22e5831eade9ff10e6fe2c811c68688cd91f10154377b4f80debcf5bafa1e56"
+    },
+    "pyodide.asm.wasm": {
+      "bytes": 8645967,
+      "sha256": "5effb6a1a6cc4a1a85bec4622701aa797c031e1de923cbbaf2ad47abdc4ab325"
+    },
+    "python_stdlib.zip": {
+      "bytes": 2416866,
+      "sha256": "71fee17f88a6260ec8c9c7c063533ee59c021fdc88a1ce76247378d3c4a35f4c"
+    },
+    "pyodide-lock.json": {
+      "bytes": 109732,
+      "sha256": "f6e6f42f451f42affbbcddb00e8c9a3278dcbf399f57aab9f3f568839a7ff4a6"
+    }
+  }
+}
