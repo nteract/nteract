@@ -57,8 +57,10 @@ fences its runtime peer immediately. Start compute creates a clean replacement.
 Only notebook owners can interrupt, and unconfirmed cleanup returns an error.
 The current celld loader does not forward fetch cancellation and registry
 disposal waits for outstanding calls. The adapter therefore invokes a private
-termination endpoint with a tiny CPU budget to trigger celld's isolate
-invalidation. Disposal also invalidates idle sessions because Python can leave
+named control method with a tiny CPU budget to trigger celld's isolate
+invalidation. The method does not read mutable guest globals or invoke Python.
+A second control call must receive the exact host invalidation marker before
+the slot is released; a returned value or guest-wrapped exception is rejected. Disposal also invalidates idle sessions because Python can leave
 background tasks running after an execution returns. Failed termination retains
 the capacity reservation. A native host termination API should replace this
 mechanism when available. Startup has independent CPU and wall budgets too.

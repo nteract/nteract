@@ -1,3 +1,4 @@
+import { terminateLoadedPython } from "./host-termination.js";
 import { runWithDeadline } from "./runtime-deadline.js";
 import { validateExecutionResult } from "./execution-result.js";
 import source from "../dist/session.js";
@@ -62,19 +63,7 @@ export async function createCelldRuntime(
   let active = false;
   let terminating;
   async function terminate() {
-    terminating ??= (async () => {
-      try {
-        await stub
-          .getEntrypoint(null, { limits: { cpuMs: 10, subRequests: 0 } })
-          .fetch("https://session.invalid/terminate");
-        throw new Error("Python host did not terminate the session");
-      } catch (error) {
-        if (
-          !/exceeded CPU limit|runtime invalidated after execution termination/i.test(String(error))
-        )
-          throw error;
-      }
-    })();
+    terminating ??= terminateLoadedPython(stub);
     return terminating;
   }
   const dispose = async () => {
