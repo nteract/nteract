@@ -81,7 +81,7 @@ export class PythonRuntimePeer {
             output_id: crypto.randomUUID(),
             ename: "RuntimeError",
             evalue: String(error),
-            traceback: [],
+            traceback: { inline: "[]" },
           }),
         );
         this.#peer.set_execution_done(executionId, false);

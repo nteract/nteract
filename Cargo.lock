@@ -7871,6 +7871,7 @@ name = "runtimed-wasm"
 version = "0.6.6"
 dependencies = [
  "automerge 0.11.0",
+ "base64 0.22.1",
  "comments-doc",
  "console_error_panic_hook",
  "getrandom 0.2.17",

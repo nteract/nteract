@@ -7,9 +7,19 @@ import libraries from "../dist/library-modules.js";
 import source from "../dist/session.js";
 import interpreter from "../dist/pyodide.asm.wasm";
 import sentinel from "../dist/sentinel.wasm";
+let bridgePool;
 
 export default {
   async fetch(request, env) {
+    if (new URL(request.url).pathname === "/bridge") {
+      bridgePool ??= new SessionPool({
+        create: () => createCelldRuntime(env),
+        maxSessions: 1,
+        warmCount: 0,
+      });
+      await bridgePool.open("bridge");
+      return Response.json(await bridgePool.execute("bridge", await request.json()));
+    }
     if (new URL(request.url).pathname === "/deadline") {
       const pool = new SessionPool({
         create: () => createCelldRuntime(env, { wallMs: 150 }),
