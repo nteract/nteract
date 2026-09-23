@@ -207,7 +207,7 @@ test("main artifact packaging stays in the read-only Build job and only runs on 
     const step = job.split(`      - name: ${name}\n`)[1].split("\n      - ")[0];
     assert.match(step, /^        if: github.event_name == 'push' && github.ref == 'refs\/heads\/main'$/m);
   }
-  assert.match(job, /pnpm --dir apps\/notebook-cloud build:viewer/);
+  assert.match(job, /pnpm --filter @nteract\/preview-python build\n          pnpm --dir apps\/notebook-cloud build:viewer\n          NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps\/notebook-cloud\/scripts\/celld-local\.mjs export/);
   assert.match(job, /node \.github\/preview\/pack.mjs "\$RUNNER_TEMP\/main-preview-export" "\$GITHUB_SHA" "\$RUNNER_TEMP\/preview.bundle.gz"/);
   assert.match(job, /name: preview-bundle\n          path: \$\{\{ runner.temp \}\}\/preview.bundle.gz/);
 });

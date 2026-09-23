@@ -42,6 +42,7 @@ export interface IdentityEnvironment {
   NOTEBOOK_CLOUD_TRUST_LOOPBACK_HEADERS?: string;
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_PRINCIPAL_NAMESPACE?: string;
   NOTEBOOK_CLOUD_ANACONDA_API_KEY_USERINFO_URL?: string;
+  NOTEBOOK_CLOUD_OIDC_FLOW?: string;
   NOTEBOOK_CLOUD_OIDC_AUDIENCE?: string;
   NOTEBOOK_CLOUD_OIDC_CLIENT_ID?: string;
   NOTEBOOK_CLOUD_OIDC_REQUIRED_CLIENT_ID?: string;
@@ -301,6 +302,12 @@ export async function authenticateRequestWithProviders(
       oidcPartial ? "OIDC auth is not fully configured" : "OIDC auth is not configured",
       503,
     );
+  }
+  // Server-login endpoints accept their own session cookie, not replayable
+  // provider tokens shared with other deployments. The login callback calls
+  // authenticateOidcRequest directly after its state/PKCE exchange.
+  if (oidcCredential && env.NOTEBOOK_CLOUD_OIDC_FLOW === "server") {
+    throw new AuthError("Use the server sign-in session for this endpoint", 401);
   }
   if (oidcCredential && oidcConfig) {
     if (hasDevIdentityCredential(request) || hasDevCredentialTransport(request)) {
