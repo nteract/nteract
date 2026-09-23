@@ -124,6 +124,19 @@ describe("NotebookRoom presence rewrite", () => {
       );
       await state.drain();
       assert.deepEqual(executed, ["causal", "later"]);
+      Object.assign(harness.materializers.get("demo")!, {
+        waitForNotebookHeads: async () => {
+          harness.peers.delete(peer.id);
+          return true;
+        },
+      });
+      await room.webSocketMessage(peer.socket, request);
+      await state.drain();
+      assert.deepEqual(
+        executed,
+        ["causal", "later"],
+        "disconnect during causal wait must not submit execution",
+      );
     } finally {
       clearTimeout(timer);
       releaseHeads(false);
@@ -2825,6 +2838,7 @@ describe("NotebookRoom materialized sync routing", () => {
       checkpoint: async () => undefined,
     });
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3686,6 +3700,7 @@ describe("NotebookRoom materialized sync routing", () => {
       },
     } as never);
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3753,6 +3768,7 @@ describe("NotebookRoom materialized sync routing", () => {
       },
     } as never);
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3826,6 +3842,7 @@ describe("NotebookRoom materialized sync routing", () => {
       },
     } as never);
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3900,6 +3917,7 @@ describe("NotebookRoom materialized sync routing", () => {
       consecutiveRejectedFrames: 0,
     };
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3919,7 +3937,11 @@ describe("NotebookRoom materialized sync routing", () => {
     const attachment = await materializer.getWorkstationAttachment();
     assert.equal(attachment?.status, "connecting");
     assert.equal(attachment?.runtime_session_id, db.attachJobs[0]?.id);
-    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    const accepted = socket.sent
+      .filter((frame) => frame[0] === FrameType.SESSION_CONTROL)
+      .map((frame) => decodeJsonPayload<Record<string, unknown>>(frame.slice(1)))
+      .find((control) => control.type === "cloud_frame_accepted");
+    assert.ok(accepted);
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
@@ -3985,6 +4007,7 @@ describe("NotebookRoom materialized sync routing", () => {
       consecutiveRejectedFrames: 0,
     };
 
+    harness.peers.set(ownerPeer.id, ownerPeer);
     await harness.handleMessage(
       "demo",
       ownerPeer,
@@ -4006,7 +4029,11 @@ describe("NotebookRoom materialized sync routing", () => {
     const reconnectingAttachment = await materializer.getWorkstationAttachment();
     assert.equal(reconnectingAttachment?.status, "connecting");
     assert.equal(reconnectingAttachment?.runtime_session_id, db.attachJobs[0]?.id);
-    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    const accepted = socket.sent
+      .filter((frame) => frame[0] === FrameType.SESSION_CONTROL)
+      .map((frame) => decodeJsonPayload<Record<string, unknown>>(frame.slice(1)))
+      .find((control) => control.type === "cloud_frame_accepted");
+    assert.ok(accepted);
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 

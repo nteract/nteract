@@ -1358,18 +1358,6 @@ export class NotebookRoom {
           return;
         }
       }
-      const managed = this.managedPython.get(notebookId);
-      if (
-        managed &&
-        !(await managedPythonOwnerCanExecute(this.env, notebookId, managed.runtime.ownerPrincipal))
-      ) {
-        const reason = "Compute owner's access was revoked; start a new managed Python session";
-        await this.failManagedPython(notebookId, managed.runtime, new Error(reason));
-        this.rejectFrame(notebookId, peer, normalizedFrame.type, reason, {
-          countsTowardStreak: false,
-        });
-        return;
-      }
       const runtimePeer = await this.activeRuntimePeer(notebookId, peer.id);
       if (
         !runtimePeer &&
@@ -1389,6 +1377,19 @@ export class NotebookRoom {
         );
         return;
       }
+      const managed = this.managedPython.get(notebookId);
+      if (
+        managed &&
+        !(await managedPythonOwnerCanExecute(this.env, notebookId, managed.runtime.ownerPrincipal))
+      ) {
+        const reason = "Compute owner's access was revoked; start a new managed Python session";
+        await this.failManagedPython(notebookId, managed.runtime, new Error(reason));
+        this.rejectFrame(notebookId, peer, normalizedFrame.type, reason, {
+          countsTowardStreak: false,
+        });
+        return;
+      }
+      if (this.peers.get(peer.id) !== peer) return;
     }
 
     const unsupportedRuntimeRequestAction =
