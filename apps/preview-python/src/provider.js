@@ -2,14 +2,18 @@ import { SessionPool } from "./session-pool.js";
 import { createCelldRuntime } from "./celld-runtime.js";
 import { createProviderService } from "./provider-service.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import packages from "../dist/package-assets.js";
+import packages from "../dist/packages.json";
+const packageNames = new Set(packages.map((entry) => entry.filename));
 
 /** Immutable package bytes only; this binding has no user data or credentials. */
 export class PackageAssets extends WorkerEntrypoint {
   fetch(request) {
     const name = new URL(request.url).pathname.slice(1);
-    return Object.hasOwn(packages, name)
-      ? new Response(packages[name])
+    return packageNames.has(name) ||
+      /^(?:library-[a-f0-9]{64}|pyodide\.asm|sentinel)\.wasm$/.test(name)
+      ? this.env.ASSETS.fetch(
+          new Request(`https://python-assets.invalid/__preview-python-packages/${name}`),
+        )
       : new Response("Not found", { status: 404 });
   }
 }

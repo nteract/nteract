@@ -13,6 +13,40 @@ export async function createCelldRuntime(
   if (!Number.isFinite(wallMs) || wallMs <= 0) throw new Error("Invalid execution deadline");
   if (!Number.isFinite(startupWallMs) || startupWallMs <= 0)
     throw new Error("Invalid startup deadline");
+  // Deployment bundles carry hashed asset descriptors rather than megabytes of
+  // base64 JS in every notebook-room isolate. Only this compute factory loads
+  // the immutable bytes, and the Dynamic Worker API requires bytes, not modules.
+  const loadBytes = async (value) => {
+    if (!value?.asset) return value;
+    const response = await env.PACKAGES.fetch(
+      new Request(`https://python-assets.invalid/${value.asset}`),
+    );
+    if (!response.ok) throw new Error(`Missing Python module asset: ${value.asset}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    if (bytes.byteLength !== value.size || hash !== value.sha256)
+      throw new Error("Python module asset integrity mismatch");
+    return bytes;
+  };
+  const modules = await runWithDeadline(
+    async () =>
+      Object.fromEntries(
+        await Promise.all(
+          Object.entries({
+            ...libraries,
+            "pyodide.asm.wasm": { wasm: interpreter },
+            "sentinel.wasm": { wasm: sentinel },
+          }).map(async ([name, module]) => [name, { wasm: await loadBytes(module.wasm) }]),
+        ),
+      ),
+    {
+      timeoutMs: startupWallMs,
+      terminate: async () => {},
+      message: "Python module asset deadline exceeded",
+    },
+  );
   const stub = env.LOADER.load({
     mainModule: "session.js",
     compatibilityDate: "2026-09-21",
@@ -20,10 +54,8 @@ export async function createCelldRuntime(
     globalOutbound: null,
     env: { PACKAGES: env.PACKAGES },
     modules: {
-      ...libraries,
+      ...modules,
       "session.js": source,
-      "pyodide.asm.wasm": { wasm: interpreter },
-      "sentinel.wasm": { wasm: sentinel },
     },
   });
   let disposed = false;
