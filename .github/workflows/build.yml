@@ -711,11 +711,6 @@ jobs:
           name: ui-build-dist
           path: apps/notebook/dist
 
-      - name: Download WASM artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: wasm-artifacts
-
       - name: Install system dependencies
         run: |
           sudo flock /var/lock/nteract-ci-apt.lock bash -euo pipefail <<'APT'
@@ -732,6 +727,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ubuntu-release
+
+      # Cache fallback cleanup removes target/xtask fingerprints. Restore the
+      # current-run artifact after that cleanup, before strict verification.
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: wasm-artifacts
 
       - uses: ./.github/actions/build-runtime-artifacts
         with:
