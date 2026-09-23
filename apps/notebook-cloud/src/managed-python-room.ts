@@ -143,6 +143,7 @@ export class ManagedPythonRoom {
     }
     await this.synchronize();
     this.handle.set_kernel_running("python", "python", "celld-pyodide", this.peer.id);
+    this.handle.refresh_execution_queue();
     await this.synchronize();
     await this.materializer.checkpoint();
   }
