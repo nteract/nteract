@@ -48,7 +48,17 @@ try {
   async function execute(source, expected) {
     console.error(`Checking: ${expected}`);
     const editor = owner.locator(".cm-content").first();
-    await editor.fill(source);
+    // Replace through CodeMirror's transaction API, as the existing cloud
+    // workstation smoke does. DOM fill can race its document reconciliation.
+    await editor.evaluate((node, text) => {
+      const view = node.cmTile?.view;
+      if (!view) throw new Error("CodeMirror view unavailable");
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+      view.focus();
+    }, source);
+    await expect
+      .poll(() => editor.evaluate((node) => node.cmTile.view.state.doc.toString()))
+      .toBe(source);
     // The UI execution path flushes the live document before requesting by cell_id.
     await owner.getByTestId("execute-button").first().click();
     await expect(owner.getByText(expected, { exact: true })).toBeVisible({ timeout: 60000 });
