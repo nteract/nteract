@@ -2004,7 +2004,7 @@ async function routeWorkstationDeregister(
     return json(
       {
         error:
-          "Preview Python is managed by this deployment. Choose another default workstation to use your own compute.",
+          "Python (sandboxed) is managed by this deployment. Choose another default workstation to use your own compute.",
       },
       409,
     );

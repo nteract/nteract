@@ -459,6 +459,7 @@ export function NotebookViewer({
   const {
     connectionActorLabel,
     connectionError,
+    requestError,
     connectionPeerId,
     connectionPeerLabel,
     connectionScope,
@@ -601,7 +602,15 @@ export function NotebookViewer({
   }, [cloudKernelLifecycle.lifecycle]);
   // Deduplicated shared projection — re-renders only when attachment facts
   // change, not on every runtime tick (was per-host shadow state).
-  const workstationAttachment = useWorkstationAttachment();
+  const storedWorkstationAttachment = useWorkstationAttachment();
+  // Older notebook attachments retain their original label across deployments.
+  const workstationAttachment = useMemo(
+    () =>
+      storedWorkstationAttachment?.workstation_id === "celld-preview-python"
+        ? { ...storedWorkstationAttachment, display_name: "Python (sandboxed)" }
+        : storedWorkstationAttachment,
+    [storedWorkstationAttachment],
+  );
   const runtimePeerCount = cloudPresenceRuntimePeerCount(presenceSnapshot);
   const runtimePeerAvailable = cloudPresenceHasRuntimePeer(presenceSnapshot);
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
@@ -1890,6 +1899,11 @@ export function NotebookViewer({
     authState,
     authRenewal,
     connectionError,
+    requestError,
+    computeError:
+      workstationAttachment?.status === "error"
+        ? workstationAttachment.status_message || "Try starting compute again."
+        : null,
     diagnostics,
     hasAppSession,
     isPublicViewer,
@@ -1907,6 +1921,19 @@ export function NotebookViewer({
       authState={authState}
       authRenewal={authRenewal}
       connectionError={connectionError}
+      requestError={requestError}
+      computeError={
+        workstationAttachment?.status === "error"
+          ? workstationAttachment.status_message || "Try starting compute again."
+          : null
+      }
+      onRetryCompute={
+        canStartSelectedWorkstation
+          ? () => {
+              void onStartSelectedWorkstation?.();
+            }
+          : undefined
+      }
       diagnostics={diagnostics}
       hasAppSession={hasAppSession}
       isPublicViewer={isPublicViewer}

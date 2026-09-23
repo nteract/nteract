@@ -44,7 +44,7 @@ export async function ensureManagedPythonWorkstation(env: Env, ownerPrincipal: s
   if (status.provider !== "celld-pyodide" || status.version !== 1) return null;
   const workstation = await registerWorkstation(env, ownerPrincipal, {
     workstationId: MANAGED_PYTHON_WORKSTATION,
-    displayName: "Preview Python",
+    displayName: "Python (sandboxed)",
     provider: "celld-pyodide",
     providerLabel: "Managed Python",
     defaultEnvironmentLabel: "Python · pandas · NumPy · Matplotlib",

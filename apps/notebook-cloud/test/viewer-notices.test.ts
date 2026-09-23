@@ -655,3 +655,38 @@ test("a cleared stall renders nothing (late convergence clears the line)", () =>
     false,
   );
 });
+
+test("request failure leaves a ready notebook with a retryable command notice", () => {
+  const props = {
+    authState: authState("anonymous"),
+    authRenewal: { kind: "idle" as const, message: null },
+    connectionError: null,
+    requestError: "Your Python session limit was reached.",
+    status: { kind: "ready" as const, message: "Ready" },
+    onResetAuth: () => {},
+  };
+  assert.equal(cloudNotebookHasNotices(props), true);
+  const html = renderToStaticMarkup(React.createElement(CloudNotebookNotices, props));
+  assert.match(html, /Request could not run/);
+  assert.match(html, /session limit/);
+  assert.doesNotMatch(html, /Unable to load notebook/);
+  assert.equal(cloudNotebookHasNotices({ ...props, requestError: null }), false);
+});
+
+test("startup failure displays compute recovery without a request rejection", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(CloudNotebookNotices, {
+      authState: authState("anonymous"),
+      authRenewal: { kind: "idle", message: null },
+      connectionError: null,
+      computeError: "Your Python session limit was reached.",
+      status: { kind: "ready", message: "Ready" },
+      onResetAuth: () => {},
+      onRetryCompute: () => {},
+    }),
+  );
+  assert.match(html, /Compute could not start/);
+  assert.match(html, /Retry compute/);
+  assert.match(html, /session limit/);
+  assert.doesNotMatch(html, /Unable to load notebook/);
+});

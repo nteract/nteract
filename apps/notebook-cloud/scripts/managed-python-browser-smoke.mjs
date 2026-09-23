@@ -131,7 +131,7 @@ try {
     await expect(owner.getByTestId("execute-button").first()).toBeEnabled();
     await expect(owner.getByRole("button", { name: "Restart kernel", exact: true })).toHaveCount(0);
   }
-  async function execute(source, expected) {
+  async function execute(source, expected, state = "ran") {
     console.error(`Checking: ${expected}`);
     const editor = owner.locator(".cm-content").first();
     // Replace through CodeMirror's transaction API, as the existing cloud
@@ -151,7 +151,7 @@ try {
     await expect(owner.getByText(expected, { exact: true })).toBeVisible({ timeout: 60000 });
     await expect(owner.getByTestId("execute-button").first()).toHaveAttribute(
       "data-execution-state",
-      "ran",
+      state,
       { timeout: 10000 },
     );
   }
@@ -160,6 +160,30 @@ try {
     "managed first output 42",
   );
   measurements.firstOutputMs = performance.now() - started;
+  await execute("x", "NameError: name 'x' is not defined", "error");
+  await execute("print('after name error', persisted)", "after name error 41");
+  // A valid command naming a missing cell is rejected at the room boundary.
+  // The document must stay editable and the next request must clear its notice.
+  await owner.evaluate(() => {
+    const socket = window.__smokeRoomSockets.find(
+      (socket) => socket.readyState === 1 && new URL(socket.url).pathname.endsWith("/sync"),
+    );
+    const payload = new TextEncoder().encode(
+      JSON.stringify({
+        id: "missing-cell-probe",
+        action: "execute_cell",
+        cell_id: "missing-cell-probe",
+      }),
+    );
+    const frame = new Uint8Array(payload.length + 1);
+    frame[0] = 1;
+    frame.set(payload, 1);
+    socket.send(frame);
+  });
+  await expect(owner.getByText("Request could not run.", { exact: true })).toBeVisible();
+  await expect(owner.getByText("Unable to load notebook.", { exact: true })).toHaveCount(0);
+  await execute("print('after rejected request', persisted)", "after rejected request 41");
+  await expect(owner.getByText("Request could not run.", { exact: true })).toHaveCount(0);
   // Deliberately put execution ahead of the edit's sync frame on the same
   // socket. The room must keep reading while its causal fence waits.
   await owner.evaluate(() => {
@@ -310,6 +334,8 @@ try {
           "concurrent_blob_upload_preserves_first_writer_metadata",
           explicitAttach ? "first_attach_without_reconnect" : "first_run_allocates_without_attach",
           "persistent_variables",
+          "name_error_is_cell_output_and_session_survives",
+          "rejected_command_recovers_without_reload",
           "execution_waits_for_later_sync_on_same_socket",
           "viewer_convergence",
           "distinct_viewer_and_editor_converge",

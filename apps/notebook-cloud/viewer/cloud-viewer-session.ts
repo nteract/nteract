@@ -159,6 +159,7 @@ export interface CloudViewerConfig {
 export interface CloudViewerSession {
   connectionActorLabel: string | null;
   connectionError: string | null;
+  requestError: string | null;
   connectionPeerId: string | null;
   connectionPeerLabel: string | null;
   connectionScope: string | null;
@@ -355,6 +356,7 @@ export function useCloudViewerSession({
   const [connectionPeerLabel, setConnectionPeerLabel] = useState<string | null>(null);
   const [connectionActorLabel, setConnectionActorLabel] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
   // The live-room effect must not depend on raw auth/session object identity:
   // browser auth refreshes can rebuild those objects without changing the
@@ -1253,6 +1255,7 @@ export function useCloudViewerSession({
 
     presenceStore.reset();
     resetRuntimeState();
+    setRequestError(null);
     setConnectionError(null);
     setConnectionActorLabel(null);
     setConnectionPeerId(null);
@@ -1288,7 +1291,11 @@ export function useCloudViewerSession({
         ) {
           presenceStore.reduceMessage(message);
         }
+        if (message.type === "cloud_frame_accepted" && message.frame_type === FrameType.REQUEST) {
+          setRequestError(null);
+        }
         if (message.type === "cloud_room_ready") {
+          setRequestError(null);
           markCloudViewerLoadMilestone("live-room-ready");
           rejectionTracker.reset(); // fresh connection, fresh strike count
           setConnectionError(null);
@@ -1306,6 +1313,12 @@ export function useCloudViewerSession({
           return;
         }
         if (message.type === "cloud_frame_rejected") {
+          // A failed command does not invalidate the synced notebook or disable
+          // its toolbar. Keep it retryable on the existing room connection.
+          if (message.frame_type === FrameType.REQUEST) {
+            setRequestError(message.reason);
+            return;
+          }
           if (isRecoverableCloudFrameRejection(message)) {
             const liveRuntime = liveRuntimeRef.current;
             const disposition = rejectionTracker.record(liveRuntime !== null);
@@ -1666,6 +1679,7 @@ export function useCloudViewerSession({
   return {
     connectionActorLabel,
     connectionError,
+    requestError,
     connectionStatus$: connectionStatusBridge,
     connectionPeerId,
     connectionPeerLabel,

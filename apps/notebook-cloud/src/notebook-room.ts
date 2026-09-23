@@ -1359,22 +1359,40 @@ export class NotebookRoom {
         }
       }
       const runtimePeer = await this.activeRuntimePeer(notebookId, peer.id);
-      if (
-        !runtimePeer &&
-        !(await this.ensureRuntimeForHostedExecution(notebookId, hostedExecutionAction))
-      ) {
-        await this.reconcileMissingRuntimePeer(
-          notebookId,
-          `no runtime peer is attached for ${hostedExecutionAction}`,
-          "hosted_execution_without_runtime_peer",
-        );
+      let runtimeAvailable = Boolean(runtimePeer);
+      try {
+        if (!runtimeAvailable)
+          runtimeAvailable = await this.ensureRuntimeForHostedExecution(
+            notebookId,
+            hostedExecutionAction,
+          );
+      } catch (error) {
         this.rejectFrame(
           notebookId,
           peer,
           normalizedFrame.type,
-          `no runtime peer is attached for ${hostedExecutionAction}`,
+          error instanceof Error ? error.message : String(error),
           { countsTowardStreak: false },
         );
+        return;
+      }
+      if (!runtimeAvailable) {
+        const attachment = await this.materializerFor(notebookId).getWorkstationAttachment?.();
+        // A startup failure already reconciled the runtime. Keep its useful
+        // reason (e.g. quota), instead of overwriting it with missing-peer state.
+        const reason =
+          attachment?.status === "error" && attachment.status_message
+            ? attachment.status_message
+            : `no runtime peer is attached for ${hostedExecutionAction}`;
+        if (attachment?.status !== "error")
+          await this.reconcileMissingRuntimePeer(
+            notebookId,
+            reason,
+            "hosted_execution_without_runtime_peer",
+          );
+        this.rejectFrame(notebookId, peer, normalizedFrame.type, reason, {
+          countsTowardStreak: false,
+        });
         return;
       }
       const managed = this.managedPython.get(notebookId);
@@ -2034,7 +2052,7 @@ export class NotebookRoom {
       managedPythonStub(this.env)
     ) {
       await this.startManagedPython(notebookId, attachment.runtime_session_id);
-      return true;
+      return this.managedPython.has(notebookId);
     }
     if (attachment?.status === "connecting") {
       return true;
@@ -2055,7 +2073,7 @@ export class NotebookRoom {
         const materializer = this.materializerFor(notebookId);
         const selected = await materializer.getWorkstationAttachment();
         if (selected?.runtime_session_id === sessionId && selected.status !== "error") {
-          const reason = String(error).slice(0, 1000);
+          const reason = errorMessage(error).slice(0, 1000);
           const result = await materializer.transitionManagedPythonSession(
             sessionId,
             "error",
@@ -2168,7 +2186,7 @@ export class NotebookRoom {
     });
     try {
       const materializer = this.materializerFor(notebookId);
-      const reason = String(error).slice(0, 1000);
+      const reason = errorMessage(error).slice(0, 1000);
       const failed = await materializer.transitionManagedPythonSession(
         runtime.sessionId,
         "error",

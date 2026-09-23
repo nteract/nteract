@@ -21,7 +21,7 @@ test(
     await post("/open", "alice", "1");
     await post("/open", "alice", "2");
     const denied = await post("/open", "alice", "3", undefined, 409);
-    assert.match(denied.error, /Your Preview Python session limit/);
+    assert.match(denied.error, /Your Python session limit/);
     await post("/open", "bob", "1");
     await post("/open", "bob", "2");
     const results = await Promise.all(

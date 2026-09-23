@@ -180,6 +180,7 @@ export default {
       const persisted = await run(first, "value + 2", "second");
       const warmMs = Date.now() - warmStart;
       const isolated = await run(second, "'value' in globals()", "isolated");
+      const nameError = await run(first, "x", "undefined-name");
       const error = await run(first, "raise ValueError('expected')", "error");
       const recovered = await run(
         first,
@@ -220,6 +221,7 @@ export default {
         persisted,
         isolated,
         error,
+        nameError,
         recovered,
         denied,
         timeout,

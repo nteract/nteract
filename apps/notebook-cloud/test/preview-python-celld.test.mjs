@@ -57,7 +57,7 @@ test(
     host.set_workstation_attachment_json(
       JSON.stringify({
         workstation_id: "celld-preview-python",
-        display_name: "Preview Python",
+        display_name: "Python (sandboxed)",
         provider: "celld-pyodide",
         default_environment_label: "Python",
         environment_policy: "curated",

@@ -3720,6 +3720,86 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
+  it("preserves startup errors and accepts a retry on the same peer", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let materialized = 0;
+    let reconciled = 0;
+    let failed = true;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab",
+        display_name: "Lab",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: failed ? "error" : "connecting",
+        status_message: failed ? "Your Python session limit was reached." : null,
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: null,
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-new",
+      }),
+      reconcileRuntimePeerGone: async () => {
+        reconciled += 1;
+        return noopMaterializedResult();
+      },
+    } as never);
+
+    harness.peers.set(peer.id, peer);
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+    assert.equal(materialized, 0);
+    assert.equal(reconciled, 0);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(rejected.reason, "Your Python session limit was reached.");
+    failed = false;
+    socket.sent.length = 0;
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(materialized, 1, "connecting attach may queue initial execution");
+    assert.equal(reconciled, 0);
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(socket.sent.length, 1);
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
   it("creates an owner-scoped resume attach job when owner execution finds no runtime peer", async () => {
     const db = new ResumeNotebookD1();
     const room = new NotebookRoom(fakeState(), { DB: db } as unknown as Env);

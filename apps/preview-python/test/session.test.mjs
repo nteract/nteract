@@ -64,6 +64,9 @@ test(
     assert.ok(result.plot.outputs.some((o) => o.data?.["image/png"]?.startsWith("iVBOR")));
     assert.equal(result.persisted.outputs[0].data["text/plain"], "43");
     assert.equal(result.isolated.outputs[0].data["text/plain"], "False");
+    assert.equal(result.nameError.success, false);
+    assert.equal(result.nameError.outputs[0].ename, "NameError");
+    assert.match(result.nameError.outputs[0].evalue, /x/);
     assert.equal(result.error.success, false);
     assert.equal(result.error.outputs[0].ename, "ValueError");
     assert.equal(result.recovered.outputs[0].data["text/plain"], "41");

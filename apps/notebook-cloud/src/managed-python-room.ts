@@ -28,7 +28,7 @@ export class ManagedPythonRoom {
       actor_label: this.peer.identity.actorLabel,
       connection_scope: "runtime_peer",
       participant_key: this.peer.id,
-      display_name: "Preview Python",
+      display_name: "Python (sandboxed)",
       connected_at: this.connectedAt,
     };
   }
@@ -95,7 +95,19 @@ export class ManagedPythonRoom {
         }),
       }),
     );
-    if (!response.ok) throw new Error(`Managed Python ${path} failed: ${await response.text()}`);
+    if (!response.ok) {
+      const body = await response.text();
+      let reason = body;
+      try {
+        const parsed = JSON.parse(body) as { error?: unknown };
+        if (typeof parsed.error === "string") reason = parsed.error;
+      } catch {
+        /* A non-JSON provider failure still needs a bounded diagnostic. */
+      }
+      throw new Error(
+        reason.replace(/^Error: /, "").slice(0, 1000) || "Python request failed. Try again.",
+      );
+    }
     return response.json();
   }
 

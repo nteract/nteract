@@ -41,7 +41,8 @@ export class SessionPool {
 
   #fresh() {
     // Settled failures are retained for admission to report, never unhandled.
-    if (this.#runtimeCount >= this.#maxSessions) throw new Error("Preview Python capacity reached");
+    if (this.#runtimeCount >= this.#maxSessions)
+      throw new Error("Python (sandboxed) capacity reached");
     this.#runtimeCount++;
     return Promise.resolve()
       .then(this.#create)
@@ -106,10 +107,10 @@ export class SessionPool {
     const owned = this.#ownerCounts.get(owner) ?? 0;
     if (owned >= this.#maxSessionsPerOwner)
       throw new Error(
-        "Your Preview Python session limit was reached; stop another notebook session",
+        "Your Python session limit was reached. Stop another notebook session and try again.",
       );
     if (this.#sessions.size >= this.#maxSessions)
-      throw new Error("Preview Python capacity reached");
+      throw new Error("Python (sandboxed) capacity reached");
     const warmCandidate = this.#warm.shift();
     const candidate = warmCandidate ?? this.#fresh();
     this.#ownerCounts.set(owner, owned + 1);

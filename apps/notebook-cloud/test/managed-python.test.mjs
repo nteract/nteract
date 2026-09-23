@@ -219,7 +219,7 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
   room.materializers.set("coowner", materializer);
   await materializer.setWorkstationAttachment({
     workstation_id: MANAGED_PYTHON_WORKSTATION,
-    display_name: "Preview Python",
+    display_name: "Python (sandboxed)",
     provider: "celld-pyodide",
     default_environment_label: "Python",
     environment_policy: "curated",
