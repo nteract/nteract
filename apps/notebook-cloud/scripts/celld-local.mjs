@@ -438,6 +438,10 @@ async function copyProjectFiles(worker, projectDir) {
   await rm(assetsDir, { recursive: true, force: true });
   await cp(path.join(appDir, worker.assets), assetsDir, { recursive: true, dereference: true });
   if (worker.name === "main" && process.env.NOTEBOOK_CLOUD_CELLD_PYTHON === "1") {
+    await writeFile(
+      path.join(assetsDir, "__preview-python.json"),
+      JSON.stringify({ version: 1, runtime: "pyodide-0.28.3" }),
+    );
     await cp(
       path.join(appDir, "../preview-python/dist/wheels"),
       path.join(assetsDir, "__preview-python-packages"),

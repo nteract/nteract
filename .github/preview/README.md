@@ -178,3 +178,21 @@ secret at `https://main.runtimed.run`; it is not tied to a PR's closure. A faile
 or stale Build must leave the current deployment untouched. GitHub's dedicated
 deployment environment and the job summary identify the requested revision and
 link to the site; PR comment reporting is not used for this target.
+
+## Managed Python build artifacts
+
+The Python-capable reusable workflow and main Build job build
+`@nteract/preview-python` before exporting with `NOTEBOOK_CLOUD_CELLD_PYTHON=1`.
+The exporter includes private provider code, pinned Pyodide/scientific assets,
+and `main/assets/__preview-python.json` (version 1, Pyodide 0.28.3). The
+controller requires that contract before selecting its qualified Python runtime.
+Generated configuration and credentials are still excluded from artifacts.
+
+This change depends on the managed Python application implementation in #4272.
+An older PR branch must update before using the Python-capable workflow; a
+missing package/exporter must fail the build instead of silently producing a
+preview without compute. The PR caller remains pinned to the previous reusable
+workflow until the reviewed new revision is trusted by preview-infra. Activating
+that pin is a separate rollout step. Main's cloud packaging changes take effect
+on merge, while the controller controls whether Python bindings are enabled.
+Anaconda authentication is likewise host-owned, never selected by these builds.
