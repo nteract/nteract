@@ -251,3 +251,40 @@ test("unconfirmed disposal retains the owner's reservation", async () => {
   await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
   await pool.open("bob/1", "bob");
 });
+
+for (const assignedBeforeFailure of [false, true]) {
+  test(`failed clean standby never quarantines an owner's quota: assigned=${assignedBeforeFailure}`, async () => {
+    let rejectStartup;
+    let created = 0;
+    const pool = new SessionPool({
+      maxSessions: 2,
+      maxSessionsPerOwner: 1,
+      warmCount: 1,
+      create: async () => {
+        if (++created === 1)
+          return new Promise((_, reject) => {
+            rejectStartup = reject;
+          });
+        return { info: {}, dispose: async () => {} };
+      },
+    });
+    const warming = pool.prewarm();
+    const failedWarm = assert.rejects(warming, /standby initialization failed/);
+    await Promise.resolve();
+    const allocation = assignedBeforeFailure ? pool.open("alice/1", "alice") : null;
+    const failedAllocation =
+      allocation && assert.rejects(allocation, /standby initialization failed/);
+    rejectStartup(
+      Object.assign(new Error("standby initialization failed"), { runtimeRetained: true }),
+    );
+    await failedWarm;
+    await failedAllocation;
+    await pool.open("alice/retry", "alice");
+    await assert.rejects(
+      pool.open("bob/1", "bob"),
+      /capacity/,
+      "quarantine still consumes deployment capacity",
+    );
+    await pool.close();
+  });
+}

@@ -71,7 +71,16 @@ export class SessionPool {
   warm() {
     if (this.#closed) return;
     while (this.#warm.length < this.#warmCount && this.#runtimeCount < this.#maxSessions) {
-      this.#warm.push(this.#fresh());
+      const candidate = this.#fresh();
+      this.#warm.push(candidate);
+      void candidate.then((result) => {
+        if (result.error) {
+          const index = this.#warm.indexOf(candidate);
+          if (index !== -1) this.#warm.splice(index, 1);
+          // Keep any quarantined deployment reservation, but let the next
+          // discovery retry a clean standby without an automatic retry loop.
+        }
+      });
     }
   }
 
@@ -98,7 +107,8 @@ export class SessionPool {
       );
     if (this.#sessions.size >= this.#maxSessions)
       throw new Error("Preview Python capacity reached");
-    const candidate = this.#warm.shift() ?? this.#fresh();
+    const warmCandidate = this.#warm.shift();
+    const candidate = warmCandidate ?? this.#fresh();
     this.#ownerCounts.set(owner, owned + 1);
     let reserved = true;
     const releaseOwner = () => {
@@ -121,7 +131,7 @@ export class SessionPool {
     session.ready = candidate.then(async ({ runtime, error }) => {
       if (error) {
         if (this.#sessions.get(key) === session) this.#sessions.delete(key);
-        if (error?.runtimeRetained !== true) releaseOwner();
+        if (warmCandidate || error?.runtimeRetained !== true) releaseOwner();
         throw error;
       }
       if (this.#sessions.get(key) !== session || this.#closed) {
