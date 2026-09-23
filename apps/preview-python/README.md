@@ -5,8 +5,8 @@ not enabled by default and is not a Desktop kernel or a generic Cloudflare
 provider. See [the implementation plan](../../docs/plans/preview-python.md).
 
 The initial adapter executes Python directly and returns notebook-shaped outputs
-without ZeroMQ. The trusted supervisor and cloud runtime-peer integration are
-under development. Do not expose the internal execution endpoint publicly.
+without ZeroMQ. A trusted supervisor bridges accepted notebook executions to
+isolated interpreters. Do not expose the internal execution endpoint publicly.
 
 The private provider bundle exports `PreviewPythonSessions` (a Durable Object
 holding the deployment pool) and `PackageAssets` (immutable scientific wheels).
@@ -29,8 +29,7 @@ local interpreter/stdlib assets; runtime startup does not fetch from a CDN.
 The compiled-Wasm bootstrap follows the local celld Python Workers experiment
 (branch `quod/python-workers`, based on celld 0.5.1). The execution/display
 separation is informed by runtimed/runtime-agents' Pyodide agent used by anode.
-The current evaluator is newly implemented; the managed provider and its
-notebook integration remain implementation gates.
+The current evaluator and managed cloud integration are newly implemented.
 No notebook readiness or tenant-isolation claim follows from the build alone.
 
 ## Scientific environment and isolation
@@ -94,7 +93,8 @@ and tests first attachment, persistent variables, a viewing collaborator,
 restart, reconnect, and interrupt/replacement. Fixtures remain in local storage;
 stop/restart the local fleet between repeated runs to release its bounded
 in-memory compute pool.
-Its timings are single browser observations, not latency distributions or RSS.
+Each run reports browser-to-output timing, separately from provider benchmarks
+and RSS measurements.
 
 When an owner opens a notebook with no selected compute, the celld room selects
 the managed default as idle. Running the first synced code cell allocates its
@@ -158,3 +158,8 @@ count against the owner's limit until destruction is confirmed; uncertain
 cleanup keeps both owner and deployment reservations. A user at their limit
 must stop another notebook session before starting a third. Clean unassigned
 standbys count against deployment capacity, not an owner's allowance.
+
+Preview Python is deployment-managed, so its workstation registration cannot be
+deleted while this provider is enabled. Choose a different default workstation
+to use your own compute. Disabling the deployment flag stops managed discovery;
+ordinary workstation deregistration then works as before.

@@ -174,6 +174,23 @@ try {
     "managed clear remains 41",
   );
   await expect(owner.getByText("'managed clear gone'", { exact: true })).toHaveCount(0);
+  await execute(
+    "import pandas as pd\nimport matplotlib.pyplot as plt\ndisplay(pd.DataFrame({'managed_sample': [2, 4]}))\nplt.plot([1, 2], [3, 4])\nplt.show()\nprint('managed science', persisted)",
+    "managed science 41",
+  );
+  for (const page of [owner, viewer, editor]) {
+    await expect(page.getByText("managed science 41", { exact: true })).toBeVisible();
+    await expect(
+      page.frameLocator('[data-slot="isolated-frame"]').getByRole("table"),
+    ).toContainText("managed_sample");
+    await expect
+      .poll(async () =>
+        page
+          .locator("[data-cell-id] img")
+          .evaluateAll((images) => images.some((img) => img.complete && img.naturalWidth > 100)),
+      )
+      .toBe(true);
+  }
   const replacement = owner.waitForResponse(
     (r) => r.request().method() === "POST" && r.url().endsWith("/workstation-attachments"),
   );
@@ -238,6 +255,7 @@ try {
           "distinct_viewer_and_editor_converge",
           "viewer_and_editor_server_reject_execution_and_attachment",
           "display_update_and_clear_preserve_session",
+          "dataframe_and_plot_render_for_three_clients",
           "restart_clears_variables",
           "owner_reconnect",
           "interrupt_detaches_and_replacement_is_clean",
