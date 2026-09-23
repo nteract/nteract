@@ -446,7 +446,6 @@ async function copyProjectFiles(worker, projectDir) {
       JSON.stringify({
         version: 1,
         runtime: `pyodide-${runtimeLock.pyodide}`,
-        serverSessionOnly: true,
       }),
     );
     await cp(
@@ -456,6 +455,10 @@ async function copyProjectFiles(worker, projectDir) {
     );
   }
   if (worker.name === "main") {
+    await writeFile(
+      path.join(assetsDir, "__preview-auth.json"),
+      JSON.stringify({ version: 1, serverSessionOnly: true }),
+    );
     const migrationsDir = path.join(projectDir, "migrations");
     await rm(migrationsDir, { recursive: true, force: true });
     await cp(path.join(appDir, "migrations"), migrationsDir, { recursive: true });
