@@ -1,6 +1,7 @@
 import { SessionPool } from "./session-pool.js";
 import { createCelldRuntime } from "./celld-runtime.js";
 import { createProviderService } from "./provider-service.js";
+import { ensureHousekeepingAlarm } from "./housekeeping.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import packages from "../dist/packages.json";
 const packageNames = new Set(packages.map((entry) => entry.filename));
@@ -31,7 +32,7 @@ export class PreviewPythonSessions {
   }
   async fetch(request) {
     // Alarms are only lifecycle housekeeping; no notebook code is replayed.
-    await this.state.storage.setAlarm(Date.now() + 60_000);
+    await ensureHousekeepingAlarm(this.state.storage);
     return this.service.fetch(request);
   }
   async alarm() {
