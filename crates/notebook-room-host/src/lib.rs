@@ -3235,6 +3235,26 @@ mod tests {
     }
 
     #[test]
+    fn idle_execution_rejects_malformed_id_without_mutation() {
+        let mut host = RoomHostEngine::create_empty("receipt", "system/host").unwrap();
+        host.seed_initial_code_cell_if_empty("cell-1").unwrap();
+        let notebook_heads = host.doc.get_heads();
+        let runtime_heads = host.state_doc.get_heads();
+        let error = host
+            .handle_execute_cell(
+                &json!({"cell_id":"cell-1", "execution_id":"invalid"}),
+                "peer",
+                "user:dev:alice/client:a",
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("valid UUID"));
+        assert_eq!(host.doc.get_heads(), notebook_heads);
+        assert_eq!(host.state_doc.get_heads(), runtime_heads);
+        assert!(host.state_doc.read_state().executions.is_empty());
+        assert!(host.doc.get_execution_id("cell-1").is_none());
+    }
+
+    #[test]
     fn active_execution_rejects_supplied_ids_without_mutation() {
         for running in [false, true] {
             let mut host = RoomHostEngine::create_empty("receipt", "system/host").unwrap();
@@ -3249,19 +3269,16 @@ mod tests {
             }
             let notebook_heads = host.doc.get_heads();
             let runtime_heads = host.state_doc.get_heads();
-            for supplied in [
-                active_id.as_str(),
-                "11111111-1111-4111-8111-111111111111",
-                "invalid",
+            for (supplied, expected) in [
+                (active_id.as_str(), "active execution"),
+                ("11111111-1111-4111-8111-111111111111", "active execution"),
+                ("invalid", "valid UUID"),
             ] {
                 let error = host.handle_execute_cell(
                     &json!({"action":"execute_cell", "cell_id":"cell-1", "execution_id":supplied}),
                     "peer", "user:dev:alice/client:a",
                 ).unwrap_err();
-                assert!(
-                    error.to_string().contains("active execution")
-                        || error.to_string().contains("valid UUID")
-                );
+                assert!(error.to_string().contains(expected), "{error}");
                 assert_eq!(host.doc.get_heads(), notebook_heads);
                 assert_eq!(host.state_doc.get_heads(), runtime_heads);
             }
