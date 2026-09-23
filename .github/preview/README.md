@@ -146,11 +146,18 @@ Build runs. The build keeps repository-read permission and has no deployment
 identity token or infrastructure credentials. Exported runtime configuration is
 excluded by the same bundle format used for PR previews.
 
-The separate `send-main-deployment.mjs` helper is intended for a future pinned
-`main-preview-reusable.yml`, called without inputs by `main-preview.yml` on
-successful `Build` completion. This patch does not install either workflow or
-activate main deployment. Publish them through the same reviewed helper,
-reusable workflow, controller trust, and pinned caller sequence described above.
+The separate `main-preview-reusable.yml` runs `send-main-deployment.mjs` from
+the reviewed helper revision `cc55c85aec0441894941ac1f47321c4bc0e1231a`. It accepts
+no inputs or inherited secrets and checks out only those helpers. Its deployment
+job has repository/action read permissions and GitHub OIDC permission, and uses
+the fixed `runtimed-main` environment and concurrency group without cancelling
+an accepted update. It never downloads or executes the application artifact.
+
+The reusable workflow alone does not activate main deployment. Install its
+reviewed revision in the controller's main trust policy before publishing a
+`main-preview.yml` caller pinned to that revision for successful `Build`
+completion. This follows the same reviewed helper, reusable workflow,
+controller trust, and pinned caller sequence described above.
 
 Main authorization is separate from PR authorization. The helper requires a
 successful completed push-to-main Build, an active deployment workflow, eligible
