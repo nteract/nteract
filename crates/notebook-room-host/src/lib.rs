@@ -64,11 +64,32 @@ pub struct RoomHostOutboundFrame {
 /// Effects produced by applying one room event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RoomHostFrameResult {
+    /// Execution receipt; the host must persist changes before sending it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_response: Option<RoomExecutionResponse>,
     pub changed: bool,
     pub ignored_stale: bool,
     pub notebook_changed: bool,
     pub runtime_state_changed: bool,
     pub outbound: Vec<RoomHostOutboundFrame>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum RoomExecutionResponse {
+    CellQueued {
+        cell_id: String,
+        execution_id: String,
+    },
+    AllCellsQueued {
+        queued: Vec<RoomQueuedCell>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RoomQueuedCell {
+    pub cell_id: String,
+    pub execution_id: String,
 }
 
 impl RoomHostFrameResult {
@@ -78,6 +99,7 @@ impl RoomHostFrameResult {
             ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
+            execution_response: None,
             outbound: Vec::new(),
         }
     }
@@ -491,6 +513,7 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: changed,
             runtime_state_changed: false,
+            execution_response: None,
             outbound: Vec::new(),
         };
         self.queue_notebook_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
@@ -566,6 +589,7 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
+            execution_response: None,
             outbound: Vec::new(),
         };
         self.queue_runtime_state_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
@@ -631,6 +655,7 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
+            execution_response: None,
             outbound: Vec::new(),
         };
         self.queue_comms_doc_sync_for_peer(peer_id, can_write, &mut result.outbound)?;
@@ -702,6 +727,7 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: false,
+            execution_response: None,
             outbound: Vec::new(),
         };
         self.queue_comments_doc_sync_for_peer(peer_id, can_write, &mut result.outbound)
@@ -788,7 +814,12 @@ impl RoomHostEngine {
                 // No-op: nothing changed. The room logs the materialized frame
                 // (notebook-room.ts room.materialized_frame.applied) with
                 // changed=false, which is the observable signal here.
-                return Ok(RoomHostFrameResult::empty());
+                let mut result = RoomHostFrameResult::empty();
+                result.execution_response = Some(RoomExecutionResponse::CellQueued {
+                    cell_id: cell_id.to_string(),
+                    execution_id: active_id,
+                });
+                return Ok(result);
             }
         }
 
@@ -836,9 +867,8 @@ impl RoomHostEngine {
             )
             .map_err(|e| RoomHostError::new(format!("create execution: {e}")))?;
         if !created {
-            // The id already exists (a client retried with the same id). Treat it
-            // as an idempotent no-op rather than erroring the peer, matching the
-            // daemon: the existing execution is already in the synced doc.
+            // Preserve the existing no-op for a previously used ID. This is
+            // not a new queue acceptance, so it has no execution receipt.
             return Ok(RoomHostFrameResult::empty());
         }
 
@@ -875,6 +905,10 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: true,
             runtime_state_changed: true,
+            execution_response: Some(RoomExecutionResponse::CellQueued {
+                cell_id: cell_id.to_string(),
+                execution_id,
+            }),
             outbound: Vec::new(),
         };
         self.queue_runtime_state_sync_for_peer(peer_id, true, &mut result.outbound)?;
@@ -898,7 +932,10 @@ impl RoomHostEngine {
             .filter(|cell| cell.cell_type == "code")
             .collect();
         if code_cells.is_empty() {
-            return Ok(RoomHostFrameResult::empty());
+            let mut result = RoomHostFrameResult::empty();
+            result.execution_response =
+                Some(RoomExecutionResponse::AllCellsQueued { queued: vec![] });
+            return Ok(result);
         }
 
         let (existing_execution_ids, next_seq) = {
@@ -987,6 +1024,15 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: true,
             runtime_state_changed: true,
+            execution_response: Some(RoomExecutionResponse::AllCellsQueued {
+                queued: entries
+                    .iter()
+                    .map(|(execution_id, cell_id, _, _, _)| RoomQueuedCell {
+                        cell_id: cell_id.clone(),
+                        execution_id: execution_id.clone(),
+                    })
+                    .collect(),
+            }),
             outbound: Vec::new(),
         };
         self.queue_runtime_state_sync_for_peer(peer_id, true, &mut result.outbound)?;
@@ -1251,6 +1297,7 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
+            execution_response: None,
             outbound: Vec::new(),
         };
         // Broadcast the reconciled state to every remaining peer. Passing an
@@ -1303,6 +1350,7 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
+            execution_response: None,
             outbound: Vec::new(),
         };
         if changed {
@@ -1324,6 +1372,7 @@ impl RoomHostEngine {
                 ignored_stale: true,
                 notebook_changed: false,
                 runtime_state_changed: false,
+                execution_response: None,
                 outbound: Vec::new(),
             });
         }
@@ -1339,6 +1388,7 @@ impl RoomHostEngine {
             ignored_stale: false,
             notebook_changed: false,
             runtime_state_changed: changed,
+            execution_response: None,
             outbound: Vec::new(),
         };
         if changed {
@@ -3153,6 +3203,53 @@ mod tests {
             .read_state()
             .executions
             .contains_key(supplied));
+    }
+
+    #[test]
+    fn execution_receipts_identify_new_and_already_active_executions() {
+        let mut host = RoomHostEngine::create_empty("receipt", "system/host").unwrap();
+        host.seed_initial_code_cell_if_empty("cell-1").unwrap();
+        let request = json!({"action":"execute_cell", "cell_id":"cell-1"});
+        let first = host
+            .handle_execute_cell(&request, "peer", "user:dev:alice/client:a")
+            .unwrap();
+        let id = host.doc.get_execution_id("cell-1").unwrap();
+        let expected = json!({"result":"cell_queued", "cell_id":"cell-1", "execution_id":id});
+        assert_eq!(
+            serde_json::to_value(&first.execution_response).unwrap(),
+            expected
+        );
+        let retry = host
+            .handle_execute_cell(&request, "peer", "user:dev:alice/client:a")
+            .unwrap();
+        assert!(!retry.changed);
+        assert_eq!(retry.execution_response, first.execution_response);
+        assert_eq!(host.runtime_queue_depth(), 1);
+        let invalid = json!({"action":"execute_cell", "cell_id":"missing"});
+        assert!(host
+            .handle_execute_cell(&invalid, "peer", "user:dev:alice/client:a")
+            .is_err());
+    }
+
+    #[test]
+    fn run_all_receipt_matches_persisted_queue() {
+        let mut host = RoomHostEngine::create_empty("receipt", "system/host").unwrap();
+        let empty = host
+            .handle_run_all_cells(&json!({}), "peer", "user:dev:alice/client:a")
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(empty.execution_response).unwrap(),
+            json!({"result":"all_cells_queued","queued":[]})
+        );
+        host.seed_initial_code_cell_if_empty("cell-1").unwrap();
+        let result = host
+            .handle_run_all_cells(&json!({}), "peer", "user:dev:alice/client:a")
+            .unwrap();
+        let id = host.doc.get_execution_id("cell-1").unwrap();
+        assert_eq!(
+            serde_json::to_value(result.execution_response).unwrap(),
+            json!({"result":"all_cells_queued","queued":[{"cell_id":"cell-1","execution_id":id}]})
+        );
     }
 
     #[test]
