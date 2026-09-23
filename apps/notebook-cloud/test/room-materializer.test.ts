@@ -1793,6 +1793,33 @@ describe("RoomMaterializer", () => {
     assert.deepEqual(again.outbound, []);
   });
 
+  it("does not replace explicit compute with a newer automatic selection", async () => {
+    const materializer = new RoomMaterializer("demo", fakeState(), {} as Env);
+    const selected = {
+      workstation_id: "explicit",
+      display_name: "My compute",
+      provider: "runtime_peer",
+      default_environment_label: "Python",
+      environment_policy: "runtime_peer",
+      status: "ready",
+      updated_at: "2026-09-23T00:00:00.000Z",
+    };
+    await materializer.setWorkstationAttachment(selected);
+    const before = await materializer.getWorkstationAttachment();
+    const result = await materializer.setWorkstationAttachment(
+      {
+        ...selected,
+        workstation_id: "celld-preview-python",
+        status: "idle",
+        updated_at: "2026-09-24T00:00:00.000Z",
+      },
+      { onlyIfAbsent: true },
+    );
+    assert.equal(result.changed, false);
+    assert.equal(result.ignored_stale, true);
+    assert.deepEqual(await materializer.getWorkstationAttachment(), before);
+  });
+
   it("passes through ignored stale workstation attachment publishes", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);

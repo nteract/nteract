@@ -120,10 +120,23 @@ export class RoomMaterializer {
   /// host owns the notebook-visible selected-compute projection.
   async setWorkstationAttachment(
     attachment: WorkstationAttachmentState | null,
+    options: { onlyIfAbsent?: boolean } = {},
   ): Promise<RoomHostFrameResult> {
-    return this.withHost((host) =>
-      normalizeResult(host.set_workstation_attachment_json(JSON.stringify(attachment))),
-    );
+    return this.withHost((host) => {
+      if (
+        options.onlyIfAbsent &&
+        normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json())
+      ) {
+        return {
+          changed: false,
+          ignored_stale: true,
+          notebook_changed: false,
+          runtime_state_changed: false,
+          outbound: [],
+        };
+      }
+      return normalizeResult(host.set_workstation_attachment_json(JSON.stringify(attachment)));
+    });
   }
 
   /** Fence managed lifecycle changes atomically with the room's selected session. */

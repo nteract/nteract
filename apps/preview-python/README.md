@@ -93,3 +93,11 @@ restart, reconnect, and interrupt/replacement. Fixtures remain in local storage;
 stop/restart the local fleet between repeated runs to release its bounded
 in-memory compute pool.
 Its timings are single browser observations, not latency distributions or RSS.
+
+When an owner opens a notebook with no selected compute, the celld room selects
+the managed default as idle. Running the first synced code cell allocates its
+interpreter; opening the notebook alone does not allocate a session. Existing
+notebook selections and other default workstations are preserved. Editors and
+viewers cannot trigger this selection or execute. The browser smoke uses this
+first-run path by default; set `NOTEBOOK_CLOUD_PYTHON_EXPLICIT_ATTACH=1` to
+exercise the separate Start compute path.

@@ -17,7 +17,11 @@ import {
 } from "./compute-session-index.ts";
 import { identityDisplayLabel } from "./display-label.ts";
 import { ManagedPythonRoom } from "./managed-python-room.ts";
-import { managedPythonStub, MANAGED_PYTHON_WORKSTATION } from "./managed-python.ts";
+import {
+  ensureManagedPythonWorkstation,
+  managedPythonStub,
+  MANAGED_PYTHON_WORKSTATION,
+} from "./managed-python.ts";
 import {
   allowsBlobUpload,
   allowsExecutionRequestSubmit,
@@ -57,6 +61,7 @@ import {
 import {
   createWorkstationAttachJob,
   getNotebookRow,
+  getDefaultWorkstationId,
   getWorkstationRow,
   grantNotebookAclRow,
   roomSummaryKey,
@@ -1440,6 +1445,12 @@ export class NotebookRoom {
   private async syncPeerFromRoomHost(notebookId: string, peer: Peer): Promise<void> {
     const startedAt = Date.now();
     try {
+      await this.selectManagedPythonForOwner(notebookId, peer).catch((error) => {
+        cloudLog("warn", "managed_python.selection_failed", {
+          notebook_id: notebookId,
+          error: String(error),
+        });
+      });
       const result = await this.materializerFor(notebookId).syncPeer(peer);
       cloudLog("debug", "room.peer_sync.completed", {
         notebook_id: notebookId,
@@ -1896,6 +1907,42 @@ export class NotebookRoom {
     return selected;
   }
 
+  /** Select an idle target for a new owner notebook; allocation waits for execution. */
+  private async selectManagedPythonForOwner(notebookId: string, peer: Peer): Promise<void> {
+    if (
+      peer.identity.scope !== "owner" ||
+      !managedPythonStub(this.env) ||
+      !this.env.DB ||
+      this.hasRuntimePeer()
+    )
+      return;
+    const materializer = this.materializerFor(notebookId);
+    if (await materializer.getWorkstationAttachment()) return;
+    const notebook = await getNotebookRow(this.env, notebookId);
+    if (!notebook || notebook.owner_principal !== peer.identity.principal) return;
+    const workstation = await ensureManagedPythonWorkstation(this.env, notebook.owner_principal);
+    if (
+      !workstation ||
+      (await getDefaultWorkstationId(this.env, notebook.owner_principal)) !==
+        MANAGED_PYTHON_WORKSTATION
+    )
+      return;
+    const attachment = {
+      ...projectNotebookWorkstationAttachmentFromClaim({
+        workstation: workstationAttachmentTargetFromRow(workstation),
+        claim: { status: "completed", updatedAt: new Date().toISOString() },
+      }),
+      status: "idle",
+      status_message: "Python starts when you run a cell.",
+    };
+    const result = await materializer.setWorkstationAttachment(attachment, { onlyIfAbsent: true });
+    if (result.changed) {
+      this.cacheSelectedRuntimePeerSession(notebookId, attachment);
+      this.deliverRoomHostFrames(notebookId, result);
+      this.scheduleRoomHostCheckpoint(notebookId, materializer, "managed_python_selected");
+    }
+  }
+
   private async ensureRuntimeForHostedExecution(
     notebookId: string,
     action: HostedExecutionRequestAction,
@@ -2081,7 +2128,10 @@ export class NotebookRoom {
     }
     const ownerPrincipal = notebook.owner_principal;
     const workstationId = attachment.workstation_id.trim();
-    const workstation = await getWorkstationRow(this.env, ownerPrincipal, workstationId);
+    const workstation =
+      workstationId === MANAGED_PYTHON_WORKSTATION
+        ? await ensureManagedPythonWorkstation(this.env, ownerPrincipal)
+        : await getWorkstationRow(this.env, ownerPrincipal, workstationId);
     if (!workstation || !(await this.workstationCanResumeExecution(ownerPrincipal, workstation))) {
       return false;
     }

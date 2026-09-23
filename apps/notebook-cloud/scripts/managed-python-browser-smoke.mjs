@@ -40,12 +40,18 @@ try {
   }
   const owner = await client("owner");
   ownerPage = owner;
-  await owner.getByRole("button", { name: "Start compute", exact: true }).click();
-  measurements.attachClickedMs = performance.now() - started;
-  await expect(owner.getByRole("button", { name: "Restart kernel", exact: true })).toBeVisible({
-    timeout: 60000,
-  });
-  measurements.readyMs = performance.now() - started;
+  const explicitAttach = process.env.NOTEBOOK_CLOUD_PYTHON_EXPLICIT_ATTACH === "1";
+  if (explicitAttach) {
+    await owner.getByRole("button", { name: "Start compute", exact: true }).click();
+    measurements.attachClickedMs = performance.now() - started;
+    await expect(owner.getByRole("button", { name: "Restart kernel", exact: true })).toBeVisible({
+      timeout: 60000,
+    });
+    measurements.readyMs = performance.now() - started;
+  } else {
+    await expect(owner.getByTestId("execute-button").first()).toBeEnabled();
+    await expect(owner.getByRole("button", { name: "Restart kernel", exact: true })).toHaveCount(0);
+  }
   async function execute(source, expected) {
     console.error(`Checking: ${expected}`);
     const editor = owner.locator(".cm-content").first();
@@ -61,6 +67,7 @@ try {
       .poll(() => editor.evaluate((node) => node.cmTile.view.state.doc.toString()))
       .toBe(source);
     // The UI execution path flushes the live document before requesting by cell_id.
+    measurements.firstRunRequestedMs ??= performance.now() - started;
     await owner.getByTestId("execute-button").first().click();
     await expect(owner.getByText(expected, { exact: true })).toBeVisible({ timeout: 60000 });
     await expect(owner.getByTestId("execute-button").first()).toHaveAttribute(
@@ -139,7 +146,7 @@ try {
         notebook: notebook.viewer_url,
         measurements,
         checks: [
-          "first_attach_without_reconnect",
+          explicitAttach ? "first_attach_without_reconnect" : "first_run_allocates_without_attach",
           "persistent_variables",
           "viewer_convergence",
           "viewer_cannot_execute",
