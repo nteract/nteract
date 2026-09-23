@@ -1,3 +1,4 @@
+import { PROVIDER_ORPHAN_IDLE_MS } from "./lifecycle-policy.js";
 import { SessionPool } from "./session-pool.js";
 import { createCelldRuntime } from "./celld-runtime.js";
 import { createProviderService } from "./provider-service.js";
@@ -33,12 +34,18 @@ export class PreviewPythonSessions {
       },
       maxSessions: 4,
       warmCount: 1,
+      idleMs: PROVIDER_ORPHAN_IDLE_MS,
     });
     this.service = createProviderService(this.pool);
   }
   async fetch(request) {
     // Alarms are only lifecycle housekeeping; no notebook code is replayed.
     await ensureHousekeepingAlarm(this.state.storage);
+    if (request.method === "GET" && new URL(request.url).pathname === "/health") {
+      // Discovery prepares one clean interpreter without allocating a tenant
+      // session. Initialization is retained after this fast response returns.
+      this.state.waitUntil(this.pool.prewarm().catch(() => undefined));
+    }
     return this.service.fetch(request);
   }
   async alarm() {

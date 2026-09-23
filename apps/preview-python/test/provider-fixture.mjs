@@ -34,6 +34,7 @@ export async function startProviderFixture() {
       contents: `import publicWorker, { PreviewPythonSessions as Sessions } from './provider.js'; export { PackageAssets } from './provider.js';
       export class PreviewPythonSessions extends Sessions {
         async fetch(request) {
+          if(new URL(request.url).pathname === '/probe') return Response.json({ok: true});
           if(new URL(request.url).pathname === '/prewarm') return Response.json(await this.pool.prewarm());
           return super.fetch(request);
         }

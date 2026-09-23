@@ -83,7 +83,7 @@ for (let trial = 0; trial < trials; trial++) {
         interpreterStartupMs: info.info.startupMs,
       };
     }
-    await request("/health");
+    await request("/probe");
     if (trial === 0)
       memory.push({
         phase: "provider_without_interpreters",

@@ -137,3 +137,9 @@ sessions were terminated, RSS remained 1218 MiB in this immediate sample.
 Disposal releases admission capacity but does not promise immediate RSS return
 to the operating system. This scientific package set therefore needs hundreds
 of MiB per additional ready interpreter, even though warm execution is fast.
+
+Authenticated discovery starts preparing one clean interpreter in the background;
+it does not allocate a notebook session. The room transitions idle compute after
+30 minutes. The provider's orphan-session sweep waits 35 minutes, leaving time
+for the room to publish idle state and terminate normally. This fallback bounds
+orphan retention if room cleanup fails; discovery polling does not postpone it.

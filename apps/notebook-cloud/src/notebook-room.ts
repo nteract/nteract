@@ -16,6 +16,7 @@ import {
   type WorkstationLeaseRecord,
 } from "./compute-session-index.ts";
 import { identityDisplayLabel } from "./display-label.ts";
+import { CLOUD_RUNTIME_IDLE_MS } from "../../preview-python/src/lifecycle-policy.js";
 import { ManagedPythonRoom } from "./managed-python-room.ts";
 import {
   ensureManagedPythonWorkstation,
@@ -163,7 +164,7 @@ interface PendingRuntimePeerResponse {
 /// kernel that is about to come back: if a `runtime_peer` rejoins inside the
 /// window the alarm is disarmed.
 const RUNTIME_PEER_GONE_GRACE_MS = 30_000;
-export const RUNTIME_IDLE_TTL_MS = 30 * 60_000;
+export const RUNTIME_IDLE_TTL_MS = CLOUD_RUNTIME_IDLE_MS;
 const ROOM_SUMMARY_REFRESH_MS = 60_000;
 const MAX_CONSECUTIVE_REJECTED_FRAMES = 8;
 const REJECTED_FRAME_POLICY_CLOSE_CODE = 1008;
