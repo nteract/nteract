@@ -82,7 +82,26 @@ try {
       window.WebSocket = class extends Original {
         constructor(...args) {
           super(...args);
+          this.heldNotebookSync = [];
           window.__smokeRoomSockets.push(this);
+        }
+        send(data) {
+          const bytes =
+            data instanceof ArrayBuffer
+              ? new Uint8Array(data)
+              : ArrayBuffer.isView(data)
+                ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+                : null;
+          if (window.__smokeHoldNotebookSync && bytes?.[0] === 0) {
+            this.heldNotebookSync.push(data);
+            return;
+          }
+          super.send(data);
+          if (window.__smokeHoldNotebookSync && bytes?.[0] === 1) {
+            window.__smokeHoldNotebookSync = false;
+            window.__smokeReorderedSyncFrames = this.heldNotebookSync.length;
+            for (const frame of this.heldNotebookSync.splice(0)) super.send(frame);
+          }
         }
       };
     });
@@ -141,7 +160,13 @@ try {
     "managed first output 42",
   );
   measurements.firstOutputMs = performance.now() - started;
+  // Deliberately put execution ahead of the edit's sync frame on the same
+  // socket. The room must keep reading while its causal fence waits.
+  await owner.evaluate(() => {
+    window.__smokeHoldNotebookSync = true;
+  });
   await execute("print('managed retained value', persisted)", "managed retained value 41");
+  expect(await owner.evaluate(() => window.__smokeReorderedSyncFrames)).toBeGreaterThan(0);
   const viewer = await client("viewer");
   await expect(viewer.getByText("managed retained value 41", { exact: true })).toBeVisible({
     timeout: 15000,
@@ -285,6 +310,7 @@ try {
           "concurrent_blob_upload_preserves_first_writer_metadata",
           explicitAttach ? "first_attach_without_reconnect" : "first_run_allocates_without_attach",
           "persistent_variables",
+          "execution_waits_for_later_sync_on_same_socket",
           "viewer_convergence",
           "distinct_viewer_and_editor_converge",
           "viewer_and_editor_server_reject_execution_and_attachment",

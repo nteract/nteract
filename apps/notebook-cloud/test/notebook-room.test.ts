@@ -44,6 +44,81 @@ before(async () => {
 });
 
 describe("NotebookRoom presence rewrite", () => {
+  it("lets the next socket sync satisfy a waiting execution request", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    await state.drain();
+    const harness = roomHarness(room);
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+      ),
+      connectedAt: new Date().toISOString(),
+      consecutiveRejectedFrames: 0,
+      workstation: null,
+    };
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: peer.id,
+      identity: peer.identity,
+      connectedAt: new Date().toISOString(),
+    });
+    harness.peers.set(peer.id, peer);
+    let releaseHeads!: (present: boolean) => void;
+    const headsArrived = new Promise<boolean>((resolve) => {
+      releaseHeads = resolve;
+    });
+    let executed = false;
+    harness.materializers.set("demo", {
+      waitForNotebookHeads: () => headsArrived,
+      receiveFrame: async (_peer: unknown, frame: { type: number }) => {
+        if (frame.type === FrameType.AUTOMERGE_SYNC) releaseHeads(true);
+        if (frame.type === FrameType.REQUEST) executed = true;
+        return noopMaterializedResult();
+      },
+    } as never);
+    Object.assign(room, { ensureRuntimeForHostedExecution: async () => true });
+    const request = encodeTypedFrame(
+      FrameType.REQUEST,
+      new TextEncoder().encode(
+        JSON.stringify({
+          id: "causal",
+          action: "execute_cell",
+          cell_id: "code",
+          required_heads: ["a".repeat(64)],
+        }),
+      ),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const returned = await Promise.race([
+        room.webSocketMessage(peer.socket, request).then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), 100);
+        }),
+      ]);
+      assert.equal(
+        returned,
+        true,
+        "the socket reader must be allowed to receive the required sync",
+      );
+      assert.equal(executed, false);
+      await room.webSocketMessage(
+        peer.socket,
+        encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([0])),
+      );
+      await state.drain();
+      assert.equal(executed, true);
+    } finally {
+      clearTimeout(timer);
+      releaseHeads(false);
+      await state.drain();
+    }
+  });
+
   it("does not broadcast an in-flight cursor update after announcing the peer's departure", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);

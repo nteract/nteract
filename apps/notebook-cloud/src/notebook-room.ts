@@ -767,6 +767,19 @@ export class NotebookRoom {
     }
 
     await this.restoredPeersReady;
+    // celld reads the next socket message only after this handler returns.
+    // Requests may wait for causal edits arriving on that same socket; keep
+    // their work alive without holding up subsequent Automerge sync messages.
+    const bytes =
+      typeof message === "string"
+        ? null
+        : message instanceof ArrayBuffer
+          ? new Uint8Array(message)
+          : new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+    if (bytes?.[0] === FrameType.REQUEST) {
+      this.state.waitUntil(this.handleMessage(attachment.notebookId, peer, message));
+      return;
+    }
     await this.handleMessage(attachment.notebookId, peer, message);
   }
 
