@@ -55,6 +55,7 @@ interface RoomPeer {
 export class RoomMaterializer {
   private hostReady: Promise<RoomHostHandle> | undefined;
   private operationQueue: Promise<void> = Promise.resolve();
+  private readonly notebookChangeWaiters = new Set<() => void>();
   private loadedPublishedRevisionId: string | null = null;
   private loadedPublishedNotebookHeads: string[] | null = null;
   private loadedPublishedRuntimeStateHeads: string[] | null = null;
@@ -83,6 +84,46 @@ export class RoomMaterializer {
     await this.withHost((host) => {
       host.remove_peer(peerId);
     });
+  }
+
+  /** Wait outside the host operation queue so incoming sync can satisfy the fence. */
+  async waitForNotebookHeads(heads: unknown, timeoutMs = 5_000): Promise<boolean> {
+    if (heads === undefined) return true;
+    if (
+      !Array.isArray(heads) ||
+      heads.length > 1024 ||
+      heads.some((head) => typeof head !== "string" || !/^[0-9a-f]{64}$/i.test(head))
+    ) {
+      throw new Error("Invalid required notebook heads");
+    }
+    if (this.notebookChangeWaiters.size >= 128)
+      throw new Error("Too many pending execution fences");
+    let timer: ReturnType<typeof setTimeout>;
+    let expired = false;
+    const timeout = new Promise<false>((resolve) => {
+      timer = setTimeout(() => {
+        expired = true;
+        resolve(false);
+      }, timeoutMs);
+    });
+    try {
+      while (true) {
+        if (expired) return false;
+        let notify!: () => void;
+        const changed = new Promise<true>((resolve) => {
+          notify = () => resolve(true);
+        });
+        this.notebookChangeWaiters.add(notify);
+        try {
+          if (await this.withHost((host) => host.contains_notebook_heads(heads))) return true;
+          if (!(await Promise.race([changed, timeout]))) return false;
+        } finally {
+          this.notebookChangeWaiters.delete(notify);
+        }
+      }
+    } finally {
+      clearTimeout(timer!);
+    }
   }
 
   /// Reconcile the authoritative RuntimeStateDoc after the room's runtime_peer
@@ -217,8 +258,8 @@ export class RoomMaterializer {
   ): Promise<RoomHostFrameResult> {
     const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);
-    return this.withHost((host) =>
-      normalizeResult(
+    return this.withHost((host) => {
+      const result = normalizeResult(
         host.receive_peer_frame(
           peer.id,
           peer.identity.principal,
@@ -227,8 +268,12 @@ export class RoomMaterializer {
           canWriteAllNotebookChanges,
           encoded,
         ),
-      ),
-    );
+      );
+      if (result.notebook_changed) {
+        for (const notify of this.notebookChangeWaiters) notify();
+      }
+      return result;
+    });
   }
 
   async checkpoint(): Promise<void> {

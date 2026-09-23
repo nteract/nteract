@@ -23,6 +23,8 @@ const browser = await chromium.launch({ headless: true });
 const started = performance.now();
 const measurements = {};
 let ownerPage;
+const pendingRequests = new Map();
+const browserErrors = [];
 try {
   async function client(scope) {
     const clientUser = scope === "owner" ? user : `${user}-${scope}`;
@@ -61,6 +63,13 @@ try {
       };
     });
     const page = await context.newPage();
+    page.on("request", (request) => pendingRequests.set(request, performance.now()));
+    page.on("requestfinished", (request) => pendingRequests.delete(request));
+    page.on("requestfailed", (request) => {
+      pendingRequests.delete(request);
+      browserErrors.push({ scope, url: request.url(), failure: request.failure() });
+    });
+    page.on("pageerror", (error) => browserErrors.push({ scope, error: String(error) }));
     page.setDefaultTimeout(60000);
     await page.goto(`${notebook.viewer_url}?mode=${scope === "viewer" ? "view" : "edit"}`);
     return page;
@@ -266,6 +275,19 @@ try {
     ),
   );
 } catch (error) {
+  console.error(
+    JSON.stringify(
+      {
+        browserErrors,
+        pendingRequests: Array.from(pendingRequests, ([request, since]) => ({
+          url: request.url(),
+          ageMs: performance.now() - since,
+        })),
+      },
+      null,
+      2,
+    ),
+  );
   if (ownerPage) console.error(await ownerPage.locator("body").innerText());
   throw error;
 } finally {

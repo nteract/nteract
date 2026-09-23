@@ -644,6 +644,36 @@ describe("RoomHostHandle", () => {
 });
 
 describe("RoomMaterializer", () => {
+  it("waits for causal notebook edits without blocking the sync that supplies them", async () => {
+    const materializer = new RoomMaterializer("causal", fakeState(), {} as Env);
+    const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:causal");
+    const peer = {
+      id: "owner",
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/causal/sync?user=alice&operator=desktop:causal&scope=owner",
+        ),
+      ),
+    };
+    try {
+      await syncMaterializerWithClient(materializer, peer, owner);
+      const cell = JSON.parse(owner.get_cells_json())[0];
+      owner.update_source(cell.id, "print('latest source')");
+      const heads = owner.get_heads_hex();
+      assert.equal(await materializer.waitForNotebookHeads(heads, 1), false);
+      const waiting = materializer.waitForNotebookHeads(heads);
+      const message = owner.flush_local_changes();
+      assert.ok(message);
+      await materializer.receiveFrame(peer, { type: FrameType.AUTOMERGE_SYNC, payload: message });
+      assert.equal(await waiting, true);
+      assert.equal(await materializer.waitForNotebookHeads(heads, 1), true);
+      await assert.rejects(materializer.waitForNotebookHeads(["invalid"]), /Invalid required/);
+      await assert.rejects(materializer.waitForNotebookHeads("invalid"), /Invalid required/);
+    } finally {
+      owner.free();
+    }
+  });
+
   it("seeds a brand-new hosted room with one initial code cell", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);

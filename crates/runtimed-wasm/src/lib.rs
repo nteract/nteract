@@ -829,6 +829,12 @@ impl RoomHostHandle {
         self.engine.notebook_heads_hex()
     }
 
+    pub fn contains_notebook_heads(&mut self, heads: Vec<String>) -> Result<bool, JsError> {
+        self.engine
+            .contains_notebook_heads(&heads)
+            .map_err(room_host_js_error)
+    }
+
     pub fn get_runtime_state_heads_hex(&mut self) -> Vec<String> {
         self.engine.runtime_state_heads_hex()
     }

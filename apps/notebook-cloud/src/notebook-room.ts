@@ -148,6 +148,7 @@ type UnsupportedHostedRuntimeRequestAction =
 interface RequestEnvelopeMetadata {
   id: string | null;
   action: string | null;
+  requiredHeads?: unknown;
 }
 
 interface PendingRuntimePeerResponse {
@@ -219,7 +220,7 @@ function requestEnvelopeMetadataFromPayload(payload: Uint8Array): RequestEnvelop
     const record = value as Record<string, unknown>;
     const id = typeof record.id === "string" ? record.id : null;
     const action = typeof record.action === "string" ? record.action : null;
-    return { id, action };
+    return { id, action, requiredHeads: record.required_heads };
   } catch {
     return { id: null, action: null };
   }
@@ -1297,6 +1298,20 @@ export class NotebookRoom {
         ? hostedExecutionRequestAction(requestMetadata?.action ?? null)
         : null;
     if (hostedExecutionAction) {
+      if (requestMetadata?.requiredHeads !== undefined) {
+        try {
+          const synced = await this.materializerFor(notebookId).waitForNotebookHeads(
+            requestMetadata?.requiredHeads,
+          );
+          if (!synced)
+            throw new Error("required notebook heads have not synced before execution timeout");
+        } catch (error) {
+          this.rejectFrame(notebookId, peer, normalizedFrame.type, String(error), {
+            countsTowardStreak: false,
+          });
+          return;
+        }
+      }
       const runtimePeer = await this.activeRuntimePeer(notebookId, peer.id);
       if (
         !runtimePeer &&
