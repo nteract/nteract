@@ -15,6 +15,7 @@ const response = await fetch(fixtureUrl, {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ title: "Managed Python browser smoke" }),
+  signal: AbortSignal.timeout(30_000),
 });
 if (!response.ok) throw new Error(`Create notebook: ${response.status} ${await response.text()}`);
 const notebook = await response.json();
@@ -98,6 +99,39 @@ try {
     timeout: 15000,
   });
   await execute("print('managed reconnect', 6 * 7)", "managed reconnect 42");
+  await owner
+    .locator(".cm-content")
+    .first()
+    .evaluate((node) => {
+      const view = node.cmTile.view;
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: view.state.doc.length,
+          insert: "import asyncio\ninterrupted_value = 123\nawait asyncio.sleep(60)",
+        },
+      });
+      view.focus();
+    });
+  await owner.getByTestId("execute-button").first().click();
+  await expect(owner.getByTestId("execute-button").first()).toHaveAttribute(
+    "data-execution-state",
+    "running",
+  );
+  const interruptStarted = performance.now();
+  await owner.getByRole("button", { name: "Interrupt kernel", exact: true }).click();
+  await expect(owner.getByRole("button", { name: "Start compute", exact: true })).toBeVisible({
+    timeout: 10000,
+  });
+  measurements.interruptToDetachedMs = performance.now() - interruptStarted;
+  await owner.getByRole("button", { name: "Start compute", exact: true }).click();
+  await expect(owner.getByRole("button", { name: "Restart kernel", exact: true })).toBeVisible({
+    timeout: 60000,
+  });
+  await execute(
+    "print('managed interrupt replacement', 'interrupted_value' in globals())",
+    "managed interrupt replacement False",
+  );
   console.log(
     JSON.stringify(
       {
@@ -111,6 +145,7 @@ try {
           "viewer_cannot_execute",
           "restart_clears_variables",
           "owner_reconnect",
+          "interrupt_detaches_and_replacement_is_clean",
         ],
       },
       null,

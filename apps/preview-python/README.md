@@ -52,6 +52,9 @@ storage. Python-side limits alone are not a security boundary.
 
 Execution has independent CPU and wall deadlines. Expiration destroys the
 interpreter, so variables are lost; it is not a resumable Python interrupt.
+The cloud Interrupt action uses the same destructive session termination and
+fences its runtime peer immediately. Start compute creates a clean replacement.
+Only notebook owners can interrupt, and unconfirmed cleanup returns an error.
 The current celld loader does not forward fetch cancellation and registry
 disposal waits for outstanding calls. The adapter therefore invokes a private
 termination endpoint with a tiny CPU budget to trigger celld's isolate
@@ -86,6 +89,7 @@ NOTEBOOK_CLOUD_MANAGED_PYTHON_ORIGIN=http://127.0.0.1:9876 \
 
 The smoke requires loopback dev authentication. It creates a notebook fixture
 and tests first attachment, persistent variables, a viewing collaborator,
-restart, and reconnect. Fixtures remain in local storage; stop/restart the local
-fleet between repeated runs to release its bounded in-memory compute pool.
+restart, reconnect, and interrupt/replacement. Fixtures remain in local storage;
+stop/restart the local fleet between repeated runs to release its bounded
+in-memory compute pool.
 Its timings are single browser observations, not latency distributions or RSS.

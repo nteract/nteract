@@ -1145,6 +1145,42 @@ export class NotebookRoom {
       requestMetadata?.action ?? null,
     );
     if (forwardedRequestAction) {
+      const managed = this.managedPython.get(notebookId);
+      if (forwardedRequestAction === "interrupt_execution" && managed) {
+        this.sendControl(notebookId, peer, {
+          type: "cloud_frame_accepted",
+          notebook_id: notebookId,
+          peer_id: peer.id,
+          frame_type: normalizedFrame.type,
+          byte_length: normalizedFrame.payload.byteLength,
+          timestamp: receivedAt,
+        });
+        let response: { result: string; error?: string };
+        try {
+          await this.failManagedPython(
+            notebookId,
+            managed.runtime,
+            new Error("Python interrupted; restart compute to continue. Variables were discarded."),
+            true,
+          );
+          response = { result: "interrupt_sent" };
+        } catch (error) {
+          response = {
+            result: "error",
+            error: `Python termination was not confirmed: ${String(error)}`,
+          };
+        }
+        this.sendFrameToPeer(
+          notebookId,
+          peer,
+          encodeJsonFrame(FrameType.RESPONSE, {
+            id: requestMetadata?.id,
+            ...response,
+          }),
+        );
+        this.resetRejectedFrameStreak(peer);
+        return;
+      }
       const forwardedRuntimePeerId = await this.forwardRequestToActiveRuntimePeer(
         notebookId,
         normalizedFrame,
@@ -1890,7 +1926,33 @@ export class NotebookRoom {
   private async startManagedPython(notebookId: string, sessionId: string): Promise<void> {
     const next = this.managedPythonStartup
       .catch(() => undefined)
-      .then(() => this.startManagedPythonNow(notebookId, sessionId));
+      .then(() => this.startManagedPythonNow(notebookId, sessionId))
+      .catch(async (error) => {
+        // Construction and catalog lookup can fail before a runtime entry
+        // exists. Never leave the selected attachment connecting forever.
+        const materializer = this.materializerFor(notebookId);
+        const selected = await materializer.getWorkstationAttachment();
+        if (selected?.runtime_session_id === sessionId && selected.status !== "error") {
+          const reason = String(error).slice(0, 1000);
+          const result = await materializer.transitionManagedPythonSession(
+            sessionId,
+            "error",
+            reason,
+          );
+          this.deliverRoomHostFrames(notebookId, result);
+          await this.checkpointRoomHost(notebookId, materializer, "managed_python_start_failed");
+          const notebook = await getNotebookRow(this.env, notebookId);
+          if (notebook)
+            await updateWorkstationAttachJobStatus(this.env, {
+              ownerPrincipal: notebook.owner_principal,
+              workstationId: MANAGED_PYTHON_WORKSTATION,
+              jobId: sessionId,
+              status: "failed",
+              errorMessage: reason,
+            });
+        }
+        throw error;
+      });
     this.managedPythonStartup = next;
     return next;
   }
@@ -1965,6 +2027,7 @@ export class NotebookRoom {
     notebookId: string,
     runtime: ManagedPythonRoom,
     error: unknown,
+    reportCleanupFailure = false,
   ): Promise<void> {
     const entry = this.managedPython.get(notebookId);
     if (entry?.runtime !== runtime) return;
@@ -1972,7 +2035,9 @@ export class NotebookRoom {
     this.broadcastManagedPythonPresence(notebookId, runtime, false);
     // Invalidate synchronously before awaiting persistence. Any late output
     // must lose its authority before a replacement can attach.
+    let cleanupFailure: unknown;
     const closing = runtime.close().catch((closeError) => {
+      cleanupFailure = closeError;
       cloudLog("warn", "managed_python.close_failed", {
         notebook_id: notebookId,
         error: String(closeError),
@@ -2001,6 +2066,7 @@ export class NotebookRoom {
       await this.publishCurrentComputeSessionSummary(notebookId);
     } finally {
       await closing;
+      if (reportCleanupFailure && cleanupFailure) throw cleanupFailure;
     }
   }
 

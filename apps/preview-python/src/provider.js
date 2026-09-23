@@ -24,7 +24,13 @@ export class PreviewPythonSessions {
   constructor(state, env) {
     this.state = state;
     this.pool = new SessionPool({
-      create: () => createCelldRuntime(env),
+      create: () => {
+        const pending = createCelldRuntime(env);
+        // A clean replacement starts in the background after allocation.
+        // Keep its I/O alive after the request that triggered warming ends.
+        state.waitUntil(pending.catch(() => undefined));
+        return pending;
+      },
       maxSessions: 4,
       warmCount: 1,
     });

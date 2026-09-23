@@ -92,6 +92,30 @@ test(
       execution: { execution_id: "e3", source: "'saved' in globals()" },
     });
     assert.equal(fresh.outputs.at(-1).data["text/plain"], "False");
+    const executing = fetch(server.url + "/execute", {
+      method: "POST",
+      body: JSON.stringify({
+        ...identity,
+        sessionId: "2",
+        execution: {
+          execution_id: "interrupted",
+          source: "import asyncio\nawait asyncio.sleep(60)",
+        },
+      }),
+      signal: AbortSignal.timeout(40000),
+    });
+    // Let the request enter Python before destroying the interpreter.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await post("/close", { ...identity, sessionId: "2" });
+    assert.equal((await executing).status, 409);
+    const afterInterrupt = await post("/open", { ...identity, sessionId: "3" });
+    assert.notEqual(afterInterrupt.info.instanceId, replacement.info.instanceId);
+    const continued = await post("/execute", {
+      ...identity,
+      sessionId: "3",
+      execution: { execution_id: "after-interrupt", source: "40 + 2" },
+    });
+    assert.equal(continued.outputs.at(-1).data["text/plain"], "42");
+    await post("/close", { ...identity, sessionId: "3" });
   },
 );
