@@ -137,7 +137,7 @@ reusable workflow, controller trust installation, then the caller pin. If the
 comment is missing or stale, inspect the **Update preview comment** job; a comment
 outage does not change whether the preview deployment itself succeeded.
 
-## Main deployment preparation
+## Main deployment
 
 The `Build shared UI artifacts` job exports a cloud `preview-bundle` on every
 push to `main`, reusing the runtime, sift, and renderer artifacts it already
@@ -153,11 +153,14 @@ job has repository/action read permissions and GitHub OIDC permission, and uses
 the fixed `runtimed-main` environment and concurrency group without cancelling
 an accepted update. It never downloads or executes the application artifact.
 
-The reusable workflow alone does not activate main deployment. Install its
-reviewed revision in the controller's main trust policy before publishing a
-`main-preview.yml` caller pinned to that revision for successful `Build`
-completion. This follows the same reviewed helper, reusable workflow,
-controller trust, and pinned caller sequence described above.
+The `main-preview.yml` caller listens for completed `Build` runs on `main` and
+calls reusable revision `4a3e012df05e10a738caf4242a1062a2d41d79ac` only after a
+successful push run. The entire Build workflow must pass. Scheduled runs,
+manual Build runs, PR builds, and failed builds do not request deployment.
+The caller passes no inputs or secrets and leaves concurrency to the reusable.
+The controller must trust that exact reusable revision before activation.
+Updates follow the same reviewed helper, reusable workflow, controller trust,
+and pinned caller sequence described above.
 
 Main authorization is separate from PR authorization. The helper requires a
 successful completed push-to-main Build, an active deployment workflow, eligible
@@ -170,7 +173,7 @@ digest and bundle manifest, and current main before publication. The helper
 never downloads or executes application artifacts. Existing PR previews and
 their authorization rules are unchanged.
 
-Main deployment will reuse its own persistent notebook storage and session
+Main deployment reuses its own persistent notebook storage and session
 secret at `https://main.runtimed.run`; it is not tied to a PR's closure. A failed
 or stale Build must leave the current deployment untouched. GitHub's dedicated
 deployment environment and the job summary identify the requested revision and
