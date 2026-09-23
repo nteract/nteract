@@ -136,3 +136,35 @@ Future updates follow the same publication sequence: reviewed helpers, reviewed
 reusable workflow, controller trust installation, then the caller pin. If the
 comment is missing or stale, inspect the **Update preview comment** job; a comment
 outage does not change whether the preview deployment itself succeeded.
+
+## Main deployment preparation
+
+The `Build shared UI artifacts` job exports a cloud `preview-bundle` on every
+push to `main`, reusing the runtime, sift, and renderer artifacts it already
+builds. It does not package this additional bundle for PR, scheduled, or manual
+Build runs. The build keeps repository-read permission and has no deployment
+identity token or infrastructure credentials. Exported runtime configuration is
+excluded by the same bundle format used for PR previews.
+
+The separate `send-main-deployment.mjs` helper is intended for a future pinned
+`main-preview-reusable.yml`, called without inputs by `main-preview.yml` on
+successful `Build` completion. This patch does not install either workflow or
+activate main deployment. Publish them through the same reviewed helper,
+reusable workflow, controller trust, and pinned caller sequence described above.
+
+Main authorization is separate from PR authorization. The helper requires a
+successful completed push-to-main Build, an active deployment workflow, eligible
+original and rerun actors for both runs, immutable repository IDs, the exact
+current main revision, and a unique artifact from the successful build job.
+The request keeps `buildRunId` and `buildRunAttempt` separate from the active
+deployment's `runId` and `runAttempt`; it has the fixed `main` target and no PR
+number. The controller independently checks these facts, the artifact archive
+digest and bundle manifest, and current main before publication. The helper
+never downloads or executes application artifacts. Existing PR previews and
+their authorization rules are unchanged.
+
+Main deployment will reuse its own persistent notebook storage and session
+secret at `https://main.runtimed.run`; it is not tied to a PR's closure. A failed
+or stale Build must leave the current deployment untouched. GitHub's dedicated
+deployment environment and the job summary identify the requested revision and
+link to the site; PR comment reporting is not used for this target.

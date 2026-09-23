@@ -5,11 +5,15 @@ on:
     paths:
       - .github/preview/**
       - .github/workflows/preview*.yml
+      - .github/workflows/main-preview*.yml
+      - .github/workflows/build.yml
   push:
     branches: [main]
     paths:
       - .github/preview/**
       - .github/workflows/preview*.yml
+      - .github/workflows/main-preview*.yml
+      - .github/workflows/build.yml
 
 permissions:
   contents: read

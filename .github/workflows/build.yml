@@ -480,15 +480,20 @@ jobs:
   build-ui:
     name: Build shared UI artifacts
     needs: [changes]
+    # Every main push produces a revision-bound cloud bundle, including docs-only
+    # commits. The later deployment workflow still requires the whole Build run.
     if: |
-      needs.changes.outputs.source_changed == 'true' && (
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (needs.changes.outputs.source_changed == 'true' && (
         github.event_name != 'pull_request' ||
         needs.changes.outputs.ci_changed == 'true' ||
         needs.changes.outputs.frontend_changed == 'true' ||
         contains(github.event.pull_request.labels.*.name, 'ci:full') ||
         contains(github.event.pull_request.labels.*.name, 'ci:frontend')
-      )
+      ))
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -513,6 +518,24 @@ jobs:
         run: |
           pnpm --dir apps/notebook build
           pnpm --dir apps/elements build
+
+      - name: Build and package main cloud deployment
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          pnpm --dir apps/notebook-cloud build:viewer
+          node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/main-preview-export"
+          node .github/preview/pack.mjs "$RUNNER_TEMP/main-preview-export" "$GITHUB_SHA" "$RUNNER_TEMP/preview.bundle.gz"
+
+      - name: Upload main cloud deployment bundle
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: preview-bundle
+          path: ${{ runner.temp }}/preview.bundle.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
 
       - name: Test and package notebook UI release bundle
         run: |
