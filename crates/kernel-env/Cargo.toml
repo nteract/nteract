@@ -16,6 +16,7 @@ runtime = [
     "dep:rattler",
     "dep:rattler_cache",
     "dep:rattler_conda_types",
+    "dep:rattler_networking",
     "dep:rattler_repodata_gateway",
     "dep:rattler_solve",
     "dep:rattler_virtual_packages",
@@ -43,6 +44,7 @@ kernel-launch = { path = "../kernel-launch", optional = true }
 rattler = { workspace = true, optional = true }
 rattler_cache = { workspace = true, optional = true }
 rattler_conda_types = { workspace = true, optional = true }
+rattler_networking = { workspace = true, optional = true }
 rattler_repodata_gateway = { workspace = true, optional = true }
 rattler_solve = { workspace = true, optional = true }
 rattler_virtual_packages = { workspace = true, optional = true }

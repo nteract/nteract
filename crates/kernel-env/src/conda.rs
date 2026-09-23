@@ -78,30 +78,6 @@ fn is_conda_base_package(dep: &str) -> bool {
     CONDA_BASE_PACKAGES.contains(&dep)
 }
 
-const CONDA_GIL_SELECTOR: &str = "python-gil";
-
-fn conda_python_requests_free_threading(python: &str) -> bool {
-    python
-        .split(|ch: char| {
-            ch == ','
-                || ch == '='
-                || ch == '<'
-                || ch == '>'
-                || ch == '!'
-                || ch == '~'
-                || ch.is_whitespace()
-        })
-        .filter(|part| !part.is_empty())
-        .any(|part| part.ends_with('t'))
-}
-
-fn should_enforce_gil_python(deps: &CondaDependencies) -> bool {
-    !deps
-        .python
-        .as_deref()
-        .is_some_and(conda_python_requests_free_threading)
-}
-
 /// Compute the unified env hash for a notebook. Used by the captured-deps
 /// reopen path from the unified env resolution design.
 ///
@@ -118,7 +94,7 @@ pub fn compute_unified_env_hash(deps: &CondaDependencies, env_id: &str) -> Strin
 
 /// Compute a stable cache key for the given dependencies.
 ///
-/// The hash includes sorted deps, sorted channels, python constraint,
+/// The hash includes sorted deps, ordered channels, python constraint,
 /// and env_id (for per-notebook isolation).
 pub fn compute_env_hash(deps: &CondaDependencies) -> String {
     let mut hasher = Sha256::new();
@@ -130,9 +106,7 @@ pub fn compute_env_hash(deps: &CondaDependencies) -> String {
         hasher.update(b"\n");
     }
 
-    let mut sorted_channels = deps.channels.clone();
-    sorted_channels.sort();
-    for channel in &sorted_channels {
+    for channel in &deps.channels {
         hasher.update(b"channel:");
         hasher.update(channel.as_bytes());
         hasher.update(b"\n");
@@ -143,9 +117,7 @@ pub fn compute_env_hash(deps: &CondaDependencies) -> String {
         hasher.update(py.as_bytes());
     }
 
-    if should_enforce_gil_python(deps) {
-        hasher.update(b"python-abi:gil\n");
-    }
+    hasher.update(b"python-abi:constraint-v2\n");
 
     if let Some(ref env_id) = deps.env_id {
         hasher.update(b"env_id:");
@@ -226,12 +198,19 @@ pub async fn prepare_environment_in(
         if let Some(lock) = crate::lock::LockFile::read_from(&env_path).await {
             // Build expected specs to match against the lock
             let expected_specs = build_spec_strings(deps);
-            let expected_channels = if deps.channels.is_empty() {
-                vec!["conda-forge".to_string()]
-            } else {
-                deps.channels.clone()
-            };
-            if lock.matches(&expected_specs, &expected_channels) {
+            let config = ChannelConfig::default_with_root_dir(cache_dir.to_path_buf());
+            let expected_channels =
+                parse_channels(&deps.channels, &config, crate::conda_solve_platform())?
+                    .iter()
+                    .map(|channel| channel.name().to_string())
+                    .collect::<Vec<_>>();
+            let (_, constraints) = crate::python::solve_specs(&expected_specs)?;
+            let constraints = constraints
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            if lock.matches(&expected_specs, &expected_channels) && lock.constraints == constraints
+            {
                 info!("Rebuilding conda env from lock file at {:?}", env_path);
                 tokio::fs::remove_dir_all(&env_path).await?;
                 tokio::fs::create_dir_all(&env_path).await?;
@@ -408,12 +387,19 @@ async fn prepare_environment_unified_inner(
     if unified_lock_rebuild_is_applicable(force_rebuild, env_path.exists(), python_path.exists()) {
         if let Some(lock) = crate::lock::LockFile::read_from(&env_path).await {
             let expected_specs = build_spec_strings(deps);
-            let expected_channels = if deps.channels.is_empty() {
-                vec!["conda-forge".to_string()]
-            } else {
-                deps.channels.clone()
-            };
-            if lock.matches(&expected_specs, &expected_channels) {
+            let config = ChannelConfig::default_with_root_dir(cache_dir.to_path_buf());
+            let expected_channels =
+                parse_channels(&deps.channels, &config, crate::conda_solve_platform())?
+                    .iter()
+                    .map(|channel| channel.name().to_string())
+                    .collect::<Vec<_>>();
+            let (_, constraints) = crate::python::solve_specs(&expected_specs)?;
+            let constraints = constraints
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            if lock.matches(&expected_specs, &expected_channels) && lock.constraints == constraints
+            {
                 info!("Rebuilding conda env from lock file at {:?}", env_path);
                 tokio::fs::remove_dir_all(&env_path).await?;
                 tokio::fs::create_dir_all(&env_path).await?;
@@ -510,35 +496,9 @@ async fn install_conda_env(
         },
     );
 
-    // Build specs
-    let match_spec_options = ParseMatchSpecOptions::strict();
-    let mut specs: Vec<MatchSpec> = Vec::new();
-
-    if let Some(ref py) = deps.python {
-        specs.push(MatchSpec::from_str(
-            &format_python_spec(py),
-            match_spec_options,
-        )?);
-    } else {
-        specs.push(MatchSpec::from_str("python>=3.13", match_spec_options)?);
-    }
-    if should_enforce_gil_python(deps) {
-        specs.push(MatchSpec::from_str(CONDA_GIL_SELECTOR, match_spec_options)?);
-    }
-
-    for package in CONDA_BASE_PACKAGES {
-        specs.push(MatchSpec::from_str(package, match_spec_options)?);
-    }
-
-    for dep in &deps.dependencies {
-        if !is_conda_base_package(dep) {
-            specs.push(MatchSpec::from_str(dep, match_spec_options)?);
-        }
-    }
-
-    // Capture spec strings for lock file using the same format as build_spec_strings()
-    // (raw input strings, not MatchSpec::to_string() which may normalize differently)
     let spec_strings_for_lock = build_spec_strings(deps);
+    let (specs, constraints) = crate::python::solve_specs(&spec_strings_for_lock)?;
+    let constraint_strings = constraints.iter().map(ToString::to_string).collect();
 
     // Rattler cache
     let rattler_cache_dir = default_cache_dir()
@@ -547,8 +507,7 @@ async fn install_conda_env(
         .map_err(|e| anyhow!("could not create rattler cache directory: {}", e))?;
 
     // HTTP client
-    let download_client = reqwest::Client::builder().build()?;
-    let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
+    let download_client = crate::channels::download_client()?;
 
     // Query repodata with offline-first strategy
     let platforms = vec![install_platform, Platform::NoArch];
@@ -580,6 +539,7 @@ async fn install_conda_env(
     let solver_task = SolverTask {
         virtual_packages,
         specs,
+        constraints,
         ..SolverTask::from_iter(&repo_data)
     };
 
@@ -593,7 +553,7 @@ async fn install_conda_env(
                     message: error_msg.clone(),
                 },
             );
-            return Err(anyhow!(error_msg));
+            return Err(anyhow!(e).context(error_msg));
         }
     };
     let required_packages = solver_result.records;
@@ -642,7 +602,7 @@ async fn install_conda_env(
                     message: error_msg.clone(),
                 },
             );
-            return Err(anyhow!(error_msg));
+            return Err(anyhow!(e).context(error_msg));
         }
     }
 
@@ -659,7 +619,8 @@ async fn install_conda_env(
     );
 
     // Write lock file for offline re-creation
-    let lock = crate::lock::LockFile::new(spec_strings_for_lock, channel_names, packages_for_lock);
+    let lock = crate::lock::LockFile::new(spec_strings_for_lock, channel_names, packages_for_lock)
+        .with_constraints(constraint_strings);
     crate::lock::try_write_lock(env_path, &lock).await;
 
     Ok(())
@@ -934,48 +895,21 @@ pub async fn sync_dependencies(
 
     let match_spec_options = ParseMatchSpecOptions::strict();
 
-    // Pin the installed Python version so the solver cannot upgrade or
-    // downgrade it. Without this, the solver treats Python as a soft
-    // preference (locked_packages) and can swap it out to satisfy new
-    // deps — producing site-packages for the wrong Python version.
-    // Also enforce `python-gil` to prevent switching to the
-    // free-threaded build. See: conda-sequential pinning bug.
-    let installed_python_version = detect_installed_python_version(&env.env_path);
+    let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
+    let installed_python = installed_packages
+        .iter()
+        .find(|record| record.repodata_record.package_record.name.as_normalized() == "python")
+        .context("Cannot sync conda environment without its installed Python record")?;
+    let python_record = &installed_python.repodata_record;
 
-    // Always include base runtime packages — the solver only returns packages
-    // needed to satisfy specs, and locked_packages are "preferred" not "required".
-    // Without these, the Installer will remove ipykernel etc from the env.
+    // Keep the exact interpreter, including its ABI and channel. A version-only
+    // pin can switch between regular and free-threaded builds. Requiring a
+    // selector metapackage instead breaks channels which don't publish it.
     let mut specs: Vec<MatchSpec> = CONDA_BASE_PACKAGES
         .iter()
         .map(|package| MatchSpec::from_str(package, match_spec_options))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-
-    if let Some(ref py_ver) = installed_python_version {
-        info!("Pinning Python to installed version: {}", py_ver);
-        specs.push(MatchSpec::from_str(
-            &format!("python={}", py_ver),
-            match_spec_options,
-        )?);
-        // Preserve the installed GIL/free-threaded selector. conda-meta
-        // stores "3.14.4" not "3.14t", so we can't infer from the version
-        // string. Instead, check if `python-freethreading` is installed:
-        // if so, keep `python-freethreading`; otherwise pin `python-gil`.
-        if has_freethreading_package(&env.env_path) {
-            info!("Free-threaded Python detected, keeping python-freethreading selector");
-            specs.push(MatchSpec::from_str(
-                "python-freethreading",
-                match_spec_options,
-            )?);
-        } else {
-            specs.push(MatchSpec::from_str(CONDA_GIL_SELECTOR, match_spec_options)?);
-        }
-    } else {
-        warn!(
-            "Could not detect installed Python version in {:?}, solver may change Python",
-            env.env_path
-        );
-    }
-
+    specs.push(MatchSpec::from_str("python", match_spec_options)?);
     for dep in &deps.dependencies {
         if !is_conda_base_package(dep) {
             specs.push(MatchSpec::from_str(dep, match_spec_options)?);
@@ -985,8 +919,7 @@ pub async fn sync_dependencies(
     let rattler_cache_dir = default_cache_dir()
         .map_err(|e| anyhow!("could not determine rattler cache directory: {}", e))?;
 
-    let download_client = reqwest::Client::builder().build()?;
-    let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
+    let download_client = crate::channels::download_client()?;
 
     let platforms = vec![install_platform, Platform::NoArch];
 
@@ -1002,8 +935,6 @@ pub async fn sync_dependencies(
     .await?;
 
     let virtual_packages = crate::detect_solve_virtual_packages()?;
-
-    let installed_packages = PrefixRecord::collect_from_prefix::<PrefixRecord>(&env.env_path)?;
 
     // Collect package names that have explicit version constraints in specs.
     // Exclude these from locked_packages so the solver doesn't favor installed
@@ -1023,6 +954,7 @@ pub async fn sync_dependencies(
     let solver_task = SolverTask {
         virtual_packages,
         specs,
+        pinned_packages: vec![python_record.clone()],
         locked_packages: installed_packages
             .iter()
             .filter(|r| {
@@ -1123,16 +1055,12 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
 /// Format a Python version constraint as a conda MatchSpec string.
 ///
-/// Bare versions (`"3.11"`, `"3.11.*"`) get `python=` prepended.
-/// Operator-prefixed constraints (`">=3.9"`, `">=3.9,<4"`) get `python`
-/// prepended without an extra `=`, producing e.g. `"python>=3.9,<4"`.
+/// Normalize bare pins to wildcard constraints. Separating the package name
+/// with whitespace also preserves wildcard/range specs returned by the YAML
+/// parser: strict MatchSpec parsing rejects `python=3.12.*`.
 fn format_python_spec(constraint: &str) -> String {
-    let first = constraint.as_bytes().first().copied().unwrap_or(b'0');
-    if first == b'>' || first == b'<' || first == b'=' || first == b'!' || first == b'~' {
-        format!("python{}", constraint)
-    } else {
-        format!("python={}", constraint)
-    }
+    let normalized = normalize_bare_versions(constraint);
+    format!("python {}", normalized.as_deref().unwrap_or(constraint))
 }
 
 /// Build the list of spec strings that `install_conda_env` would produce,
@@ -1142,11 +1070,6 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
 
     if let Some(ref py) = deps.python {
         specs.push(format_python_spec(py));
-    } else {
-        specs.push("python>=3.13".to_string());
-    }
-    if should_enforce_gil_python(deps) {
-        specs.push(CONDA_GIL_SELECTOR.to_string());
     }
 
     specs.extend(conda_base_packages());
@@ -1157,6 +1080,19 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
         }
     }
 
+    if deps.python.is_none()
+        && !deps.dependencies.iter().any(|dep| {
+            MatchSpec::from_str(dep, ParseMatchSpecOptions::strict())
+                .ok()
+                .is_some_and(|spec| {
+                    spec.name
+                        .as_exact()
+                        .is_some_and(|name| name.as_normalized() == "python")
+                })
+        })
+    {
+        specs.push("python>=3.13".to_string());
+    }
     specs
 }
 
@@ -1184,32 +1120,6 @@ pub fn detect_installed_python_version(env_path: &std::path::Path) -> Option<Str
         }
     }
     None
-}
-
-/// Check whether the `python-freethreading` package is installed in a conda
-/// environment by looking for `python-freethreading-*.json` in `conda-meta`.
-///
-/// `conda-meta` stores the plain version number (e.g. `3.14.4`), not the
-/// `3.14t` constraint syntax, so we cannot infer free-threading from the
-/// Python version string. Instead, check for the selector package that conda
-/// uses to distinguish GIL vs free-threaded builds. If `python-freethreading`
-/// is present, the env was created as free-threaded; otherwise it uses the
-/// default GIL build.
-fn has_freethreading_package(env_path: &std::path::Path) -> bool {
-    let meta_dir = env_path.join("conda-meta");
-    let entries = match std::fs::read_dir(&meta_dir) {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    for entry in entries.flatten() {
-        let fname = entry.file_name();
-        let fname = fname.to_string_lossy();
-        // e.g. python-freethreading-3.14.4-h0abcdef_0.json
-        if fname.starts_with("python-freethreading-") && fname.ends_with(".json") {
-            return true;
-        }
-    }
-    false
 }
 
 /// Check whether the installed Python version in a conda env matches the
@@ -1409,6 +1319,19 @@ mod tests {
     }
 
     #[test]
+    fn channel_priority_changes_cache_identity() {
+        let mut deps = CondaDependencies {
+            dependencies: vec![],
+            channels: vec!["main".into(), "main-x".into()],
+            python: Some("3.12".into()),
+            env_id: None,
+        };
+        let before = compute_env_hash(&deps);
+        deps.channels.reverse();
+        assert_ne!(before, compute_env_hash(&deps));
+    }
+
+    #[test]
     fn test_compute_env_hash_different_deps() {
         let deps1 = CondaDependencies {
             dependencies: vec!["pandas".to_string()],
@@ -1525,54 +1448,67 @@ mod tests {
     }
 
     #[test]
-    fn managed_specs_enforce_gil_python_by_default() {
-        let deps = CondaDependencies {
-            dependencies: vec!["numpy".into()],
-            channels: vec!["conda-forge".into()],
-            python: None,
-            env_id: None,
-        };
-
-        let specs = build_spec_strings(&deps);
-        assert!(specs.contains(&"python>=3.13".to_string()));
-        assert!(specs.contains(&CONDA_GIL_SELECTOR.to_string()));
+    fn managed_specs_respect_python_pins_in_either_location() {
+        for python in [Some("3.12".into()), None] {
+            let deps = CondaDependencies {
+                dependencies: if python.is_none() {
+                    vec!["python=3.12".into()]
+                } else {
+                    vec![]
+                },
+                channels: vec!["main".into()],
+                python,
+                env_id: None,
+            };
+            let specs = build_spec_strings(&deps);
+            let (parsed, _) = crate::python::solve_specs(&specs).unwrap();
+            let python = parsed
+                .iter()
+                .find(|spec| {
+                    spec.name
+                        .as_exact()
+                        .is_some_and(|name| name.as_normalized() == "python")
+                })
+                .unwrap();
+            assert!(python
+                .version
+                .as_ref()
+                .unwrap()
+                .matches(&Version::from_str("3.12.9").unwrap()));
+            assert!(!specs.contains(&"python>=3.13".to_string()));
+            assert!(!specs.contains(&"python-gil".to_string()));
+        }
     }
 
     #[test]
-    fn managed_specs_enforce_gil_python_for_normal_pin() {
+    fn metadata_free_threaded_pin_selects_the_conda_build() {
         let deps = CondaDependencies {
-            dependencies: vec!["numpy".into()],
-            channels: vec!["conda-forge".into()],
-            python: Some("3.11".into()),
-            env_id: None,
-        };
-
-        let specs = build_spec_strings(&deps);
-        assert!(specs.contains(&"python=3.11".to_string()));
-        assert!(specs.contains(&CONDA_GIL_SELECTOR.to_string()));
-    }
-
-    #[test]
-    fn explicit_free_threaded_pin_does_not_add_gil_selector() {
-        let deps = CondaDependencies {
-            dependencies: vec!["numpy".into()],
-            channels: vec!["conda-forge".into()],
+            dependencies: vec![],
+            channels: vec!["main".into()],
             python: Some("3.14t".into()),
             env_id: None,
         };
-
-        let specs = build_spec_strings(&deps);
-        assert!(specs.contains(&"python=3.14t".to_string()));
-        assert!(!specs.contains(&CONDA_GIL_SELECTOR.to_string()));
-    }
-
-    #[test]
-    fn free_threading_constraint_detection_is_explicit() {
-        assert!(conda_python_requests_free_threading("3.14t"));
-        assert!(conda_python_requests_free_threading(">=3.14t"));
-        assert!(conda_python_requests_free_threading(">=3.13,!=3.14t"));
-        assert!(!conda_python_requests_free_threading("3.14"));
-        assert!(!conda_python_requests_free_threading(">=3.13,<3.15"));
+        let (specs, constraints) = crate::python::solve_specs(&build_spec_strings(&deps)).unwrap();
+        assert!(constraints.is_empty());
+        let python = specs
+            .iter()
+            .find(|spec| {
+                spec.name
+                    .as_exact()
+                    .is_some_and(|name| name.as_normalized() == "python")
+            })
+            .unwrap();
+        assert!(python
+            .version
+            .as_ref()
+            .unwrap()
+            .matches(&Version::from_str("3.14.1").unwrap()));
+        assert_eq!(python.build.as_ref().unwrap().to_string(), "*_cp314t");
+        // Passing the shorthand straight to conda, as before, matched neither
+        // the regular nor the free-threaded package's actual version.
+        assert!(!VersionSpec::from_str("3.14t.*", ParseStrictness::Strict)
+            .unwrap()
+            .matches(&Version::from_str("3.14.1").unwrap()));
     }
 
     #[test]
@@ -1628,37 +1564,6 @@ mod tests {
 
         let version = detect_installed_python_version(dir.path());
         assert_eq!(version.as_deref(), Some("3.14.4"));
-    }
-
-    #[test]
-    fn has_freethreading_package_detects_selector() {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = dir.path().join("conda-meta");
-        std::fs::create_dir_all(&meta).unwrap();
-        std::fs::write(meta.join("python-3.14.4-h2b28147_0_cpython.json"), "{}").unwrap();
-        std::fs::write(
-            meta.join("python-freethreading-3.14.4-h2b28147_0.json"),
-            "{}",
-        )
-        .unwrap();
-
-        assert!(has_freethreading_package(dir.path()));
-    }
-
-    #[test]
-    fn has_freethreading_package_false_for_gil_env() {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = dir.path().join("conda-meta");
-        std::fs::create_dir_all(&meta).unwrap();
-        std::fs::write(meta.join("python-3.14.4-h2b28147_0.json"), "{}").unwrap();
-
-        assert!(!has_freethreading_package(dir.path()));
-    }
-
-    #[test]
-    fn has_freethreading_package_false_when_no_conda_meta() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!has_freethreading_package(dir.path()));
     }
 
     #[test]
@@ -1847,15 +1752,27 @@ mod tests {
 
     #[test]
     fn format_python_spec_bare_version() {
-        assert_eq!(format_python_spec("3.11"), "python=3.11");
-        assert_eq!(format_python_spec("3.11.*"), "python=3.11.*");
+        for pin in ["3.11", "3.11.*", "3.10|3.11"] {
+            let spec =
+                MatchSpec::from_str(&format_python_spec(pin), ParseMatchSpecOptions::strict())
+                    .unwrap();
+            assert!(spec
+                .version
+                .unwrap()
+                .matches(&Version::from_str("3.11.9").unwrap()));
+        }
     }
 
     #[test]
     fn format_python_spec_operator_prefixed() {
-        assert_eq!(format_python_spec(">=3.9"), "python>=3.9");
-        assert_eq!(format_python_spec(">=3.9,<4"), "python>=3.9,<4");
-        assert_eq!(format_python_spec("==3.12"), "python==3.12");
-        assert_eq!(format_python_spec("<4"), "python<4");
+        for pin in [">=3.9", ">=3.9,<4", "==3.12", "<4"] {
+            let spec =
+                MatchSpec::from_str(&format_python_spec(pin), ParseMatchSpecOptions::strict())
+                    .unwrap();
+            assert!(spec
+                .version
+                .unwrap()
+                .matches(&Version::from_str("3.12").unwrap()));
+        }
     }
 }

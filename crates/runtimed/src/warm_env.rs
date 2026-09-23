@@ -671,7 +671,7 @@ async fn create_uv(env_dir: &Path, packages: &[String]) {
 
 async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) {
     use rattler::install::Installer;
-    use rattler_conda_types::{Channel, ChannelConfig, MatchSpec, ParseMatchSpecOptions, Platform};
+    use rattler_conda_types::{ChannelConfig, Platform};
     use rattler_solve::{resolvo, SolverImpl, SolverTask};
 
     #[cfg(target_os = "windows")]
@@ -695,38 +695,23 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
     let channel_config = ChannelConfig::default_with_root_dir(cache_dir);
 
     progress("channels", "parsing channels");
-    let channel_names = if channels.is_empty() {
-        vec!["conda-forge".to_string()]
-    } else {
-        channels.to_vec()
-    };
-    let channels = match channel_names
-        .iter()
-        .map(|channel| Channel::from_str(channel, &channel_config))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(channels) => channels,
-        Err(e) => {
-            emit_failure(
-                format!("Failed to parse conda channel: {e}"),
-                "setup_failed",
-                None,
-            );
-            return;
-        }
-    };
+    let install_platform = kernel_env::conda_solve_platform();
+    let channels =
+        match kernel_env::channels::parse_channels(channels, &channel_config, install_platform) {
+            Ok(channels) => channels,
+            Err(e) => {
+                emit_failure(
+                    format!("Failed to parse conda channel: {e}"),
+                    "setup_failed",
+                    None,
+                );
+                return;
+            }
+        };
 
     // Build specs
     progress("specs", "building dependency specs");
-    let match_spec_options = ParseMatchSpecOptions::strict();
-    let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
-        let mut specs = vec![MatchSpec::from_str("python>=3.13", match_spec_options)?];
-        specs.push(MatchSpec::from_str("python-gil", match_spec_options)?);
-        for pkg in packages {
-            specs.push(MatchSpec::from_str(pkg, match_spec_options)?);
-        }
-        Ok(specs)
-    })() {
+    let (specs, constraints) = match kernel_env::python::solve_specs(packages) {
         Ok(s) => s,
         Err(e) => {
             emit_failure(
@@ -760,8 +745,8 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
     }
 
     // HTTP client
-    let download_client = match reqwest::Client::builder().build() {
-        Ok(c) => reqwest_middleware::ClientBuilder::new(c).build(),
+    let download_client = match kernel_env::channels::download_client() {
+        Ok(c) => c,
         Err(e) => {
             emit_failure(
                 format!("Failed to create HTTP client: {e}"),
@@ -772,12 +757,14 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
         }
     };
 
-    let install_platform = kernel_env::conda_solve_platform();
     let platforms = vec![install_platform, Platform::NoArch];
     let progress_handler = std::sync::Arc::new(kernel_env::LogHandler);
 
     // Fetch repodata
-    progress("resolving", "fetching repodata from cache or conda-forge");
+    progress(
+        "resolving",
+        "fetching repodata from cache or configured channels",
+    );
     let repo_data = match kernel_env::repodata::query_repodata_offline_first(
         channels,
         platforms,
@@ -818,6 +805,7 @@ async fn create_conda(env_dir: &Path, packages: &[String], channels: &[String]) 
     let solver_task = SolverTask {
         virtual_packages,
         specs,
+        constraints,
         ..SolverTask::from_iter(&repo_data)
     };
     let required_packages = match resolvo::Solver.solve(solver_task) {

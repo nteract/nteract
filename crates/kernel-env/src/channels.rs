@@ -15,7 +15,8 @@ pub(crate) const ANACONDA_DEFAULT_CHANNELS: &[&str] = &[
     "https://repo.anaconda.com/pkgs/msys2",
 ];
 
-pub(crate) fn parse_channels(
+/// Resolve Anaconda aliases and ordinary channels, preserving priority order.
+pub fn parse_channels(
     declared_channels: &[String],
     channel_config: &ChannelConfig,
     platform: Platform,
@@ -36,16 +37,131 @@ pub(crate) fn parse_channels(
                 channels.push(Channel::from_str(default_channel, channel_config)?);
             }
         } else {
-            channels.push(Channel::from_str(declared, channel_config)?);
+            let channel = match declared.as_str() {
+                "main" => "https://repo.anaconda.com/pkgs/main",
+                "main-x" => "https://repo.anaconda.cloud/repo/main-x",
+                _ => declared,
+            };
+            channels.push(Channel::from_str(channel, channel_config)?);
         }
     }
     Ok(channels)
+}
+
+/// Use the same rattler/Pixi credential store for repodata and package downloads,
+/// including lock-based reinstalls. Credentials stay out of channel URLs and
+/// notebook metadata; RATTLER_AUTH_FILE can override the standard store.
+pub fn download_client() -> Result<reqwest_middleware::ClientWithMiddleware> {
+    download_client_with_auth(
+        rattler_networking::AuthenticationMiddleware::from_env_and_defaults()?,
+    )
+}
+
+fn download_client_with_auth(
+    auth: rattler_networking::AuthenticationMiddleware,
+) -> Result<reqwest_middleware::ClientWithMiddleware> {
+    Ok(reqwest_middleware::ClientBuilder::new(
+        reqwest::Client::builder()
+            // Anaconda's package endpoint rejects requests without a User-Agent.
+            .user_agent(concat!("nteract/", env!("CARGO_PKG_VERSION")))
+            .build()?,
+    )
+    .with(auth)
+    .build())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn downloads_identify_the_client_and_scope_credentials_to_the_host() {
+        use rattler_networking::authentication_storage::backends::memory::MemoryStorage;
+        use rattler_networking::{Authentication, AuthenticationMiddleware, AuthenticationStorage};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut storage = AuthenticationStorage::empty();
+        storage.add_backend(std::sync::Arc::new(MemoryStorage::new()));
+        storage
+            .store(
+                "127.0.0.1",
+                &Authentication::BearerToken("test-token".into()),
+            )
+            .unwrap();
+        let client =
+            download_client_with_auth(AuthenticationMiddleware::from_auth_storage(storage))
+                .unwrap();
+        let server = tokio::spawn(async move {
+            for expect_auth in [true, true, false] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0; 1024];
+                    let count = stream.read(&mut buf).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buf[..count]);
+                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).unwrap().to_lowercase();
+                assert!(request.contains("user-agent: nteract/"));
+                assert_eq!(
+                    request.contains("authorization: bearer test-token"),
+                    expect_auth
+                );
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+        });
+        for (host, path) in [
+            ("127.0.0.1", "repo/main-x/noarch/repodata.json"),
+            ("127.0.0.1", "repo/main-x/noarch/example.conda"),
+            ("localhost", "public/noarch/repodata.json"),
+        ] {
+            client
+                .get(format!("http://{host}:{port}/{path}"))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+        }
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn anaconda_aliases_preserve_declared_priority_and_custom_channels() {
+        let config = ChannelConfig::default_with_root_dir(PathBuf::from("/tmp"));
+        let channels = parse_channels(
+            &[
+                "main".into(),
+                "main-x".into(),
+                "conda-forge".into(),
+                "https://packages.example.org/team".into(),
+            ],
+            &config,
+            Platform::OsxArm64,
+        )
+        .unwrap();
+        assert_eq!(
+            channels
+                .iter()
+                .map(|channel| channel.base_url.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "https://repo.anaconda.com/pkgs/main/",
+                "https://repo.anaconda.cloud/repo/main-x/",
+                "https://conda.anaconda.org/conda-forge/",
+                "https://packages.example.org/team/",
+            ]
+        );
+    }
 
     #[test]
     fn defaults_expands_to_anaconda_channels_instead_of_community_alias() {
