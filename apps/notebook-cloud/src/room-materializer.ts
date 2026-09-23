@@ -126,6 +126,51 @@ export class RoomMaterializer {
     );
   }
 
+  /** Fence managed lifecycle changes atomically with the room's selected session. */
+  async transitionManagedPythonSession(
+    sessionId: string,
+    status: "ready" | "error",
+    reason: string | null = null,
+  ): Promise<RoomHostFrameResult> {
+    return this.withHost((host) => {
+      const current = normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json());
+      if (
+        current?.workstation_id !== "celld-preview-python" ||
+        current.runtime_session_id !== sessionId ||
+        (status === "ready" && !["connecting", "ready"].includes(current.status))
+      ) {
+        return {
+          changed: false,
+          ignored_stale: true,
+          notebook_changed: false,
+          runtime_state_changed: false,
+          outbound: [],
+        };
+      }
+      const failed =
+        status === "error"
+          ? normalizeResult(host.reconcile_runtime_peer_gone(reason ?? "Managed Python failed"))
+          : null;
+      const changed = normalizeResult(
+        host.set_workstation_attachment_json(
+          JSON.stringify({
+            ...current,
+            status,
+            status_message: reason,
+            updated_at: new Date().toISOString(),
+          }),
+        ),
+      );
+      return {
+        ...changed,
+        changed: changed.changed || !!failed?.changed,
+        notebook_changed: changed.notebook_changed || !!failed?.notebook_changed,
+        runtime_state_changed: changed.runtime_state_changed || !!failed?.runtime_state_changed,
+        outbound: [...(failed?.outbound ?? []), ...changed.outbound],
+      };
+    });
+  }
+
   async reconcileRuntimeIdleTimeout(
     reason: string,
     updatedAt: string,

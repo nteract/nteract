@@ -49,7 +49,7 @@ export async function fixture(t, source = "print('accepted from notebook')") {
   owner.add_cell(0, "code", "code");
   owner.update_source("code", source);
   sync(host, owner, "owner", "owner");
-  const request = (scope = "owner") =>
+  const request = (scope = "owner", cellId = "code") =>
     host.receive_peer_frame(
       scope,
       `user:dev:${scope}`,
@@ -59,7 +59,7 @@ export async function fixture(t, source = "print('accepted from notebook')") {
       encodeTypedFrame(
         FrameType.REQUEST,
         new TextEncoder().encode(
-          JSON.stringify({ id: crypto.randomUUID(), action: "execute_cell", cell_id: "code" }),
+          JSON.stringify({ id: crypto.randomUUID(), action: "execute_cell", cell_id: cellId }),
         ),
       ),
     );
@@ -71,6 +71,7 @@ export async function fixture(t, source = "print('accepted from notebook')") {
   sync(host, peer, "runtime", "runtime_peer", true);
   return {
     host,
+    owner,
     peer,
     request,
     publish: async () => sync(host, peer, "runtime", "runtime_peer", true),

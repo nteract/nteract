@@ -49,7 +49,7 @@ test(
       },
     );
     t.after(server.close);
-    const { host } = await fixture(
+    const { host, owner, request } = await fixture(
       t,
       "import pandas as pd\nimport matplotlib.pyplot as plt\nprint('from real Python')\nplt.plot([1,2], [3,4])\nplt.show()\npd.DataFrame({'x':[1,2]})",
     );
@@ -129,6 +129,24 @@ test(
       Array.from(blobs.get(blobKey("notebook", png.blob)).bytes.slice(0, 8)),
       [137, 80, 78, 71, 13, 10, 26, 10],
     );
+    async function runAccepted(source) {
+      owner.update_source("code", source);
+      sync(host, owner, "owner", "owner");
+      const accepted = request();
+      bridge.accept(accepted);
+      sync(host, owner, "owner", "owner", false, accepted.outbound);
+      await bridge.wake();
+    }
+    await runAccepted("saved_after_error = 99\nraise ValueError('expected recovery probe')");
+    await runAccepted("saved_after_error");
+    const recoveredViewer = new RuntimeStatePeerHandle("user:dev:recovery-viewer/test");
+    t.after(() => recoveredViewer.free());
+    sync(host, recoveredViewer, "recovery-viewer", "viewer", true);
+    const recovered = Object.values(recoveredViewer.get_runtime_state().executions);
+    assert.ok(recovered.some((execution) => execution.success === false));
+    const last = recovered.find((execution) => execution.source === "saved_after_error");
+    assert.equal(last.success, true);
+    assert.deepEqual(last.outputs.at(-1).data["text/plain"], { inline: "99" });
     await bridge.close();
   },
 );

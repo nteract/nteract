@@ -79,3 +79,46 @@ test("managed room uses private service and publishes through actual runtime-pee
   await runtime.close();
   assert.equal(requests.at(-1).path, "/close");
 });
+
+test("managed lifecycle updates cannot overwrite a replacement session", async () => {
+  await initializeTestRuntimedWasm();
+  const { RoomMaterializer } = await import("../src/room-materializer.ts");
+  const materializer = new RoomMaterializer(
+    "fencing",
+    { storage: { get: async () => undefined } },
+    {},
+  );
+  const attachment = {
+    workstation_id: "celld-preview-python",
+    display_name: "Preview Python",
+    provider: "celld-pyodide",
+    default_environment_label: "Python",
+    environment_policy: "curated",
+    status: "connecting",
+    runtime_session_id: "old",
+  };
+  await materializer.setWorkstationAttachment(attachment);
+  await materializer.setWorkstationAttachment({ ...attachment, runtime_session_id: "replacement" });
+  assert.equal(
+    (await materializer.transitionManagedPythonSession("old", "error", "old startup failed"))
+      .ignored_stale,
+    true,
+  );
+  assert.equal(
+    (await materializer.transitionManagedPythonSession("old", "ready")).ignored_stale,
+    true,
+  );
+  assert.equal((await materializer.getWorkstationAttachment()).status, "connecting");
+  await materializer.transitionManagedPythonSession(
+    "replacement",
+    "error",
+    "package initialization failed",
+  );
+  const failed = await materializer.getWorkstationAttachment();
+  assert.equal(failed.status, "error");
+  assert.equal(failed.status_message, "package initialization failed");
+  assert.equal(
+    (await materializer.transitionManagedPythonSession("replacement", "ready")).ignored_stale,
+    true,
+  );
+});

@@ -98,10 +98,16 @@ export class PythonRuntimePeer {
       }
       this.#peer.set_execution_done(executionId, result.success);
       await this.#publish();
-      // Stop the queue on Python errors; the room coordinator owns cancellation
-      // of subsequent accepted requests and any future retry decision.
+      // Abort already queued work after a Python error, but keep the interpreter
+      // usable for a later explicit execution. Never replay the failed request.
       if (!result.success) {
-        this.#halted = true;
+        this.#assertCurrent();
+        for (const [queuedId, queued] of Object.entries(
+          this.#peer.get_runtime_state().executions ?? {},
+        )) {
+          if (queued.status === "queued") this.#peer.set_execution_cancelled(queuedId);
+        }
+        await this.#publish();
         return;
       }
     }

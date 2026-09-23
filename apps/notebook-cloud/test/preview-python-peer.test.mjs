@@ -79,3 +79,39 @@ test("bridge fences output when session expires during execution", async (t) => 
   );
   await bridge.close();
 });
+
+test("Python exception cancels queued work and permits a later explicit execution", async (t) => {
+  const { host, owner, peer, request, publish } = await fixture(t);
+  owner.add_cell(1, "queued", "code");
+  owner.update_source("queued", "42");
+  sync(host, owner, "owner", "owner");
+  sync(host, peer, "runtime", "runtime_peer", true, request("owner", "queued").outbound);
+  let calls = 0;
+  const bridge = new PythonRuntimePeer({
+    peer,
+    sessionKey: "session",
+    isCurrent: () => true,
+    publish,
+    pool: {
+      execute: async () => {
+        calls++;
+        return { execution_count: calls, success: calls > 1, outputs: [] };
+      },
+      release: async () => {},
+    },
+    prepareOutputs: async () => [],
+  });
+  await bridge.drain();
+  assert.equal(calls, 1);
+  const states = Object.values(peer.get_runtime_state().executions);
+  assert.equal(states.filter((e) => e.status === "cancelled").length, 1);
+  assert.equal(states.filter((e) => e.success === false).length, 1);
+  sync(host, peer, "runtime", "runtime_peer", true, request().outbound);
+  await bridge.drain();
+  assert.equal(calls, 2);
+  assert.equal(
+    Object.values(peer.get_runtime_state().executions).filter((e) => e.success === true).length,
+    1,
+  );
+  await bridge.close();
+});

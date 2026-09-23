@@ -14,6 +14,7 @@ export class PythonRuntimePeer {
       set_execution_running(id: string): void;
       set_execution_count(id: string, count: number): void;
       set_execution_done(id: string, success: boolean): void;
+      set_execution_cancelled(id: string): void;
       set_kernel_error(details: string): void;
       append_output_json(id: string, manifest: string): unknown;
     };

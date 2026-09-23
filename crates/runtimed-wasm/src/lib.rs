@@ -544,6 +544,12 @@ impl RuntimeStatePeerHandle {
             .map_err(|e| JsError::new(&format!("set execution done failed: {e}")))
     }
 
+    pub fn set_execution_cancelled(&mut self, execution_id: &str) -> Result<(), JsError> {
+        self.state_doc
+            .set_execution_cancelled(execution_id)
+            .map_err(|e| JsError::new(&format!("cancel execution failed: {e}")))
+    }
+
     pub fn append_output_json(
         &mut self,
         execution_id: &str,

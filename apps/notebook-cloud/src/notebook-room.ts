@@ -1337,10 +1337,7 @@ export class NotebookRoom {
             managed.ready
               .then(() => managed.runtime.wake())
               .catch((error) => {
-                cloudLog("warn", "managed_python.execution_failed", {
-                  notebook_id: notebookId,
-                  error: String(error),
-                });
+                return this.failManagedPython(notebookId, managed.runtime, error);
               }),
           );
         this.refreshRuntimeIdleWatch(notebookId);
@@ -1939,11 +1936,8 @@ export class NotebookRoom {
           current?.runtime_session_id !== sessionId
         )
           return;
-        const result = await materializer.setWorkstationAttachment({
-          ...current,
-          status: "ready",
-          updated_at: new Date().toISOString(),
-        });
+        const result = await materializer.transitionManagedPythonSession(sessionId, "ready");
+        if (result.ignored_stale) return;
         this.deliverRoomHostFrames(notebookId, result);
         await updateWorkstationAttachJobStatus(this.env, {
           ownerPrincipal: notebook.owner_principal,
@@ -1952,14 +1946,57 @@ export class NotebookRoom {
           status: "running",
         });
         this.refreshRuntimeIdleWatch(notebookId);
-        this.state.waitUntil(runtime.wake());
+        this.state.waitUntil(
+          runtime.wake().catch((error) => this.failManagedPython(notebookId, runtime, error)),
+        );
       })
       .catch(async (error) => {
-        if (this.managedPython.get(notebookId) === entry) this.managedPython.delete(notebookId);
-        await runtime.close();
+        await this.failManagedPython(notebookId, runtime, error);
         throw error;
       });
     return entry.ready;
+  }
+
+  private async failManagedPython(
+    notebookId: string,
+    runtime: ManagedPythonRoom,
+    error: unknown,
+  ): Promise<void> {
+    const entry = this.managedPython.get(notebookId);
+    if (entry?.runtime !== runtime) return;
+    this.managedPython.delete(notebookId);
+    // Invalidate synchronously before awaiting persistence. Any late output
+    // must lose its authority before a replacement can attach.
+    const closing = runtime.close().catch((closeError) => {
+      cloudLog("warn", "managed_python.close_failed", {
+        notebook_id: notebookId,
+        error: String(closeError),
+      });
+    });
+    try {
+      const materializer = this.materializerFor(notebookId);
+      const reason = String(error).slice(0, 1000);
+      const failed = await materializer.transitionManagedPythonSession(
+        runtime.sessionId,
+        "error",
+        reason,
+      );
+      if (failed.ignored_stale) return;
+      this.deliverRoomHostFrames(notebookId, failed);
+      const notebook = await getNotebookRow(this.env, notebookId);
+      if (notebook)
+        await updateWorkstationAttachJobStatus(this.env, {
+          ownerPrincipal: notebook.owner_principal,
+          workstationId: MANAGED_PYTHON_WORKSTATION,
+          jobId: runtime.sessionId,
+          status: "failed",
+          errorMessage: reason,
+        });
+      await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
+      await this.publishCurrentComputeSessionSummary(notebookId);
+    } finally {
+      await closing;
+    }
   }
 
   private async requestRuntimeResumeForExecution(
