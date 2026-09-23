@@ -69,6 +69,10 @@ test("managed discovery is opt-in, owner-scoped, idempotent and preserves defaul
     await ensureManagedPythonWorkstation(env, "bob");
     assert.equal(await getDefaultWorkstationId(env, "bob"), MANAGED_PYTHON_WORKSTATION);
     assert.equal((await listWorkstationsForPrincipal(env, "bob")).length, 1);
+    assert.equal(
+      (await listWorkstationsForPrincipal(env, "bob"))[0].working_directory,
+      "/home/pyodide",
+    );
   } finally {
     sqlite.close();
   }

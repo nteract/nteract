@@ -26,6 +26,7 @@ export async function ensureManagedPythonWorkstation(env: Env, ownerPrincipal: s
     providerLabel: "Managed Python",
     defaultEnvironmentLabel: "Python · pandas · NumPy · Matplotlib",
     environmentPolicy: "Curated Pyodide environment",
+    workingDirectory: "/home/pyodide",
     statusMessage: "Ready to start an isolated notebook session",
   });
   if (!workstation) return null;

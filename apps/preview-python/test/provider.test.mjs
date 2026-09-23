@@ -78,6 +78,11 @@ test(
       execution: { execution_id: "e2", source: "saved" },
     });
     assert.equal(persisted.outputs.at(-1).data["text/plain"], "41");
+    const directory = await post("/execute", {
+      ...identity,
+      execution: { execution_id: "cwd", source: "import os\nos.getcwd()" },
+    });
+    assert.equal(directory.outputs.at(-1).data["text/plain"], "'/home/pyodide'");
     await post("/close", identity);
     const replacement = await post("/open", { ...identity, sessionId: "2" });
     assert.notEqual(first.info.instanceId, replacement.info.instanceId);
