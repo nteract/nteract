@@ -49,7 +49,7 @@ interface RoomCheckpointMetadata {
 
 interface RoomPeer {
   id: string;
-  identity: AuthenticatedConnection;
+  identity: Pick<AuthenticatedConnection, "principal" | "actorLabel" | "scope">;
 }
 
 export class RoomMaterializer {

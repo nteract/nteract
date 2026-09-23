@@ -12,6 +12,16 @@ let bridgePool;
 
 export default {
   async fetch(request, env) {
+    if (new URL(request.url).pathname.startsWith("/private/")) {
+      bridgePool ??= new SessionPool({
+        create: () => createCelldRuntime(env),
+        maxSessions: 1,
+        warmCount: 0,
+      });
+      const url = new URL(request.url);
+      url.pathname = url.pathname.slice("/private".length);
+      return createProviderService(bridgePool).fetch(new Request(url, request));
+    }
     if (new URL(request.url).pathname === "/bridge") {
       bridgePool ??= new SessionPool({
         create: () => createCelldRuntime(env),

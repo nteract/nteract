@@ -16,6 +16,8 @@ import {
   type WorkstationLeaseRecord,
 } from "./compute-session-index.ts";
 import { identityDisplayLabel } from "./display-label.ts";
+import { ManagedPythonRoom } from "./managed-python-room.ts";
+import { managedPythonStub, MANAGED_PYTHON_WORKSTATION } from "./managed-python.ts";
 import {
   allowsBlobUpload,
   allowsExecutionRequestSubmit,
@@ -273,6 +275,11 @@ function unsupportedHostedRuntimeRequestAction(
 }
 
 export class NotebookRoom {
+  private readonly managedPython = new Map<
+    string,
+    { runtime: ManagedPythonRoom; ready: Promise<void> }
+  >();
+  private managedPythonStartup: Promise<void> = Promise.resolve();
   private readonly peers = new Map<string, Peer>();
   private readonly pendingRemovals = new Map<
     string,
@@ -496,6 +503,23 @@ export class NotebookRoom {
         });
       } else {
         this.cacheSelectedRuntimePeerSession(notebookId, attachment);
+        const existing = this.managedPython.get(notebookId);
+        if (
+          existing &&
+          (attachment?.workstation_id !== MANAGED_PYTHON_WORKSTATION ||
+            !["connecting", "ready"].includes(attachment.status) ||
+            attachment.runtime_session_id !== existing.runtime.sessionId)
+        ) {
+          this.managedPython.delete(notebookId);
+          this.state.waitUntil(existing.runtime.close());
+        }
+        if (
+          attachment?.workstation_id === MANAGED_PYTHON_WORKSTATION &&
+          ["connecting", "ready"].includes(attachment.status) &&
+          attachment.runtime_session_id
+        ) {
+          this.state.waitUntil(this.startManagedPython(notebookId, attachment.runtime_session_id));
+        }
       }
       if (closeRuntimePeers && !result.ignored_stale) {
         this.removeRuntimePeers(notebookId, {
@@ -1307,6 +1331,18 @@ export class NotebookRoom {
         this.scheduleRoomHostCheckpoint(notebookId, materializer, "materialized_frame");
       }
       if (result.runtime_state_changed) {
+        const managed = this.managedPython.get(notebookId);
+        if (managed)
+          this.state.waitUntil(
+            managed.ready
+              .then(() => managed.runtime.wake())
+              .catch((error) => {
+                cloudLog("warn", "managed_python.execution_failed", {
+                  notebook_id: notebookId,
+                  error: String(error),
+                });
+              }),
+          );
         this.refreshRuntimeIdleWatch(notebookId);
         this.state.waitUntil(
           this.publishCurrentComputeSessionSummary(notebookId, undefined, {
@@ -1658,6 +1694,11 @@ export class NotebookRoom {
   }
 
   private removeRuntimePeers(notebookId: string, closeOptions: PeerCloseOptions): void {
+    const managed = this.managedPython.get(notebookId);
+    if (managed) {
+      this.managedPython.delete(notebookId);
+      this.state.waitUntil(managed.runtime.close());
+    }
     for (const peer of Array.from(this.peers.values())) {
       if (peer.identity.scope === "runtime_peer") {
         this.removePeer(notebookId, peer, closeOptions);
@@ -1718,6 +1759,7 @@ export class NotebookRoom {
   }
 
   private deliverRoomHostFrames(notebookId: string, result: RoomHostFrameResult): void {
+    this.managedPython.get(notebookId)?.runtime.accept(result);
     for (const outbound of result.outbound) {
       const target = this.peers.get(outbound.peer_id);
       if (!target) {
@@ -1828,6 +1870,15 @@ export class NotebookRoom {
       return false;
     }
     const attachment = await materializer.getWorkstationAttachment();
+    if (
+      attachment?.workstation_id === MANAGED_PYTHON_WORKSTATION &&
+      ["connecting", "ready"].includes(attachment.status) &&
+      attachment.runtime_session_id &&
+      managedPythonStub(this.env)
+    ) {
+      await this.startManagedPython(notebookId, attachment.runtime_session_id);
+      return true;
+    }
     if (attachment?.status === "connecting") {
       return true;
     }
@@ -1835,6 +1886,80 @@ export class NotebookRoom {
       return false;
     }
     return this.requestRuntimeResumeForExecution(notebookId, attachment, action);
+  }
+
+  private async startManagedPython(notebookId: string, sessionId: string): Promise<void> {
+    const next = this.managedPythonStartup
+      .catch(() => undefined)
+      .then(() => this.startManagedPythonNow(notebookId, sessionId));
+    this.managedPythonStartup = next;
+    return next;
+  }
+
+  private async startManagedPythonNow(notebookId: string, sessionId: string): Promise<void> {
+    if (!managedPythonStub(this.env)) return;
+    const existing = this.managedPython.get(notebookId);
+    if (existing?.runtime.sessionId === sessionId) return existing.ready;
+    const notebook = await getNotebookRow(this.env, notebookId);
+    if (!notebook) throw new Error("Managed Python notebook no longer exists");
+    // Recheck after storage I/O: concurrent requests can join the same startup.
+    const concurrent = this.managedPython.get(notebookId);
+    if (concurrent?.runtime.sessionId === sessionId) return concurrent.ready;
+    if (concurrent) {
+      this.managedPython.delete(notebookId);
+      await concurrent.runtime.close();
+    }
+    const materializer = this.materializerFor(notebookId);
+    const selected = await materializer.getWorkstationAttachment();
+    if (
+      selected?.workstation_id !== MANAGED_PYTHON_WORKSTATION ||
+      selected.runtime_session_id !== sessionId
+    )
+      return;
+    const runtime = new ManagedPythonRoom(
+      this.env,
+      materializer,
+      notebookId,
+      notebook.owner_principal,
+      sessionId,
+      (result) => {
+        this.deliverRoomHostFrames(notebookId, result);
+        if (result.changed)
+          this.scheduleRoomHostCheckpoint(notebookId, materializer, "managed_python");
+      },
+    );
+    const entry = { runtime, ready: Promise.resolve() };
+    this.managedPython.set(notebookId, entry);
+    entry.ready = runtime
+      .start()
+      .then(async () => {
+        const current = await materializer.getWorkstationAttachment();
+        if (
+          this.managedPython.get(notebookId) !== entry ||
+          current?.runtime_session_id !== sessionId
+        )
+          return;
+        const result = await materializer.setWorkstationAttachment({
+          ...current,
+          status: "ready",
+          updated_at: new Date().toISOString(),
+        });
+        this.deliverRoomHostFrames(notebookId, result);
+        await updateWorkstationAttachJobStatus(this.env, {
+          ownerPrincipal: notebook.owner_principal,
+          workstationId: MANAGED_PYTHON_WORKSTATION,
+          jobId: sessionId,
+          status: "running",
+        });
+        this.refreshRuntimeIdleWatch(notebookId);
+        this.state.waitUntil(runtime.wake());
+      })
+      .catch(async (error) => {
+        if (this.managedPython.get(notebookId) === entry) this.managedPython.delete(notebookId);
+        await runtime.close();
+        throw error;
+      });
+    return entry.ready;
   }
 
   private async requestRuntimeResumeForExecution(
@@ -1886,6 +2011,9 @@ export class NotebookRoom {
     const result = await materializer.setWorkstationAttachment(nextAttachment);
     if (!result.ignored_stale) {
       this.cacheSelectedRuntimePeerSession(notebookId, nextAttachment);
+      if (workstationId === MANAGED_PYTHON_WORKSTATION && managedPythonStub(this.env)) {
+        this.state.waitUntil(this.startManagedPython(notebookId, attachJob.job.id));
+      }
     }
     if (result.changed) {
       this.deliverRoomHostFrames(notebookId, result);
@@ -2498,7 +2626,7 @@ export class NotebookRoom {
   }
 
   private runtimePeerCount(): number {
-    let count = 0;
+    let count = this.managedPython.size;
     for (const peer of this.peers.values()) {
       if (peer.identity.scope === "runtime_peer") {
         count += 1;

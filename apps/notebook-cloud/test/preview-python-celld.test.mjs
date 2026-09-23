@@ -4,12 +4,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { startCelld } from "../../preview-python/test/local-celld.mjs";
-import { PythonRuntimePeer } from "../../preview-python/src/runtime-peer.js";
-import { createOutputPreparer } from "../../preview-python/src/output-manifests.js";
-import {
-  prepare_output_content,
-  RuntimeStatePeerHandle,
-} from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
+import { ManagedPythonRoom } from "../src/managed-python-room.ts";
+import { encodeTypedFrame } from "../src/protocol.ts";
+import { blobKey } from "../src/storage.ts";
+import { RuntimeStatePeerHandle } from "../../notebook/src/wasm/runtimed-wasm/runtimed_wasm.js";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 import { fixture, sync } from "./preview-python-helpers.mjs";
 
@@ -51,34 +49,62 @@ test(
       },
     );
     t.after(server.close);
-    const { host, peer, publish } = await fixture(
+    const { host } = await fixture(
       t,
       "import pandas as pd\nimport matplotlib.pyplot as plt\nprint('from real Python')\nplt.plot([1,2], [3,4])\nplt.show()\npd.DataFrame({'x':[1,2]})",
     );
     const blobs = new Map();
-    const bridge = new PythonRuntimePeer({
-      peer,
-      sessionKey: "bridge",
-      isCurrent: () => true,
-      publish,
-      pool: {
-        execute: async (_key, execution) => {
-          const response = await fetch(server.url + "/bridge", {
-            method: "POST",
-            body: JSON.stringify(execution),
-            signal: AbortSignal.timeout(40000),
-          });
-          assert.equal(response.status, 200, await response.clone().text());
-          return response.json();
-        },
-        release: async () => {},
-      },
-      prepareOutputs: createOutputPreparer({
-        prepareContent: prepare_output_content,
-        putBlob: async (blob) => blobs.set(blob.hash, blob),
+    host.set_workstation_attachment_json(
+      JSON.stringify({
+        workstation_id: "celld-preview-python",
+        display_name: "Preview Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "bridge",
       }),
-    });
-    await bridge.drain();
+    );
+    const env = {
+      NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+      PREVIEW_PYTHON_SESSIONS: {
+        idFromName: (name) => name,
+        get: () => ({
+          fetch: (request) =>
+            fetch(server.url + "/private" + new URL(request.url).pathname, {
+              method: request.method,
+              body: request.body,
+              duplex: "half",
+              signal: AbortSignal.timeout(40000),
+            }),
+        }),
+      },
+      NOTEBOOK_SNAPSHOTS: { put: async (key, bytes) => blobs.set(key, { bytes }) },
+    };
+    const materializer = {
+      syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveFrame: async (peer, frame) =>
+        host.receive_peer_frame(
+          peer.id,
+          peer.identity.principal,
+          peer.identity.actorLabel,
+          peer.identity.scope,
+          false,
+          encodeTypedFrame(frame.type, frame.payload),
+        ),
+      checkpoint: async () => {},
+      removePeer: async (id) => host.remove_peer(id),
+    };
+    const bridge = new ManagedPythonRoom(
+      env,
+      materializer,
+      "notebook",
+      "user:dev:owner",
+      "bridge",
+      (result) => bridge.accept(result),
+    );
+    await bridge.start();
+    await bridge.wake();
     const viewer = new RuntimeStatePeerHandle("user:dev:viewer/test");
     t.after(() => viewer.free());
     sync(host, viewer, "viewer", "viewer", true);
@@ -94,10 +120,13 @@ test(
       /from real Python/,
     );
     const html = executions[0].outputs.find((o) => o.data?.["text/html"]).data["text/html"];
-    assert.match(html.inline ?? new TextDecoder().decode(blobs.get(html.blob).bytes), /<table/);
+    assert.match(
+      html.inline ?? new TextDecoder().decode(blobs.get(blobKey("notebook", html.blob)).bytes),
+      /<table/,
+    );
     const png = executions[0].outputs.find((o) => o.data?.["image/png"]).data["image/png"];
     assert.deepEqual(
-      Array.from(blobs.get(png.blob).bytes.slice(0, 8)),
+      Array.from(blobs.get(blobKey("notebook", png.blob)).bytes.slice(0, 8)),
       [137, 80, 78, 71, 13, 10, 26, 10],
     );
     await bridge.close();
