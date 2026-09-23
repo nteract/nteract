@@ -9,7 +9,7 @@ import type {
 import type { NotebookComputeSessionSummary } from "runtimed";
 import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
-import { ensureManagedPythonWorkstation } from "./managed-python.ts";
+import { ensureManagedPythonWorkstation, MANAGED_PYTHON_WORKSTATION } from "./managed-python.ts";
 import {
   AuthError,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -1991,6 +1991,20 @@ async function routeWorkstationDeregister(
   const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (!workstation) {
     return missingWorkstationResponse();
+  }
+
+  if (
+    workstationId === MANAGED_PYTHON_WORKSTATION &&
+    workstation.provider === "celld-pyodide" &&
+    env.NOTEBOOK_CLOUD_PYTHON_PROVIDER === "celld"
+  ) {
+    return json(
+      {
+        error:
+          "Preview Python is managed by this deployment. Choose another default workstation to use your own compute.",
+      },
+      409,
+    );
   }
 
   const leaseDelete = await deleteWorkstationLease(env, ownerPrincipal, workstationId);

@@ -3464,6 +3464,41 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(body.workstations, []);
   });
 
+  it("rejects deleting deployment-managed Python without deleting its default or lease", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({
+      OWNER_COMPUTE_INDEX: compute,
+      NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+    });
+    const ownerPrincipal = "user:dev:alice";
+    const workstationId = "celld-preview-python";
+    seedWorkstation(env, { ownerPrincipal, workstationId });
+    const row = env.DB.workstations.get(workstationKey(ownerPrincipal, workstationId))!;
+    row.provider = "celld-pyodide";
+    env.DB.workstationDefaults.set(ownerPrincipal, workstationId);
+    seedWorkstationLease(compute, {
+      ownerPrincipal,
+      workstationId,
+      lastSeenAt: new Date().toISOString(),
+    });
+    const response = await worker.fetch(
+      new Request(`http://localhost/api/workstations/${workstationId}`, {
+        method: "DELETE",
+        headers: { "X-Operator": "browser:tab", "X-Scope": "owner", "X-User": "alice" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(response.status, 409);
+    assert.match(
+      ((await response.json()) as { error: string }).error,
+      /managed by this deployment/,
+    );
+    assert.equal(env.DB.workstations.get(workstationKey(ownerPrincipal, workstationId)), row);
+    assert.equal(env.DB.workstationDefaults.get(ownerPrincipal), workstationId);
+    assert.equal(compute.leases.has(workstationId), true);
+  });
+
   it("does not let another principal deregister a workstation", async () => {
     const compute = new FakeOwnerComputeIndexNamespace();
     const events = new FakeWorkstationEventsNamespace();
