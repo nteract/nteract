@@ -64,6 +64,7 @@ export class PythonRuntimePeer {
       // Publish running before invoking Python. A reconnect must not rerun
       // entries that may already have produced side effects.
       this.#peer.set_execution_running(executionId);
+      this.#peer.refresh_execution_queue();
       await this.#publish();
       this.#assertCurrent();
       let result;
@@ -85,6 +86,7 @@ export class PythonRuntimePeer {
           }),
         );
         this.#peer.set_execution_done(executionId, false);
+        this.#peer.refresh_execution_queue();
         this.#peer.set_kernel_error("Python session ended; restart to continue");
         await this.#publish();
         throw error;
@@ -97,6 +99,7 @@ export class PythonRuntimePeer {
         this.#peer.append_output_json(executionId, JSON.stringify(manifest));
       }
       this.#peer.set_execution_done(executionId, result.success);
+      this.#peer.refresh_execution_queue();
       await this.#publish();
       // Abort already queued work after a Python error, but keep the interpreter
       // usable for a later explicit execution. Never replay the failed request.
@@ -107,6 +110,7 @@ export class PythonRuntimePeer {
         )) {
           if (queued.status === "queued") this.#peer.set_execution_cancelled(queuedId);
         }
+        this.#peer.refresh_execution_queue();
         await this.#publish();
         return;
       }

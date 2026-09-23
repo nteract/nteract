@@ -22,6 +22,8 @@ test("bridge executes synced source and publishes through actual room permission
       execute: async (key, execution) => {
         calls.push(execution);
         assert.equal(peer.get_runtime_state().executions[execution.execution_id].status, "running");
+        assert.equal(peer.get_runtime_state().queue.executing.execution_id, execution.execution_id);
+        assert.equal(peer.get_runtime_state().queue.queued.length, 0);
         return {
           execution_count: 1,
           success: true,
@@ -49,6 +51,8 @@ test("bridge executes synced source and publishes through actual room permission
   assert.equal(execution.success, true);
   assert.deepEqual(execution.outputs[0].text, { inline: "hello\n" });
   assert.equal(execution.cell_id, "code");
+  assert.equal(observer.get_runtime_state().queue.executing, null);
+  assert.deepEqual(observer.get_runtime_state().queue.queued, []);
   await bridge.close();
 });
 
@@ -106,6 +110,8 @@ test("Python exception cancels queued work and permits a later explicit executio
   const states = Object.values(peer.get_runtime_state().executions);
   assert.equal(states.filter((e) => e.status === "cancelled").length, 1);
   assert.equal(states.filter((e) => e.success === false).length, 1);
+  assert.equal(peer.get_runtime_state().queue.executing, null);
+  assert.deepEqual(peer.get_runtime_state().queue.queued, []);
   sync(host, peer, "runtime", "runtime_peer", true, request().outbound);
   await bridge.drain();
   assert.equal(calls, 2);

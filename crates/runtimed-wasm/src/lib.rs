@@ -550,6 +550,47 @@ impl RuntimeStatePeerHandle {
             .map_err(|e| JsError::new(&format!("cancel execution failed: {e}")))
     }
 
+    /// Publish the queue projection for a serial runtime from accepted execution
+    /// statuses. Status and queue changes must be flushed together.
+    pub fn refresh_execution_queue(&mut self) -> Result<(), JsError> {
+        let state = self.state_doc.read_state();
+        let mut pending: Vec<_> = state
+            .executions
+            .iter()
+            .filter(|(_, execution)| matches!(execution.status.as_str(), "queued" | "running"))
+            .collect();
+        pending.sort_by(|(id_a, a), (id_b, b)| a.seq.cmp(&b.seq).then(id_a.cmp(id_b)));
+        let running: Vec<_> = pending
+            .iter()
+            .filter(|(_, execution)| execution.status == "running")
+            .collect();
+        if running.len() > 1 {
+            return Err(JsError::new(
+                "serial runtime has multiple running executions",
+            ));
+        }
+        let executing = running.first().map(|(id, _)| runtime_doc::QueueEntry {
+            execution_id: (*id).clone(),
+        });
+        let queued: Vec<_> = pending
+            .iter()
+            .filter(|(_, execution)| execution.status == "queued")
+            .map(|(id, _)| runtime_doc::QueueEntry {
+                execution_id: (*id).clone(),
+            })
+            .collect();
+        self.state_doc
+            .set_queue(executing.as_ref(), &queued)
+            .map_err(|e| JsError::new(&format!("refresh execution queue failed: {e}")))?;
+        self.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(if executing.is_some() {
+                KernelActivity::Busy
+            } else {
+                KernelActivity::Idle
+            }))
+            .map_err(|e| JsError::new(&format!("refresh kernel activity failed: {e}")))
+    }
+
     pub fn append_output_json(
         &mut self,
         execution_id: &str,
