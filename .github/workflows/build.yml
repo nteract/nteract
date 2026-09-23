@@ -522,8 +522,9 @@ jobs:
       - name: Build and package main cloud deployment
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
+          pnpm --filter @nteract/preview-python build
           pnpm --dir apps/notebook-cloud build:viewer
-          node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/main-preview-export"
+          NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/main-preview-export"
           node .github/preview/pack.mjs "$RUNNER_TEMP/main-preview-export" "$GITHUB_SHA" "$RUNNER_TEMP/preview.bundle.gz"
 
       - name: Upload main cloud deployment bundle

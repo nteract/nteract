@@ -95,7 +95,7 @@ test("a dependency cache hit never skips installation, source compilation, or bu
   const build = jobs.get("build");
   assert.doesNotMatch(build, /cache-hit|lookup-only|sccache|SCCACHE/);
   assert.match(build, /run: pnpm install --frozen-lockfile --store-dir "\$RUNNER_TEMP\/preview-pnpm-store" --verify-store-integrity/);
-  assert.match(build, /pnpm --dir apps\/notebook-cloud build\n          node apps\/notebook-cloud\/scripts\/celld-local\.mjs export/);
+  assert.match(build, /pnpm --filter @nteract\/preview-python build\n          pnpm --dir apps\/notebook-cloud build\n          NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps\/notebook-cloud\/scripts\/celld-local\.mjs export/);
   assert.ok(build.indexOf("name: Cache Rust dependencies") > build.indexOf("name: Install Rust and the WASM builder"));
   assert.ok(build.indexOf("name: Cache Rust dependencies") < build.indexOf("name: Build and export application"));
 });

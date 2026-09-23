@@ -438,6 +438,16 @@ async function copyProjectFiles(worker, projectDir) {
   await rm(assetsDir, { recursive: true, force: true });
   await cp(path.join(appDir, worker.assets), assetsDir, { recursive: true, dereference: true });
   if (worker.name === "main" && process.env.NOTEBOOK_CLOUD_CELLD_PYTHON === "1") {
+    const runtimeLock = JSON.parse(
+      await readFile(path.join(appDir, "../preview-python/runtime-lock.json"), "utf8"),
+    );
+    await writeFile(
+      path.join(assetsDir, "__preview-python.json"),
+      JSON.stringify({
+        version: 1,
+        runtime: `pyodide-${runtimeLock.pyodide}`,
+      }),
+    );
     await cp(
       path.join(appDir, "../preview-python/dist/wheels"),
       path.join(assetsDir, "__preview-python-packages"),
@@ -445,6 +455,10 @@ async function copyProjectFiles(worker, projectDir) {
     );
   }
   if (worker.name === "main") {
+    await writeFile(
+      path.join(assetsDir, "__preview-auth.json"),
+      JSON.stringify({ version: 1, serverSessionOnly: true }),
+    );
     const migrationsDir = path.join(projectDir, "migrations");
     await rm(migrationsDir, { recursive: true, force: true });
     await cp(path.join(appDir, "migrations"), migrationsDir, { recursive: true });
