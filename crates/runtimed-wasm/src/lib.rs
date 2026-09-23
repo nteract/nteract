@@ -33,6 +33,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
+mod output_content;
+
 const MARKDOWN_PROJECTION_MIME: &str = "application/vnd.nteract.markdown+json";
 const MARKDOWN_SOURCE_MIME: &str = "text/markdown";
 const BOKEHJS_EXEC_MIME: &str = "application/vnd.bokehjs_exec.v0+json";
@@ -542,6 +544,53 @@ impl RuntimeStatePeerHandle {
             .map_err(|e| JsError::new(&format!("set execution done failed: {e}")))
     }
 
+    pub fn set_execution_cancelled(&mut self, execution_id: &str) -> Result<(), JsError> {
+        self.state_doc
+            .set_execution_cancelled(execution_id)
+            .map_err(|e| JsError::new(&format!("cancel execution failed: {e}")))
+    }
+
+    /// Publish the queue projection for a serial runtime from accepted execution
+    /// statuses. Status and queue changes must be flushed together.
+    pub fn refresh_execution_queue(&mut self) -> Result<(), JsError> {
+        let state = self.state_doc.read_state();
+        let mut pending: Vec<_> = state
+            .executions
+            .iter()
+            .filter(|(_, execution)| matches!(execution.status.as_str(), "queued" | "running"))
+            .collect();
+        pending.sort_by(|(id_a, a), (id_b, b)| a.seq.cmp(&b.seq).then(id_a.cmp(id_b)));
+        let running: Vec<_> = pending
+            .iter()
+            .filter(|(_, execution)| execution.status == "running")
+            .collect();
+        if running.len() > 1 {
+            return Err(JsError::new(
+                "serial runtime has multiple running executions",
+            ));
+        }
+        let executing = running.first().map(|(id, _)| runtime_doc::QueueEntry {
+            execution_id: (*id).clone(),
+        });
+        let queued: Vec<_> = pending
+            .iter()
+            .filter(|(_, execution)| execution.status == "queued")
+            .map(|(id, _)| runtime_doc::QueueEntry {
+                execution_id: (*id).clone(),
+            })
+            .collect();
+        self.state_doc
+            .set_queue(executing.as_ref(), &queued)
+            .map_err(|e| JsError::new(&format!("refresh execution queue failed: {e}")))?;
+        self.state_doc
+            .set_lifecycle(&RuntimeLifecycle::Running(if executing.is_some() {
+                KernelActivity::Busy
+            } else {
+                KernelActivity::Idle
+            }))
+            .map_err(|e| JsError::new(&format!("refresh kernel activity failed: {e}")))
+    }
+
     pub fn append_output_json(
         &mut self,
         execution_id: &str,
@@ -552,6 +601,44 @@ impl RuntimeStatePeerHandle {
         self.state_doc
             .append_output(execution_id, &manifest)
             .map_err(|e| JsError::new(&format!("append output failed: {e}")))
+    }
+
+    /// Clear one accepted execution while maintaining the display index.
+    pub fn clear_execution_outputs(&mut self, execution_id: &str) -> Result<bool, JsError> {
+        self.state_doc
+            .set_outputs(execution_id, &[])
+            .map_err(|e| JsError::new(&format!("clear execution outputs failed: {e}")))
+    }
+
+    /// Update every existing display with this ID, preserving output identity.
+    pub fn update_display_data_json(
+        &mut self,
+        display_id: &str,
+        data_json: &str,
+        metadata_json: &str,
+    ) -> Result<u32, JsError> {
+        let data: serde_json::Value = serde_json::from_str(data_json)
+            .map_err(|e| JsError::new(&format!("decode display data: {e}")))?;
+        let metadata: serde_json::Value = serde_json::from_str(metadata_json)
+            .map_err(|e| JsError::new(&format!("decode display metadata: {e}")))?;
+        if !data.is_object() || !metadata.is_object() {
+            return Err(JsError::new("display data and metadata must be objects"));
+        }
+        let mut changed = 0;
+        for (execution_id, output_id) in self.state_doc.get_display_index_entries(display_id) {
+            if let Some(mut manifest) = self.state_doc.get_output(&execution_id, &output_id) {
+                manifest["data"] = data.clone();
+                manifest["metadata"] = metadata.clone();
+                if self
+                    .state_doc
+                    .replace_output(&execution_id, &output_id, &manifest)
+                    .map_err(|e| JsError::new(&format!("update display failed: {e}")))?
+                {
+                    changed += 1;
+                }
+            }
+        }
+        Ok(changed)
     }
 
     pub fn put_comm_json(
@@ -745,6 +832,12 @@ impl RoomHostHandle {
 
     pub fn get_heads_hex(&mut self) -> Vec<String> {
         self.engine.notebook_heads_hex()
+    }
+
+    pub fn contains_notebook_heads(&mut self, heads: Vec<String>) -> Result<bool, JsError> {
+        self.engine
+            .contains_notebook_heads(&heads)
+            .map_err(room_host_js_error)
     }
 
     pub fn get_runtime_state_heads_hex(&mut self) -> Vec<String> {

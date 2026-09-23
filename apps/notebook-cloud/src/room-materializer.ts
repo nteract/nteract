@@ -49,12 +49,13 @@ interface RoomCheckpointMetadata {
 
 interface RoomPeer {
   id: string;
-  identity: AuthenticatedConnection;
+  identity: Pick<AuthenticatedConnection, "principal" | "actorLabel" | "scope">;
 }
 
 export class RoomMaterializer {
   private hostReady: Promise<RoomHostHandle> | undefined;
   private operationQueue: Promise<void> = Promise.resolve();
+  private readonly notebookChangeWaiters = new Set<() => void>();
   private loadedPublishedRevisionId: string | null = null;
   private loadedPublishedNotebookHeads: string[] | null = null;
   private loadedPublishedRuntimeStateHeads: string[] | null = null;
@@ -83,6 +84,51 @@ export class RoomMaterializer {
     await this.withHost((host) => {
       host.remove_peer(peerId);
     });
+  }
+
+  /** Wait outside the host operation queue so incoming sync can satisfy the fence. */
+  async waitForNotebookHeads(heads: unknown, timeoutMs = 5_000): Promise<boolean> {
+    if (heads === undefined) return true;
+    if (
+      !Array.isArray(heads) ||
+      heads.length > 1024 ||
+      heads.some((head) => typeof head !== "string" || !/^[0-9a-f]{64}$/i.test(head))
+    ) {
+      throw new Error("Invalid required notebook heads");
+    }
+    if (this.notebookChangeWaiters.size >= 128)
+      throw new Error("Too many pending execution fences");
+    let timer: ReturnType<typeof setTimeout>;
+    let expired = false;
+    const timeout = new Promise<false>((resolve) => {
+      timer = setTimeout(() => {
+        expired = true;
+        resolve(false);
+      }, timeoutMs);
+    });
+    try {
+      while (true) {
+        if (expired) return false;
+        let notify!: () => void;
+        const changed = new Promise<true>((resolve) => {
+          notify = () => resolve(true);
+        });
+        this.notebookChangeWaiters.add(notify);
+        try {
+          const present = await Promise.race([
+            this.withHost((host) => !expired && host.contains_notebook_heads(heads)),
+            timeout,
+          ]);
+          if (expired) return false;
+          if (present) return true;
+          if (!(await Promise.race([changed, timeout]))) return false;
+        } finally {
+          this.notebookChangeWaiters.delete(notify);
+        }
+      }
+    } finally {
+      clearTimeout(timer!);
+    }
   }
 
   /// Reconcile the authoritative RuntimeStateDoc after the room's runtime_peer
@@ -120,10 +166,68 @@ export class RoomMaterializer {
   /// host owns the notebook-visible selected-compute projection.
   async setWorkstationAttachment(
     attachment: WorkstationAttachmentState | null,
+    options: { onlyIfAbsent?: boolean } = {},
   ): Promise<RoomHostFrameResult> {
-    return this.withHost((host) =>
-      normalizeResult(host.set_workstation_attachment_json(JSON.stringify(attachment))),
-    );
+    return this.withHost((host) => {
+      if (
+        options.onlyIfAbsent &&
+        normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json())
+      ) {
+        return {
+          changed: false,
+          ignored_stale: true,
+          notebook_changed: false,
+          runtime_state_changed: false,
+          outbound: [],
+        };
+      }
+      return normalizeResult(host.set_workstation_attachment_json(JSON.stringify(attachment)));
+    });
+  }
+
+  /** Fence managed lifecycle changes atomically with the room's selected session. */
+  async transitionManagedPythonSession(
+    sessionId: string,
+    status: "ready" | "error",
+    reason: string | null = null,
+  ): Promise<RoomHostFrameResult> {
+    return this.withHost((host) => {
+      const current = normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json());
+      if (
+        current?.workstation_id !== "celld-preview-python" ||
+        current.runtime_session_id !== sessionId ||
+        (status === "ready" && !["connecting", "ready"].includes(current.status))
+      ) {
+        return {
+          changed: false,
+          ignored_stale: true,
+          notebook_changed: false,
+          runtime_state_changed: false,
+          outbound: [],
+        };
+      }
+      const failed =
+        status === "error"
+          ? normalizeResult(host.reconcile_runtime_peer_gone(reason ?? "Managed Python failed"))
+          : null;
+      const changed = normalizeResult(
+        host.set_workstation_attachment_json(
+          JSON.stringify({
+            ...current,
+            status,
+            status_message: reason,
+            updated_at: new Date().toISOString(),
+          }),
+        ),
+      );
+      return {
+        ...changed,
+        changed: changed.changed || !!failed?.changed,
+        notebook_changed: changed.notebook_changed || !!failed?.notebook_changed,
+        runtime_state_changed: changed.runtime_state_changed || !!failed?.runtime_state_changed,
+        outbound: [...(failed?.outbound ?? []), ...changed.outbound],
+      };
+    });
   }
 
   async reconcileRuntimeIdleTimeout(
@@ -159,8 +263,8 @@ export class RoomMaterializer {
   ): Promise<RoomHostFrameResult> {
     const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);
-    return this.withHost((host) =>
-      normalizeResult(
+    return this.withHost((host) => {
+      const result = normalizeResult(
         host.receive_peer_frame(
           peer.id,
           peer.identity.principal,
@@ -169,8 +273,12 @@ export class RoomMaterializer {
           canWriteAllNotebookChanges,
           encoded,
         ),
-      ),
-    );
+      );
+      if (result.notebook_changed) {
+        for (const notify of this.notebookChangeWaiters) notify();
+      }
+      return result;
+    });
   }
 
   async checkpoint(): Promise<void> {

@@ -391,6 +391,23 @@ impl RoomHostEngine {
         self.doc.get_heads_hex()
     }
 
+    /// Whether the room has integrated the requester's causal notebook history.
+    pub fn contains_notebook_heads(&mut self, heads: &[String]) -> Result<bool, RoomHostError> {
+        if heads.len() > 1024 {
+            return Err(RoomHostError::new("too many required notebook heads"));
+        }
+        let hashes = heads
+            .iter()
+            .map(|head| {
+                head.parse::<automerge::ChangeHash>()
+                    .map_err(|_| RoomHostError::new("invalid required notebook head"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(hashes
+            .iter()
+            .all(|head| self.doc.doc_mut().get_change_by_hash(head).is_some()))
+    }
+
     pub fn runtime_state_heads_hex(&mut self) -> Vec<String> {
         self.state_doc
             .get_heads()
@@ -763,18 +780,30 @@ impl RoomHostEngine {
         let request: serde_json::Value = serde_json::from_slice(payload)
             .map_err(|e| RoomHostError::new(format!("decode request: {e}")))?;
         match request.get("action").and_then(|v| v.as_str()) {
-            // Guarded and unguarded execution intent (single-cell and run-all)
-            // both create executions; the observed-heads causal guard is deferred
-            // (see ADR run-cell follow-ups). Until then `_guarded` is accepted for
-            // wire parity but does not validate the requester's NotebookDoc heads.
             Some("execute_cell") | Some("execute_cell_guarded") => {
+                self.require_request_heads(&request)?;
                 self.handle_execute_cell(&request, peer_id, submitter_actor_label)
             }
             Some("run_all_cells") | Some("run_all_cells_guarded") => {
+                self.require_request_heads(&request)?;
                 self.handle_run_all_cells(&request, peer_id, submitter_actor_label)
             }
             _ => Ok(RoomHostFrameResult::empty()),
         }
+    }
+
+    fn require_request_heads(&mut self, request: &serde_json::Value) -> Result<(), RoomHostError> {
+        let heads: Vec<String> = match request.get("required_heads") {
+            None => Vec::new(),
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|_| RoomHostError::new("invalid required notebook heads"))?,
+        };
+        if !self.contains_notebook_heads(&heads)? {
+            return Err(RoomHostError::new(
+                "required notebook heads have not synced",
+            ));
+        }
+        Ok(())
     }
 
     /// Create a queued execution for an ExecuteCell request and broadcast it.
@@ -2980,6 +3009,58 @@ mod tests {
             .expect("second set");
         assert!(!second.changed);
         assert!(second.outbound.is_empty());
+    }
+
+    #[test]
+    fn hosted_execution_requires_synced_causal_heads_before_creating_intent() {
+        let mut host =
+            RoomHostEngine::create_empty("demo", "system/schema:notebook-cloud-room").unwrap();
+        host.seed_initial_code_cell_if_empty("cell-1").unwrap();
+        host.doc.update_source("cell-1", "old_source").unwrap();
+        let previous_heads = host.notebook_heads_hex();
+        let checkpoint = host.doc.save();
+        let mut edited = NotebookDoc::load(&checkpoint).unwrap();
+        edited.update_source("cell-1", "new_source").unwrap();
+        let heads = edited.get_heads_hex();
+        for action in [
+            "execute_cell",
+            "execute_cell_guarded",
+            "run_all_cells",
+            "run_all_cells_guarded",
+        ] {
+            let request = json!({"action": action, "cell_id": "cell-1", "required_heads": heads});
+            let error = host
+                .receive_request(
+                    "owner",
+                    "user:dev:owner/browser",
+                    true,
+                    &serde_json::to_vec(&request).unwrap(),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("have not synced"));
+            assert!(host.state_doc.read_state().executions.is_empty());
+        }
+        host.doc = edited;
+        assert!(
+            host.contains_notebook_heads(&previous_heads).unwrap(),
+            "ancestors also satisfy the fence"
+        );
+        let request =
+            json!({"action": "execute_cell", "cell_id": "cell-1", "required_heads": heads});
+        host.receive_request(
+            "owner",
+            "user:dev:owner/browser",
+            true,
+            &serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap();
+        let state = host.state_doc.read_state();
+        assert_eq!(state.executions.len(), 1);
+        assert_eq!(
+            state.executions.values().next().unwrap().source.as_deref(),
+            Some("new_source")
+        );
+        assert!(host.contains_notebook_heads(&["invalid".into()]).is_err());
     }
 
     #[test]

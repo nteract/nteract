@@ -1,3 +1,5 @@
+import { normalizedBlobUploadContentType } from "./blob-content-type.ts";
+import { storeNotebookBlob } from "./blob-storage.ts";
 import type {
   DurableObjectStub,
   Env,
@@ -8,6 +10,7 @@ import type {
 import type { NotebookComputeSessionSummary } from "runtimed";
 import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
+import { ensureManagedPythonWorkstation, MANAGED_PYTHON_WORKSTATION } from "./managed-python.ts";
 import {
   AuthError,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -50,7 +53,6 @@ import {
   listActiveWorkstationAttachJobs,
   listNotebooksForPrincipal,
   listWorkstationsForPrincipal,
-  recordBlob,
   recordRevision,
   registerWorkstation,
   revokeNotebookAclRow,
@@ -219,18 +221,6 @@ const SNAPSHOT_BLOB_HEAD_CONCURRENCY = 16;
 // operations. Sized ~10x the largest blob_ref_count observed in
 // snapshot_pair.validation.completed logs; raise it if legitimate notebooks hit it.
 const MAX_SNAPSHOT_BLOB_REFS = 2000;
-const DEFAULT_BLOB_UPLOAD_CONTENT_TYPE = "application/octet-stream";
-const ALLOWED_EXACT_BLOB_UPLOAD_CONTENT_TYPES = new Set([
-  DEFAULT_BLOB_UPLOAD_CONTENT_TYPE,
-  "application/ecmascript",
-  "application/javascript",
-  "application/json",
-  "application/pdf",
-  "application/vnd.apache.arrow.stream",
-  "application/vnd.apache.parquet",
-  "application/wasm",
-]);
-const ALLOWED_PREFIXED_BLOB_UPLOAD_CONTENT_TYPES = ["audio/", "image/", "text/", "video/"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CREATE_NOTEBOOK_ID_ATTEMPTS = 8;
 
@@ -1722,26 +1712,6 @@ function isRasterCoverMime(value: unknown): value is "image/png" | "image/jpeg" 
   return value === "image/png" || value === "image/jpeg";
 }
 
-function normalizedBlobUploadContentType(contentType: string | null): string | null {
-  const mediaType =
-    contentType == null
-      ? DEFAULT_BLOB_UPLOAD_CONTENT_TYPE
-      : (contentType.split(";")[0]?.trim().toLowerCase() ?? "");
-  if (mediaType.length === 0) {
-    return null;
-  }
-  if (ALLOWED_EXACT_BLOB_UPLOAD_CONTENT_TYPES.has(mediaType)) {
-    return mediaType;
-  }
-  if (ALLOWED_PREFIXED_BLOB_UPLOAD_CONTENT_TYPES.some((prefix) => mediaType.startsWith(prefix))) {
-    return mediaType;
-  }
-  if (mediaType.startsWith("application/") && mediaType.endsWith("+json")) {
-    return mediaType;
-  }
-  return null;
-}
-
 function parseNotebookCellComposition(
   value: string | null,
 ): { code: number; markdown: number; raw: number } | undefined {
@@ -1893,6 +1863,11 @@ async function routeWorkstations(
   const ownerPrincipal = await canonicalPrincipalForIdentity(env, identity);
 
   if (request.method === "GET") {
+    try {
+      await ensureManagedPythonWorkstation(env, ownerPrincipal);
+    } catch (error) {
+      cloudLog("warn", "managed_python.discovery_failed", { error: String(error) });
+    }
     const [workstations, defaultWorkstationId, leases, latestBuilds] = await Promise.all([
       listWorkstationsForPrincipal(env, ownerPrincipal),
       getDefaultWorkstationId(env, ownerPrincipal),
@@ -1934,6 +1909,9 @@ async function routeWorkstations(
   const registration = parseWorkstationRegistrationPayload(payload);
   if (registration instanceof Response) {
     return registration;
+  }
+  if (registration.workstationId === MANAGED_PYTHON_WORKSTATION) {
+    return json({ error: "This workstation ID is reserved for deployment-managed Python" }, 409);
   }
 
   const workstation = await registerWorkstation(env, ownerPrincipal, registration);
@@ -2016,6 +1994,20 @@ async function routeWorkstationDeregister(
   const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (!workstation) {
     return missingWorkstationResponse();
+  }
+
+  if (
+    workstationId === MANAGED_PYTHON_WORKSTATION &&
+    workstation.provider === "celld-pyodide" &&
+    env.NOTEBOOK_CLOUD_PYTHON_PROVIDER === "celld"
+  ) {
+    return json(
+      {
+        error:
+          "Python (sandboxed) is managed by this deployment. Choose another default workstation to use your own compute.",
+      },
+      409,
+    );
   }
 
   const leaseDelete = await deleteWorkstationLease(env, ownerPrincipal, workstationId);
@@ -5388,19 +5380,12 @@ async function routeBlob(
     return authorizedIdentity;
   }
 
-  // Content-addressed first-writer-wins: an existing object already holds
-  // these exact bytes (the hash was verified above), and its stored metadata
-  // (Content-Type) must not be rewritable by later writers. Skip the R2 write;
-  // recordBlob is idempotent and heals a missing catalog row.
-  const existing = await env.NOTEBOOK_SNAPSHOTS.head(key);
-  if (existing) {
-    await recordBlob(env, {
-      notebookId,
-      hash,
-      size: body.byteLength,
-      contentType,
-      r2Key: key,
-    });
+  const { deduplicated } = await storeNotebookBlob(env, notebookId, {
+    hash,
+    bytes: body,
+    contentType,
+  });
+  if (deduplicated) {
     cloudLog("info", "blob.upload.deduplicated", {
       notebook_id: notebookId,
       hash,
@@ -5413,23 +5398,6 @@ async function routeBlob(
     return json({ ok: true, key, size: body.byteLength, deduplicated: true }, 200);
   }
 
-  await env.NOTEBOOK_SNAPSHOTS.put(key, body, {
-    httpMetadata: {
-      contentType,
-      cacheControl: "public, max-age=31536000, immutable",
-    },
-    customMetadata: {
-      notebook_id: notebookId,
-      hash,
-    },
-  });
-  await recordBlob(env, {
-    notebookId,
-    hash,
-    size: body.byteLength,
-    contentType,
-    r2Key: key,
-  });
   cloudLog("info", "blob.upload.completed", {
     notebook_id: notebookId,
     hash,

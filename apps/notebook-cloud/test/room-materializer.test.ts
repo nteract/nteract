@@ -644,6 +644,61 @@ describe("RoomHostHandle", () => {
 });
 
 describe("RoomMaterializer", () => {
+  it("times out a causal fence even while checkpoint I/O blocks the host queue", async () => {
+    const materializer = new RoomMaterializer("blocked", fakeState(), {} as Env);
+    let release!: () => void;
+    (materializer as unknown as { operationQueue: Promise<void> }).operationQueue = new Promise(
+      (resolve) => {
+        release = resolve;
+      },
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waiting = materializer.waitForNotebookHeads([], 1);
+    try {
+      const result = await Promise.race([
+        waiting,
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve("still blocked"), 100);
+        }),
+      ]);
+      assert.equal(result, false);
+    } finally {
+      release();
+      clearTimeout(timer);
+      await waiting;
+    }
+  });
+
+  it("waits for causal notebook edits without blocking the sync that supplies them", async () => {
+    const materializer = new RoomMaterializer("causal", fakeState(), {} as Env);
+    const owner = NotebookHandle.create_bootstrap("user:dev:alice/desktop:causal");
+    const peer = {
+      id: "owner",
+      identity: authenticateDevRequest(
+        new Request(
+          "https://cloud.test/n/causal/sync?user=alice&operator=desktop:causal&scope=owner",
+        ),
+      ),
+    };
+    try {
+      await syncMaterializerWithClient(materializer, peer, owner);
+      const cell = JSON.parse(owner.get_cells_json())[0];
+      owner.update_source(cell.id, "print('latest source')");
+      const heads = owner.get_heads_hex();
+      assert.equal(await materializer.waitForNotebookHeads(heads, 1), false);
+      const waiting = materializer.waitForNotebookHeads(heads);
+      const message = owner.flush_local_changes();
+      assert.ok(message);
+      await materializer.receiveFrame(peer, { type: FrameType.AUTOMERGE_SYNC, payload: message });
+      assert.equal(await waiting, true);
+      assert.equal(await materializer.waitForNotebookHeads(heads, 1), true);
+      await assert.rejects(materializer.waitForNotebookHeads(["invalid"]), /Invalid required/);
+      await assert.rejects(materializer.waitForNotebookHeads("invalid"), /Invalid required/);
+    } finally {
+      owner.free();
+    }
+  });
+
   it("seeds a brand-new hosted room with one initial code cell", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);
@@ -1791,6 +1846,33 @@ describe("RoomMaterializer", () => {
     assert.equal(again.changed, false, "same attachment is idempotent");
     assert.equal(again.ignored_stale, false);
     assert.deepEqual(again.outbound, []);
+  });
+
+  it("does not replace explicit compute with a newer automatic selection", async () => {
+    const materializer = new RoomMaterializer("demo", fakeState(), {} as Env);
+    const selected = {
+      workstation_id: "explicit",
+      display_name: "My compute",
+      provider: "runtime_peer",
+      default_environment_label: "Python",
+      environment_policy: "runtime_peer",
+      status: "ready",
+      updated_at: "2026-09-23T00:00:00.000Z",
+    };
+    await materializer.setWorkstationAttachment(selected);
+    const before = await materializer.getWorkstationAttachment();
+    const result = await materializer.setWorkstationAttachment(
+      {
+        ...selected,
+        workstation_id: "celld-preview-python",
+        status: "idle",
+        updated_at: "2026-09-24T00:00:00.000Z",
+      },
+      { onlyIfAbsent: true },
+    );
+    assert.equal(result.changed, false);
+    assert.equal(result.ignored_stale, true);
+    assert.deepEqual(await materializer.getWorkstationAttachment(), before);
   });
 
   it("passes through ignored stale workstation attachment publishes", async () => {

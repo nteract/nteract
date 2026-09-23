@@ -22,6 +22,9 @@ export interface CloudNotebookNoticesProps {
   authState: CloudPrototypeAuthState;
   authRenewal: CloudAuthRenewalState;
   connectionError: string | null;
+  requestError?: string | null;
+  computeError?: string | null;
+  onRetryCompute?: () => void;
   hasAppSession?: boolean;
   /**
    * The room accepted this browser as an anonymous public viewer. In this
@@ -128,6 +131,8 @@ export function cloudNotebookHasNotices({
   authState,
   authRenewal,
   connectionError,
+  requestError = null,
+  computeError = null,
   hasAppSession = false,
   isPublicViewer = false,
   hasReadableSnapshot = false,
@@ -182,6 +187,8 @@ export function cloudNotebookHasNotices({
     Boolean(offlineMergeNotice) ||
     Boolean(connectionNotice) ||
     Boolean(rendererAssetError) ||
+    Boolean(requestError) ||
+    Boolean(computeError) ||
     Boolean(diagnostics) ||
     shouldShowStatusNotice
   );
@@ -191,6 +198,8 @@ export function CloudNotebookNotices({
   authState,
   authRenewal,
   connectionError,
+  requestError = null,
+  computeError = null,
   hasAppSession = false,
   isPublicViewer = false,
   hasReadableSnapshot = false,
@@ -202,6 +211,7 @@ export function CloudNotebookNotices({
   syncHealStalled = false,
   status,
   diagnostics,
+  onRetryCompute,
   onResetAuth,
   onRetryConnection,
   onRetryRendererAssets,
@@ -212,6 +222,8 @@ export function CloudNotebookNotices({
       authState,
       authRenewal,
       connectionError,
+      requestError,
+      computeError,
       hasAppSession,
       isPublicViewer,
       hasReadableSnapshot,
@@ -375,6 +387,33 @@ export function CloudNotebookNotices({
           Rich outputs are paused because their renderer assets failed to load. Code and text stay
           readable; retry to restore outputs.
         </NotebookNotice>
+      ) : null}
+
+      {computeError ? (
+        <div role="alert">
+          <NotebookNotice
+            tone="error"
+            icon={<AlertCircle />}
+            title="Compute could not start."
+            actions={
+              onRetryCompute ? (
+                <NotebookNoticeAction onClick={onRetryCompute} icon={<RotateCcw />}>
+                  Retry compute
+                </NotebookNoticeAction>
+              ) : null
+            }
+          >
+            {computeError}
+          </NotebookNotice>
+        </div>
+      ) : null}
+
+      {requestError && !computeError ? (
+        <div role="alert">
+          <NotebookNotice tone="error" icon={<AlertCircle />} title="Request could not run.">
+            {requestError}
+          </NotebookNotice>
+        </div>
       ) : null}
 
       {diagnostics}

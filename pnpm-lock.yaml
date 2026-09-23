@@ -654,6 +654,16 @@ importers:
         specifier: 'catalog:'
         version: 0.1.16(@opentelemetry/api@1.9.1)(@types/node@20.19.37)(@voidzero-dev/vite-plus-core@0.1.16(@types/node@20.19.37)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.21.0)(typescript@5.8.3)(yaml@2.8.3))(esbuild@0.28.0)(jiti@2.7.0)(jsdom@29.0.2)(tsx@4.21.0)(typescript@5.8.3)(yaml@2.8.3)
 
+  apps/preview-python:
+    dependencies:
+      pyodide:
+        specifier: 0.28.3
+        version: 0.28.3
+    devDependencies:
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+
   apps/renderer-test:
     dependencies:
       react:
@@ -9215,6 +9225,10 @@ packages:
   puppeteer-core@21.11.0:
     resolution: {integrity: sha512-ArbnyA3U5SGHokEvkfWjW+O8hOxV1RSJxOgriX/3A4xZRqixt9ZFHD0yPgZQF05Qj0oAqi8H/7stDorjoHY90Q==}
     engines: {node: '>=16.13.2'}
+
+  pyodide@0.28.3:
+    resolution: {integrity: sha512-rtCsyTU55oNGpLzSVuAd55ZvruJDEX8o6keSdWKN9jPeBVSNlynaKFG7eRqkiIgU7i2M6HEgYtm0atCEQX3u4A==}
+    engines: {node: '>=18.0.0'}
 
   qs@6.15.0:
     resolution: {integrity: sha512-mAZTtNCeetKMH+pSjrb76NAM8V9a05I9aBZOHztWy/UqcJdQYNsf59vrRKWnojAT9Y+GbIvoTBC++CPHqpDBhQ==}
@@ -20179,6 +20193,13 @@ snapshots:
       - encoding
       - react-native-b4a
       - supports-color
+      - utf-8-validate
+
+  pyodide@0.28.3:
+    dependencies:
+      ws: 8.20.1
+    transitivePeerDependencies:
+      - bufferutil
       - utf-8-validate
 
   qs@6.15.0:

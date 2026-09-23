@@ -44,6 +44,106 @@ before(async () => {
 });
 
 describe("NotebookRoom presence rewrite", () => {
+  it("lets the next socket sync satisfy a waiting execution request", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    await state.drain();
+    const harness = roomHarness(room);
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+      ),
+      connectedAt: new Date().toISOString(),
+      consecutiveRejectedFrames: 0,
+      workstation: null,
+    };
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: peer.id,
+      identity: peer.identity,
+      connectedAt: new Date().toISOString(),
+    });
+    harness.peers.set(peer.id, peer);
+    let releaseHeads!: (present: boolean) => void;
+    const headsArrived = new Promise<boolean>((resolve) => {
+      releaseHeads = resolve;
+    });
+    const executed: string[] = [];
+    harness.materializers.set("demo", {
+      waitForNotebookHeads: () => headsArrived,
+      receiveFrame: async (_peer: unknown, frame: { type: number; payload: Uint8Array }) => {
+        if (frame.type === FrameType.AUTOMERGE_SYNC) releaseHeads(true);
+        if (frame.type === FrameType.REQUEST)
+          executed.push(JSON.parse(new TextDecoder().decode(frame.payload)).id);
+        return noopMaterializedResult();
+      },
+    } as never);
+    Object.assign(room, { ensureRuntimeForHostedExecution: async () => true });
+    const request = encodeTypedFrame(
+      FrameType.REQUEST,
+      new TextEncoder().encode(
+        JSON.stringify({
+          id: "causal",
+          action: "execute_cell",
+          cell_id: "code",
+          required_heads: ["a".repeat(64)],
+        }),
+      ),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const returned = await Promise.race([
+        room.webSocketMessage(peer.socket, request).then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), 100);
+        }),
+      ]);
+      assert.equal(
+        returned,
+        true,
+        "the socket reader must be allowed to receive the required sync",
+      );
+      assert.deepEqual(executed, []);
+      await room.webSocketMessage(
+        peer.socket,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({ id: "later", action: "execute_cell", cell_id: "code" }),
+          ),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(executed, [], "later requests cannot overtake the causal wait");
+      await room.webSocketMessage(
+        peer.socket,
+        encodeTypedFrame(FrameType.AUTOMERGE_SYNC, new Uint8Array([0])),
+      );
+      await state.drain();
+      assert.deepEqual(executed, ["causal", "later"]);
+      Object.assign(harness.materializers.get("demo")!, {
+        waitForNotebookHeads: async () => {
+          harness.peers.delete(peer.id);
+          return true;
+        },
+      });
+      await room.webSocketMessage(peer.socket, request);
+      await state.drain();
+      assert.deepEqual(
+        executed,
+        ["causal", "later"],
+        "disconnect during causal wait must not submit execution",
+      );
+    } finally {
+      clearTimeout(timer);
+      releaseHeads(false);
+      await state.drain();
+    }
+  });
+
   it("does not broadcast an in-flight cursor update after announcing the peer's departure", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);
@@ -2738,6 +2838,7 @@ describe("NotebookRoom materialized sync routing", () => {
       checkpoint: async () => undefined,
     });
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3599,6 +3700,87 @@ describe("NotebookRoom materialized sync routing", () => {
       },
     } as never);
 
+    harness.peers.set(peer.id, peer);
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+
+    assert.equal(materialized, 1, "connecting attach may queue initial execution");
+    assert.equal(reconciled, 0);
+    assert.equal(peer.consecutiveRejectedFrames, 0);
+    assert.equal(socket.sent.length, 1);
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
+  it("preserves startup errors and accepts a retry on the same peer", async () => {
+    const room = new NotebookRoom(fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity,
+      connectedAt: "2026-05-22T00:00:00.000Z",
+      consecutiveRejectedFrames: 0,
+    };
+    const harness = roomHarness(room);
+    let materialized = 0;
+    let reconciled = 0;
+    let failed = true;
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        materialized += 1;
+        return noopMaterializedResult();
+      },
+      checkpoint: async () => undefined,
+      removePeer: async () => undefined,
+      getWorkstationAttachment: async () => ({
+        workstation_id: "ws-lab",
+        display_name: "Lab",
+        provider: "runtime_peer",
+        default_environment_label: "Current Python",
+        environment_policy: "current_python",
+        status: failed ? "error" : "connecting",
+        status_message: failed ? "Your Python session limit was reached." : null,
+        cpu_count: null,
+        memory_bytes: null,
+        working_directory: null,
+        updated_at: "2026-05-22T00:00:00.000Z",
+        runtime_session_id: "job-new",
+      }),
+      reconcileRuntimePeerGone: async () => {
+        reconciled += 1;
+        return noopMaterializedResult();
+      },
+    } as never);
+
+    harness.peers.set(peer.id, peer);
+    await harness.handleMessage(
+      "demo",
+      peer,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "request-1", action: "execute_cell", cell_id: "cell-1" }),
+        ),
+      ),
+    );
+    assert.equal(materialized, 0);
+    assert.equal(reconciled, 0);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(rejected.reason, "Your Python session limit was reached.");
+    failed = false;
+    socket.sent.length = 0;
     await harness.handleMessage(
       "demo",
       peer,
@@ -3666,6 +3848,7 @@ describe("NotebookRoom materialized sync routing", () => {
       },
     } as never);
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3739,6 +3922,7 @@ describe("NotebookRoom materialized sync routing", () => {
       },
     } as never);
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3813,6 +3997,7 @@ describe("NotebookRoom materialized sync routing", () => {
       consecutiveRejectedFrames: 0,
     };
 
+    harness.peers.set(peer.id, peer);
     await harness.handleMessage(
       "demo",
       peer,
@@ -3832,7 +4017,11 @@ describe("NotebookRoom materialized sync routing", () => {
     const attachment = await materializer.getWorkstationAttachment();
     assert.equal(attachment?.status, "connecting");
     assert.equal(attachment?.runtime_session_id, db.attachJobs[0]?.id);
-    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    const accepted = socket.sent
+      .filter((frame) => frame[0] === FrameType.SESSION_CONTROL)
+      .map((frame) => decodeJsonPayload<Record<string, unknown>>(frame.slice(1)))
+      .find((control) => control.type === "cloud_frame_accepted");
+    assert.ok(accepted);
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
@@ -3898,6 +4087,7 @@ describe("NotebookRoom materialized sync routing", () => {
       consecutiveRejectedFrames: 0,
     };
 
+    harness.peers.set(ownerPeer.id, ownerPeer);
     await harness.handleMessage(
       "demo",
       ownerPeer,
@@ -3919,7 +4109,11 @@ describe("NotebookRoom materialized sync routing", () => {
     const reconnectingAttachment = await materializer.getWorkstationAttachment();
     assert.equal(reconnectingAttachment?.status, "connecting");
     assert.equal(reconnectingAttachment?.runtime_session_id, db.attachJobs[0]?.id);
-    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    const accepted = socket.sent
+      .filter((frame) => frame[0] === FrameType.SESSION_CONTROL)
+      .map((frame) => decodeJsonPayload<Record<string, unknown>>(frame.slice(1)))
+      .find((control) => control.type === "cloud_frame_accepted");
+    assert.ok(accepted);
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
@@ -4434,6 +4628,39 @@ describe("NotebookRoom runtime_peer-gone watchdog", () => {
     assert.equal(await state.state.storage.get("runtime_peer_gone_watch"), undefined);
     assert.equal(await state.state.storage.get("runtime_peer_gone_watch_alarm_at"), undefined);
     assert.equal(await state.getAlarm(), null);
+  });
+
+  it("rearms idle cleanup when managed Python publishes completion", async () => {
+    const state = alarmCapableState();
+    const room = new NotebookRoom(state.state, {} as Env);
+    const harness = roomHarness(room);
+    harness.peers.set("rt", peerWithScope("rt", "runtime_peer"));
+    let executing = true;
+    harness.materializers.set("demo", {
+      getRuntimeExecutionActivity: async () => ({ executing, queueDepth: executing ? 1 : 0 }),
+    } as never);
+    const publish = () =>
+      (
+        room as unknown as {
+          deliverManagedPythonPublication(
+            notebookId: string,
+            result: ReturnType<typeof noopMaterializedResult>,
+          ): void;
+        }
+      ).deliverManagedPythonPublication("demo", {
+        ...noopMaterializedResult(),
+        runtime_state_changed: true,
+      });
+    publish();
+    await state.drain();
+    assert.equal(await state.getAlarm(), null);
+    executing = false;
+    const completedAt = Date.now();
+    publish();
+    await state.drain();
+    const deadline = await state.getAlarm();
+    assert.ok(deadline! >= completedAt + RUNTIME_IDLE_TTL_MS);
+    assert.ok(deadline! <= Date.now() + RUNTIME_IDLE_TTL_MS);
   });
 
   it("does not arm idle teardown while execution is active or queued", async () => {

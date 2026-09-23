@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 automerge = { workspace = true }
+base64 = { workspace = true }
 comments-doc = { path = "../comments-doc" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-room-host = { path = "../notebook-room-host" }

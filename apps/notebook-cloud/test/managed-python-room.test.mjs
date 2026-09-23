@@ -1,0 +1,134 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { ManagedPythonRoom } from "../src/managed-python-room.ts";
+import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
+import { fixture, sync } from "./preview-python-helpers.mjs";
+import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
+import { encodeTypedFrame } from "../src/protocol.ts";
+
+for (const staleQueue of [false, true])
+  test(`managed room publishes execution and repairs stale queue: ${staleQueue}`, async (t) => {
+    await initializeTestRuntimedWasm();
+    const { host, peer, publish } = await fixture(t);
+    if (staleQueue) {
+      const id = Object.keys(peer.get_runtime_state().executions)[0];
+      peer.set_execution_done(id, true);
+      await publish();
+    }
+    host.set_workstation_attachment_json(
+      JSON.stringify({
+        workstation_id: "celld-preview-python",
+        display_name: "Python (sandboxed)",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "session",
+      }),
+    );
+    const requests = [];
+    const env = {
+      NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+      PREVIEW_PYTHON_SESSIONS: {
+        idFromName: (n) => n,
+        get: () => ({
+          fetch: async (request) => {
+            const body = await request.json();
+            requests.push({ path: new URL(request.url).pathname, ...body });
+            if (new URL(request.url).pathname === "/execute")
+              return Response.json({
+                execution_count: 1,
+                success: true,
+                outputs: [{ output_type: "stream", name: "stdout", text: "managed output\n" }],
+              });
+            return Response.json({ ok: true });
+          },
+        }),
+      },
+    };
+    const materializer = {
+      syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveFrame: async (peer, frame) =>
+        host.receive_peer_frame(
+          peer.id,
+          peer.identity.principal,
+          peer.identity.actorLabel,
+          peer.identity.scope,
+          false,
+          encodeTypedFrame(frame.type, frame.payload),
+        ),
+      checkpoint: async () => {},
+      removePeer: async (id) => host.remove_peer(id),
+    };
+    const runtime = new ManagedPythonRoom(
+      env,
+      materializer,
+      "notebook",
+      "user:dev:owner",
+      "session",
+      (result) => runtime.accept(result),
+    );
+    await runtime.start();
+    await runtime.wake();
+    assert.equal(requests[0].path, "/open");
+    const executed = requests.find((r) => r.path === "/execute");
+    if (!staleQueue) {
+      assert.equal(executed.ownerPrincipal, "user:dev:owner");
+      assert.equal(executed.notebookId, "notebook");
+      assert.equal(executed.sessionId, "session");
+      assert.equal(executed.execution.source, "print('accepted from notebook')");
+    } else assert.equal(executed, undefined);
+    const viewer = new RuntimeStatePeerHandle("user:dev:viewer/test");
+    t.after(() => viewer.free());
+    sync(host, viewer, "viewer", "viewer", true);
+    const execution = Object.values(viewer.get_runtime_state().executions)[0];
+    assert.equal(execution.status, "done");
+    if (!staleQueue) assert.deepEqual(execution.outputs[0].text, { inline: "managed output\n" });
+    assert.equal(viewer.get_runtime_state().queue.executing, null);
+    assert.deepEqual(viewer.get_runtime_state().queue.queued, []);
+    await runtime.close();
+    assert.equal(requests.at(-1).path, "/close");
+  });
+
+test("managed lifecycle updates cannot overwrite a replacement session", async () => {
+  await initializeTestRuntimedWasm();
+  const { RoomMaterializer } = await import("../src/room-materializer.ts");
+  const materializer = new RoomMaterializer(
+    "fencing",
+    { storage: { get: async () => undefined } },
+    {},
+  );
+  const attachment = {
+    workstation_id: "celld-preview-python",
+    display_name: "Python (sandboxed)",
+    provider: "celld-pyodide",
+    default_environment_label: "Python",
+    environment_policy: "curated",
+    status: "connecting",
+    runtime_session_id: "old",
+  };
+  await materializer.setWorkstationAttachment(attachment);
+  await materializer.setWorkstationAttachment({ ...attachment, runtime_session_id: "replacement" });
+  assert.equal(
+    (await materializer.transitionManagedPythonSession("old", "error", "old startup failed"))
+      .ignored_stale,
+    true,
+  );
+  assert.equal(
+    (await materializer.transitionManagedPythonSession("old", "ready")).ignored_stale,
+    true,
+  );
+  assert.equal((await materializer.getWorkstationAttachment()).status, "connecting");
+  await materializer.transitionManagedPythonSession(
+    "replacement",
+    "error",
+    "package initialization failed",
+  );
+  const failed = await materializer.getWorkstationAttachment();
+  assert.equal(failed.status, "error");
+  assert.equal(failed.status_message, "package initialization failed");
+  assert.equal(
+    (await materializer.transitionManagedPythonSession("replacement", "ready")).ignored_stale,
+    true,
+  );
+});

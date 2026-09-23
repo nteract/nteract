@@ -1208,6 +1208,7 @@ export async function setDefaultWorkstation(
   env: Env,
   ownerPrincipal: string,
   workstationId: string,
+  options: { onlyIfAbsent?: boolean } = {},
 ): Promise<string | null> {
   if (!env.DB) {
     return null;
@@ -1223,13 +1224,17 @@ export async function setDefaultWorkstation(
   await env.DB.prepare(
     `INSERT INTO workstation_defaults (owner_principal, workstation_id, updated_at)
      VALUES (?, ?, ?)
-     ON CONFLICT(owner_principal) DO UPDATE SET
+     ON CONFLICT(owner_principal) ${
+       options.onlyIfAbsent
+         ? "DO NOTHING"
+         : `DO UPDATE SET
        workstation_id = excluded.workstation_id,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at`
+     }`,
   )
     .bind(ownerPrincipal, workstationId, now)
     .run();
-  return workstationId;
+  return options.onlyIfAbsent ? getDefaultWorkstationId(env, ownerPrincipal) : workstationId;
 }
 
 export async function createWorkstationAttachJob(

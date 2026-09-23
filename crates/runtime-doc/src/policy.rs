@@ -339,7 +339,7 @@ fn validate_runtime_peer_execution_update(
         return Err(runtime_state_policy_error(
             scope,
             "executions",
-            &format!("terminal execution outputs are append-only for {execution_id}"),
+            &format!("terminal execution outputs permit only append or display data updates for {execution_id}"),
         ));
     }
 
@@ -354,7 +354,41 @@ fn runtime_peer_outputs_preserved_prefix(
         && before
             .iter()
             .zip(after.iter())
-            .all(|(before_output, after_output)| before_output == after_output)
+            .all(|(before_output, after_output)| {
+                before_output == after_output
+                    || runtime_peer_display_update_allowed(before_output, after_output)
+            })
+}
+
+// IPython display handles remain live after the creating execution finishes.
+// Permit only their payload/metadata to change, never output identity, type,
+// display ID, ordering, execution result, or accepted-source provenance.
+fn runtime_peer_display_update_allowed(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) -> bool {
+    if !matches!(
+        before.get("output_type").and_then(|v| v.as_str()),
+        Some("display_data" | "execute_result")
+    ) || before
+        .pointer("/transient/display_id")
+        .and_then(|v| v.as_str())
+        .is_none_or(str::is_empty)
+        || !after.get("data").is_some_and(|v| v.is_object())
+        || !after.get("metadata").is_some_and(|v| v.is_object())
+    {
+        return false;
+    }
+    let (Some(mut before), Some(mut after)) =
+        (before.as_object().cloned(), after.as_object().cloned())
+    else {
+        return false;
+    };
+    for key in ["data", "metadata"] {
+        before.remove(key);
+        after.remove(key);
+    }
+    before == after
 }
 
 fn runtime_peer_status_transition_allowed(before: &str, after: &str) -> bool {
@@ -1387,6 +1421,64 @@ mod tests {
 
         validate_runtime_state_sync_scope(&before, &after, RuntimeStateWriteScope::RuntimePeer)
             .unwrap();
+    }
+
+    #[test]
+    fn runtime_peer_policy_allows_only_payload_changes_for_terminal_displays() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("accepted", "display(value)", 0)
+            .unwrap();
+        doc.set_execution_running("accepted").unwrap();
+        let output = serde_json::json!({"output_id": "stable", "output_type": "display_data", "transient": {"display_id": "handle"}, "data": {"text/plain": {"inline": "old"}}, "metadata": {}});
+        doc.append_output("accepted", &output).unwrap();
+        doc.set_execution_done("accepted", true).unwrap();
+        let before = runtime_state_policy_snapshot(&doc);
+        for (field, value, allowed) in [
+            (
+                "data",
+                serde_json::json!({"text/html": {"inline": "<b>new</b>"}}),
+                true,
+            ),
+            ("metadata", serde_json::json!({"expanded": true}), true),
+            (
+                "transient",
+                serde_json::json!({"display_id": "other"}),
+                false,
+            ),
+            ("output_type", serde_json::json!("stream"), false),
+            ("output_id", serde_json::json!("other"), false),
+            ("data", serde_json::json!("invalid"), false),
+        ] {
+            let mut after_doc = RuntimeStateDoc::from_doc(doc.doc().clone());
+            let mut changed = output.clone();
+            changed[field] = value;
+            after_doc
+                .replace_output("accepted", "stable", &changed)
+                .unwrap();
+            let after = runtime_state_policy_snapshot(&after_doc);
+            assert_eq!(
+                validate_runtime_state_sync_scope(
+                    &before,
+                    &after,
+                    RuntimeStateWriteScope::RuntimePeer
+                )
+                .is_ok(),
+                allowed,
+                "field {field}"
+            );
+            assert!(validate_runtime_state_sync_scope(
+                &before,
+                &after,
+                RuntimeStateWriteScope::Editor
+            )
+            .is_err());
+            assert!(validate_runtime_state_sync_scope(
+                &before,
+                &after,
+                RuntimeStateWriteScope::Viewer
+            )
+            .is_err());
+        }
     }
 
     #[test]

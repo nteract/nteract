@@ -2968,6 +2968,30 @@ describe("Worker artifact routes", () => {
     assert.deepEqual(await response.json(), { error: "sign in to list notebooks" });
   });
 
+  it("reserves the managed Python workstation ID for server registration", async () => {
+    const env = fakeEnv();
+    const response = await worker.fetch(
+      new Request("http://localhost/api/workstations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Operator": "workstation:test",
+          "X-Scope": "owner",
+          "X-User": "alice",
+        },
+        body: JSON.stringify({
+          workstation_id: "celld-preview-python",
+          display_name: "Pretend managed",
+        }),
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(response.status, 409);
+    assert.match(((await response.json()) as { error: string }).error, /reserved/);
+    assert.equal(env.DB.workstations.size, 0);
+  });
+
   it("registers and lists user-owned workstations", async () => {
     const env = fakeEnv();
 
@@ -3462,6 +3486,41 @@ describe("Worker artifact routes", () => {
     };
     assert.equal(body.default_workstation_id, null);
     assert.deepEqual(body.workstations, []);
+  });
+
+  it("rejects deleting deployment-managed Python without deleting its default or lease", async () => {
+    const compute = new FakeOwnerComputeIndexNamespace();
+    const env = fakeEnv({
+      OWNER_COMPUTE_INDEX: compute,
+      NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+    });
+    const ownerPrincipal = "user:dev:alice";
+    const workstationId = "celld-preview-python";
+    seedWorkstation(env, { ownerPrincipal, workstationId });
+    const row = env.DB.workstations.get(workstationKey(ownerPrincipal, workstationId))!;
+    row.provider = "celld-pyodide";
+    env.DB.workstationDefaults.set(ownerPrincipal, workstationId);
+    seedWorkstationLease(compute, {
+      ownerPrincipal,
+      workstationId,
+      lastSeenAt: new Date().toISOString(),
+    });
+    const response = await worker.fetch(
+      new Request(`http://localhost/api/workstations/${workstationId}`, {
+        method: "DELETE",
+        headers: { "X-Operator": "browser:tab", "X-Scope": "owner", "X-User": "alice" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(response.status, 409);
+    assert.match(
+      ((await response.json()) as { error: string }).error,
+      /managed by this deployment/,
+    );
+    assert.equal(env.DB.workstations.get(workstationKey(ownerPrincipal, workstationId)), row);
+    assert.equal(env.DB.workstationDefaults.get(ownerPrincipal), workstationId);
+    assert.equal(compute.leases.has(workstationId), true);
   });
 
   it("does not let another principal deregister a workstation", async () => {
@@ -5857,7 +5916,7 @@ describe("Worker artifact routes", () => {
     assert.equal(env.DB.blobs.has(`runtime-demo:${hash}`), false);
 
     const response = await scopedPut(env, `/api/n/runtime-demo/blobs/${hash}`, body, {
-      "Content-Type": "image/png",
+      "Content-Type": "text/html",
       "X-Scope": "runtime_peer",
       "X-User": "runtime-service",
       "X-Operator": "runtime:py-3.12",
@@ -11857,13 +11916,14 @@ class FakeR2Bucket implements R2Bucket {
     key: string,
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
     options?: R2PutOptions,
-  ): Promise<R2Object> {
+  ): Promise<R2Object | null> {
     const object = new FakeR2Object(
       key,
       await toBytes(value),
       options?.httpMetadata,
       options?.customMetadata,
     );
+    if (options?.onlyIf?.etagDoesNotMatch === "*" && this.objects.has(key)) return null;
     this.objects.set(key, object);
     return object;
   }

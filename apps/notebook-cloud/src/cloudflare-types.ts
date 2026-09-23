@@ -2,6 +2,9 @@ export interface Env {
   NOTEBOOK_ROOMS: DurableObjectNamespace;
   OWNER_COMPUTE_INDEX?: DurableObjectNamespace;
   WORKSTATION_EVENTS?: DurableObjectNamespace;
+  /** Explicit celld-only opt-in; absent from generic Cloudflare deployments. */
+  NOTEBOOK_CLOUD_PYTHON_PROVIDER?: "celld";
+  PREVIEW_PYTHON_SESSIONS?: DurableObjectNamespace;
   DB?: D1Database;
   NOTEBOOK_SNAPSHOTS?: R2Bucket;
   ASSETS?: WorkerAssets;
@@ -139,7 +142,7 @@ export interface R2Bucket {
     key: string,
     value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null,
     options?: R2PutOptions,
-  ): Promise<R2Object>;
+  ): Promise<R2Object | null>;
   delete(key: string): Promise<void>;
 }
 
@@ -162,6 +165,7 @@ export interface R2ObjectBody extends R2Object {
 }
 
 export interface R2PutOptions {
+  onlyIf?: { etagDoesNotMatch: string };
   httpMetadata?: R2HTTPMetadata;
   customMetadata?: Record<string, string>;
 }
