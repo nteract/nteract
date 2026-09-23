@@ -3,6 +3,7 @@ export class SessionPool {
   #create;
   #sessions = new Map();
   #warm = [];
+  #warmQuarantined = false;
   #closed = false;
   #clock;
   #maxSessions;
@@ -69,16 +70,18 @@ export class SessionPool {
   }
 
   warm() {
-    if (this.#closed) return;
+    if (this.#closed || this.#warmQuarantined) return;
     while (this.#warm.length < this.#warmCount && this.#runtimeCount < this.#maxSessions) {
       const candidate = this.#fresh();
       this.#warm.push(candidate);
       void candidate.then((result) => {
         if (result.error) {
+          if (result.error.runtimeRetained === true) this.#warmQuarantined = true;
           const index = this.#warm.indexOf(candidate);
           if (index !== -1) this.#warm.splice(index, 1);
-          // Keep any quarantined deployment reservation, but let the next
-          // discovery retry a clean standby without an automatic retry loop.
+          // A normal startup failure can retry on later discovery. Unconfirmed
+          // destruction stops background warming until provider restart, so
+          // polling cannot quarantine every deployment slot after a host fault.
         }
       });
     }

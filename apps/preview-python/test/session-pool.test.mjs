@@ -288,3 +288,22 @@ for (const assignedBeforeFailure of [false, true]) {
     await pool.close();
   });
 }
+
+test("discovery cannot exhaust all slots after an unconfirmed standby cleanup", async () => {
+  let created = 0;
+  const pool = new SessionPool({
+    maxSessions: 4,
+    warmCount: 1,
+    create: async () => {
+      if (++created === 1)
+        throw Object.assign(new Error("standby cleanup uncertain"), { runtimeRetained: true });
+      return { info: {}, dispose: async () => {} };
+    },
+  });
+  await assert.rejects(pool.prewarm(), /cleanup uncertain/);
+  for (let i = 0; i < 10; i++) await pool.prewarm();
+  assert.equal(created, 1, "discovery stops automatic warming after quarantine");
+  await pool.open("explicit-session", "alice");
+  assert.equal(created, 2, "explicit admission can still use remaining capacity");
+  await pool.close();
+});
