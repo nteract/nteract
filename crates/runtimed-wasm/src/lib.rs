@@ -686,6 +686,11 @@ impl RoomHostHandle {
             .map_err(|error| JsError::new(&format!("serialize room result: {error}")))
     }
 
+    /// Apply a peer frame and return document/sync effects. Execution requests
+    /// may also return `execution_response` in the NotebookResponse wire shape.
+    /// Hosts must persist any changed documents before using that receipt as an
+    /// acknowledgement, and supply request correlation themselves. The receipt
+    /// does not indicate completion; progress and outputs remain in RuntimeStateDoc.
     pub fn receive_peer_frame(
         &mut self,
         peer_id: &str,
