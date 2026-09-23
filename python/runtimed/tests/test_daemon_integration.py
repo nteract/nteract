@@ -1870,11 +1870,21 @@ class TestProjectFileDetection:
             await asyncio.sleep(0.5)
 
         try:
-            await session.start_kernel(
-                kernel_type="python",
-                env_source="auto",
-                notebook_path=notebook_path,
-            )
+            # Shutdown acknowledges cancellation before the auto-launch owner
+            # releases its gate. A manual launch can still join that cancelled
+            # attempt; retry only that outcome before checking env detection.
+            for attempt in range(3):
+                try:
+                    await session.start_kernel(
+                        kernel_type="python",
+                        env_source="auto",
+                        notebook_path=notebook_path,
+                    )
+                    break
+                except runtimed.RuntimedError as e:
+                    if str(e) != "Kernel launch was cancelled by shutdown" or attempt == 2:
+                        raise
+                    await asyncio.sleep(0.1)
         except runtimed.RuntimedError as e:
             assert env_name in str(e)
             await async_wait_for_conda_env_yml_missing(
