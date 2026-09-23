@@ -58,6 +58,7 @@ class LengthPrefixedFrames {
     reject: (err: Error) => void;
   }> = [];
   private liveHandler: ((frame: Buffer) => void) | null = null;
+  private failure: Error | null = null;
 
   push(chunk: Buffer): void {
     this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
@@ -67,6 +68,7 @@ class LengthPrefixedFrames {
   readFrame(): Promise<Buffer> {
     const frame = this.shiftFrame();
     if (frame) return Promise.resolve(frame);
+    if (this.failure) return Promise.reject(this.failure);
     return new Promise((resolve, reject) => {
       this.waiters.push({ resolve, reject });
     });
@@ -78,13 +80,16 @@ class LengthPrefixedFrames {
   }
 
   fail(err: Error): void {
+    this.failure = err;
     for (const waiter of this.waiters) waiter.reject(err);
     this.waiters = [];
   }
 
   private drain(): void {
     let frame: Buffer | null;
-    while ((frame = this.shiftFrame())) {
+    // A handshake and following sync/status frames can share one socket read.
+    // Keep them until the async bootstrap installs the forwarding consumer.
+    while ((this.waiters.length > 0 || this.liveHandler) && (frame = this.shiftFrame())) {
       const waiter = this.waiters.shift();
       if (waiter) waiter.resolve(frame);
       else this.liveHandler?.(frame);
@@ -344,6 +349,28 @@ async function handleRelayConnection(
   }
 
   const frames = new LengthPrefixedFrames();
+  let forwarding = false;
+  let daemonClosed = false;
+  let daemonError: Error | null = null;
+  const finishDisconnect = () => {
+    if (daemonError) {
+      control(ws, {
+        type: "unavailable",
+        payload: {
+          reason: "daemon_socket_error",
+          message: daemonError.message,
+          guidance: "Restart the dev daemon with `cargo xtask dev-daemon`.",
+        },
+      });
+    }
+    control(ws, { type: "disconnected" });
+    ws.close(1011, "daemon socket closed");
+  };
+  ws.on("close", () => daemon?.destroy());
+  if (ws.readyState !== ws.OPEN) {
+    daemon.destroy();
+    return;
+  }
   daemon.on("data", (chunk) => {
     try {
       frames.push(chunk);
@@ -356,20 +383,14 @@ async function handleRelayConnection(
   });
   daemon.on("error", (err) => {
     frames.fail(err);
-    control(ws, {
-      type: "unavailable",
-      payload: {
-        reason: "daemon_socket_error",
-        message: err.message,
-        guidance: "Restart the dev daemon with `cargo xtask dev-daemon`.",
-      },
-    });
-    ws.close(1011, "daemon socket error");
+    daemonError = err;
   });
   daemon.on("close", () => {
     frames.fail(new Error("daemon socket closed"));
-    control(ws, { type: "disconnected" });
-    ws.close(1011, "daemon socket closed");
+    daemonClosed = true;
+    // Initial-load failures send final status and immediately close. Deliver
+    // ready (including viewer scope) and buffered frames before disconnecting.
+    if (forwarding) finishDisconnect();
   });
 
   try {
@@ -424,9 +445,27 @@ async function handleRelayConnection(
     return;
   }
 
-  frames.pipeTo((frame) => {
-    if (ws.readyState === ws.OPEN) ws.send(frame);
-  });
+  try {
+    frames.pipeTo((frame) => {
+      if (ws.readyState === ws.OPEN) ws.send(frame);
+    });
+    forwarding = true;
+    if (daemonClosed) finishDisconnect();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(`[browser-relay] ${message}`);
+    control(ws, {
+      type: "unavailable",
+      payload: {
+        reason: "daemon_frame_error",
+        message,
+        guidance: "Check the dev daemon logs with `./target/debug/runt daemon logs -f`.",
+      },
+    });
+    ws.close(1011, "daemon frame error");
+    daemon.destroy();
+    return;
+  }
 
   ws.on("message", (data, isBinary) => {
     if (!isBinary || !daemon || daemon.destroyed) return;
@@ -434,7 +473,6 @@ async function handleRelayConnection(
     if (!frame) return;
     writeFrame(daemon, frame);
   });
-  ws.on("close", () => daemon?.destroy());
 }
 
 export function browserDevRelayPlugin(options: RelayOptions): Plugin {
