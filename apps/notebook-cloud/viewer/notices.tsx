@@ -33,6 +33,8 @@ export interface CloudNotebookNoticesProps {
    */
   isPublicViewer?: boolean;
   hasReadableSnapshot?: boolean;
+  /** The startup shell owns ordinary loading; actionable notices still render. */
+  loadingOwnedByShell?: boolean;
   /**
    * The route has no authenticated browser identity and the live-room join is
    * retrying without a readable public snapshot. This is different from stale
@@ -136,6 +138,7 @@ export function cloudNotebookHasNotices({
   hasAppSession = false,
   isPublicViewer = false,
   hasReadableSnapshot = false,
+  loadingOwnedByShell = false,
   signInRequired = false,
   signInRequiredOwnedByStage = false,
   offlineMergeNotice = null,
@@ -150,6 +153,7 @@ export function cloudNotebookHasNotices({
     : null;
   const shouldShowStatusNotice =
     status.kind !== "ready" &&
+    !(status.kind === "loading" && loadingOwnedByShell) &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !(connectionNotice && status.kind === "loading") &&
     !signInRequired &&
@@ -203,6 +207,7 @@ export function CloudNotebookNotices({
   hasAppSession = false,
   isPublicViewer = false,
   hasReadableSnapshot = false,
+  loadingOwnedByShell = false,
   signInRequired = false,
   signInRequiredOwnedByStage = false,
   offlineMergeNotice = null,
@@ -227,6 +232,7 @@ export function CloudNotebookNotices({
       hasAppSession,
       isPublicViewer,
       hasReadableSnapshot,
+      loadingOwnedByShell,
       signInRequired,
       signInRequiredOwnedByStage,
       offlineMergeNotice,
@@ -245,6 +251,7 @@ export function CloudNotebookNotices({
     : null;
   const shouldShowStatusNotice =
     status.kind !== "ready" &&
+    !(status.kind === "loading" && loadingOwnedByShell) &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !(connectionNotice && status.kind === "loading") &&
     !signInRequired &&

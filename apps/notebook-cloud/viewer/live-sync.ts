@@ -1,4 +1,5 @@
 import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
+import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { BehaviorSubject, ReplaySubject, type Observable } from "rxjs";
 import {
   SyncEngine,
@@ -36,6 +37,7 @@ import {
   encodeInteractionPresenceAfterInit,
   encodeSelectionPresenceAfterInit,
   loadNotebookHandleFromBytes,
+  initializeRuntimedWasmClient,
   type NotebookHandle,
 } from "./runtimed-wasm-client";
 
@@ -252,6 +254,7 @@ export async function connectCloudSyncRuntime({
   onConnectionLost,
   onTransportCreated,
 }: CloudSyncConnectOptions): Promise<CloudSyncRuntime> {
+  markCloudViewerLoadMilestone("live-connect-start");
   const transport = new CloudWebSocketTransport({ connectTarget, onControl, onConnectionLost });
   onTransportCreated?.(transport);
   try {
@@ -259,9 +262,15 @@ export async function connectCloudSyncRuntime({
     // disconnect, so initial-connect failures ride the same loop instead
     // of dead-ending the session. `ready` resolves on the first successful
     // handshake, whenever that happens.
-    const ready = await transport.ready;
     const wasmModuleUrl = new URL(runtimedWasmModulePath, location.href);
     const wasmUrl = new URL(runtimedWasmPath, location.href);
+    // Engine assets and the room handshake are independent. Join both promises
+    // immediately so an asset failure tears down the transport even while the
+    // room is retrying, and neither rejection can become unhandled.
+    const [ready] = await Promise.all([
+      transport.ready,
+      initializeRuntimedWasmClient(wasmModuleUrl, wasmUrl),
+    ]);
     const {
       handle,
       outcome: persistenceSeedOutcome,
@@ -293,6 +302,7 @@ export async function connectCloudSyncRuntime({
       logger: consoleSyncLogger,
     });
 
+    markCloudViewerLoadMilestone("live-sync-start");
     startCloudBootstrapSync(engine);
 
     const sendPresence = (payload: Uint8Array, label: string) => {

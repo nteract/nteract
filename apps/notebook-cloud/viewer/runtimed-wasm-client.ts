@@ -4,6 +4,7 @@ import {
 } from "runtimed";
 import { setMarkdownProjectionProjector } from "../../../src/lib/markdown-projection";
 import type { NotebookHandle, RuntimedWasmModule } from "../src/runtimed-wasm.ts";
+import { markCloudViewerLoadMilestone } from "./load-milestones";
 import {
   asRuntimedWasmAssetFailure,
   RUNTIMED_WASM_ASSET_FAILURE_PREFIX,
@@ -92,6 +93,7 @@ export async function initializeRuntimedWasmClient(
   }
 
   initializedSource = source;
+  if (!initialized) markCloudViewerLoadMilestone("wasm-start");
   initialized ??= loadRuntimedWasmModule(modulePath)
     .then(async (module) => {
       const binary = await resolveRuntimedWasmBinary(moduleOrPath);
@@ -104,6 +106,7 @@ export async function initializeRuntimedWasmClient(
       await module.default({ module_or_path: binary.value });
       setMarkdownProjectionProjector(module.project_markdown_json);
       resolvedModule = module;
+      markCloudViewerLoadMilestone("wasm-ready");
       return module;
     })
     .catch((error: unknown) => {

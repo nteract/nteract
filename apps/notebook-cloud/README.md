@@ -112,6 +112,28 @@ pnpm --dir apps/notebook-cloud dev:browser --rebuild
 pnpm --dir apps/notebook-cloud dev:browser --skip-build
 ```
 
+To measure creation through the first editable code cell, run this against a
+built, running local Worker:
+
+```bash
+NOTEBOOK_CLOUD_STARTUP_ASSERT=1 pnpm --dir apps/notebook-cloud profile:startup
+```
+
+The harness creates disposable notebooks on loopback only, types a comment
+without executing code, and checks it survives reopening. It reports five
+samples each of cold creation (fresh browser context), warm reopening, and
+warm creation. JSON on stdout includes catalog creation, navigation/resource
+timing, viewer/WASM/room/sync milestones, first and stable editor readiness,
+and toolbar transitions. The assertion flag checks for startup notice churn,
+controls becoming disabled again, and browser errors. Set
+`NOTEBOOK_CLOUD_STARTUP_RUNS` to change the sample count and `NTERACT_CLOUD_URL`
+to select another loopback Worker.
+
+These timings exclude hosted network latency and OIDC, and do not restart the
+Worker or browser process between samples. Create-to-editable adds API duration
+to navigation timing; it excludes dashboard input and scheduling overhead.
+The local catalog retains the timestamped probe notebooks.
+
 The local bootstrap token is synthetic and useful only because the Worker
 accepts dev credentials from `localhost`, `127.0.0.1`, and `::1` without an
 extra shared secret. Do not use `/local-auth` for deployed prototype

@@ -15,6 +15,37 @@ import { CloudNotebookNotices, cloudNotebookHasNotices } from "../viewer/notices
 
 globalThis.React = React;
 
+test("the startup shell owns loading without hiding actionable failures", () => {
+  const base = {
+    authState: authState("dev"),
+    authRenewal: { kind: "idle" as const, message: null },
+    connectionError: null,
+    loadingOwnedByShell: true,
+    status: {
+      kind: "loading" as const,
+      message: "Rendering 1 live cells while resolving output payloads...",
+    },
+    onResetAuth: () => {},
+  };
+  assert.equal(cloudNotebookHasNotices(base), false);
+  assert.equal(renderToStaticMarkup(React.createElement(CloudNotebookNotices, base)), "");
+  for (const failure of [
+    { connectionError: CLOUD_CONNECTION_NO_ACCESS_DIAGNOSTIC },
+    { connectionError: "cloud sync connect target failed: credentials unavailable" },
+    { computeError: "Failed to start compute" },
+    { requestError: "Execution denied" },
+    { status: { kind: "error" as const, message: "Unable to load notebook" } },
+    { sustainedReconnecting: true },
+    { syncHealStalled: true },
+  ]) {
+    const props = { ...base, ...failure };
+    assert.equal(cloudNotebookHasNotices(props), true);
+    const html = renderToStaticMarkup(React.createElement(CloudNotebookNotices, props));
+    assert.match(html, /data-slot="notebook-notice/);
+    assert.doesNotMatch(html, /resolving output payloads/);
+  }
+});
+
 function authState(mode: CloudPrototypeAuthState["mode"]): CloudPrototypeAuthState {
   return {
     mode,

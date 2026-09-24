@@ -1,7 +1,13 @@
 const CLOUD_VIEWER_MILESTONE_PREFIX = "nteract:notebook-cloud:";
 
 export type CloudViewerLoadMilestone =
+  | "entry-ready"
   | "viewer-start"
+  | "live-connect-start"
+  | "wasm-start"
+  | "wasm-ready"
+  | "live-sync-start"
+  | "live-sync-caught-up"
   | "snapshot-initial-cells"
   | "snapshot-ready"
   | "instant-paint-initial-cells"

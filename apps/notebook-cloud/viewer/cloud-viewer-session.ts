@@ -1514,6 +1514,7 @@ export function useCloudViewerSession({
             if (!caughtUp) return;
             caughtUpMaterializeKicked = true;
             materializeLiveCellsSafely(liveRuntime);
+            markCloudViewerLoadMilestone("live-sync-caught-up");
           }),
           // Offline-merge derivation taps (no new engine observables):
           // notebookDocChanged$ emissions are local flush attempts while
