@@ -115,7 +115,7 @@ describe.skipIf(!nativeEnabled)("explicit environment.yml initialization", () =>
     expect(fs.readdirSync(project)).toEqual([]);
     const manifest = await rt.initializeEnvironmentYml(options);
     expect(manifest).toBe(
-      path.join(path.toNamespacedPath(fs.realpathSync(project)), "environment.yml"),
+      path.join(path.toNamespacedPath(fs.realpathSync.native(project)), "environment.yml"),
     );
     const original = fs.readFileSync(manifest, "utf8");
     await expect(rt.initializeEnvironmentYml(options)).rejects.toThrow("already exists");
