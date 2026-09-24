@@ -3,14 +3,17 @@ import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createFixtureNotebookHost } from "../../../../elements/components/fixture-notebook-host";
+import { logger } from "../../lib/logger";
 import { useHostUsername } from "../useHostUsername";
 
 function deferredUsername() {
   let resolve!: (username: string) => void;
-  const promise = new Promise<string>((done) => {
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<string>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function renderUsername(getUsername: () => Promise<string>) {
@@ -31,7 +34,10 @@ function renderUsername(getUsername: () => Promise<string>) {
   };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("useHostUsername", () => {
   it("uses the host without a Tauri username global and updates after a delayed reply", async () => {
@@ -61,11 +67,14 @@ describe("useHostUsername", () => {
   });
 
   it("keeps the empty-label fallback when lookup fails", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const error = new Error("Host unavailable");
     const { result } = renderUsername(async () => {
-      throw new Error("Host unavailable");
+      throw error;
     });
     await act(async () => {});
     expect(result.current).toBe("");
+    expect(warn).toHaveBeenCalledWith("Failed to get username:", error);
   });
 
   it("clears the previous host's name while a replacement lookup is pending", async () => {
@@ -90,11 +99,12 @@ describe("useHostUsername", () => {
     expect(result.current).toBe("Current user");
   });
 
-  it("ignores a reply after unmount", async () => {
+  it("does not log a cancelled lookup's failure after unmount", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     const username = deferredUsername();
-    const { result, unmount } = renderUsername(() => username.promise);
+    const { unmount } = renderUsername(() => username.promise);
     unmount();
-    await act(async () => username.resolve("Late user"));
-    expect(result.current).toBe("");
+    await act(async () => username.reject(new Error("Host closed")));
+    expect(warn).not.toHaveBeenCalled();
   });
 });
