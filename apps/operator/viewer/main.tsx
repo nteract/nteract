@@ -3,124 +3,56 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { OperatorStore } from "./store.ts";
-import {
-  bytes,
-  cpu,
-  currentHost,
-  format,
-  gapBetween,
-  memory,
-  timestamp,
-  type Metrics,
-} from "./metrics.ts";
+import { bytes, cpu, currentHost, format, memory, timestamp, type Metrics } from "./metrics.ts";
+import { HistoryCharts } from "./charts.tsx";
+import { endpointName, fleetGroups, fleetKnown, historyCoverage, measured } from "./projections.ts";
 import "./style.css";
 
 const store = new OperatorStore();
 
-function CpuChart({ data }: { data: Metrics }) {
-  const hosts = data.observations.filter((o) => o.kind === "host");
-  const points = hosts.map((o, i) => ({ at: o.at, value: cpu(data, hosts[i - 1], o) }));
-  if (!points.some((p) => p.value !== null))
-    return (
-      <p className="empty">
-        {data.sourceGapsTruncated
-          ? "CPU history has incomplete gap detail. Try a shorter range."
-          : "No measured CPU usage in this range."}
-      </p>
-    );
-  const start = points[0].at,
-    end = Math.max(start + 60_000, points.at(-1)!.at);
-  const x = (at: number) => 40 + ((at - start) / (end - start)) * 820;
-  const y = (value: number) => 175 - value * 1.5;
-  let path = "",
-    previous: number | null = null;
-  for (const p of points) {
-    if (p.value === null) {
-      previous = null;
-      continue;
-    }
-    path += `${data.sourceGapsTruncated || previous === null || gapBetween(data, previous, p.at, "host") ? "M" : "L"}${x(p.at)},${y(p.value)} `;
-    previous = p.at;
-  }
-  return (
-    <>
-      <svg
-        className="chart"
-        viewBox="0 0 900 220"
-        role="img"
-        aria-label="Host CPU busy percentage over time; missing samples are gaps"
-      >
-        {[0, 25, 50, 75, 100].map((v) => (
-          <g key={v}>
-            <line x1="40" x2="860" y1={y(v)} y2={y(v)} />
-            <text x="32" y={y(v) + 4} textAnchor="end">
-              {v}%
-            </text>
-          </g>
-        ))}
-        <path d={path} className="cpu-line" />
-        {points
-          .filter((p) => p.value !== null)
-          .map((p) => (
-            <circle key={p.at} cx={x(p.at)} cy={y(p.value!)} r="2">
-              <title>
-                {timestamp(p.at)} · CPU {format(p.value, "%")}
-              </title>
-            </circle>
-          ))}
-        {[0, 1, 2].map((i) => (
-          <text
-            key={i}
-            x={x(start + ((end - start) * i) / 2)}
-            y="205"
-            textAnchor={i === 0 ? "start" : i === 2 ? "end" : "middle"}
-          >
-            {new Date(start + ((end - start) * i) / 2).toLocaleString([], {
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </text>
-        ))}
-      </svg>
-      <p className="caption">
-        CPU rates between sampled counters. Chart snapshots every {format(data.strideMs / 60_000)}{" "}
-        minute(s); brief peaks can be missed. Gaps remain visible.
-      </p>
-    </>
-  );
-}
-
 function Fleet({ data }: { data: Metrics }) {
   const current = data.observations.filter((o) => o.at === data.latest?.at);
-  const known = !data.stale && data.latest?.discovery_status === "ok";
+  const groups = fleetGroups(data);
   return (
     <section>
       <div className="section-heading">
-        <h2>Fleet inventory</h2>
-        <span className="muted">{data.previews.length} retained endpoints</span>
+        <h2>Current deployments</h2>
+        <span className="muted">
+          {groups.current.length} {groups.known ? "monitored" : "listed"}
+        </span>
       </div>
       <p className="caption">
-        Deployment status is the last registry observation. Each application, output and renderer
-        service is a separate celld fleet. Measurements below come from the latest collection.
+        Each application, output and renderer service is a separate celld fleet. Values come from
+        the latest collection; an unavailable measurement stays unknown.
       </p>
-      {!known && (
+      {!groups.known && (
         <p className="notice">
-          Current fleet state is unknown. Retained deployment records are shown for reference.
+          {data.stale
+            ? "Current fleet state is unknown. Last observed deployments are shown for reference."
+            : "Managed preview discovery is unavailable. Their last observed state is shown for reference; original app measurements are independent."}
         </p>
       )}
-      {data.previews.length ? (
+      {!data.previews.some((p) => p.id === "app") && (
+        <p className="caption">
+          This collector currently covers managed main and PR deployments. The original app.runt.run
+          fleet is not included.
+        </p>
+      )}
+      {groups.current.length ? (
         <div className="fleet-grid">
-          {data.previews.map((preview) => (
+          {groups.current.map((preview) => (
             <article key={preview.id} className="fleet-card">
               <div className="section-heading">
-                <h3>{preview.id}</h3>
+                <h3>{endpointName(preview.id)}</h3>
                 <Badge variant="outline">
-                  {known ? preview.status : `Last: ${preview.status}`}
+                  {fleetKnown(data, preview.id) ? preview.status : `Last: ${preview.status}`}
                 </Badge>
               </div>
-              <p className="revision">Revision {preview.revision?.slice(0, 12) ?? "unknown"}</p>
+              <p className="revision">
+                {preview.id === "app"
+                  ? "Observed outside the preview lifecycle"
+                  : `Revision ${preview.revision?.slice(0, 12) ?? "unknown"}`}
+              </p>
               {preview.desiredRevision && preview.desiredRevision !== preview.revision && (
                 <p className="caption">Requested {preview.desiredRevision.slice(0, 12)}</p>
               )}
@@ -131,14 +63,18 @@ function Fleet({ data }: { data: Metrics }) {
                 const fleet = current.find(
                   (o) => o.kind === "fleet" && o.preview === preview.id && o.role === role,
                 );
-                const s = known && service?.status === "ok" ? service.values : {};
-                const f = known && fleet?.status === "ok" ? fleet.values : {};
+                const known = fleetKnown(data, preview.id);
+                const s = known && measured(service) ? service!.values : {};
+                const f = known && measured(fleet) ? fleet!.values : {};
                 return (
                   <div className="fleet-role" key={role}>
                     <div>
                       <strong>{role}</strong>
                       <small>{known ? (service?.status ?? "unmeasured") : "unknown"}</small>
                     </div>
+                    {known && fleet?.status !== "ok" && (
+                      <p className="caption">Fleet census: {fleet?.status ?? "unmeasured"}</p>
+                    )}
                     <dl>
                       <div>
                         <dt>Memory</dt>
@@ -158,11 +94,17 @@ function Fleet({ data }: { data: Metrics }) {
                           {format(s.automatic_restarts)} / {format(s.oom_kills)}
                         </dd>
                       </div>
+                      <div>
+                        <dt>Waiting: activation / capacity</dt>
+                        <dd>
+                          {format(f.activation_waiting)} / {format(f.capacity_waiting)}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Pressure</dt>
+                        <dd>{f.pressured === 0 ? "No" : f.pressured === 1 ? "Yes" : "—"}</dd>
+                      </div>
                     </dl>
-                    {f.pressured === 1 && <p className="notice">Memory pressure reported</p>}
-                    {(f.capacity_waiting ?? 0) > 0 && (
-                      <p className="notice">{format(f.capacity_waiting)} waiting for capacity</p>
-                    )}
                   </div>
                 );
               })}
@@ -170,7 +112,24 @@ function Fleet({ data }: { data: Metrics }) {
           ))}
         </div>
       ) : (
-        <p className="empty">No deployment inventory has been collected.</p>
+        <p className="empty">No current deployments were observed.</p>
+      )}
+      {groups.retained.length > 0 && (
+        <details className="retained">
+          <summary>{groups.retained.length} stopped previews · saved state retained</summary>
+          <p className="caption">
+            These previews are stopped, so there are no current fleet measurements. Their saved
+            state and deployment history remain available.
+          </p>
+          <ul className="retained-list">
+            {groups.retained.map((p) => (
+              <li key={p.id}>
+                <strong>{p.id}</strong>
+                <span>Revision {p.revision?.slice(0, 12) ?? "unknown"}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </section>
   );
@@ -178,6 +137,7 @@ function Fleet({ data }: { data: Metrics }) {
 
 function Dashboard({ data, hours }: { data: Metrics; hours: number }) {
   const host = currentHost(data);
+  const coverage = historyCoverage(data);
   const busy = host ? cpu(data, data.currentHost.at(-2), host, true) : null;
   return (
     <>
@@ -186,6 +146,14 @@ function Dashboard({ data, hours }: { data: Metrics; hours: number }) {
         {data.latest ? timestamp(data.latest.at) : "No samples yet"}
         <br />
         {data.provenance} · Collected and refreshed every 60 seconds.
+        {coverage.first !== null && (
+          <>
+            <br />
+            Available history begins {timestamp(coverage.first)}.
+            {data.coverage!.requestedFrom < coverage.first &&
+              " Earlier selected time has no retained measurements."}
+          </>
+        )}
       </div>
       <div className="gauges">
         {[
@@ -201,16 +169,34 @@ function Dashboard({ data, hours }: { data: Metrics; hours: number }) {
           </div>
         ))}
       </div>
-      <section>
-        <div className="section-heading">
-          <h2>CPU history</h2>
-          <span className="muted">
-            Last {hours >= 24 ? `${hours / 24} day(s)` : `${hours} hours`}
-          </span>
-        </div>
-        <CpuChart data={data} />
-      </section>
+      <HistoryCharts data={data} hours={hours} />
       <Fleet data={data} />
+      {data.processChanges && (
+        <section>
+          <h2>Service process changes</h2>
+          <p className="caption">
+            Observed process replacements include manual starts. Times mark collection, not the
+            exact restart.
+            {data.processChanges.length > 10 &&
+              ` Showing the latest 10 of ${data.processChanges.length} returned observations; the JSON export includes the full returned history.`}
+          </p>
+          {data.processChanges.length ? (
+            <ul className="events">
+              {data.processChanges.slice(0, 10).map((event, i) => (
+                <li key={i}>
+                  {endpointName(event.preview) || "Infrastructure"} · {event.role}
+                  <small>{timestamp(event.at)}</small>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="caption">No process replacements observed in this range.</p>
+          )}
+          {data.processChangesTruncated && (
+            <p className="notice">Process-change history is incomplete. Choose a shorter range.</p>
+          )}
+        </section>
+      )}
       <div className="details-grid">
         <section>
           <h2>Deployment history</h2>
@@ -223,7 +209,7 @@ function Dashboard({ data, hours }: { data: Metrics; hours: number }) {
                 .map((event, i) => (
                   <li key={`${event.at}-${i}`}>
                     <span>
-                      {event.preview} · {event.status}
+                      {endpointName(event.preview)} · {event.status}
                     </span>
                     <small>
                       {timestamp(event.at)} · {event.revision?.slice(0, 12) ?? "revision unknown"}
@@ -252,7 +238,7 @@ function Dashboard({ data, hours }: { data: Metrics; hours: number }) {
             </div>
             <div>
               <dt>Collection gaps</dt>
-              <dd>{data.gaps.length}</dd>
+              <dd>{coverage.gaps}</dd>
             </div>
             <div>
               <dt>Retention</dt>
@@ -261,8 +247,7 @@ function Dashboard({ data, hours }: { data: Metrics; hours: number }) {
           </dl>
           {data.sourceGapsTruncated && (
             <p className="notice">
-              Gap detail is incomplete. Only adjacent CPU samples are shown, with disconnected chart
-              lines.
+              Gap detail is incomplete. Chart points are shown without connecting lines.
             </p>
           )}
           {data.latest?.recovery && <p className="notice">Journal recovery recorded</p>}

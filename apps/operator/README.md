@@ -10,10 +10,20 @@ session protocol. Transient profile-storage failures remain retryable.
 This is application source, **not an installed deployment**. The existing metrics
 collector remains owned by `nteract/preview-infra`; this app does not collect host
 state, read journals, enumerate raw Durable Object identities, or call a model.
-It shows host CPU history, current measured memory/disk, separate application /
-output / renderer fleets, resident counts, sockets, restart/OOM counts and retained
-deployment events. Missing values stay unknown. Current state and retained history
-have separate labels; the initial collection and refresh cadence is one minute.
+It shows host CPU/memory history, Durable Object class history, observed room
+presence, current memory/disk, separate application / output / renderer fleets,
+queue/pressure gauges, sockets, restart/OOM counts and process/deployment events.
+Current deployments appear first; stopped previews are collapsed with their saved
+state and revisions. Available-history boundaries distinguish the first retained
+capture from collection outages. Missing values stay unknown; partial sources
+retain numeric measurements that are present. Collection and refresh run once per
+minute. Presence is application-reported per half hour, not simultaneous occupancy
+or unique people; absent reports do not establish zero users.
+
+The collector may also supply metric ID `app` for the original `app.runt.run`
+fleet. It is labeled as observed outside the preview lifecycle, with no deployment
+controls or invented revision. The UI remains compatible with older readers that
+omit coverage, presence or process-change fields and describes unavailable panels.
 
 ## Authentication and read boundary
 
@@ -34,7 +44,7 @@ have separate labels; the initial collection and refresh cadence is one minute.
   changes. There are no deployment controls.
 - The Worker forwards fixed GET queries to `http://127.0.0.1:9464`. It sends no user
   cookies or credentials upstream. Only 1/6/24/168/336-hour windows and exact
-  `main` / `pr-N` filters are accepted. JSON and CSV exports use the same gate.
+  `app` / `main` / `pr-N` filters are accepted. JSON and CSV exports use the same gate.
   Unknown upstream routes, arbitrary URLs, SQL, redirects and deployment API
   forwarding are absent. `OPERATOR_METRICS_SERVICE_TOKEN` supplies a dedicated
   32-byte random credential encoded as 64 lowercase hex characters in the fixed
