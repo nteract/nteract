@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, expectTypeOf, it, vi } from "vite-plus/test";
 import type { ExecutionViewChangeset, SessionStatus } from "../src/index";
 
 const require = createRequire(import.meta.url);
@@ -245,6 +245,8 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
 describe.skipIf(!nativeEnabled)("@runtimed/node daemon compatibility probe", () => {
   const compatible = {
     type: "daemon_info",
+    // Keep this supported fixture aligned with notebook-wire and
+    // runtimed-client/src/protocol.rs when their compatibility versions change.
     protocol_version: 4,
     daemon_api_version: 1,
     daemon_version: "0.0.0+different-build",
@@ -302,6 +304,13 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon compatibility probe", () 
   }
 
   it("preserves reported versions and accepts a different artifact build", async () => {
+    const rootApi: typeof import("../src/index") = require("../src/index.cjs");
+    const relayApi: typeof import("../src/relay") = require("../src/relay.cjs");
+    expect(rootApi.queryDaemonInfo).toBe(relayApi.queryDaemonInfo);
+    expectTypeOf<typeof rootApi.queryDaemonInfo>().toEqualTypeOf<typeof relayApi.queryDaemonInfo>();
+    expectTypeOf<import("../src/relay").DaemonInfo>().toEqualTypeOf<
+      import("../src/binding").DaemonInfo
+    >();
     const { result, socketPath } = await probe(compatible);
     expect(result).toMatchObject({
       version: compatible.daemon_version,

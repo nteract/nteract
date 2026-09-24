@@ -976,7 +976,11 @@ jobs:
         run: cargo build -p runtimed
 
       - name: Test runtimed-node native integration
-        run: vp test run packages/runtimed-node/tests/arrow-ipc.test.ts packages/runtimed-node/tests/native-session.test.ts
+        # Runtime test transforms erase expectTypeOf/satisfies checks. Check
+        # public declarations against native types after building the binding.
+        run: |
+          pnpm --dir packages/runtimed-node typecheck:contracts
+          vp test run packages/runtimed-node/tests/arrow-ipc.test.ts packages/runtimed-node/tests/native-session.test.ts
         env:
           RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
 

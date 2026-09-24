@@ -373,6 +373,7 @@ contract against an isolated daemon. CI runs this check without a Python kernel:
 
 ```bash
 pnpm --dir packages/runtimed-node build:debug
+pnpm --dir packages/runtimed-node typecheck:contracts
 cargo xtask artifacts ensure runtime,sift,renderer
 cargo build -p runtimed
 RUNTIMED_NODE_NATIVE_INTEGRATION=1 \

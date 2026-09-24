@@ -1,6 +1,6 @@
 import type { Observable } from "rxjs";
 
-export { RelaySession, connectRelay, createRelay, openRelayPath } from "./relay";
+export { RelaySession, connectRelay, createRelay, openRelayPath, queryDaemonInfo } from "./relay";
 export type {
   CommentsNotebookRef,
   CreateRelayOptions,

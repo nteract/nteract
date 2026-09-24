@@ -77,6 +77,7 @@
     "smoke:relay": "node scripts/smoke-relay.cjs",
     "smoke:api": "node scripts/smoke-api.cjs",
     "build:stores": "node scripts/build-execution-store.mjs",
+    "typecheck:contracts": "tsc --project tsconfig.contracts.json",
     "check:stores": "node scripts/build-execution-store.mjs --check"
   },
   "dependencies": {
