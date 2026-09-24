@@ -104,6 +104,7 @@ async function route(
 ): Promise<Response> {
   const origin = configured(env, request, localDevelopment);
   const url = new URL(request.url);
+  const site = request.headers.get("Sec-Fetch-Site");
   const publicNavigation =
     request.method === "GET" &&
     ["/", "/operator", "/operator/"].includes(url.pathname) &&
@@ -111,9 +112,14 @@ async function route(
     request.headers.get("Sec-Fetch-Dest") === "document";
   // TLS may terminate at a reverse proxy. Use the configured public origin,
   // never forwarded headers, to validate browser origins and create redirects.
+  // Missing Fetch Metadata is a compatibility path, not proof of same origin;
+  // session authorization and explicit Origin checks still apply.
   if (
     (request.headers.has("Origin") && request.headers.get("Origin") !== origin) ||
-    (request.headers.get("Sec-Fetch-Site") === "cross-site" &&
+    // Preview subdomains are same-site but are not trusted application origins.
+    (site !== null &&
+      site !== "same-origin" &&
+      site !== "none" &&
       url.pathname !== "/oidc" &&
       !publicNavigation)
   )

@@ -45,14 +45,19 @@ async function fixture(t: TestContext, email = "operator.one@example.test") {
   });
   const request = (path: string, init: RequestInit = {}) =>
     worker.fetch(new Request(`${ORIGIN}${path}`, init), env);
-  const login = async () => {
+  const login = async (site?: string) => {
     const start = await request("/api/auth/oidc/login?return_to=https://evil.test");
     assert.equal(start.status, 302);
     const authorization = await issuer.handle(new Request(start.headers.get("Location")!));
     assert.ok(authorization);
     const callback = await worker.fetch(
       new Request(authorization.headers.get("Location")!, {
-        headers: { cookie: start.headers.get("Set-Cookie")!.split(";")[0] },
+        headers: {
+          cookie: start.headers.get("Set-Cookie")!.split(";")[0],
+          ...(site
+            ? { "Sec-Fetch-Site": site, "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" }
+            : {}),
+        },
       }),
       env,
     );
@@ -175,31 +180,49 @@ test("removing a safelisted identity in the refresh window revokes its session",
   assert.equal((await f.request("/api/operator/metrics", { headers: { cookie } })).status, 401);
   assert.equal(f.calls.length, 0);
 });
-test("cross-site top-level navigation reaches the login landing page but never APIs or assets", async (t) => {
+test("cross-origin navigation reaches only the public shell; sibling sites cannot start login or renewal", async (t) => {
   const f = await fixture(t);
   f.env.ASSETS = {
     async fetch() {
       return new Response("shell");
     },
   };
-  const headers = {
-    "Sec-Fetch-Site": "cross-site",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Dest": "document",
-  };
-  for (const path of ["/", "/operator", "/operator/"])
-    assert.equal((await f.request(path, { headers })).status, path === "/operator/" ? 200 : 302);
-  for (const path of [
-    "/api/operator/metrics",
-    "/api/operator/export.csv",
-    "/api/operator/session",
-    "/operator/assets/index-abc.js",
-  ])
-    assert.equal((await f.request(path, { headers })).status, 403);
-  assert.equal(
-    (await f.request("/operator/", { headers: { ...headers, "Sec-Fetch-Dest": "iframe" } })).status,
-    403,
-  );
+  for (const site of ["same-site", "cross-site", "unrecognized"]) {
+    const headers = {
+      "Sec-Fetch-Site": site,
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Dest": "document",
+    };
+    for (const path of ["/", "/operator", "/operator/"])
+      assert.equal((await f.request(path, { headers })).status, path === "/operator/" ? 200 : 302);
+    for (const path of [
+      "/api/operator/metrics",
+      "/api/operator/export.csv",
+      "/api/operator/session",
+      "/operator/assets/index-abc.js",
+    ])
+      assert.equal((await f.request(path, { headers })).status, 403);
+    assert.equal(
+      (await f.request("/operator/", { headers: { ...headers, "Sec-Fetch-Dest": "iframe" } }))
+        .status,
+      403,
+    );
+    const blockedLogin = await f.request("/api/auth/oidc/login", {
+      headers: { ...headers, "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image" },
+    });
+    assert.equal(blockedLogin.status, 403);
+    assert.equal(blockedLogin.headers.get("Set-Cookie"), null);
+  }
+  for (const site of ["same-origin", "none"])
+    assert.equal(
+      (await f.request("/api/operator/metrics", { headers: { "Sec-Fetch-Site": site } })).status,
+      401,
+    );
+  for (const site of ["same-site", "cross-site"]) {
+    const { callback } = await f.login(site);
+    assert.equal(callback.status, 303);
+    assert.equal(callback.headers.get("Location"), "/operator/");
+  }
   assert.equal(f.calls.length, 0);
 });
 test("origin protection, logout and configuration fail closed", async (t) => {
