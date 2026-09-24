@@ -1,3 +1,4 @@
+import { CloudNotebookHomeStore } from "../cloud-notebook-home-store";
 import { renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it } from "vite-plus/test";
@@ -22,6 +23,7 @@ describe("CloudStoresProvider", () => {
 
     const fixtureAccessRequest = new CloudAccessRequestStore({ readSelectedMode: () => "edit" });
     const fixtureStores: CloudStores = {
+      notebookHome: new CloudNotebookHomeStore(),
       accessRequest: fixtureAccessRequest,
       catalog: cloudCatalogStore,
       user: cloudUserStore,
