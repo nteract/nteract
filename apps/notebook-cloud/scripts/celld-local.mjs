@@ -464,6 +464,12 @@ async function copyProjectFiles(worker, projectDir) {
     );
   }
   if (worker.name === "main") {
+    // Preview deployment supplies its own trusted bindings and schedules;
+    // exported wrangler configuration is deliberately excluded from bundles.
+    await writeFile(
+      path.join(assetsDir, "__preview-notebook-home.json"),
+      JSON.stringify({ version: 1 }),
+    );
     await writeFile(
       path.join(assetsDir, "__preview-auth.json"),
       JSON.stringify({ version: 1, serverSessionOnly: true }),
