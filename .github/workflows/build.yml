@@ -164,6 +164,10 @@ jobs:
               - "packages/runtimed-node/**"
               - "plugins/nteract/pi/**"
               - "crates/runtimed-node/**"
+              - "crates/runtimed-client/**"
+              - "crates/notebook-protocol/**"
+              - "crates/notebook-wire/**"
+              - "crates/notebook-sync/**"
               - "crates/runtimed/**"
               - "package.json"
               - "pnpm-lock.yaml"
@@ -972,15 +976,16 @@ jobs:
       - name: Build runtimed-node N-API package
         run: pnpm --dir packages/runtimed-node build:debug
 
+      # Runtime test transforms erase expectTypeOf/satisfies checks. Check
+      # public declarations against native types after building the binding.
+      - name: Check runtimed-node public type contracts
+        run: pnpm --dir packages/runtimed-node typecheck:contracts
+
       - name: Build daemon for native session tests
         run: cargo build -p runtimed
 
       - name: Test runtimed-node native integration
-        # Runtime test transforms erase expectTypeOf/satisfies checks. Check
-        # public declarations against native types after building the binding.
-        run: |
-          pnpm --dir packages/runtimed-node typecheck:contracts
-          vp test run packages/runtimed-node/tests/arrow-ipc.test.ts packages/runtimed-node/tests/native-session.test.ts
+        run: vp test run packages/runtimed-node/tests/arrow-ipc.test.ts packages/runtimed-node/tests/native-session.test.ts
         env:
           RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
 
