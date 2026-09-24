@@ -124,7 +124,13 @@ const WORKERS = [
     name: "main",
     scriptName: "nteract-notebook-cloud-celld-local",
     entry: "src/index.ts",
-    entryExports: ["default", "NotebookRoom", "WorkstationEvents", "OwnerComputeIndex"],
+    entryExports: [
+      "default",
+      "NotebookRoom",
+      "WorkstationEvents",
+      "OwnerComputeIndex",
+      "ComputeAllocation",
+    ],
     assets: "dist",
     port: basePort,
     healthPath: "/api/health",
@@ -448,6 +454,11 @@ async function copyProjectFiles(worker, projectDir) {
         runtime: `pyodide-${runtimeLock.pyodide}`,
       }),
     );
+    // Capability only; the trusted fleet configuration decides whether to bind it.
+    await writeFile(
+      path.join(assetsDir, "__compute-allocation.json"),
+      JSON.stringify({ version: 1, provider: "celld-pyodide" }),
+    );
     await cp(
       path.join(appDir, "../preview-python/dist/wheels"),
       path.join(assetsDir, "__preview-python-packages"),
@@ -484,6 +495,16 @@ async function writeWorkerConfig(worker, projectDir, main, sessionSecret) {
       tag: "celld-local-python-v1",
       new_sqlite_classes: ["PreviewPythonSessions"],
     });
+    if (process.env.NOTEBOOK_CLOUD_CELLD_ALLOCATIONS === "1") {
+      config.durable_objects.bindings.push({
+        name: "COMPUTE_ALLOCATIONS",
+        class_name: "ComputeAllocation",
+      });
+      config.migrations.push({
+        tag: "celld-compute-allocation-v1",
+        new_sqlite_classes: ["ComputeAllocation"],
+      });
+    }
     config.worker_loaders = [{ binding: "LOADER" }];
     config.services = [
       { binding: "PACKAGES", service: worker.scriptName, entrypoint: "PackageAssets" },

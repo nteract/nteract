@@ -90,7 +90,7 @@ test("idle expiry disposes sessions and close fences pending allocation", async 
   });
   const allocation = pending.open("a");
   await Promise.resolve();
-  await pending.close();
+  const closing = pending.close();
   finish({
     info: {},
     dispose: async () => {
@@ -98,6 +98,7 @@ test("idle expiry disposes sessions and close fences pending allocation", async 
     },
   });
   await assert.rejects(allocation, /expired/);
+  await closing;
   assert.equal(disposed, true);
 });
 
@@ -113,10 +114,11 @@ test("cancelled pending allocation retains capacity until its isolate is dispose
   });
   const allocation = pool.open("a");
   await Promise.resolve();
-  await pool.release("a");
+  const releasing = pool.release("a");
   await assert.rejects(pool.open("b"), /capacity/);
   finish({ info: {}, dispose: async () => {} });
   await assert.rejects(allocation, /expired/);
+  await releasing;
   await pool.close();
 });
 
@@ -213,7 +215,8 @@ for (const retained of [false, true])
     if (retained) await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
     else await pool.open("alice/2", "alice");
     await pool.open("bob/1", "bob");
-    await pool.close();
+    if (retained) await assert.rejects(pool.close(), /startup failed/);
+    else await pool.close();
   });
 
 test("cancelled pending owner allocation stays reserved through confirmed cleanup", async () => {
@@ -229,10 +232,11 @@ test("cancelled pending owner allocation stays reserved through confirmed cleanu
   });
   const starting = pool.open("alice/1", "alice");
   await Promise.resolve();
-  await pool.release("alice/1");
+  const releasing = pool.release("alice/1");
   await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
   finish({ info: {}, dispose: async () => {} });
   await assert.rejects(starting, /expired/);
+  await releasing;
   const next = pool.open("alice/2", "alice");
   await Promise.resolve();
   finish({ info: {}, dispose: async () => {} });

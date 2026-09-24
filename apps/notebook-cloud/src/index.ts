@@ -196,6 +196,7 @@ import {
 } from "./server-oidc.ts";
 
 export { NotebookRoom, WorkstationEvents, OwnerComputeIndex };
+export { ComputeAllocation } from "./compute-allocation.ts";
 
 // `/plugins/*` is a raw static asset path in deployed Workers. Use a
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar

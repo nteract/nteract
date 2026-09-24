@@ -5,6 +5,8 @@ export interface Env {
   /** Explicit celld-only opt-in; absent from generic Cloudflare deployments. */
   NOTEBOOK_CLOUD_PYTHON_PROVIDER?: "celld";
   PREVIEW_PYTHON_SESSIONS?: DurableObjectNamespace;
+  /** Opt-in allocation lifecycle; never used as the execution transport. */
+  COMPUTE_ALLOCATIONS?: DurableObjectNamespace;
   DB?: D1Database;
   NOTEBOOK_SNAPSHOTS?: R2Bucket;
   ASSETS?: WorkerAssets;

@@ -10,6 +10,7 @@ import {
   type PythonExecutionResult,
 } from "../../preview-python/src/runtime-peer.js";
 import { createOutputPreparer } from "../../preview-python/src/output-manifests.js";
+import { computeAllocationStub } from "./compute-allocation.ts";
 
 /** Trusted room-local Automerge peer; the private compute service sees no room credentials. */
 export class ManagedPythonRoom {
@@ -82,10 +83,19 @@ export class ManagedPythonRoom {
   }
 
   private async call(path: string, extra: Record<string, unknown> = {}): Promise<unknown> {
-    const provider = managedPythonStub(this.env);
+    const allocation =
+      path === "/execute"
+        ? null
+        : computeAllocationStub(this.env, {
+            ownerPrincipal: this.ownerPrincipal,
+            notebookId: this.notebookId,
+            sessionId: this.sessionId,
+          });
+    const provider = allocation ?? managedPythonStub(this.env);
     if (!provider) throw new Error("Managed Python provider unavailable");
+    const operation = allocation ? (path === "/open" ? "/ensure" : "/release") : path;
     const response = await provider.fetch(
-      new Request(`https://preview-python.internal${path}`, {
+      new Request(`https://preview-python.internal${operation}`, {
         method: "POST",
         body: JSON.stringify({
           ownerPrincipal: this.ownerPrincipal,

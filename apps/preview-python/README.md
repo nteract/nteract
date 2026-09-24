@@ -24,6 +24,11 @@ it never replaces an existing default. The cloud room attaches a private compute
 session as an Automerge runtime peer. This remains experimental and requires a
 qualified celld deployment.
 
+An optional `COMPUTE_ALLOCATIONS` binding moves open/close ownership into a
+durable allocation object while execution continues directly to this provider.
+See [the allocation memo](../../docs/memos/compute-allocation-lifecycle.md) for
+the preview opt-in, cancellation/recovery contract, and retained-record limits.
+
 ## Build
 
 Run `pnpm --filter @nteract/preview-python build`. Runtime assets are pinned to

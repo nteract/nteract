@@ -37,7 +37,7 @@ export class PreviewPythonSessions {
       warmCount: 1,
       idleMs: PROVIDER_ORPHAN_IDLE_MS,
     });
-    this.service = createProviderService(this.pool);
+    this.service = createProviderService(this.pool, state.storage);
   }
   async fetch(request) {
     // Alarms are only lifecycle housekeeping; no notebook code is replayed.
