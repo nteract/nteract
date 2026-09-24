@@ -331,6 +331,7 @@ export class ManagedPythonRoom {
           "Waiting for another package installation before restoring saved packages…",
         );
         await this.waitForPackageCapacity(Math.min(delay, retryUntil - Date.now()));
+        await this.publishPackageState("restoring");
         // Do not issue a new attempt after the bounded admission wait expires.
         if (Date.now() >= retryUntil) break;
         delay = Math.min(delay * 2, 10_000);

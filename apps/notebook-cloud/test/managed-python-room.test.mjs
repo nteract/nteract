@@ -132,7 +132,17 @@ for (const outcome of [
               fetch: async (request) => {
                 const path = new URL(request.url).pathname;
                 requests.push({ path, ...(await request.clone().json()) });
-                if (service) return service.fetch(request);
+                if (service) {
+                  if (path === "/packages") {
+                    assert.equal(states.at(-1).phase, "restoring");
+                    assert.equal(
+                      states.at(-1).message,
+                      null,
+                      "a retry must clear waiting copy before acquisition and installation can begin",
+                    );
+                  }
+                  return service.fetch(request);
+                }
                 if (path === "/packages/inventory") return Response.json({ installed: [] });
                 if (path === "/packages")
                   return Response.json(
