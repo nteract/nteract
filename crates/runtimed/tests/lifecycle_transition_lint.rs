@@ -6,9 +6,9 @@
 //! task claim, staged artifact, prepared projection) must happen under
 //! `lock_transition`, or a torn update can publish one axis without the
 //! other and mint duplicate generation leases. The generation-bump bug
-//! family starts exactly there, so this is enforced structurally: a
-//! transition method that compiles without `lock_transition` fails CI
-//! here instead of shipping.
+//! family starts exactly there. This textual lint checks for missing
+//! or late `lock_transition` calls; it does not prove lexical guard
+//! lifetime or that every control-flow path holds the lock.
 //!
 //! Two rules over `notebook_sync_server/lifecycle.rs`:
 //!
@@ -66,7 +66,12 @@ fn production_text(source: &str) -> String {
 
 struct FnBody {
     name: String,
+    // Whitespace-free so access chains match even when rustfmt splits them.
     body: String,
+}
+
+fn without_whitespace(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 /// Split source into function bodies via brace matching. Names are the
@@ -117,7 +122,7 @@ fn function_bodies(text: &str) -> Vec<FnBody> {
         }
         out.push(FnBody {
             name,
-            body: text[body_start..=end].to_string(),
+            body: without_whitespace(&text[body_start..=end]),
         });
         i = end.max(at + 3);
     }
@@ -150,6 +155,7 @@ fn transition_lock_violations(text: &str) -> Vec<String> {
 }
 
 fn doc_lock_violations(text: &str) -> Vec<String> {
+    let text = without_whitespace(text);
     DOC_LOCK_TOKENS
         .iter()
         .filter(|t| text.contains(*t))
@@ -224,4 +230,137 @@ fn lint_catches_seeded_violations() {
 
     let doc_touch = "fn f(&self) { let doc = room.doc.write().await; }";
     assert_eq!(doc_lock_violations(doc_touch).len(), 1);
+}
+
+fn mutation_variants() -> Vec<String> {
+    let mutations = [
+        "self.source_tx.send_replace(state);",
+        "self.availability_tx.send_replace(availability);",
+        "self.task_claimed.store(true, Ordering::Release);",
+        "*self.staged.write().unwrap() = Some(artifact);",
+        "*self.prepared_projection.write().unwrap() = Some(projection);",
+    ];
+    let mut variants = Vec::new();
+    for mutation in mutations {
+        for separator in [".", ".\n    ", "\n    .", " \t.\t ", "\r\n    ."] {
+            variants.push(mutation.replace('.', separator));
+        }
+    }
+    variants
+}
+
+#[test]
+fn lint_rejects_unlocked_mutations_across_whitespace() {
+    for mutation in mutation_variants() {
+        let unlocked = format!("fn transition(&self) {{ {mutation} }}");
+        assert_eq!(
+            transition_lock_violations(&unlocked),
+            ["fn transition: mutates lifecycle state without lock_transition"],
+            "missed unlocked mutation: {mutation}"
+        );
+    }
+}
+
+#[test]
+fn lint_rejects_late_locks_across_whitespace() {
+    for mutation in mutation_variants() {
+        // A later, easily recognized mutation must not hide the first one.
+        let late = format!(
+            "fn transition(&self) {{
+                    {mutation}
+                    let _guard = self.lock_transition();
+                    self.source_tx.send_replace(state);
+                }}"
+        );
+        assert_eq!(
+            transition_lock_violations(&late),
+            ["fn transition: mutates lifecycle state before calling lock_transition"],
+            "missed mutation before lock: {mutation}"
+        );
+    }
+}
+
+#[test]
+fn lint_accepts_guarded_mutations_across_whitespace() {
+    for mutation in mutation_variants() {
+        let guarded = format!(
+            "fn transition(&self) {{
+                    if self.done {{ return; }}
+                    let _guard = self\n .lock_transition \n ();
+                    {mutation}
+                }}"
+        );
+        assert!(
+            transition_lock_violations(&guarded).is_empty(),
+            "rejected guarded mutation: {mutation}"
+        );
+    }
+}
+
+#[test]
+fn lint_rejects_document_locks_across_whitespace() {
+    for (expression, token) in [
+        ("room.doc\n .write \n ().await", "doc.write("),
+        ("room\n .doc\t.\tread\t().await", "doc.read("),
+        ("with_doc\r\n (f)", "with_doc("),
+        ("NotebookDoc::new()", "NotebookDoc"),
+    ] {
+        let text = format!(
+            "fn transition(&self) {{
+                let _guard = self.lock_transition();
+                let doc = {expression};
+            }}"
+        );
+        assert_eq!(
+            doc_lock_violations(&text),
+            [format!(
+                "lifecycle.rs references document-lock token `{token}`"
+            )],
+            "missed document lock: {expression}"
+        );
+    }
+}
+
+#[test]
+fn lint_preserves_exact_constructor_and_lock_allowlist() {
+    for name in ["new", "lock_transition", "renew", "lock_transition_later"] {
+        let text = format!("fn {name}(&self) {{ self.source_tx\n .send_replace(state); }}");
+        let violations = transition_lock_violations(&text);
+        if matches!(name, "new" | "lock_transition") {
+            assert!(violations.is_empty(), "rejected allowlisted fn {name}");
+        } else {
+            assert_eq!(
+                violations,
+                [format!(
+                    "fn {name}: mutates lifecycle state without lock_transition"
+                )]
+            );
+        }
+    }
+}
+
+#[test]
+fn lint_checks_production_but_ignores_line_comments_and_test_module() {
+    let text = production_text(
+        r#"
+        // NotebookDoc and doc.write() in prose are not lock acquisitions.
+        fn transition(&self) {
+            // lock_transition() in a comment does not protect this mutation.
+            self.source_tx // rustfmt may split access chains
+                .send_replace(state);
+        }
+        #[cfg(test)]
+mod tests {
+            fn helper() {
+                self.source_tx.send_replace(state);
+                room.doc.write();
+            }
+        }
+        "#,
+    );
+    assert_eq!(
+        transition_lock_violations(&text),
+        ["fn transition: mutates lifecycle state without lock_transition"]
+    );
+    assert!(doc_lock_violations(&text).is_empty());
 }
