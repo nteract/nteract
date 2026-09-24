@@ -1400,6 +1400,22 @@ export class CloudWebSocketTransport implements NotebookTransport {
     );
   }
 
+  async changeCloudPackage(
+    operation: "add" | "remove" | "clear",
+    requirement: string,
+  ): Promise<NotebookResponse> {
+    const id = crypto.randomUUID();
+    return this.sendRuntimePeerQuery(
+      FrameType.REQUEST,
+      new TextEncoder().encode(
+        JSON.stringify({ id, action: "cloud_package_change", operation, requirement }),
+      ),
+      id,
+      180_000,
+      "package change",
+    );
+  }
+
   onFrame(callback: FrameListener): () => void {
     this.listeners.add(callback);
     for (const frame of this.queuedFrames.splice(0)) {

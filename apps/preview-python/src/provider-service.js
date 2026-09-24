@@ -1,5 +1,10 @@
+import { installPackageManifest } from "./package-service.js";
+import { safePackageFailure } from "./package-resolver.js";
+import { PackageAdmission } from "./package-admission.js";
+
 /** Internal service-binding protocol. Never mount this on a public route. */
-export function createProviderService(pool, storage) {
+export function createProviderService(pool, storage, packageResolver) {
+  const packageAdmission = new PackageAdmission();
   // Only admission/fencing is serialized. Never hold this queue while Python
   // initializes or executes: close must be able to interrupt either operation.
   let mutations = Promise.resolve();
@@ -13,9 +18,19 @@ export function createProviderService(pool, storage) {
     async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/health" && request.method === "GET") {
-        return Response.json({ provider: "celld-pyodide", version: 1 });
+        return Response.json({
+          provider: "celld-pyodide",
+          version: 1,
+          packages: {
+            ...packageAdmission.status,
+            planner: packageResolver?.status ?? "unavailable",
+          },
+        });
       }
-      if (request.method !== "POST" || !["/open", "/execute", "/close"].includes(path)) {
+      if (
+        request.method !== "POST" ||
+        !["/open", "/execute", "/close", "/packages", "/packages/inventory"].includes(path)
+      ) {
         return new Response("Not found", { status: 404 });
       }
       // These identities come from the cloud's authenticated attachment, never
@@ -59,6 +74,26 @@ export function createProviderService(pool, storage) {
           // Attach rejection handling before yielding the admission queue.
           const result = await operation;
           return Response.json(path === "/open" ? { info: result } : { ok: true });
+        }
+        if (path === "/packages/inventory")
+          return Response.json({ installed: pool.packageInventory(key) });
+        if (path === "/packages") {
+          try {
+            return Response.json(
+              await pool.packages(key, input.operation_id, (session) =>
+                packageAdmission.run(
+                  input.ownerPrincipal,
+                  session.signal,
+                  () => installPackageManifest(session, input, packageResolver),
+                  { cooldown: input.operation !== "restore" },
+                ),
+              ),
+            );
+          } catch (error) {
+            // Never promote exception text from a resolver or Python interpreter
+            // into room diagnostics: it can contain arbitrary package metadata.
+            return Response.json(safePackageFailure(error));
+          }
         }
         return Response.json(await pool.execute(key, input.execution));
       } catch (error) {

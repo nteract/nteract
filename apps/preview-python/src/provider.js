@@ -4,6 +4,7 @@ import { createCelldRuntime } from "@nteract/pyodide-runtime/celld";
 import { createProviderService } from "./provider-service.js";
 import { ensureHousekeepingAlarm, runHousekeepingAlarm } from "./housekeeping.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { PackageResolver } from "./package-resolver.js";
 import packages from "../dist/packages.json";
 const packageNames = new Set(packages.map((entry) => entry.filename));
 
@@ -37,7 +38,8 @@ export class PreviewPythonSessions {
       warmCount: 1,
       idleMs: PROVIDER_ORPHAN_IDLE_MS,
     });
-    this.service = createProviderService(this.pool, state.storage);
+    this.packageResolver = new PackageResolver({ create: () => createCelldRuntime(env) });
+    this.service = createProviderService(this.pool, state.storage, this.packageResolver);
   }
   async fetch(request) {
     // Alarms are only lifecycle housekeeping; no notebook code is replayed.

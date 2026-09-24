@@ -53,6 +53,7 @@ export class SessionPool {
             runtime: {
               info: runtime.info,
               execute: (execution) => runtime.execute(execution),
+              install: (payload) => runtime.install(payload),
               dispose: () =>
                 (disposal ??= Promise.resolve()
                   .then(async () => {
@@ -136,6 +137,9 @@ export class SessionPool {
       lastUsed: this.#clock(),
       busy: false,
       executions: new Set(),
+      packageOperations: new Set(),
+      installed: [],
+      packageAbort: null,
       cancelled: false,
       cleanupComplete: false,
       closing: undefined,
@@ -151,6 +155,7 @@ export class SessionPool {
         throw error;
       }
       session.runtime = runtime;
+      session.installed = runtime.info.installed ?? [];
       if (session.cancelled || this.#sessions.get(key) !== session || this.#closed) {
         await runtime.dispose();
         releaseOwner();
@@ -171,6 +176,7 @@ export class SessionPool {
     if (this.#sessions.get(key) !== session || session.cancelled)
       throw new Error("Session was replaced");
     if (session.busy) throw new Error("Session is already executing");
+    if (session.packageDamaged) throw new Error("Package state is uncertain; restart Python");
     if (session.executions.has(execution.execution_id))
       throw new Error("Execution was already accepted");
     // Bound replay bookkeeping; a new generation is explicit rather than
@@ -196,6 +202,7 @@ export class SessionPool {
   async release(key, expected = this.#sessions.get(key)) {
     if (!expected || this.#sessions.get(key) !== expected) return;
     expected.cancelled = true;
+    expected.packageAbort?.abort();
     expected.closing ??= (async () => {
       if (!expected.runtime) {
         try {
@@ -214,6 +221,53 @@ export class SessionPool {
       expected.closing = undefined;
     });
     return expected.closing;
+  }
+
+  async packages(key, operationId, operation) {
+    const session = this.#sessions.get(key);
+    if (!session) throw new Error("Session expired; start a new Python session");
+    await session.ready;
+    if (this.#sessions.get(key) !== session || session.cancelled)
+      throw new Error("Session was replaced");
+    if (session.busy) throw new Error("Python is busy. Wait for the current operation and retry.");
+    if (session.packageDamaged) throw new Error("Package state is uncertain; restart Python");
+    if (
+      typeof operationId !== "string" ||
+      !operationId ||
+      operationId.length > 128 ||
+      session.packageOperations.has(operationId)
+    )
+      throw new Error("Package operation was already accepted or is invalid");
+    if (session.packageOperations.size >= 1000)
+      throw new Error("Package operation limit reached; restart Python");
+    session.packageOperations.add(operationId);
+    session.busy = true;
+    const abort = new AbortController();
+    session.packageAbort = abort;
+    try {
+      const result = await operation({
+        runtime: session.runtime,
+        installed: session.installed,
+        signal: abort.signal,
+      });
+      if (session.cancelled || this.#sessions.get(key) !== session)
+        throw new Error("Package result belongs to an expired session");
+      if (result.status === "ready") session.installed = result.installed;
+      if (result.needs_restart) session.packageDamaged = true;
+      return result;
+    } finally {
+      session.busy = false;
+      session.packageAbort = null;
+      session.lastUsed = this.#clock();
+    }
+  }
+
+  packageInventory(key) {
+    const session = this.#sessions.get(key);
+    if (!session?.runtime || session.cancelled) throw new Error("Python session is unavailable");
+    if (session.packageAbort || session.packageDamaged)
+      throw new Error("Package state is uncertain; restart Python");
+    return session.installed;
   }
 
   inspect(key) {

@@ -350,6 +350,59 @@ impl RoomHostEngine {
         self.state_doc.workstation_attachment()
     }
 
+    /// Canonical notebook-owned package intent; installed observations never write here.
+    pub fn cloud_package_manifest(&self) -> serde_json::Value {
+        self.doc
+            .get_pyodide_manifest()
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// The cloud host owns environment state; runtime-peer sync cannot forge it.
+    pub fn set_cloud_package_state(
+        &mut self,
+        session_id: &str,
+        value: serde_json::Value,
+    ) -> Result<RoomHostFrameResult, RoomHostError> {
+        let attachment = self.state_doc.workstation_attachment();
+        if !attachment.is_some_and(|a| {
+            a.workstation_id == "celld-preview-python"
+                && a.runtime_session_id.as_deref() == Some(session_id)
+        }) {
+            return Err(RoomHostError::new(
+                "Package state belongs to a replaced session",
+            ));
+        }
+        self.state_doc
+            .set_env_progress("pyodide", &value)
+            .map_err(|e| RoomHostError::new(format!("package state: {e}")))?;
+        let mut result = RoomHostFrameResult::empty();
+        result.changed = true;
+        result.runtime_state_changed = true;
+        self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
+        Ok(result)
+    }
+
+    /// Host-only success commit. A concurrent owner edit wins over an async install.
+    pub fn compare_set_cloud_package_manifest(
+        &mut self,
+        expected: &serde_json::Value,
+        next: serde_json::Value,
+    ) -> Result<RoomHostFrameResult, RoomHostError> {
+        if &self.cloud_package_manifest() != expected {
+            return Err(RoomHostError::new(
+                "Package requirements changed during installation; refresh and try again",
+            ));
+        }
+        self.doc
+            .set_pyodide_manifest(&next)
+            .map_err(|e| RoomHostError::new(format!("save package manifest: {e}")))?;
+        let mut result = RoomHostFrameResult::empty();
+        result.changed = true;
+        result.notebook_changed = true;
+        self.queue_notebook_sync_for_other_peers("", &mut result.outbound)?;
+        Ok(result)
+    }
+
     pub fn runtime_queue_depth(&self) -> usize {
         self.state_doc.read_state().queue.queued.len()
     }
@@ -1756,6 +1809,36 @@ mod tests {
     use super::*;
     use automerge::sync::SyncDoc;
     use serde_json::json;
+
+    #[test]
+    fn package_cas_failure_and_removal_preserve_legacy_metadata() {
+        let mut host =
+            RoomHostEngine::create_empty("packages", "system/schema:notebook-cloud-room").unwrap();
+        let previous = json!({"requirements": ["six"], "wheels": []});
+        let legacy = json!({"uv": "opaque legacy value", "vendor": [3, true], "pyodide": previous});
+        host.doc.set_metadata_value("runt", &legacy).unwrap();
+        host.doc
+            .set_metadata_value("kernelspec", &json!({"unknown": 7}))
+            .unwrap();
+        let before = host.save_notebook();
+        assert!(host
+            .compare_set_cloud_package_manifest(&json!(null), json!({}))
+            .is_err());
+        assert_eq!(
+            host.save_notebook(),
+            before,
+            "failed CAS must not author any changes"
+        );
+        host.compare_set_cloud_package_manifest(&previous, json!(null))
+            .unwrap();
+        let mut expected = legacy;
+        expected["pyodide"] = json!(null);
+        assert_eq!(host.doc.get_metadata_value("runt"), Some(expected));
+        assert_eq!(
+            host.doc.get_metadata_value("kernelspec"),
+            Some(json!({"unknown": 7}))
+        );
+    }
 
     #[test]
     fn room_host_seeds_initial_code_cell_idempotently() {

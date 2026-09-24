@@ -91,9 +91,60 @@ export async function createCelldRuntime(
         message: "Preview Python initialization deadline exceeded",
       },
     );
+    const packageOperation = async (path, payload) => {
+      if (active) throw new Error("Python session is already busy");
+      if (disposed) throw new Error("Python session was disposed");
+      active = true;
+      try {
+        return await runWithDeadline(
+          async () => {
+            const response = await stub
+              .getEntrypoint(null, { limits: { cpuMs: 10_000, subRequests: 0 } })
+              .fetch(`https://session.invalid/${path}`, {
+                method: "POST",
+                body: JSON.stringify(payload),
+              });
+            if (!response.ok) throw new Error("Python package operation failed");
+            const reader = response.body.getReader();
+            const chunks = [];
+            let size = 0;
+            try {
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                size += value.length;
+                if (size > 128 * 1024) {
+                  await reader.cancel();
+                  throw new Error("Package result limit exceeded");
+                }
+                chunks.push(value);
+              }
+            } finally {
+              reader.releaseLock();
+            }
+            const bytes = new Uint8Array(size);
+            let offset = 0;
+            for (const chunk of chunks) {
+              bytes.set(chunk, offset);
+              offset += chunk.length;
+            }
+            return JSON.parse(new TextDecoder().decode(bytes));
+          },
+          {
+            timeoutMs: wallMs,
+            terminate,
+            message: "Python package deadline exceeded; restart required",
+          },
+        );
+      } finally {
+        active = false;
+      }
+    };
     return {
       info,
       dispose,
+      plan: (payload) => packageOperation("plan", payload),
+      install: (payload) => packageOperation("install", payload),
       async execute(execution) {
         if (active) throw new Error("Python session is already executing");
         if (disposed) throw new Error("Python session was disposed");
