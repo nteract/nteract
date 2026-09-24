@@ -615,6 +615,11 @@ jobs:
       - name: Run sift tests
         run: pnpm --filter @nteract/sift test
 
+      - name: Build isolated Python runtime and verify IPython compatibility
+        run: |
+          pnpm --filter @nteract/preview-python build
+          pnpm --filter @nteract/pyodide-runtime test
+
       - name: Run JS benchmarks
         run: pnpm test:bench
 

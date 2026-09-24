@@ -24,17 +24,17 @@ test(
     const first = await post("/open", identity);
     const result = await post("/execute", {
       ...identity,
-      execution: { execution_id: "e1", source: "saved = 41\nsaved + 1" },
+      execution: { cell_id: "test-cell", execution_id: "e1", source: "saved = 41\nsaved + 1" },
     });
     assert.equal(result.outputs.at(-1).data["text/plain"], "42");
     const persisted = await post("/execute", {
       ...identity,
-      execution: { execution_id: "e2", source: "saved" },
+      execution: { cell_id: "test-cell", execution_id: "e2", source: "saved" },
     });
     assert.equal(persisted.outputs.at(-1).data["text/plain"], "41");
     const directory = await post("/execute", {
       ...identity,
-      execution: { execution_id: "cwd", source: "import os\nos.getcwd()" },
+      execution: { cell_id: "test-cell", execution_id: "cwd", source: "import os\nos.getcwd()" },
     });
     assert.equal(directory.outputs.at(-1).data["text/plain"], "'/home/pyodide'");
     await post("/close", identity);
@@ -43,7 +43,7 @@ test(
     const fresh = await post("/execute", {
       ...identity,
       sessionId: "2",
-      execution: { execution_id: "e3", source: "'saved' in globals()" },
+      execution: { cell_id: "test-cell", execution_id: "e3", source: "'saved' in globals()" },
     });
     assert.equal(fresh.outputs.at(-1).data["text/plain"], "False");
     const executing = fetch(server.url + "/execute", {
@@ -52,6 +52,7 @@ test(
         ...identity,
         sessionId: "2",
         execution: {
+          cell_id: "test-cell",
           execution_id: "interrupted",
           source: "import asyncio\nawait asyncio.sleep(60)",
         },
@@ -67,7 +68,7 @@ test(
     const continued = await post("/execute", {
       ...identity,
       sessionId: "3",
-      execution: { execution_id: "after-interrupt", source: "40 + 2" },
+      execution: { cell_id: "test-cell", execution_id: "after-interrupt", source: "40 + 2" },
     });
     assert.equal(continued.outputs.at(-1).data["text/plain"], "42");
     await post("/close", { ...identity, sessionId: "3" });

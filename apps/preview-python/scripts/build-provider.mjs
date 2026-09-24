@@ -1,8 +1,12 @@
 import { build } from "esbuild";
-import { readFile, mkdir, copyFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { assembleRuntimeAssets } from "@nteract/pyodide-runtime/deployment";
 import { basename } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+// The service assembles the machine's immutable assets into its deployment.
+// It does not compile Python or own the interpreter/package dependency graph.
+await assembleRuntimeAssets(new URL("../dist/", import.meta.url));
 await build({
   absWorkingDir: fileURLToPath(new URL("..", import.meta.url)),
   entryPoints: ["src/provider.js"],
@@ -31,21 +35,3 @@ await build({
     },
   ],
 });
-const wheels = JSON.parse(
-  await readFile(new URL("../dist/packages.json", import.meta.url), "utf8"),
-);
-await mkdir(new URL("../dist/wheels/", import.meta.url), { recursive: true });
-for (const { filename } of wheels) {
-  await copyFile(
-    new URL(`../.scratch/packages/${filename}`, import.meta.url),
-    new URL(`../dist/wheels/${filename}`, import.meta.url),
-  );
-}
-const { readdir } = await import("node:fs/promises");
-for (const filename of await readdir(new URL("../dist/", import.meta.url))) {
-  if (!filename.endsWith(".wasm")) continue;
-  await copyFile(
-    new URL(`../dist/${filename}`, import.meta.url),
-    new URL(`../dist/wheels/${filename}`, import.meta.url),
-  );
-}

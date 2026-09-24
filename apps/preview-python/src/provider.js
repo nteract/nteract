@@ -1,6 +1,6 @@
 import { PROVIDER_ORPHAN_IDLE_MS } from "./lifecycle-policy.js";
 import { SessionPool } from "./session-pool.js";
-import { createCelldRuntime } from "./celld-runtime.js";
+import { createCelldRuntime } from "@nteract/pyodide-runtime/celld";
 import { createProviderService } from "./provider-service.js";
 import { ensureHousekeepingAlarm } from "./housekeeping.js";
 import { WorkerEntrypoint } from "cloudflare:workers";

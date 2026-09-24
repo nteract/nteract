@@ -23,7 +23,12 @@ test("private service requires explicit allocation and separates owner/notebook/
     );
   const identity = { ownerPrincipal: "alice", notebookId: "n", sessionId: "s" };
   assert.equal(
-    (await request("/execute", { ...identity, execution: { execution_id: "e" } })).status,
+    (
+      await request("/execute", {
+        ...identity,
+        execution: { cell_id: "test-cell", execution_id: "e" },
+      })
+    ).status,
     409,
   );
   const first = await (await request("/open", identity)).json();

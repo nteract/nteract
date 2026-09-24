@@ -27,7 +27,11 @@ test(
     const results = await Promise.all(
       ["alice", "bob"].flatMap((owner) =>
         ["1", "2"].map((id) =>
-          post("/execute", owner, id, { execution_id: "check", source: "40 + 2" }),
+          post("/execute", owner, id, {
+            cell_id: "test-cell",
+            execution_id: "check",
+            source: "40 + 2",
+          }),
         ),
       ),
     );

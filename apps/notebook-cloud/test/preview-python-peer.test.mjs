@@ -43,6 +43,7 @@ test("bridge executes synced source and publishes through actual room permission
   await bridge.drain();
   assert.equal(calls.length, 1);
   assert.equal(calls[0].source, "print('accepted from notebook')");
+  assert.equal(calls[0].cell_id, "code");
   const observer = new RuntimeStatePeerHandle("user:dev:observer/test");
   t.after(() => observer.free());
   sync(host, observer, "observer", "viewer", true);

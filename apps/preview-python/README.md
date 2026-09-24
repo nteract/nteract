@@ -4,6 +4,12 @@ On-demand notebook compute for our celld cloud deployment only. This package is
 not enabled by default and is not a Desktop kernel or a generic Cloudflare
 provider. See [the implementation plan](../../docs/plans/preview-python.md).
 
+This app owns the session pool and nteract runtime peer. The isolated interpreter,
+IPython execution, pinned assets, and celld loader live in
+[`@nteract/pyodide-runtime`](../../packages/pyodide-runtime/README.md).
+The [boundary map](../../docs/memos/python-runtime-boundaries.md) describes their
+deployment, authority, execution lineage, and the remaining async work.
+
 The initial adapter executes Python directly and returns notebook-shaped outputs
 without ZeroMQ. A trusted supervisor bridges accepted notebook executions to
 isolated interpreters. Do not expose the internal execution endpoint publicly.
@@ -15,13 +21,13 @@ disabled unless `NOTEBOOK_CLOUD_PYTHON_PROVIDER=celld` and the private
 `PREVIEW_PYTHON_SESSIONS` namespace binding are both configured. Discovery
 registers an owner-scoped managed workstation and fills an absent default;
 it never replaces an existing default. The cloud room attaches a private compute
-session as an Automerge runtime peer. This remains experimental and is not ready
-for live deployment yet.
+session as an Automerge runtime peer. This remains experimental and requires a
+qualified celld deployment.
 
 ## Build
 
 Run `pnpm --filter @nteract/preview-python build`. Runtime assets are pinned to
-Pyodide 0.28.3 and verified against `runtime-lock.json`. Build output contains
+Pyodide 0.28.3 and verified against the machine package's `runtime-lock.json`. Build output contains
 local interpreter/stdlib assets; runtime startup does not fetch from a CDN.
 
 ## Provenance
@@ -40,10 +46,12 @@ by a restricted internal service binding and verified again on initialization;
 loaded session code stays below celld's module limit. Guest ambient networking
 remains disabled. Package assets contain no user data or credentials.
 
-The direct evaluator uses IPython formatters and display publishing, while code
-uses Python AST evaluation with top-level await. IPython magics, shell escapes,
-stdin, widgets, progressive output streaming and full IPython history semantics
-are not currently supported. The trusted adapter bounds response bytes and
+The evaluator uses IPython's cell lifecycle, input transformations, display hooks,
+in-memory history, top-level await and inline Matplotlib events. It reuses the
+launcher's structured traceback formatter with cell/execution/source provenance.
+Compatible in-process magics work. Shell escapes, stdin, widgets, completion and
+inspection transport, Arrow buffers and progressive output streaming are not
+currently supported. The trusted adapter bounds response bytes and
 validates output records, stripping unknown properties and rejecting guest
 supplied internal blob/widget references. Conversion into canonical runtime
 output manifests uses the shared Rust MIME classifier, with notebook-scoped blob

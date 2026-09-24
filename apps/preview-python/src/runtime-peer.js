@@ -71,6 +71,7 @@ export class PythonRuntimePeer {
       try {
         result = await this.#pool.execute(this.#key, {
           execution_id: executionId,
+          cell_id: accepted.cell_id,
           source: accepted.source,
         });
       } catch (error) {

@@ -656,9 +656,9 @@ importers:
 
   apps/preview-python:
     dependencies:
-      pyodide:
-        specifier: 0.28.3
-        version: 0.28.3
+      '@nteract/pyodide-runtime':
+        specifier: workspace:*
+        version: link:../../packages/pyodide-runtime
     devDependencies:
       esbuild:
         specifier: ^0.28.0
@@ -746,6 +746,16 @@ importers:
       vitest:
         specifier: npm:@voidzero-dev/vite-plus-test@0.1.16
         version: '@voidzero-dev/vite-plus-test@0.1.16(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(@voidzero-dev/vite-plus-core@0.1.16(@types/node@24.12.2)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3))(esbuild@0.28.0)(jiti@2.7.0)(jsdom@29.0.2)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)'
+
+  packages/pyodide-runtime:
+    dependencies:
+      pyodide:
+        specifier: 0.28.3
+        version: 0.28.3
+    devDependencies:
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
 
   packages/runtimed:
     dependencies:

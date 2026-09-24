@@ -32,6 +32,7 @@ test(
       const id = `tampered-${i}`;
       await post("/open", id);
       const result = await post("/execute", id, {
+        cell_id: "test-cell",
         execution_id: "poison",
         source: attacks[i % attacks.length],
       });
@@ -41,6 +42,7 @@ test(
     }
     await post("/open", "replacement");
     const fresh = await post("/execute", "replacement", {
+      cell_id: "test-cell",
       execution_id: "fresh",
       source: "40 + 2",
     });

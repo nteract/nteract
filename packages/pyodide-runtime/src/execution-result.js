@@ -15,7 +15,8 @@ function bundle(value) {
     if (mime.length > 256 || !/^[\w.+-]+\/[\w.+-]+$/.test(mime))
       throw new Error("Invalid output MIME type");
     if (
-      mime.startsWith("application/vnd.nteract.") ||
+      (mime.startsWith("application/vnd.nteract.") &&
+        mime !== "application/vnd.nteract.traceback+json") ||
       mime === "application/vnd.jupyter.widget-view+json"
     ) {
       throw new Error("Runtime-owned output references are not supported by Preview Python");
@@ -28,10 +29,12 @@ function metadata(value) {
   if (!record(value)) throw new Error("Invalid Python output metadata");
   return value;
 }
-export function validateExecutionResult(value, executionId) {
+export function validateExecutionResult(value, executionId, provenance) {
   if (
     !record(value) ||
     value.execution_id !== executionId ||
+    (provenance &&
+      (value.cell_id !== provenance.cellId || value.source_hash !== provenance.sourceHash)) ||
     typeof value.success !== "boolean" ||
     !Number.isSafeInteger(value.execution_count) ||
     value.execution_count < 1 ||
@@ -79,6 +82,7 @@ export function validateExecutionResult(value, executionId) {
   });
   return {
     execution_id: executionId,
+    ...(provenance ? { cell_id: provenance.cellId, source_hash: provenance.sourceHash } : {}),
     execution_count: value.execution_count,
     success: value.success,
     outputs,
