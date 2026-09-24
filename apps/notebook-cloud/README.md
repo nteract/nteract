@@ -162,9 +162,12 @@ to select another loopback Worker.
 
 To reproduce a room that accepts the connection before its document is ready,
 set `NOTEBOOK_CLOUD_STARTUP_SYNC_DELAY_MS=2500` alongside the assertion flag.
-The harness delivers session control immediately and delays incoming document
-frames in order. This checks that the opening screen stays put until notebook
-content arrives; synthetic delays are reported separately from normal timings.
+The harness holds incoming NotebookDoc frames in order, starting with the first
+such frame; session control and other document types flow immediately. It
+asserts that frames were actually held for the requested interval, including
+when a cached editor appears early. Each result records the requested delay,
+buffered-frame count, and measured hold duration. Keep these synthetic-delay
+samples separate from normal startup timings.
 
 These timings exclude hosted network latency and OIDC, and do not restart the
 Worker or browser process between samples. Create-to-editable adds API duration
@@ -799,6 +802,15 @@ event-specific dimensions such as `notebook_id`, `peer_id`, `scope`,
 `frame_type`, `duration_ms`, and log-derived counters (`counter` +
 `counter_delta`). Do not add request bodies, auth tokens, raw WebSocket payloads,
 or notebook source text to these logs.
+
+For `room.materializer.loaded` with `source=empty_room`, `checkpoint_lookup_ms`
+and `published_lookup_ms` bracket storage lookups; `wasm_host_ms` brackets WASM
+initialization, host creation, and initial-cell seeding. These fields and
+`duration_ms` use the runtime's `Date.now()` clock, not a CPU profiler.
+[Cloudflare Workers clocks advance only after I/O](https://developers.cloudflare.com/workers/runtime-apis/performance/),
+so synchronous WASM work can report zero. Do not infer CPU cost from these
+fields or compare runtimes without accounting for their clock behavior; use
+platform CPU profiling or external end-to-end observations for that purpose.
 
 Tail the deployed prototype with:
 

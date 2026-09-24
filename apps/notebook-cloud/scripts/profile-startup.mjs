@@ -21,23 +21,34 @@ const editorSelector = '[data-cell-type="code"] .cm-content[contenteditable="tru
 try {
   for (let run = 0; run < runs; run++) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const syncDelayProbes = [];
     if (syncDelayMs > 0) {
       await context.routeWebSocket(
         (url) => url.pathname.endsWith("/sync"),
         (socket) => {
           const server = socket.connectToServer();
           const pending = [];
-          let waiting = true;
-          const timer = setTimeout(() => {
-            waiting = false;
-            for (const message of pending.splice(0)) socket.send(message);
-          }, syncDelayMs);
-          // Deliver session control immediately, but hold binary document sync
-          // frames in order to reproduce a slow room hydration after acceptance.
+          const probe = { firstFrameAt: null, releasedAt: null, bufferedFrameCount: 0 };
+          syncDelayProbes.push(probe);
+          let timer;
+          // Anchor the delay to the first NotebookDoc frame, so a slow dial
+          // cannot consume it. Session control and other document types flow.
           server.onMessage((message) => {
-            if (waiting && typeof message !== "string" && message[0] !== FrameType.SESSION_CONTROL)
+            if (
+              probe.releasedAt === null &&
+              typeof message !== "string" &&
+              message[0] === FrameType.AUTOMERGE_SYNC
+            ) {
+              if (probe.firstFrameAt === null) {
+                probe.firstFrameAt = performance.now();
+                timer = setTimeout(() => {
+                  probe.releasedAt = performance.now();
+                  for (const frame of pending.splice(0)) socket.send(frame);
+                }, syncDelayMs);
+              }
+              probe.bufferedFrameCount++;
               pending.push(message);
-            else socket.send(message);
+            } else socket.send(message);
           });
           socket.onClose(() => {
             clearTimeout(timer);
@@ -100,6 +111,7 @@ try {
     };
     const profile = async (mode, created, typeSource) => {
       errors.length = 0;
+      const probeStart = syncDelayProbes.length;
       const viewerUrl = new URL(created.viewer_url, origin);
       // Reverse-proxy defaults can advertise the deployed origin even locally.
       // Keep probes on the requested loopback Worker in every case.
@@ -117,6 +129,28 @@ try {
       }
       if (typeSource) {
         await page.locator(editorSelector).first().fill("# startup profiling probe");
+      }
+      // A cached editor can appear before sync. Observe the delayed exchange
+      // too, and fail if this probe never actually held a notebook frame.
+      if (syncDelayMs > 0) {
+        const deadline = performance.now() + 30_000 + syncDelayMs;
+        while (
+          !syncDelayProbes.slice(probeStart).some((probe) => probe.releasedAt !== null) &&
+          performance.now() < deadline
+        ) {
+          await page.waitForTimeout(25);
+        }
+        assert.ok(
+          syncDelayProbes
+            .slice(probeStart)
+            .some(
+              (probe) =>
+                probe.bufferedFrameCount > 0 &&
+                probe.releasedAt !== null &&
+                probe.releasedAt - probe.firstFrameAt >= syncDelayMs - 1,
+            ),
+          "the delayed-sync probe must hold a NotebookDoc frame for the requested interval",
+        );
       }
       // Observe the post-ready window: a transient editable node alone must not
       // count as stable readiness. Keep the complete enabled/disabled trace.
@@ -148,6 +182,11 @@ try {
       const result = {
         run,
         mode,
+        syncDelayMs,
+        delayedSync: syncDelayProbes.slice(probeStart).map((probe) => ({
+          bufferedFrameCount: probe.bufferedFrameCount,
+          heldForMs: probe.releasedAt === null ? null : probe.releasedAt - probe.firstFrameAt,
+        })),
         notebookId: created.notebook_id,
         catalogCreateMs: mode === "warm-reopen" ? null : created.catalogCreateMs,
         firstEditableMs: firstEditable,
