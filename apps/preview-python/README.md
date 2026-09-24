@@ -78,6 +78,21 @@ If that failure occurs while preparing a standby, automatic warming stops until
 the provider restarts. Explicit notebook allocations can use remaining capacity;
 discovery polling cannot consume every slot with failed background starts.
 
+Closing a session permanently fences its owner/notebook/session generation,
+including when close arrives before open. These small fence records survive
+provider reconstruction and are retained indefinitely: the protocol has no
+maximum delayed-request age that would make expiry safe. Runtime disposal can
+be retried after a failure, while owner and deployment capacity stay reserved
+until cleanup is confirmed. Expiry and shutdown still attempt healthy siblings
+when another session cannot be cleaned up.
+The alarm arms its next sweep first and logs cleanup failures without rejecting
+the sweep; failure to store the next alarm still propagates.
+
+Provider bookkeeping tests do not qualify the native or hosted lifecycle.
+The separate [HTTP shared-promise ownership defect](https://github.com/nteract/nteract/issues/4296)
+and [stale-activation Storage/WebSocket authority defect](https://github.com/nteract/nteract/issues/4295)
+remain runtime qualification gates.
+
 Run the real isolated-server test with a qualified experimental celld binary:
 
 ```sh

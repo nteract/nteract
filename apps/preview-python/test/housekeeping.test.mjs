@@ -1,8 +1,65 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ensureHousekeepingAlarm } from "../src/housekeeping.js";
+import { ensureHousekeepingAlarm, runHousekeepingAlarm } from "../src/housekeeping.js";
 import { SessionPool } from "../src/session-pool.js";
 import { createProviderService } from "../src/provider-service.js";
+
+test("alarm reschedules and reports quarantined cleanup without rejecting each sweep", async (t) => {
+  const warnings = t.mock.method(console, "warn", () => {});
+  let alarm = null;
+  let now = 0;
+  const pool = new SessionPool({
+    maxSessions: 1,
+    warmCount: 0,
+    idleMs: 1,
+    clock: () => now,
+    create: async () => {
+      const error = new Error("startup cleanup unconfirmed");
+      error.runtimeRetained = true;
+      throw error;
+    },
+  });
+  await assert.rejects(pool.open("quarantined", "alice"), /cleanup unconfirmed/);
+  const expire = pool.expire.bind(pool);
+  pool.expire = async () => {
+    assert.equal(alarm, now + 60_000, "the next alarm must be armed before cleanup");
+    await expire();
+  };
+  for (now of [60_000, 120_000]) {
+    await runHousekeepingAlarm(
+      {
+        setAlarm: async (deadline) => {
+          alarm = deadline;
+        },
+      },
+      pool,
+      now,
+    );
+    await assert.rejects(pool.open("replacement", "bob"), /capacity/);
+  }
+  assert.equal(warnings.mock.callCount(), 2);
+  assert.match(String(warnings.mock.calls[0].arguments[1]), /Session cleanup failed/);
+});
+
+test("alarm scheduling failure remains observable and does not start cleanup", async () => {
+  let expired = false;
+  await assert.rejects(
+    runHousekeepingAlarm(
+      {
+        setAlarm: async () => {
+          throw new Error("alarm storage unavailable");
+        },
+      },
+      {
+        expire: async () => {
+          expired = true;
+        },
+      },
+    ),
+    /alarm storage unavailable/,
+  );
+  assert.equal(expired, false);
+});
 
 test("continuous discovery preserves the sweep deadline and idle sessions expire", async () => {
   let now = 0;
