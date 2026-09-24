@@ -20,6 +20,7 @@ export class ManagedPythonRoom {
   private active = true;
   private syncing: Promise<void> = Promise.resolve();
   private pumping: Promise<void> | undefined;
+  private wakeRequested = false;
   private readonly connectedAt = new Date().toISOString();
 
   get presence() {
@@ -170,12 +171,20 @@ export class ManagedPythonRoom {
   }
 
   wake(): Promise<void> {
+    this.wakeRequested = true;
     this.pumping ??= (async () => {
-      await this.synchronize();
-      await this.bridge.drain();
-    })().finally(() => {
-      this.pumping = undefined;
-    });
+      try {
+        do {
+          this.wakeRequested = false;
+          await this.synchronize();
+          await this.bridge.drain();
+          // New intent can arrive after drain's final sync but before its
+          // checkpoint completes. Sync again before treating the queue as empty.
+        } while (this.active && this.wakeRequested);
+      } finally {
+        this.pumping = undefined;
+      }
+    })();
     return this.pumping;
   }
 
