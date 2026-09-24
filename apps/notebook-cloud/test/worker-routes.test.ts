@@ -12002,3 +12002,95 @@ async function toBytes(
   }
   return new Uint8Array(await new Response(value).arrayBuffer());
 }
+
+describe("notebook home event authorization", () => {
+  function homeNamespace(seen: { principal: string; request: Request }[]): DurableObjectNamespace {
+    return {
+      idFromName: (name) => ({ toString: () => name }),
+      get: (id) => ({
+        fetch: async (request) => {
+          seen.push({ principal: id.toString(), request });
+          return Response.json({ ok: true });
+        },
+      }),
+    };
+  }
+
+  it("rejects anonymous listeners and untrusted browser origins", async () => {
+    const seen: { principal: string; request: Request }[] = [];
+    const env = fakeEnv({ NOTEBOOK_HOME: homeNamespace(seen) });
+    const anonymous = await worker.fetch(
+      new Request("https://cloud.test/api/notebook-home/events", {
+        headers: { Upgrade: "websocket", Origin: "https://cloud.test" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(anonymous.status, 401);
+    const foreign = await worker.fetch(
+      new Request("http://localhost/api/notebook-home/events?user=alice", {
+        headers: { Upgrade: "websocket", Origin: "https://foreign.test" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(foreign.status, 403);
+    assert.deepEqual(seen, []);
+  });
+
+  it("selects the authenticated principal and discards caller-supplied routing", async () => {
+    const seen: { principal: string; request: Request }[] = [];
+    const env = fakeEnv({ NOTEBOOK_HOME: homeNamespace(seen) });
+    const response = await worker.fetch(
+      new Request("http://localhost/api/notebook-home/events?user=alice&owner_principal=bob", {
+        headers: { Upgrade: "websocket", Origin: "http://localhost" },
+      }),
+      env,
+      fakeContext(),
+    );
+    assert.equal(response.status, 200);
+    assert.equal(seen[0]?.principal, "user:dev:alice");
+    assert.equal(seen[0]?.request.url, "https://notebook-home.internal/stream");
+  });
+
+  it("accepts a valid app-session cookie and rejects an expired one", async () => {
+    const seen: { principal: string; request: Request }[] = [];
+    const env = fakeEnv({
+      NOTEBOOK_HOME: homeNamespace(seen),
+      NOTEBOOK_CLOUD_APP_SESSION_SECRET: APP_SESSION_SECRET,
+    });
+    const identity = {
+      principal: "user:anaconda:alice",
+      operator: "browser:test",
+      actorLabel: "user:anaconda:alice/browser:test",
+      scope: "viewer" as const,
+      metadata: {
+        provider: "oidc" as const,
+        transport: "oidc-bearer" as const,
+        principalNamespace: "user:anaconda",
+      },
+    };
+    const cookie = await createCloudAppSessionCookie(env, identity);
+    const open = (cookie: string) =>
+      worker.fetch(
+        new Request("https://cloud.test/api/notebook-home/events?principal=user:anaconda:mallory", {
+          headers: {
+            Upgrade: "websocket",
+            Origin: "https://cloud.test",
+            Cookie: cookie.split(";")[0]!,
+            "Sec-WebSocket-Protocol": NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+          },
+        }),
+        env,
+        fakeContext(),
+      );
+    assert.equal((await open(cookie)).status, 200);
+    assert.equal(seen[0]?.principal, identity.principal);
+    assert.equal(seen[0]?.request.headers.get("Cookie"), null);
+    assert.equal(
+      seen[0]?.request.headers.get("Sec-WebSocket-Protocol"),
+      NOTEBOOK_CLOUD_WEBSOCKET_PROTOCOL,
+    );
+    assert.equal((await open(await createCloudAppSessionCookie(env, identity, 0))).status, 401);
+  });
+});

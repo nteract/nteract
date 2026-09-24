@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { asyncScheduler, filter, fromEvent, merge } from "rxjs";
+import { useCloudStores } from "./cloud-stores-context";
+import { useCloudNotebookHomeState } from "./use-cloud-notebook-home-store";
+import { notebookHomeEvents, notebookHomeEventsUrl } from "./notebook-home-events";
+import { NotebookHomeAccessError } from "./cloud-notebook-home-store";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -54,7 +59,6 @@ import type {
   CloudNotebookListBootstrap,
   CloudNotebookListResponse,
   CloudNotebookListSnapshot,
-  CloudNotebookListState,
   CloudNotebookRenameState,
   CloudNotebookUpdateResponse,
   CloudViewerAuthConfig,
@@ -98,16 +102,32 @@ export function CloudNotebookListView({
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const auth = useCloudAuthStore();
-  const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
+  const [bootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
   );
   const appSessionStatus = useCloudAppSession();
   const authState = useCloudAuthState();
   const authRenewal = useCloudAuthRenewal();
-  const [listState, setListState] = useState<CloudNotebookListState>(() =>
-    initialCloudNotebookListState(authState, bootstrap),
-  );
-  const [refreshIndex, setRefreshIndex] = useState(0);
+  const { notebookHome } = useCloudStores();
+  const identityKey = appSessionStatus.session
+    ? `session:${appSessionStatus.session.cache_key}`
+    : authState.mode === "dev" && authState.token
+      ? `dev:${authState.user ?? "browser-editor"}`
+      : authState.oidcClaims?.sub
+        ? `oidc:${authState.oidcClaims.sub}`
+        : null;
+  useState(() => {
+    notebookHome.seed(
+      cloudNotebookListSeedFromBootstrapOrCache(authState, appSessionStatus.session, bootstrap),
+      identityKey,
+    );
+    return null;
+  });
+  const {
+    list: listState,
+    displayName: currentUserDisplay,
+    avatar: currentUserAvatar,
+  } = useCloudNotebookHomeState();
   const [createState, setCreateState] = useState<"idle" | "starting">("idle");
   const [createError, setCreateError] = useState<string | null>(null);
   const [createFormOpen, setCreateFormOpen] = useState(false);
@@ -138,120 +158,60 @@ export function CloudNotebookListView({
   }, [resolvedTheme]);
 
   useEffect(() => {
-    const seed = cloudNotebookListSeedFromBootstrapOrCache(
+    // Bootstrap is consumed at mount. Reusing it here can resurrect items
+    // removed by a newer authorized snapshot when credentials renew.
+    const seed = readCachedCloudNotebookListFromLocalStorage(authState, appSessionStatus.session);
+    const target = notebookHomeEventsUrl(
+      new URL("api/notebook-home/events", `${window.location.origin}/`).href,
       authState,
-      appSessionStatus.session,
-      bootstrap,
+      hasAppSession,
     );
-    const initialState = seed
-      ? { kind: "ready" as const, notebooks: seed.notebooks, totalCount: seed.totalCount }
-      : { kind: "loading" as const };
-    const loadNotebookList = async (controller: AbortController, warningLabel: string) => {
-      try {
+    return notebookHome.activate({
+      identityKey,
+      gate: canFetchNotebookList ? "open" : waitingForAppSession ? "waiting" : "closed",
+      seed,
+      waitMs: Math.max(0, appSessionWaitDeadline),
+      scheduler: asyncScheduler,
+      load: async (signal) => {
         const response = await fetchCloudNotebookList(
           authState,
-          AbortSignal.any([
-            controller.signal,
-            AbortSignal.timeout(CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS),
-          ]),
+          AbortSignal.any([signal, AbortSignal.timeout(CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS)]),
         );
-        if (controller.signal.aborted) return;
-        if (!response.ok) {
-          const responseError = await cloudResponseError(response, "Unable to list notebooks");
-          if (controller.signal.aborted) return;
-          throw responseError;
-        }
-        const body = (await response.json()) as unknown;
-        if (controller.signal.aborted) return;
-        if (!isCloudNotebookListResponse(body)) {
+        if (response.status === 401 || response.status === 403)
+          throw new NotebookHomeAccessError("Sign in to list notebooks");
+        if (!response.ok) throw await cloudResponseError(response, "Unable to list notebooks");
+        const body: unknown = await response.json();
+        if (!isCloudNotebookListResponse(body))
           throw new Error("Unable to list notebooks: response shape was invalid");
-        }
-        const totalCount = normalizeCloudNotebookListTotalCount(body.notebooks, body.total_count);
+        return body;
+      },
+      events: notebookHomeEvents(() => new WebSocket(target.url, target.protocols), asyncScheduler),
+      wake: merge(
+        fromEvent(window, "online"),
+        fromEvent(document, "visibilitychange").pipe(
+          filter(() => document.visibilityState === "visible"),
+        ),
+      ),
+      saved: (body) =>
         writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, {
           notebooks: body.notebooks,
           principal: body.current_user_principal,
-          totalCount,
-        });
-        if (typeof body.current_user_display === "string" && body.current_user_display.trim()) {
-          setCurrentUserDisplay(body.current_user_display.trim());
-        }
-        setCurrentUserAvatar(
-          typeof body.current_user_avatar === "string" && body.current_user_avatar.trim()
-            ? body.current_user_avatar.trim()
-            : null,
-        );
-        setListState({ kind: "ready", notebooks: body.notebooks, totalCount });
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        if (seed) {
-          console.warn(
-            `[notebook-cloud] notebook list refresh failed${warningLabel}; keeping cached list`,
-            error,
-          );
-          return;
-        }
-        setListState({
-          kind: "error",
-          message: notebookListFetchErrorMessage(error),
-        });
-      }
-    };
-    if (!canFetchNotebookList) {
-      if (waitingForAppSession) {
-        const controller = new AbortController();
-        setListState(initialState);
-        const deadline = window.setTimeout(
-          () => {
-            void loadNotebookList(controller, " after app-session wait deadline");
-          },
-          Math.max(0, appSessionWaitDeadline),
-        );
-        return () => {
-          window.clearTimeout(deadline);
-          controller.abort();
-        };
-      }
-      clearCachedCloudNotebookListFromLocalStorage();
-      setListState({ kind: "signed_out" });
-      return;
-    }
-
-    if (refreshIndex === 0 && bootstrap) {
-      const totalCount = normalizeCloudNotebookListTotalCount(
-        bootstrap.notebooks,
-        bootstrap.total_count,
-      );
-      writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, {
-        notebooks: bootstrap.notebooks,
-        totalCount,
-      });
-      setListState({ kind: "ready", notebooks: bootstrap.notebooks, totalCount });
-      return;
-    }
-
-    const controller = new AbortController();
-    setListState(initialState);
-    void loadNotebookList(controller, "");
-
-    return () => {
-      controller.abort();
-    };
+          totalCount: normalizeCloudNotebookListTotalCount(body.notebooks, body.total_count),
+        }),
+      clear: clearCachedCloudNotebookListFromLocalStorage,
+    });
   }, [
     appSessionStatus.session,
     appSessionWaitDeadline,
     authState,
-    bootstrap,
     canFetchNotebookList,
-    refreshIndex,
+    hasAppSession,
+    identityKey,
+    notebookHome,
     waitingForAppSession,
   ]);
 
-  const refreshList = () => {
-    // The list GET authenticates directly, renews a live app-session cookie,
-    // and syncs the stored profile. A parallel session-status GET only creates
-    // a second auth transition that can restart this list request mid-refresh.
-    setRefreshIndex((value) => value + 1);
-  };
+  const refreshList = () => notebookHome.refresh();
 
   const openCreateForm = () => {
     if (!signedIn) {
@@ -331,6 +291,7 @@ export function CloudNotebookListView({
       return;
     }
 
+    const identityEpoch = notebookHome.identityEpoch;
     const notebookId = renameState.notebookId;
     const nextTitle = renameState.title.trim();
     try {
@@ -355,30 +316,8 @@ export function CloudNotebookListView({
       if (body.ok !== true || body.notebook_id !== notebookId) {
         throw new Error("Unable to rename notebook: response shape was invalid");
       }
-      setListState((current) => {
-        if (current.kind !== "ready") {
-          return current;
-        }
-        const notebooks = current.notebooks.map((notebook) =>
-          notebook.notebook_id === notebookId
-            ? {
-                ...notebook,
-                title: body.title ?? null,
-                updated_at: body.updated_at ?? notebook.updated_at,
-                viewer_url: body.viewer_url ?? notebook.viewer_url,
-              }
-            : notebook,
-        );
-        writeCachedCloudNotebookListToLocalStorage(authState, appSessionStatus.session, {
-          notebooks,
-          totalCount: current.totalCount,
-        });
-        return {
-          kind: "ready",
-          notebooks,
-          totalCount: current.totalCount,
-        };
-      });
+      if (notebookHome.identityEpoch !== identityEpoch) return;
+      notebookHome.refresh();
       setRenameState(null);
     } catch (error) {
       setRenameError(error instanceof Error ? error.message : String(error));
@@ -388,7 +327,6 @@ export function CloudNotebookListView({
   };
 
   const signOut = () => {
-    setBootstrap(null);
     setDashboardQuery("");
     auth.clearAppSessionStatus();
     clearCachedCloudNotebookListFromLocalStorage();
@@ -401,8 +339,6 @@ export function CloudNotebookListView({
     auth.refreshAuthState();
   };
 
-  const [currentUserDisplay, setCurrentUserDisplay] = useState<string | null>(null);
-  const [currentUserAvatar, setCurrentUserAvatar] = useState<string | null>(null);
   const displayName = appSessionStatus.session?.display_name ?? currentUserDisplay;
   const headerDetail = cloudNotebookListHeaderDetail(
     authState,
@@ -819,24 +755,6 @@ function cloudAuthWithScope(
       };
 }
 
-function initialCloudNotebookListState(
-  authState: CloudPrototypeAuthState,
-  bootstrap: CloudNotebookListBootstrap | null,
-): CloudNotebookListState {
-  const seededNotebooks = cloudNotebookListSeedFromBootstrapOrCache(
-    authState,
-    bootstrap?.session ?? null,
-    bootstrap,
-  );
-  return seededNotebooks
-    ? {
-        kind: "ready",
-        notebooks: seededNotebooks.notebooks,
-        totalCount: seededNotebooks.totalCount,
-      }
-    : { kind: "loading" };
-}
-
 function fetchCloudNotebookList(
   authState: CloudPrototypeAuthState,
   signal: AbortSignal,
@@ -855,20 +773,12 @@ function fetchCloudNotebookList(
   });
 }
 
-function notebookListFetchErrorMessage(error: unknown): string {
-  const timedOut = error instanceof DOMException && error.name === "TimeoutError";
-  if (timedOut) {
-    return "Loading notebooks timed out - the service may be mid-deploy. Retry, or hard-refresh if this persists.";
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
 function cloudNotebookListSeedFromBootstrapOrCache(
   authState: CloudPrototypeAuthState,
   appSession: CloudAppSession | null | undefined,
   bootstrap: CloudNotebookListBootstrap | null,
 ): CloudNotebookListSnapshot | null {
-  return bootstrap
+  return bootstrap && bootstrap.session?.cache_key === appSession?.cache_key
     ? {
         notebooks: bootstrap.notebooks,
         totalCount: normalizeCloudNotebookListTotalCount(

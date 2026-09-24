@@ -195,7 +195,10 @@ import {
   serverOidcSessionStatus,
 } from "./server-oidc.ts";
 
-export { NotebookRoom, WorkstationEvents, OwnerComputeIndex };
+import { NotebookHome } from "./notebook-home.ts";
+import { drainNotebookHomeOutbox } from "./notebook-home-outbox.ts";
+
+export { NotebookRoom, WorkstationEvents, OwnerComputeIndex, NotebookHome };
 
 // `/plugins/*` is a raw static asset path in deployed Workers. Use a
 // Worker-owned route by default so sandboxed srcdoc iframes can fetch sidecar
@@ -347,6 +350,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
     methods: ["GET", "HEAD"],
     handler: ({ params }, request, env) =>
       viewer(params.notebookId, request, env, undefined, params.vanityName),
+  },
+  {
+    match: exactPath("/api/notebook-home/events"),
+    methods: ["GET"],
+    handler: (_match, request, env) => routeNotebookHomeEvents(request, env),
   },
   {
     match: exactPath("/api/n"),
@@ -508,6 +516,11 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
 ];
 
 const worker: ExportedHandler<Env> = {
+  async scheduled(_controller, env) {
+    // Retry committed changes whose immediate notification failed. Browsers
+    // never poll the catalog; this only drains pending delivery records.
+    await drainNotebookHomeOutbox(env);
+  },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === "OPTIONS") {
       return withCors(new Response(null, { status: 204 }));
@@ -527,6 +540,9 @@ const worker: ExportedHandler<Env> = {
 
     const routeResponse = await dispatchWorkerRoute(NOTEBOOK_CLOUD_ROUTES, request, env, ctx);
     if (routeResponse) {
+      if (env.NOTEBOOK_HOME && !["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+        ctx.waitUntil(drainNotebookHomeOutbox(env));
+      }
       return routeResponse;
     }
 
@@ -2472,6 +2488,37 @@ async function routeNotebookRuntimeStateRepair(
     body = { error: "runtime state repair returned a non-JSON response" };
   }
   return json(body, response.status);
+}
+
+async function routeNotebookHomeEvents(request: Request, env: Env): Promise<Response> {
+  if (!env.DB || !env.NOTEBOOK_HOME) {
+    return json({ error: "notebook home events are not configured" }, 503);
+  }
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return json({ error: "expected WebSocket upgrade" }, 426);
+  }
+  const originRejection = rejectUntrustedWebSocketOrigin(request, env);
+  if (originRejection) return originRejection;
+  const identity =
+    (await appSessionIdentityFromWebSocketRequest(request, env)) ??
+    (await authenticateRequestOrResponse(request, env));
+  if (identity instanceof Response) return identity;
+  if (isAnonymousViewer(identity)) return json({ error: "sign in to subscribe to notebooks" }, 401);
+
+  // Match /api/n's requesting principal, including linked transport identities.
+  // Routing comes exclusively from the resolved identity, never a separate
+  // subscription target supplied by the caller.
+  const stub = env.NOTEBOOK_HOME.get(env.NOTEBOOK_HOME.idFromName(identity.principal));
+  return stub.fetch(
+    new Request("https://notebook-home.internal/stream", {
+      headers: {
+        Upgrade: "websocket",
+        ...(identity.webSocketProtocol
+          ? { "Sec-WebSocket-Protocol": identity.webSocketProtocol }
+          : {}),
+      },
+    }),
+  );
 }
 
 async function routeWorkstationEvents(

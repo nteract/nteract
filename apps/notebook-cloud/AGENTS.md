@@ -45,6 +45,12 @@ stores, not from using document boundaries as a rerender workaround.
 
 ## Worker and viewer split
 
+- For new Durable Objects, bindings, schedules or providers, follow
+  [DEPLOY.md](DEPLOY.md#adding-a-hosted-capability). Keep Wrangler and local celld
+  configuration aligned, and coordinate the managed `preview-infra` contract.
+  Preview bundles exclude exporter configs; a local pass or general health
+  response does not prove the deployed feature is wired. Verify its live path.
+
 - `src/` owns Worker routes, auth, ACL/storage helpers, Durable Object room
   materialization, blob resolution, observability, and output/renderer asset
   Workers.
@@ -77,9 +83,9 @@ section and `docs/adr/frontend-sync-bridge.md` Decision 8 before editing
 `viewer/*store*.ts`, `viewer/use-cloud-*-store.ts`,
 `viewer/browser-signals.ts`, or cloud viewer code that touches RxJS.
 
-- The four source stores in `viewer/` hold cloud host policy per
+- The source stores in `viewer/` hold cloud host policy per
   `docs/adr/frontend-sync-bridge.md` Decision 8: `cloud-access-request-store.ts`,
-  `cloud-catalog-store.ts`, and `cloud-workstations-store.ts` extend
+  `cloud-catalog-store.ts`, `cloud-notebook-home-store.ts`, and `cloud-workstations-store.ts` extend
   `ObservableStore`; `cloud-auth-store.ts` is deliberately a multi-subject
   module store (synchronously seeded so instant paint can read it before React
   mounts).
