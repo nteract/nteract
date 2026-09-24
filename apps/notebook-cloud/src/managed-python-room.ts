@@ -11,6 +11,11 @@ import {
 } from "../../preview-python/src/runtime-peer.js";
 import { createOutputPreparer } from "../../preview-python/src/output-manifests.js";
 import { computeAllocationStub } from "./compute-allocation.ts";
+import {
+  packageManifest,
+  type PackageManifest,
+  type PackageResult,
+} from "../../preview-python/src/package-service.js";
 
 /** Trusted room-local Automerge peer; the private compute service sees no room credentials. */
 export class ManagedPythonRoom {
@@ -22,6 +27,9 @@ export class ManagedPythonRoom {
   private syncing: Promise<void> = Promise.resolve();
   private pumping: Promise<void> | undefined;
   private wakeRequested = false;
+  private installingPackages = false;
+  private packagesBlocked = false;
+  private installedPackages: string[] = [];
   private readonly connectedAt = new Date().toISOString();
 
   get presence() {
@@ -85,7 +93,7 @@ export class ManagedPythonRoom {
 
   private async call(path: string, extra: Record<string, unknown> = {}): Promise<unknown> {
     const allocation =
-      path === "/execute"
+      path !== "/open" && path !== "/close"
         ? null
         : computeAllocationStub(this.env, {
             ownerPrincipal: this.ownerPrincipal,
@@ -174,6 +182,13 @@ export class ManagedPythonRoom {
       return;
     }
     await this.synchronize();
+    const inventory = (await this.call("/packages/inventory")) as { installed?: string[] };
+    this.installedPackages = inventory.installed ?? [];
+    const manifest = packageManifest(await this.materializer.getCloudPackageManifest());
+    if (manifest.requirements.length) {
+      const restored = await this.installPackages(manifest, "restore");
+      if (restored.status !== "ready") throw new Error(restored.error);
+    } else await this.publishPackageState("ready");
     this.handle.set_kernel_running("python", "python", "celld-pyodide", this.peer.id);
     this.handle.refresh_execution_queue();
     await this.synchronize();
@@ -181,6 +196,7 @@ export class ManagedPythonRoom {
   }
 
   wake(): Promise<void> {
+    if (this.installingPackages || this.packagesBlocked) return Promise.resolve();
     this.wakeRequested = true;
     this.pumping ??= (async () => {
       try {
@@ -196,6 +212,86 @@ export class ManagedPythonRoom {
       }
     })();
     return this.pumping;
+  }
+
+  private assertPackageSession(): void {
+    if (!this.active) throw new Error("Managed session expired");
+    const state = this.handle.get_runtime_state() as {
+      workstation?: { runtime_session_id?: string };
+    };
+    if (state.workstation?.runtime_session_id !== this.sessionId)
+      throw new Error("Managed session replaced");
+  }
+
+  private async publishPackageState(
+    phase: "ready" | "installing" | "restoring" | "error",
+    error: string | null = null,
+  ): Promise<void> {
+    this.assertPackageSession();
+    this.apply(
+      await this.materializer.setCloudPackageState(this.sessionId, {
+        phase:
+          phase === "ready"
+            ? "install_complete"
+            : phase === "error"
+              ? "error"
+              : "installing_packages",
+        elapsed_ms: 0,
+        packages: [],
+        message: error,
+        managed_packages: {
+          session_id: this.sessionId,
+          phase,
+          installed: this.installedPackages,
+          error,
+          needs_restart: this.packagesBlocked,
+        },
+      }),
+    );
+    await this.synchronize();
+    await this.materializer.checkpoint();
+  }
+
+  async installPackages(
+    manifest: PackageManifest,
+    operation: "add" | "restore",
+    requirement?: string,
+    operationId: string = crypto.randomUUID(),
+  ): Promise<PackageResult> {
+    if (this.installingPackages || this.packagesBlocked)
+      throw new Error("Python packages are busy or need a restart");
+    this.installingPackages = true;
+    try {
+      await this.pumping;
+      await this.publishPackageState(operation === "restore" ? "restoring" : "installing");
+      const result = (await this.call("/packages", {
+        manifest,
+        operation,
+        requirement,
+        operation_id: operationId,
+      })) as PackageResult;
+      this.assertPackageSession();
+      if (result.status === "ready") {
+        this.installedPackages = result.installed;
+        await this.publishPackageState("ready");
+      } else {
+        this.packagesBlocked = result.needs_restart;
+        if (this.packagesBlocked)
+          this.handle.set_kernel_error("Package installation needs a restart");
+        await this.publishPackageState("error", result.error);
+      }
+      return result;
+    } catch {
+      this.packagesBlocked = true;
+      this.assertPackageSession();
+      const error =
+        "The package operation could not be confirmed. Restart Python to restore saved requirements.";
+      this.handle.set_kernel_error(error);
+      await this.publishPackageState("error", error);
+      return { status: "error", error, needs_restart: true };
+    } finally {
+      this.installingPackages = false;
+    }
   }
 
   async close(): Promise<void> {

@@ -155,6 +155,37 @@ export class RoomMaterializer {
     );
   }
 
+  async getCloudPackageManifest(): Promise<unknown> {
+    return this.withHost((host) => JSON.parse(host.get_cloud_package_manifest_json()));
+  }
+
+  async setCloudPackageState(sessionId: string, value: unknown): Promise<RoomHostFrameResult> {
+    return this.withHost((host) =>
+      normalizeResult(host.set_cloud_package_state_json(sessionId, JSON.stringify(value))),
+    );
+  }
+
+  async compareSetCloudPackageManifest(
+    expected: unknown,
+    next: unknown,
+    sessionId?: string,
+  ): Promise<RoomHostFrameResult> {
+    return this.withHost((host) => {
+      if (
+        sessionId &&
+        normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json())
+          ?.runtime_session_id !== sessionId
+      )
+        throw new Error("Python session changed during installation");
+      return normalizeResult(
+        host.compare_set_cloud_package_manifest_json(
+          JSON.stringify(expected),
+          JSON.stringify(next),
+        ),
+      );
+    });
+  }
+
   async getCommentAuthorActorLabels(): Promise<string[]> {
     return this.withHost((host) =>
       commentAuthorActorLabelsFromProjection(host.get_comments_projection()),

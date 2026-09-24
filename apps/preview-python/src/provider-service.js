@@ -1,5 +1,7 @@
+import { installPackageManifest } from "./package-service.js";
+
 /** Internal service-binding protocol. Never mount this on a public route. */
-export function createProviderService(pool, storage) {
+export function createProviderService(pool, storage, packageResolver) {
   // Only admission/fencing is serialized. Never hold this queue while Python
   // initializes or executes: close must be able to interrupt either operation.
   let mutations = Promise.resolve();
@@ -17,7 +19,9 @@ export function createProviderService(pool, storage) {
       }
       if (
         request.method !== "POST" ||
-        !["/open", "/execute", "/close", "/inspect"].includes(path)
+        !["/open", "/execute", "/close", "/inspect", "/packages", "/packages/inventory"].includes(
+          path,
+        )
       ) {
         return new Response("Not found", { status: 404 });
       }
@@ -64,6 +68,26 @@ export function createProviderService(pool, storage) {
           return Response.json(path === "/open" ? { info: result } : { ok: true });
         }
         if (path === "/inspect") return Response.json(pool.inspect(key));
+        if (path === "/packages/inventory")
+          return Response.json({ installed: pool.packageInventory(key) });
+        if (path === "/packages") {
+          try {
+            return Response.json(
+              await pool.packages(key, input.operation_id, (session) =>
+                installPackageManifest(session, input, packageResolver),
+              ),
+            );
+          } catch {
+            // Never promote exception text from a resolver or Python interpreter
+            // into room diagnostics: it can contain arbitrary package metadata.
+            return Response.json({
+              status: "error",
+              error:
+                "Packages could not be resolved or downloaded. Check compatibility and try again.",
+              needs_restart: false,
+            });
+          }
+        }
         return Response.json(await pool.execute(key, input.execution));
       } catch (error) {
         return Response.json({ error: String(error) }, { status: 409 });

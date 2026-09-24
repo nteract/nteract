@@ -350,6 +350,62 @@ impl RoomHostEngine {
         self.state_doc.workstation_attachment()
     }
 
+    /// Canonical notebook-owned package intent; installed observations never write here.
+    pub fn cloud_package_manifest(&self) -> serde_json::Value {
+        self.doc
+            .get_metadata_snapshot()
+            .and_then(|snapshot| snapshot.runt.extra.get("pyodide").cloned())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// The cloud host owns environment state; runtime-peer sync cannot forge it.
+    pub fn set_cloud_package_state(
+        &mut self,
+        session_id: &str,
+        value: serde_json::Value,
+    ) -> Result<RoomHostFrameResult, RoomHostError> {
+        let attachment = self.state_doc.workstation_attachment();
+        if !attachment.is_some_and(|a| {
+            a.workstation_id == "celld-preview-python"
+                && a.runtime_session_id.as_deref() == Some(session_id)
+        }) {
+            return Err(RoomHostError::new(
+                "Package state belongs to a replaced session",
+            ));
+        }
+        self.state_doc
+            .set_env_progress("pyodide", &value)
+            .map_err(|e| RoomHostError::new(format!("package state: {e}")))?;
+        let mut result = RoomHostFrameResult::empty();
+        result.changed = true;
+        result.runtime_state_changed = true;
+        self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
+        Ok(result)
+    }
+
+    /// Host-only success commit. A concurrent owner edit wins over an async install.
+    pub fn compare_set_cloud_package_manifest(
+        &mut self,
+        expected: &serde_json::Value,
+        next: serde_json::Value,
+    ) -> Result<RoomHostFrameResult, RoomHostError> {
+        if &self.cloud_package_manifest() != expected {
+            return Err(RoomHostError::new(
+                "Package requirements changed during installation; refresh and try again",
+            ));
+        }
+        let mut snapshot = self.doc.get_metadata_snapshot().unwrap_or_default();
+        snapshot.runt.extra.insert("pyodide".to_string(), next);
+        self.doc
+            .set_metadata_snapshot(&snapshot)
+            .map_err(|e| RoomHostError::new(format!("save package manifest: {e}")))?;
+        let mut result = RoomHostFrameResult::empty();
+        result.changed = true;
+        result.notebook_changed = true;
+        self.queue_notebook_sync_for_other_peers("", &mut result.outbound)?;
+        Ok(result)
+    }
+
     pub fn runtime_queue_depth(&self) -> usize {
         self.state_doc.read_state().queue.queued.len()
     }

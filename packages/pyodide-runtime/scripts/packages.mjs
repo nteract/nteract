@@ -15,7 +15,7 @@ export async function preparePackages(root, runtime) {
     selected.set(name, entry);
     entry.depends.forEach(visit);
   }
-  ["ipython", "pandas"].forEach(visit);
+  ["ipython", "pandas", "micropip"].forEach(visit);
   const cache = resolve(root, ".scratch/packages");
   await mkdir(cache, { recursive: true });
   const wheels = [];

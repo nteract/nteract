@@ -4316,6 +4316,27 @@ describe("NotebookRoom materialized sync routing", () => {
       const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
       assert.equal(rejected.type, "cloud_frame_rejected");
       assert.equal(rejected.reason, `${scope} cannot write request frames`);
+      await harness.handleMessage(
+        "demo",
+        peer,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({
+              id: "package-1",
+              action: "cloud_package_change",
+              operation: "add",
+              requirement: "six",
+            }),
+          ),
+        ),
+      );
+      assert.equal(materialized, 0, `${scope} package request reached room host`);
+      const packageRejected = decodeJsonPayload<Record<string, unknown>>(
+        socket.sent.at(-1)!.slice(1),
+      );
+      assert.equal(packageRejected.type, "cloud_frame_rejected");
+      assert.equal(packageRejected.reason, `${scope} cannot write request frames`);
     }
   });
 

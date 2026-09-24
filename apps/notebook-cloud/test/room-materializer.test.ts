@@ -644,6 +644,92 @@ describe("RoomHostHandle", () => {
 });
 
 describe("RoomMaterializer", () => {
+  it("preserves concurrent owner package edits and persists successful package intent", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=desktop:a&scope=owner"),
+    );
+    const peer = { id: "owner", identity };
+    const owner = NotebookHandle.create_bootstrap(identity.actorLabel);
+    const manifest = { version: 1, pyodide: "0.28.3", requirements: ["six>=1,<2"], wheels: [] };
+    try {
+      await syncMaterializerWithClient(materializer, peer, owner);
+      const baseline = await materializer.getCloudPackageManifest();
+      const metadata = JSON.parse(owner.get_metadata_snapshot_json() ?? "{}");
+      owner.set_metadata_snapshot_value({
+        ...metadata,
+        runt: { ...metadata.runt, schema_version: "1", pyodide: manifest, custom: "preserve me" },
+      });
+      const edit = owner.flush_local_changes();
+      assert.ok(edit);
+      await materializer.receiveFrame(peer, { type: FrameType.AUTOMERGE_SYNC, payload: edit });
+      await assert.rejects(
+        materializer.compareSetCloudPackageManifest(baseline, {
+          ...manifest,
+          requirements: ["requests"],
+        }),
+        /changed during installation/,
+      );
+      assert.deepEqual(await materializer.getCloudPackageManifest(), manifest);
+      const removed = { ...manifest, requirements: [] };
+      await materializer.compareSetCloudPackageManifest(manifest, removed);
+      await materializer.checkpoint();
+      const reloaded = new RoomMaterializer("demo", state, {} as Env);
+      assert.deepEqual(await reloaded.getCloudPackageManifest(), removed);
+      await syncMaterializerWithClient(reloaded, peer, owner);
+      assert.equal(
+        JSON.parse(owner.get_metadata_snapshot_json() ?? "{}").runt.custom,
+        "preserve me",
+      );
+    } finally {
+      owner.free();
+    }
+  });
+
+  it("rejects stale package completion and inventory after restart or release", async () => {
+    const materializer = new RoomMaterializer("demo", fakeState(), {} as Env);
+    const selected = {
+      workstation_id: "celld-preview-python",
+      display_name: "Cloud Python",
+      provider: "celld",
+      default_environment_label: "Python",
+      environment_policy: "managed",
+      status: "ready",
+      runtime_session_id: "first",
+      updated_at: "2026-09-24T00:00:00Z",
+    };
+    await materializer.setWorkstationAttachment(selected);
+    const manifest = { version: 1, pyodide: "0.28.3", requirements: ["six"], wheels: [] };
+    await materializer.compareSetCloudPackageManifest(null, manifest, "first");
+    const removed = { ...manifest, requirements: [] };
+    await materializer.compareSetCloudPackageManifest(manifest, removed);
+    await materializer.setCloudPackageState("first", {
+      managed_packages: { session_id: "first", phase: "ready", installed: ["six==1.0"] },
+    });
+    assert.deepEqual(
+      await materializer.getCloudPackageManifest(),
+      removed,
+      "inventory cannot re-promote a removed requirement",
+    );
+    await materializer.setWorkstationAttachment({
+      ...selected,
+      runtime_session_id: "second",
+      updated_at: "2026-09-24T00:00:01Z",
+    });
+    await assert.rejects(
+      materializer.compareSetCloudPackageManifest(removed, manifest, "first"),
+      /session changed/,
+    );
+    await assert.rejects(materializer.setCloudPackageState("first", {}), /replaced session/);
+    await materializer.setWorkstationAttachment(null);
+    await assert.rejects(
+      materializer.compareSetCloudPackageManifest(removed, manifest, "second"),
+      /session changed/,
+    );
+    assert.deepEqual(await materializer.getCloudPackageManifest(), removed);
+  });
+
   it("times out a causal fence even while checkpoint I/O blocks the host queue", async () => {
     const materializer = new RoomMaterializer("blocked", fakeState(), {} as Env);
     let release!: () => void;

@@ -61,6 +61,9 @@ for (const allocationEnabled of [false, true])
           },
         };
         const materializer = {
+          getCloudPackageManifest: async () => null,
+          setCloudPackageState: async (sessionId, value) =>
+            host.set_cloud_package_state_json(sessionId, JSON.stringify(value)),
           syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
           receiveFrame: async (peer, frame) =>
             host.receive_peer_frame(
@@ -199,6 +202,9 @@ for (const checkpointOutcome of ["complete", "close", "fail"])
       },
     };
     const materializer = {
+      getCloudPackageManifest: async () => null,
+      setCloudPackageState: async (sessionId, value) =>
+        host.set_cloud_package_state_json(sessionId, JSON.stringify(value)),
       syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
       receiveFrame: async (peer, frame) =>
         host.receive_peer_frame(

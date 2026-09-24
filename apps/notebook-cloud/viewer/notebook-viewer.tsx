@@ -8,6 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import { NotebookHostProvider } from "@nteract/notebook-host";
+import { ManagedPythonPackages } from "@/components/environment/ManagedPythonPackages";
+import { projectCloudPackages } from "./cloud-packages";
 import {
   AlertCircle,
   Check,
@@ -613,6 +615,37 @@ export function NotebookViewer({
   );
   const runtimePeerCount = cloudPresenceRuntimePeerCount(presenceSnapshot);
   const runtimePeerAvailable = cloudPresenceHasRuntimePeer(presenceSnapshot);
+  const isManagedPython = workstationAttachment?.workstation_id === "celld-preview-python";
+  const packageSessionId = workstationAttachment?.runtime_session_id ?? null;
+  const [packageActionError, setPackageActionError] = useState<{
+    session: string | null;
+    message: string;
+  } | null>(null);
+  const cloudPackages = useMemo(
+    () =>
+      projectCloudPackages(
+        notebookMetadata,
+        runtimeState.env.progress,
+        packageSessionId,
+        runtimePeerAvailable,
+      ),
+    [notebookMetadata, runtimeState.env.progress, packageSessionId, runtimePeerAvailable],
+  );
+  const changeCloudPackage = useCallback(
+    async (operation: "add" | "remove", requirement: string) => {
+      const runtime = liveRuntimeRef.current;
+      if (!runtime || connectionScope !== "owner" || !isManagedPython) return false;
+      setPackageActionError(null);
+      const result = await runtime.transport.changeCloudPackage(operation, requirement);
+      if (liveRuntimeRef.current !== runtime) return false;
+      if (result.result === "sync_environment_failed") {
+        setPackageActionError({ session: packageSessionId, message: result.error });
+        return false;
+      }
+      return result.result === "sync_environment_complete";
+    },
+    [connectionScope, isManagedPython, liveRuntimeRef, packageSessionId],
+  );
   const outputHostContext = useMemo<NteractEmbedHostContextPatch>(
     () => ({
       nteract: {
@@ -1680,20 +1713,39 @@ export function NotebookViewer({
         ) : undefined
       }
       packagesPanel={
-        <>
-          {shouldShowPackageEnvironmentSummary ? (
-            <EnvironmentSummary
-              capabilities={shellCapabilities}
-              packages={notebookViewModel.packages}
-              showPackageDetails={false}
-              className="cloud-package-summary-header"
-            />
-          ) : null}
-          <NotebookPackageSummaryPanel
-            packages={notebookViewModel.packages}
-            readOnly={!shellCapabilities.canManagePackages}
+        isManagedPython ? (
+          <ManagedPythonPackages
+            key={packageSessionId ?? "offline"}
+            {...cloudPackages}
+            error={
+              packageActionError?.session === packageSessionId
+                ? packageActionError.message
+                : cloudPackages.error
+            }
+            readOnly={connectionScope !== "owner"}
+            onAdd={(requirement) => changeCloudPackage("add", requirement)}
+            onRemove={async (requirement) => {
+              if (!(await changeCloudPackage("remove", requirement)))
+                throw new Error("Requirement removal failed");
+            }}
+            onRestart={handleCloudRestartRuntime}
           />
-        </>
+        ) : (
+          <>
+            {shouldShowPackageEnvironmentSummary ? (
+              <EnvironmentSummary
+                capabilities={shellCapabilities}
+                packages={notebookViewModel.packages}
+                showPackageDetails={false}
+                className="cloud-package-summary-header"
+              />
+            ) : null}
+            <NotebookPackageSummaryPanel
+              packages={notebookViewModel.packages}
+              readOnly={!shellCapabilities.canManagePackages}
+            />
+          </>
+        )
       }
       onActivePanelChange={handleRailPanelChange}
       onCollapsedChange={setNotebookRailCollapsed}
