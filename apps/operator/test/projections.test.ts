@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { HistoryCharts } from "../viewer/charts.tsx";
 import { currentHost, isMetrics, type Metrics, type Observation } from "../viewer/metrics.ts";
 import {
   chartPath,
@@ -129,6 +132,19 @@ test("an all-zero census derives class names from the observations", () => {
   ];
   assert.equal(residentSeries(data)[0].name, "WorkstationEvents");
   assert.equal(residentSeries(data)[0].points[0].value, 0);
+});
+
+test("all-unknown chart samples keep their accessible measurements and fleet coverage", () => {
+  const data = fixture();
+  data.observations = [
+    row("fleet", 180000, "main", { resident_objects: null }, "error"),
+    row("class", 180000, "main", { resident_objects: null }, "error"),
+  ];
+  const html = renderToStaticMarkup(createElement(HistoryCharts, { data, hours: 24 }));
+  assert(html.includes("No measured Durable Object census"));
+  assert(html.includes("View measurements and coverage"));
+  assert(html.includes("<td>Unknown</td>"));
+  assert(html.includes("0/1 application fleets measured"));
 });
 
 test("resident totals retain healthy fleets with explicit partial coverage and break across unknown captures", () => {
