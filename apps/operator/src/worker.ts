@@ -105,9 +105,9 @@ async function route(
   const origin = configured(env, request, localDevelopment);
   const url = new URL(request.url);
   const site = request.headers.get("Sec-Fetch-Site");
-  const publicNavigation =
+  const allowedNavigation =
     request.method === "GET" &&
-    ["/", "/operator", "/operator/"].includes(url.pathname) &&
+    ["/", "/operator", "/operator/", "/oidc"].includes(url.pathname) &&
     request.headers.get("Sec-Fetch-Mode") === "navigate" &&
     request.headers.get("Sec-Fetch-Dest") === "document";
   // TLS may terminate at a reverse proxy. Use the configured public origin,
@@ -117,11 +117,7 @@ async function route(
   if (
     (request.headers.has("Origin") && request.headers.get("Origin") !== origin) ||
     // Preview subdomains are same-site but are not trusted application origins.
-    (site !== null &&
-      site !== "same-origin" &&
-      site !== "none" &&
-      url.pathname !== "/oidc" &&
-      !publicNavigation)
+    (site !== null && site !== "same-origin" && site !== "none" && !allowedNavigation)
   )
     return new Response("Open this page from the operator site", { status: 403 });
   const sameOrigin = request.headers.get("Origin") === origin;

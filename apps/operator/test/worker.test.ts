@@ -212,6 +212,11 @@ test("cross-origin navigation reaches only the public shell; sibling sites canno
     });
     assert.equal(blockedLogin.status, 403);
     assert.equal(blockedLogin.headers.get("Set-Cookie"), null);
+    const blockedCallback = await f.request("/oidc", {
+      headers: { ...headers, "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image" },
+    });
+    assert.equal(blockedCallback.status, 403);
+    assert.equal(blockedCallback.headers.get("Set-Cookie"), null);
   }
   for (const site of ["same-origin", "none"])
     assert.equal(
