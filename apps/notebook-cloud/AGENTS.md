@@ -77,9 +77,9 @@ section and `docs/adr/frontend-sync-bridge.md` Decision 8 before editing
 `viewer/*store*.ts`, `viewer/use-cloud-*-store.ts`,
 `viewer/browser-signals.ts`, or cloud viewer code that touches RxJS.
 
-- The four source stores in `viewer/` hold cloud host policy per
+- The source stores in `viewer/` hold cloud host policy per
   `docs/adr/frontend-sync-bridge.md` Decision 8: `cloud-access-request-store.ts`,
-  `cloud-catalog-store.ts`, and `cloud-workstations-store.ts` extend
+  `cloud-catalog-store.ts`, `cloud-notebook-home-store.ts`, and `cloud-workstations-store.ts` extend
   `ObservableStore`; `cloud-auth-store.ts` is deliberately a multi-subject
   module store (synchronously seeded so instant paint can read it before React
   mounts).

@@ -1,6 +1,6 @@
 /**
- * Lazy consumption seam for the four non-auth cloud viewer source stores
- * (access-request, catalog, user directory, workstations).
+ * Lazy consumption seam for the non-auth cloud viewer source stores
+ * (access-request, catalog, notebook home, user directory, workstations).
  *
  * These stores stay module singletons; their route-level controllers activate
  * the instances they consume, not this seam. Auth has its own always-loaded
@@ -24,6 +24,7 @@ import {
   type CloudAccessRequestStore,
 } from "./cloud-access-request-store";
 import { cloudCatalogStore, type CloudCatalogStore } from "./cloud-catalog-store";
+import { cloudNotebookHomeStore, type CloudNotebookHomeStore } from "./cloud-notebook-home-store";
 import { cloudUserStore, type CloudUserStore } from "./cloud-user-store";
 import { cloudWorkstationsStore, type CloudWorkstationsStore } from "./cloud-workstations-store";
 
@@ -31,6 +32,7 @@ import { cloudWorkstationsStore, type CloudWorkstationsStore } from "./cloud-wor
 export interface CloudStores {
   accessRequest: CloudAccessRequestStore;
   catalog: CloudCatalogStore;
+  notebookHome: CloudNotebookHomeStore;
   user: CloudUserStore;
   workstations: CloudWorkstationsStore;
 }
@@ -42,6 +44,7 @@ export interface CloudStores {
 const singletonCloudStores: CloudStores = {
   accessRequest: cloudAccessRequestStore,
   catalog: cloudCatalogStore,
+  notebookHome: cloudNotebookHomeStore,
   user: cloudUserStore,
   workstations: cloudWorkstationsStore,
 };

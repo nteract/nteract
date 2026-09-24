@@ -1,3 +1,4 @@
+import { CloudNotebookHomeStore } from "../cloud-notebook-home-store";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { createElement, useMemo, type ReactNode } from "react";
 import { BehaviorSubject } from "rxjs";
@@ -70,6 +71,7 @@ function wrapperFor(
   authStore?: CloudAuthStore,
 ): ({ children }: { children: ReactNode }) => ReactNode {
   const stores: CloudStores = {
+    notebookHome: new CloudNotebookHomeStore(),
     accessRequest: cloudAccessRequestStore,
     catalog: cloudCatalogStore,
     user,

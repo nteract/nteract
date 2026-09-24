@@ -23,6 +23,31 @@ telemetry for live sync traffic. Viewer-scope peers use the normal sync exchange
 
 `/n/:notebookId/:vanityName` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` is an immutable pinned viewer that loads the persisted `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` Automerge snapshot set directly through `/api/n/:id/snapshots/:headsHash`, `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`, `/api/n/:id/comms-snapshots/:commsHeadsHash`, and catalog revision metadata. Snapshot publishes validate that the documents can be loaded and that referenced output/widget blobs exist before recording the catalog revision, so missing runtime or comm snapshots, corrupt snapshot bytes, or missing blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, widgets, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
 
+## Live notebook listing
+
+Notebook Home (`/n`) subscribes to `/api/notebook-home/events`. The Worker
+authenticates the browser and routes it to a `NotebookHome` Durable Object
+for that principal. The hibernatable WebSocket carries only `ready` and
+`changed` invalidations; the browser fetches the authorized `/api/n` listing
+on each invalidation. Every reconnect refreshes the snapshot, including changes
+between the server-rendered bootstrap and subscription. Healthy connections
+do not poll the listing. Connection leases require reauthentication every five
+minutes, and heartbeats detect interrupted connections.
+
+Creation, title changes, ACL changes, and account linking update a coalesced
+`notebook_home_outbox` row in the catalog transaction via SQLite triggers.
+Mutation requests attempt delivery immediately. The configured minute cron
+retries pending deliveries, so a committed change survives a failed wakeup.
+Deployments need the `NOTEBOOK_HOME` binding and scheduled handler enabled;
+the celld configuration exports both. Migration `0009_notebook_home.sql` and
+lazy schema initialization install the same triggers. Delivery failures emit
+`notebook_home.delivery_failed` or `notebook_home.outbox_failed` logs.
+
+D1 remains the catalog and access authority. The stream does not carry
+notebook content, presence, or compute changes; those summaries are refreshed
+when the listing is fetched. Continuous presence and compute updates are
+outside this subscription's scope.
+
 ## Local dev
 
 ```bash

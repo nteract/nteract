@@ -206,7 +206,15 @@ describe("CloudNotebookListView", () => {
       notebooks: [notebook("nb-a", "Notebook A")],
     });
     document.body.append(bootstrap);
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            notebooks: [notebook("nb-a", "Notebook A")],
+          }),
+        ),
+    );
     vi.stubGlobal("fetch", fetchMock);
     const serverConfig: CloudViewerAuthConfig = {
       localDev: null,
@@ -252,7 +260,7 @@ describe("CloudNotebookListView", () => {
       expect(screen.getByRole("menu").textContent).toContain("Alice Example");
       expect(screen.queryByText("You")).toBeNull();
       expect(readSession).toHaveBeenCalledTimes(1);
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalled();
       expect(storage.getItem("nteract:notebook-cloud:oidc-token")).toBeNull();
       expect(bootstrap.textContent).not.toContain("Alice Example");
     } finally {
@@ -289,6 +297,57 @@ describe("CloudNotebookListView", () => {
       expect.stringContaining("notebook list refresh failed"),
       expect.any(Error),
     );
+  });
+
+  it("adds, renames, and removes notebooks from live notifications without navigation", async () => {
+    const sockets: EventTarget[] = [];
+    vi.stubGlobal(
+      "WebSocket",
+      class extends EventTarget {
+        constructor() {
+          super();
+          sockets.push(this);
+        }
+        send() {}
+        close() {}
+      },
+    );
+    let notebooks: CloudNotebookListItem[] = [];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, notebooks })));
+    vi.stubGlobal("fetch", fetchMock);
+    renderNotebookList({
+      mode: "dev",
+      token: "token",
+      user: "alice",
+      oidcClaims: null,
+      requestedScope: "owner",
+      problem: null,
+    });
+    const notify = async (event: string) => {
+      await act(async () => {
+        sockets
+          .at(-1)!
+          .dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ event }) }));
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+      });
+    };
+    await notify("ready");
+    notebooks = [notebook("new", "Created elsewhere")];
+    await notify("changed");
+    expect(screen.getByText("Created elsewhere")).toBeTruthy();
+    notebooks = [notebook("new", "Renamed elsewhere")];
+    await notify("changed");
+    expect(screen.queryByText("Created elsewhere")).toBeNull();
+    expect(screen.getByText("Renamed elsewhere")).toBeTruthy();
+    notebooks = [];
+    await notify("changed");
+    expect(screen.queryByText("Renamed elsewhere")).toBeNull();
+    const calls = fetchMock.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(calls);
+    expect(window.location.pathname).toBe("/n");
   });
 });
 

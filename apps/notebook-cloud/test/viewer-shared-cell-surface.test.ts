@@ -732,8 +732,6 @@ test("hosted live room smoke can exercise the shared history shortcut", () => {
 });
 
 test("cloud auth store re-establishes and refreshes cookie-backed state after OIDC exchange", () => {
-  const routeSourcePath = new URL("../viewer/notebook-list-view.tsx", import.meta.url);
-  const routeSourceText = readFileSync(routeSourcePath, "utf8");
   const storeSourcePath = new URL("../viewer/cloud-auth-store.ts", import.meta.url);
   const storeSourceText = readFileSync(storeSourcePath, "utf8");
 
@@ -746,10 +744,6 @@ test("cloud auth store re-establishes and refreshes cookie-backed state after OI
     storeSourceText,
     /this\.establishAppSessionOp\(authState\)\s*\.then\(\(\) => \{[\s\S]*this\.refreshAppSessionStatus\(\);/,
   );
-  assert.match(
-    routeSourceText,
-    /\[\s*appSessionStatus\.session,[\s\S]*appSessionWaitDeadline,[\s\S]*authState,[\s\S]*bootstrap,[\s\S]*canFetchNotebookList,[\s\S]*refreshIndex,[\s\S]*waitingForAppSession,[\s\S]*\]/,
-  );
 });
 
 test("cloud notebook list refresh stays on the GET-first session path", () => {
@@ -757,12 +751,6 @@ test("cloud notebook list refresh stays on the GET-first session path", () => {
   const routeSourceText = readFileSync(routeSourcePath, "utf8");
 
   assert.match(routeSourceText, /import \{ clearCloudAppSession \}/);
-  assert.match(routeSourceText, /const refreshList = \(\) => \{[\s\S]{0,500}?setRefreshIndex/);
-  assert.doesNotMatch(
-    routeSourceText,
-    /const refreshList = \(\) => \{[\s\S]{0,500}?refreshAppSessionStatus/,
-    "manual refresh should issue one list GET; that response renews the cookie and syncs the stored profile",
-  );
   assert.doesNotMatch(
     routeSourceText,
     /establishCloudAppSession/,
@@ -800,16 +788,6 @@ test("cloud notebook list bounds app-session waits before catalog fetches", () =
   );
   assert.match(
     sourceText,
-    /if \(!canFetchNotebookList\) \{[\s\S]*if \(waitingForAppSession\) \{[\s\S]*window\.setTimeout\([\s\S]*\(\) => \{[\s\S]*loadNotebookList\(controller, " after app-session wait deadline"\);/,
-    "waiting for the trusted cookie must have a deadline fallback instead of an eternal skeleton",
-  );
-  assert.match(
-    sourceText,
-    /if \(seed\) \{[\s\S]*console\.warn\([\s\S]*keeping cached list/,
-    "stale local-first content should stay visible when a refresh fails",
-  );
-  assert.match(
-    sourceText,
     /fetchCloudNotebookList\(\s*authState,\s*AbortSignal\.any\(\[[\s\S]*AbortSignal\.timeout\(CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS\)/,
     "catalog fetch should still use the existing auth helper on ready and deadline paths",
   );
@@ -822,11 +800,6 @@ test("cloud notebook list trusts server bootstrap on initial app-session paint",
   assert.match(
     sourceText,
     /const seed = cloudNotebookListSeedFromBootstrapOrCache\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap,[\s\S]*\);/,
-  );
-  assert.match(
-    sourceText,
-    /if \(refreshIndex === 0 && bootstrap\) \{[\s\S]*const totalCount = normalizeCloudNotebookListTotalCount\([\s\S]*bootstrap\.notebooks,[\s\S]*bootstrap\.total_count,[\s\S]*\);[\s\S]*writeCachedCloudNotebookListToLocalStorage\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*notebooks: bootstrap\.notebooks,[\s\S]*totalCount,[\s\S]*\);[\s\S]*setListState\(\{ kind: "ready", notebooks: bootstrap\.notebooks, totalCount \}\);[\s\S]*return;/,
-    "fresh notebook-home bootstrap should satisfy the initial render without an immediate duplicate /api/n fetch",
   );
   assert.match(
     sourceText,
