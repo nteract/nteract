@@ -45,6 +45,12 @@ stores, not from using document boundaries as a rerender workaround.
 
 ## Worker and viewer split
 
+- For new Durable Objects, bindings, schedules or providers, follow
+  [DEPLOY.md](DEPLOY.md#adding-a-hosted-capability). Keep Wrangler and local celld
+  configuration aligned, and coordinate the managed `preview-infra` contract.
+  Preview bundles exclude exporter configs; a local pass or general health
+  response does not prove the deployed feature is wired. Verify its live path.
+
 - `src/` owns Worker routes, auth, ACL/storage helpers, Durable Object room
   materialization, blob resolution, observability, and output/renderer asset
   Workers.

@@ -13,6 +13,12 @@ author profiles, runtime repair, OG images, snapshots, blobs, and live sync
 49e46666/6febe0d2/48dae8fb dashboard). Experimental APIs and preview deployment
 resources retain explicit "prototype" or "preview" labels.
 
+For deployment, start with [DEPLOY.md](DEPLOY.md#choose-the-deployment-path).
+Wrangler and the local celld exporter include this app's bindings. Managed
+`*.runtimed.run` previews reconstruct configuration in `preview-infra`, so new
+hosted capabilities can require a companion controller change. Local development
+does not require that private repository.
+
 The current Durable Object does not host kernels. It owns a `runtimed-wasm`
 room host for the notebook's `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` +
 `CommentsDoc` (sidecar, commit 778fc53e), syncs peers with typed-frame v4,
