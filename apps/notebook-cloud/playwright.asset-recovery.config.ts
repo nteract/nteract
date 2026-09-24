@@ -12,7 +12,8 @@ export default defineConfig({
   webServer: {
     command: "pnpm exec vp build -c vite.config.ts && node test/asset-recovery/server.mjs",
     port: 5187,
-    reuseExistingServer: !process.env.CI,
+    // Always build this checkout; a reused fixture could serve a stale bundle.
+    reuseExistingServer: false,
     timeout: 180_000,
   },
 });

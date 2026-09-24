@@ -15,7 +15,12 @@ for (const asset of ["notebook", "markdown-text", "workstations"]) {
         .toBe(2);
       await expect(page.getByText("Opening notebook", { exact: true })).toBeHidden();
       await expect(page.getByText(/Cloud viewer crashed|Couldn't download/)).toBeHidden();
-      await expect(page.getByRole("main")).toBeVisible();
+      await expect(
+        page.getByRole("region", {
+          name: asset === "workstations" ? "Workstations" : "Hosted notebook",
+          exact: true,
+        }),
+      ).toBeVisible();
       expect((await (await request.get(`/__status?case=${id}`)).json()).requests).toBe(2);
     });
   }
@@ -35,6 +40,7 @@ test("stops automatic reloads after a repeated failure and supports manual retry
     .toBe(3);
   await expect(page.getByRole("button", { name: "Reload page" })).toBeHidden();
   await expect(page.getByText("Opening notebook", { exact: true })).toBeHidden();
+  await expect(page.getByRole("region", { name: "Hosted notebook", exact: true })).toBeVisible();
   expect((await (await request.get(`/__status?case=${id}`)).json()).requests).toBe(3);
 });
 
