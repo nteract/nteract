@@ -213,8 +213,11 @@ The request and response types live in
 1. **required_heads timeout:** Daemon rejected the request after waiting 10s
    for heads that never arrived. Check if the sync stream is healthy before
    retrying.
-2. **Kernel not ready:** The kernel isn't started or is in error state.
-   The daemon returns an error response, not `CellQueued`.
+2. **Kernel availability:** The daemon returns `NoKernel` when no runtime
+   agent is connected and no launch is in progress, or when the lifecycle is
+   `Shutdown` or `Error`. During launch, it can queue work and return
+   `CellQueued` before the agent connects. See `handle_inner()` in
+   `crates/runtimed/src/requests/execute_cell.rs`.
 3. **Trust gate:** Untrusted notebooks may block execution pending
    approval.
 
