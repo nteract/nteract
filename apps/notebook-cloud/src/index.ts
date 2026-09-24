@@ -516,10 +516,10 @@ const NOTEBOOK_CLOUD_ROUTES: readonly WorkerRoute[] = [
 ];
 
 const worker: ExportedHandler<Env> = {
-  scheduled(_controller, env, ctx) {
+  async scheduled(_controller, env) {
     // Retry committed changes whose immediate notification failed. Browsers
     // never poll the catalog; this only drains pending delivery records.
-    ctx.waitUntil(drainNotebookHomeOutbox(env));
+    await drainNotebookHomeOutbox(env);
   },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === "OPTIONS") {

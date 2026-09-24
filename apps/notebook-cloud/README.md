@@ -39,7 +39,7 @@ Creation, title changes, ACL changes, and account linking update a coalesced
 Mutation requests attempt delivery immediately. The configured minute cron
 retries pending deliveries, so a committed change survives a failed wakeup.
 Deployments need the `NOTEBOOK_HOME` binding and scheduled handler enabled;
-the celld configuration exports both. Migration `0009_notebook_home.sql` and
+the celld configuration exports both. Migration `0010_notebook_home.sql` and
 lazy schema initialization install the same triggers. Delivery failures emit
 `notebook_home.delivery_failed` or `notebook_home.outbox_failed` logs.
 

@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { before, beforeEach, test } from "node:test";
 import { NOTEBOOK_HOME_SCHEMA } from "../src/notebook-home-schema.ts";
 import { drainNotebookHomeOutbox } from "../src/notebook-home-outbox.ts";
+import worker from "../src/index.ts";
 import {
   createNotebookWithOwnerAcl,
   ensureCatalogSchema,
@@ -73,7 +74,7 @@ beforeEach(() => {
 
 test("migration and lazy schema initialization install the same triggers", async () => {
   const migration = await readFile(
-    new URL("../migrations/0009_notebook_home.sql", import.meta.url),
+    new URL("../migrations/0010_notebook_home.sql", import.meta.url),
     "utf8",
   );
   assert.equal(
@@ -188,4 +189,38 @@ test("acknowledging an older delivery cannot erase a concurrent change", async (
   await drainNotebookHomeOutbox(env);
   assert.equal(pending().length, 1);
   assert.notEqual(pending()[0].change_id, before);
+});
+
+test("the scheduled handler stays pending until notification delivery finishes", async () => {
+  await createNotebookWithOwnerAcl(env, "nb", owner);
+  let deliveryStarted;
+  const started = new Promise((resolve) => {
+    deliveryStarted = resolve;
+  });
+  let deliver;
+  env.NOTEBOOK_HOME = {
+    idFromName: (name) => name,
+    get: () => ({
+      fetch: () => {
+        deliveryStarted();
+        return new Promise((resolve) => {
+          deliver = resolve;
+        });
+      },
+    }),
+  };
+  let completed = false;
+  const completion = Promise.resolve(worker.scheduled({}, env, { waitUntil: () => {} })).then(
+    () => {
+      completed = true;
+    },
+  );
+  await started;
+  try {
+    assert.equal(completed, false, "the scheduler must own the full delivery lifetime");
+  } finally {
+    deliver(new Response());
+    await completion;
+  }
+  assert.deepEqual(pending(), []);
 });
