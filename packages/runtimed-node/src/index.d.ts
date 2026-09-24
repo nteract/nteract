@@ -11,16 +11,14 @@ export type {
   RelayInfo,
 } from "./relay";
 
-export type NotebookDocPhase = "pending" | "syncing" | "interactive";
-export type RuntimeStatePhase = "pending" | "syncing" | "ready";
+export type ConnectionState = "Connected" | "Disconnected";
+export type NotebookDocPhase = "Pending" | "Syncing" | "Interactive";
+export type RuntimeStatePhase = "Pending" | "Syncing" | "Ready";
 
-export type InitialLoadPhase =
-  | { phase: "not_needed" }
-  | { phase: "streaming" }
-  | { phase: "ready" }
-  | { phase: "failed"; reason: string };
+export type InitialLoadPhase = "NotNeeded" | "Streaming" | "Ready" | { Failed: { reason: string } };
 
 export interface SessionStatus {
+  connection: ConnectionState;
   notebook_doc: NotebookDocPhase;
   runtime_state: RuntimeStatePhase;
   initial_load: InitialLoadPhase;
