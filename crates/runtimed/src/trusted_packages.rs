@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use rattler_conda_types::{MatchSpec, ParseMatchSpecOptions};
 use rusqlite::{params, Connection};
 use tracing::warn;
 
@@ -12,8 +13,224 @@ pub(crate) struct PackageIdentity {
     pub normalized_name: String,
 }
 
+const ECOSYSTEM_PYPI: &str = "pypi";
+const ECOSYSTEM_CONDA: &str = "conda";
 const ECOSYSTEM_CONDA_CHANNEL: &str = "conda-channel";
 const ECOSYSTEM_PIXI_CHANNEL: &str = "pixi-channel";
+
+/// Prefix for allowlist keys that hold an exact dependency spec. Registry
+/// names normalize to `[a-z0-9-]`, so exact keys can never collide with them.
+const EXACT_SPEC_PREFIX: &str = "exact:";
+
+/// Which installer grammar a dependency spec is written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpecSource {
+    /// PEP 508 requirements installed by uv or pixi's PyPI solver.
+    Pypi,
+    /// Conda match specs. `channel_ecosystem` is the allowlist namespace for
+    /// a `channel::name` qualifier on a spec from this source.
+    Conda { channel_ecosystem: &'static str },
+}
+
+impl SpecSource {
+    fn package_ecosystem(self) -> &'static str {
+        match self {
+            Self::Pypi => ECOSYSTEM_PYPI,
+            Self::Conda { .. } => ECOSYSTEM_CONDA,
+        }
+    }
+
+    fn for_package_ecosystem(ecosystem: &str) -> Self {
+        if ecosystem == ECOSYSTEM_CONDA {
+            Self::Conda {
+                channel_ecosystem: ECOSYSTEM_CONDA_CHANNEL,
+            }
+        } else {
+            Self::Pypi
+        }
+    }
+}
+
+/// Allowlist identity of one dependency spec.
+///
+/// Approval of a registry name must never extend to a spec that chooses its
+/// own source. Anything that is not a plain registry spec is keyed by its
+/// exact text, so it needs its own approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SpecIdentity {
+    /// A package resolved from the configured registry or channels, keyed by
+    /// normalized name. Extras, version constraints, and environment markers
+    /// do not change the source, so approving `numpy` covers `numpy>=2`.
+    Registry(String),
+    /// A conda package pinned to a named channel with `channel::name`. The
+    /// package and the channel must both be approved.
+    ChannelRegistry { channel: String, name: String },
+    /// A spec that names its own source (a PEP 508 direct reference, VCS or
+    /// path reference, installer option, conda URL, or bracketed conda
+    /// channel) or that is not a recognizable registry spec.
+    Exact(String),
+}
+
+fn classify_spec(source: SpecSource, spec: &str) -> Option<SpecIdentity> {
+    match source {
+        SpecSource::Pypi => classify_pypi_spec(spec),
+        SpecSource::Conda { .. } => classify_conda_spec(spec),
+    }
+}
+
+fn classify_pypi_spec(spec: &str) -> Option<SpecIdentity> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    let exact = || Some(SpecIdentity::Exact(spec.to_string()));
+
+    // PEP 508 direct references (`name @ url`) choose their own source. A
+    // valid marker can't contain `@`, so checking the whole spec is safe.
+    if spec.contains('@') {
+        return exact();
+    }
+    // Environment markers only decide whether the requirement applies.
+    let requirement = spec.split(';').next().unwrap_or(spec).trim_end();
+
+    let name_end = requirement
+        .find(|ch: char| !is_registry_name_char(ch))
+        .unwrap_or(requirement.len());
+    let Some(name) = normalize_registry_name(&requirement[..name_end]) else {
+        return exact();
+    };
+
+    let mut rest = requirement[name_end..].trim_start();
+    if let Some(after_open) = rest.strip_prefix('[') {
+        let Some((extras, after_close)) = after_open.split_once(']') else {
+            return exact();
+        };
+        if !extras
+            .chars()
+            .all(|ch| is_registry_name_char(ch) || matches!(ch, ',' | ' ' | '\t'))
+        {
+            return exact();
+        }
+        rest = after_close;
+    }
+    if !rest.chars().all(is_version_clause_char) {
+        return exact();
+    }
+    Some(SpecIdentity::Registry(name))
+}
+
+fn classify_conda_spec(spec: &str) -> Option<SpecIdentity> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    let exact = || Some(SpecIdentity::Exact(spec.to_string()));
+
+    // Match kernel-env's installer, which treats the first `::` as a channel
+    // qualifier (`kernel_env::channels::parse_match_spec`).
+    let (channel, package_spec) = match spec.split_once("::") {
+        Some((channel, package_spec)) => (Some(channel.trim()), package_spec.trim()),
+        None => (None, spec),
+    };
+    if channel.is_some_and(str::is_empty) {
+        return exact();
+    }
+
+    let Ok(parsed) = MatchSpec::from_str(package_spec, ParseMatchSpecOptions::strict()) else {
+        return exact();
+    };
+    // Bracketed `channel=` / `url=` keys and URL specs choose their own source.
+    if parsed.channel.is_some() || parsed.url.is_some() {
+        return exact();
+    }
+    let Some(name) = parsed.name.as_exact() else {
+        return exact();
+    };
+    let Some(name) = normalize_registry_name(name.as_normalized()) else {
+        return exact();
+    };
+
+    Some(match channel {
+        Some(channel) => SpecIdentity::ChannelRegistry {
+            channel: channel.to_string(),
+            name,
+        },
+        None => SpecIdentity::Registry(name),
+    })
+}
+
+fn is_registry_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+}
+
+/// Characters allowed in a PEP 440 version clause, including the legacy
+/// parenthesized form. `:`, `/`, `@`, `-`, and newlines are excluded, which
+/// keeps URLs, paths, and installer options out of the registry identity.
+fn is_version_clause_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(
+            ch,
+            '<' | '>' | '=' | '!' | '~' | ',' | '.' | '*' | '+' | '(' | ')' | ' ' | '\t'
+        )
+}
+
+/// Normalize a PEP 503 / conda package name, or `None` if `name` is not a
+/// valid registry name.
+fn normalize_registry_name(name: &str) -> Option<String> {
+    let first = name.chars().next()?;
+    let last = name.chars().last()?;
+    if !first.is_ascii_alphanumeric()
+        || !last.is_ascii_alphanumeric()
+        || !name.chars().all(is_registry_name_char)
+    {
+        return None;
+    }
+
+    let mut normalized = String::with_capacity(name.len());
+    let mut last_was_separator = false;
+    for ch in name.chars() {
+        if matches!(ch, '-' | '_' | '.') {
+            if !last_was_separator {
+                normalized.push('-');
+                last_was_separator = true;
+            }
+        } else {
+            normalized.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        }
+    }
+    Some(normalized)
+}
+
+fn identities_for_spec(source: SpecSource, raw_spec: &str) -> Vec<PackageIdentity> {
+    let Some(identity) = classify_spec(source, raw_spec) else {
+        return Vec::new();
+    };
+    let package = |normalized_name: String| PackageIdentity {
+        ecosystem: source.package_ecosystem(),
+        raw_spec: raw_spec.to_string(),
+        normalized_name,
+    };
+    match (identity, source) {
+        (SpecIdentity::Registry(name), _) => vec![package(name)],
+        (SpecIdentity::Exact(spec), _) => vec![package(format!("{EXACT_SPEC_PREFIX}{spec}"))],
+        (
+            SpecIdentity::ChannelRegistry { channel, name },
+            SpecSource::Conda { channel_ecosystem },
+        ) => vec![
+            package(name),
+            PackageIdentity {
+                ecosystem: channel_ecosystem,
+                raw_spec: raw_spec.to_string(),
+                normalized_name: channel,
+            },
+        ],
+        // Only the conda grammar produces channel identities.
+        (SpecIdentity::ChannelRegistry { .. }, SpecSource::Pypi) => {
+            vec![package(format!("{EXACT_SPEC_PREFIX}{}", raw_spec.trim()))]
+        }
+    }
+}
 
 #[derive(Debug)]
 enum StoreInner {
@@ -115,15 +332,24 @@ impl TrustedPackageStore {
     }
 
     pub(crate) fn enrich_info(&self, info: &mut runt_trust::TrustInfo) -> Result<()> {
-        info.approved_uv_dependencies = self.approved_raw_specs("pypi", &info.uv_dependencies)?;
-        info.approved_conda_dependencies =
-            self.approved_raw_specs("conda", &info.conda_dependencies)?;
+        info.approved_uv_dependencies =
+            self.approved_raw_specs(SpecSource::Pypi, &info.uv_dependencies)?;
+        info.approved_conda_dependencies = self.approved_raw_specs(
+            SpecSource::Conda {
+                channel_ecosystem: ECOSYSTEM_CONDA_CHANNEL,
+            },
+            &info.conda_dependencies,
+        )?;
         info.approved_conda_channels =
             self.approved_raw_channels(ECOSYSTEM_CONDA_CHANNEL, &info.conda_channels)?;
-        info.approved_pixi_dependencies =
-            self.approved_raw_specs("conda", &info.pixi_dependencies)?;
+        info.approved_pixi_dependencies = self.approved_raw_specs(
+            SpecSource::Conda {
+                channel_ecosystem: ECOSYSTEM_PIXI_CHANNEL,
+            },
+            &info.pixi_dependencies,
+        )?;
         info.approved_pixi_pypi_dependencies =
-            self.approved_raw_specs("pypi", &info.pixi_pypi_dependencies)?;
+            self.approved_raw_specs(SpecSource::Pypi, &info.pixi_pypi_dependencies)?;
         info.approved_pixi_channels =
             self.approved_raw_channels(ECOSYSTEM_PIXI_CHANNEL, &info.pixi_channels)?;
         Ok(())
@@ -153,11 +379,15 @@ impl TrustedPackageStore {
         Ok(true)
     }
 
+    /// Seed product-default registry packages. Seeds are plain names; a seed
+    /// that is not a plain registry spec is ignored rather than stored as an
+    /// exact-spec approval.
     pub(crate) fn seed_defaults(&self, ecosystem: &'static str, specs: &[&str]) -> Result<()> {
         let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
             return Ok(());
         };
 
+        let source = SpecSource::for_package_ecosystem(ecosystem);
         let approved_at = chrono::Utc::now().to_rfc3339();
         let mut conn = conn
             .lock()
@@ -172,7 +402,7 @@ impl TrustedPackageStore {
                 "#,
             )?;
             for spec in specs {
-                if let Some(name) = normalize_package_name(spec) {
+                if let Some(SpecIdentity::Registry(name)) = classify_spec(source, spec) {
                     stmt.execute(params![ecosystem, name, approved_at, "daemon-default"])?;
                 }
             }
@@ -214,7 +444,7 @@ impl TrustedPackageStore {
         Ok(())
     }
 
-    fn approved_raw_specs(&self, ecosystem: &'static str, specs: &[String]) -> Result<Vec<String>> {
+    fn approved_raw_specs(&self, source: SpecSource, specs: &[String]) -> Result<Vec<String>> {
         let StoreInner::Sqlite { conn } = self.inner.as_ref() else {
             return Ok(vec![]);
         };
@@ -225,14 +455,18 @@ impl TrustedPackageStore {
             "SELECT 1 FROM trusted_packages WHERE ecosystem = ?1 AND normalized_name = ?2",
         )?;
         let mut approved = Vec::new();
-        for spec in specs {
-            let Some(name) = normalize_package_name(spec) else {
+        'specs: for spec in specs {
+            let identities = identities_for_spec(source, spec);
+            if identities.is_empty() {
                 continue;
-            };
-            let mut rows = stmt.query(params![ecosystem, name])?;
-            if rows.next()?.is_some() {
-                approved.push(spec.clone());
             }
+            for identity in identities {
+                let mut rows = stmt.query(params![identity.ecosystem, identity.normalized_name])?;
+                if rows.next()?.is_none() {
+                    continue 'specs;
+                }
+            }
+            approved.push(spec.clone());
         }
         Ok(approved)
     }
@@ -266,15 +500,27 @@ impl TrustedPackageStore {
 }
 
 pub(crate) fn identities_from_trust_info(info: &runt_trust::TrustInfo) -> Vec<PackageIdentity> {
+    let conda = SpecSource::Conda {
+        channel_ecosystem: ECOSYSTEM_CONDA_CHANNEL,
+    };
+    let pixi_conda = SpecSource::Conda {
+        channel_ecosystem: ECOSYSTEM_PIXI_CHANNEL,
+    };
     let mut out = Vec::new();
-    out.extend(identities_for_specs("pypi", &info.uv_dependencies));
-    out.extend(identities_for_specs("conda", &info.conda_dependencies));
+    out.extend(identities_for_specs(
+        SpecSource::Pypi,
+        &info.uv_dependencies,
+    ));
+    out.extend(identities_for_specs(conda, &info.conda_dependencies));
     out.extend(identities_for_channels(
         ECOSYSTEM_CONDA_CHANNEL,
         &info.conda_channels,
     ));
-    out.extend(identities_for_specs("conda", &info.pixi_dependencies));
-    out.extend(identities_for_specs("pypi", &info.pixi_pypi_dependencies));
+    out.extend(identities_for_specs(pixi_conda, &info.pixi_dependencies));
+    out.extend(identities_for_specs(
+        SpecSource::Pypi,
+        &info.pixi_pypi_dependencies,
+    ));
     out.extend(identities_for_channels(
         ECOSYSTEM_PIXI_CHANNEL,
         &info.pixi_channels,
@@ -282,16 +528,10 @@ pub(crate) fn identities_from_trust_info(info: &runt_trust::TrustInfo) -> Vec<Pa
     out
 }
 
-fn identities_for_specs(ecosystem: &'static str, specs: &[String]) -> Vec<PackageIdentity> {
+fn identities_for_specs(source: SpecSource, specs: &[String]) -> Vec<PackageIdentity> {
     specs
         .iter()
-        .filter_map(|raw_spec| {
-            normalize_package_name(raw_spec).map(|normalized_name| PackageIdentity {
-                ecosystem,
-                raw_spec: raw_spec.clone(),
-                normalized_name,
-            })
-        })
+        .flat_map(|raw_spec| identities_for_spec(source, raw_spec))
         .collect()
 }
 
@@ -314,54 +554,6 @@ pub(crate) fn normalize_channel_source(source: &str) -> Option<String> {
         None
     } else {
         Some(source.to_string())
-    }
-}
-
-pub(crate) fn normalize_package_name(spec: &str) -> Option<String> {
-    let mut name = spec.split(';').next().unwrap_or(spec).trim();
-    if name.is_empty() {
-        return None;
-    }
-    if let Some((_, after_channel)) = name.rsplit_once("::") {
-        name = after_channel.trim();
-    }
-    if let Some((before_url, _)) = name.split_once('@') {
-        name = before_url.trim();
-    }
-    let end = name
-        .char_indices()
-        .find_map(|(idx, ch)| {
-            if matches!(ch, '[' | '<' | '>' | '=' | '!' | '~') || ch.is_whitespace() {
-                Some(idx)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(name.len());
-    name = name[..end].trim();
-    if name.is_empty() {
-        return None;
-    }
-
-    let mut normalized = String::with_capacity(name.len());
-    let mut last_was_dash = false;
-    for ch in name.chars() {
-        let ch = ch.to_ascii_lowercase();
-        if matches!(ch, '-' | '_' | '.') {
-            if !last_was_dash {
-                normalized.push('-');
-                last_was_dash = true;
-            }
-        } else {
-            normalized.push(ch);
-            last_was_dash = false;
-        }
-    }
-    let normalized = normalized.trim_matches('-').to_string();
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
     }
 }
 
@@ -463,26 +655,229 @@ pub(crate) fn log_store_unavailable(store: &TrustedPackageStore) {
 mod tests {
     use super::*;
 
+    const CONDA: SpecSource = SpecSource::Conda {
+        channel_ecosystem: ECOSYSTEM_CONDA_CHANNEL,
+    };
+
+    fn registry(name: &str) -> Option<SpecIdentity> {
+        Some(SpecIdentity::Registry(name.into()))
+    }
+
+    fn exact(spec: &str) -> Option<SpecIdentity> {
+        Some(SpecIdentity::Exact(spec.into()))
+    }
+
+    fn empty_info() -> runt_trust::TrustInfo {
+        runt_trust::TrustInfo {
+            status: runt_trust::TrustStatus::Untrusted,
+            uv_dependencies: vec![],
+            approved_uv_dependencies: vec![],
+            conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
+            conda_channels: vec![],
+            approved_conda_channels: vec![],
+            pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
+            approved_pixi_channels: vec![],
+        }
+    }
+
+    fn seeded_store(tmp: &tempfile::TempDir) -> TrustedPackageStore {
+        let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();
+        store.seed_defaults("pypi", &["numpy", "pandas"]).unwrap();
+        store.seed_defaults("conda", &["numpy", "pandas"]).unwrap();
+        store.seed_default_channels(&["conda-forge"]).unwrap();
+        store
+    }
+
     #[test]
-    fn normalizes_common_dependency_specs() {
-        assert_eq!(normalize_package_name("pandas>=2"), Some("pandas".into()));
-        assert_eq!(normalize_package_name("Pandas"), Some("pandas".into()));
+    fn registry_specs_normalize_to_package_names() {
+        let pypi = SpecSource::Pypi;
+        assert_eq!(classify_spec(pypi, "pandas>=2"), registry("pandas"));
+        assert_eq!(classify_spec(pypi, "Pandas"), registry("pandas"));
         assert_eq!(
-            normalize_package_name("scikit_learn"),
-            Some("scikit-learn".into())
+            classify_spec(pypi, "scikit_learn"),
+            registry("scikit-learn")
         );
         assert_eq!(
-            normalize_package_name("requests[security,socks]>=2; python_version >= '3.11'"),
-            Some("requests".into())
+            classify_spec(
+                pypi,
+                "requests[security,socks]>=2; python_version >= '3.11'"
+            ),
+            registry("requests")
         );
         assert_eq!(
-            normalize_package_name("conda-forge::NumPy=1.26"),
-            Some("numpy".into())
+            classify_spec(pypi, "my.pkg__name>=1"),
+            registry("my-pkg-name")
+        );
+        assert_eq!(classify_spec(pypi, "numpy (>=1.0, <2)"), registry("numpy"));
+        assert_eq!(classify_spec(pypi, "torch==2.1.0+cpu"), registry("torch"));
+        assert_eq!(classify_spec(pypi, "   "), None);
+
+        assert_eq!(classify_spec(CONDA, "NumPy=1.26"), registry("numpy"));
+        assert_eq!(
+            classify_spec(CONDA, "python>=3.12,<3.14"),
+            registry("python")
         );
         assert_eq!(
-            normalize_package_name("my.pkg__name>=1"),
-            Some("my-pkg-name".into())
+            classify_spec(CONDA, "conda-forge::NumPy=1.26"),
+            Some(SpecIdentity::ChannelRegistry {
+                channel: "conda-forge".into(),
+                name: "numpy".into(),
+            })
         );
+    }
+
+    #[test]
+    fn source_selecting_specs_keep_their_exact_text() {
+        let pypi = SpecSource::Pypi;
+        for spec in [
+            "numpy @ https://example.test/numpy-2.0-py3-none-any.whl",
+            "numpy@https://example.test/numpy.whl",
+            "numpy @ file:///tmp/numpy.whl ; python_version >= '3.11'",
+            "numpy[extra] @ git+https://example.test/numpy.git",
+            "git+https://example.test/numpy.git",
+            "https://example.test/numpy-2.0-py3-none-any.whl",
+            "./vendor/numpy",
+            "-e ./vendor/numpy",
+            "--index-url=https://example.test/simple",
+            "numpy --index-url https://example.test/simple",
+            "@ https://example.test/numpy.whl",
+        ] {
+            assert_eq!(classify_spec(pypi, spec), exact(spec), "pypi spec {spec:?}");
+        }
+
+        for spec in [
+            "numpy[channel=https://example.test/conda]",
+            "numpy[url=https://example.test/numpy-2.0-0.conda]",
+            "https://example.test/linux-64/numpy-2.0-0.conda",
+            "::numpy",
+            "nump*",
+        ] {
+            assert_eq!(
+                classify_spec(CONDA, spec),
+                exact(spec),
+                "conda spec {spec:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_references_do_not_inherit_name_approval() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = seeded_store(&tmp);
+        let direct = "numpy @ https://example.test/numpy-2.0-py3-none-any.whl";
+
+        for (uv, pixi_pypi) in [
+            (vec![direct.to_string()], vec![]),
+            (vec![], vec![direct.to_string()]),
+        ] {
+            let info = runt_trust::TrustInfo {
+                uv_dependencies: uv,
+                pixi_pypi_dependencies: pixi_pypi,
+                ..empty_info()
+            };
+            assert!(
+                !store.all_dependencies_approved(&info).unwrap(),
+                "an approved registry name must not approve a direct reference"
+            );
+        }
+
+        let info = runt_trust::TrustInfo {
+            uv_dependencies: vec!["pandas".into(), direct.into()],
+            ..empty_info()
+        };
+        let mut enriched = info.clone();
+        store.enrich_info(&mut enriched).unwrap();
+        assert_eq!(enriched.approved_uv_dependencies, vec!["pandas"]);
+
+        store.add_from_info(&info, "test").unwrap();
+        assert!(store.all_dependencies_approved(&info).unwrap());
+
+        let other_url = runt_trust::TrustInfo {
+            uv_dependencies: vec!["numpy @ https://example.test/other.whl".into()],
+            ..empty_info()
+        };
+        assert!(
+            !store.all_dependencies_approved(&other_url).unwrap(),
+            "approving one direct reference must not approve another URL"
+        );
+
+        let plain = runt_trust::TrustInfo {
+            uv_dependencies: vec!["numpy>=2".into()],
+            ..empty_info()
+        };
+        assert!(store.all_dependencies_approved(&plain).unwrap());
+    }
+
+    #[test]
+    fn unrecognized_specs_fail_closed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = seeded_store(&tmp);
+        let info = runt_trust::TrustInfo {
+            uv_dependencies: vec!["pandas".into(), "@ https://example.test/x.whl".into()],
+            ..empty_info()
+        };
+        assert!(
+            !store.all_dependencies_approved(&info).unwrap(),
+            "a spec without a registry name must not drop out of the trust check"
+        );
+    }
+
+    #[test]
+    fn conda_channel_qualifiers_require_channel_approval() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = seeded_store(&tmp);
+
+        for (conda, pixi) in [
+            (vec!["conda-forge::numpy".to_string()], vec![]),
+            (vec![], vec!["conda-forge::numpy".to_string()]),
+        ] {
+            let info = runt_trust::TrustInfo {
+                conda_dependencies: conda,
+                pixi_dependencies: pixi,
+                ..empty_info()
+            };
+            assert!(store.all_dependencies_approved(&info).unwrap());
+        }
+
+        let untrusted_channel = runt_trust::TrustInfo {
+            conda_dependencies: vec!["https://example.test/conda::numpy".into()],
+            ..empty_info()
+        };
+        assert!(
+            !store.all_dependencies_approved(&untrusted_channel).unwrap(),
+            "a channel qualifier must be approved like a notebook channel"
+        );
+        let mut enriched = untrusted_channel.clone();
+        store.enrich_info(&mut enriched).unwrap();
+        assert!(enriched.approved_conda_dependencies.is_empty());
+
+        store.add_from_info(&untrusted_channel, "test").unwrap();
+        assert!(store.all_dependencies_approved(&untrusted_channel).unwrap());
+
+        let bracket_channel = runt_trust::TrustInfo {
+            conda_dependencies: vec!["numpy[channel=https://example.test/other]".into()],
+            ..empty_info()
+        };
+        assert!(!store.all_dependencies_approved(&bracket_channel).unwrap());
+    }
+
+    #[test]
+    fn seed_defaults_ignores_source_selecting_specs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = TrustedPackageStore::open(tmp.path().join("trusted.sqlite")).unwrap();
+        let direct = "numpy @ https://example.test/numpy.whl";
+        store.seed_defaults("pypi", &[direct]).unwrap();
+
+        let info = runt_trust::TrustInfo {
+            uv_dependencies: vec![direct.into()],
+            ..empty_info()
+        };
+        assert!(!store.all_dependencies_approved(&info).unwrap());
     }
 
     #[test]

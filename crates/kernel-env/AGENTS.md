@@ -194,6 +194,12 @@ is present in the local trusted-package store.
 - **Store:** `TrustedPackageStore` in `crates/runtimed/src/trusted_packages.rs`,
   keyed by `(ecosystem, normalized_name)` and populated by user approval
   via the trust dialog or by daemon-initiated approval flows.
+- **Identity:** only plain registry specs (name, extras, version constraints,
+  markers) share a normalized-name identity. A spec that selects its own
+  source — a PEP 508 direct reference, VCS/path/URL spec, installer option,
+  conda URL, or bracketed conda channel — is keyed by its exact text. A
+  `channel::name` conda spec needs both the name and the channel approved.
+  Unrecognized specs fail closed; never drop them from the check.
 - **Extraction:** `runt_trust::extract_trust_info()` pulls dep names out
   of `metadata.runt.uv` / `metadata.runt.conda` / `metadata.runt.pixi`
   (with fallback to legacy `metadata.uv` / `metadata.conda`).
