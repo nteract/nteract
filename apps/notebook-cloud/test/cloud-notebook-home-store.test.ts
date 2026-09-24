@@ -28,6 +28,7 @@ function fixture() {
   const saved: CloudNotebookListResponse[] = [];
   let clears = 0;
   const driver: NotebookHomeDriver = {
+    identityKey: "alice",
     gate: "open",
     seed: null,
     waitMs: 8_000,
@@ -85,7 +86,8 @@ test("an account switch discards completions from the previous identity", async 
   const dispose = store.activate(first.driver);
   const epoch = store.identityEpoch;
   dispose();
-  const stop = store.activate(next.driver);
+  const stop = store.activate({ ...next.driver, identityKey: "bob" });
+  assert.equal(store.snapshot.list.kind, "loading");
   first.calls[0]!.resolve(body("alice"));
   next.calls[0]!.resolve(body("bob"));
   await settle();

@@ -28,6 +28,7 @@ export interface NotebookHomeState {
 }
 
 export interface NotebookHomeDriver {
+  identityKey: string | null;
   gate: "open" | "waiting" | "closed";
   seed: CloudNotebookListSnapshot | null;
   waitMs: number;
@@ -51,12 +52,16 @@ export class NotebookHomeAccessError extends Error {}
 export class CloudNotebookHomeStore extends ObservableStore<NotebookHomeState> {
   private readonly refreshes = new Subject<void>();
   private epoch = 0;
+  private identityKey: string | null = null;
 
   constructor() {
     super(initialState());
   }
 
-  seed(seed: CloudNotebookListSnapshot | null): void {
+  seed(seed: CloudNotebookListSnapshot | null, identityKey: string | null): void {
+    // Session renewal changes credentials, not the authorized projection.
+    if (identityKey !== null && identityKey === this.identityKey) return;
+    this.identityKey = identityKey;
     this.setState({
       ...initialState(),
       list: seed ? { kind: "ready", ...seed } : { kind: "loading" },
@@ -75,8 +80,9 @@ export class CloudNotebookHomeStore extends ObservableStore<NotebookHomeState> {
   activate(driver: NotebookHomeDriver): () => void {
     const epoch = ++this.epoch;
     const subscriptions = new Subscription();
-    this.seed(driver.seed);
+    this.seed(driver.seed, driver.identityKey);
     if (driver.gate === "closed") {
+      this.identityKey = null;
       driver.clear();
       this.setState({ ...initialState(), list: { kind: "signed_out" } });
     } else {

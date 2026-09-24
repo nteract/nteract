@@ -102,16 +102,24 @@ export function CloudNotebookListView({
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const auth = useCloudAuthStore();
-  const [bootstrap, setBootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
+  const [bootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
   );
   const appSessionStatus = useCloudAppSession();
   const authState = useCloudAuthState();
   const authRenewal = useCloudAuthRenewal();
   const { notebookHome } = useCloudStores();
+  const identityKey = appSessionStatus.session
+    ? `session:${appSessionStatus.session.cache_key}`
+    : authState.mode === "dev" && authState.token
+      ? `dev:${authState.user ?? "browser-editor"}`
+      : authState.oidcClaims?.sub
+        ? `oidc:${authState.oidcClaims.sub}`
+        : null;
   useState(() => {
     notebookHome.seed(
-      cloudNotebookListSeedFromBootstrapOrCache(authState, bootstrap?.session, bootstrap),
+      cloudNotebookListSeedFromBootstrapOrCache(authState, appSessionStatus.session, bootstrap),
+      identityKey,
     );
     return null;
   });
@@ -150,17 +158,16 @@ export function CloudNotebookListView({
   }, [resolvedTheme]);
 
   useEffect(() => {
-    const seed = cloudNotebookListSeedFromBootstrapOrCache(
-      authState,
-      appSessionStatus.session,
-      bootstrap,
-    );
+    // Bootstrap is consumed at mount. Reusing it here can resurrect items
+    // removed by a newer authorized snapshot when credentials renew.
+    const seed = readCachedCloudNotebookListFromLocalStorage(authState, appSessionStatus.session);
     const target = notebookHomeEventsUrl(
       new URL("api/notebook-home/events", `${window.location.origin}/`).href,
       authState,
       hasAppSession,
     );
     return notebookHome.activate({
+      identityKey,
       gate: canFetchNotebookList ? "open" : waitingForAppSession ? "waiting" : "closed",
       seed,
       waitMs: Math.max(0, appSessionWaitDeadline),
@@ -197,9 +204,9 @@ export function CloudNotebookListView({
     appSessionStatus.session,
     appSessionWaitDeadline,
     authState,
-    bootstrap,
     canFetchNotebookList,
     hasAppSession,
+    identityKey,
     notebookHome,
     waitingForAppSession,
   ]);
@@ -320,7 +327,6 @@ export function CloudNotebookListView({
   };
 
   const signOut = () => {
-    setBootstrap(null);
     setDashboardQuery("");
     auth.clearAppSessionStatus();
     clearCachedCloudNotebookListFromLocalStorage();

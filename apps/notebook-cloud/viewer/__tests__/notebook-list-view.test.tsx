@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import { CloudAuthStoreProvider } from "../cloud-auth-context";
 import { CloudAuthStore } from "../cloud-auth-store";
+import { cloudNotebookHomeStore } from "../cloud-notebook-home-store";
 import type { CloudViewerAuthConfig } from "../cloud-viewer-types";
 import type { CloudPrototypeAuthState } from "../collaborator-auth";
 import { CloudNotebookListView } from "../notebook-list-view";
@@ -18,6 +19,7 @@ describe("CloudNotebookListView", () => {
   let storage: MemoryStorage;
 
   beforeEach(() => {
+    cloudNotebookHomeStore.seed(null, null);
     vi.useFakeTimers();
     storage = new MemoryStorage();
     Object.defineProperty(window, "localStorage", {
@@ -297,6 +299,61 @@ describe("CloudNotebookListView", () => {
       expect.stringContaining("notebook list refresh failed"),
       expect.any(Error),
     );
+  });
+
+  it("does not restore revoked bootstrap items when the session renews offline", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const session = { provider: "oidc" as const, expires_at: 99_999, cache_key: "renewal-a" };
+    const bootstrap = document.createElement("script");
+    bootstrap.id = "nteract-cloud-bootstrap";
+    bootstrap.type = "application/json";
+    bootstrap.textContent = JSON.stringify({
+      kind: "notebook-list",
+      saved_at: "2026-09-24T12:00:00Z",
+      session,
+      notebooks: [notebook("revoked", "Revoked notebook")],
+    });
+    document.body.append(bootstrap);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, notebooks: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = new CloudAuthStore({
+      readAuthState: () => ({
+        mode: "anonymous",
+        token: null,
+        user: null,
+        oidcClaims: null,
+        requestedScope: null,
+        problem: null,
+      }),
+    });
+    const deps = { now: () => 0, readAppSessionStatus: () => new Promise<never>(() => {}) };
+    let dispose = store.activate({ authConfig, initialSession: session }, deps);
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      expect(screen.getByText("Revoked notebook")).toBeTruthy();
+      await act(async () => {
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+      });
+      expect(screen.queryByText("Revoked notebook")).toBeNull();
+      fetchMock.mockRejectedValue(new Error("offline"));
+      await act(async () => {
+        dispose();
+        dispose = store.activate(
+          { authConfig, initialSession: { ...session, expires_at: 199_999 } },
+          deps,
+        );
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+      expect(screen.queryByText("Revoked notebook")).toBeNull();
+    } finally {
+      dispose();
+      bootstrap.remove();
+    }
   });
 
   it("adds, renames, and removes notebooks from live notifications without navigation", async () => {

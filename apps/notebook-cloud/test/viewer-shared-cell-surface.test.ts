@@ -799,10 +799,6 @@ test("cloud notebook list trusts server bootstrap on initial app-session paint",
 
   assert.match(
     sourceText,
-    /const seed = cloudNotebookListSeedFromBootstrapOrCache\([\s\S]*authState,[\s\S]*appSessionStatus\.session,[\s\S]*bootstrap,[\s\S]*\);/,
-  );
-  assert.match(
-    sourceText,
     /return bootstrap[\s\S]*\? \{[\s\S]*notebooks: bootstrap\.notebooks,[\s\S]*totalCount: normalizeCloudNotebookListTotalCount\([\s\S]*bootstrap\.notebooks,[\s\S]*bootstrap\.total_count,[\s\S]*\),[\s\S]*\}[\s\S]*: readCachedCloudNotebookListFromLocalStorage\(authState, appSession\);/,
     "server bootstrap should beat stale localStorage cache when both are present",
   );
