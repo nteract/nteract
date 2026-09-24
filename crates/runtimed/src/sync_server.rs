@@ -72,52 +72,58 @@ where
 
     // Phase 2: Exchange messages until sync is complete, then watch for changes
     loop {
-        tokio::select! {
-            // Incoming message from this client
-            result = connection::recv_frame(&mut reader) => {
-                match result? {
-                    Some(data) => {
-                        let message = sync::Message::decode(&data)
-                            .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
+        // recv_frame uses read_exact, so dropping it on a broadcast would lose
+        // partial prefix/body bytes. Keep the same raw-frame future alive until
+        // it completes, without requiring an owned reader or a spawned task.
+        let incoming = connection::recv_frame(&mut reader);
+        tokio::pin!(incoming);
+        let result = loop {
+            tokio::select! {
+                result = &mut incoming => break result,
 
-                        let outcome = {
-                            let mut doc = settings.write().await;
-                            apply_incoming_settings_sync_frame(
-                                &mut doc,
-                                &mut peer_state,
-                                message,
-                                &json_path,
-                            )?
-                        };
-
-                        if outcome.broadcast_changed {
-                            let _ = changed_tx.send(());
-                        }
-
-                        if let Some(reply) = outcome.reply {
-                            connection::send_frame(&mut writer, &reply).await?;
-                        }
-                    }
-                    None => {
-                        // Client disconnected
-                        return Ok(());
+                // Another peer changed settings -- push update to this client
+                _ = changed_rx.recv() => {
+                    let encoded = {
+                        let mut doc = settings.write().await;
+                        generate_settings_sync_frame(
+                            &mut doc,
+                            &mut peer_state,
+                            "settings-sync-broadcast-generate",
+                        )?
+                    };
+                    if let Some(msg) = encoded {
+                        connection::send_frame(&mut writer, &msg).await?;
                     }
                 }
             }
+        };
 
-            // Another peer changed settings -- push update to this client
-            _ = changed_rx.recv() => {
-                let encoded = {
+        match result? {
+            Some(data) => {
+                let message = sync::Message::decode(&data)
+                    .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
+
+                let outcome = {
                     let mut doc = settings.write().await;
-                    generate_settings_sync_frame(
+                    apply_incoming_settings_sync_frame(
                         &mut doc,
                         &mut peer_state,
-                        "settings-sync-broadcast-generate",
+                        message,
+                        &json_path,
                     )?
                 };
-                if let Some(msg) = encoded {
-                    connection::send_frame(&mut writer, &msg).await?;
+
+                if outcome.broadcast_changed {
+                    let _ = changed_tx.send(());
                 }
+
+                if let Some(reply) = outcome.reply {
+                    connection::send_frame(&mut writer, &reply).await?;
+                }
+            }
+            None => {
+                // Client disconnected
+                return Ok(());
             }
         }
     }
@@ -263,7 +269,206 @@ mod tests {
     use super::*;
     use crate::settings_doc::{ColorTheme, SyncedSettings, ThemeMode};
     use serial_test::serial;
+    use std::cell::Cell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::task::{Context, Poll};
     use tempfile::TempDir;
+    use tokio::io::{AsyncWriteExt, DuplexStream, ReadBuf};
+
+    struct ObservedReader<R> {
+        inner: R,
+        consumed: Rc<Cell<usize>>,
+    }
+
+    impl<R: AsyncRead + Unpin> AsyncRead for ObservedReader<R> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let before = buf.filled().len();
+            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+            self.consumed
+                .set(self.consumed.get() + buf.filled().len() - before);
+            result
+        }
+    }
+
+    // Drive the real handler and client explicitly, without spawned tasks or
+    // sleeps. These small settings frames fit in the duplex buffer, so a handler
+    // poll writes complete frames before parking on its next read/broadcast.
+    async fn exchange_settings_until_idle(
+        mut handler: Pin<&mut impl Future<Output = anyhow::Result<()>>>,
+        stream: &mut DuplexStream,
+        client: &mut SettingsDoc,
+        peer_state: &mut sync::State,
+    ) {
+        for _ in 0..16 {
+            let result = futures::poll!(handler.as_mut());
+            assert!(
+                result.is_pending(),
+                "handler closed unexpectedly: {result:?}"
+            );
+            let incoming = {
+                let receive = connection::recv_frame(stream);
+                tokio::pin!(receive);
+                futures::poll!(receive)
+            };
+            match incoming {
+                Poll::Ready(Ok(Some(data))) => {
+                    client
+                        .receive_sync_message(
+                            peer_state,
+                            sync::Message::decode(&data).expect("server sync message"),
+                        )
+                        .expect("apply server settings");
+                    if let Some(message) = client.generate_sync_message(peer_state) {
+                        connection::send_frame(stream, &message.encode())
+                            .await
+                            .expect("send client settings");
+                    }
+                }
+                Poll::Pending => return,
+                result => panic!("server frame failed: {result:?}"),
+            }
+        }
+        panic!("settings sync did not become idle");
+    }
+
+    async fn settings_handler_preserves_fragment_across_broadcasts(split_at: usize) {
+        let _hook_guard = SettingsSyncFailureHookGuard::new();
+        let tmp = TempDir::new().expect("temp dir");
+        let json_path = tmp.path().join("settings.json");
+        let canonical = SyncedSettings::default();
+        write_settings_json(&json_path, &canonical);
+        let settings = Arc::new(RwLock::new(SettingsDoc::from_synced_settings(&canonical)));
+        let (changed_tx, changed_rx) = broadcast::channel(16);
+        let (mut client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+        let (reader, mut writer) = tokio::io::split(server_stream);
+        let consumed = Rc::new(Cell::new(0));
+        let mut reader = ObservedReader {
+            inner: reader,
+            consumed: consumed.clone(),
+        };
+        // Borrow both halves and use a !Send reader to preserve the handler's
+        // existing lifetime and AsyncRead/AsyncWrite + Unpin contract.
+        let handler = handle_settings_sync_connection(
+            &mut reader,
+            &mut writer,
+            settings.clone(),
+            changed_tx.clone(),
+            changed_rx,
+            json_path.clone(),
+        );
+        tokio::pin!(handler);
+        let mut client = SettingsDoc::new();
+        let mut peer_state = sync::State::new();
+        exchange_settings_until_idle(
+            handler.as_mut(),
+            &mut client_stream,
+            &mut client,
+            &mut peer_state,
+        )
+        .await;
+        assert_eq!(settings.write().await.heads(), client.heads());
+
+        client.put("theme", "light");
+        let message = client
+            .generate_sync_message(&mut peer_state)
+            .expect("client edit")
+            .encode();
+        let mut frame = (message.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(&message);
+        assert!(split_at < frame.len());
+        let before = consumed.get();
+        client_stream
+            .write_all(&frame[..split_at])
+            .await
+            .expect("write fragment");
+        assert!(futures::poll!(handler.as_mut()).is_pending());
+        assert_eq!(consumed.get(), before + split_at, "partial frame was read");
+
+        // Simulate another peer's persisted edit while the incoming frame is
+        // incomplete. With no remaining bytes available, only the broadcast can
+        // win select; its receiver must be drained before we finish the frame.
+        {
+            let mut server = settings.write().await;
+            server.put("color_theme", "cream");
+            server
+                .save_json_mirror(&json_path)
+                .expect("persist other peer edit");
+        }
+        for _ in 0..2 {
+            assert_eq!(changed_tx.send(()).expect("broadcast settings"), 1);
+            assert!(futures::poll!(handler.as_mut()).is_pending());
+            assert_eq!(changed_tx.len(), 0, "handler processed the broadcast");
+            assert_eq!(consumed.get(), before + split_at);
+        }
+
+        client_stream
+            .write_all(&frame[split_at..])
+            .await
+            .expect("finish frame");
+        exchange_settings_until_idle(
+            handler.as_mut(),
+            &mut client_stream,
+            &mut client,
+            &mut peer_state,
+        )
+        .await;
+        assert_eq!(client.get_all().theme, ThemeMode::Light);
+        assert_eq!(client.get_all().color_theme, ColorTheme::Cream);
+        assert_eq!(settings.write().await.heads(), client.heads());
+
+        // A later frame must start on its own length prefix and converge too.
+        client.put("theme", "dark");
+        let next = client
+            .generate_sync_message(&mut peer_state)
+            .expect("next client edit");
+        connection::send_frame(&mut client_stream, &next.encode())
+            .await
+            .expect("send next frame");
+        exchange_settings_until_idle(
+            handler.as_mut(),
+            &mut client_stream,
+            &mut client,
+            &mut peer_state,
+        )
+        .await;
+        assert_eq!(client.get_all().theme, ThemeMode::Dark);
+        assert_eq!(settings.write().await.heads(), client.heads());
+        let persisted: SyncedSettings = serde_json::from_str(
+            &std::fs::read_to_string(&json_path).expect("read persisted settings"),
+        )
+        .expect("parse persisted settings");
+        assert_eq!(persisted, client.get_all());
+
+        client_stream
+            .shutdown()
+            .await
+            .expect("orderly client disconnect");
+        assert!(matches!(
+            futures::poll!(handler.as_mut()),
+            Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[tokio::test]
+    #[serial(settings_sync_panic_hooks)]
+    async fn settings_handler_preserves_partial_prefix_across_broadcasts() {
+        // Scheduling is explicit; cooperative budget yields must not look like
+        // an idle connection while buffered bytes are still available.
+        tokio::task::unconstrained(settings_handler_preserves_fragment_across_broadcasts(2)).await;
+    }
+
+    #[tokio::test]
+    #[serial(settings_sync_panic_hooks)]
+    async fn settings_handler_preserves_partial_body_across_broadcasts() {
+        tokio::task::unconstrained(settings_handler_preserves_fragment_across_broadcasts(4 + 5))
+            .await;
+    }
 
     struct SettingsSyncFailureHookGuard;
 
