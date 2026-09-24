@@ -315,7 +315,8 @@ export class ManagedPythonRoom {
           const error =
             "The package operation could not be confirmed. Restart Python to restore saved requirements.";
           this.handle.set_kernel_error(error);
-          await this.publishPackageState("error", error);
+          await this.publishPackageState("error", error).catch(() => undefined);
+          this.assertPackageSession();
           return { status: "error", error, needs_restart: true };
         }
         this.assertPackageSession();

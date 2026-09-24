@@ -1486,6 +1486,7 @@ export class NotebookRoom {
       normalizedFrame.type === FrameType.REQUEST
         ? hostedExecutionRequestAction(requestMetadata?.action ?? null)
         : null;
+    let managedExecutionSessionId: string | undefined;
     if (hostedExecutionAction) {
       if (requestMetadata?.requiredHeads !== undefined) {
         try {
@@ -1539,6 +1540,12 @@ export class NotebookRoom {
         return;
       }
       const managed = this.managedPython.get(notebookId);
+      managedExecutionSessionId = managed?.runtime.sessionId;
+      if (!managed && !runtimePeer) {
+        const selected = await this.materializerFor(notebookId).getWorkstationAttachment?.();
+        if (selected?.workstation_id === MANAGED_PYTHON_WORKSTATION)
+          managedExecutionSessionId = selected.runtime_session_id ?? undefined;
+      }
       if (
         managed &&
         !(await managedPythonOwnerCanExecute(this.env, notebookId, managed.runtime.ownerPrincipal))
@@ -1573,7 +1580,7 @@ export class NotebookRoom {
       const materializer = this.materializerFor(notebookId);
       const startedAt = Date.now();
       try {
-        result = await materializer.receiveFrame(peer, normalizedFrame);
+        result = await materializer.receiveFrame(peer, normalizedFrame, managedExecutionSessionId);
       } catch (error) {
         if (isRoomStorageDegradedError(error)) {
           this.sendRoomDegradedControl(notebookId, peer, errorMessage(error));
@@ -2300,6 +2307,8 @@ export class NotebookRoom {
     entry.ready = runtime
       .start()
       .then(async () => {
+        if (!(await managedPythonOwnerCanExecute(this.env, notebookId, ownerPrincipal)))
+          throw new Error("Compute owner's access was revoked; start a new managed Python session");
         const current = await materializer.getWorkstationAttachment();
         if (
           this.managedPython.get(notebookId) !== entry ||

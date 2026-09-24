@@ -270,9 +270,13 @@ export class RoomMaterializer {
     );
   }
 
-  async receiveFrame(peer: RoomPeer, frame: TypedFrame): Promise<RoomHostFrameResult> {
+  async receiveFrame(
+    peer: RoomPeer,
+    frame: TypedFrame,
+    expectedManagedSessionId?: string,
+  ): Promise<RoomHostFrameResult> {
     try {
-      return await this.receiveFrameWithCurrentHost(peer, frame);
+      return await this.receiveFrameWithCurrentHost(peer, frame, expectedManagedSessionId);
     } catch (error) {
       if (!shouldRecoverReceiveFrame(frame, error)) {
         throw error;
@@ -291,10 +295,22 @@ export class RoomMaterializer {
   private async receiveFrameWithCurrentHost(
     peer: RoomPeer,
     frame: TypedFrame,
+    expectedManagedSessionId?: string,
   ): Promise<RoomHostFrameResult> {
     const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);
     return this.withHost((host) => {
+      // Check the selected generation in the same host operation that queues
+      // execution. Startup can fail or be replaced during the caller's ACL I/O.
+      if (expectedManagedSessionId !== undefined) {
+        const current = normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json());
+        if (
+          current?.workstation_id !== "celld-preview-python" ||
+          current.runtime_session_id !== expectedManagedSessionId ||
+          !["connecting", "ready"].includes(current.status)
+        )
+          throw new Error("Python session changed or failed before execution was accepted");
+      }
       const result = normalizeResult(
         host.receive_peer_frame(
           peer.id,

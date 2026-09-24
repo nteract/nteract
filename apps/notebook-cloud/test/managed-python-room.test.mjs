@@ -8,8 +8,8 @@ import { fixture, sync } from "./preview-python-helpers.mjs";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { encodeTypedFrame } from "../src/protocol.ts";
 
-for (const failurePhase of ["before_install", "after_install"])
-  test(`package publication failure preserves usable Python: ${failurePhase}`, async (t) => {
+for (const failurePhase of ["before_install", "after_install", "unconfirmed_install"])
+  test(`package publication failure preserves recovery state: ${failurePhase}`, async (t) => {
     await initializeTestRuntimedWasm();
     const { host } = await fixture(t);
     host.set_workstation_attachment_json(
@@ -80,11 +80,13 @@ for (const failurePhase of ["before_install", "after_install"])
               const result = await service.fetch(request);
               if (
                 injectFailure &&
-                failurePhase === "after_install" &&
+                failurePhase !== "before_install" &&
                 new URL(request.url).pathname === "/packages"
               ) {
                 injectFailure = false;
                 failCheckpoint = true;
+                if (failurePhase === "unconfirmed_install")
+                  throw new Error("provider response was lost after install");
               }
               return result;
             },
@@ -102,11 +104,21 @@ for (const failurePhase of ["before_install", "after_install"])
       injectFailure = true;
       failCheckpoint = failurePhase === "before_install";
       const manifest = { version: 1, pyodide: "0.28.3", requirements: [], wheels: [] };
-      await assert.rejects(
-        runtime.installPackages(manifest, "add", "six"),
-        /checkpoint unavailable/,
-      );
-      assert.equal(installs, failurePhase === "after_install" ? 1 : 0);
+      if (failurePhase === "unconfirmed_install") {
+        const result = await runtime.installPackages(manifest, "add", "six");
+        assert.equal(result.status, "error");
+        assert.equal(
+          result.needs_restart,
+          true,
+          "failed error publication must preserve restart guidance",
+        );
+      } else {
+        await assert.rejects(
+          runtime.installPackages(manifest, "add", "six"),
+          /checkpoint unavailable/,
+        );
+      }
+      assert.equal(installs, failurePhase === "before_install" ? 0 : 1);
       const inventory = await (
         await service.fetch(
           new Request("https://provider/packages/inventory", {
@@ -119,15 +131,19 @@ for (const failurePhase of ["before_install", "after_install"])
           }),
         )
       ).json();
-      assert.deepEqual(inventory.installed, failurePhase === "after_install" ? ["six==1.0"] : []);
-      assert.ok(states.every((state) => !state.needs_restart));
+      assert.deepEqual(inventory.installed, failurePhase === "before_install" ? [] : ["six==1.0"]);
+      assert.equal(states.at(-1).needs_restart, failurePhase === "unconfirmed_install");
       assert.equal(
         states.at(-1).phase,
         "error",
         "recovered publication clears the busy phase for retry",
       );
       await runtime.wake();
-      assert.equal(executions, 1, "publication failure must not block accepted execution");
+      assert.equal(
+        executions,
+        failurePhase === "unconfirmed_install" ? 0 : 1,
+        "only unconfirmed provider work blocks accepted execution",
+      );
     } finally {
       await runtime.close();
       await pool.close();
