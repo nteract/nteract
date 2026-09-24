@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
+import { FrameType } from "runtimed/src/wire-constants.ts";
 import { notebookCloudBaseUrl } from "./local-dev.mjs";
 
 // Only creates disposable LOCAL notebooks. Never accepts an existing notebook id.
@@ -12,12 +13,39 @@ const origin = new URL(baseUrl).origin;
 assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(new URL(baseUrl).hostname));
 const runs = Number(process.env.NOTEBOOK_CLOUD_STARTUP_RUNS ?? 5);
 assert.ok(Number.isInteger(runs) && runs > 0 && runs <= 30);
+const syncDelayMs = Number(process.env.NOTEBOOK_CLOUD_STARTUP_SYNC_DELAY_MS ?? 0);
+assert.ok(Number.isInteger(syncDelayMs) && syncDelayMs >= 0 && syncDelayMs <= 10_000);
 const browser = await chromium.launch({ headless: true });
 const results = [];
 const editorSelector = '[data-cell-type="code"] .cm-content[contenteditable="true"]';
 try {
   for (let run = 0; run < runs; run++) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    if (syncDelayMs > 0) {
+      await context.routeWebSocket(
+        (url) => url.pathname.endsWith("/sync"),
+        (socket) => {
+          const server = socket.connectToServer();
+          const pending = [];
+          let waiting = true;
+          const timer = setTimeout(() => {
+            waiting = false;
+            for (const message of pending.splice(0)) socket.send(message);
+          }, syncDelayMs);
+          // Deliver session control immediately, but hold binary document sync
+          // frames in order to reproduce a slow room hydration after acceptance.
+          server.onMessage((message) => {
+            if (waiting && typeof message !== "string" && message[0] !== FrameType.SESSION_CONTROL)
+              pending.push(message);
+            else socket.send(message);
+          });
+          socket.onClose(() => {
+            clearTimeout(timer);
+            server.close();
+          });
+        },
+      );
+    }
     await context.addInitScript(() => {
       if (window !== window.top) return;
       localStorage.setItem("nteract:notebook-cloud:dev-token", "local-loopback-dev-token");
@@ -170,6 +198,6 @@ try {
 } finally {
   await browser.close();
   process.stdout.write(
-    `${JSON.stringify({ baseUrl, generatedAt: new Date().toISOString(), results, limitations: ["Loopback Worker and dev-token auth; no hosted network, OIDC or deployed cold-start claim.", "Cold browser contexts do not restart the Worker, OS file cache, or browser process.", "Create-to-editable sums measured API duration and navigation timing; excludes dashboard pointer and scheduling time.", "MutationObserver samples DOM transitions, not guaranteed painted frames."] }, null, 2)}\n`,
+    `${JSON.stringify({ baseUrl, syncDelayMs, generatedAt: new Date().toISOString(), results, limitations: ["Loopback Worker and dev-token auth; no hosted network, OIDC or deployed cold-start claim.", "Cold browser contexts do not restart the Worker, OS file cache, or browser process.", "Create-to-editable sums measured API duration and navigation timing; excludes dashboard pointer and scheduling time.", "MutationObserver samples DOM transitions, not guaranteed painted frames."] }, null, 2)}\n`,
   );
 }

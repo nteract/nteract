@@ -160,6 +160,12 @@ controls becoming disabled again, and browser errors. Set
 `NOTEBOOK_CLOUD_STARTUP_RUNS` to change the sample count and `NTERACT_CLOUD_URL`
 to select another loopback Worker.
 
+To reproduce a room that accepts the connection before its document is ready,
+set `NOTEBOOK_CLOUD_STARTUP_SYNC_DELAY_MS=2500` alongside the assertion flag.
+The harness delivers session control immediately and delays incoming document
+frames in order. This checks that the opening screen stays put until notebook
+content arrives; synthetic delays are reported separately from normal timings.
+
 These timings exclude hosted network latency and OIDC, and do not restart the
 Worker or browser process between samples. Create-to-editable adds API duration
 to navigation timing; it excludes dashboard input and scheduling overhead.

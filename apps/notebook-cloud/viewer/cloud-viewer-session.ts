@@ -1000,7 +1000,6 @@ export function useCloudViewerSession({
     const mayShowEmptyLiveNotebook = (liveRuntime: CloudSyncRuntime) =>
       shouldDisplayEmptyLiveNotebook({
         snapshotResolved: snapshotResolvedRef.current,
-        paintedCellCount: materializedCellCount(),
         handleCaughtUp: cloudNotebookHandleCaughtUp(liveRuntime.handle),
       });
 
@@ -1103,7 +1102,7 @@ export function useCloudViewerSession({
 
       const currentCellCount = materializedCellCount();
       if (currentCellCount === 0) {
-        if (snapshotResolvedRef.current) {
+        if (mayShowEmptyLiveNotebook(liveRuntime)) {
           setStatus({ kind: "empty", message: "This notebook room has no cells yet." });
         }
         return;
