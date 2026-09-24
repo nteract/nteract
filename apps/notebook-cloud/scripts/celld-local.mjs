@@ -124,26 +124,35 @@ const WORKERS = [
     name: "main",
     scriptName: "nteract-notebook-cloud-celld-local",
     entry: "src/index.ts",
-    entryExports: ["default", "NotebookRoom", "WorkstationEvents", "OwnerComputeIndex"],
+    entryExports: [
+      "default",
+      "NotebookRoom",
+      "WorkstationEvents",
+      "OwnerComputeIndex",
+      "NotebookHome",
+    ],
     assets: "dist",
     port: basePort,
     healthPath: "/api/health",
     config: (vars) => ({
+      triggers: { crons: ["* * * * *"] },
       durable_objects: {
         bindings: [
           { name: "NOTEBOOK_ROOMS", class_name: "NotebookRoom" },
           { name: "WORKSTATION_EVENTS", class_name: "WorkstationEvents" },
           { name: "OWNER_COMPUTE_INDEX", class_name: "OwnerComputeIndex" },
+          { name: "NOTEBOOK_HOME", class_name: "NotebookHome" },
         ],
       },
       // celld applies the migration list to a fresh store. The Wrangler history
-      // (v1..v5, including the deleted MarkdownDocumentRoom) is Cloudflare's
-      // record; a new celld store only needs the three live classes.
+      // (including the deleted MarkdownDocumentRoom) is Cloudflare's record;
+      // a new celld store only needs the live classes.
       migrations: [
         {
           tag: "celld-local-v1",
           new_sqlite_classes: ["NotebookRoom", "WorkstationEvents", "OwnerComputeIndex"],
         },
+        { tag: "celld-local-v2", new_sqlite_classes: ["NotebookHome"] },
       ],
       d1_databases: [
         {
@@ -455,6 +464,12 @@ async function copyProjectFiles(worker, projectDir) {
     );
   }
   if (worker.name === "main") {
+    // Preview deployment supplies its own trusted bindings and schedules;
+    // exported wrangler configuration is deliberately excluded from bundles.
+    await writeFile(
+      path.join(assetsDir, "__preview-notebook-home.json"),
+      JSON.stringify({ version: 1 }),
+    );
     await writeFile(
       path.join(assetsDir, "__preview-auth.json"),
       JSON.stringify({ version: 1, serverSessionOnly: true }),

@@ -13,6 +13,12 @@ author profiles, runtime repair, OG images, snapshots, blobs, and live sync
 49e46666/6febe0d2/48dae8fb dashboard). Experimental APIs and preview deployment
 resources retain explicit "prototype" or "preview" labels.
 
+For deployment, start with [DEPLOY.md](DEPLOY.md#choose-the-deployment-path).
+Wrangler and the local celld exporter include this app's bindings. Managed
+`*.runtimed.run` previews reconstruct configuration in `preview-infra`, so new
+hosted capabilities can require a companion controller change. Local development
+does not require that private repository.
+
 The current Durable Object does not host kernels. It owns a `runtimed-wasm`
 room host for the notebook's `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` +
 `CommentsDoc` (sidecar, commit 778fc53e), syncs peers with typed-frame v4,
@@ -22,6 +28,31 @@ CBOR presence through the shared helper, and keeps in-memory frame-budget
 telemetry for live sync traffic. Viewer-scope peers use the normal sync exchange so they can materialize live room updates, while the room host uses read-only peer state as a protocol hint and still rejects any viewer-authored changes explicitly. No-op read-only sync control frames are acknowledged and delivered as protocol traffic, but they are not persisted as room-event history. Editor-scope live `NotebookDoc` writes cover the allowed cell surface, while notebook identity and metadata remain owner-only. Widget state writes live in `CommsDoc`; `RuntimeStateDoc` remains runtime-peer/room-host owned. Runtime peers can sync kernel lifecycle, widget comm topology, output routing, and progress/output state for room-accepted executions into `RuntimeStateDoc`, but they cannot create execution intent, edit `NotebookDoc`, rewrite trust/environment/path/project metadata, or acquire the frontend notebook editing API.
 
 `/n/:notebookId/:vanityName` is a hosted notebook page backed by `/n/:id/sync`. Latest notebook views do not fetch a separate materialized render document; viewers join the live Automerge room as read-only peers and editor+ connections use the same synced document for permitted edits. `/n/:id/r/:headsHash` is an immutable pinned viewer that loads the persisted `NotebookDoc` + `RuntimeStateDoc` + `CommsDoc` Automerge snapshot set directly through `/api/n/:id/snapshots/:headsHash`, `/api/n/:id/runtime-snapshots/:runtimeHeadsHash`, `/api/n/:id/comms-snapshots/:commsHeadsHash`, and catalog revision metadata. Snapshot publishes validate that the documents can be loaded and that referenced output/widget blobs exist before recording the catalog revision, so missing runtime or comm snapshots, corrupt snapshot bytes, or missing blobs fail the publish request instead of advertising a broken revision. Output blob refs stay host-neutral and are mapped to `/api/n/:id/blobs/:hash` through the shared `BlobResolver` surface. The browser viewer bundle uses the shared notebook display components (`CellContainer`, `OutputArea`, `ReadOnlyCodeMirror`, `MediaProvider`) so published source, markdown, stdout/stderr, rich display data, widgets, and blob-backed renderer manifests go through the same isolated output renderer path as the desktop notebook.
+
+## Live notebook listing
+
+Notebook Home (`/n`) subscribes to `/api/notebook-home/events`. The Worker
+authenticates the browser and routes it to a `NotebookHome` Durable Object
+for that principal. The hibernatable WebSocket carries only `ready` and
+`changed` invalidations; the browser fetches the authorized `/api/n` listing
+on each invalidation. Every reconnect refreshes the snapshot, including changes
+between the server-rendered bootstrap and subscription. Healthy connections
+do not poll the listing. Connection leases require reauthentication every five
+minutes, and heartbeats detect interrupted connections.
+
+Creation, title changes, ACL changes, and account linking update a coalesced
+`notebook_home_outbox` row in the catalog transaction via SQLite triggers.
+Mutation requests attempt delivery immediately. The configured minute cron
+retries pending deliveries, so a committed change survives a failed wakeup.
+Deployments need the `NOTEBOOK_HOME` binding and scheduled handler enabled;
+the celld configuration exports both. Migration `0010_notebook_home.sql` and
+lazy schema initialization install the same triggers. Delivery failures emit
+`notebook_home.delivery_failed` or `notebook_home.outbox_failed` logs.
+
+D1 remains the catalog and access authority. The stream does not carry
+notebook content, presence, or compute changes; those summaries are refreshed
+when the listing is fetched. Continuous presence and compute updates are
+outside this subscription's scope.
 
 ## Local dev
 

@@ -4,10 +4,17 @@ compatibility_date = "2024-11-06"
 compatibility_flags = ["nodejs_compat"]
 routes = [{ pattern = "preview.runt.run", custom_domain = true }]
 
+[triggers]
+crons = ["* * * * *"]
+
 [dev]
 # Fallback for direct Wrangler invocations. `pnpm --dir apps/notebook-cloud dev`
 # overrides this with a worktree-specific port to avoid local worktree clashes.
 port = 8787
+
+[[durable_objects.bindings]]
+name = "NOTEBOOK_HOME"
+class_name = "NotebookHome"
 
 [[durable_objects.bindings]]
 name = "NOTEBOOK_ROOMS"
@@ -40,6 +47,10 @@ deleted_classes = ["MarkdownDocumentRoom"]
 [[migrations]]
 tag = "v5"
 new_sqlite_classes = ["OwnerComputeIndex"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["NotebookHome"]
 
 [[d1_databases]]
 binding = "DB"

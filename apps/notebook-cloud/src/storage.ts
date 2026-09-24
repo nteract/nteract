@@ -1,5 +1,6 @@
 import type { AuthenticatedConnection } from "./identity.ts";
 import type { D1PreparedStatement, Env } from "./cloudflare-types.ts";
+import { NOTEBOOK_HOME_SCHEMA } from "./notebook-home-schema.ts";
 
 export interface NotebookCatalog {
   notebook: NotebookRow;
@@ -567,6 +568,9 @@ async function initializeCatalogSchema(env: Env): Promise<void> {
     await env.DB!.prepare(statement).run();
   }
   await runCatalogMigrations(env);
+  for (const statement of NOTEBOOK_HOME_SCHEMA) {
+    await env.DB!.prepare(statement).run();
+  }
   await backfillNotebookAcl(env);
 }
 

@@ -2,6 +2,7 @@ export interface Env {
   NOTEBOOK_ROOMS: DurableObjectNamespace;
   OWNER_COMPUTE_INDEX?: DurableObjectNamespace;
   WORKSTATION_EVENTS?: DurableObjectNamespace;
+  NOTEBOOK_HOME?: DurableObjectNamespace;
   /** Explicit celld-only opt-in; absent from generic Cloudflare deployments. */
   NOTEBOOK_CLOUD_PYTHON_PROVIDER?: "celld";
   PREVIEW_PYTHON_SESSIONS?: DurableObjectNamespace;
@@ -63,6 +64,7 @@ export interface ExecutionContext {
 
 export interface ExportedHandler<E> {
   fetch(request: Request, env: E, ctx: ExecutionContext): Response | Promise<Response>;
+  scheduled?(controller: unknown, env: E, ctx: ExecutionContext): void | Promise<void>;
 }
 
 export interface DurableObjectId {
