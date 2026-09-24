@@ -804,6 +804,18 @@ export class NotebookRoom {
           try {
             if (this.peers.get(peer.id) === peer)
               await this.handleMessage(notebookId, peer, message);
+          } catch (error) {
+            // A transient lookup/storage failure must reach the requester,
+            // rather than disappearing into a rejected waitUntil promise.
+            cloudLog("error", "room.request.failed", {
+              notebook_id: notebookId,
+              peer_id: peer.id,
+              error: errorMessage(error),
+            });
+            if (this.peers.get(peer.id) === peer)
+              this.rejectFrame(notebookId, peer, FrameType.REQUEST, errorMessage(error), {
+                countsTowardStreak: false,
+              });
           } finally {
             queue.pending--;
           }

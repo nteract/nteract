@@ -44,6 +44,77 @@ before(async () => {
 });
 
 describe("NotebookRoom presence rewrite", () => {
+  it("reports an unexpected execution request failure and accepts the next request", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    await state.drain();
+    const backgroundErrors: unknown[] = [];
+    const waitUntil = state.state.waitUntil;
+    state.state.waitUntil = (promise) => {
+      void promise.catch((error) => {
+        backgroundErrors.push(error);
+      });
+      waitUntil(promise);
+    };
+    const harness = roomHarness(room);
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+      ),
+      connectedAt: new Date().toISOString(),
+      consecutiveRejectedFrames: 0,
+      workstation: null,
+    };
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: peer.id,
+      identity: peer.identity,
+      connectedAt: peer.connectedAt,
+    });
+    harness.peers.set(peer.id, peer);
+    let attempts = 0;
+    let executions = 0;
+    Object.assign(room, {
+      activeRuntimePeer: async () => {
+        if (++attempts === 1) throw new Error("runtime lookup unavailable");
+        return undefined;
+      },
+      ensureRuntimeForHostedExecution: async () => true,
+    });
+    harness.materializers.set("demo", {
+      receiveFrame: async () => {
+        executions++;
+        return noopMaterializedResult();
+      },
+    } as never);
+    const request = (id: string) =>
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(JSON.stringify({ id, action: "execute_cell", cell_id: "code" })),
+      );
+
+    await room.webSocketMessage(peer.socket, request("first"));
+    // Report the request failure without leaving a rejected background task.
+    await state.drain();
+    assert.deepEqual(backgroundErrors, [], "the request background task must settle successfully");
+    assert.equal(socket.sent.length, 1, "the browser must receive the request failure");
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.match(String(rejected.reason), /runtime lookup unavailable/);
+    assert.equal(peer.consecutiveRejectedFrames, 0, "server failure is not client abuse");
+    assert.equal(executions, 0);
+
+    await room.webSocketMessage(peer.socket, request("second"));
+    await state.drain();
+    assert.deepEqual(backgroundErrors, []);
+    assert.equal(executions, 1);
+    const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[1].slice(1));
+    assert.equal(accepted.type, "cloud_frame_accepted");
+  });
+
   it("lets the next socket sync satisfy a waiting execution request", async () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);
