@@ -382,13 +382,15 @@ Priority is by blast radius, then by cost.
 
 ### P0
 
-- [ ] Fix the settings-sync `select!` desync in `sync_server.rs:77`. Read
-      through a cancel-safe `FrameSource` / `FramedReader`, as `sync_task.rs`
-      does.
-- [ ] Fix `Client._shutdown_daemon()` in `_client.py:110` and make
-      `Execution.done` treat `cancelled` as terminal.
-- [ ] Add `windows-arm64` to the long-tail `track_result` calls in
-      `build.yml`.
+- [x] Fix settings-sync cancellation by retaining the raw length-prefixed
+      read across broadcasts. The typed `FramedReader` is not a drop-in for
+      the untyped settings protocol
+      ([#4306](https://github.com/nteract/nteract/pull/4306)).
+- [x] Fix `Client._shutdown_daemon()` and make `Execution.done` treat
+      `cancelled` as terminal
+      ([#4305](https://github.com/nteract/nteract/pull/4305)).
+- [x] Add `windows-arm64` to the long-tail `track_result` calls in
+      `build.yml` ([#4304](https://github.com/nteract/nteract/pull/4304)).
 - [ ] Replace `"**/lib/**"` in `vite.config.ts` with build-output paths, then
       run `cargo xtask lint --fix` and fix what surfaces.
 
@@ -399,8 +401,13 @@ Priority is by blast radius, then by cost.
       short lock; release supervisor guards before child RPCs).
 - [ ] Complete the `select!` extras list; rename the free `recv_frame` so it
       can be blocklisted without hitting the cancel-safe trait method.
-- [ ] Make `lifecycle_transition_lint.rs` whitespace-insensitive and add a
-      multi-line case to its self-test.
+- [x] Make `lifecycle_transition_lint.rs` whitespace-insensitive and add
+      regression cases for multiline mutations and lock ordering
+      ([#4307](https://github.com/nteract/nteract/pull/4307)).
+- [ ] Cover `task_claimed.swap` in lifecycle mutation detection.
+      `begin_source` holds the transition lock today, but the scanner only
+      recognizes `task_claimed.store`. Keep the scanner's limits explicit:
+      matching an earlier lock call does not prove the guard stays alive.
 - [ ] Point `rpc_routing.rs` at the real router.
 - [ ] Durability slice 1: make `automerge-store` commits O(changes), set
       `fullfsync` on macOS, add a compaction trigger, and benchmark a store
@@ -408,8 +415,12 @@ Priority is by blast radius, then by cost.
       behavior change.
 - [ ] Reconcile the two storage ADRs so agents get one answer about the
       acceptance boundary.
-- [ ] Fix the wrong guidance listed above (execution-pipeline, room
-      lifecycle, crash recovery, ts-rs, palette lint).
+- [x] Correct execution-pipeline required-heads timeout, response shapes,
+      and startup-queueing guidance; document the `ts-bindings` feature
+      required for TypeScript settings exports
+      ([#4307](https://github.com/nteract/nteract/pull/4307)).
+- [ ] Fix the remaining wrong guidance listed above: room lifecycle, crash
+      recovery, and palette lint.
 - [ ] Drop `kernel_started` caches in both bindings; read RuntimeStateDoc.
 - [ ] One package-name normalizer, used by trust, pool match, typosquat, and
       metadata.
