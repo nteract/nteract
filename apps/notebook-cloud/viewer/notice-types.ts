@@ -8,7 +8,7 @@ export type CloudAuthRenewalState =
   | { kind: "failed"; message: string };
 
 export type ViewerStatus =
-  | { kind: "loading"; message: string }
+  | { kind: "loading"; message: string; reason?: "sync-recovery" }
   | { kind: "empty"; message: string }
   | { kind: "ready"; message: string }
   | { kind: "error"; message: string };

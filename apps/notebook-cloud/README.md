@@ -143,6 +143,37 @@ pnpm --dir apps/notebook-cloud dev:browser --rebuild
 pnpm --dir apps/notebook-cloud dev:browser --skip-build
 ```
 
+To measure creation through the first editable code cell, run this against a
+built, running local Worker:
+
+```bash
+NOTEBOOK_CLOUD_STARTUP_ASSERT=1 pnpm --dir apps/notebook-cloud profile:startup
+```
+
+The harness creates disposable notebooks on loopback only, types a comment
+without executing code, and checks it survives reopening. It reports five
+samples each of cold creation (fresh browser context), warm reopening, and
+warm creation. JSON on stdout includes catalog creation, navigation/resource
+timing, viewer/WASM/room/sync milestones, first and stable editor readiness,
+and toolbar transitions. The assertion flag checks for startup notice churn,
+controls becoming disabled again, and browser errors. Set
+`NOTEBOOK_CLOUD_STARTUP_RUNS` to change the sample count and `NTERACT_CLOUD_URL`
+to select another loopback Worker.
+
+To reproduce a room that accepts the connection before its document is ready,
+set `NOTEBOOK_CLOUD_STARTUP_SYNC_DELAY_MS=2500` alongside the assertion flag.
+The harness holds incoming NotebookDoc frames in order, starting with the first
+such frame; session control and other document types flow immediately. It
+asserts that frames were actually held for the requested interval, including
+when a cached editor appears early. Each result records the requested delay,
+buffered-frame count, and measured hold duration. Keep these synthetic-delay
+samples separate from normal startup timings.
+
+These timings exclude hosted network latency and OIDC, and do not restart the
+Worker or browser process between samples. Create-to-editable adds API duration
+to navigation timing; it excludes dashboard input and scheduling overhead.
+The local catalog retains the timestamped probe notebooks.
+
 The local bootstrap token is synthetic and useful only because the Worker
 accepts dev credentials from `localhost`, `127.0.0.1`, and `::1` without an
 extra shared secret. Do not use `/local-auth` for deployed prototype
@@ -771,6 +802,15 @@ event-specific dimensions such as `notebook_id`, `peer_id`, `scope`,
 `frame_type`, `duration_ms`, and log-derived counters (`counter` +
 `counter_delta`). Do not add request bodies, auth tokens, raw WebSocket payloads,
 or notebook source text to these logs.
+
+For `room.materializer.loaded` with `source=empty_room`, `checkpoint_lookup_ms`
+and `published_lookup_ms` bracket storage lookups; `wasm_host_ms` brackets WASM
+initialization, host creation, and initial-cell seeding. These fields and
+`duration_ms` use the runtime's `Date.now()` clock, not a CPU profiler.
+[Cloudflare Workers clocks advance only after I/O](https://developers.cloudflare.com/workers/runtime-apis/performance/),
+so synchronous WASM work can report zero. Do not infer CPU cost from these
+fields or compare runtimes without accounting for their clock behavior; use
+platform CPU profiling or external end-to-end observations for that purpose.
 
 Tail the deployed prototype with:
 

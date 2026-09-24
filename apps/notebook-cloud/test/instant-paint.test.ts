@@ -629,29 +629,21 @@ describe("cloudInstantPaintStorageOptions (session storage boundary)", () => {
 });
 
 describe("empty live room displacement", () => {
-  it("displaces painted cells only once the handle has caught up to the room", () => {
+  it("shows an empty room only once the handle has caught up, including a blank first load", () => {
     // The matcher heuristic's backstop: a (possibly false-positive) paint
     // may block a zero-cell apply only while the bootstrap exchange could
     // still deliver content. Once the room's advertised heads are all
     // applied, zero cells IS the room's truth.
-    const painted = { snapshotResolved: true, paintedCellCount: 3 };
+    const resolved = { snapshotResolved: true };
 
-    assert.equal(shouldDisplayEmptyLiveNotebook({ ...painted, handleCaughtUp: false }), false);
-    assert.equal(shouldDisplayEmptyLiveNotebook({ ...painted, handleCaughtUp: true }), true);
-    // Nothing painted: the empty state may always show once resolved.
-    assert.equal(
-      shouldDisplayEmptyLiveNotebook({
-        snapshotResolved: true,
-        paintedCellCount: 0,
-        handleCaughtUp: false,
-      }),
-      true,
-    );
+    // This applies even when no cached cells were painted: a fresh bootstrap
+    // cannot tell us whether the room is empty before its first sync exchange.
+    assert.equal(shouldDisplayEmptyLiveNotebook({ ...resolved, handleCaughtUp: false }), false);
+    assert.equal(shouldDisplayEmptyLiveNotebook({ ...resolved, handleCaughtUp: true }), true);
     // Pinned-snapshot path still resolving: never blank under it.
     assert.equal(
       shouldDisplayEmptyLiveNotebook({
         snapshotResolved: false,
-        paintedCellCount: 0,
         handleCaughtUp: true,
       }),
       false,

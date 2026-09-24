@@ -1,7 +1,5 @@
 import { lazy, Profiler, Suspense, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { BookOpen, Loader2 } from "lucide-react";
-import { NotebookBrandMark } from "@/components/notebook/NotebookBrandMark";
 import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { setLoggerHost } from "@/lib/logger";
@@ -19,18 +17,15 @@ import {
 import type { CloudViewerAuthConfig, ViewerRuntimeState } from "./cloud-viewer-types";
 import { cloudAuthStore } from "./cloud-auth-store";
 import { cloudNotebookModeFromSearch } from "./cloud-notebook-mode";
-import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-state";
 import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
-import { loadNotebookRouteModule } from "./notebook-route-preload";
+import { NotebookRouteLoader } from "./notebook-route-loader";
+import { ViewerStartupLoading } from "./viewer-startup-loading";
 import { isRouteAssetLoadError, loadRouteWithRecovery } from "./route-load-recovery";
 import "./index.css";
+import { markCloudViewerLoadMilestone } from "./load-milestones";
 
-const NotebookRoute = lazy(() =>
-  loadRouteWithRecovery(loadNotebookRouteModule).then((module) => ({
-    default: module.NotebookRoute,
-  })),
-);
+markCloudViewerLoadMilestone("entry-ready");
 
 // Boot-path discipline: only the auth store may ride the entry chunk (its
 // synchronous seed is what instant paint reads). The workstations surface -
@@ -124,17 +119,7 @@ function App() {
     return <ViewerStartupError message={`Unable to start cloud viewer: ${runtimeState.message}`} />;
   }
 
-  return (
-    <Suspense
-      fallback={
-        <ViewerStartupLoading
-          title={cloudNotebookRouteTitleFromPathname(window.location.pathname).title}
-        />
-      }
-    >
-      <NotebookRoute runtime={runtimeState.runtime} authConfig={authConfig} />
-    </Suspense>
-  );
+  return <NotebookRouteLoader runtime={runtimeState.runtime} authConfig={authConfig} />;
 }
 
 function ViewerStartupError({
@@ -161,53 +146,6 @@ function ViewerStartupError({
           Reload page
         </Button>
       )}
-    </main>
-  );
-}
-
-function ViewerStartupLoading({ title }: { title: string }) {
-  return (
-    <main className="cloud-startup-shell" aria-busy="true">
-      <header className="cloud-startup-toolbar">
-        <a className="cloud-app-home" href="/n" aria-label="Notebook home" title="Notebook home">
-          <NotebookBrandMark className="size-8" />
-        </a>
-        <div className="cloud-notebook-title-group">
-          <div className="cloud-notebook-title">
-            <h1 className="cloud-startup-title">{title}</h1>
-            <p className="cloud-startup-status" role="status">
-              <Loader2 aria-hidden="true" />
-              Opening notebook
-            </p>
-          </div>
-        </div>
-        <div className="cloud-startup-toolbar-actions" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-      </header>
-      <div className="cloud-startup-workspace">
-        <aside className="cloud-startup-rail" aria-hidden="true">
-          <BookOpen aria-hidden="true" />
-          <span />
-        </aside>
-        <div className="cloud-startup-main">
-          <div className="cloud-startup-command-row" aria-hidden="true">
-            <div className="cloud-startup-toolbar-actions">
-              <span />
-              <span />
-            </div>
-          </div>
-          <section className="cloud-startup-stage" aria-hidden="true">
-            <div className="cloud-startup-cell">
-              <span className="cloud-startup-line cloud-startup-line--wide" />
-              <span className="cloud-startup-line" />
-              <span className="cloud-startup-line cloud-startup-line--short" />
-            </div>
-          </section>
-        </div>
-      </div>
     </main>
   );
 }

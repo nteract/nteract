@@ -98,6 +98,7 @@ describe("cloud notebook body loading projection", () => {
         }),
         {
           isLoading: false,
+          shouldShowStartupShell: false,
           shouldRenderNotebookView: false,
         },
       );
@@ -120,6 +121,7 @@ describe("cloud notebook body loading projection", () => {
       }),
       {
         isLoading: false,
+        shouldShowStartupShell: false,
         shouldRenderNotebookView: true,
       },
     );

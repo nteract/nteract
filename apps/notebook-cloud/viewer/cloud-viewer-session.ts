@@ -1000,7 +1000,6 @@ export function useCloudViewerSession({
     const mayShowEmptyLiveNotebook = (liveRuntime: CloudSyncRuntime) =>
       shouldDisplayEmptyLiveNotebook({
         snapshotResolved: snapshotResolvedRef.current,
-        paintedCellCount: materializedCellCount(),
         handleCaughtUp: cloudNotebookHandleCaughtUp(liveRuntime.handle),
       });
 
@@ -1103,7 +1102,7 @@ export function useCloudViewerSession({
 
       const currentCellCount = materializedCellCount();
       if (currentCellCount === 0) {
-        if (snapshotResolvedRef.current) {
+        if (mayShowEmptyLiveNotebook(liveRuntime)) {
           setStatus({ kind: "empty", message: "This notebook room has no cells yet." });
         }
         return;
@@ -1330,6 +1329,7 @@ export function useCloudViewerSession({
             }
             setStatus({
               kind: "loading",
+              reason: "sync-recovery",
               message: "Resynchronizing live notebook room after a rejected sync frame...",
             });
             if (disposition === "resync_in_place" && liveRuntime) {
@@ -1514,6 +1514,7 @@ export function useCloudViewerSession({
             if (!caughtUp) return;
             caughtUpMaterializeKicked = true;
             materializeLiveCellsSafely(liveRuntime);
+            markCloudViewerLoadMilestone("live-sync-caught-up");
           }),
           // Offline-merge derivation taps (no new engine observables):
           // notebookDocChanged$ emissions are local flush attempts while

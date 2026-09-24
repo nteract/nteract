@@ -352,6 +352,7 @@ export class RoomMaterializer {
     const startedAt = Date.now();
     try {
       const checkpointResult = await this.loadCheckpointForHydration(startedAt);
+      const checkpointLookupMs = durationMs(startedAt);
       const checkpoint = checkpointResult.checkpoint;
       if (checkpoint) {
         const latestPublished = await this.loadLatestPublishedSnapshotPairForCheckpoint();
@@ -428,7 +429,9 @@ export class RoomMaterializer {
         return host;
       }
 
+      const publishedLookupStartedAt = Date.now();
       const published = await this.loadLatestPublishedSnapshotPair();
+      const publishedLookupMs = durationMs(publishedLookupStartedAt);
       if (published) {
         const host = await loadRoomHostSnapshot(
           published.notebookBytes,
@@ -459,12 +462,16 @@ export class RoomMaterializer {
       this.loadedPublishedRuntimeStateHeads = null;
       this.loadedPublishedCommsDocHeads = null;
       this.loadedPublishedCommentsDocHeads = null;
+      const hostStartedAt = Date.now();
       const host = await createEmptyRoomHost(this.notebookId, roomHostActorLabel(this.notebookId));
       host.seed_initial_code_cell_if_empty(initialHostedCellId(this.notebookId));
       cloudLog("info", "room.materializer.loaded", {
         notebook_id: this.notebookId,
         source: "empty_room",
         duration_ms: durationMs(startedAt),
+        checkpoint_lookup_ms: checkpointLookupMs,
+        published_lookup_ms: publishedLookupMs,
+        wasm_host_ms: durationMs(hostStartedAt),
         counter: "materializer_loads",
         counter_delta: 1,
       });

@@ -57,26 +57,23 @@ const INSTANT_PAINT_READ_TIMEOUT_MS = 2_000;
  * truth: live emptiness must displace whatever is showing. This is the
  * principal-matcher heuristic's backstop — a false-positive paint must
  * not outlive the handshake, even over a room with nothing to send. With
- * nothing painted, the empty state may always show once the pinned
- * snapshot path has resolved.
+ * nothing painted, an empty bootstrap is still not evidence of an empty
+ * room: wait for the peer's heads before showing the empty state there too.
  */
 export function shouldDisplayEmptyLiveNotebook({
   snapshotResolved,
-  paintedCellCount,
   handleCaughtUp,
 }: {
   snapshotResolved: boolean;
-  paintedCellCount: number;
   handleCaughtUp: boolean;
 }): boolean {
-  if (!snapshotResolved) return false;
-  return paintedCellCount === 0 || handleCaughtUp;
+  return snapshotResolved && handleCaughtUp;
 }
 
 /**
  * `notebook_doc_caught_up()` with deployed-handle tolerance: an older WASM
- * bundle without the export reports not-caught-up, degrading to the
- * previous behavior (painted cells are never displaced by emptiness).
+ * bundle without the export reports not-caught-up: keep painted content
+ * or the opening state until live content can establish readiness.
  */
 export function cloudNotebookHandleCaughtUp(handle: {
   notebook_doc_caught_up?: () => boolean;
