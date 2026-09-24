@@ -1,5 +1,15 @@
 import { BookOpen, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { NotebookBrandMark } from "@/components/notebook/NotebookBrandMark";
+
+/** Once content or an actionable notice is shown, preserve that mounted UI. */
+export function useNotebookStartupLoading(loading: boolean): boolean {
+  const [finished, setFinished] = useState(!loading);
+  useEffect(() => {
+    if (!loading) setFinished(true);
+  }, [loading]);
+  return loading && !finished;
+}
 
 export function ViewerStartupLoading({ title }: { title: string }) {
   return (

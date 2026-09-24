@@ -153,7 +153,7 @@ export function cloudNotebookHasNotices({
     : null;
   const shouldShowStatusNotice =
     status.kind !== "ready" &&
-    !(status.kind === "loading" && loadingOwnedByShell) &&
+    !(status.kind === "loading" && loadingOwnedByShell && status.reason !== "sync-recovery") &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !(connectionNotice && status.kind === "loading") &&
     !signInRequired &&
@@ -251,7 +251,7 @@ export function CloudNotebookNotices({
     : null;
   const shouldShowStatusNotice =
     status.kind !== "ready" &&
-    !(status.kind === "loading" && loadingOwnedByShell) &&
+    !(status.kind === "loading" && loadingOwnedByShell && status.reason !== "sync-recovery") &&
     !(status.kind === "empty" && hasReadableSnapshot) &&
     !(connectionNotice && status.kind === "loading") &&
     !signInRequired &&

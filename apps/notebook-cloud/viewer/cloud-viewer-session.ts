@@ -1330,6 +1330,7 @@ export function useCloudViewerSession({
             }
             setStatus({
               kind: "loading",
+              reason: "sync-recovery",
               message: "Resynchronizing live notebook room after a rejected sync frame...",
             });
             if (disposition === "resync_in_place" && liveRuntime) {

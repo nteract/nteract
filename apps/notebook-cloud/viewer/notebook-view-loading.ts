@@ -15,6 +15,7 @@ export interface CloudNotebookViewLoadingProjectionInput {
 
 export interface CloudNotebookViewSurfaceProjection {
   isLoading: boolean;
+  shouldShowStartupShell: boolean;
   shouldRenderNotebookView: boolean;
 }
 
@@ -52,8 +53,10 @@ export function projectCloudNotebookViewLoading({
 export function projectCloudNotebookViewSurface(
   input: CloudNotebookViewLoadingProjectionInput,
 ): CloudNotebookViewSurfaceProjection {
+  const isLoading = projectCloudNotebookViewLoading(input);
   return {
-    isLoading: projectCloudNotebookViewLoading(input),
+    isLoading,
+    shouldShowStartupShell: isLoading && !input.hasReadableSnapshot,
     shouldRenderNotebookView: !input.bodyAccessBlocked,
   };
 }

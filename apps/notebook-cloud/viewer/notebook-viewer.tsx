@@ -142,7 +142,7 @@ import {
 import { beginOidcLogin } from "./oidc-auth";
 import { cloudViewerLoadingPolicy } from "./loading-policy";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
-import { ViewerStartupLoading } from "./viewer-startup-loading";
+import { useNotebookStartupLoading, ViewerStartupLoading } from "./viewer-startup-loading";
 import { cloudPresenceHasRuntimePeer, cloudPresenceRuntimePeerCount } from "./presence";
 import { commentAuthorActorLabels } from "./comment-author-profiles";
 import type { ResolvedCell } from "./render-resolution";
@@ -1979,7 +1979,10 @@ export function NotebookViewer({
   // projection. Don't expose a briefly writable toolbar for an empty bootstrap
   // handle. Readable cached/live cells and actionable failures own their normal
   // surfaces; output hydration must not narrate internal phases over content.
-  if (notebookViewIsLoading && !notebookHasReadableSnapshot && !hasNotices) {
+  const showStartupShell = useNotebookStartupLoading(
+    notebookViewSurface.shouldShowStartupShell && !hasNotices,
+  );
+  if (showStartupShell) {
     return <ViewerStartupLoading title={notebookTitle.title} />;
   }
 

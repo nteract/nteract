@@ -37,6 +37,13 @@ test("the startup shell owns loading without hiding actionable failures", () => 
     { status: { kind: "error" as const, message: "Unable to load notebook" } },
     { sustainedReconnecting: true },
     { syncHealStalled: true },
+    {
+      status: {
+        kind: "loading" as const,
+        reason: "sync-recovery" as const,
+        message: "Resynchronizing live notebook room after a rejected sync frame...",
+      },
+    },
   ]) {
     const props = { ...base, ...failure };
     assert.equal(cloudNotebookHasNotices(props), true);
