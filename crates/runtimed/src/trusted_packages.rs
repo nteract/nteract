@@ -152,6 +152,17 @@ fn classify_pypi_spec(spec: &str) -> Option<SpecIdentity> {
         }
         rest = after_close;
     }
+    rest = rest.trim_start();
+    // Registry versions start with a comparison operator or parenthesis.
+    // Other starts can make uv fall back to an unnamed local path, where a
+    // semicolon inside the filename is not an environment-marker separator.
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|ch| !matches!(ch, '(' | '<' | '>' | '=' | '!' | '~'))
+    {
+        return exact();
+    }
     if !rest.chars().all(is_version_clause_char) {
         return exact();
     }
@@ -771,6 +782,14 @@ mod tests {
         );
         assert_eq!(classify_spec(pypi, "numpy (>=1.0, <2)"), registry("numpy"));
         assert_eq!(classify_spec(pypi, "torch==2.1.0+cpu"), registry("torch"));
+        assert_eq!(
+            classify_spec(pypi, "numpy;python_version>'3'"),
+            registry("numpy")
+        );
+        assert_eq!(
+            classify_spec(pypi, "numpy[extra] >=1;python_version>'3'"),
+            registry("numpy")
+        );
         assert_eq!(classify_spec(pypi, "   "), None);
 
         assert_eq!(classify_spec(CONDA, "NumPy=1.26"), registry("numpy"));
@@ -889,6 +908,10 @@ mod tests {
             "numpy[x]+y.tar.gz",
             "numpy[x]+y.tar.gz[extra]",
             "numpy.whl [extra]",
+            "numpy+x;y.tar.gz",
+            "numpy[x]+y;z.tar.gz[extra]",
+            "numpy+x;y.tar.gz ; python_version > '3'",
+            "numpy+x.tar.gz ; python_version > '3'",
         ] {
             let info = runt_trust::TrustInfo {
                 uv_dependencies: vec![spec.into()],
