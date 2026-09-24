@@ -18,6 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm run wasm && node --import tsx --test test/*.test.ts test/*.test.mjs",
     "test:renderer-parity": "playwright test -c playwright.render-parity.config.ts",
+    "test:asset-recovery": "playwright test -c playwright.asset-recovery.config.ts",
     "test:renderer-parity:update": "playwright test -c playwright.render-parity.config.ts --update-snapshots",
     "dev": "node scripts/dev.mjs",
     "profile:local": "node scripts/profile-local.mjs",
