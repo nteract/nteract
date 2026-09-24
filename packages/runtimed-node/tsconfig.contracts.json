@@ -8,5 +8,9 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["tests/session-status.test.ts", "tests/native-session.test.ts"]
+  "include": [
+    "tests/session-status.test.ts",
+    "tests/native-*.test.ts",
+    "tests/environment-*.test.ts"
+  ]
 }
