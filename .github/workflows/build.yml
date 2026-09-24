@@ -1682,6 +1682,7 @@ jobs:
           track_result "${{ needs.python-unit-tests.result }}"
           track_result "${{ needs.wasm-deno.result }}"
           track_result "${{ needs.windows-clippy.result }}"
+          track_result "${{ needs.windows-arm64.result }}"
           track_result "${{ needs.nsis-bootstrap.result }}"
           track_result "${{ needs.build-linux.result }}"
           track_result "${{ needs.e2e.result }}"
