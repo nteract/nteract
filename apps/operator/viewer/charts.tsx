@@ -37,104 +37,117 @@ function Chart({
     observer.observe(chart);
     return () => observer.disconnect();
   }, [hasValues]);
-  if (!values.length) return <p className="empty">{empty}</p>;
-  const start = Math.min(...points.map((p) => p.at)),
+  const start = points.length ? Math.min(...points.map((p) => p.at)) : data.now,
     end = Math.max(start + 60_000, ...points.map((p) => p.at));
   const max = percent ? 100 : Math.max(1, ...values);
   const x = (at: number) => 40 + ((at - start) / (end - start)) * (width - 60),
     y = (value: number) => 175 - (value / max) * 150;
   return (
     <>
-      <svg
-        ref={chartRef}
-        className="chart"
-        viewBox={`0 0 ${width} 220`}
-        role="img"
-        aria-label={label}
-      >
-        {[0, 1, 2, 3, 4].map((i) => (
-          <g key={i}>
-            <line x1="40" x2={width - 20} y1={y((max * i) / 4)} y2={y((max * i) / 4)} />
-            <text x="32" y={y((max * i) / 4) + 4} textAnchor="end">
-              {format((max * i) / 4, percent ? "%" : "")}
-            </text>
-          </g>
-        ))}
-        {series.map((s, i) => (
-          <g key={s.name} className={`series series-${i % 8}`}>
-            {!bars && <path d={chartPath(s.points, x, y, data)} />}
-            {s.points
-              .filter((p) => p.value !== null)
-              .map((p) => (
-                <g key={p.at}>
-                  {bars && (
-                    <line x1={x(p.at)} x2={x(p.at)} y1={175} y2={y(p.value!)} className="bar" />
-                  )}
-                  {bars && p.value === 0 && (
-                    <line x1={x(p.at) - 5} x2={x(p.at) + 5} y1={175} y2={175} className="zero" />
-                  )}
-                  <circle cx={x(p.at)} cy={y(p.value!)} r="2.5">
-                    <title>
-                      {timestamp(p.at)} · {s.name}: {format(p.value, percent ? "%" : "")}
-                      {p.detail ? ` · ${p.detail}` : ""}
-                    </title>
-                  </circle>
-                </g>
-              ))}
-          </g>
-        ))}
-        {(width < 540 ? [0, 2] : [0, 1, 2]).map((i) => (
-          <text
-            key={i}
-            x={x(start + ((end - start) * i) / 2)}
-            y="205"
-            textAnchor={i === 0 ? "start" : i === 2 ? "end" : "middle"}
+      {hasValues ? (
+        <>
+          <svg
+            ref={chartRef}
+            className="chart"
+            viewBox={`0 0 ${width} 220`}
+            role="img"
+            aria-label={label}
           >
-            {new Date(start + ((end - start) * i) / 2).toLocaleString([], {
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </text>
-        ))}
-      </svg>
-      <ul className="chart-legend" aria-label={`${label} legend`}>
-        {series.map((s, i) => (
-          <li key={s.name} className={`series-${i % 8}`}>
-            <span aria-hidden="true" />
-            {s.name}
-          </li>
-        ))}
-      </ul>
-      <details className="chart-data">
-        <summary>View measurements and coverage</summary>
-        <div className="chart-table" tabIndex={0} role="region" aria-label={`${label} data`}>
-          <table>
-            <caption>{label}</caption>
-            <thead>
-              <tr>
-                <th scope="col">Time</th>
-                <th scope="col">Series</th>
-                <th scope="col">Value</th>
-                <th scope="col">Coverage</th>
-              </tr>
-            </thead>
-            <tbody>
-              {series.flatMap((s) =>
-                s.points.map((p) => (
-                  <tr key={`${s.name}-${p.at}`}>
-                    <td>{timestamp(p.at)}</td>
-                    <td>{s.name}</td>
-                    <td>{p.value === null ? "Unknown" : format(p.value, percent ? "%" : "")}</td>
-                    <td>{p.detail ?? "Recorded sample"}</td>
-                  </tr>
-                )),
-              )}
-            </tbody>
-          </table>
-        </div>
-      </details>
+            {[0, 1, 2, 3, 4].map((i) => (
+              <g key={i}>
+                <line x1="40" x2={width - 20} y1={y((max * i) / 4)} y2={y((max * i) / 4)} />
+                <text x="32" y={y((max * i) / 4) + 4} textAnchor="end">
+                  {format((max * i) / 4, percent ? "%" : "")}
+                </text>
+              </g>
+            ))}
+            {series.map((s, i) => (
+              <g key={s.name} className={`series series-${i % 8}`}>
+                {!bars && <path d={chartPath(s.points, x, y, data)} />}
+                {s.points
+                  .filter((p) => p.value !== null)
+                  .map((p) => (
+                    <g key={p.at}>
+                      {bars && (
+                        <line x1={x(p.at)} x2={x(p.at)} y1={175} y2={y(p.value!)} className="bar" />
+                      )}
+                      {bars && p.value === 0 && (
+                        <line
+                          x1={x(p.at) - 5}
+                          x2={x(p.at) + 5}
+                          y1={175}
+                          y2={175}
+                          className="zero"
+                        />
+                      )}
+                      <circle cx={x(p.at)} cy={y(p.value!)} r="2.5">
+                        <title>
+                          {timestamp(p.at)} · {s.name}: {format(p.value, percent ? "%" : "")}
+                          {p.detail ? ` · ${p.detail}` : ""}
+                        </title>
+                      </circle>
+                    </g>
+                  ))}
+              </g>
+            ))}
+            {(width < 540 ? [0, 2] : [0, 1, 2]).map((i) => (
+              <text
+                key={i}
+                x={x(start + ((end - start) * i) / 2)}
+                y="205"
+                textAnchor={i === 0 ? "start" : i === 2 ? "end" : "middle"}
+              >
+                {new Date(start + ((end - start) * i) / 2).toLocaleString([], {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </text>
+            ))}
+          </svg>
+          <ul className="chart-legend" aria-label={`${label} legend`}>
+            {series.map((s, i) => (
+              <li key={s.name} className={`series-${i % 8}`}>
+                <span aria-hidden="true" />
+                {s.name}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="empty">{empty}</p>
+      )}
+      {points.length > 0 && (
+        <details className="chart-data">
+          <summary>View measurements and coverage</summary>
+          <div className="chart-table" tabIndex={0} role="region" aria-label={`${label} data`}>
+            <table>
+              <caption>{label}</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Series</th>
+                  <th scope="col">Value</th>
+                  <th scope="col">Coverage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {series.flatMap((s) =>
+                  s.points.map((p) => (
+                    <tr key={`${s.name}-${p.at}`}>
+                      <td>{timestamp(p.at)}</td>
+                      <td>{s.name}</td>
+                      <td>{p.value === null ? "Unknown" : format(p.value, percent ? "%" : "")}</td>
+                      <td>{p.detail ?? "Recorded sample"}</td>
+                    </tr>
+                  )),
+                )}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
     </>
   );
 }
@@ -174,8 +187,9 @@ export function HistoryCharts({ data, hours }: { data: Metrics; hours: number })
             empty="No measured Durable Object census in this range."
           />
           <p className="caption">
-            Application fleets grouped by class. Totals include only measured fleets; open the
-            measurements table for coverage. Residency does not indicate people or activity.
+            Application fleets grouped by class. Totals include only measured fleets. Coverage is
+            included in measurement tables where available. Residency does not indicate people or
+            activity.
           </p>
         </section>
         <section>

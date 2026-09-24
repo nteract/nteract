@@ -18,7 +18,7 @@ function Fleet({ data }: { data: Metrics }) {
       <div className="section-heading">
         <h2>Current deployments</h2>
         <span className="muted">
-          {groups.current.length} {groups.known ? "monitored" : "last observed"}
+          {groups.current.length} {groups.known ? "monitored" : "listed"}
         </span>
       </div>
       <p className="caption">
