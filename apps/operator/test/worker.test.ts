@@ -31,6 +31,7 @@ async function fixture(t: TestContext, email = "operator.one@example.test") {
     NOTEBOOK_CLOUD_OIDC_TOKEN_AUTH_METHOD: "none",
     NOTEBOOK_CLOUD_APP_SESSION_SECRET: "test-only-operator-session-secret-32-bytes",
     OPERATOR_ALLOWED_EMAILS: "operator.one@example.test,operator.two@example.test",
+    OPERATOR_METRICS_SERVICE_TOKEN: "a".repeat(64),
   };
   const calls: Request[] = [];
   t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -88,11 +89,39 @@ test("server OIDC login with SQLite permits both exact verified emails and strip
       assert.equal(response.headers.get("Cache-Control"), "no-store");
       assert.equal(f.calls.length, 1);
       assert.equal(f.calls[0].headers.get("cookie"), null);
-      assert.equal(f.calls[0].headers.get("authorization"), null);
+      assert.equal(
+        f.calls[0].headers.get("authorization"),
+        `Bearer ${f.env.OPERATOR_METRICS_SERVICE_TOKEN}`,
+      );
+      assert.equal(f.calls[0].headers.get("x-secret"), null);
       assert.equal(f.calls[0].method, "GET");
       assert.equal((await response.json()).schema, 1);
     });
   }
+});
+test("metrics and exports require a private service credential without exposing or forwarding browser credentials", async (t) => {
+  const f = await fixture(t),
+    { cookie } = await f.login();
+  assert.ok(cookie);
+  for (const path of [
+    "/api/operator/metrics",
+    "/api/operator/export.json",
+    "/api/operator/export.csv",
+  ]) {
+    for (const token of [undefined, "", "a".repeat(63), "A".repeat(64)]) {
+      f.env.OPERATOR_METRICS_SERVICE_TOKEN = token;
+      assert.equal((await f.request(path, { headers: { cookie } })).status, 503);
+    }
+    f.env.OPERATOR_METRICS_SERVICE_TOKEN = "b".repeat(64);
+    const response = await f.request(path, {
+      headers: { cookie, authorization: "Bearer browser-value" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(f.calls.at(-1)!.headers.get("authorization"), `Bearer ${"b".repeat(64)}`);
+    assert(!(await response.text()).includes("b".repeat(64)));
+    assert.equal(response.headers.get("authorization"), null);
+  }
+  assert.equal(f.calls.length, 3);
 });
 test("unauthenticated, forged header, bearer and cookie requests never read metrics", async (t) => {
   const f = await fixture(t);

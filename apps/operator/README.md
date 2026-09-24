@@ -36,8 +36,13 @@ have separate labels; the initial collection and refresh cadence is one minute.
   cookies or credentials upstream. Only 1/6/24/168/336-hour windows and exact
   `main` / `pr-N` filters are accepted. JSON and CSV exports use the same gate.
   Unknown upstream routes, arbitrary URLs, SQL, redirects and deployment API
-  forwarding are absent. The local collector API remains readable by trusted
-  host processes, as in preview-infra's existing host trust model.
+  forwarding are absent. `OPERATOR_METRICS_SERVICE_TOKEN` supplies a dedicated
+  32-byte random credential encoded as 64 lowercase hex characters in the fixed
+  outbound Authorization header. Missing/invalid configuration fails closed.
+  The reader validates this credential on every route, including health. It is
+  private runtime configuration, never a browser login credential or build input.
+  The operator's OS identity, configuration, storage and celld control listener
+  must be isolated from preview Workers; a loopback bind alone is insufficient.
 - The sign-in shell and static UI code are public; fleet data and exports require
   an allowed session. Every response is no-store and carries a restrictive CSP.
 
@@ -54,7 +59,8 @@ pnpm install --frozen-lockfile
 pnpm --dir apps/operator typecheck
 pnpm --dir apps/operator test
 pnpm --dir apps/operator build
-pnpm --dir apps/operator exec node scripts/prepare-local.mjs
+METRICS_SERVICE_TOKEN_FILE=/absolute/private/metrics-service-token \
+  pnpm --dir apps/operator exec node scripts/prepare-local.mjs
 CELLD_ESBUILD="$PWD/apps/operator/node_modules/.bin/esbuild" \
   celld dev apps/operator/wrangler.local.json --host 127.0.0.1 --port 9470 --no-watch
 ```
@@ -74,7 +80,9 @@ a fresh login when a provider token needs renewal. That issuer is not a producti
 identity provider. These checks do not qualify a production OAuth client.
 
 Run preview-infra's existing metrics demo or read service on loopback port 9464
-to supply measurements. Synthetic captures remain labeled by their provenance.
+to supply measurements, using the same private credential file. Its raw browser
+dashboard now also requires service authentication; use the operator UI for
+ordinary browser access. Synthetic captures remain labeled by their provenance.
 Without that service the app shows an explicit unavailable state. `pnpm dev`
 provides UI hot reload but does not supply login or metrics by itself.
 
@@ -91,6 +99,8 @@ provides UI hot reload but does not supply login or metrics by itself.
    random session secret of at least 32 characters. Keep the secret and database
    together through updates and backups; rollback of code is not schema rollback.
    Keep app assets behind the Worker (`run_worker_first: true`).
+   Supply `OPERATOR_METRICS_SERVICE_TOKEN` privately from the reader's credential;
+   do not put it into the example config, application artifact or client bundle.
 3. Verify the actual celld release and its configuration contract before host
    installation. Keep both the celld listener and metrics listener private. The
    app needs no journal, registry, controller credentials, deployment workflow

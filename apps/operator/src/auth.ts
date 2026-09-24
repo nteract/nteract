@@ -11,6 +11,7 @@ import {
 export interface OperatorEnvironment extends ServerOidcEnvironment {
   OPERATOR_ALLOWED_EMAILS?: string;
   OPERATOR_METRICS_ORIGIN?: string;
+  OPERATOR_METRICS_SERVICE_TOKEN?: string;
 }
 
 /** No domain grants, headers, dev tokens, API keys or provider bearer fallback. */

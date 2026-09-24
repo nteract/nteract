@@ -11,12 +11,18 @@ await build({
   outfile: "dist-dev/dev-worker.js",
 });
 let secret;
+let metricsToken;
 try {
-  secret = JSON.parse(await readFile("wrangler.local.json", "utf8")).vars
-    .NOTEBOOK_CLOUD_APP_SESSION_SECRET;
+  const existing = JSON.parse(await readFile("wrangler.local.json", "utf8")).vars;
+  secret = existing.NOTEBOOK_CLOUD_APP_SESSION_SECRET;
+  metricsToken = existing.OPERATOR_METRICS_SERVICE_TOKEN;
 } catch (error) {
   if (error.code !== "ENOENT") throw error;
 }
+if (process.env.METRICS_SERVICE_TOKEN_FILE)
+  metricsToken = (await readFile(process.env.METRICS_SERVICE_TOKEN_FILE, "utf8")).trim();
+if (!/^[a-f0-9]{64}$/.test(metricsToken ?? ""))
+  throw new Error("Set METRICS_SERVICE_TOKEN_FILE to the private metrics reader credential file");
 const config = JSON.parse(await readFile("wrangler.json.example", "utf8"));
 config.main = "dist-dev/dev-worker.js";
 config.durable_objects = { bindings: [{ name: "DEV_ISSUER", class_name: "LocalOperatorIssuer" }] };
@@ -31,6 +37,7 @@ Object.assign(config.vars, {
   NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
   NOTEBOOK_CLOUD_APP_SESSION_SECRET: secret ?? randomBytes(32).toString("hex"),
   OPERATOR_ALLOWED_EMAILS: "operator@example.test",
+  OPERATOR_METRICS_SERVICE_TOKEN: metricsToken,
 });
 await writeFile("wrangler.local.json", JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
 console.log(
