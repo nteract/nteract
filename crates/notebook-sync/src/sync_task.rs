@@ -1168,6 +1168,11 @@ impl SyncReactor {
     }
 
     fn expire_pending_requests(&mut self) {
+        // Cancelled callers (including closed Node sessions) no longer need a
+        // routing entry. A late response cannot satisfy another request.
+        self.state
+            .pending_requests
+            .retain(|_, entry| !entry.reply.is_closed());
         if self.state.pending_requests.is_empty() {
             return;
         }
@@ -1429,7 +1434,8 @@ mod tests {
             runtime_state_rx,
             status_rx,
             "test-notebook".to_string(),
-        );
+        )
+        .with_notebook_sync_receipt_capability(true);
         let config = SyncTaskConfig {
             doc: shared,
             changed_rx,
@@ -1526,6 +1532,23 @@ mod tests {
             live_rx.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn cancelled_request_releases_its_pending_entry() {
+        let mut reactor = test_reactor();
+        let (reply, receiver) = oneshot::channel();
+        reactor.state.pending_requests.insert(
+            "cancelled".into(),
+            PendingRequest {
+                reply,
+                broadcast_tx: None,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+        );
+        drop(receiver);
+        reactor.expire_pending_requests();
+        assert!(reactor.state.pending_requests.is_empty());
     }
 
     #[test]
@@ -2021,6 +2044,142 @@ mod tests {
         drop(handle);
         sync_task.await.expect("sync task exits");
         assert_eq!(daemon.await.expect("daemon task"), CELL_COUNT);
+    }
+
+    #[tokio::test]
+    async fn strict_receipt_ignores_old_sync_and_unrelated_responses() {
+        let (handle, config) = test_handle_and_config();
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let sync_task = tokio::spawn(run(config, client_read, client_write));
+        let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 64);
+        let mut writer = BufWriter::new(server_write);
+
+        // Freeze an older peer message before the edit being acknowledged.
+        let mut old_peer = SharedDocState::new(
+            notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
+            "test-notebook".into(),
+        );
+        let old_frame = old_peer.generate_sync_message().unwrap().encode();
+        handle
+            .add_cell_with_source("receipt-cell", "code", None, "value = 1")
+            .unwrap();
+        let target_heads = handle.current_heads_hex().unwrap();
+        let waiting_handle = handle.clone();
+        let mut receipt = tokio::spawn(async move { waiting_handle.confirm_notebook_sync().await });
+        let request = loop {
+            let frame = timeout(Duration::from_secs(2), reader.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if frame.frame_type == NotebookFrameType::Request {
+                break serde_json::from_slice::<NotebookRequestEnvelope>(&frame.payload).unwrap();
+            }
+        };
+        assert!(matches!(
+            request.request,
+            NotebookRequest::AcknowledgeNotebookSync {}
+        ));
+        assert_eq!(request.required_heads, target_heads);
+
+        // Edits after capture are deliberately outside this receipt.
+        handle.update_source("receipt-cell", "value = 2").unwrap();
+        assert_ne!(handle.current_heads_hex().unwrap(), target_heads);
+        connection::send_typed_frame(&mut writer, NotebookFrameType::AutomergeSync, &old_frame)
+            .await
+            .unwrap();
+        send_typed_json_frame(
+            &mut writer,
+            NotebookFrameType::Response,
+            &NotebookResponseEnvelope {
+                id: Some("another-connection-or-request".into()),
+                response: NotebookResponse::NotebookSyncAcknowledged {
+                    heads: target_heads.clone(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert!(timeout(Duration::from_millis(100), &mut receipt)
+            .await
+            .is_err());
+
+        send_typed_json_frame(
+            &mut writer,
+            NotebookFrameType::Response,
+            &NotebookResponseEnvelope {
+                id: request.id,
+                response: NotebookResponse::NotebookSyncAcknowledged {
+                    heads: target_heads.clone(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(receipt.await.unwrap().unwrap(), target_heads);
+        drop(handle);
+        sync_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn strict_receipt_rejects_wrong_receipts_errors_and_disconnect() {
+        for response in [
+            Some(NotebookResponse::NotebookSyncAcknowledged { heads: vec![] }),
+            Some(NotebookResponse::Ok {}),
+            Some(NotebookResponse::Error {
+                error: "unsupported request".into(),
+            }),
+            None,
+        ] {
+            let (handle, config) = test_handle_and_config();
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            let (client_read, client_write) = tokio::io::split(client);
+            let (server_read, server_write) = tokio::io::split(server);
+            let sync_task = tokio::spawn(run(config, client_read, client_write));
+            let daemon = tokio::spawn(async move {
+                let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 64);
+                let mut writer = BufWriter::new(server_write);
+                loop {
+                    let frame = reader.recv().await.unwrap().unwrap();
+                    if frame.frame_type != NotebookFrameType::Request {
+                        continue;
+                    }
+                    let request: NotebookRequestEnvelope =
+                        serde_json::from_slice(&frame.payload).unwrap();
+                    if let Some(response) = response {
+                        send_typed_json_frame(
+                            &mut writer,
+                            NotebookFrameType::Response,
+                            &NotebookResponseEnvelope {
+                                id: request.id,
+                                response,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    break;
+                }
+            });
+            handle
+                .add_cell_with_source("unaccepted", "code", None, "local_only = True")
+                .unwrap();
+            assert!(handle
+                .get_cells()
+                .iter()
+                .any(|cell| cell.id == "unaccepted"));
+            assert!(
+                timeout(Duration::from_secs(2), handle.confirm_notebook_sync())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            daemon.await.unwrap();
+            drop(handle);
+            sync_task.await.unwrap();
+        }
     }
 
     #[tokio::test]

@@ -152,6 +152,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
         NotebookRequest::ApproveProjectEnvironment { .. } => "ApproveProjectEnvironment",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
+        NotebookRequest::AcknowledgeNotebookSync {} => "AcknowledgeNotebookSync",
         NotebookRequest::CreateBlobUpload { .. } => "CreateBlobUpload",
         NotebookRequest::CompleteBlobUpload { .. } => "CompleteBlobUpload",
         NotebookRequest::AbortBlobUpload { .. } => "AbortBlobUpload",
@@ -570,6 +571,12 @@ pub(crate) async fn handle_notebook_request(
         }
 
         NotebookRequest::GetDocBytes {} => get_doc_bytes::handle(room).await,
+
+        // Only the per-connection causal gate can issue a receipt. A direct
+        // dispatcher call has no envelope or required-head precondition.
+        NotebookRequest::AcknowledgeNotebookSync {} => NotebookResponse::Error {
+            error: "Notebook sync acknowledgement requires a causal request envelope".into(),
+        },
 
         NotebookRequest::CreateBlobUpload { .. }
         | NotebookRequest::CompleteBlobUpload { .. }

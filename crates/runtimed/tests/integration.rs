@@ -1132,6 +1132,131 @@ async fn test_notebook_sync_via_unified_socket() {
 }
 
 #[tokio::test]
+async fn test_strict_sync_receipt_cross_peer_and_restart_without_export() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    let daemon_for_inspect = daemon.clone();
+    let mut daemon_handle = tokio::spawn(async move { daemon.run().await.unwrap() });
+    let pool = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool).await);
+
+    let ephemeral = connect::connect_create(
+        socket_path.clone(),
+        connect::CreateNotebookSpec {
+            ephemeral: true,
+            ..create_spec("receipt-ephemeral")
+        },
+    )
+    .await
+    .unwrap();
+    assert_session_ready(&ephemeral.handle, "ephemeral receipt").await;
+    ephemeral
+        .handle
+        .add_cell_with_source("volatile", "markdown", None, "accepted in memory")
+        .unwrap();
+    assert!(!ephemeral
+        .handle
+        .confirm_notebook_sync()
+        .await
+        .unwrap()
+        .is_empty());
+    // A hosted replica must never issue a local-authority receipt, even when
+    // there is no active bridge connection in the daemon's bridge registry.
+    daemon_for_inspect
+        .test_get_room(uuid::Uuid::parse_str(&ephemeral.info.notebook_id).unwrap())
+        .await
+        .unwrap()
+        .mark_hosted();
+    let error = ephemeral.handle.confirm_notebook_sync().await.unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("not supported for hosted bridge rooms"));
+    drop(ephemeral);
+
+    let owner = connect::connect_create(socket_path.clone(), create_spec("receipt-owner"))
+        .await
+        .unwrap();
+    let notebook_id = owner.info.notebook_id.clone();
+    let peer = connect::connect(socket_path.clone(), notebook_id.clone(), "receipt-peer")
+        .await
+        .unwrap();
+    assert_session_ready(&owner.handle, "receipt owner").await;
+    assert_session_ready(&peer.handle, "receipt peer").await;
+    owner
+        .handle
+        .add_cell_with_source("receipt", "code", None, "accepted = True")
+        .unwrap();
+    let heads = owner.handle.confirm_notebook_sync().await.unwrap();
+    let mut changed = peer.handle.subscribe();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !peer.handle.contains_notebook_heads(&heads).unwrap() {
+            changed.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("independent peer observes accepted heads");
+    assert_eq!(
+        peer.handle
+            .get_cells()
+            .iter()
+            .find(|cell| cell.id == "receipt")
+            .unwrap()
+            .source,
+        "accepted = True"
+    );
+
+    // Both a descendant and another actor's concurrent edit can advance the
+    // authority beyond the frozen frontier without invalidating its receipt.
+    peer.handle
+        .add_cell_with_source("other-peer", "markdown", None, "also accepted")
+        .unwrap();
+    owner
+        .handle
+        .update_source("receipt", "accepted = 2")
+        .unwrap();
+    peer.handle.confirm_notebook_sync().await.unwrap();
+    let latest = owner.handle.confirm_notebook_sync().await.unwrap();
+    assert_ne!(heads, latest);
+    let response = owner
+        .handle
+        .send_request_after_heads(NotebookRequest::AcknowledgeNotebookSync {}, heads.clone())
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, NotebookResponse::NotebookSyncAcknowledged { heads: accepted } if accepted == heads)
+    );
+
+    drop(changed);
+    drop(peer);
+    drop(owner);
+    stop_daemon_for_replacement(&pool, &mut daemon_handle).await;
+
+    // No SaveNotebook request or .ipynb file exists: restart must use recovery.
+    let daemon = Daemon::new_for_test(replacement_config(config, &temp_dir, "receipt")).unwrap();
+    let mut daemon_handle = tokio::spawn(async move { daemon.run().await.unwrap() });
+    assert!(wait_for_daemon(&pool).await);
+    let recovered = connect::connect(socket_path, notebook_id, "receipt-recovered")
+        .await
+        .unwrap();
+    assert_session_ready(&recovered.handle, "recovered receipt").await;
+    assert!(recovered.handle.contains_notebook_heads(&latest).unwrap());
+    assert_eq!(
+        recovered
+            .handle
+            .get_cells()
+            .iter()
+            .find(|cell| cell.id == "receipt")
+            .unwrap()
+            .source,
+        "accepted = 2"
+    );
+    drop(recovered);
+    stop_daemon_for_replacement(&pool, &mut daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_notebook_sync_cross_window_propagation() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);

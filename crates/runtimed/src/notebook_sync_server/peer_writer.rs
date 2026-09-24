@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use notebook_protocol::connection::{self, NotebookFrameType};
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use nteract_identity::ConnectionScope;
 
 use super::blob_upload::{maybe_handle_blob_upload_request, MultipartUploadState};
@@ -276,7 +277,24 @@ pub(super) fn spawn_peer_request_worker(
             let start = std::time::Instant::now();
             let response = match wait_for_required_heads(&room, &envelope.required_heads).await {
                 Ok(()) => {
-                    if let Some(response) = maybe_handle_blob_upload_request(
+                    if matches!(
+                        envelope.request,
+                        NotebookRequest::AcknowledgeNotebookSync {}
+                    ) {
+                        if room.is_hosted() {
+                            NotebookResponse::Error {
+                                error: "Notebook sync receipts are not supported for hosted bridge rooms".into(),
+                            }
+                        } else if room.durability.status().requires_durability_repair() {
+                            NotebookResponse::Error {
+                                error: "Notebook recovery storage requires repair; cannot acknowledge sync".into(),
+                            }
+                        } else {
+                            NotebookResponse::NotebookSyncAcknowledged {
+                                heads: envelope.required_heads.clone(),
+                            }
+                        }
+                    } else if let Some(response) = maybe_handle_blob_upload_request(
                         &multipart_uploads,
                         &room.blob_store,
                         &envelope.request,
@@ -448,6 +466,7 @@ fn request_allowed_for_scope(
     matches!(
         request,
         notebook_protocol::protocol::NotebookRequest::GetDocBytes {}
+            | notebook_protocol::protocol::NotebookRequest::AcknowledgeNotebookSync {}
     ) || match request_required_scope(request) {
         RequestRequiredScope::NotebookWrite => connection_scope.allows_notebook_write(),
         RequestRequiredScope::BlobUpload => connection_scope.allows_local_blob_upload(),
@@ -488,6 +507,7 @@ fn request_required_scope(
         NotebookRequest::SendComm { .. }
         | NotebookRequest::ApplyBokehSessionPatch { .. }
         | NotebookRequest::CloneAsEphemeral { .. }
+        | NotebookRequest::AcknowledgeNotebookSync {}
         | NotebookRequest::GetDocBytes {} => RequestRequiredScope::NotebookWrite,
         NotebookRequest::CreateBlobUpload { .. }
         | NotebookRequest::CompleteBlobUpload { .. }

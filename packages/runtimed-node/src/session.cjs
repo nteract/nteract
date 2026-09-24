@@ -206,6 +206,10 @@ class Session {
     return this.executions.getSnapshot();
   }
 
+  confirmNotebookSync() {
+    return this._native.confirmNotebookSync();
+  }
+
   close() {
     for (const subscription of this._subscriptions.splice(0)) {
       subscription?.dispose?.();

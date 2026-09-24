@@ -3083,6 +3083,7 @@ async fn unresolved_peer_changes_are_rejected_before_acknowledgement() {
 async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "peer-journal-failure.ipynb");
+    let room = Arc::new(room);
     let (server_heads, server_actor) = {
         let mut doc = room.doc.write().await;
         (doc.get_heads(), doc.get_actor_id())
@@ -3139,6 +3140,57 @@ async fn peer_journal_failure_rolls_back_document_and_sync_ack() {
             .unwrap(),
         Some(runtime_doc::FileSourceIssue::Degraded { .. })
     ));
+
+    // Even already-present heads must not receive a strict receipt from a
+    // room with failed recovery storage. Exercise the real causal worker.
+    {
+        use notebook_protocol::protocol::{NotebookRequestEnvelope, NotebookResponseEnvelope};
+        let mut config = test_daemon_config(&tmp);
+        config.notebook_registry_db_path = tmp.path().join("receipt-registry.sqlite");
+        let daemon = crate::daemon::Daemon::new_for_test(config).unwrap();
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let (writer, _writer_task) = super::peer_writer::spawn_peer_writer(
+            server,
+            room.id.to_string(),
+            "receipt-peer".into(),
+        );
+        let worker = super::peer_writer::spawn_peer_request_worker(
+            room.clone(),
+            daemon,
+            writer.clone(),
+            super::blob_upload::MultipartUploadState::new(&room.blob_store),
+            room.id.to_string(),
+            "receipt-peer".into(),
+            identity.actor_label().to_string(),
+        );
+        let envelope = NotebookRequestEnvelope {
+            id: Some("failed-storage-receipt".into()),
+            required_heads: server_heads.iter().map(ToString::to_string).collect(),
+            request: crate::protocol::NotebookRequest::AcknowledgeNotebookSync {},
+        };
+        super::peer_writer::enqueue_notebook_request(
+            &worker,
+            &writer,
+            &serde_json::to_vec(&envelope).unwrap(),
+            &room.id.to_string(),
+            "receipt-peer",
+            nteract_identity::ConnectionScope::Owner,
+        )
+        .unwrap();
+        let frame = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            notebook_protocol::connection::recv_typed_frame(&mut client),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        let receipt: NotebookResponseEnvelope = serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(receipt.id, envelope.id);
+        assert!(
+            matches!(receipt.response, crate::protocol::NotebookResponse::Error { error } if error.contains("recovery storage"))
+        );
+    }
 
     // The same encoded peer message succeeds after the injected I/O fault is
     // removed, proving the sync state was rolled back with the document.
