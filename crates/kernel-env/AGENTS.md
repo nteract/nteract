@@ -188,17 +188,27 @@ Runtime type is determined by `kernelspec.name`, not by a field in `runt`.
 ## Trust system
 
 Dependency installation is gated on a per-machine SQLite allowlist. The
-daemon only launches a kernel when every dependency name in the notebook
-is present in the local trusted-package store.
+daemon only launches a kernel when every required dependency and source
+identity is present in the local trusted-package store.
 
 - **Store:** `TrustedPackageStore` in `crates/runtimed/src/trusted_packages.rs`,
   keyed by `(ecosystem, normalized_name)` and populated by user approval
   via the trust dialog or by daemon-initiated approval flows.
+- **Identity:** only plain registry specs (name, extras, version constraints,
+  markers) share a normalized-name identity. A spec that selects its own
+  source — a PEP 508 direct reference, VCS/path/URL spec, bare archive filename,
+  installer option, conda URL, or bracketed conda channel — is keyed by its
+  exact text in a separate `pypi-exact` / `conda-exact` ecosystem so legacy
+  name keys cannot approve sources. A `channel::name` conda spec needs both
+  the name and the channel approved. Conda specs with comments or a
+  `defaults::` qualifier require exact approval because installer parsing
+  differs from ordinary channel-list identity.
+  Unrecognized specs fail closed; never drop them from the check.
 - **Extraction:** `runt_trust::extract_trust_info()` pulls dep names out
   of `metadata.runt.uv` / `metadata.runt.conda` / `metadata.runt.pixi`
   (with fallback to legacy `metadata.uv` / `metadata.conda`).
 - **Finalization:** `metadata::finalize_trust_status()` in `runtimed`
-  asks the store whether every name is approved and returns `Trusted`,
+  asks the store whether every required identity is approved and returns `Trusted`,
   `Untrusted`, or `NoDependencies`. Store unavailability is fail-closed.
 - **Machine-specific:** every shared notebook is untrusted on the
   recipient's machine until they approve the deps locally.
