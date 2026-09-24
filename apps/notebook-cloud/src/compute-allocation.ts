@@ -1,5 +1,6 @@
 import type { DurableObjectState, Env } from "./cloudflare-types.ts";
 import { managedPythonStub } from "./managed-python.ts";
+import { cloudLog } from "./observability.ts";
 import { PROVIDER_ORPHAN_IDLE_MS } from "../../preview-python/src/lifecycle-policy.js";
 
 export interface AllocationIdentity {
@@ -20,6 +21,9 @@ interface Allocation extends AllocationIdentity {
 
 const RECORD = "allocation-v1";
 const RECONCILE_MS = 60_000;
+
+class ProviderRejected extends Error {}
+class SessionLost extends Error {}
 
 export function allocationObjectName(identity: AllocationIdentity): string {
   return JSON.stringify([identity.ownerPrincipal, identity.notebookId, identity.sessionId]);
@@ -54,9 +58,17 @@ export class ComputeAllocation {
   }
 
   private async save(record: Allocation): Promise<void> {
+    const previous = await this.state.storage.get<Allocation>(RECORD);
     // Arm recovery before a side effect can escape its durable intent.
     if (!["released", "failed"].includes(record.phase)) await this.schedule();
     await this.state.storage.put(RECORD, { ...record, updatedAt: Date.now() });
+    if (previous?.phase !== record.phase)
+      cloudLog("info", "compute_allocation_phase", {
+        notebook_id: record.notebookId,
+        session_id: record.sessionId,
+        provider: record.provider,
+        phase: record.phase,
+      });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -135,7 +147,20 @@ export class ComputeAllocation {
         }),
       }),
     );
-    if (!response.ok) throw new Error((await response.text()).slice(0, 1000));
+    if (!response.ok) {
+      let message = (await response.text()).slice(0, 1000);
+      try {
+        const body = JSON.parse(message);
+        if (typeof body.error === "string") message = body.error;
+      } catch {
+        // Providers may return plain text for malformed requests.
+      }
+      message = message.replace(/^Error: /, "");
+      // Admission rejection is definite. Transport and server failures leave
+      // resource state uncertain and must be retried with the same identity.
+      const ErrorType = response.status < 500 ? ProviderRejected : Error;
+      throw new ErrorType(message);
+    }
     return response.json();
   }
 
@@ -157,8 +182,9 @@ export class ComputeAllocation {
         await this.provider("/open", record);
       } else {
         const status = await this.provider("/inspect", record);
-        if (status.phase !== "ready")
-          throw new Error("Python session was lost; restart to continue");
+        if (status.phase === "absent" || status.phase === "releasing")
+          throw new SessionLost("Python session was lost; restart to continue");
+        if (status.phase !== "ready") throw new Error("Python session status is uncertain");
         if (
           status.busy !== true &&
           typeof status.lastUsed === "number" &&
@@ -180,9 +206,14 @@ export class ComputeAllocation {
       });
       if (released) await this.release();
     } catch (error) {
+      if (
+        !(error instanceof SessionLost) &&
+        !(record.phase === "allocating" && error instanceof ProviderRejected)
+      )
+        throw error;
       await this.mutate(async () => {
         const current = await this.state.storage.get<Allocation>(RECORD);
-        if (current && !["released", "failed"].includes(current.phase))
+        if (current?.desired === "running")
           await this.save({
             ...current,
             desired: "released",

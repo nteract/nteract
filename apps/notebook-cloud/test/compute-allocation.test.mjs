@@ -37,6 +37,7 @@ function fixture(options = {}) {
     ...options,
   });
   let service = createProviderService(pool, fences);
+  let fault;
   const paths = [];
   const env = {
     NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
@@ -45,6 +46,11 @@ function fixture(options = {}) {
       get: () => ({
         fetch: (request) => {
           paths.push(new URL(request.url).pathname);
+          if (fault) {
+            const fail = fault;
+            fault = undefined;
+            return fail(request);
+          }
           return service.fetch(request);
         },
       }),
@@ -61,6 +67,9 @@ function fixture(options = {}) {
     paths,
     reload,
     counts: () => ({ created, disposed }),
+    failNext: (fail) => {
+      fault = fail;
+    },
     loseProvider: () => {
       service = createProviderService(
         new SessionPool({
@@ -176,6 +185,40 @@ test("a lost ready interpreter fails rather than silently replacing Python state
   assert.equal((await f.call("/ensure")).status, 409);
   assert.equal(await phase(f), "failed");
   assert.equal(f.counts().created, 1);
+});
+
+for (const phaseName of ["allocating", "ready"]) {
+  for (const failure of ["transport", "server"]) {
+    test(`${failure} failure while ${phaseName} preserves intent and retries`, async () => {
+      const f = fixture();
+      if (phaseName === "ready") await f.call("/ensure");
+      f.failNext(() => {
+        if (failure === "transport") throw Error("connection interrupted");
+        return Response.json({ error: "Provider temporarily unavailable" }, { status: 503 });
+      });
+      assert.equal((await f.call("/ensure")).status, 409);
+      assert.equal(await phase(f), phaseName);
+      assert.ok(!f.paths.includes("/close"));
+      assert.equal(f.counts().disposed, 0);
+      f.reload();
+      await f.alarm();
+      assert.equal(await phase(f), "ready");
+      assert.equal(f.counts().created, 1);
+      await f.call("/release");
+    });
+  }
+}
+
+test("admission rejection is readable and terminal", async () => {
+  const f = fixture();
+  f.failNext(() =>
+    Response.json({ error: "Error: Your Python session limit was reached" }, { status: 409 }),
+  );
+  const response = await f.call("/ensure");
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "Your Python session limit was reached");
+  assert.equal(await phase(f), "failed");
+  assert.equal(f.counts().created, 0);
 });
 
 test("orphan expiry does not stop a busy interpreter", async () => {

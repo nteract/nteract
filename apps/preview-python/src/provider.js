@@ -50,8 +50,9 @@ export class PreviewPythonSessions {
     return this.service.fetch(request);
   }
   async alarm() {
-    await this.pool.expire();
+    // A quarantined runtime must not stop future cleanup of other sessions.
     await this.state.storage.setAlarm(Date.now() + 60_000);
+    await this.pool.expire();
   }
 }
 

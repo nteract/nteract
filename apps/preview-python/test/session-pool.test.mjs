@@ -215,7 +215,7 @@ for (const retained of [false, true])
     if (retained) await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
     else await pool.open("alice/2", "alice");
     await pool.open("bob/1", "bob");
-    if (retained) await assert.rejects(pool.close(), /startup failed/);
+    if (retained) await assert.rejects(pool.close(), /Session cleanup failed/);
     else await pool.close();
   });
 
@@ -317,3 +317,41 @@ test("discovery cannot exhaust all slots after an unconfirmed standby cleanup", 
   assert.equal(created, 2, "explicit admission can still use remaining capacity");
   await pool.close();
 });
+
+for (const operation of ["expire", "close"]) {
+  test(`${operation} cleans healthy sessions despite quarantined startup failure`, async () => {
+    let created = 0,
+      disposed = 0,
+      now = 0;
+    const pool = new SessionPool({
+      maxSessions: 3,
+      maxSessionsPerOwner: 1,
+      warmCount: 0,
+      idleMs: 10,
+      clock: () => now,
+      create: async () => {
+        if (++created === 1)
+          throw Object.assign(Error("host termination uncertain"), { runtimeRetained: true });
+        return {
+          info: {},
+          dispose: async () => {
+            disposed++;
+          },
+        };
+      },
+    });
+    await assert.rejects(pool.open("alice/1", "alice"), /uncertain/);
+    await pool.open("bob/1", "bob");
+    now = 11;
+    await assert.rejects(pool[operation](), /Session cleanup failed/);
+    assert.equal(disposed, 1);
+    assert.equal(pool.inspect("bob/1").phase, "absent");
+    assert.equal(pool.inspect("alice/1").phase, "releasing");
+    if (operation === "expire") {
+      await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
+      await pool.open("bob/2", "bob");
+      await assert.rejects(pool.close(), /Session cleanup failed/);
+      assert.equal(disposed, 2);
+    }
+  });
+}

@@ -228,21 +228,35 @@ export class SessionPool {
 
   async expire() {
     const now = this.#clock();
+    const pending = [];
     for (const [key, session] of this.#sessions) {
       if (session.cancelled || (!session.busy && now - session.lastUsed >= this.#idleMs))
-        await this.release(key, session);
+        pending.push(this.release(key, session));
     }
+    const results = await Promise.allSettled(pending);
     this.warm();
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length)
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        "Session cleanup failed",
+      );
   }
 
   async close() {
     this.#closed = true;
-    for (const key of this.#sessions.keys()) await this.release(key);
-    await Promise.all(
-      this.#warm.splice(0).map(async (pending) => {
+    const results = await Promise.allSettled([
+      ...Array.from(this.#sessions.keys(), (key) => this.release(key)),
+      ...this.#warm.splice(0).map(async (pending) => {
         const { runtime } = await pending;
         await runtime?.dispose();
       }),
-    );
+    ]);
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length)
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        "Session cleanup failed",
+      );
   }
 }
