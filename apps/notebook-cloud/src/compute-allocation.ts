@@ -177,14 +177,17 @@ export class ComputeAllocation {
     const record = await this.state.storage.get<Allocation>(RECORD);
     if (!record || ["released", "failed"].includes(record.phase)) return;
     if (record.desired === "released") return this.release();
+    let inspecting = false;
     try {
       if (record.phase === "allocating") {
         await this.provider("/open", record);
       } else {
+        inspecting = true;
         const status = await this.provider("/inspect", record);
         if (status.phase === "absent" || status.phase === "releasing")
           throw new SessionLost("Python session was lost; restart to continue");
         if (status.phase !== "ready") throw new Error("Python session status is uncertain");
+        inspecting = false;
         if (
           status.busy !== true &&
           typeof status.lastUsed === "number" &&
@@ -210,7 +213,7 @@ export class ComputeAllocation {
         !(error instanceof SessionLost) &&
         !(record.phase === "allocating" && error instanceof ProviderRejected)
       ) {
-        if (record.phase === "ready") {
+        if (inspecting) {
           // Reattachment uses the last confirmed allocation. An inconclusive
           // health probe must not send the room down its startup-failed cleanup
           // path and destroy a used interpreter. The alarm retries inspection;
@@ -218,6 +221,7 @@ export class ComputeAllocation {
           cloudLog("warn", "compute_allocation_inspection_deferred", {
             notebook_id: record.notebookId,
             session_id: record.sessionId,
+            error: String(error).slice(0, 1000),
           });
           return;
         }

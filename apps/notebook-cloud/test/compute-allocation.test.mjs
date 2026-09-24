@@ -221,6 +221,25 @@ test("admission rejection is readable and terminal", async () => {
   assert.equal(f.counts().created, 0);
 });
 
+test("orphan cleanup failure remains a retryable alarm failure", async () => {
+  let attempts = 0;
+  const f = fixture({
+    clock: () => Date.now() - PROVIDER_ORPHAN_IDLE_MS - 1,
+    create: async () => ({
+      info: {},
+      dispose: async () => {
+        if (++attempts === 1) throw Error("close interrupted");
+      },
+    }),
+  });
+  await f.call("/ensure");
+  await assert.rejects(f.alarm(), /close interrupted/);
+  assert.equal(await phase(f), "releasing");
+  await f.alarm();
+  assert.equal(await phase(f), "released");
+  assert.equal(attempts, 2);
+});
+
 test("orphan expiry does not stop a busy interpreter", async () => {
   let clock = Date.now(),
     finish;
