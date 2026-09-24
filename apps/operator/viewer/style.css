@@ -118,8 +118,7 @@ section {
 }
 .chart {
   width: 100%;
-  height: auto;
-  min-height: 180px;
+  height: 220px;
   margin-top: 18px;
 }
 .chart line {
@@ -129,13 +128,92 @@ section {
   font-size: 10px;
   fill: var(--muted-foreground);
 }
-.cpu-line {
-  stroke: var(--primary);
+.series path {
+  stroke: var(--series-color);
   stroke-width: 2;
   fill: none;
 }
-.chart circle {
-  fill: var(--primary);
+.series circle {
+  fill: var(--series-color);
+}
+.series .bar {
+  stroke: var(--series-color);
+  stroke-width: 8;
+}
+.series-0 {
+  --series-color: #3b6c91;
+}
+.series-1 {
+  --series-color: #3c806b;
+}
+.series-2 {
+  --series-color: #b37536;
+}
+.series-3 {
+  --series-color: #936797;
+}
+.series-4 {
+  --series-color: #a35a5a;
+}
+.series-5 {
+  --series-color: #687a32;
+}
+.series-6 {
+  --series-color: #75634b;
+}
+.series-7 {
+  --series-color: #5b7182;
+}
+.chart-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+.chart-grid section {
+  min-width: 0;
+}
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  list-style: none;
+  padding: 0;
+  font-size: 12px;
+}
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.chart-legend span {
+  width: 14px;
+  height: 3px;
+  background: var(--series-color);
+}
+.retained {
+  margin-top: 24px;
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+.retained summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.retained-list {
+  padding: 0;
+  list-style: none;
+}
+.retained-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.retained-list span {
+  color: var(--muted-foreground);
+  font-family: monospace;
+  font-size: 12px;
 }
 .fleet-grid {
   display: grid;
@@ -238,6 +316,15 @@ footer {
   }
   .details-grid {
     display: block;
+  }
+  .chart-grid {
+    display: block;
+  }
+  .chart {
+    min-height: 0;
+  }
+  .fleet-grid {
+    grid-template-columns: 1fr;
   }
   header {
     align-items: flex-start;

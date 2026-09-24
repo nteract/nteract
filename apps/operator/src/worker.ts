@@ -89,7 +89,7 @@ function metricsUrl(request: Request, env: OperatorEnvironment, path: string): U
   const preview = input.searchParams.get("preview") ?? "";
   if (
     ![1, 6, 24, 168, 336].includes(hours) ||
-    (preview && !/^(main|pr-[1-9][0-9]{0,7})$/.test(preview))
+    (preview && !/^(app|main|pr-[1-9][0-9]{0,7})$/.test(preview))
   )
     throw new AuthError("Invalid metrics query", 400);
   const url = new URL(path, base);

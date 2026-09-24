@@ -36,6 +36,17 @@ export interface Metrics {
   sourceGapsTruncated: boolean;
   deployments: { at: number; preview: string; status: string; revision: string | null }[];
   runtime: { version: string; binarySha: string } | null;
+  coverage?: { availableFrom: number | null; requestedFrom: number; firstInRange: number | null };
+  presence?: {
+    bucket: number;
+    preview: string;
+    reports: number;
+    positive_reports: number;
+    distinct_rooms: number;
+    max_occupants: number;
+  }[];
+  processChanges?: { at: number; preview: string; role: string }[];
+  processChangesTruncated?: boolean;
 }
 export const format = (n: number | null | undefined, suffix = "") =>
   n === null || n === undefined || !Number.isFinite(n)
@@ -64,8 +75,8 @@ export function cpu(
   if (
     !a ||
     !b ||
-    a.status !== "ok" ||
-    b.status !== "ok" ||
+    !["ok", "partial"].includes(a.status) ||
+    !["ok", "partial"].includes(b.status) ||
     !b.process ||
     a.process !== b.process ||
     // With incomplete gap metadata only adjacent collection samples are safe.
@@ -88,6 +99,7 @@ const record = (v: unknown): v is Record<string, unknown> =>
 const number = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const text = (v: unknown): v is string => typeof v === "string";
 const nullableText = (v: unknown) => v === null || text(v);
+const nullableNumber = (v: unknown) => v === null || number(v);
 const list = (v: unknown, item: (v: unknown) => boolean) => Array.isArray(v) && v.every(item);
 const observation = (v: unknown) =>
   record(v) &&
@@ -118,6 +130,28 @@ export function isMetrics(v: unknown): v is Metrics {
         nullableText(v.latest.recovery))) &&
     list(v.observations, observation) &&
     list(v.currentHost, observation) &&
+    (v.coverage === undefined ||
+      (record(v.coverage) &&
+        nullableNumber(v.coverage.availableFrom) &&
+        number(v.coverage.requestedFrom) &&
+        nullableNumber(v.coverage.firstInRange))) &&
+    (v.presence === undefined ||
+      list(
+        v.presence,
+        (p) =>
+          record(p) &&
+          number(p.bucket) &&
+          text(p.preview) &&
+          [p.reports, p.positive_reports, p.distinct_rooms, p.max_occupants].every(
+            (n) => number(n) && n >= 0,
+          ),
+      )) &&
+    (v.processChanges === undefined ||
+      list(
+        v.processChanges,
+        (p) => record(p) && number(p.at) && text(p.preview) && text(p.role),
+      )) &&
+    (v.processChangesTruncated === undefined || typeof v.processChangesTruncated === "boolean") &&
     list(
       v.previews,
       (p) =>
@@ -150,7 +184,11 @@ export function isMetrics(v: unknown): v is Metrics {
 }
 export function currentHost(data: Metrics) {
   const host = data.currentHost.at(-1);
-  return !data.stale && host?.at === data.latest?.at && host?.status === "ok" ? host : undefined;
+  return !data.stale &&
+    host?.at === data.latest?.at &&
+    ["ok", "partial"].includes(host?.status ?? "")
+    ? host
+    : undefined;
 }
 export function memory(host?: Observation): number | null {
   const total = host?.values.memory_total_bytes,
