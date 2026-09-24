@@ -89,8 +89,8 @@ describe("NotebookRoom presence rewrite", () => {
       );
 
     await room.webSocketMessage(peer.socket, request("first"));
-    // A rejected waitUntil used to be the only trace of the failure.
-    await state.drain().catch(() => undefined);
+    // Report the request failure without leaving a rejected background task.
+    await state.drain();
     assert.equal(socket.sent.length, 1, "the browser must receive the request failure");
     const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
     assert.equal(rejected.type, "cloud_frame_rejected");
