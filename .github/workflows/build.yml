@@ -121,6 +121,7 @@ jobs:
             browser_e2e:
               - ".github/workflows/build.yml"
               - "apps/notebook/**"
+              - "apps/notebook-cloud/**"
               - "src/**"
               - "packages/sift/**"
               - "crates/runtimed-wasm/**"
@@ -665,6 +666,12 @@ jobs:
         env:
           NTERACT_BROWSER_E2E_READY_TIMEOUT_MS: 900000
 
+      - name: Test cloud asset recovery
+        if: ${{ !cancelled() && (steps.browser_e2e.outcome == 'success' || steps.browser_e2e.outcome == 'failure') }}
+        run: |
+          pnpm --dir apps/notebook-cloud exec node --import tsx --test test/route-load-recovery.test.ts
+          pnpm --dir apps/notebook-cloud test:asset-recovery
+
       - name: Upload Playwright report
         # A successful retry must not discard the first attempt's failure trace.
         if: ${{ !cancelled() && (steps.browser_e2e.outcome == 'success' || steps.browser_e2e.outcome == 'failure') }}
@@ -674,6 +681,7 @@ jobs:
           path: |
             apps/notebook/playwright-report/
             apps/notebook/test-results/
+            apps/notebook-cloud/test-results/
           retention-days: 7
 
   build-linux:

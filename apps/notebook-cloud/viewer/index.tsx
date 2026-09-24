@@ -2,6 +2,7 @@ import { lazy, Profiler, Suspense, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { BookOpen, Loader2 } from "lucide-react";
 import { NotebookBrandMark } from "@/components/notebook/NotebookBrandMark";
+import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { setLoggerHost } from "@/lib/logger";
 import { setOpenUrlHost } from "@/lib/open-url";
@@ -22,13 +23,13 @@ import { cloudNotebookRouteTitleFromPathname } from "./cloud-notebook-title-stat
 import { CloudHomeView } from "./home-view";
 import { CloudNotebookListView } from "./notebook-list-view";
 import { loadNotebookRouteModule } from "./notebook-route-preload";
-import { installStaleDeploymentRecovery } from "./stale-deployment-recovery";
+import { isRouteAssetLoadError, loadRouteWithRecovery } from "./route-load-recovery";
 import "./index.css";
 
-installStaleDeploymentRecovery();
-
 const NotebookRoute = lazy(() =>
-  loadNotebookRouteModule().then((module) => ({ default: module.NotebookRoute })),
+  loadRouteWithRecovery(loadNotebookRouteModule).then((module) => ({
+    default: module.NotebookRoute,
+  })),
 );
 
 // Boot-path discipline: only the auth store may ride the entry chunk (its
@@ -36,7 +37,9 @@ const NotebookRoute = lazy(() =>
 // store, hooks, and the management page UI - belongs to its route's chunk, so
 // notebook and dashboard visitors never download it.
 const CloudWorkstationsView = lazy(() =>
-  import("./workstations-view").then((module) => ({ default: module.CloudWorkstationsView })),
+  loadRouteWithRecovery(() => import("./workstations-view")).then((module) => ({
+    default: module.CloudWorkstationsView,
+  })),
 );
 
 setLoggerHost({
@@ -134,15 +137,30 @@ function App() {
   );
 }
 
-function ViewerStartupError({ message }: { message: string }) {
+function ViewerStartupError({
+  message,
+  canReload = false,
+}: {
+  message: string;
+  canReload?: boolean;
+}) {
   return (
     <main className="flex min-h-screen w-full flex-col px-8 py-4 pr-4">
       <header className="mb-4">
         <h1 className="text-2xl font-semibold tracking-normal">nteract cloud notebook</h1>
       </header>
-      <div className="cloud-state" data-kind="error">
+      <div className="cloud-state" data-kind="error" role="alert">
         {message}
       </div>
+      {canReload && (
+        <Button
+          className="mt-4 self-start"
+          variant="outline"
+          onClick={() => window.location.reload()}
+        >
+          Reload page
+        </Button>
+      )}
     </main>
   );
 }
@@ -224,7 +242,16 @@ function withRenderProfiler(node: ReactNode): ReactNode {
 
 createRoot(requireElement("#root")).render(
   <ErrorBoundary
-    fallback={(error) => <ViewerStartupError message={`Cloud viewer crashed: ${error.message}`} />}
+    fallback={(error) => (
+      <ViewerStartupError
+        message={
+          isRouteAssetLoadError(error)
+            ? "Couldn't download part of the app. Check your connection, then reload to try again."
+            : `Cloud viewer crashed: ${error.message}`
+        }
+        canReload={isRouteAssetLoadError(error)}
+      />
+    )}
   >
     {withRenderProfiler(<App />)}
   </ErrorBoundary>,
