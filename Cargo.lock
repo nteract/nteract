@@ -8095,6 +8095,7 @@ dependencies = [
  "arrow",
  "base64 0.22.1",
  "bytes",
+ "kernel-env",
  "napi",
  "napi-build",
  "napi-derive",

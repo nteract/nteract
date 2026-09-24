@@ -31,6 +31,8 @@
 pub mod channels;
 #[cfg(feature = "runtime")]
 pub mod conda;
+#[cfg(feature = "manifest")]
+pub mod environment_yml;
 #[cfg(feature = "runtime")]
 pub mod gc;
 #[cfg(feature = "runtime")]

@@ -11,7 +11,10 @@ workspace = true
 
 [features]
 default = ["runtime"]
+# Manifest operations need parsing and local files, but never an installer.
+manifest = ["dep:rattler_conda_types", "dep:tempfile"]
 runtime = [
+    "manifest",
     "dep:kernel-launch",
     "dep:rattler",
     "dep:rattler_cache",
@@ -33,6 +36,7 @@ uuid = { workspace = true }
 log = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+tempfile = { workspace = true, optional = true }
 
 # Channel-aware cache directory (nightly vs stable, dev worktree isolation).
 runt-workspace = { path = "../runt-workspace" }
