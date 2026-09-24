@@ -156,6 +156,7 @@ import {
 import { getCellById, getNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
+import { addPyodidePackageWithRollback } from "./lib/pyodide-package-add";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterOutput } from "./types";
@@ -1579,18 +1580,27 @@ function AppContent() {
   // channel and render in the env-progress banner — so never dismiss it here:
   // a premature `envProgress.reset()` used to hide the success/error phase
   // before it rendered, leaving a failed install visible only in the devtools
-  // log.
+  // log. A failed install rolls the declaration back so a package micropip
+  // cannot resolve is not retried on every kernel start.
   const addPyodidePackage = useCallback(
     async (pkg: string) => {
-      await addPyodideDependency(pkg);
-      const response = await syncEnvironment();
-      if (response.result === "sync_environment_failed") {
-        // Diagnostic breadcrumb only; the banner (env.progress error phase)
-        // is the user-facing surface for install failures.
-        logger.error("[pyodide] Package install failed:", response.error);
+      const { rollbackError } = await addPyodidePackageWithRollback({
+        pkg,
+        declaredBefore: pyodideDeps,
+        addDependency: addPyodideDependency,
+        removeDependency: removePyodideDependency,
+        syncEnvironment,
+        onFailure: (error) => {
+          // Diagnostic breadcrumb only; the banner (env.progress error phase)
+          // is the user-facing surface for install failures.
+          logger.error("[pyodide] Package install failed:", error);
+        },
+      });
+      if (rollbackError) {
+        logger.error("[pyodide] Failed to roll back package declaration:", rollbackError);
       }
     },
-    [addPyodideDependency, syncEnvironment],
+    [addPyodideDependency, removePyodideDependency, syncEnvironment, pyodideDeps],
   );
 
   const handleExecuteCell = useCallback(
