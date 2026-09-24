@@ -433,7 +433,7 @@ class ExecutionState:
 
     @property
     def status(self) -> str:
-        """Current status: 'queued', 'running', 'done', 'error'."""
+        """Current status: 'queued', 'running', 'done', 'error', 'cancelled'."""
         ...
 
     @property
@@ -443,7 +443,7 @@ class ExecutionState:
 
     @property
     def success(self) -> bool | None:
-        """Whether the execution succeeded (None if still running)."""
+        """Whether the execution succeeded (None if pending or cancelled)."""
         ...
 
 class CommDocEntry:
@@ -562,7 +562,7 @@ class NativeAsyncClient:
     def list_active_notebooks(self) -> Coroutine[Any, Any, list[dict[str, Any]]]: ...
     def flush_pool(self) -> Coroutine[Any, Any, None]: ...
     def get_execution_result(self, execution_id: str) -> Coroutine[Any, Any, ExecutionResult]: ...
-    def shutdown(self) -> Coroutine[Any, Any, None]: ...
+    def _shutdown_daemon(self) -> Coroutine[Any, Any, None]: ...
     def open_notebook(
         self,
         path: str,

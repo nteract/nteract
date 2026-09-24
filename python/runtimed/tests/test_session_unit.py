@@ -111,6 +111,25 @@ class TestClientConstruction:
         assert repr(client) == "Client()"
 
 
+class TestClientLifecycle:
+    """Exercise the real native binding without contacting a running daemon."""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_daemon_reaches_native_connection_attempt(self, tmp_path):
+        socket_path = tmp_path / "missing.sock"
+        client = runtimed.Client(socket_path=str(socket_path))
+
+        # A connection error proves the wrapper reached the real native method,
+        # rather than failing to find it. This socket has no daemon to shut down.
+        with pytest.raises(runtimed.RuntimedError, match="Failed to connect to daemon"):
+            await client._shutdown_daemon()
+
+    @pytest.mark.asyncio
+    async def test_close_and_context_exit_do_not_require_a_daemon(self, tmp_path):
+        async with runtimed.Client(socket_path=str(tmp_path / "missing.sock")) as client:
+            await client.close()
+
+
 class TestNotebookInfo:
     """Test NotebookInfo dataclass."""
 
@@ -509,17 +528,60 @@ class TestExecutionHandle:
 
         assert session.interrupted is True
 
+    @pytest.mark.parametrize("status", ["done", "error", "cancelled"])
     @pytest.mark.asyncio
-    async def test_wait_times_out_with_current_status(self):
+    async def test_wait_returns_immediately_for_terminal_status(self, status):
         from runtimed._execution import Execution
 
         execution = Execution(
-            _ExecutionSession({"exec-1": _ExecutionEntry(status="running")}),  # ty: ignore[invalid-argument-type]
+            _ExecutionSession({"exec-1": _ExecutionEntry(status=status)}),  # ty: ignore[invalid-argument-type]
             "cell-1",
             "exec-1",
         )
 
-        with pytest.raises(TimeoutError, match="status=running"):
+        assert execution.done is True
+        # A zero timeout proves an already-terminal execution needs no polling.
+        await execution.wait(timeout_secs=0.0)
+
+    @pytest.mark.parametrize("status", ["done", "error", "cancelled"])
+    @pytest.mark.asyncio
+    async def test_wait_observes_terminal_status_after_poll(self, status, monkeypatch):
+        from runtimed._execution import Execution
+
+        entry = _ExecutionEntry(status="queued")
+        execution = Execution(
+            _ExecutionSession({"exec-1": entry}),  # ty: ignore[invalid-argument-type]
+            "cell-1",
+            "exec-1",
+        )
+        polls = []
+
+        async def sync_terminal_status(delay):
+            polls.append(delay)
+            assert len(polls) == 1, "wait kept polling after the terminal status synced"
+            entry.status = status
+
+        monkeypatch.setattr("runtimed._execution.asyncio.sleep", sync_terminal_status)
+
+        await execution.wait(timeout_secs=60.0)
+
+        assert len(polls) == 1
+        assert execution.done is True
+
+    @pytest.mark.parametrize("status", ["queued", "running", "unknown"])
+    @pytest.mark.asyncio
+    async def test_wait_times_out_with_nonterminal_status(self, status):
+        from runtimed._execution import Execution
+
+        entries = {} if status == "unknown" else {"exec-1": _ExecutionEntry(status=status)}
+        execution = Execution(
+            _ExecutionSession(entries),  # ty: ignore[invalid-argument-type]
+            "cell-1",
+            "exec-1",
+        )
+
+        assert execution.done is False
+        with pytest.raises(TimeoutError, match=f"status={status}"):
             await execution.wait(timeout_secs=0.0)
 
 
