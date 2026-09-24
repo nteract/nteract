@@ -279,8 +279,8 @@ export interface InitializeEnvironmentYmlOptions {
 
 /**
  * Explicitly create environment.yml using the local host's filesystem authority.
- * Returns its absolute path. Rejects existing files/symlinks without overwriting.
- * Also rejects an existing environment.yaml instead of superseding it.
+ * Returns its filesystem-canonical absolute path. Rejects existing files/symlinks.
+ * Checks for environment.yaml first; hosts must coordinate other writers of it.
  * Does not install packages, approve trust, contact a daemon or change a kernel.
  */
 export function initializeEnvironmentYml(options: InitializeEnvironmentYmlOptions): Promise<string>;

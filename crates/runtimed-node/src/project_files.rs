@@ -41,7 +41,7 @@ pub async fn initialize_environment_yml(
                 channels: options.channels,
             },
         )
-        .map_err(to_napi_err)?;
+        .map_err(|error| napi::Error::from_reason(format!("{error:#}")))?;
         Ok(path.to_string_lossy().into_owned())
     })
     .await

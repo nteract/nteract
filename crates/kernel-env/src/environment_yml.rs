@@ -31,7 +31,7 @@ pub fn initialize_environment_yml(directory: &Path, spec: &EnvironmentYmlSpec) -
     }
     let directory = directory
         .canonicalize()
-        .context("environment.yml directory must already exist")?;
+        .context("Could not resolve environment.yml directory")?;
     if !directory.is_dir() {
         bail!("environment.yml directory is not a directory");
     }

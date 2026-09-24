@@ -108,10 +108,15 @@ describe.skipIf(!nativeEnabled)("explicit environment.yml initialization", () =>
     };
     await expect(
       rt.initializeEnvironmentYml({ ...options, dependencies: ["bad!package"] }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Invalid environment.yml spec: dependencies\[\d+\]:.*!package/);
+    await expect(
+      rt.initializeEnvironmentYml({ ...options, directory: path.join(project, "missing") }),
+    ).rejects.toThrow(/Could not resolve environment.yml directory: .+/);
     expect(fs.readdirSync(project)).toEqual([]);
     const manifest = await rt.initializeEnvironmentYml(options);
-    expect(manifest).toBe(path.join(fs.realpathSync(project), "environment.yml"));
+    expect(manifest).toBe(
+      path.join(path.toNamespacedPath(fs.realpathSync(project)), "environment.yml"),
+    );
     const original = fs.readFileSync(manifest, "utf8");
     await expect(rt.initializeEnvironmentYml(options)).rejects.toThrow("already exists");
     expect(fs.readFileSync(manifest, "utf8")).toBe(original);

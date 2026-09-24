@@ -72,8 +72,10 @@ const manifestPath = await initializeEnvironmentYml({
 
 The helper validates the manifest with the same parser as daemon discovery,
 then publishes the complete file without replacing an existing file or symlink.
-An existing `environment.yaml` also prevents creation, so its discovery priority
-is preserved. On Unix, new manifest permissions honor the host process's umask.
+The helper checks for an existing `environment.yaml` before creating anything.
+Hosts must coordinate with other writers creating that alternate filename; only
+publication of `environment.yml` itself is atomic. On Unix, new manifest
+permissions honor the host process's umask.
 It rejects invalid specs and missing/unwritable directories. The name is optional;
 channel priority follows the supplied array. Python can be specified in `python`
 or `dependencies`, but not both. This initializer supports Conda dependencies;
