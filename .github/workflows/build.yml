@@ -614,6 +614,12 @@ jobs:
       - name: Type-check notebook-cloud
         run: pnpm --dir apps/notebook-cloud typecheck
 
+      - name: Verify read-only operator app
+        run: |
+          pnpm --dir apps/operator typecheck
+          pnpm --dir apps/operator test
+          pnpm --dir apps/operator build
+
       - name: Run JS tests
         run: vp test run
 

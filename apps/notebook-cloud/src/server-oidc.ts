@@ -1,4 +1,4 @@
-import type { Env } from "./cloudflare-types.ts";
+import type { Env as NotebookEnvironment } from "./cloudflare-types.ts";
 import { createServerAppSession, type CloudAppSession } from "./app-session.ts";
 import {
   AuthError,
@@ -28,6 +28,10 @@ import {
   type ServerSessionRow,
 } from "./oidc-session-store.ts";
 import { cloudLog } from "./observability.ts";
+
+// Server login also serves small celld applications without notebook rooms.
+export type ServerOidcEnvironment = Omit<NotebookEnvironment, "NOTEBOOK_ROOMS">;
+type Env = ServerOidcEnvironment;
 
 const LOGIN_COOKIE = "__Host-nteract_cloud_oidc_login";
 const LOGIN_SECONDS = 600;
@@ -70,6 +74,13 @@ class ProviderUnavailable extends Error {
   }
 }
 class InvalidGrant extends Error {}
+
+/** An application's explicit access rejection, not a retryable profile-write failure. */
+export class ServerOidcIdentityRejected extends AuthError {
+  constructor() {
+    super("This account cannot access this application", 403);
+  }
+}
 
 // Match only complete, source-owned messages. Prefix matching or logging an
 // exception itself could expose a token, provider response, or identity claim.
@@ -517,8 +528,10 @@ export async function completeServerOidcLogin(
   } catch (error) {
     logFailure("auth.server_callback.failed", phase, error);
     response = privateResponse(
-      "Sign-in could not be completed. Return to the notebook site and try signing in again.",
-      400,
+      error instanceof ServerOidcIdentityRejected
+        ? "This account cannot access this application. Return and sign in with an allowed account."
+        : "Sign-in could not be completed. Return to the notebook site and try signing in again.",
+      error instanceof ServerOidcIdentityRejected ? 403 : 400,
     );
   }
   response.headers.append("Set-Cookie", loginCookie("", 0));
@@ -565,6 +578,11 @@ export async function serverOidcSessionStatus(
     else response.headers.append("Set-Cookie", serverSessionCookie("", 0));
     return response;
   } catch (error) {
+    if (error instanceof ServerOidcIdentityRejected)
+      return privateResponse(JSON.stringify({ error: error.message }), 403, {
+        "Content-Type": "application/json",
+        "Set-Cookie": serverSessionCookie("", 0),
+      });
     logFailure("auth.server_session.failed", "session_renewal", error);
     return privateResponse(
       JSON.stringify({ error: "Sign-in renewal is temporarily unavailable" }),
@@ -655,12 +673,13 @@ async function refreshSession(
     );
     return saved ? loadServerSession(env, request, refreshedAt) : null;
   } catch (error) {
-    if (error instanceof InvalidGrant) {
+    if (error instanceof InvalidGrant || error instanceof ServerOidcIdentityRejected) {
       logFailure("auth.server_session.expired", "refresh", error);
       await db
         .prepare("DELETE FROM oidc_server_sessions WHERE id = ? AND generation = ? AND lease = ?")
         .bind(initial.id, initial.generation, lease)
         .run();
+      if (error instanceof ServerOidcIdentityRejected) throw error;
       return null;
     }
     await conditionalSessionUpdate(

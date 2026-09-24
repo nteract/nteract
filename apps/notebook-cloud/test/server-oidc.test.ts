@@ -809,6 +809,22 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     assert.ok(await readCloudAppSession(f.env, request));
   });
 
+  it("keeps transient profile storage failures retryable", async (t) => {
+    const f = await fixture(t);
+    const { sessionCookie } = await f.login();
+    f.expireAccess();
+    const response = await serverOidcSessionStatus(
+      f.request(undefined, sessionCookie),
+      f.env,
+      async () => {
+        throw new Error("temporary profile store failure");
+      },
+    );
+    assert.equal(response.status, 503);
+    assert.equal(f.countRows(), 1);
+    assert.equal(response.headers.get("Set-Cookie"), null);
+  });
+
   it("extends active idle sessions with long access tokens without refreshing their identity proof", async (t) => {
     const f = await fixture(t, { tokenTtlSeconds: 12 * 60 * 60 });
     const { sessionCookie } = await f.login();
