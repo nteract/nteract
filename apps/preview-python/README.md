@@ -85,6 +85,8 @@ maximum delayed-request age that would make expiry safe. Runtime disposal can
 be retried after a failure, while owner and deployment capacity stay reserved
 until cleanup is confirmed. Expiry and shutdown still attempt healthy siblings
 when another session cannot be cleaned up.
+The alarm arms its next sweep first and logs cleanup failures without rejecting
+the sweep; failure to store the next alarm still propagates.
 
 Provider bookkeeping tests do not qualify the native or hosted lifecycle.
 The separate [HTTP shared-promise ownership defect](https://github.com/nteract/nteract/issues/4296)

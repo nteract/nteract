@@ -2,7 +2,7 @@ import { PROVIDER_ORPHAN_IDLE_MS } from "./lifecycle-policy.js";
 import { SessionPool } from "./session-pool.js";
 import { createCelldRuntime } from "@nteract/pyodide-runtime/celld";
 import { createProviderService } from "./provider-service.js";
-import { ensureHousekeepingAlarm } from "./housekeeping.js";
+import { ensureHousekeepingAlarm, runHousekeepingAlarm } from "./housekeeping.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import packages from "../dist/packages.json";
 const packageNames = new Set(packages.map((entry) => entry.filename));
@@ -50,9 +50,7 @@ export class PreviewPythonSessions {
     return this.service.fetch(request);
   }
   async alarm() {
-    // A quarantined runtime must not stop future cleanup of other sessions.
-    await this.state.storage.setAlarm(Date.now() + 60_000);
-    await this.pool.expire();
+    await runHousekeepingAlarm(this.state.storage, this.pool);
   }
 }
 
