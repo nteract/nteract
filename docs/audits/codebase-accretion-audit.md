@@ -415,9 +415,10 @@ Priority is by blast radius, then by cost.
       behavior change.
 - [ ] Reconcile the two storage ADRs so agents get one answer about the
       acceptance boundary.
-- [x] Correct execution-pipeline response and startup-queueing guidance and
-      document the `ts-bindings` feature required for TypeScript settings
-      exports ([#4307](https://github.com/nteract/nteract/pull/4307)).
+- [x] Correct execution-pipeline required-heads timeout, response shapes,
+      and startup-queueing guidance; document the `ts-bindings` feature
+      required for TypeScript settings exports
+      ([#4307](https://github.com/nteract/nteract/pull/4307)).
 - [ ] Fix the remaining wrong guidance listed above: room lifecycle, crash
       recovery, and palette lint.
 - [ ] Drop `kernel_started` caches in both bindings; read RuntimeStateDoc.
