@@ -24,7 +24,7 @@ repo skill for that subsystem first and return here only for app integration.
 | One-shot setup | `cargo xtask dev` |
 | Lint/format | `cargo xtask lint --fix` |
 | nteract-dev MCP server | `cargo xtask run-mcp` |
-| Regenerate TS bindings | `cargo test` |
+| Regenerate TS bindings | `cargo test -p runtimed-client --features ts-bindings` |
 
 ## Design Exploration Mode
 
@@ -409,16 +409,24 @@ development against a local Browser/Vite worktree.
 
 Types in `src/bindings/` are auto-generated from Rust via `ts-rs`. Edit the Rust source, not the generated TypeScript.
 
+`runtimed-client` gates generation behind its opt-in `ts-bindings` feature.
+Run `cargo test -p runtimed-client --features ts-bindings` from the repo root;
+plain `cargo test` does not enable these exports. The feature is declared in
+`crates/runtimed-client/Cargo.toml`.
+
 ### How It Works
 
-Annotate Rust types with `#[derive(TS)]` and `#[ts(export)]`:
+Gate the `TS` import, derive, and export on `ts-bindings`, as in
+`crates/runtimed-client/src/settings_doc.rs`:
 
 ```rust
+#[cfg(feature = "ts-bindings")]
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
 #[serde(rename_all = "lowercase")]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub enum ThemeMode {
     System,
     Light,
@@ -433,15 +441,19 @@ export type ThemeMode = "system" | "light" | "dark";
 
 ### Adding New Bindings
 
-1. Add `ts-rs` to crate's `Cargo.toml`:
+1. Use the crate's optional `ts-rs` dependency and generation feature:
    ```toml
+   [features]
+   ts-bindings = ["dep:ts-rs"]
+
    [dependencies]
-   ts-rs = { version = "12", features = ["serde-compat"] }
+   ts-rs = { workspace = true, optional = true }
    ```
 
-2. Annotate type with `#[derive(TS)]` and `#[ts(export)]`
+2. Gate the import, derive, and export as shown above
 
-3. Run `cargo test` to generate the TypeScript file
+3. Run `cargo test -p runtimed-client --features ts-bindings` to generate the
+   TypeScript file
 
 4. Import from `src/bindings/index.ts`:
    ```typescript

@@ -37,8 +37,10 @@ execute against stale cell source: the client wrote "x = 1" but the
 daemon hasn't received that sync frame yet, so it executes the old
 "x = 0".
 
-**Timeout:** 10 seconds. If heads don't arrive, the daemon logs a
-warning and processes anyway (graceful degradation).
+**Timeout:** 10 seconds. If heads don't arrive, the daemon returns
+`NotebookResponse::Error` with `"Timed out waiting for required notebook heads"`
+without processing the request. See `wait_for_required_heads()` and its caller
+in `crates/runtimed/src/notebook_sync_server/peer_writer.rs`.
 
 **Frontend optimization:** Before capturing heads, the frontend calls
 `flushSync()` to push any pending source edits into the sync stream,
@@ -51,6 +53,7 @@ The client sends an `ExecuteCell` or batch `RunAllCells` request:
 ```rust
 let request = NotebookRequest::ExecuteCell {
     cell_id: cell_id.to_string(),
+    execution_id: None,
 };
 let response = handle.send_request_after_heads(request, required_heads).await;
 ```
@@ -70,7 +73,7 @@ execution with the kernel:
 2. Creates a unique `execution_id`
 3. Writes to `RuntimeStateDoc`: execution entry with status `"queued"`,
    then `"running"` when the kernel starts
-4. Responds with `CellQueued { execution_id, position }` immediately
+4. Responds with `CellQueued { cell_id, execution_id }` immediately
 5. Forwards code to the kernel via ZMQ `execute_request`
 
 **Key invariant:** The daemon writes `set_execution_done(eid, success)`
@@ -158,7 +161,7 @@ LLM consumption. Agents that need full output call
 
 ```
 Client sends ExecuteCell
-  → Daemon returns CellQueued { execution_id: "exec-abc" }
+  → Daemon returns CellQueued { cell_id: "cell-1", execution_id: "exec-abc" }
   → RuntimeStateDoc: executions["exec-abc"] = { status: "queued" }
   → Kernel starts: executions["exec-abc"].status = "running"
   → Outputs arrive: executions["exec-abc"].outputs = [manifest1, ...]
@@ -177,14 +180,20 @@ outputs.
 `run_all_cells` follows the same pipeline but batched:
 
 1. Captures `required_heads` once
-2. Sends `RunAllCells` request with all cell IDs
-3. Daemon returns `AllCellsQueued { cell_execution_ids }`: a map of
-   `cell_id → execution_id` for every queued cell
+2. Sends `RunAllCells { cell_execution_ids: None }`; the daemon selects code
+   cells from the synced document
+3. Daemon returns `AllCellsQueued { queued }`, where `queued` is a
+   `Vec<QueueEntry>` of `{ cell_id, execution_id }` pairs. The MCP client
+   converts this list to its `cell_execution_ids` map
 4. Client polls each `execution_id` in parallel with a shared deadline
 5. Returns per-cell results
 
 **Timeout:** The shared deadline applies to the entire run, not per-cell.
 If one cell takes 90% of the budget, remaining cells get less time.
+
+The request and response types live in
+`crates/notebook-protocol/src/protocol.rs`; the MCP queue conversion is in
+`crates/runt-mcp/src/execution.rs`.
 
 ## Common Failure Modes
 
@@ -201,8 +210,9 @@ If one cell takes 90% of the budget, remaining cells get less time.
 
 ### "Cell didn't execute"
 
-1. **required_heads timeout:** Daemon waited 10s for heads that never
-   arrived. Check if the sync stream is healthy.
+1. **required_heads timeout:** Daemon rejected the request after waiting 10s
+   for heads that never arrived. Check if the sync stream is healthy before
+   retrying.
 2. **Kernel not ready:** The kernel isn't started or is in error state.
    The daemon returns an error response, not `CellQueued`.
 3. **Trust gate:** Untrusted notebooks may block execution pending
