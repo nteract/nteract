@@ -108,7 +108,13 @@ fn classify_pypi_spec(spec: &str) -> Option<SpecIdentity> {
     // filenames with extras. Cover the formats supported by the pinned uv
     // fallback as well as system uv; their punctuation must not collapse into
     // an approved registry name.
-    let lower_name = raw_name.to_ascii_lowercase();
+    // Inspect the whole path before optional trailing extras: punctuation such
+    // as a local-version `+` may occur before the archive extension.
+    let archive_path = requirement
+        .strip_suffix(']')
+        .and_then(|without_close| without_close.rsplit_once('['))
+        .map_or(requirement, |(path, _extras)| path);
+    let lower_archive_path = archive_path.trim_end().to_ascii_lowercase();
     if [
         ".whl",
         ".zip",
@@ -125,7 +131,7 @@ fn classify_pypi_spec(spec: &str) -> Option<SpecIdentity> {
         ".tlz",
     ]
     .iter()
-    .any(|suffix| lower_name.ends_with(suffix))
+    .any(|suffix| lower_archive_path.ends_with(suffix))
     {
         return exact();
     }
@@ -864,6 +870,37 @@ mod tests {
             let parsed = MatchSpec::from_str(spec, ParseMatchSpecOptions::strict()).unwrap();
             assert_eq!(parsed.name.as_exact().unwrap().as_normalized(), "numpy");
             assert_eq!(classify_spec(CONDA, spec), exact(spec));
+        }
+    }
+
+    #[test]
+    fn archive_punctuation_does_not_hide_the_source() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = seeded_store(&tmp);
+        store
+            .seed_defaults("pypi", &["pkg-1-0", "numpy-whl"])
+            .unwrap();
+        for spec in [
+            "pkg-1.0+local.tar.gz",
+            "numpy+x.tar.gz",
+            "numpy*.whl",
+            "numpy,x.zip",
+            "numpy)x.tar.gz",
+            "numpy[x]+y.tar.gz",
+            "numpy[x]+y.tar.gz[extra]",
+            "numpy.whl [extra]",
+        ] {
+            let info = runt_trust::TrustInfo {
+                uv_dependencies: vec![spec.into()],
+                ..empty_info()
+            };
+            assert!(
+                !store.all_dependencies_approved(&info).unwrap(),
+                "registry approval must not cover archive {spec:?}"
+            );
+            assert_eq!(classify_spec(SpecSource::Pypi, spec), exact(spec));
+            store.add_from_info(&info, "test").unwrap();
+            assert!(store.all_dependencies_approved(&info).unwrap());
         }
     }
 
