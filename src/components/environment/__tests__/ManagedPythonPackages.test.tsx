@@ -59,6 +59,25 @@ describe("managed Python package controls", () => {
     expect(screen.getByRole("button", { name: "Restart Python" })).toBeEnabled();
   });
 
+  it("offers explicit clearing while a broken saved environment cannot start", async () => {
+    const onClear = vi.fn(async () => {});
+    render(
+      <ManagedPythonPackages
+        {...props}
+        phase="unavailable"
+        needsRestart
+        error="Saved packages cannot be restored."
+        onClear={onClear}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Install" })).toBeDisabled();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Clear saved packages" })),
+    );
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("region", { name: "Saved requirements" })).toHaveTextContent("six");
+  });
+
   it.each(["resolving", "installing", "restoring"] as const)(
     "disables Enter and removal while %s",
     (phase) => {

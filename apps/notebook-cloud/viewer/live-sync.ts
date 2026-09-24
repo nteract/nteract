@@ -1391,7 +1391,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   }
 
   async changeCloudPackage(
-    operation: "add" | "remove",
+    operation: "add" | "remove" | "clear",
     requirement: string,
   ): Promise<NotebookResponse> {
     const id = crypto.randomUUID();

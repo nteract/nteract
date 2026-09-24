@@ -30,6 +30,7 @@ export class ManagedPythonRoom {
   private installingPackages = false;
   private packagesBlocked = false;
   private installedPackages: string[] = [];
+  private packageOperationId: string | undefined;
   private readonly connectedAt = new Date().toISOString();
 
   get presence() {
@@ -184,10 +185,23 @@ export class ManagedPythonRoom {
     await this.synchronize();
     const inventory = (await this.call("/packages/inventory")) as { installed?: string[] };
     this.installedPackages = inventory.installed ?? [];
-    const manifest = packageManifest(await this.materializer.getCloudPackageManifest());
+    let manifest;
+    try {
+      manifest = packageManifest(await this.materializer.getCloudPackageManifest());
+    } catch {
+      this.packagesBlocked = true;
+      const error =
+        "Saved packages cannot be restored for this Python version. Remove incompatible requirements or clear saved packages, then restart Python.";
+      await this.publishPackageState("error", error);
+      throw new Error(error);
+    }
     if (manifest.requirements.length) {
       const restored = await this.installPackages(manifest, "restore");
-      if (restored.status !== "ready") throw new Error(restored.error);
+      if (restored.status !== "ready") {
+        this.packagesBlocked = true;
+        await this.publishPackageState("error", restored.error);
+        throw new Error(restored.error);
+      }
     } else await this.publishPackageState("ready");
     this.handle.set_kernel_running("python", "python", "celld-pyodide", this.peer.id);
     this.handle.refresh_execution_queue();
@@ -241,6 +255,7 @@ export class ManagedPythonRoom {
         message: error,
         managed_packages: {
           session_id: this.sessionId,
+          operation_id: this.packageOperationId,
           phase,
           installed: this.installedPackages,
           error,
@@ -261,6 +276,7 @@ export class ManagedPythonRoom {
     if (this.installingPackages || this.packagesBlocked)
       throw new Error("Python packages are busy or need a restart");
     this.installingPackages = true;
+    this.packageOperationId = operationId;
     try {
       await this.pumping;
       await this.publishPackageState(operation === "restore" ? "restoring" : "installing");

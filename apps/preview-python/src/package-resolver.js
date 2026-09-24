@@ -5,9 +5,45 @@ const MAX_STEPS = 64;
 const MAX_WHEELS = 32;
 const MAX_REQUIREMENTS = 64;
 
+const PACKAGE_ERRORS = Object.freeze({
+  invalid_requirement:
+    "Use a PyPI package name with optional version constraints or extras. Wheel URLs and local paths are unsupported.",
+  planner_busy: "Another package installation is being prepared. Try again shortly.",
+  add_cooldown: "Wait a few seconds before starting another package installation.",
+  planner_unavailable:
+    "The package service needs recovery before it can prepare another installation. Try again later.",
+  incompatible:
+    "A requested version conflicts with an included package. The included scientific package versions are fixed.",
+  unavailable:
+    "No compatible package set was found. Check the names and versions; only pure Python wheels and included scientific packages are supported.",
+  resolution_limit: "Package resolution limit exceeded. Try fewer requirements at a time.",
+});
+
+export class PackageOperationError extends Error {
+  constructor(code) {
+    super(PACKAGE_ERRORS[code]);
+    this.code = code;
+  }
+}
+
+export function safePackageFailure(error) {
+  const code =
+    error instanceof PackageOperationError && Object.hasOwn(PACKAGE_ERRORS, error.code)
+      ? error.code
+      : "acquisition_failed";
+  return {
+    status: "error",
+    code,
+    needs_restart: false,
+    error:
+      PACKAGE_ERRORS[code] ??
+      "Packages could not be resolved or downloaded. Check compatibility and try again.",
+  };
+}
+
 export function validateRequirements(value) {
   if (!Array.isArray(value) || value.length > MAX_REQUIREMENTS)
-    throw new Error("Invalid package requirements");
+    throw new PackageOperationError("invalid_requirement");
   // Full PEP 508 syntax is parsed by micropip's pinned packaging parser.
   // Block direct URLs/path syntax before it can influence acquisition.
   if (
@@ -20,9 +56,7 @@ export function validateRequirements(value) {
         [...req].some((character) => character.charCodeAt(0) < 32),
     )
   ) {
-    throw new Error(
-      "Use a PyPI package name with optional version constraints or extras. Wheel URLs and local paths are unsupported.",
-    );
+    throw new PackageOperationError("invalid_requirement");
   }
   return [...value];
 }
@@ -228,6 +262,10 @@ export class PackageResolver {
   #create;
   #fetch;
   #busy = false;
+  #retained = false;
+  get status() {
+    return this.#retained ? "recovery_required" : this.#busy ? "busy" : "ready";
+  }
   constructor({ create, fetchImpl = fetch }) {
     this.#create = create;
     this.#fetch = fetchImpl;
@@ -236,7 +274,8 @@ export class PackageResolver {
   async resolve(requirements, { constraints = [], signal } = {}) {
     validateRequirements(requirements);
     validateRequirements(constraints);
-    if (this.#busy) throw new Error("Another package plan is running. Try again shortly.");
+    if (this.#busy)
+      throw new PackageOperationError(this.#retained ? "planner_unavailable" : "planner_busy");
     this.#busy = true;
     let planner;
     let retained = false;
@@ -260,16 +299,14 @@ export class PackageResolver {
         if (result.status === "ready")
           return { requirements, wheels: acquisition.selected(result.wheels) };
         if (result.status === "error")
-          throw new Error(
-            result.code === "incompatible"
-              ? "A requested version conflicts with an included package. The included scientific package versions are fixed."
-              : "No compatible package set was found. Check the names and versions; only pure Python wheels and included scientific packages are supported.",
+          throw new PackageOperationError(
+            result.code === "incompatible" ? "incompatible" : "unavailable",
           );
         if (result.status !== "fetch" || typeof result.url !== "string")
           throw new Error("Invalid package resolver response");
         artifact = await acquisition.acquire(result.url);
       }
-      throw new Error("Package resolution limit exceeded");
+      throw new PackageOperationError("resolution_limit");
     } catch (error) {
       if (error?.runtimeRetained) retained = true;
       throw error;
@@ -282,6 +319,11 @@ export class PackageResolver {
       }
       // Unknown cleanup retains this single reservation until provider restart.
       this.#busy = retained;
+      this.#retained = retained;
+      if (retained)
+        console.warn(
+          JSON.stringify({ event: "python.package_planner.cleanup_unconfirmed", retained: true }),
+        );
     }
   }
 }

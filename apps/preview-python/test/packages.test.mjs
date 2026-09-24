@@ -1,12 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PackageResolver, PackageAcquisition } from "../src/package-resolver.js";
+import {
+  PackageResolver,
+  PackageAcquisition,
+  PackageOperationError,
+  safePackageFailure,
+} from "../src/package-resolver.js";
 import {
   installPackageManifest,
   packageManifest,
   removeRequirement,
+  removeSavedRequirement,
 } from "../src/package-service.js";
 import { SessionPool } from "../src/session-pool.js";
+import { PackageAdmission } from "../src/package-admission.js";
 
 const wheel = (name, dependencies = []) => ({
   name,
@@ -78,6 +85,77 @@ test("partial install failure never supplies a successful manifest", async () =>
   assert.equal(result.manifest, undefined);
 });
 
+test("adding another requirement cannot replace an unchanged version's pinned artifact", async () => {
+  let mutations = 0;
+  const previous = { ...empty, requirements: ["six"], wheels: [wheel("six")] };
+  const result = await installPackageManifest(
+    {
+      runtime: {
+        install: async () => {
+          mutations++;
+        },
+      },
+      installed: ["six==1.0"],
+      signal: signal(),
+    },
+    { operation: "add", requirement: "requests", manifest: previous },
+    {
+      resolve: async () => ({
+        requirements: ["six", "requests"],
+        wheels: [{ ...wheel("six"), sha256: "1".repeat(64) }, wheel("requests")],
+      }),
+    },
+  );
+  assert.equal(result.status, "error");
+  assert.equal(result.needs_restart, false);
+  assert.equal(mutations, 0);
+  assert.deepEqual(previous.wheels, [wheel("six")]);
+});
+
+test("provider admission bounds all package buffers and gives waiting owners a turn", async () => {
+  const admission = new PackageAdmission();
+  const first = deferred(),
+    second = deferred(),
+    firstStarted = deferred(),
+    secondStarted = deferred();
+  const order = [];
+  const a = admission.run("alice", signal(), async () => {
+    order.push("a");
+    firstStarted.resolve();
+    await first.promise;
+  });
+  await firstStarted.promise;
+  assert.throws(() => admission.run("alice", signal(), async () => {}), { code: "planner_busy" });
+  const b = admission.run(
+    "bob",
+    signal(),
+    async () => {
+      order.push("b");
+      secondStarted.resolve();
+      await second.promise;
+    },
+    { cooldown: false },
+  );
+  const cancelled = new AbortController();
+  const c = admission.run("carol", cancelled.signal, async () => {
+    order.push("unexpected");
+  });
+  cancelled.abort();
+  await assert.rejects(c, /abort/i);
+  assert.deepEqual(admission.status, { active: true, waiting: 1 });
+  first.resolve();
+  await a;
+  await secondStarted.promise;
+  assert.deepEqual(order, ["a", "b"], "a restore must share the add buffer reservation");
+  assert.throws(() => admission.run("alice", signal(), async () => {}), { code: "add_cooldown" });
+  second.resolve();
+  await b;
+  // Restoring the same owner's saved environment is not subject to add cooldown.
+  await new Promise((resolve) => setImmediate(resolve));
+  await admission.run("alice", signal(), async () => order.push("restore"), { cooldown: false });
+  assert.deepEqual(order, ["a", "b", "restore"]);
+});
+
 test("planner abort disposes the interpreter and leaves no reusable busy reservation", async () => {
   const started = deferred(),
     ended = deferred();
@@ -114,7 +192,60 @@ test("failed planner cleanup retains its sole reservation", async () => {
     }),
   });
   await resolver.resolve([]);
-  await assert.rejects(resolver.resolve([]), /Another package plan/);
+  await assert.rejects(resolver.resolve([]), { code: "planner_unavailable" });
+});
+
+test("stale locks retain intent until explicit removal or clearing", () => {
+  const stale = {
+    ...empty,
+    pyodide: "old",
+    requirements: ["six", "requests"],
+    wheels: [{ malformed: true }],
+  };
+  const oneRemoved = removeSavedRequirement(stale, "six");
+  assert.deepEqual(oneRemoved.requirements, ["requests"]);
+  assert.equal(oneRemoved.pyodide, "old");
+  assert.throws(() => packageManifest(oneRemoved), /rebuilt/);
+  assert.deepEqual(removeSavedRequirement(oneRemoved, "requests"), empty);
+  assert.deepEqual(stale.requirements, ["six", "requests"]);
+});
+
+test("safe package errors distinguish expected failures without exposing arbitrary metadata", () => {
+  for (const code of [
+    "invalid_requirement",
+    "planner_busy",
+    "planner_unavailable",
+    "incompatible",
+    "unavailable",
+  ]) {
+    assert.equal(safePackageFailure(new PackageOperationError(code)).code, code);
+  }
+  const failure = safePackageFailure(new Error("untrusted wheel metadata SECRET"));
+  assert.equal(failure.code, "acquisition_failed");
+  assert.ok(!failure.error.includes("SECRET"));
+});
+
+test("an acquisition deadline does not negate a confirmed install", async (t) => {
+  const deadline = new AbortController();
+  t.mock.method(AbortSignal, "timeout", () => deadline.signal);
+  const result = await installPackageManifest(
+    {
+      runtime: {
+        install: async () => {
+          deadline.abort();
+          return { status: "ready", installed: ["six==1.0"] };
+        },
+      },
+      installed: [],
+      signal: signal(),
+    },
+    { operation: "add", requirement: "six", manifest: null },
+    {
+      resolve: async () => ({ requirements: ["six"], wheels: [wheel("six")] }),
+    },
+  );
+  assert.equal(result.status, "ready");
+  assert.deepEqual(result.manifest.requirements, ["six"]);
 });
 
 test("repeated metadata requests stop at the total step budget", async () => {

@@ -43,6 +43,20 @@ export function removeRequirement(manifest, requirement) {
   };
 }
 
+/** Recovery never has to validate or download artifacts that it removes. */
+export function removeSavedRequirement(value, requirement) {
+  try {
+    return removeRequirement(packageManifest(value), requirement);
+  } catch {
+    const requirements = validateRequirements(value?.requirements);
+    const remaining = requirements.filter((req) => packageName(req) !== packageName(requirement));
+    if (!remaining.length) return packageManifest(null);
+    // Retain user intent and the stale lock marker. A remaining stale lock must
+    // still block execution until the owner removes it or explicitly rebuilds.
+    return { ...value, requirements: remaining };
+  }
+}
+
 function inventory(value) {
   if (
     !Array.isArray(value) ||
@@ -60,6 +74,7 @@ function inventory(value) {
 
 /** Trusted provider operation, executed under the tenant pool's busy guard. */
 export async function installPackageManifest({ runtime, installed, signal }, input, resolver) {
+  const sessionSignal = signal;
   signal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
   const previous = packageManifest(input.manifest);
   let plan;
@@ -83,6 +98,24 @@ export async function installPackageManifest({ runtime, installed, signal }, inp
     });
   } else throw new Error("Unsupported package operation");
   signal.throwIfAborted();
+  const pinned = new Map(previous.wheels.map((wheel) => [wheel.name, wheel]));
+  if (
+    plan.wheels.some((wheel) => {
+      const prior = pinned.get(wheel.name);
+      return (
+        prior &&
+        prior.version === wheel.version &&
+        (prior.url !== wheel.url || prior.sha256 !== wheel.sha256 || prior.size !== wheel.size)
+      );
+    })
+  ) {
+    return {
+      status: "error",
+      error:
+        "An existing package's download has changed. Saved packages are unchanged; remove that package and restart Python before choosing a new download.",
+      needs_restart: false,
+    };
+  }
   const current = new Map(inventory(installed).map((spec) => spec.split("==")));
   if (
     plan.wheels.some(
@@ -108,7 +141,9 @@ export async function installPackageManifest({ runtime, installed, signal }, inp
         ...plan.wheels.map((wheel) => `${wheel.name}==${wheel.version}`),
       ],
     });
-    signal.throwIfAborted();
+    // Acquisition has finished. Installation has its own terminating deadline;
+    // a late acquisition timer cannot negate an already confirmed result.
+    sessionSignal.throwIfAborted();
     if (result.status !== "ready")
       return {
         status: "error",

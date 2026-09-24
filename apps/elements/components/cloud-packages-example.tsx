@@ -78,6 +78,7 @@ export function CloudPackagesExample() {
                 setRequirements(requirements.filter((item) => item !== requirement))
               }
               onRestart={() => setFixture("restoring")}
+              onClear={async () => setRequirements([])}
             />
           </div>
         </section>

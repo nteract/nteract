@@ -353,8 +353,7 @@ impl RoomHostEngine {
     /// Canonical notebook-owned package intent; installed observations never write here.
     pub fn cloud_package_manifest(&self) -> serde_json::Value {
         self.doc
-            .get_metadata_snapshot()
-            .and_then(|snapshot| snapshot.runt.extra.get("pyodide").cloned())
+            .get_pyodide_manifest()
             .unwrap_or(serde_json::Value::Null)
     }
 
@@ -394,10 +393,8 @@ impl RoomHostEngine {
                 "Package requirements changed during installation; refresh and try again",
             ));
         }
-        let mut snapshot = self.doc.get_metadata_snapshot().unwrap_or_default();
-        snapshot.runt.extra.insert("pyodide".to_string(), next);
         self.doc
-            .set_metadata_snapshot(&snapshot)
+            .set_pyodide_manifest(&next)
             .map_err(|e| RoomHostError::new(format!("save package manifest: {e}")))?;
         let mut result = RoomHostFrameResult::empty();
         result.changed = true;
@@ -1812,6 +1809,36 @@ mod tests {
     use super::*;
     use automerge::sync::SyncDoc;
     use serde_json::json;
+
+    #[test]
+    fn package_cas_failure_and_removal_preserve_legacy_metadata() {
+        let mut host =
+            RoomHostEngine::create_empty("packages", "system/schema:notebook-cloud-room").unwrap();
+        let previous = json!({"requirements": ["six"], "wheels": []});
+        let legacy = json!({"uv": "opaque legacy value", "vendor": [3, true], "pyodide": previous});
+        host.doc.set_metadata_value("runt", &legacy).unwrap();
+        host.doc
+            .set_metadata_value("kernelspec", &json!({"unknown": 7}))
+            .unwrap();
+        let before = host.save_notebook();
+        assert!(host
+            .compare_set_cloud_package_manifest(&json!(null), json!({}))
+            .is_err());
+        assert_eq!(
+            host.save_notebook(),
+            before,
+            "failed CAS must not author any changes"
+        );
+        host.compare_set_cloud_package_manifest(&previous, json!(null))
+            .unwrap();
+        let mut expected = legacy;
+        expected["pyodide"] = json!(null);
+        assert_eq!(host.doc.get_metadata_value("runt"), Some(expected));
+        assert_eq!(
+            host.doc.get_metadata_value("kernelspec"),
+            Some(json!({"unknown": 7}))
+        );
+    }
 
     #[test]
     fn room_host_seeds_initial_code_cell_idempotently() {

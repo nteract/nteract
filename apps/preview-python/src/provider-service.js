@@ -1,7 +1,10 @@
 import { installPackageManifest } from "./package-service.js";
+import { safePackageFailure } from "./package-resolver.js";
+import { PackageAdmission } from "./package-admission.js";
 
 /** Internal service-binding protocol. Never mount this on a public route. */
 export function createProviderService(pool, storage, packageResolver) {
+  const packageAdmission = new PackageAdmission();
   // Only admission/fencing is serialized. Never hold this queue while Python
   // initializes or executes: close must be able to interrupt either operation.
   let mutations = Promise.resolve();
@@ -15,7 +18,14 @@ export function createProviderService(pool, storage, packageResolver) {
     async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/health" && request.method === "GET") {
-        return Response.json({ provider: "celld-pyodide", version: 1 });
+        return Response.json({
+          provider: "celld-pyodide",
+          version: 1,
+          packages: {
+            ...packageAdmission.status,
+            planner: packageResolver?.status ?? "unavailable",
+          },
+        });
       }
       if (
         request.method !== "POST" ||
@@ -74,18 +84,18 @@ export function createProviderService(pool, storage, packageResolver) {
           try {
             return Response.json(
               await pool.packages(key, input.operation_id, (session) =>
-                installPackageManifest(session, input, packageResolver),
+                packageAdmission.run(
+                  input.ownerPrincipal,
+                  session.signal,
+                  () => installPackageManifest(session, input, packageResolver),
+                  { cooldown: input.operation !== "restore" },
+                ),
               ),
             );
-          } catch {
+          } catch (error) {
             // Never promote exception text from a resolver or Python interpreter
             // into room diagnostics: it can contain arbitrary package metadata.
-            return Response.json({
-              status: "error",
-              error:
-                "Packages could not be resolved or downloaded. Check compatibility and try again.",
-              needs_restart: false,
-            });
+            return Response.json(safePackageFailure(error));
           }
         }
         return Response.json(await pool.execute(key, input.execution));

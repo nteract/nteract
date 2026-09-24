@@ -18,7 +18,10 @@ import {
 import { identityDisplayLabel } from "./display-label.ts";
 import { CLOUD_RUNTIME_IDLE_MS } from "../../preview-python/src/lifecycle-policy.js";
 import { ManagedPythonRoom } from "./managed-python-room.ts";
-import { packageManifest, removeRequirement } from "../../preview-python/src/package-service.js";
+import {
+  packageManifest,
+  removeSavedRequirement,
+} from "../../preview-python/src/package-service.js";
 import {
   ensureManagedPythonWorkstation,
   managedPythonStub,
@@ -1217,101 +1220,120 @@ export class NotebookRoom {
         byte_length: normalizedFrame.payload.byteLength,
         timestamp: receivedAt,
       });
-      let response;
-      try {
-        if (
-          peer.identity.scope !== "owner" ||
-          !requestMetadata.id ||
-          this.packageMutations.has(notebookId)
-        )
-          throw new Error("Package operation unavailable");
-        this.packageMutations.add(notebookId);
-        try {
-          if (!(await managedPythonOwnerCanExecute(this.env, notebookId, peer.identity.principal)))
-            throw new Error("Owner access required");
-          const input = JSON.parse(new TextDecoder().decode(normalizedFrame.payload)) as {
-            operation?: string;
-            requirement?: unknown;
-          };
-          if (typeof input.requirement !== "string" || input.requirement.length > 256)
-            throw new Error("Invalid requirement");
-          const materializer = this.materializerFor(notebookId);
-          const baseline = await materializer.getCloudPackageManifest();
-          const manifest = packageManifest(baseline);
-          let next;
-          let sessionId: string | undefined;
-          if (input.operation === "remove") {
-            next = removeRequirement(manifest, input.requirement);
-          } else if (input.operation === "add") {
-            const managed = this.managedPython.get(notebookId);
-            if (!managed) throw new Error("Start Python before installing packages");
-            await managed.ready;
+      // The room owns this task through completion, including client disconnect.
+      // An acceptance ack is only transport admission; the correlated response
+      // and durable package progress carry the operation result. Keep subsequent
+      // restart/interrupt requests on this socket able to cancel the session.
+      this.state.waitUntil(
+        (async () => {
+          let response;
+          try {
             if (
-              !(await managedPythonOwnerCanExecute(
-                this.env,
-                notebookId,
-                managed.runtime.ownerPrincipal,
-              ))
+              peer.identity.scope !== "owner" ||
+              !requestMetadata.id ||
+              this.packageMutations.has(notebookId)
             )
-              throw new Error("Compute owner access revoked");
-            const result = await managed.runtime.installPackages(
-              manifest,
-              "add",
-              input.requirement,
-              requestMetadata.id,
-            );
-            if (this.managedPython.get(notebookId) !== managed)
-              throw new Error("Python session changed");
-            if (result.status === "error") {
-              response = {
-                result: "sync_environment_failed",
-                error: result.error,
-                needs_restart: result.needs_restart,
+              throw new Error("Package operation unavailable");
+            this.packageMutations.add(notebookId);
+            try {
+              if (
+                !(await managedPythonOwnerCanExecute(this.env, notebookId, peer.identity.principal))
+              )
+                throw new Error("Owner access required");
+              const input = JSON.parse(new TextDecoder().decode(normalizedFrame.payload)) as {
+                operation?: string;
+                requirement?: unknown;
               };
-            } else {
-              next = result.manifest;
-              sessionId = managed.runtime.sessionId;
+              if (typeof input.requirement !== "string" || input.requirement.length > 256)
+                throw new Error("Invalid requirement");
+              const materializer = this.materializerFor(notebookId);
+              const baseline = await materializer.getCloudPackageManifest();
+              let next;
+              let sessionId: string | undefined;
+              if (input.operation === "remove") {
+                next = removeSavedRequirement(baseline, input.requirement);
+              } else if (input.operation === "clear") {
+                next = packageManifest(null);
+              } else if (input.operation === "add") {
+                const manifest = packageManifest(baseline);
+                const managed = this.managedPython.get(notebookId);
+                if (!managed) throw new Error("Start Python before installing packages");
+                await managed.ready;
+                if (
+                  !(await managedPythonOwnerCanExecute(
+                    this.env,
+                    notebookId,
+                    managed.runtime.ownerPrincipal,
+                  ))
+                )
+                  throw new Error("Compute owner access revoked");
+                const result = await managed.runtime.installPackages(
+                  manifest,
+                  "add",
+                  input.requirement,
+                  requestMetadata.id,
+                );
+                if (this.managedPython.get(notebookId) !== managed)
+                  throw new Error("Python session changed");
+                if (result.status === "error") {
+                  response = {
+                    result: "sync_environment_failed",
+                    error: result.error,
+                    needs_restart: result.needs_restart,
+                  };
+                } else {
+                  next = result.manifest;
+                  sessionId = managed.runtime.sessionId;
+                }
+              } else throw new Error("Unsupported package operation");
+              if (next) {
+                if (
+                  !(await managedPythonOwnerCanExecute(
+                    this.env,
+                    notebookId,
+                    peer.identity.principal,
+                  ))
+                )
+                  throw new Error("Owner access revoked");
+                const changed = await materializer.compareSetCloudPackageManifest(
+                  baseline,
+                  next,
+                  sessionId,
+                );
+                this.deliverRoomHostFrames(notebookId, changed);
+                await materializer.checkpoint();
+                response = {
+                  result: "sync_environment_complete",
+                  synced_packages: next.requirements,
+                };
+              }
+            } finally {
+              this.packageMutations.delete(notebookId);
             }
-          } else throw new Error("Unsupported package operation");
-          if (next) {
-            if (
-              !(await managedPythonOwnerCanExecute(this.env, notebookId, peer.identity.principal))
-            )
-              throw new Error("Owner access revoked");
-            const changed = await materializer.compareSetCloudPackageManifest(
-              baseline,
-              next,
-              sessionId,
-            );
-            this.deliverRoomHostFrames(notebookId, changed);
-            await materializer.checkpoint();
-            response = { result: "sync_environment_complete", synced_packages: next.requirements };
+          } catch {
+            response = {
+              result: "sync_environment_failed",
+              error:
+                "Package changes could not be saved. Check the connection and Python status, then try again.",
+              needs_restart: false,
+            };
           }
-        } finally {
-          this.packageMutations.delete(notebookId);
-        }
-      } catch {
-        response = {
-          result: "sync_environment_failed",
-          error:
-            "Package changes could not be saved. Check the connection and Python status, then try again.",
-          needs_restart: false,
-        };
-      }
-      const managed = this.managedPython.get(notebookId);
-      if (managed)
-        this.state.waitUntil(
-          managed.runtime
-            .wake()
-            .catch((error) => this.failManagedPython(notebookId, managed.runtime, error)),
-        );
-      this.sendFrameToPeer(
-        notebookId,
-        peer,
-        encodeTypedFrame(
-          FrameType.RESPONSE,
-          new TextEncoder().encode(JSON.stringify({ id: requestMetadata.id, ...response })),
-        ),
+          const managed = this.managedPython.get(notebookId);
+          if (managed)
+            this.state.waitUntil(
+              managed.runtime
+                .wake()
+                .catch((error) => this.failManagedPython(notebookId, managed.runtime, error)),
+            );
+          this.sendFrameToPeer(
+            notebookId,
+            peer,
+            encodeTypedFrame(
+              FrameType.RESPONSE,
+              new TextEncoder().encode(JSON.stringify({ id: requestMetadata.id, ...response })),
+            ),
+          );
+        })(),
       );
       return;
     }

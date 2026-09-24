@@ -20,3 +20,4 @@ export const PACKAGE_RUNTIME_VERSION: string;
 export function packageName(requirement: string): string | undefined;
 export function packageManifest(value: unknown): PackageManifest;
 export function removeRequirement(manifest: PackageManifest, requirement: string): PackageManifest;
+export function removeSavedRequirement(value: unknown, requirement: string): PackageManifest;

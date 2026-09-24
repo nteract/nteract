@@ -13,6 +13,7 @@ export interface ManagedPythonPackagesProps {
   readOnly?: boolean;
   onAdd: (requirement: string) => Promise<boolean>;
   onRemove: (requirement: string) => Promise<void>;
+  onClear?: () => Promise<void>;
   onRestart?: () => void;
 }
 
@@ -28,6 +29,7 @@ export function ManagedPythonPackages({
   readOnly = true,
   onAdd,
   onRemove,
+  onClear,
   onRestart,
 }: ManagedPythonPackagesProps) {
   const inputId = useId();
@@ -54,13 +56,14 @@ export function ManagedPythonPackages({
     }
   }
 
-  async function remove(requirement: string) {
+  async function remove(requirement?: string) {
     if (readOnly || busy || submitting.current) return;
     submitting.current = true;
     setPending(true);
     setActionError(null);
     try {
-      await onRemove(requirement);
+      if (requirement === undefined) await onClear?.();
+      else await onRemove(requirement);
     } catch {
       setActionError("The requirement could not be removed. Reconnect and try again.");
     } finally {
@@ -132,6 +135,11 @@ export function ManagedPythonPackages({
             <Button variant="ghost" size="sm" onClick={onRestart} disabled={busy}>
               <RotateCcw className="size-3.5" />
               Restart Python
+            </Button>
+          )}
+          {!readOnly && onClear && (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void remove()}>
+              Clear saved packages
             </Button>
           )}
         </div>

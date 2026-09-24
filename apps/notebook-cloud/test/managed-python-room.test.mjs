@@ -7,6 +7,101 @@ import { fixture, sync } from "./preview-python-helpers.mjs";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { encodeTypedFrame } from "../src/protocol.ts";
 
+for (const outcome of ["restored", "restore_failure", "stale_lock"]) {
+  test(`managed startup preserves saved intent and reports package state: ${outcome}`, async (t) => {
+    await initializeTestRuntimedWasm();
+    const { host } = await fixture(t);
+    const manifest = {
+      version: 1,
+      pyodide: outcome === "stale_lock" ? "old" : "0.28.3",
+      requirements: ["six>=1"],
+      wheels: [],
+    };
+    host.compare_set_cloud_package_manifest_json("null", JSON.stringify(manifest));
+    host.set_workstation_attachment_json(
+      JSON.stringify({
+        workstation_id: "celld-preview-python",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "restore-session",
+      }),
+    );
+    const requests = [];
+    const states = [];
+    let runtime;
+    const materializer = {
+      getCloudPackageManifest: async () => JSON.parse(host.get_cloud_package_manifest_json()),
+      setCloudPackageState: async (session, value) => {
+        states.push(value.managed_packages);
+        return host.set_cloud_package_state_json(session, JSON.stringify(value));
+      },
+      syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveFrame: async (peer, frame) =>
+        host.receive_peer_frame(
+          peer.id,
+          peer.identity.principal,
+          peer.identity.actorLabel,
+          peer.identity.scope,
+          false,
+          encodeTypedFrame(frame.type, frame.payload),
+        ),
+      checkpoint: async () => {},
+      removePeer: async (id) => host.remove_peer(id),
+    };
+    runtime = new ManagedPythonRoom(
+      {
+        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+        PREVIEW_PYTHON_SESSIONS: {
+          idFromName: (name) => name,
+          get: () => ({
+            fetch: async (request) => {
+              const path = new URL(request.url).pathname;
+              requests.push({ path, ...(await request.json()) });
+              if (path === "/packages/inventory") return Response.json({ installed: [] });
+              if (path === "/packages")
+                return Response.json(
+                  outcome === "restore_failure"
+                    ? { status: "error", error: "Download unavailable", needs_restart: false }
+                    : { status: "ready", installed: ["six==1.0"], manifest },
+                );
+              return Response.json({ ok: true });
+            },
+          }),
+        },
+      },
+      materializer,
+      "notebook",
+      "user:dev:owner",
+      "restore-session",
+      (result) => runtime.accept(result),
+    );
+    if (outcome === "restored") await runtime.start();
+    else
+      await assert.rejects(
+        runtime.start(),
+        outcome === "stale_lock" ? /Saved packages cannot/ : /Download unavailable/,
+      );
+    assert.deepEqual(
+      JSON.parse(host.get_cloud_package_manifest_json()),
+      manifest,
+      "failed or successful restore cannot rewrite requirements",
+    );
+    assert.equal(states.at(-1).phase, outcome === "restored" ? "ready" : "error");
+    if (outcome === "stale_lock")
+      assert.ok(!requests.some((request) => request.path === "/packages"));
+    else {
+      const restore = requests.find((request) => request.path === "/packages");
+      assert.equal(restore.operation, "restore");
+      assert.deepEqual(restore.manifest, manifest);
+      assert.equal(states.at(-1).operation_id, restore.operation_id);
+    }
+    await runtime.close();
+  });
+}
+
 for (const allocationEnabled of [false, true])
   for (const uncertainInspect of allocationEnabled ? [false, true] : [false])
     for (const staleQueue of [false, true])

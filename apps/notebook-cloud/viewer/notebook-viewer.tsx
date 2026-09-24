@@ -632,7 +632,7 @@ export function NotebookViewer({
     [notebookMetadata, runtimeState.env.progress, packageSessionId, runtimePeerAvailable],
   );
   const changeCloudPackage = useCallback(
-    async (operation: "add" | "remove", requirement: string) => {
+    async (operation: "add" | "remove" | "clear", requirement: string) => {
       const runtime = liveRuntimeRef.current;
       if (!runtime || connectionScope !== "owner" || !isManagedPython) return false;
       setPackageActionError(null);
@@ -1727,6 +1727,9 @@ export function NotebookViewer({
             onRemove={async (requirement) => {
               if (!(await changeCloudPackage("remove", requirement)))
                 throw new Error("Requirement removal failed");
+            }}
+            onClear={async () => {
+              if (!(await changeCloudPackage("clear", ""))) throw new Error("Package reset failed");
             }}
             onRestart={handleCloudRestartRuntime}
           />
