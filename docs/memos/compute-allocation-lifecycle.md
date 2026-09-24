@@ -35,6 +35,25 @@ The room's existing 30-minute idle policy remains primary. Allocation housekeepi
 
 This first slice intentionally leaves the existing attach UX and room startup choreography in place. Shared desktop/cloud progress rendering, browser-independent acceptance before cold startup, a public cancel/stop surface, and richer provider stages are follow-ups. The persisted allocation establishes a place for those features without claiming they already ship.
 
+## Execution acceptance while compute starts
+
+The protocol should distinguish receiving a request, accepting an execution, and having an interpreter ready. Kernel `idle` is a compute fact; it cannot prove that a particular click on Play was accepted. An allocation becoming `ready` likewise does not acknowledge execution.
+
+The desktop daemon already has a useful backend contract: after the required notebook heads arrive, it can record a queued execution while the runtime is resolving, preparing its environment, launching, or connecting. It returns `CellQueued` with the execution ID. The runtime agent consumes that shared queue when a kernel exists; startup failure must terminalize pending work. Desktop's explicit frontend start path still awaits launch before submitting execution, so this is a backend capability rather than a claim about every current first-Play interaction. See [execution admission](../../crates/runtimed/src/requests/execute_cell.rs) and [runtime agent](../../crates/runtimed/src/runtime_agent.rs).
+
+Cloud has the same underlying pieces but incomplete wiring. The [room host](../../crates/notebook-room-host/src/lib.rs) returns an `execution_response` and requires persistence before acknowledgement. The [cloud transport](../../apps/notebook-cloud/viewer/live-sync.ts) currently resolves execution requests from a generic frame acknowledgement instead of consuming that correlated receipt. Managed Python also waits for startup before admitting work in paths where the BYOC attachment can already admit work while connecting.
+
+The proposed next slice is:
+
+1. Submit the synced `cell_id`, request ID, and `required_heads`. Keep sync flowing while checking the heads; a timeout fails explicitly rather than executing stale source.
+2. Once authorized compute startup is established, persist accepted intent with its execution ID, captured source provenance, and selected runtime session independently of interpreter readiness. Return the existing execution receipt correlated to the request ID.
+3. Render queued execution and startup progress from `RuntimeStateDoc`. Drain accepted work when the runtime is ready. Preserve the requirement to publish running state before Python side effects, and fail queued work if startup fails or its session is superseded.
+4. Treat a lost response as unknown acceptance. Inspect execution lineage instead of automatically replaying side-effecting code. A future reconnect/retry design must define execution-ID admission and lookup explicitly; request IDs alone are not a durable deduplication contract.
+
+This keeps commands at the authorization boundary and puts accepted intent, lineage, progress, and outputs in Automerge documents. It does not give browser peers permission to author runtime state or turn the allocation object into an execution queue. Keeping a pending request alive while it awaits another event is a separate host-runtime obligation.
+
+Qualification should hold interpreter startup pending, deliver source sync after the request, and require a persisted receipt plus visible queued state before releasing startup. Releasing startup should produce exactly one execution; failing startup should terminate that same accepted execution. Test reconnect after acceptance separately from the ordinary first-Play path.
+
 ## Deployment and rollback
 
 The namespace is enabled only alongside the celld Python provider. For a local export, set both `NOTEBOOK_CLOUD_CELLD_PYTHON=1` and `NOTEBOOK_CLOUD_CELLD_ALLOCATIONS=1`. The regular cloud deployment and desktop remain unchanged.
