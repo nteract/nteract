@@ -10,7 +10,14 @@ import {
   Square,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
+import {
+  CondaIcon,
+  DenoIcon,
+  PixiIcon,
+  PyodideIcon,
+  PythonIcon,
+  UvIcon,
+} from "@/components/environment";
 import { cn } from "@/lib/utils";
 import {
   projectNotebookCommandRuntimeActions,
@@ -326,6 +333,11 @@ export function NotebookCommandToolbar({
             <>
               <DenoIcon className="size-3" />
               <span>Deno</span>
+            </>
+          ) : runtime === "pyodide" ? (
+            <>
+              <PyodideIcon className="size-3" />
+              <span>Pyodide</span>
             </>
           ) : (
             <>

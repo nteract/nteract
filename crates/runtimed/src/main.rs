@@ -142,6 +142,11 @@ enum Commands {
         /// Blob store root path
         #[arg(long)]
         blob_root: PathBuf,
+        /// Adapter runtime selection (e.g. `pyodide`). The kernel type on the
+        /// LaunchKernel request drives dispatch; this flag validates intent for
+        /// the adapter launch path.
+        #[arg(long)]
+        adapter: Option<String>,
     },
 
     /// Run a runtime agent attached to a hosted cloud room over WebSocket
@@ -199,6 +204,11 @@ enum Commands {
         /// synced execution intent.
         #[arg(long, value_parser = ["attach", "execute"], default_value = "attach")]
         launch_mode: String,
+        /// Adapter runtime selection (e.g. `pyodide`). When set, the
+        /// launch-on-attach kernel is the adapter runtime instead of
+        /// current-Python.
+        #[arg(long)]
+        adapter: Option<String>,
     },
 
     /// Serve this machine as a workstation for a hosted nteract cloud:
@@ -549,17 +559,30 @@ async fn main() -> anyhow::Result<()> {
             notebook_id,
             runtime_agent_id,
             blob_root,
-        }) => runtimed::runtime_agent::run_runtime_agent(
-            socket,
-            notebook_id,
-            runtime_agent_id,
-            blob_root,
-        )
-        .await
-        .map_err(|e| {
-            eprintln!("[runtime-agent] Fatal: {}", e);
-            e
-        }),
+            adapter,
+        }) => {
+            if let Some(other) = &adapter {
+                if other != "pyodide" {
+                    let msg = format!(
+                        "[runtime-agent] Unsupported --adapter '{}'; supported: pyodide",
+                        other
+                    );
+                    eprintln!("{}", msg);
+                    return Err(anyhow::anyhow!(msg));
+                }
+            }
+            runtimed::runtime_agent::run_runtime_agent(
+                socket,
+                notebook_id,
+                runtime_agent_id,
+                blob_root,
+            )
+            .await
+            .map_err(|e| {
+                eprintln!("[runtime-agent] Fatal: {}", e);
+                e
+            })
+        }
         Some(Commands::CloudRuntimeAgent {
             cloud_url,
             notebook_id,
@@ -574,6 +597,7 @@ async fn main() -> anyhow::Result<()> {
             workstation_display_name,
             runtime_session_id,
             launch_mode,
+            adapter,
         }) => {
             let cli_args = runtimed::workstation::CloudAgentArgs {
                 cloud_url,
@@ -606,9 +630,54 @@ async fn main() -> anyhow::Result<()> {
                         .map(|path| path.to_string_lossy().into_owned()),
                 });
             }
-            let result = match python_path {
+            let result = match (python_path, adapter.as_deref()) {
+                // Adapter launch-on-attach: start the pyodide adapter runtime.
+                // The interpreter is hosted by the agent's adapter kernel; no
+                // workstation Python is required.
+                (None, Some("pyodide")) => {
+                    let launch_trigger = match launch_mode.as_str() {
+                        "execute" => runtimed::runtime_agent::LaunchTrigger::OnFirstExecution,
+                        "attach" => runtimed::runtime_agent::LaunchTrigger::OnAttach,
+                        _ => unreachable!("clap validates launch-mode"),
+                    };
+                    let initial_launch = (
+                        launch_trigger,
+                        notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
+                            kernel_type: "pyodide".to_string(),
+                            env_source: notebook_protocol::connection::EnvSource::Unknown(
+                                "pyodide".to_string(),
+                            ),
+                            notebook_path: None,
+                            launched_config: Default::default(),
+                            kernel_ports: notebook_protocol::protocol::KernelPorts {
+                                stdin: 0,
+                                control: 0,
+                                hb: 0,
+                                shell: 0,
+                                iopub: 0,
+                            },
+                            env_vars: std::collections::HashMap::new(),
+                            redact_env_values_in_outputs: false,
+                        },
+                    );
+                    runtimed::runtime_agent::run_cloud_runtime_agent(
+                        config,
+                        operator,
+                        blob_root,
+                        Some(initial_launch),
+                    )
+                    .await
+                }
+                (None, Some(other)) => {
+                    let msg = format!(
+                        "[cloud-runtime-agent] Unsupported --adapter '{}'; supported: pyodide",
+                        other
+                    );
+                    eprintln!("{}", msg);
+                    Err(anyhow::anyhow!(msg))
+                }
                 // Launch-on-attach: allocate and *start* a current_python runtime.
-                Some(python_path) => {
+                (Some(python_path), _) => {
                     let launch_working_dir =
                         runtimed::workstation::current_python_launch_working_dir(
                             notebook_path.as_deref(),
@@ -648,7 +717,7 @@ async fn main() -> anyhow::Result<()> {
                     .await
                 }
                 // Attach-only: wait for an inbound launch (req #5, deferred).
-                None => {
+                (None, None) => {
                     if launch_mode == "execute" {
                         warn!(
                             "[cloud-runtime-agent] --launch-mode execute ignored without --python-path; attaching without an initial launch template"

@@ -778,6 +778,51 @@ where
                                             }
                                             continue;
                                         }
+                                        // Pyodide installs happen inside the kernel's
+                                        // interpreter (micropip via the runner child), so
+                                        // they cannot go through the host-env task below.
+                                        // Run inline: the loop is single-flight, and
+                                        // blocking it is the same behavior as `execute`.
+                                        if let notebook_protocol::protocol::EnvKind::Pyodide {
+                                            packages,
+                                        } = env_kind
+                                        {
+                                            let response = match session.kernel.as_mut() {
+                                                Some(kernel) => {
+                                                    match kernel.install_packages(packages).await {
+                                                        Ok(synced_packages) => {
+                                                            RuntimeAgentResponse::EnvironmentSynced {
+                                                                synced_packages,
+                                                            }
+                                                        }
+                                                        Err(e) => RuntimeAgentResponse::Error {
+                                                            error: format!(
+                                                                "Failed to install packages: {}",
+                                                                e
+                                                            ),
+                                                        },
+                                                    }
+                                                }
+                                                None => RuntimeAgentResponse::Error {
+                                                    error: "No kernel running".to_string(),
+                                                },
+                                            };
+                                            if let Err(e) = send_runtime_agent_response(
+                                                &mut frame_sink,
+                                                envelope.id.clone(),
+                                                response,
+                                            )
+                                            .await
+                                            {
+                                                warn!(
+                                                    "[runtime-agent] Failed to send pyodide SyncEnvironment response: {}",
+                                                    e
+                                                );
+                                                break;
+                                            }
+                                            continue;
+                                        }
+
                                         let generation = sync_generation
                                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                                             .wrapping_add(1);
@@ -2480,10 +2525,13 @@ async fn run_sync_environment(
     };
 
     // Deno doesn't support hot-sync — requires kernel restart.
-    if es == "deno" {
+    // Pyodide likewise: packages install via micropip inside the sandbox
+    // (or via declared deps at startup), not through the host venv pip path.
+    if es == "deno" || es == "pyodide" {
         return Some(RuntimeAgentResponse::Error {
-            error: "Hot-sync not supported for Deno environments. Kernel restart required."
-                .to_string(),
+            error: format!(
+                "Hot-sync not supported for {es} environments. Kernel restart required."
+            ),
         });
     }
 
@@ -2503,6 +2551,12 @@ async fn run_sync_environment(
     );
 
     match env_kind {
+        notebook_protocol::protocol::EnvKind::Pyodide { .. } => {
+            // Dispatched inline in the main loop (needs the kernel child).
+            Some(RuntimeAgentResponse::Error {
+                error: "Pyodide SyncEnvironment must be dispatched inline".to_string(),
+            })
+        }
         notebook_protocol::protocol::EnvKind::Uv { packages } => {
             let uv_env = kernel_env::uv::UvEnvironment {
                 venv_path: venv_path.clone(),

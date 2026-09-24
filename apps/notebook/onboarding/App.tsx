@@ -6,12 +6,19 @@ import type { PoolState } from "runtimed";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
+import {
+  CondaIcon,
+  DenoIcon,
+  PixiIcon,
+  PyodideIcon,
+  PythonIcon,
+  UvIcon,
+} from "@/components/environment";
 import { observeOnboardingPool, type OnboardingPoolGate } from "./pool-polling";
 import type { PythonEnv } from "./pool-readiness";
 import type { DaemonStatus } from "./types";
 
-type Runtime = "python" | "deno";
+type Runtime = "python" | "deno" | "pyodide";
 
 type SetupStep = {
   id: string;
@@ -130,6 +137,12 @@ const BRAND_COLORS = {
     ring: "ring-emerald-500",
     iconBg: "bg-emerald-500/20",
   },
+  pyodide: {
+    bg: "bg-indigo-500/10",
+    text: "text-indigo-600 dark:text-indigo-400",
+    ring: "ring-indigo-500",
+    iconBg: "bg-indigo-500/20",
+  },
   uv: {
     bg: "bg-fuchsia-500/10",
     text: "text-fuchsia-600 dark:text-fuchsia-400",
@@ -242,6 +255,8 @@ export default function App() {
   // first notebook opens into a slow "initializing" kernel path.
   useEffect(() => {
     if (!daemonReady || !pythonEnv) return;
+    // Pyodide uses no pooled environment — skip the pool readiness check.
+    if (runtime === "pyodide") return;
 
     const envLabel = PYTHON_ENV_LABELS[pythonEnv];
     const subscription = observeOnboardingPool({
@@ -259,7 +274,7 @@ export default function App() {
     });
 
     return () => subscription.unsubscribe();
-  }, [daemonReady, pythonEnv]);
+  }, [daemonReady, pythonEnv, runtime]);
 
   // Handle runtime selection
   const handleRuntimeSelect = useCallback((selected: Runtime) => {
@@ -267,9 +282,11 @@ export default function App() {
   }, []);
 
   // Advance to page 2
+  // Handle runtime selection. Pyodide needs no env-manager selection, so it
+  // skips straight to the telemetry page.
   const handleNext = useCallback(() => {
     if (runtime) {
-      setPage(2);
+      setPage(runtime === "pyodide" ? 3 : 2);
     }
   }, [runtime]);
 
@@ -307,9 +324,10 @@ export default function App() {
   // so heartbeats can fire when enabled.
   const handleChoice = useCallback(
     async (telemetryEnabled: boolean) => {
-      if (!runtime || !pythonEnv) return;
+      // Pyodide needs no Python env manager — everything else requires one.
+      if (!runtime || (!pythonEnv && runtime !== "pyodide")) return;
       if (!daemonReady) return;
-      if (!poolGate?.canContinue) return;
+      if (runtime !== "pyodide" && !poolGate?.canContinue) return;
       if (isSubmitting) return;
       setIsSubmitting(true);
 
@@ -318,10 +336,12 @@ export default function App() {
           key: "default_runtime",
           value: runtime,
         });
-        await invoke("set_synced_setting", {
-          key: "default_python_env",
-          value: pythonEnv,
-        });
+        if (pythonEnv) {
+          await invoke("set_synced_setting", {
+            key: "default_python_env",
+            value: pythonEnv,
+          });
+        }
         await invoke("set_synced_setting", {
           key: "telemetry_enabled",
           value: telemetryEnabled,
@@ -340,7 +360,7 @@ export default function App() {
         try {
           await invoke("complete_onboarding", {
             defaultRuntime: runtime,
-            defaultPythonEnv: pythonEnv,
+            defaultPythonEnv: pythonEnv ?? "pyodide",
           });
           // Window closes itself on success.
         } catch (completeError) {
@@ -389,10 +409,10 @@ export default function App() {
   const canProceed =
     page === 3 &&
     runtime !== null &&
-    pythonEnv !== null &&
     daemonReady &&
-    poolGate?.canContinue === true &&
-    !setupComplete;
+    !setupComplete &&
+    // Pyodide has no env-manager step and no pool to warm.
+    (runtime === "pyodide" || (pythonEnv !== null && poolGate?.canContinue === true));
 
   // Page titles based on selections
   const page2Title = runtime === "deno" ? "Ok but if you did use Python..." : "Python Environment";
@@ -426,6 +446,14 @@ export default function App() {
                 title="Deno"
                 description="TypeScript/JS notebooks"
                 colorClass={BRAND_COLORS.deno}
+              />
+              <SelectionCard
+                selected={runtime === "pyodide"}
+                onClick={() => handleRuntimeSelect("pyodide")}
+                icon={PyodideIcon}
+                title="Pyodide"
+                description="Instant sandboxed compute, zero setup"
+                colorClass={BRAND_COLORS.pyodide}
               />
             </div>
 

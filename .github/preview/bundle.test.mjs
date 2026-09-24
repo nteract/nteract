@@ -29,7 +29,7 @@ test("packages the existing bundle format and strips all exporter configs", asyn
   const bundle = JSON.parse(json);
   assert.equal(bundle.format, "nteract-preview-v1");
   assert.equal(bundle.sourceSha, "a".repeat(40));
-  assert.equal(bundle.files.length, 8);
+  assert.equal(bundle.files.length, 10);
   assert.ok(!json.includes("must-stay-in-ci") && !json.includes("wrangler.json"));
   assert.ok(bundle.files.every(file => digest(Buffer.from(file.content, "base64")) === file.sha256));
   assert.deepEqual(await pack(dir, "a".repeat(40)), bytes);

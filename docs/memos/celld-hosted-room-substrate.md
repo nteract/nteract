@@ -109,4 +109,9 @@ failover numbers are unmeasured on this deployment's Cloudflare Tunnel path.
   answer different questions and are not mutually exclusive.
 - Running kernels on celld nodes. The runtime-peer boundary in
   `deployment-topology.md` is unchanged; celld only changes where the document
-  engine's Worker code executes.
+  engine's Worker code executes. **Amended 2026-09-23**
+  (`specs/001-pyodide-decoupled-runtime`, contract C10): a pyodide execution
+  Worker is now deployed to the same substrate as a fourth service. It is a
+  separate `runtime_peer` client — celld still hosts no Jupyter/Python kernel
+  in the document engine Worker, and the authorization model is unchanged; the
+  pyodide worker writes only RuntimeStateDoc lifecycle/outputs per contract C8.

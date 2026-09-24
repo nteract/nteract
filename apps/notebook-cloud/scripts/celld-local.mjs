@@ -93,14 +93,15 @@ const workstationPython =
 // Browser-facing origins. The defaults are the loopback listeners, which is
 // what `celld dev` serves and what an SSH port-forward to a remote node
 // reproduces. `export` for a public deployment sets
-// NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS=<app>,<outputs>,<renderer-assets> (three
-// distinct https origins behind the operator's TLS ingress); the node
-// listeners stay on loopback either way.
+// NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS=<app>,<outputs>,<renderer-assets>[,<pyodide>]
+// (distinct https origins behind the operator's TLS ingress; the fourth is the
+// pyodide execution worker); the node listeners stay on loopback either way.
 const publicOrigins = readPublicOrigins(process.env.NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS);
 const origins = publicOrigins ?? {
   main: `http://${HOST}:${basePort}`,
   outputs: `http://${HOST}:${basePort + 1}`,
   "renderer-assets": `http://${HOST}:${basePort + 2}`,
+  pyodide: `http://${HOST}:${basePort + 3}`,
 };
 
 // Identity provider for a public deployment. Loopback deployments use the
@@ -183,6 +184,27 @@ const WORKERS = [
     healthMethod: "HEAD",
     config: () => ({
       assets: { directory: "assets", binding: "ASSETS", run_worker_first: true },
+    }),
+  },
+  {
+    // Pyodide execution worker: a plain JS worker hosting the Pyodide WASM
+    // distribution as statically imported siblings (celld's CompiledWasm rule).
+    // It attaches to rooms as a runtime_peer client and writes only
+    // lifecycle/outputs.
+    name: "pyodide",
+    scriptName: "nteract-notebook-cloud-celld-local-pyodide",
+    entry: "src/pyodide-worker/index.ts",
+    entryExports: ["default"],
+    // Pyodide distribution (pyodide.mjs, pyodide.asm.wasm, python_stdlib.zip)
+    // ships as bundled asset siblings — populated by scripts/fetch-pyodide-assets.mjs.
+    assets: "pyodide-assets",
+    port: basePort + 3,
+    healthPath: "/health",
+    config: (vars) => ({
+      vars: {
+        ...vars,
+        PYODIDE_ASSETS_URL: process.env.PYODIDE_ASSETS_URL,
+      },
     }),
   },
 ];
@@ -990,9 +1012,9 @@ function resolveEsbuild() {
 function readPublicOrigins(value) {
   if (!value?.trim()) return undefined;
   const parts = value.split(",").map((part) => part.trim());
-  if (parts.length !== 3) {
+  if (parts.length !== 3 && parts.length !== 4) {
     throw new Error(
-      "NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS must list three origins: app,outputs,renderer-assets",
+      "NOTEBOOK_CLOUD_CELLD_PUBLIC_ORIGINS must list three origins (app,outputs,renderer-assets) — or four when the pyodide execution worker is deployed",
     );
   }
   const parsed = parts.map((part) => {
@@ -1002,12 +1024,12 @@ function readPublicOrigins(value) {
     }
     return url.origin;
   });
-  if (new Set(parsed).size !== 3) {
-    throw new Error(
-      "public origins must be three distinct origins (untrusted output frames need their own)",
-    );
+  if (new Set(parsed).size !== parts.length) {
+    throw new Error("public origins must be distinct (untrusted output frames need their own)");
   }
-  return { main: parsed[0], outputs: parsed[1], "renderer-assets": parsed[2] };
+  const origins = { main: parsed[0], outputs: parsed[1], "renderer-assets": parsed[2] };
+  if (parts.length === 4) origins.pyodide = parsed[3];
+  return origins;
 }
 
 function requireEnv(name) {

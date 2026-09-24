@@ -1579,8 +1579,8 @@ pub(crate) fn build_new_notebook_metadata(
     dependencies: &[String],
 ) -> NotebookMetadataSnapshot {
     use notebook_doc::metadata::{
-        CondaInlineMetadata, KernelspecSnapshot, LanguageInfoSnapshot, RuntMetadata,
-        UvInlineMetadata,
+        CondaInlineMetadata, ExecutionMetadata, KernelspecSnapshot, LanguageInfoSnapshot,
+        RuntMetadata, UvInlineMetadata,
     };
 
     let (kernelspec, language_info, runt) = match runtime {
@@ -1603,6 +1603,40 @@ pub(crate) fn build_new_notebook_metadata(
                 conda: None,
                 pixi: None,
                 deno: None,
+                runtime: None,
+                execution: None,
+                extra: std::collections::BTreeMap::new(),
+            },
+        ),
+        "pyodide" => (
+            KernelspecSnapshot {
+                name: "python3".to_string(),
+                display_name: "Python 3 (Pyodide)".to_string(),
+                language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
+            },
+            LanguageInfoSnapshot {
+                name: "python".to_string(),
+                version: None,
+                extras: std::collections::BTreeMap::new(),
+            },
+            // The explicit runtime marker is what routes detection and the
+            // auto-launch dispatch to the pyodide adapter; requested
+            // dependencies ride `runt.execution.dependencies` and are installed
+            // via micropip at interpreter startup.
+            RuntMetadata {
+                schema_version: "1".to_string(),
+                env_id: Some(env_id.to_string()),
+                uv: None,
+                conda: None,
+                pixi: None,
+                deno: None,
+                runtime: Some("pyodide".to_string()),
+                execution: Some(ExecutionMetadata {
+                    profile: Some("pyodide.wasm".to_string()),
+                    dependencies: dependencies.to_vec(),
+                    extra: std::collections::BTreeMap::new(),
+                }),
                 extra: std::collections::BTreeMap::new(),
             },
         ),
@@ -1692,6 +1726,8 @@ pub(crate) fn build_new_notebook_metadata(
                     conda,
                     pixi,
                     deno: None,
+                    runtime: None,
+                    execution: None,
                     extra: std::collections::BTreeMap::new(),
                 },
             )

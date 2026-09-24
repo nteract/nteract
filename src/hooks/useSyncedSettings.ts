@@ -79,8 +79,8 @@ function isValidTheme(value: unknown): value is ThemeMode {
 }
 
 /** Known runtime values for UI buttons; unknown values are preserved. */
-export function isKnownRuntime(value: string): value is "python" | "deno" {
-  return value === "python" || value === "deno";
+export function isKnownRuntime(value: string): value is "python" | "deno" | "pyodide" {
+  return value === "python" || value === "deno" || value === "pyodide";
 }
 
 /** Known env type values for UI buttons; unknown values are preserved. */

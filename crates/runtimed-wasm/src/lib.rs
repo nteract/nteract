@@ -2420,6 +2420,22 @@ impl NotebookHandle {
             .map_err(|e| JsError::new(&format!("remove_uv_dependency failed: {}", e)))
     }
 
+    /// Add a pyodide dependency (`runt.execution.dependencies`).
+    pub fn add_execution_dependency(&mut self, pkg: &str) -> Result<(), JsError> {
+        self.invalidate_metadata_cache();
+        self.doc
+            .add_execution_dependency(pkg)
+            .map_err(|e| JsError::new(&format!("add_execution_dependency failed: {}", e)))
+    }
+
+    /// Remove a pyodide dependency by package name (case-insensitive).
+    pub fn remove_execution_dependency(&mut self, pkg: &str) -> Result<bool, JsError> {
+        self.invalidate_metadata_cache();
+        self.doc
+            .remove_execution_dependency(pkg)
+            .map_err(|e| JsError::new(&format!("remove_execution_dependency failed: {}", e)))
+    }
+
     /// Clear the UV section entirely (deps + requires-python).
     pub fn clear_uv_section(&mut self) -> Result<(), JsError> {
         self.invalidate_metadata_cache();

@@ -38,7 +38,14 @@ import {
   useSyncedTheme,
 } from "@/hooks/useSyncedSettings";
 import { cn } from "@/lib/utils";
-import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "@/components/environment";
+import {
+  CondaIcon,
+  DenoIcon,
+  PixiIcon,
+  PyodideIcon,
+  PythonIcon,
+  UvIcon,
+} from "@/components/environment";
 import { PrivacySection } from "./sections/Privacy";
 
 /** Format seconds into human-readable duration */
@@ -696,6 +703,19 @@ export default function App() {
                   <DenoIcon className="h-3.5 w-3.5" />
                   Deno
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setDefaultRuntime("pyodide")}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors",
+                    defaultRuntime === "pyodide"
+                      ? "bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <PyodideIcon className="h-3.5 w-3.5" />
+                  Pyodide
+                </button>
               </div>
             </div>
             {defaultRuntime && !isKnownRuntime(defaultRuntime) && (
@@ -703,7 +723,7 @@ export default function App() {
                 <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                 <span>
                   <span className="font-medium">&ldquo;{defaultRuntime}&rdquo;</span> is not a
-                  recognized runtime. Click Python or Deno above, or edit{" "}
+                  recognized runtime. Click Python, Deno, or Pyodide above, or edit{" "}
                   <code className="rounded bg-amber-500/20 px-1">settings.json</code>.
                 </span>
               </div>

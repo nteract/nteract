@@ -203,7 +203,7 @@ enum Commands {
     Open {
         /// Path to notebook file or directory to open
         path: Option<PathBuf>,
-        /// Runtime for new notebooks (python, deno)
+        /// Runtime for new notebooks (python, deno, pyodide)
         #[arg(long, short)]
         runtime: Option<String>,
     },
@@ -4337,7 +4337,7 @@ async fn config_command(command: Option<ConfigCommands>) -> Result<()> {
             if serde_json::from_str::<runtimed::settings_doc::SyncedSettings>(&json_str).is_err() {
                 let hint = match key.as_str() {
                     "theme" => "Must be one of: system, light, dark".to_string(),
-                    "default_runtime" => "Must be one of: python, deno".to_string(),
+                    "default_runtime" => "Must be one of: python, deno, pyodide".to_string(),
                     "default_python_env" => "Must be one of: uv, conda, pixi".to_string(),
                     "keep_alive_secs" => format!(
                         "Must be a number between {} and {}",

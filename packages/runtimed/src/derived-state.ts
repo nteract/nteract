@@ -136,12 +136,13 @@ export interface PixiInfo {
 export type EnvManager = "uv" | "conda" | "pixi";
 
 /**
- * Runtime kind — `"python"` / `"deno"`. Matches `kernelspec.name` /
- * `language_info.name` as sampled from the notebook doc's metadata,
- * plus a fallback when the daemon has detected a project file but the
- * notebook metadata hasn't been stamped yet.
+ * Runtime kind — `"python"` / `"deno"` / `"pyodide"`. Matches
+ * `kernelspec.name` / `language_info.name` / `metadata.runt.runtime` as
+ * sampled from the notebook doc's metadata, plus a fallback when the daemon
+ * has detected a project file but the notebook metadata hasn't been stamped
+ * yet.
  */
-export type RuntimeKind = "python" | "deno";
+export type RuntimeKind = "python" | "deno" | "pyodide";
 
 /**
  * Inline-metadata inputs to `deriveEnvManager`. Sourced from the WASM
@@ -238,8 +239,12 @@ export function deriveRuntimeKind(
   detectedRuntime: string | null,
   runtimeHint: string | null,
 ): RuntimeKind | null {
-  if (detectedRuntime === "python" || detectedRuntime === "deno") return detectedRuntime;
-  if (runtimeHint === "python" || runtimeHint === "deno") return runtimeHint;
+  if (detectedRuntime === "python" || detectedRuntime === "deno" || detectedRuntime === "pyodide") {
+    return detectedRuntime;
+  }
+  if (runtimeHint === "python" || runtimeHint === "deno" || runtimeHint === "pyodide") {
+    return runtimeHint;
+  }
   if (state.project_context.state === "Detected") return "python";
   return null;
 }

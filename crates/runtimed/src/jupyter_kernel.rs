@@ -1120,6 +1120,18 @@ impl KernelConnection for JupyterKernel {
                 cmd.stderr(Stdio::piped());
                 cmd
             }
+            "pyodide" => {
+                // Pyodide is an adapter-based runtime peer (a JS worker hosting
+                // Pyodide via static WASM import), not a Jupyter ZMQ kernel — it
+                // never gets a connection file here. It is dispatched by
+                // `launch_kernel`/`kernel_dispatch` to the adapter launch path;
+                // reaching this arm means the dispatch did not claim it.
+                return Err(anyhow::anyhow!(
+                    "Pyodide requires the adapter runtime launch path (pyodide.wasm executor), \
+                     which is not yet available for kernel type '{}'.",
+                    kernel_type
+                ));
+            }
             _ => {
                 return Err(anyhow::anyhow!(
                     "Unsupported kernel type: {}. Supported types: python, deno",

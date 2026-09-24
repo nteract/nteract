@@ -18,6 +18,35 @@ use crate::async_outcome::{recv_oneshot_with_timeout, TimedOneShot};
 use crate::daemon::Daemon;
 use crate::shell_env_overlay::ShellEnvOverlay;
 
+/// Shape the `RUNT_PYODIDE_DEPS` env pair for a pyodide kernel from its
+/// declared `runt.execution.dependencies`. Returns `None` for non-pyodide
+/// kernels or an empty dependency list. Shared by the launch and restart RPC
+/// paths so a restarted kernel reinstalls the same packages.
+fn pyodide_deps_env_var(kernel_type: &str, declared_deps: &[String]) -> Option<(String, String)> {
+    if kernel_type != "pyodide" || declared_deps.is_empty() {
+        return None;
+    }
+    Some(("RUNT_PYODIDE_DEPS".to_string(), declared_deps.join(",")))
+}
+
+/// Read the notebook's declared dependencies and produce the pyodide launch
+/// env pair, if any. Used by both `LaunchKernel` and `RestartKernel`.
+async fn pyodide_declared_deps_env(
+    room: &Arc<NotebookRoom>,
+    kernel_type: &str,
+) -> Option<(String, String)> {
+    if kernel_type != "pyodide" {
+        return None;
+    }
+    let declared_deps = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot()
+            .map(|snapshot| snapshot.execution_dependencies().to_vec())
+            .unwrap_or_default()
+    };
+    pyodide_deps_env_var(kernel_type, &declared_deps)
+}
+
 fn overlay_env_vars(overlay: &Arc<ShellEnvOverlay>) -> std::collections::HashMap<String, String> {
     // Merge the user's shell PATH with the daemon's PATH so the kernel can
     // both find daemon-managed tools (uv) and the user's shell binaries
@@ -326,6 +355,8 @@ pub(crate) async fn handle(
 
     // Deno kernels don't use Python environments - always use "deno" regardless
     // of what env_source was requested. Log a warning if caller passed a Python env.
+    // Pyodide likewise never uses a pooled Python env — the WASM sandbox brings
+    // its own interpreter.
     let resolved_env_source = if resolved_kernel_type == "deno" {
         match &launch_spec {
             LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => {
@@ -343,6 +374,23 @@ pub(crate) async fn handle(
             }
         }
         EnvSource::Deno
+    } else if resolved_kernel_type == "pyodide" {
+        match &launch_spec {
+            LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => {
+                info!("[notebook-sync] Pyodide runtime detected, using 'pyodide' env_source");
+            }
+            LaunchSpec::Concrete(EnvSource::Unknown(s)) if s == "pyodide" => {
+                info!("[notebook-sync] Pyodide runtime detected, using 'pyodide' env_source");
+            }
+            LaunchSpec::Concrete(other) => {
+                warn!(
+                    "[notebook-sync] Pyodide runtime requested with env_source '{}' - \
+                     ignoring and using 'pyodide' instead",
+                    other.as_str()
+                );
+            }
+        }
+        EnvSource::Unknown("pyodide".to_string())
     } else if matches!(launch_spec, LaunchSpec::Auto | LaunchSpec::AutoScoped(_)) {
         // Auto-detect Python environment, optionally scoped to a package manager family.
         // "auto:uv" constrains to UV sources, "auto:conda" to conda sources,
@@ -678,9 +726,13 @@ pub(crate) async fn handle(
         warn!("[runtime-state] {}", e);
     }
 
-    // Deno kernels don't need pooled environments
-    let pooled_env = if resolved_kernel_type == "deno" {
-        info!("[notebook-sync] LaunchKernel: Deno kernel (no pooled env)");
+    // Deno kernels don't need pooled environments; the pyodide WASM sandbox
+    // brings its own interpreter, so no pooled env either.
+    let pooled_env = if resolved_kernel_type == "deno" || resolved_kernel_type == "pyodide" {
+        info!(
+            "[notebook-sync] LaunchKernel: {} kernel (no pooled env)",
+            resolved_kernel_type
+        );
         None
     } else {
         // Python kernels require pooled environment
@@ -1682,6 +1734,13 @@ pub(crate) async fn handle(
                 };
             restart_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
             restart_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
+            // Pyodide: a restart must reinstall the same declared packages the
+            // launch path installed; without this injection the restarted
+            // interpreter came back with none of the notebook's dependencies.
+            if let Some((key, value)) = pyodide_declared_deps_env(room, &resolved_kernel_type).await
+            {
+                restart_env_vars.insert(key, value);
+            }
             match send_runtime_agent_request_with_captured_env_repair(
                 room,
                 captured_env_for_config.as_ref(),
@@ -1959,6 +2018,16 @@ pub(crate) async fn handle(
                 launch_env_vars
                     .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
+
+                // Pyodide: declared `runt.execution.dependencies` ride the
+                // launch env so the adapter installs them via micropip at
+                // interpreter startup.
+                if let Some((key, value)) =
+                    pyodide_declared_deps_env(room, &resolved_kernel_type).await
+                {
+                    launch_env_vars.insert(key, value);
+                }
+
                 match send_runtime_agent_request_with_captured_env_repair(
                     room,
                     captured_env_for_config.as_ref(),
@@ -2088,6 +2157,19 @@ mod tests {
     use super::*;
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::{AutoLaunchAdmission, ManualLaunchAdmission, NotebookRoom};
+
+    #[test]
+    fn pyodide_deps_env_var_only_for_pyodide_with_deps() {
+        let deps = vec!["six".to_string(), "attrs>=23".to_string()];
+        assert_eq!(
+            pyodide_deps_env_var("pyodide", &deps),
+            Some(("RUNT_PYODIDE_DEPS".to_string(), "six,attrs>=23".to_string()))
+        );
+        // Non-pyodide kernels never get the pyodide env var.
+        assert_eq!(pyodide_deps_env_var("python", &deps), None);
+        // Empty dependency lists are omitted entirely.
+        assert_eq!(pyodide_deps_env_var("pyodide", &[]), None);
+    }
 
     fn test_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
         let tmp = tempfile::TempDir::new().unwrap();

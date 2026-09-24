@@ -168,3 +168,7 @@ ds-bundle/
 
 # celld local prototype (generated projects, state, logs)
 apps/notebook-cloud/.celld-local/
+
+# Pyodide distribution fetched by scripts/fetch-pyodide-assets.mjs (the README stays tracked)
+apps/notebook-cloud/pyodide-assets/*
+!apps/notebook-cloud/pyodide-assets/README.md

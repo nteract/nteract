@@ -3,7 +3,7 @@ export const REPOSITORY_ID = "1155631492";
 export const OWNER_ID = "12401040";
 export const CONTROLLER = "https://deploy.runtimed.run";
 export const ELIGIBLE_IDS = new Set(["836375", "107147005"]);
-export const SERVICES = ["main", "outputs", "renderer-assets"];
+export const SERVICES = ["main", "outputs", "renderer-assets", "pyodide"];
 
 export function check(condition, message) {
   if (!condition) throw new Error(message);

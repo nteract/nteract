@@ -1,12 +1,14 @@
-//! Kernel dispatch enum — wraps `JupyterKernel` and `TestKernel` behind
-//! a single `KernelConnection` impl.
+//! Kernel dispatch enum — wraps `JupyterKernel`, `TestKernel`, and
+//! `PyodideKernel` behind a single `KernelConnection` impl.
 //!
 //! The `KernelConnection` trait uses RPIT futures (`impl Future`), so
 //! `Box<dyn KernelConnection>` is not viable. This enum delegates every
 //! method via match dispatch instead.
 //!
 //! `Kernel::launch` selects the variant based on `config.kernel_type`:
-//! `"test"` builds a `TestKernel`; anything else builds a `JupyterKernel`.
+//! `"test"` builds a `TestKernel`; `"pyodide"` builds a `PyodideKernel`
+//! (adapter-based WASM Python sandbox);
+//! anything else builds a `JupyterKernel`.
 
 use std::path::PathBuf;
 
@@ -20,23 +22,27 @@ use crate::jupyter_kernel::JupyterKernel;
 use crate::kernel_connection::{KernelConnection, KernelLaunchConfig, KernelSharedRefs};
 use crate::output_prep::QueueCommandReceivers;
 use crate::protocol::{CompletionItem, HistoryEntry};
+use crate::pyodide_kernel::PyodideKernel;
 use crate::test_kernel::TestKernel;
 
 pub enum Kernel {
     Jupyter(Box<JupyterKernel>),
     Test(Box<TestKernel>),
+    Pyodide(Box<PyodideKernel>),
 }
 
 impl Kernel {
     /// Return an interrupt handle for concurrent interrupt without `&mut self`.
     ///
-    /// Only `JupyterKernel` supports out-of-band interrupt; `TestKernel`
-    /// returns `None` and interrupt is handled via the `KernelConnection::interrupt`
-    /// path instead.
+    /// Only `JupyterKernel` supports out-of-band interrupt; `TestKernel` and
+    /// `PyodideKernel` return `None` and interrupt is handled via the
+    /// `KernelConnection::interrupt` path instead (for pyodide that is
+    /// terminate-and-restart).
     pub fn interrupt_handle(&self) -> Option<crate::jupyter_kernel::InterruptHandle> {
         match self {
             Kernel::Jupyter(k) => k.interrupt_handle(),
             Kernel::Test(_) => None,
+            Kernel::Pyodide(_) => None,
         }
     }
 }
@@ -49,6 +55,12 @@ impl KernelConnection for Kernel {
         if config.kernel_type == "test" {
             let (k, rx) = TestKernel::launch(config, shared).await?;
             Ok((Kernel::Test(Box::new(k)), rx))
+        } else if config.kernel_type == "pyodide" {
+            // Pyodide is an adapter-based runtime peer, not a Jupyter ZMQ kernel.
+            // The local dev harness hosts Pyodide in a Node subprocess; launch
+            // fails honestly when Node.js or the runner is unavailable.
+            let (k, rx) = PyodideKernel::launch(config, shared).await?;
+            Ok((Kernel::Pyodide(Box::new(k)), rx))
         } else {
             let (k, rx) = JupyterKernel::launch(config, shared).await?;
             Ok((Kernel::Jupyter(Box::new(k)), rx))
@@ -64,6 +76,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.execute(execution_id, cell_id, source).await,
             Kernel::Test(k) => k.execute(execution_id, cell_id, source).await,
+            Kernel::Pyodide(k) => k.execute(execution_id, cell_id, source).await,
         }
     }
 
@@ -71,6 +84,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.interrupt().await,
             Kernel::Test(k) => k.interrupt().await,
+            Kernel::Pyodide(k) => k.interrupt().await,
         }
     }
 
@@ -78,6 +92,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.shutdown().await,
             Kernel::Test(k) => k.shutdown().await,
+            Kernel::Pyodide(k) => k.shutdown().await,
         }
     }
 
@@ -85,6 +100,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.send_comm_message(message).await,
             Kernel::Test(k) => k.send_comm_message(message).await,
+            Kernel::Pyodide(k) => k.send_comm_message(message).await,
         }
     }
 
@@ -104,6 +120,10 @@ impl KernelConnection for Kernel {
                 k.send_comm_update(comm_id, state, buffer_paths, buffers)
                     .await
             }
+            Kernel::Pyodide(k) => {
+                k.send_comm_update(comm_id, state, buffer_paths, buffers)
+                    .await
+            }
         }
     }
 
@@ -114,6 +134,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.apply_bokeh_session_patch(request).await,
             Kernel::Test(k) => k.apply_bokeh_session_patch(request).await,
+            Kernel::Pyodide(k) => k.apply_bokeh_session_patch(request).await,
         }
     }
 
@@ -124,6 +145,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.bokeh_session_checkpoint_request(session_id),
             Kernel::Test(k) => k.bokeh_session_checkpoint_request(session_id),
+            Kernel::Pyodide(k) => k.bokeh_session_checkpoint_request(session_id),
         }
     }
 
@@ -135,6 +157,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.complete(code, cursor_pos).await,
             Kernel::Test(k) => k.complete(code, cursor_pos).await,
+            Kernel::Pyodide(k) => k.complete(code, cursor_pos).await,
         }
     }
 
@@ -147,6 +170,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.get_history(pattern, n, unique).await,
             Kernel::Test(k) => k.get_history(pattern, n, unique).await,
+            Kernel::Pyodide(k) => k.get_history(pattern, n, unique).await,
         }
     }
 
@@ -154,6 +178,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.kernel_type(),
             Kernel::Test(k) => k.kernel_type(),
+            Kernel::Pyodide(k) => k.kernel_type(),
         }
     }
 
@@ -161,6 +186,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.kernel_id(),
             Kernel::Test(k) => k.kernel_id(),
+            Kernel::Pyodide(k) => k.kernel_id(),
         }
     }
 
@@ -168,6 +194,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.env_source(),
             Kernel::Test(k) => k.env_source(),
+            Kernel::Pyodide(k) => k.env_source(),
         }
     }
 
@@ -175,6 +202,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.launched_config(),
             Kernel::Test(k) => k.launched_config(),
+            Kernel::Pyodide(k) => k.launched_config(),
         }
     }
 
@@ -182,6 +210,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.env_path(),
             Kernel::Test(k) => k.env_path(),
+            Kernel::Pyodide(k) => k.env_path(),
         }
     }
 
@@ -189,6 +218,15 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.is_connected(),
             Kernel::Test(k) => k.is_connected(),
+            Kernel::Pyodide(k) => k.is_connected(),
+        }
+    }
+
+    async fn install_packages(&mut self, packages: &[String]) -> Result<Vec<String>> {
+        match self {
+            Kernel::Jupyter(k) => k.install_packages(packages).await,
+            Kernel::Test(k) => k.install_packages(packages).await,
+            Kernel::Pyodide(k) => k.install_packages(packages).await,
         }
     }
 
@@ -196,6 +234,7 @@ impl KernelConnection for Kernel {
         match self {
             Kernel::Jupyter(k) => k.update_launched_uv_deps(deps),
             Kernel::Test(k) => k.update_launched_uv_deps(deps),
+            Kernel::Pyodide(k) => k.update_launched_uv_deps(deps),
         }
     }
 }

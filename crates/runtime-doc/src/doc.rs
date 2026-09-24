@@ -285,6 +285,11 @@ pub struct EnvState {
     /// Packages pre-installed in the prewarmed environment (empty for inline envs).
     #[serde(default)]
     pub prewarmed_packages: Vec<String>,
+    /// Requirement strings a pyodide cell installed at runtime via micropip.
+    /// Runtime-peer-authored capture; the frontend promotes these into
+    /// `metadata.runt.execution.dependencies`.
+    #[serde(default)]
+    pub runtime_installed: Vec<String>,
     /// Latest environment-preparation progress event, if any.
     #[serde(default)]
     pub progress: Option<serde_json::Value>,
@@ -299,6 +304,7 @@ impl Default for EnvState {
             channels_changed: false,
             deno_changed: false,
             prewarmed_packages: Vec::new(),
+            runtime_installed: Vec::new(),
             progress: None,
         }
     }
@@ -2549,6 +2555,39 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
+    /// Record requirements a pyodide cell installed at runtime via micropip.
+    /// Stored under a dedicated additive top-level map
+    /// (`runtime_packages.installed`) because the frozen v2 genesis scaffold is
+    /// never regenerated; the frontend promotes entries into
+    /// `metadata.runt.execution.dependencies`.
+    pub fn set_runtime_installed(&mut self, packages: &[String]) -> Result<(), RuntimeStateError> {
+        if self.runtime_installed() == packages {
+            return Ok(());
+        }
+
+        let map = self.get_or_create_root_map("runtime_packages")?;
+        let list = match self.doc.get(&map, "installed").ok().flatten() {
+            Some((Value::Object(ObjType::List), list)) => list,
+            _ => self.doc.put_object(&map, "installed", ObjType::List)?,
+        };
+        for i in (0..self.doc.length(&list)).rev() {
+            self.doc.delete(&list, i)?;
+        }
+        for (i, pkg) in packages.iter().enumerate() {
+            self.doc.insert(&list, i, pkg.as_str())?;
+        }
+
+        Ok(())
+    }
+
+    /// Requirements recorded by [`Self::set_runtime_installed`].
+    pub fn runtime_installed(&self) -> Vec<String> {
+        let Some(map) = self.get_map("runtime_packages") else {
+            return Vec::new();
+        };
+        self.read_str_list(&map, "installed")
+    }
+
     /// Update the latest environment preparation progress snapshot.
     pub fn set_env_progress(
         &mut self,
@@ -3460,6 +3499,7 @@ impl RuntimeStateDoc {
                 channels_changed: self.read_bool(e, "channels_changed"),
                 deno_changed: self.read_bool(e, "deno_changed"),
                 prewarmed_packages: self.read_str_list(e, "prewarmed_packages"),
+                runtime_installed: self.runtime_installed(),
                 progress: match automunge::read_json_value(&self.doc, e, "progress") {
                     Some(serde_json::Value::Null) | None => None,
                     other => other,
@@ -4536,6 +4576,88 @@ mod tests {
                 "bytes_downloaded": 1024,
                 "bytes_total": 4096,
                 "bytes_per_second": 512,
+            }))
+        );
+    }
+
+    #[test]
+    fn test_runtime_installed_defaults_empty_and_round_trips() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc.read_state().env.runtime_installed.is_empty());
+
+        doc.set_runtime_installed(&["six".to_string(), "attrs".to_string()])
+            .unwrap();
+        assert_eq!(
+            doc.read_state().env.runtime_installed,
+            vec!["six".to_string(), "attrs".to_string()]
+        );
+
+        // Overwrites replace the list; the accessor is idempotent.
+        doc.set_runtime_installed(&["six".to_string()]).unwrap();
+        assert_eq!(
+            doc.read_state().env.runtime_installed,
+            vec!["six".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_set_env_progress_round_trips_pyodide_install_phases() {
+        // The pyodide adapter writes install progress with the same flattened
+        // `phase`-tagged encoding as the uv/conda paths; the kernel used to
+        // write a `type`-tagged payload the TS projection could not read.
+        // This pins the write shape the kernel must produce.
+        let mut doc = RuntimeStateDoc::new();
+
+        doc.set_env_progress(
+            "pyodide",
+            &serde_json::json!({
+                "phase": "installing_packages",
+                "packages": ["six"],
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            doc.read_state().env.progress,
+            Some(serde_json::json!({
+                "env_type": "pyodide",
+                "phase": "installing_packages",
+                "packages": ["six"],
+            }))
+        );
+
+        doc.set_env_progress(
+            "pyodide",
+            &serde_json::json!({
+                "phase": "install_complete",
+                "elapsed_ms": 1234,
+                "packages": ["six"],
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            doc.read_state().env.progress,
+            Some(serde_json::json!({
+                "env_type": "pyodide",
+                "phase": "install_complete",
+                "elapsed_ms": 1234,
+                "packages": ["six"],
+            }))
+        );
+
+        doc.set_env_progress(
+            "pyodide",
+            &serde_json::json!({
+                "phase": "error",
+                "message": "Package 'request' could not be resolved — check the package name and spelling.",
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            doc.read_state().env.progress,
+            Some(serde_json::json!({
+                "env_type": "pyodide",
+                "phase": "error",
+                "message": "Package 'request' could not be resolved — check the package name and spelling.",
             }))
         );
     }

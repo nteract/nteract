@@ -24,6 +24,8 @@ pub use runtimed_settings_sync as sync_client;
 // Server-only modules (not in runtimed-client)
 // ============================================================================
 
+#[doc(hidden)]
+pub mod adapter;
 pub(crate) mod async_outcome;
 pub mod blob_server;
 pub mod blob_store;
@@ -59,6 +61,7 @@ pub mod paths;
 pub(crate) mod pixi_project;
 pub mod process_groups;
 pub mod project_file;
+pub mod pyodide_kernel;
 pub(crate) mod requests;
 pub mod runtime_agent;
 pub mod runtime_agent_handle;
@@ -76,7 +79,6 @@ pub mod test_kernel;
 pub(crate) mod trusted_packages;
 pub mod user_error;
 pub(crate) mod uv_project;
-#[doc(hidden)]
 pub mod warm_env;
 pub mod workstation;
 

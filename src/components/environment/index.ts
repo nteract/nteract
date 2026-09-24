@@ -2,6 +2,7 @@ export {
   CondaIcon,
   DenoIcon,
   PixiIcon,
+  PyodideIcon,
   PythonIcon,
   UvIcon,
   type EnvironmentIconProps,
@@ -30,6 +31,7 @@ export {
   type PackageSpecTone,
 } from "./PackageSpecList";
 export { UvDependencyPanel, type UvDependencyPanelProps } from "./UvDependencyPanel";
+export { PyodideDependencyPanel, type PyodideDependencyPanelProps } from "./PyodideDependencyPanel";
 export { type DependencyPanelVariant, type EnvironmentSyncState } from "./dependency-panel-types";
 export {
   notebookMetadataToPackageViewModel,

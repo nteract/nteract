@@ -124,6 +124,10 @@ export interface EnvState {
   channels_changed: boolean;
   deno_changed: boolean;
   prewarmed_packages: string[];
+  /** Requirements a pyodide cell installed at runtime via micropip.
+   * Runtime-peer-authored capture; the frontend promotes entries into
+   * `metadata.runt.execution.dependencies`. */
+  runtime_installed: string[];
   progress: EnvProgressEvent | null;
 }
 
@@ -434,6 +438,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     channels_changed: false,
     deno_changed: false,
     prewarmed_packages: [],
+    runtime_installed: [],
     progress: null,
   },
   trust: {

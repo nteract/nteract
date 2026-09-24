@@ -117,23 +117,49 @@ export function useNotebookMetadata(): NotebookMetadataSnapshot | null {
 
 /**
  * React hook: detect the notebook runtime from metadata.
- * Returns "python", "deno", or null.
+ * Returns "python", "deno", "pyodide", or null.
  *
  * Delegates to the canonical Rust implementation via WASM
  * (NotebookMetadataSnapshot::detect_runtime). The useSyncExternalStore
  * subscription ensures React re-renders when metadata changes.
  */
-export function useDetectRuntime(): "python" | "deno" | null {
+export function useDetectRuntime(): "python" | "deno" | "pyodide" | null {
   // Subscribe to metadata changes so we re-render when the doc updates.
   useSyncExternalStore(subscribe, getSnapshot);
   if (!_handle) return null;
-  return (_handle.detect_runtime() as "python" | "deno") ?? null;
+  return (_handle.detect_runtime() as "python" | "deno" | "pyodide") ?? null;
 }
 
 /**
  * React hook: read UV inline dependencies.
  * Returns a stable object reference (via useMemo) to avoid unnecessary
  * re-renders in consumers that use the result as a dependency or prop.
+ */
+/**
+ * React hook: read pyodide (micropip) dependencies from
+ * `metadata.runt.execution.dependencies`. These are *declared* dependencies —
+ * the sandbox installs them at interpreter startup; they are not installed
+ * anywhere else.
+ */
+export function useExecutionDependencies(): {
+  dependencies: string[];
+  profile: string | null;
+} | null {
+  const snapshot = useNotebookMetadata();
+  const execution = snapshot?.runt?.execution as
+    | { dependencies?: string[]; profile?: string }
+    | undefined;
+  const deps = execution?.dependencies;
+  const profile = execution?.profile ?? null;
+  return useMemo(() => {
+    if (!execution) return null;
+    return { dependencies: deps ?? [], profile };
+  }, [execution, deps, profile]);
+}
+
+/**
+ * React hook: read UV inline dependencies.
+ * Returns a stable object reference (via useMemo).
  */
 export function useUvDependencies(): {
   dependencies: string[];
@@ -254,6 +280,14 @@ export interface RuntMetadata {
   conda?: CondaInlineMetadata;
   pixi?: PixiInlineMetadata;
   deno?: DenoMetadata;
+  runtime?: string;
+  execution?: ExecutionMetadata;
+}
+
+/** `metadata.runt.execution` — adapter profile + declared pyodide deps. */
+export interface ExecutionMetadata {
+  profile?: string;
+  dependencies?: string[];
 }
 
 export interface NotebookMetadataSnapshot {
@@ -332,6 +366,30 @@ async function syncToRelay(): Promise<void> {
 
 /**
  * Add a UV dependency, deduplicating by package name (case-insensitive).
+ */
+/**
+ * Add a pyodide dependency to `runt.execution.dependencies` (micropip).
+ */
+export async function addExecutionDependency(pkg: string): Promise<void> {
+  if (!_handle) return;
+  _handle.add_execution_dependency(pkg);
+  await syncToRelay();
+  notifyMetadataChanged();
+}
+
+/**
+ * Remove a pyodide dependency by package name (case-insensitive match).
+ */
+export async function removeExecutionDependency(pkg: string): Promise<void> {
+  if (!_handle) return;
+  const removed = _handle.remove_execution_dependency(pkg);
+  if (!removed) return;
+  await syncToRelay();
+  notifyMetadataChanged();
+}
+
+/**
+ * Add a UV dependency to `runt.uv.dependencies`.
  */
 export async function addUvDependency(pkg: string): Promise<void> {
   if (!_handle) return;

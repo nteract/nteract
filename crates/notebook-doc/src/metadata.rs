@@ -49,6 +49,15 @@ pub struct RuntMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deno: Option<DenoMetadata>,
 
+    /// Explicit runtime selection (`metadata.runt.runtime`), e.g. `"pyodide"`.
+    /// Unknown values are preserved through round-trips.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+
+    /// Execution profile (`metadata.runt.execution`), e.g. `pyodide.wasm`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionMetadata>,
+
     /// Catch-all for unknown/third-party runt keys.
     /// Preserves fields we don't model (e.g. from newer schema versions or extensions)
     /// through deserialization → serialization round-trips.
@@ -71,6 +80,24 @@ where
     map.remove("trust_signature");
     map.remove("trust_timestamp");
     Ok(map)
+}
+
+/// Execution profile metadata (`metadata.runt.execution`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutionMetadata {
+    /// Adapter profile id, e.g. `"pyodide.wasm"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+
+    /// Packages the adapter installs at interpreter startup via micropip
+    /// (PEP 508 specifiers). These are the *declared* dependencies — the
+    /// sandbox installs them on launch; nothing else installs them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
+
+    /// Catch-all for unknown/third-party execution keys, preserved verbatim.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// UV inline dependency metadata (`metadata.runt.uv`).
@@ -373,14 +400,36 @@ impl NotebookMetadataSnapshot {
 
     /// Detect the notebook runtime from kernelspec + language_info metadata.
     ///
-    /// Returns `"python"`, `"deno"`, or `None` for unknown runtimes.
+    /// Returns `"python"`, `"deno"`, `"pyodide"`, or `None` for unknown
+    /// runtimes.
     ///
     /// Priority chain:
-    /// 1. `kernelspec.name` (substring match for "deno" or "python")
-    /// 2. `kernelspec.language` (exact match: "typescript"/"javascript" → deno)
-    /// 3. `language_info.name` (exact match, including "deno")
-    /// 4. `runt.deno` presence (legacy notebooks without kernelspec)
+    /// 1. explicit `runt.runtime` (python/deno/pyodide; unknown falls through)
+    /// 2. `runt.execution.profile == "pyodide.wasm"` → pyodide
+    /// 3. `kernelspec.name` (substring match for "deno" or "python")
+    /// 4. `kernelspec.language` (exact match: "typescript"/"javascript" → deno)
+    /// 5. `language_info.name` (exact match, including "deno")
+    /// 6. `runt.deno` presence (legacy notebooks without kernelspec)
+    /// 7. `runt.uv` / `runt.conda` presence (implicitly Python)
     pub fn detect_runtime(&self) -> Option<String> {
+        // Explicit runt.runtime wins.
+        if let Some(runtime) = &self.runt.runtime {
+            let lowered = runtime.to_lowercase();
+            if lowered == "python" || lowered == "deno" || lowered == "pyodide" {
+                return Some(lowered);
+            }
+        }
+        if let Some(profile) = self
+            .runt
+            .execution
+            .as_ref()
+            .and_then(|execution| execution.profile.as_ref())
+        {
+            if profile == "pyodide.wasm" {
+                return Some("pyodide".to_string());
+            }
+        }
+
         // Check kernelspec.name first (most reliable)
         if let Some(ref ks) = self.kernelspec {
             let name = ks.name.to_lowercase();
@@ -479,6 +528,49 @@ impl NotebookMetadataSnapshot {
             prerelease: None,
         });
         uv.prerelease = prerelease;
+    }
+
+    // ── Pyodide (micropip) dependency operations ───────────────────
+
+    /// Add a pyodide dependency (`runt.execution.dependencies`), deduplicating
+    /// by package name (case-insensitive). Initializes the execution section
+    /// if absent, preserving the profile.
+    pub fn add_execution_dependency(&mut self, pkg: &str) {
+        let execution = self
+            .runt
+            .execution
+            .get_or_insert_with(|| ExecutionMetadata {
+                profile: None,
+                dependencies: Vec::new(),
+                extra: std::collections::BTreeMap::new(),
+            });
+        let name = extract_package_name(pkg);
+        execution
+            .dependencies
+            .retain(|d| extract_package_name(d) != name);
+        execution.dependencies.push(pkg.to_string());
+    }
+
+    /// Remove a pyodide dependency by package name (case-insensitive).
+    /// Returns true if a dependency was removed.
+    pub fn remove_execution_dependency(&mut self, pkg: &str) -> bool {
+        let Some(ref mut execution) = self.runt.execution else {
+            return false;
+        };
+        let name = extract_package_name(pkg);
+        let before = execution.dependencies.len();
+        execution
+            .dependencies
+            .retain(|d| extract_package_name(d) != name);
+        execution.dependencies.len() < before
+    }
+
+    /// Get pyodide dependencies, or empty slice if no execution section.
+    pub fn execution_dependencies(&self) -> &[String] {
+        match &self.runt.execution {
+            Some(execution) => &execution.dependencies,
+            None => &[],
+        }
     }
 
     /// Get UV dependencies, or empty slice if no UV section.
@@ -628,6 +720,8 @@ impl RuntMetadata {
             conda: None,
             pixi: None,
             deno: None,
+            runtime: None,
+            execution: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -645,6 +739,8 @@ impl RuntMetadata {
             }),
             pixi: None,
             deno: None,
+            runtime: None,
+            execution: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -663,6 +759,8 @@ impl RuntMetadata {
                 python: None,
             }),
             deno: None,
+            runtime: None,
+            execution: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -681,6 +779,8 @@ impl RuntMetadata {
                 config: None,
                 flexible_npm_imports: None,
             }),
+            runtime: None,
+            execution: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -697,6 +797,8 @@ impl Default for RuntMetadata {
             conda: None,
             pixi: None,
             deno: None,
+            runtime: None,
+            execution: None,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -713,6 +815,8 @@ impl RuntMetadata {
             && self.conda.is_none()
             && self.pixi.is_none()
             && self.deno.is_none()
+            && self.runtime.is_none()
+            && self.execution.is_none()
             && self.extra.is_empty()
             && self.schema_version == "1"
     }
@@ -1014,6 +1118,8 @@ mod tests {
                 conda: None,
                 pixi: None,
                 deno: None,
+                runtime: None,
+                execution: None,
                 extra: std::collections::BTreeMap::new(),
             },
             extras: std::collections::BTreeMap::new(),
@@ -1123,6 +1229,8 @@ mod tests {
             conda: None,
             pixi: None,
             deno: None,
+            runtime: None,
+            execution: None,
             extra: std::collections::BTreeMap::new(),
         };
         let json = serde_json::to_value(&meta).unwrap();
@@ -1340,6 +1448,61 @@ mod tests {
             runt: RuntMetadata::default(),
             extras: std::collections::BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn test_detect_runtime_explicit_runt_runtime_pyodide() {
+        let mut s = snapshot_with_kernelspec("python3", Some("python"));
+        s.runt.runtime = Some("pyodide".to_string());
+        // Explicit runt.runtime wins over a legacy python kernelspec.
+        assert_eq!(s.detect_runtime(), Some("pyodide".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_execution_profile_pyodide_wasm() {
+        let mut s = snapshot_with_kernelspec("python3", Some("python"));
+        s.runt.execution = Some(ExecutionMetadata {
+            profile: Some("pyodide.wasm".to_string()),
+            dependencies: Vec::new(),
+            extra: std::collections::BTreeMap::new(),
+        });
+        assert_eq!(s.detect_runtime(), Some("pyodide".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_explicit_runt_runtime_python_and_deno_unchanged() {
+        let mut s = snapshot_with_kernelspec("deno", None);
+        s.runt.runtime = Some("python".to_string());
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+
+        let mut s = snapshot_with_kernelspec("python3", Some("python"));
+        s.runt.runtime = Some("deno".to_string());
+        assert_eq!(s.detect_runtime(), Some("deno".to_string()));
+    }
+
+    #[test]
+    fn test_detect_runtime_unknown_runt_runtime_falls_through() {
+        let mut s = snapshot_with_kernelspec("python3", Some("python"));
+        s.runt.runtime = Some("marimo".to_string());
+        assert_eq!(s.detect_runtime(), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_runt_metadata_round_trips_pyodide_keys() {
+        let json = serde_json::json!({
+            "schema_version": "1",
+            "runtime": "pyodide",
+            "execution": { "profile": "pyodide.wasm" }
+        });
+        let runt: RuntMetadata = serde_json::from_value(json).unwrap();
+        assert_eq!(runt.runtime.as_deref(), Some("pyodide"));
+        assert_eq!(
+            runt.execution.as_ref().and_then(|e| e.profile.as_deref()),
+            Some("pyodide.wasm")
+        );
+        let reserialized = serde_json::to_value(&runt).unwrap();
+        assert_eq!(reserialized["runtime"], "pyodide");
+        assert_eq!(reserialized["execution"]["profile"], "pyodide.wasm");
     }
 
     #[test]

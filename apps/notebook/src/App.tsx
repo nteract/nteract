@@ -92,6 +92,7 @@ import { createDesktopConnectionStatusSource } from "./lib/desktop-connection-st
 import {
   CondaDependencyPanel as CondaDependencyHeader,
   DenoDependencyPanel as DenoDependencyHeader,
+  PyodideDependencyPanel,
   UvDependencyPanel as DependencyHeader,
 } from "@/components/environment";
 import { NotebookToolbar } from "./components/NotebookToolbar";
@@ -105,6 +106,7 @@ import { startCursorDispatch } from "@/components/notebook/cursor-registry";
 import { useDaemonKernel } from "./hooks/useDaemonKernel";
 import { useDenoConfig } from "./hooks/useDenoConfig";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
+import { usePyodideDependencies } from "./hooks/usePyodideDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
 import { useGlobalFind } from "./hooks/useGlobalFind";
@@ -542,6 +544,13 @@ function AppContent() {
     importFromPyproject,
   } = useDependencies();
 
+  // Pyodide (micropip) dependency management
+  const {
+    dependencies: pyodideDeps,
+    addDependency: addPyodideDependency,
+    removeDependency: removePyodideDependency,
+  } = usePyodideDependencies();
+
   // Conda Dependency management
   const {
     dependencies: condaDependencies,
@@ -861,7 +870,11 @@ function AppContent() {
     (cellId: string): string | undefined => {
       const cell = getCellById(cellId);
       if (cell?.cell_type !== "code") return undefined;
-      return runtime === "python" ? "python" : runtime === "deno" ? "typescript" : undefined;
+      return runtime === "python" || runtime === "pyodide"
+        ? "python"
+        : runtime === "deno"
+          ? "typescript"
+          : undefined;
     },
     [runtime],
   );
@@ -1560,6 +1573,25 @@ function AppContent() {
     resetDismissedEnvBuildDetails,
     showEnvBuildDialog,
   });
+  // Add a declared pyodide package, then hot-install it into the live sandbox
+  // via micropip (no kernel restart needed for additions). Install progress
+  // and the terminal outcome come from the RuntimeStateDoc `env.progress`
+  // channel and render in the env-progress banner — so never dismiss it here:
+  // a premature `envProgress.reset()` used to hide the success/error phase
+  // before it rendered, leaving a failed install visible only in the devtools
+  // log.
+  const addPyodidePackage = useCallback(
+    async (pkg: string) => {
+      await addPyodideDependency(pkg);
+      const response = await syncEnvironment();
+      if (response.result === "sync_environment_failed") {
+        // Diagnostic breadcrumb only; the banner (env.progress error phase)
+        // is the user-facing surface for install failures.
+        logger.error("[pyodide] Package install failed:", response.error);
+      }
+    },
+    [addPyodideDependency, syncEnvironment],
+  );
 
   const handleExecuteCell = useCallback(
     (cellId: string) => {
@@ -2268,16 +2300,29 @@ function AppContent() {
                       justSynced={justSynced}
                     />
                   )}
+                  {runtime === "pyodide" && (
+                    <PyodideDependencyPanel
+                      variant="rail"
+                      dependencies={pyodideDeps}
+                      loading={depsLoading}
+                      readOnly={!shellCapabilities.canManagePackages}
+                      onAdd={addPyodidePackage}
+                      onRemove={removePyodideDependency}
+                    />
+                  )}
                   {runtime === null && (
                     <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
                       Runtime metadata is still loading.
                     </div>
                   )}
-                  {runtime !== null && runtime !== "python" && runtime !== "deno" && (
-                    <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                      No package controls for this runtime.
-                    </div>
-                  )}
+                  {runtime !== null &&
+                    runtime !== "python" &&
+                    runtime !== "deno" &&
+                    runtime !== "pyodide" && (
+                      <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+                        No package controls for this runtime.
+                      </div>
+                    )}
                 </NotebookPackagesPanel>
               }
             />

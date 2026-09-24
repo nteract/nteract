@@ -22,6 +22,8 @@ pub enum Runtime {
     #[default]
     Python,
     Deno,
+    /// WASM-based Python sandbox (Pyodide adapter).
+    Pyodide,
     /// An unrecognized runtime value, preserved for round-tripping.
     Other(String),
 }
@@ -51,7 +53,7 @@ impl JsonSchema for Runtime {
     fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
             "type": "string",
-            "examples": ["python", "deno"]
+            "examples": ["python", "deno", "pyodide"]
         })
     }
 }
@@ -63,6 +65,7 @@ impl std::fmt::Display for Runtime {
         match self {
             Runtime::Python => write!(f, "python"),
             Runtime::Deno => write!(f, "deno"),
+            Runtime::Pyodide => write!(f, "pyodide"),
             Runtime::Other(s) => write!(f, "{}", s),
         }
     }
@@ -75,6 +78,7 @@ impl std::str::FromStr for Runtime {
         Ok(match s.to_lowercase().as_str() {
             "python" | "py" => Runtime::Python,
             "deno" | "typescript" | "ts" => Runtime::Deno,
+            "pyodide" => Runtime::Pyodide,
             _ => Runtime::Other(s.to_string()),
         })
     }

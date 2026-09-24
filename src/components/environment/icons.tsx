@@ -116,3 +116,26 @@ export function PixiIcon({ className, ...props }: EnvironmentIconProps) {
     </svg>
   );
 }
+
+/** Pyodide (WASM Python sandbox) mark: rounded square with an embedded "Py". */
+/**
+ * Official Pyodide logo (the "Py" letterforms from pyodide/pyodide-artwork,
+ * CC-BY-4.0), scaled from the 182×182 quadratic mark and adapted to
+ * `currentColor` so it follows the app theme like the other environment icons.
+ */
+export function PyodideIcon({ className, ...props }: EnvironmentIconProps) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={className}
+      {...props}
+    >
+      {/* "P" letterform */}
+      <path d="M11.736 6.542c0 1.399-1.16 2.638-2.638 2.638H3.822v2.638H2.506V2.582h6.593c1.41 0 2.598 1.174 2.637 2.638v1.322zm-1.319-1.319c0-.725-.593-1.319-1.319-1.319H3.822v3.958h5.277c.725 0 1.318-.593 1.318-1.319v-1.32z" />
+      {/* "y" letterform */}
+      <path d="M17.398 8.927v2.9h-1.319v-2.9l-3.958-4.354V2.594h1.319v1.437l3.297 3.627 3.297-3.627V2.594h1.319v1.979l-3.955 4.354z" />
+    </svg>
+  );
+}

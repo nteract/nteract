@@ -936,6 +936,27 @@ impl NotebookDoc {
         Ok(removed)
     }
 
+    /// Add a pyodide dependency (`runt.execution.dependencies`),
+    /// deduplicating by package name (case-insensitive).
+    pub fn add_execution_dependency(&mut self, pkg: &str) -> Result<(), AutomergeError> {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        snapshot.add_execution_dependency(pkg);
+        self.set_metadata_snapshot(&snapshot)
+    }
+
+    /// Remove a pyodide dependency by package name (case-insensitive).
+    /// Returns true if a dependency was removed.
+    pub fn remove_execution_dependency(&mut self, pkg: &str) -> Result<bool, AutomergeError> {
+        let Some(mut snapshot) = self.get_metadata_snapshot() else {
+            return Ok(false);
+        };
+        let removed = snapshot.remove_execution_dependency(pkg);
+        if removed {
+            self.set_metadata_snapshot(&snapshot)?;
+        }
+        Ok(removed)
+    }
+
     /// Clear the UV section entirely (deps + requires-python).
     pub fn clear_uv_section(&mut self) -> Result<(), AutomergeError> {
         if let Some(mut snapshot) = self.get_metadata_snapshot() {

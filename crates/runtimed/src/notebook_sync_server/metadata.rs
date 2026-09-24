@@ -3327,6 +3327,16 @@ async fn auto_launch_kernel_attempt(
                 info!("[notebook-sync] Auto-launch: Deno kernel (notebook kernelspec)");
                 ("deno", EnvSource::Deno, None)
             }
+            Some("pyodide") => {
+                // Notebook explicitly declares the pyodide runtime
+                // (`runt.runtime` / execution profile) — an explicit runtime
+                // choice that suppresses project-file resolution the same way
+                // `notebook` environment mode does for python. The WASM
+                // sandbox adapter needs no pooled environment; launch
+                // dispatches on the kernel type.
+                info!("[notebook-sync] Auto-launch: Pyodide runtime (notebook metadata)");
+                ("pyodide", EnvSource::Unknown("pyodide".to_string()), None)
+            }
             Some("python") => {
                 // Notebook is a Python notebook - resolve environment.
                 // Auto keeps the legacy project-first policy. `notebook` is
@@ -3403,6 +3413,12 @@ async fn auto_launch_kernel_attempt(
                     // User's default is Deno
                     info!("[notebook-sync] Auto-launch: Deno kernel (default runtime)");
                     ("deno", EnvSource::Deno, None)
+                } else if matches!(default_runtime, crate::runtime::Runtime::Pyodide) {
+                    // User's default is Pyodide — the WASM sandbox adapter needs
+                    // no pooled environment; the launch path dispatches on the
+                    // kernel type.
+                    info!("[notebook-sync] Auto-launch: Pyodide runtime (default runtime)");
+                    ("pyodide", EnvSource::Unknown("pyodide".to_string()), None)
                 } else {
                     // Default to Python. Auto keeps the legacy project-first
                     // policy. `notebook` is the explicit opt-out and
@@ -5148,6 +5164,85 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
         };
     };
 
+    // Pyodide: declared `runt.execution.dependencies` install live via micropip
+    // inside the sandbox. Only
+    // additions are hot-installable; removal needs a kernel restart to drop
+    // the already-imported module.
+    if env_source == "pyodide" {
+        let declared: Vec<String> = current_metadata.execution_dependencies().to_vec();
+        let before: std::collections::BTreeSet<String> = launched
+            .pyodide_deps
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let added: Vec<String> = declared
+            .iter()
+            .filter(|pkg| !before.contains(*pkg))
+            .cloned()
+            .collect();
+        let removed: Vec<String> = before
+            .iter()
+            .filter(|pkg| !declared.contains(pkg))
+            .cloned()
+            .collect();
+        if !removed.is_empty() {
+            return NotebookResponse::SyncEnvironmentFailed {
+                error: "Removing packages from a running pyodide sandbox requires a kernel restart"
+                    .to_string(),
+                needs_restart: true,
+            };
+        }
+        if added.is_empty() {
+            return NotebookResponse::SyncEnvironmentComplete {
+                synced_packages: vec![],
+            };
+        }
+        let env_kind = notebook_protocol::protocol::EnvKind::Pyodide {
+            packages: added.clone(),
+        };
+        match send_runtime_agent_request(
+            room,
+            notebook_protocol::protocol::RuntimeAgentRequest::SyncEnvironment(env_kind),
+        )
+        .await
+        {
+            Ok(notebook_protocol::protocol::RuntimeAgentResponse::EnvironmentSynced {
+                synced_packages,
+            }) => {
+                let mut lc = room.runtime_agent_launched_config.write().await;
+                if let Some(ref mut config) = *lc {
+                    let deps = config.pyodide_deps.get_or_insert_with(Vec::new);
+                    for pkg in &synced_packages {
+                        if !deps.contains(pkg) {
+                            deps.push(pkg.clone());
+                        }
+                    }
+                }
+                drop(lc);
+                return NotebookResponse::SyncEnvironmentComplete { synced_packages };
+            }
+            Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
+                return NotebookResponse::SyncEnvironmentFailed {
+                    error,
+                    needs_restart: false,
+                };
+            }
+            Ok(other) => {
+                return NotebookResponse::SyncEnvironmentFailed {
+                    error: format!("Unexpected runtime-agent response: {:?}", other),
+                    needs_restart: false,
+                };
+            }
+            Err(e) => {
+                return NotebookResponse::SyncEnvironmentFailed {
+                    error: format!("Failed to reach runtime agent: {}", e),
+                    needs_restart: false,
+                };
+            }
+        }
+    }
+
     // Determine what packages need installing.
     // For inline-dep kernels, compute_env_sync_diff gives the drift.
     // For prewarmed kernels, check if the user added new inline deps.
@@ -5243,6 +5338,9 @@ pub(crate) async fn handle_sync_environment(room: &NotebookRoom) -> NotebookResp
                 let mut lc = room.runtime_agent_launched_config.write().await;
                 if let Some(ref mut config) = *lc {
                     match &env_kind {
+                        notebook_protocol::protocol::EnvKind::Pyodide { .. } => {
+                            // Handled by the dedicated pyodide branch above.
+                        }
                         notebook_protocol::protocol::EnvKind::Uv { .. } => {
                             // Promote prewarmed to uv:inline baseline if needed
                             if config.uv_deps.is_none() {
@@ -5385,7 +5483,7 @@ pub(crate) fn formatter_actor(runtime: &str) -> String {
     format!("runtimed:{tool}")
 }
 
-/// Detect the runtime from room metadata, returning "python", "deno", or None.
+/// Detect the runtime from room metadata, returning "python", "deno", "pyodide", or None.
 pub(crate) async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
     let doc = room.doc.read().await;
     doc.get_metadata_snapshot()

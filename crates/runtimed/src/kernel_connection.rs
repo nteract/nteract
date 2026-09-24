@@ -201,6 +201,21 @@ pub trait KernelConnection: Send {
 
     // ── Mutable metadata update ───────────────────────────────────────────
 
+    /// Install packages into a live runtime peer (pyodide hot-sync).
+    ///
+    /// Mirrors the async style of the other methods (internal trait, single
+    /// real impl); the lint is suppressed alongside the rest of the trait.
+    #[allow(async_fn_in_trait)]
+    ///
+    /// Backed by micropip inside the sandbox; environments that install
+    /// through the host (uv/conda/pixi) override nothing and get the default
+    /// unsupported error, which the agent turns into a needs-restart response.
+    async fn install_packages(&mut self, _packages: &[String]) -> Result<Vec<String>> {
+        Err(anyhow::anyhow!(
+            "This runtime does not support live package installs"
+        ))
+    }
+
     /// Update the UV deps in the launched config after hot-sync.
     ///
     /// Ensures future sync-drift checks reflect the newly installed packages.

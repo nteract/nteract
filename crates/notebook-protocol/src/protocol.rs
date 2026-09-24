@@ -43,6 +43,11 @@ pub struct LaunchedEnvConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conda_deps: Option<Vec<String>>,
 
+    /// Pyodide declared deps that have been installed in the sandbox
+    /// (if env_source is "pyodide"), for hot-sync drift tracking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pyodide_deps: Option<Vec<String>>,
+
     /// Conda channels (if env_source is "conda:inline")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conda_channels: Option<Vec<String>>,
@@ -156,13 +161,18 @@ pub enum EnvKind {
         packages: Vec<String>,
         channels: Vec<String>,
     },
+    /// Pyodide WASM sandbox (`runt.execution.dependencies`), installed with
+    /// micropip inside the runtime peer.
+    Pyodide { packages: Vec<String> },
 }
 
 impl EnvKind {
     /// The packages to install, regardless of environment type.
     pub fn packages(&self) -> &[String] {
         match self {
-            EnvKind::Uv { packages } | EnvKind::Conda { packages, .. } => packages,
+            EnvKind::Uv { packages }
+            | EnvKind::Conda { packages, .. }
+            | EnvKind::Pyodide { packages } => packages,
         }
     }
 }

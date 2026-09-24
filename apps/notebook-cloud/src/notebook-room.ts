@@ -2184,6 +2184,7 @@ export class NotebookRoom {
         error: String(closeError),
       });
     });
+    let ignoredStale = false;
     try {
       const materializer = this.materializerFor(notebookId);
       const reason = errorMessage(error).slice(0, 1000);
@@ -2192,22 +2193,28 @@ export class NotebookRoom {
         "error",
         reason,
       );
-      if (failed.ignored_stale) return;
-      this.deliverRoomHostFrames(notebookId, failed);
-      if (this.env.DB)
-        await updateWorkstationAttachJobStatus(this.env, {
-          ownerPrincipal: runtime.ownerPrincipal,
-          workstationId: MANAGED_PYTHON_WORKSTATION,
-          jobId: runtime.sessionId,
-          status: "failed",
-          errorMessage: reason,
-        });
-      await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
-      await this.publishCurrentComputeSessionSummary(notebookId);
+      if (failed.ignored_stale) {
+        ignoredStale = true;
+      } else {
+        this.deliverRoomHostFrames(notebookId, failed);
+        if (this.env.DB)
+          await updateWorkstationAttachJobStatus(this.env, {
+            ownerPrincipal: runtime.ownerPrincipal,
+            workstationId: MANAGED_PYTHON_WORKSTATION,
+            jobId: runtime.sessionId,
+            status: "failed",
+            errorMessage: reason,
+          });
+        await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
+        await this.publishCurrentComputeSessionSummary(notebookId);
+      }
     } finally {
       await closing;
-      if (reportCleanupFailure && cleanupFailure) throw cleanupFailure;
     }
+    // Report the cleanup failure after the `finally` has finished so it does
+    // not overwrite a return or throw from the body above.
+    if (reportCleanupFailure && cleanupFailure) throw cleanupFailure;
+    if (ignoredStale) return;
   }
 
   private async requestRuntimeResumeForExecution(
