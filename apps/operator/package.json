@@ -1,0 +1,30 @@
+{
+  "name": "@nteract/operator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vp build && node scripts/build-worker.mjs",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "dev": "vp dev --host 127.0.0.1"
+  },
+  "dependencies": {
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "rxjs": "^7.8.2",
+    "runtimed": "workspace:*"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.8",
+    "@types/node": "^20.10.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.1.5",
+    "@vitejs/plugin-react": "^6.0.1",
+    "esbuild": "^0.28.0",
+    "tailwindcss": "^4.1.8",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.3",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

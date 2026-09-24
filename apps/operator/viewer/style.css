@@ -1,0 +1,253 @@
+@import "tailwindcss";
+@import "../../../src/styles/notebook-base.css";
+@import "../../../src/styles/cream-theme.css";
+@source "../../../src/components/ui/button.tsx";
+@source "../../../src/components/ui/badge.tsx";
+@source "./**/*.{ts,tsx}";
+
+* {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 14px;
+}
+main {
+  max-width: 1320px;
+  margin: auto;
+  padding: 42px 32px;
+}
+header,
+.section-heading,
+.toolbar,
+.exports {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+header,
+.section-heading {
+  justify-content: space-between;
+}
+header {
+  margin-bottom: 32px;
+}
+h1 {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  margin: 6px 0;
+}
+h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+}
+h3 {
+  font-size: 17px;
+  font-weight: 600;
+}
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.muted,
+.caption,
+small,
+dt {
+  color: var(--muted-foreground);
+}
+.caption {
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 10px 0 20px;
+}
+.toolbar {
+  margin: 0 0 20px;
+  flex-wrap: wrap;
+}
+label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-right: auto;
+}
+select {
+  border: 1px solid var(--border);
+  background: var(--background);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.notice {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  line-height: 1.7;
+  background: var(--muted);
+  margin: 14px 0;
+}
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 24px 0;
+}
+.gauge {
+  padding: 22px;
+  background: var(--card);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gauge > strong {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+section {
+  margin: 30px 0;
+}
+.chart {
+  width: 100%;
+  height: auto;
+  min-height: 180px;
+  margin-top: 18px;
+}
+.chart line {
+  stroke: var(--border);
+}
+.chart text {
+  font-size: 10px;
+  fill: var(--muted-foreground);
+}
+.cpu-line {
+  stroke: var(--primary);
+  stroke-width: 2;
+  fill: none;
+}
+.chart circle {
+  fill: var(--primary);
+}
+.fleet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(285px, 1fr));
+  gap: 20px;
+}
+.fleet-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  background: var(--card);
+}
+.revision {
+  font-family: monospace;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin: 8px 0 18px;
+}
+.fleet-role {
+  border-top: 1px solid var(--border);
+  padding: 14px 0 4px;
+}
+.fleet-role > div {
+  display: flex;
+  justify-content: space-between;
+}
+.fleet-role strong {
+  font-weight: 500;
+}
+.fleet-role dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 10px 0;
+}
+dt {
+  font-size: 11px;
+}
+dd {
+  margin: 3px 0;
+  font-variant-numeric: tabular-nums;
+}
+.details-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+}
+.health > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.health dt {
+  font-size: 13px;
+}
+.events {
+  list-style: none;
+  padding: 0;
+}
+.events li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.events small {
+  display: block;
+  margin-top: 5px;
+}
+.exports {
+  margin-top: 24px;
+}
+.empty {
+  padding: 40px 0;
+  color: var(--muted-foreground);
+}
+.login {
+  padding: 45px 0;
+}
+.login p {
+  margin: 14px 0 22px;
+}
+footer {
+  border-top: 1px solid var(--border);
+  color: var(--muted-foreground);
+  padding-top: 24px;
+  margin-top: 40px;
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  main {
+    padding: 24px 16px;
+  }
+  .gauges,
+  .details-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .gauge {
+    padding: 16px;
+  }
+  .details-grid {
+    display: block;
+  }
+  header {
+    align-items: flex-start;
+  }
+  h1 {
+    font-size: 24px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

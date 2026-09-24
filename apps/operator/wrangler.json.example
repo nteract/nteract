@@ -1,0 +1,20 @@
+{
+  "name": "nteract-operator",
+  "main": "dist/worker.js",
+  "compatibility_date": "2026-01-01",
+  "assets": { "directory": "dist", "binding": "ASSETS", "run_worker_first": true },
+  "d1_databases": [{ "binding": "DB", "database_name": "operator-sessions", "database_id": "operator-sessions" }],
+  "vars": {
+    "NOTEBOOK_CLOUD_PUBLIC_ORIGIN": "https://deploy.runtimed.run",
+    "NOTEBOOK_CLOUD_OIDC_FLOW": "server",
+    "NOTEBOOK_CLOUD_OIDC_ISSUER": "https://auth.anaconda.com/api/auth",
+    "NOTEBOOK_CLOUD_OIDC_CLIENT_ID": "REQUIRED_APPROVED_CLIENT_ID",
+    "NOTEBOOK_CLOUD_OIDC_AUDIENCE": "REQUIRED_APPROVED_AUDIENCE",
+    "NOTEBOOK_CLOUD_OIDC_PRINCIPAL_NAMESPACE": "nteract-operator",
+    "NOTEBOOK_CLOUD_OIDC_REDIRECT_URI": "https://deploy.runtimed.run/oidc",
+    "NOTEBOOK_CLOUD_OIDC_TOKEN_AUTH_METHOD": "none",
+    "NOTEBOOK_CLOUD_OIDC_USERINFO": "true",
+    "OPERATOR_ALLOWED_EMAILS": "operator.one@example.test,operator.two@example.test",
+    "OPERATOR_METRICS_ORIGIN": "http://127.0.0.1:9464"
+  }
+}
