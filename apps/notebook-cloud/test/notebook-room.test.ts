@@ -48,6 +48,14 @@ describe("NotebookRoom presence rewrite", () => {
     const state = hibernatedState([]);
     const room = new NotebookRoom(state.state, {} as Env);
     await state.drain();
+    const backgroundErrors: unknown[] = [];
+    const waitUntil = state.state.waitUntil;
+    state.state.waitUntil = (promise) => {
+      void promise.catch((error) => {
+        backgroundErrors.push(error);
+      });
+      waitUntil(promise);
+    };
     const harness = roomHarness(room);
     const socket = new FakeSocket();
     const peer = {
@@ -91,6 +99,7 @@ describe("NotebookRoom presence rewrite", () => {
     await room.webSocketMessage(peer.socket, request("first"));
     // Report the request failure without leaving a rejected background task.
     await state.drain();
+    assert.deepEqual(backgroundErrors, [], "the request background task must settle successfully");
     assert.equal(socket.sent.length, 1, "the browser must receive the request failure");
     const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
     assert.equal(rejected.type, "cloud_frame_rejected");
@@ -100,6 +109,7 @@ describe("NotebookRoom presence rewrite", () => {
 
     await room.webSocketMessage(peer.socket, request("second"));
     await state.drain();
+    assert.deepEqual(backgroundErrors, []);
     assert.equal(executions, 1);
     const accepted = decodeJsonPayload<Record<string, unknown>>(socket.sent[1].slice(1));
     assert.equal(accepted.type, "cloud_frame_accepted");
