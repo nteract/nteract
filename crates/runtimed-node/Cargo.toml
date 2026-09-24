@@ -21,6 +21,7 @@ notebook-sync = { path = "../notebook-sync" }
 runtime-doc = { path = "../runtime-doc" }
 runt-workspace = { path = "../runt-workspace" }
 nteract-predicate = { path = "../nteract-predicate" }
+kernel-env = { path = "../kernel-env", default-features = false, features = ["manifest"] }
 arrow = { workspace = true, features = ["ipc"] }
 parquet = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

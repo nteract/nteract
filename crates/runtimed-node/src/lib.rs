@@ -25,6 +25,7 @@ use napi_derive::napi;
 mod arrow_ipc;
 mod error;
 mod parquet;
+mod project_files;
 mod relay;
 mod session;
 
@@ -33,6 +34,7 @@ pub use arrow_ipc::{
 };
 pub use error::NodeError;
 pub use parquet::{read_parquet_file, summarize_parquet_file};
+pub use project_files::{initialize_environment_yml, InitializeEnvironmentYmlOptions};
 pub use relay::{
     connect_relay, create_relay, open_relay_path, query_daemon_info, CreateRelayOptions,
     DaemonInfo, NativeRelaySession, OpenRelayOptions, QueryDaemonOptions, RelayInfo,

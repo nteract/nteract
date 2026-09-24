@@ -52,6 +52,48 @@ through the same local daemon used by nteract desktop.
 
 ## Embedding a notebook frontend
 
+### Explicit project manifest creation
+
+The local Node host can create a missing `environment.yml` after the user or
+host explicitly requests it. Supply an existing absolute directory and the
+desired Conda specs; opening a notebook never calls this helper automatically.
+
+```js
+const { initializeEnvironmentYml } = require("@runtimed/node");
+
+const manifestPath = await initializeEnvironmentYml({
+  directory: "/absolute/path/to/project",
+  name: "analysis",
+  python: ">=3.11,<3.13",
+  dependencies: ["numpy>=2,<3", "pandas"],
+  channels: ["conda-forge"],
+});
+```
+
+The helper validates the manifest with the same parser as daemon discovery,
+then publishes the complete file without replacing an existing file or symlink.
+The helper checks for an existing `environment.yaml` before creating anything.
+Hosts must coordinate with other writers creating that alternate filename; only
+publication of `environment.yml` itself is atomic. On Unix, new manifest
+permissions honor the host process's umask.
+It rejects invalid specs and missing/unwritable directories. The name is optional;
+channel priority follows the supplied array. Python can be specified in `python`
+or `dependencies`, but not both. This initializer supports Conda dependencies;
+pip subsections and other manifest formats remain separate work.
+
+This is a local filesystem operation for a host process that already has write
+authority over the chosen directory. It is not exposed by the Electron renderer
+bridge or a remote notebook request. It does not contact the daemon, install
+packages, approve environment trust, or launch/change a running kernel.
+
+Open or reopen a notebook in that directory to use normal project discovery.
+Existing project precedence still applies (`pyproject.toml`, `pixi.toml`, then
+`environment.yml`). Installing an environment and launching a kernel use the
+usual explicit launch and approval flow. Creation does not change the environment
+of a notebook that is already running.
+
+### Notebook relay
+
 `@runtimed/node/relay` exposes the native byte pipe used by desktop notebook
 hosts. The browser/WASM frontend remains the Automerge peer; Node owns the
 daemon socket, handshake, framing, and liveness heartbeat and forwards opaque

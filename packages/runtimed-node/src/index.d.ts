@@ -263,6 +263,28 @@ export const NativeSession: unknown;
 
 export function defaultSocketPath(): string;
 export function socketPathForChannel(channel: "stable" | "nightly"): string;
+
+export interface InitializeEnvironmentYmlOptions {
+  /** Existing absolute directory the local host is authorized to write. */
+  directory: string;
+  /** Optional name containing only letters, numbers, '.', '_' and '-'. */
+  name?: string;
+  /** Conda match specs. Pip subsections are not supported by this initializer. */
+  dependencies: string[];
+  /** Python version constraint, e.g. "3.12" or ">=3.11,<3.13". */
+  python?: string;
+  /** At least one channel, in priority order. No channels are inferred. */
+  channels: string[];
+}
+
+/**
+ * Explicitly create environment.yml using the local host's filesystem authority.
+ * Returns its filesystem-canonical absolute path. Rejects existing files/symlinks.
+ * Checks for environment.yaml first; hosts must coordinate other writers of it.
+ * Does not install packages, approve trust, contact a daemon or change a kernel.
+ */
+export function initializeEnvironmentYml(options: InitializeEnvironmentYmlOptions): Promise<string>;
+
 export function createNotebook(options?: CreateNotebookOptions): Promise<Session>;
 export function openNotebook(notebookId: string, options?: OpenNotebookOptions): Promise<Session>;
 export function openNotebookPath(path: string, options?: OpenNotebookOptions): Promise<Session>;
