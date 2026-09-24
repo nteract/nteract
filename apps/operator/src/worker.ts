@@ -157,6 +157,8 @@ async function route(
   const upstreamPath = DATA_ROUTES.get(url.pathname);
   if (upstreamPath) {
     await authorizeOperator(request, env);
+    if (!/^[a-f0-9]{64}$/.test(env.OPERATOR_METRICS_SERVICE_TOKEN ?? ""))
+      configurationFailure("OPERATOR_METRICS_SERVICE_TOKEN");
     const upstreamUrl = metricsUrl(request, env, upstreamPath);
     let upstream: Response;
     try {
@@ -164,7 +166,10 @@ async function route(
         method: "GET",
         redirect: "error",
         signal: AbortSignal.timeout(10_000),
-        headers: { Accept: upstreamPath.endsWith(".csv") ? "text/csv" : "application/json" },
+        headers: {
+          Accept: upstreamPath.endsWith(".csv") ? "text/csv" : "application/json",
+          Authorization: `Bearer ${env.OPERATOR_METRICS_SERVICE_TOKEN}`,
+        },
       });
     } catch (error) {
       console.warn(
