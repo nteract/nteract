@@ -37,7 +37,7 @@ export class PreviewPythonSessions {
       warmCount: 1,
       idleMs: PROVIDER_ORPHAN_IDLE_MS,
     });
-    this.service = createProviderService(this.pool);
+    this.service = createProviderService(this.pool, state.storage);
   }
   async fetch(request) {
     // Alarms are only lifecycle housekeeping; no notebook code is replayed.
@@ -50,8 +50,9 @@ export class PreviewPythonSessions {
     return this.service.fetch(request);
   }
   async alarm() {
-    await this.pool.expire();
+    // A quarantined runtime must not stop future cleanup of other sessions.
     await this.state.storage.setAlarm(Date.now() + 60_000);
+    await this.pool.expire();
   }
 }
 

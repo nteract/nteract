@@ -1,5 +1,14 @@
 /** Internal service-binding protocol. Never mount this on a public route. */
-export function createProviderService(pool) {
+export function createProviderService(pool, storage) {
+  // Only admission/fencing is serialized. Never hold this queue while Python
+  // initializes or executes: close must be able to interrupt either operation.
+  let mutations = Promise.resolve();
+  const closed = new Set();
+  const mutate = (fn) => {
+    const next = mutations.then(fn);
+    mutations = next.catch(() => undefined);
+    return next;
+  };
   return {
     async fetch(request) {
       const path = new URL(request.url).pathname;
@@ -30,11 +39,26 @@ export function createProviderService(pool) {
       }
       const key = JSON.stringify(parts);
       try {
-        if (path === "/open")
-          return Response.json({ info: await pool.open(key, input.ownerPrincipal) });
-        if (path === "/close") {
-          await pool.release(key);
-          return Response.json({ ok: true });
+        if (path === "/open" || path === "/close") {
+          const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+          const fence =
+            "released:" +
+            Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+          const { operation } = await mutate(async () => {
+            if (path === "/close") {
+              // Persist before cleanup, including close-before-open. A delayed
+              // request must never resurrect a released session generation.
+              if (storage) await storage.put(fence, true);
+              else closed.add(key);
+              return { operation: pool.release(key) };
+            }
+            if (storage ? await storage.get(fence) : closed.has(key))
+              throw new Error("Session was released; allocate a new runtime session");
+            return { operation: pool.open(key, input.ownerPrincipal) };
+          });
+          // Attach rejection handling before yielding the admission queue.
+          const result = await operation;
+          return Response.json(path === "/open" ? { info: result } : { ok: true });
         }
         return Response.json(await pool.execute(key, input.execution));
       } catch (error) {

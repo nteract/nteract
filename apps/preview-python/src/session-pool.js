@@ -54,10 +54,15 @@ export class SessionPool {
               info: runtime.info,
               execute: (execution) => runtime.execute(execution),
               dispose: () =>
-                (disposal ??= Promise.resolve().then(async () => {
-                  await runtime.dispose();
-                  this.#runtimeCount--;
-                })),
+                (disposal ??= Promise.resolve()
+                  .then(async () => {
+                    await runtime.dispose();
+                    this.#runtimeCount--;
+                  })
+                  .catch((error) => {
+                    disposal = undefined;
+                    throw error;
+                  })),
             },
           };
         },
@@ -102,6 +107,7 @@ export class SessionPool {
     let session = this.#sessions.get(key);
     if (session) {
       if (session.owner !== owner) throw new Error("Session owner mismatch");
+      if (session.cancelled) throw new Error("Session is being released");
       return session.ready;
     }
     const owned = this.#ownerCounts.get(owner) ?? 0;
@@ -130,20 +136,27 @@ export class SessionPool {
       lastUsed: this.#clock(),
       busy: false,
       executions: new Set(),
+      cancelled: false,
+      cleanupComplete: false,
+      closing: undefined,
     };
     this.#sessions.set(key, session);
     session.ready = candidate.then(async ({ runtime, error }) => {
       if (error) {
-        if (this.#sessions.get(key) === session) this.#sessions.delete(key);
-        if (warmCandidate || error?.runtimeRetained !== true) releaseOwner();
+        if (warmCandidate || error?.runtimeRetained !== true) {
+          releaseOwner();
+          session.cleanupComplete = true;
+          if (this.#sessions.get(key) === session) this.#sessions.delete(key);
+        }
         throw error;
       }
-      if (this.#sessions.get(key) !== session || this.#closed) {
+      session.runtime = runtime;
+      if (session.cancelled || this.#sessions.get(key) !== session || this.#closed) {
         await runtime.dispose();
         releaseOwner();
+        session.cleanupComplete = true;
         throw new Error("Session expired during allocation");
       }
-      session.runtime = runtime;
       session.lastUsed = this.#clock();
       this.warm();
       return runtime.info;
@@ -155,7 +168,8 @@ export class SessionPool {
     const session = this.#sessions.get(key);
     if (!session) throw new Error("Session expired; allocate a new runtime session");
     await session.ready;
-    if (this.#sessions.get(key) !== session) throw new Error("Session was replaced");
+    if (this.#sessions.get(key) !== session || session.cancelled)
+      throw new Error("Session was replaced");
     if (session.busy) throw new Error("Session is already executing");
     if (session.executions.has(execution.execution_id))
       throw new Error("Execution was already accepted");
@@ -167,7 +181,7 @@ export class SessionPool {
     session.busy = true;
     try {
       const result = await session.runtime.execute(execution);
-      if (this.#sessions.get(key) !== session)
+      if (this.#sessions.get(key) !== session || session.cancelled)
         throw new Error("Discarded output from expired session");
       return result;
     } catch (error) {
@@ -181,30 +195,68 @@ export class SessionPool {
 
   async release(key, expected = this.#sessions.get(key)) {
     if (!expected || this.#sessions.get(key) !== expected) return;
-    this.#sessions.delete(key);
-    // A pending allocation disposes itself when it notices removal.
-    if (expected.runtime) {
-      await expected.runtime.dispose();
-      expected.releaseOwner();
-    }
+    expected.cancelled = true;
+    expected.closing ??= (async () => {
+      if (!expected.runtime) {
+        try {
+          await expected.ready;
+        } catch (error) {
+          if (!expected.cleanupComplete && !expected.runtime) throw error;
+        }
+      }
+      if (!expected.cleanupComplete) {
+        await expected.runtime.dispose();
+        expected.releaseOwner();
+        expected.cleanupComplete = true;
+      }
+      if (this.#sessions.get(key) === expected) this.#sessions.delete(key);
+    })().finally(() => {
+      expected.closing = undefined;
+    });
+    return expected.closing;
+  }
+
+  inspect(key) {
+    const session = this.#sessions.get(key);
+    if (!session) return { phase: "absent" };
+    return {
+      phase: session.cancelled ? "releasing" : session.runtime ? "ready" : "allocating",
+      busy: session.busy,
+      lastUsed: session.lastUsed,
+    };
   }
 
   async expire() {
     const now = this.#clock();
+    const pending = [];
     for (const [key, session] of this.#sessions) {
-      if (!session.busy && now - session.lastUsed >= this.#idleMs) await this.release(key, session);
+      if (session.cancelled || (!session.busy && now - session.lastUsed >= this.#idleMs))
+        pending.push(this.release(key, session));
     }
+    const results = await Promise.allSettled(pending);
     this.warm();
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length)
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        "Session cleanup failed",
+      );
   }
 
   async close() {
     this.#closed = true;
-    for (const key of this.#sessions.keys()) await this.release(key);
-    await Promise.all(
-      this.#warm.splice(0).map(async (pending) => {
+    const results = await Promise.allSettled([
+      ...Array.from(this.#sessions.keys(), (key) => this.release(key)),
+      ...this.#warm.splice(0).map(async (pending) => {
         const { runtime } = await pending;
         await runtime?.dispose();
       }),
-    );
+    ]);
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length)
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        "Session cleanup failed",
+      );
   }
 }

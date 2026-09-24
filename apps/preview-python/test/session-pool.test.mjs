@@ -90,7 +90,7 @@ test("idle expiry disposes sessions and close fences pending allocation", async 
   });
   const allocation = pending.open("a");
   await Promise.resolve();
-  await pending.close();
+  const closing = pending.close();
   finish({
     info: {},
     dispose: async () => {
@@ -98,6 +98,7 @@ test("idle expiry disposes sessions and close fences pending allocation", async 
     },
   });
   await assert.rejects(allocation, /expired/);
+  await closing;
   assert.equal(disposed, true);
 });
 
@@ -113,10 +114,11 @@ test("cancelled pending allocation retains capacity until its isolate is dispose
   });
   const allocation = pool.open("a");
   await Promise.resolve();
-  await pool.release("a");
+  const releasing = pool.release("a");
   await assert.rejects(pool.open("b"), /capacity/);
   finish({ info: {}, dispose: async () => {} });
   await assert.rejects(allocation, /expired/);
+  await releasing;
   await pool.close();
 });
 
@@ -213,7 +215,8 @@ for (const retained of [false, true])
     if (retained) await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
     else await pool.open("alice/2", "alice");
     await pool.open("bob/1", "bob");
-    await pool.close();
+    if (retained) await assert.rejects(pool.close(), /Session cleanup failed/);
+    else await pool.close();
   });
 
 test("cancelled pending owner allocation stays reserved through confirmed cleanup", async () => {
@@ -229,10 +232,11 @@ test("cancelled pending owner allocation stays reserved through confirmed cleanu
   });
   const starting = pool.open("alice/1", "alice");
   await Promise.resolve();
-  await pool.release("alice/1");
+  const releasing = pool.release("alice/1");
   await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
   finish({ info: {}, dispose: async () => {} });
   await assert.rejects(starting, /expired/);
+  await releasing;
   const next = pool.open("alice/2", "alice");
   await Promise.resolve();
   finish({ info: {}, dispose: async () => {} });
@@ -313,3 +317,101 @@ test("discovery cannot exhaust all slots after an unconfirmed standby cleanup", 
   assert.equal(created, 2, "explicit admission can still use remaining capacity");
   await pool.close();
 });
+
+for (const operation of ["expire", "close"]) {
+  test(`${operation} cleans healthy sessions despite quarantined startup failure`, async () => {
+    let created = 0,
+      disposed = 0,
+      now = 0;
+    const pool = new SessionPool({
+      maxSessions: 3,
+      maxSessionsPerOwner: 1,
+      warmCount: 0,
+      idleMs: 10,
+      clock: () => now,
+      create: async () => {
+        if (++created === 1)
+          throw Object.assign(Error("host termination uncertain"), { runtimeRetained: true });
+        return {
+          info: {},
+          dispose: async () => {
+            disposed++;
+          },
+        };
+      },
+    });
+    await assert.rejects(pool.open("alice/1", "alice"), /uncertain/);
+    await pool.open("bob/1", "bob");
+    now = 11;
+    await assert.rejects(pool[operation](), /Session cleanup failed/);
+    assert.equal(disposed, 1);
+    assert.equal(pool.inspect("bob/1").phase, "absent");
+    assert.equal(pool.inspect("alice/1").phase, "releasing");
+    if (operation === "expire") {
+      await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
+      await pool.open("bob/2", "bob");
+      await assert.rejects(pool.close(), /Session cleanup failed/);
+      assert.equal(disposed, 2);
+    }
+  });
+}
+
+test("failed cleanup can be retried without releasing quota early", async () => {
+  let attempts = 0;
+  const pool = new SessionPool({
+    maxSessions: 1,
+    maxSessionsPerOwner: 1,
+    warmCount: 0,
+    create: async () => ({
+      info: {},
+      dispose: async () => {
+        if (++attempts === 1) throw new Error("cleanup failed once");
+      },
+    }),
+  });
+  await pool.open("alice/1", "alice");
+  await assert.rejects(pool.release("alice/1"), /cleanup failed once/);
+  await assert.rejects(pool.open("alice/2", "alice"), /session limit/);
+  await assert.rejects(pool.open("bob/1", "bob"), /capacity/);
+  await pool.release("alice/1");
+  assert.equal(attempts, 2);
+  await pool.open("alice/2", "alice");
+  await assert.rejects(pool.open("bob/1", "bob"), /capacity/);
+  await pool.close();
+});
+
+for (const operation of ["expire", "close"]) {
+  test(`${operation} disposes healthy siblings after another runtime cleanup fails`, async () => {
+    let now = 0;
+    let firstFails = true;
+    const disposals = [0, 0];
+    let created = 0;
+    const pool = new SessionPool({
+      maxSessions: 2,
+      warmCount: 0,
+      idleMs: 10,
+      clock: () => now,
+      create: async () => {
+        const id = created++;
+        return {
+          info: { id },
+          dispose: async () => {
+            disposals[id]++;
+            if (id === 0 && firstFails) throw new Error("first cleanup failed");
+          },
+        };
+      },
+    });
+    await pool.open("alice/1", "alice");
+    await pool.open("bob/1", "bob");
+    now = 11;
+    const [result] = await Promise.allSettled([pool[operation]()]);
+    assert.deepEqual(disposals, [1, 1]);
+    assert.equal(result.status, "rejected");
+    assert.match(String(result.reason), /Session cleanup failed/);
+    firstFails = false;
+    await pool[operation]();
+    assert.deepEqual(disposals, [2, 1]);
+    await pool.close();
+  });
+}
