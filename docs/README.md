@@ -19,6 +19,7 @@ Start here to understand a subsystem. This is not a complete inventory.
 | Remote compute and workstations | [`adr/remote-workstation-doc-agents.md`](adr/remote-workstation-doc-agents.md), [`adr/runtime-principal-promotion.md`](adr/runtime-principal-promotion.md), [`memos/python-runtime-boundaries.md`](memos/python-runtime-boundaries.md), [`runbooks/remote-workstation.md`](runbooks/remote-workstation.md) |
 | Product requirements | [`prd/notebook-identity-environment-surfaces.md`](prd/notebook-identity-environment-surfaces.md), [`prd/hosted-sharing-invites.md`](prd/hosted-sharing-invites.md) |
 | MCP, cloud embedding, and Automerge audit | [`audits/mcp-cloud-automerge-audit.md`](audits/mcp-cloud-automerge-audit.md) |
+| Accreting patterns, enforcement gaps, and agent guidance | [`audits/codebase-accretion-audit.md`](audits/codebase-accretion-audit.md) |
 | Evidence and measurements | [`audits/`](audits/), [`measurements/`](measurements/) |
 | CLI and installation | [`runbooks/cli.md`](runbooks/cli.md), [`plans/unified-cli-release.md`](plans/unified-cli-release.md) |
 | Conda Python versions and Anaconda channels | [`runbooks/conda-environments.md`](runbooks/conda-environments.md) |
