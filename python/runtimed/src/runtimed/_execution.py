@@ -31,7 +31,7 @@ class Execution:
     Example::
 
         execution = await cell.execute()
-        print(execution.status)          # "queued", "running", "done", "error"
+        print(execution.status)          # "queued", "running", "done", "error", "cancelled"
         result = await execution.result()  # wait for completion
         print(result.success, result.stdout)
 
@@ -65,7 +65,10 @@ class Execution:
         """Current execution status (sync read from local CRDT).
 
         Returns one of: ``"queued"``, ``"running"``, ``"done"``, ``"error"``,
-        or ``"unknown"`` if the execution entry hasn't synced yet.
+        ``"cancelled"``, or ``"unknown"`` if the execution entry hasn't synced yet.
+
+        ``"cancelled"`` is terminal: the execution was removed from the queue
+        without running.
         """
         try:
             rs = self._session.get_runtime_state_sync()
@@ -78,7 +81,7 @@ class Execution:
 
     @property
     def success(self) -> bool | None:
-        """Whether the execution succeeded (None if still running)."""
+        """Whether the execution succeeded (None if pending, unknown, or cancelled)."""
         try:
             rs = self._session.get_runtime_state_sync()
             entry = rs.executions.get(self._execution_id)
@@ -103,7 +106,7 @@ class Execution:
     @property
     def done(self) -> bool:
         """Whether the execution has reached a terminal state."""
-        return self.status in ("done", "error")
+        return self.status in ("done", "error", "cancelled")
 
     async def result(self, timeout_secs: float = 60.0) -> ExecutionResult:
         """Wait for the execution to complete and return collected results.
@@ -157,7 +160,7 @@ class Execution:
         """Wait for the execution to reach a terminal state.
 
         Unlike :meth:`result`, this doesn't collect outputs — it just
-        polls the RuntimeStateDoc until status is "done" or "error".
+        polls the RuntimeStateDoc until status is "done", "error", or "cancelled".
 
         Args:
             timeout_secs: Maximum time to wait.

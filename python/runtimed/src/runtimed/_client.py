@@ -107,7 +107,7 @@ class Client:
         Stops the *entire* daemon, disconnecting all peers and notebooks.
         You almost certainly want ``close()`` instead.
         """
-        await self._native.shutdown()
+        await self._native._shutdown_daemon()
 
     async def __aenter__(self) -> Client:
         return self
