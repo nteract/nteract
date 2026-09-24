@@ -15,7 +15,7 @@ export interface PackageManifest {
 }
 export type PackageResult =
   | { status: "ready"; installed: string[]; manifest: PackageManifest }
-  | { status: "error"; error: string; needs_restart: boolean };
+  | { status: "error"; code?: string; error: string; needs_restart: boolean };
 export const PACKAGE_RUNTIME_VERSION: string;
 export function packageName(requirement: string): string | undefined;
 export function packageManifest(value: unknown): PackageManifest;

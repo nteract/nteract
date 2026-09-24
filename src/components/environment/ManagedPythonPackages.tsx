@@ -9,6 +9,7 @@ export interface ManagedPythonPackagesProps {
   installed: readonly string[];
   phase: "unavailable" | "ready" | "resolving" | "installing" | "restoring" | "error";
   error?: string | null;
+  progressMessage?: string | null;
   needsRestart?: boolean;
   readOnly?: boolean;
   onAdd: (requirement: string) => Promise<boolean>;
@@ -25,6 +26,7 @@ export function ManagedPythonPackages({
   installed,
   phase,
   error,
+  progressMessage,
   needsRestart = false,
   readOnly = true,
   onAdd,
@@ -65,7 +67,11 @@ export function ManagedPythonPackages({
       if (requirement === undefined) await onClear?.();
       else await onRemove(requirement);
     } catch {
-      setActionError("The requirement could not be removed. Reconnect and try again.");
+      setActionError(
+        requirement === undefined
+          ? "Saved packages could not be cleared. Reconnect and try again."
+          : "The requirement could not be removed. Reconnect and try again.",
+      );
     } finally {
       submitting.current = false;
       setPending(false);
@@ -113,7 +119,7 @@ export function ManagedPythonPackages({
           : phase === "installing"
             ? "Resolving and installing packages…"
             : phase === "restoring"
-              ? "Restoring saved packages…"
+              ? (progressMessage ?? "Restoring saved packages…")
               : phase === "unavailable"
                 ? "Start Python to install packages or inspect this session."
                 : null}

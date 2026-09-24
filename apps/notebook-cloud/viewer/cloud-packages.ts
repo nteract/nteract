@@ -13,7 +13,7 @@ export function projectCloudPackages(
   ready: boolean,
 ): Pick<
   ManagedPythonPackagesProps,
-  "requirements" | "installed" | "phase" | "error" | "needsRestart"
+  "requirements" | "installed" | "phase" | "error" | "needsRestart" | "progressMessage"
 > {
   const manifest = record(record(record(metadata).runt).pyodide);
   const state = record(record(progress).managed_packages);
@@ -26,6 +26,10 @@ export function projectCloudPackages(
     requirements: strings(manifest.requirements),
     installed: current && ready ? strings(state.installed) : [],
     phase: ready ? phase : "unavailable",
+    progressMessage:
+      current && ready && typeof record(progress).message === "string"
+        ? (record(progress).message as string)
+        : null,
     error: current && typeof state.error === "string" ? state.error : null,
     needsRestart: current && state.needs_restart === true,
   };

@@ -8,14 +8,23 @@ import {
 import { EnvironmentPackageSummaryPanel } from "../../../src/components/environment/EnvironmentPackageSummaryPanel";
 import { Button } from "../../../src/components/ui/button";
 
-const states = ["ready", "installing", "error", "restoring", "unavailable", "peer"] as const;
+const states = [
+  "ready",
+  "installing",
+  "error",
+  "restoring",
+  "waiting",
+  "unavailable",
+  "peer",
+] as const;
 type Fixture = (typeof states)[number];
 
 export function CloudPackagesExample() {
   const [fixture, setFixture] = useState<Fixture>("ready");
   const [requirements, setRequirements] = useState(["snowballstemmer>=2,<4"]);
   const [narrow, setNarrow] = useState(false);
-  const phase: ManagedPythonPackagesProps["phase"] = fixture === "peer" ? "ready" : fixture;
+  const phase: ManagedPythonPackagesProps["phase"] =
+    fixture === "peer" ? "ready" : fixture === "waiting" ? "restoring" : fixture;
   return (
     <div className="not-prose space-y-6">
       <div className="flex flex-wrap gap-2" aria-label="Package fixture state">
@@ -63,6 +72,11 @@ export function CloudPackagesExample() {
               requirements={requirements}
               installed={["numpy==2.2.5", "pandas==2.3.0", "snowballstemmer==3.0.1"]}
               phase={phase}
+              progressMessage={
+                fixture === "waiting"
+                  ? "Waiting for another package installation before restoring saved packages…"
+                  : null
+              }
               readOnly={fixture === "peer"}
               needsRestart={fixture === "error"}
               error={

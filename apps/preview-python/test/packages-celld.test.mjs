@@ -40,6 +40,9 @@ test(
       },
     });
     assert.equal(executed.outputs.at(-1).data["text/plain"], "'run'");
+    // Reach the resolver after the per-owner add cooldown, rather than
+    // mistaking an admission rejection for unsupported-package validation.
+    await new Promise((resolve) => setTimeout(resolve, 5_100));
     const failed = await post("/packages", {
       operation_id: "install-native",
       operation: "add",
@@ -47,6 +50,7 @@ test(
       manifest: result.manifest,
     });
     assert.equal(failed.status, "error");
+    assert.equal(failed.code, "unavailable", JSON.stringify(failed));
     assert.equal(failed.needs_restart, false);
     const afterFailure = await post("/execute", {
       execution: { cell_id: "package-cell", execution_id: "e2", source: "kept" },

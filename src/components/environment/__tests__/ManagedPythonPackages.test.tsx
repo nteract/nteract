@@ -78,6 +78,22 @@ describe("managed Python package controls", () => {
     expect(screen.getByRole("region", { name: "Saved requirements" })).toHaveTextContent("six");
   });
 
+  it("announces restore admission waiting without exposing an error or enabling edits", () => {
+    render(
+      <ManagedPythonPackages
+        {...props}
+        phase="restoring"
+        progressMessage="Waiting for another package installation…"
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Waiting for another package installation…",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("Add a package")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove six==1.16.0" })).toBeDisabled();
+  });
+
   it.each(["resolving", "installing", "restoring"] as const)(
     "disables Enter and removal while %s",
     (phase) => {

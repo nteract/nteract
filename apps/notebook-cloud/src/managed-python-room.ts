@@ -24,6 +24,7 @@ export class ManagedPythonRoom {
   private readonly bridge: PythonRuntimePeer;
   private readonly pending: Uint8Array[] = [];
   private active = true;
+  private readonly packageWaitAbort = new AbortController();
   private syncing: Promise<void> = Promise.resolve();
   private pumping: Promise<void> | undefined;
   private wakeRequested = false;
@@ -240,6 +241,7 @@ export class ManagedPythonRoom {
   private async publishPackageState(
     phase: "ready" | "installing" | "restoring" | "error",
     error: string | null = null,
+    message: string | null = null,
   ): Promise<void> {
     this.assertPackageSession();
     this.apply(
@@ -252,7 +254,7 @@ export class ManagedPythonRoom {
               : "installing_packages",
         elapsed_ms: 0,
         packages: [],
-        message: error,
+        message: message ?? error,
         managed_packages: {
           session_id: this.sessionId,
           operation_id: this.packageOperationId,
@@ -267,12 +269,31 @@ export class ManagedPythonRoom {
     await this.materializer.checkpoint();
   }
 
+  private async waitForPackageCapacity(delay: number): Promise<void> {
+    const signal = this.packageWaitAbort.signal;
+    signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, delay);
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    this.assertPackageSession();
+  }
+
   async installPackages(
     manifest: PackageManifest,
     operation: "add" | "restore",
     requirement?: string,
     operationId: string = crypto.randomUUID(),
   ): Promise<PackageResult> {
+    if (typeof operationId !== "string" || !operationId || operationId.length > 128)
+      throw new Error("Invalid package operation ID");
     if (this.installingPackages || this.packagesBlocked)
       throw new Error("Python packages are busy or need a restart");
     this.installingPackages = true;
@@ -280,13 +301,41 @@ export class ManagedPythonRoom {
     try {
       await this.pumping;
       await this.publishPackageState(operation === "restore" ? "restoring" : "installing");
-      const result = (await this.call("/packages", {
-        manifest,
-        operation,
-        requirement,
-        operation_id: operationId,
-      })) as PackageResult;
-      this.assertPackageSession();
+      // Only pre-install capacity rejection is retryable. Preserve the same
+      // logical progress operation, with fresh provider attempt IDs for replay
+      // protection. No second artifact buffer or owner queue is allocated here.
+      const retryUntil = Date.now() + 180_000;
+      let delay = 1_000;
+      let attemptId = operationId;
+      let result: PackageResult;
+      for (;;) {
+        this.assertPackageSession();
+        result = (await this.call("/packages", {
+          manifest,
+          operation,
+          requirement,
+          operation_id: attemptId,
+        })) as PackageResult;
+        this.assertPackageSession();
+        if (
+          operation !== "restore" ||
+          result.status !== "error" ||
+          result.code !== "planner_busy" ||
+          result.needs_restart ||
+          Date.now() >= retryUntil
+        )
+          break;
+        await this.publishPackageState(
+          "restoring",
+          null,
+          "Waiting for another package installation before restoring saved packages…",
+        );
+        await this.waitForPackageCapacity(Math.min(delay, retryUntil - Date.now()));
+        // Do not issue a new attempt after the bounded admission wait expires.
+        if (Date.now() >= retryUntil) break;
+        delay = Math.min(delay * 2, 10_000);
+        attemptId = crypto.randomUUID();
+      }
       if (result.status === "ready") {
         this.installedPackages = result.installed;
         await this.publishPackageState("ready");
@@ -312,6 +361,7 @@ export class ManagedPythonRoom {
 
   async close(): Promise<void> {
     this.active = false;
+    this.packageWaitAbort.abort();
     await this.bridge.close();
     await this.pumping?.catch(() => undefined);
     await this.syncing;
