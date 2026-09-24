@@ -34,6 +34,7 @@ export const NOTEBOOK_REQUEST_TYPES = [
   "approve_trust",
   "approve_project_environment",
   "get_doc_bytes",
+  "acknowledge_notebook_sync",
   "create_blob_upload",
   "complete_blob_upload",
   "abort_blob_upload",
@@ -47,6 +48,7 @@ export const NOTEBOOK_REQUEST_TYPES_EXHAUSTIVE: MissingUnionMember<
   : never = true;
 
 export const NOTEBOOK_RESPONSE_RESULTS = [
+  "notebook_sync_acknowledged",
   "kernel_launched",
   "kernel_already_running",
   "cell_queued",

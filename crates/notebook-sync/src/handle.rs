@@ -95,6 +95,9 @@ pub struct DocHandle {
 
     /// The notebook identifier.
     notebook_id: String,
+
+    /// Advertised by this connection's daemon during bootstrap.
+    notebook_sync_receipt: bool,
 }
 
 /// Serialized notebook snapshot set suitable for hosted publish flows.
@@ -148,7 +151,13 @@ impl DocHandle {
             runtime_state_rx,
             status_rx,
             notebook_id,
+            notebook_sync_receipt: false,
         }
+    }
+
+    pub(crate) fn with_notebook_sync_receipt_capability(mut self, supported: bool) -> Self {
+        self.notebook_sync_receipt = supported;
+        self
     }
 
     /// The notebook ID this handle is connected to.
@@ -786,6 +795,39 @@ impl DocHandle {
             comms_doc_heads,
             comments_doc_heads,
         })
+    }
+
+    /// Return a strict receipt for the current local NotebookDoc heads.
+    ///
+    /// Captures a fixed frontier and asks the addressed daemon to acknowledge
+    /// it through the existing causal request gate. Later edits are not covered.
+    /// Only a matching, request-correlated receipt succeeds; timeout, disconnect,
+    /// rejection and older peers without this operation fail. Persistent local
+    /// rooms retain their recovery-journal-before-acceptance boundary; ephemeral
+    /// rooms promise acceptance only. This does not export an .ipynb, acknowledge
+    /// other streams, or establish persistence by a hosted authority.
+    pub async fn confirm_notebook_sync(&self) -> Result<Vec<String>, SyncError> {
+        if !self.notebook_sync_receipt {
+            return Err(SyncError::Protocol(
+                "Daemon does not support NotebookDoc sync receipts".into(),
+            ));
+        }
+        let heads = self.current_heads_hex()?;
+        self.changed_tx
+            .send(())
+            .map_err(|_| SyncError::Disconnected)?;
+        match self
+            .send_request_after_heads(NotebookRequest::AcknowledgeNotebookSync {}, heads.clone())
+            .await?
+        {
+            NotebookResponse::NotebookSyncAcknowledged { heads: accepted } if accepted == heads => {
+                Ok(heads)
+            }
+            NotebookResponse::Error { error } => Err(SyncError::Protocol(error)),
+            _ => Err(SyncError::Protocol(
+                "Daemon did not return a matching NotebookDoc sync receipt".into(),
+            )),
+        }
     }
 
     /// Confirm that the daemon has merged our current local heads.

@@ -303,7 +303,7 @@ pub async fn connect_with_options(
     build_and_spawn(doc, peer_state, notebook_id, reader, writer)
         .await
         .map(|(handle, broadcast_rx)| ConnectResult {
-            handle,
+            handle: handle.with_notebook_sync_receipt_capability(caps.notebook_sync_receipt),
             broadcast_rx,
             initial_metadata,
         })
@@ -357,7 +357,8 @@ pub async fn connect_open(
     build_and_spawn(doc, peer_state, notebook_id, reader, writer)
         .await
         .map(|(handle, broadcast_rx)| OpenResult {
-            handle,
+            handle: handle
+                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt),
             broadcast_rx,
             info,
         })
@@ -414,7 +415,8 @@ pub async fn connect_open_hosted(
     build_and_spawn(doc, peer_state, notebook_id, reader, writer)
         .await
         .map(|(handle, broadcast_rx)| OpenResult {
-            handle,
+            handle: handle
+                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt),
             broadcast_rx,
             info,
         })
@@ -468,7 +470,8 @@ pub async fn connect_create(
     build_and_spawn(doc, peer_state, notebook_id, reader, writer)
         .await
         .map(|(handle, broadcast_rx)| CreateResult {
-            handle,
+            handle: handle
+                .with_notebook_sync_receipt_capability(info.capabilities.notebook_sync_receipt),
             broadcast_rx,
             info,
         })

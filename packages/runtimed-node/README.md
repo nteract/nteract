@@ -258,6 +258,15 @@ sessions.
   and startup error details.
 - `Session.syncEnvironment()` installs recorded notebook dependencies.
 - `Session.saveNotebook(path?)` saves the notebook.
+- `Session.confirmNotebookSync()` returns the current NotebookDoc heads after
+  the connected local daemon accepts them. Later edits are outside that receipt.
+  Timeout, close, disconnect, rejected edits, and unsupported daemons reject the
+  promise; there is no best-effort fallback. A missing handshake capability
+  rejects before sending a request, leaving older daemon sessions usable.
+  Persistent local rooms journal edits
+  before acknowledging them, while ephemeral rooms promise acceptance only.
+  This does not export an `.ipynb`, acknowledge other document streams, or confirm
+  hosted persistence. Hosted bridge rooms currently reject this operation.
 - `Session.close()` releases the daemon connection.
 
 ## Daemon Requirements

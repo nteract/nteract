@@ -226,6 +226,14 @@ export class Session {
   runCell(source: string, options?: RunCellOptions): Promise<CellResult>;
   saveNotebook(path?: string): Promise<void>;
   exportSnapshotPair(): Promise<SnapshotPair>;
+  /**
+   * Return the current NotebookDoc heads after the connected daemon accepts them.
+   * Later edits are not covered. Rejects on timeout, close, disconnect, rejection,
+   * and unsupported peers (including hosted bridges). Persistent local rooms
+   * preserve recovery-journal-before-acceptance; ephemeral rooms promise acceptance
+   * only. Does not export an .ipynb or acknowledge runtime, comments, or widgets.
+   */
+  confirmNotebookSync(): Promise<string[]>;
   listCells(): Promise<CellSnapshot[]>;
   getCell(cellId: string): Promise<CellSnapshot | null>;
   createCell(source: string, options?: CreateCellOptions): Promise<string>;

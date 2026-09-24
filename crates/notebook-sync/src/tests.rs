@@ -94,6 +94,36 @@ mod tests {
         assert_eq!(handle.notebook_id(), "test-notebook");
     }
 
+    #[tokio::test]
+    async fn strict_receipt_without_capability_does_not_send_a_request() {
+        let (handle, mut changed, mut commands) = test_handle();
+        let error = handle.confirm_notebook_sync().await.unwrap_err();
+        assert!(error.to_string().contains("does not support"));
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            changed.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn strict_receipt_propagates_timeout_instead_of_best_effort_success() {
+        let (handle, _changed_rx, mut commands) = test_handle();
+        let handle = handle.with_notebook_sync_receipt_capability(true);
+        let receipt = tokio::spawn(async move { handle.confirm_notebook_sync().await });
+        let command = commands.recv().await.unwrap();
+        match command {
+            crate::sync_task::SyncCommand::SendRequest { reply, .. } => {
+                reply.send(Err(SyncError::Timeout)).unwrap();
+            }
+            _ => panic!("strict receipt must use a correlated request"),
+        }
+        assert!(matches!(receipt.await.unwrap(), Err(SyncError::Timeout)));
+    }
+
     #[test]
     fn test_with_doc_returns_value() {
         let (handle, _changed_rx, _cmd_rx) = test_handle();

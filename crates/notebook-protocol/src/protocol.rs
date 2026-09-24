@@ -786,6 +786,10 @@ pub enum NotebookRequest {
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
 
+    /// Acknowledge acceptance of the envelope's required NotebookDoc heads.
+    /// This does not save an .ipynb file or acknowledge other document streams.
+    AcknowledgeNotebookSync {},
+
     /// Begin a peer-scoped multipart blob upload.
     CreateBlobUpload {
         media_type: String,
@@ -812,6 +816,10 @@ pub enum NotebookRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum NotebookResponse {
+    /// The addressed notebook authority has accepted these required heads.
+    /// Descendant changes may already be present; this is not a visible-state
+    /// equality check or an .ipynb export receipt.
+    NotebookSyncAcknowledged { heads: Vec<String> },
     /// Kernel launched successfully.
     KernelLaunched {
         kernel_type: String,
@@ -1663,6 +1671,10 @@ mod tests {
             (
                 "get_doc_bytes",
                 serde_json::json!({ "action": "get_doc_bytes" }),
+            ),
+            (
+                "acknowledge_notebook_sync",
+                serde_json::json!({ "action": "acknowledge_notebook_sync" }),
             ),
             (
                 "create_blob_upload",

@@ -315,6 +315,7 @@ mod tests {
                 protocol_version,
                 daemon_version,
                 put_blob: None,
+                notebook_sync_receipt: false,
                 actor_label: None,
                 connection_scope: None,
                 comments_doc_id: None,
@@ -434,11 +435,13 @@ mod tests {
         assert!(info.notebook_path.is_none());
         assert!(info.capabilities.actor_label.is_none());
         assert!(info.capabilities.connection_scope.is_none());
+        assert!(!info.capabilities.notebook_sync_receipt);
     }
 
     #[test]
     fn protocol_capabilities_advertise_put_blob_frame_limit() {
         let caps = ProtocolCapabilities::v4(Some("0.1.0+abc123".into()));
+        assert!(caps.notebook_sync_receipt);
         let put_blob = caps.put_blob.expect("PutBlob is advertised");
         assert_eq!(put_blob.version, 1);
         assert_eq!(

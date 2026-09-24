@@ -31,12 +31,14 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "approve_trust",
     "approve_project_environment",
     "get_doc_bytes",
+    "acknowledge_notebook_sync",
     "create_blob_upload",
     "complete_blob_upload",
     "abort_blob_upload",
 ];
 
 pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
+    "notebook_sync_acknowledged",
     "kernel_launched",
     "kernel_already_running",
     "cell_queued",
@@ -313,6 +315,7 @@ export type NotebookRequest =
   | {{ type: "approve_trust"; observed_heads?: string[] | null }}
   | {{ type: "approve_project_environment"; project_file_path?: string | null }}
   | {{ type: "get_doc_bytes" }}
+  | {{ type: "acknowledge_notebook_sync" }}
   | {{
       type: "create_blob_upload";
       media_type: string;
@@ -411,6 +414,7 @@ export type NotebookResponse =
   | {{ result: "sync_environment_complete"; synced_packages: string[] }}
   | {{ result: "sync_environment_failed"; error: string; needs_restart: boolean }}
   | {{ result: "doc_bytes"; bytes: number[] }}
+  | {{ result: "notebook_sync_acknowledged"; heads: string[] }}
   | {{ result: "blob_stored"; hash: string; size: number; media_type: string }}
   | {{ result: "blob_upload_created"; upload_id: string; part_size: number; expires_at: string }}
   | {{ result: "blob_part_stored"; upload_id: string; part_number: number; sha256: string }}

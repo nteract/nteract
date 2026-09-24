@@ -201,6 +201,10 @@ pub struct ProtocolCapabilities {
     /// Blob upload support advertised by the daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub put_blob: Option<PutBlobCapability>,
+    /// Supports the request-correlated NotebookDoc acceptance receipt.
+    /// Missing on older daemons; clients must not send the new request then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub notebook_sync_receipt: bool,
     /// Authenticated actor label that the client should use for Automerge
     /// changes on this connection, formatted as `<principal>/<operator>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -232,6 +236,7 @@ impl ProtocolCapabilities {
                 multipart: true,
                 ephemeral_supported: true,
             }),
+            notebook_sync_receipt: true,
             actor_label: None,
             connection_scope: None,
             comments_doc_id: None,

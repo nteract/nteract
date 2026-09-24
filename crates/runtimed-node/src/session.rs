@@ -416,6 +416,7 @@ struct ExecutionResultParts<'a> {
 pub struct Session {
     notebook_id: String,
     state: Arc<Mutex<SessionState>>,
+    closed_tx: tokio::sync::watch::Sender<bool>,
 }
 
 /// A live event subscription returned by `Session.on*` methods.
@@ -807,10 +808,28 @@ impl Session {
         })
     }
 
+    /// Acknowledge the current NotebookDoc frontier at the connected daemon.
+    /// Returns the captured heads; later edits are not covered. Rejects on
+    /// timeout, close, disconnect, unsupported peers, or daemon rejection.
+    /// This does not save an .ipynb or acknowledge other document streams.
+    #[napi]
+    pub async fn confirm_notebook_sync(&self) -> Result<Vec<String>> {
+        let mut closed_rx = self.closed_tx.subscribe();
+        let handle = session_handle(&self.state).await?;
+        tokio::select! {
+            biased;
+            _ = closed_rx.wait_for(|closed| *closed) => {
+                Err(Error::from_reason("Session closed before notebook sync acknowledgement"))
+            }
+            result = handle.confirm_notebook_sync() => result.map_err(to_napi_err),
+        }
+    }
+
     /// Close the session and release the underlying connection.
     #[napi]
     pub async fn close(&self) -> Result<()> {
         let mut st = self.state.lock().await;
+        self.closed_tx.send_replace(true);
         st.handle = None;
         st._broadcast_rx = None;
         st.kernel_started = false;
@@ -1209,6 +1228,7 @@ impl Session {
             .map_err(to_napi_err)?;
         if removed {
             let mut st = self.state.lock().await;
+            self.closed_tx.send_replace(true);
             st.handle = None;
             st._broadcast_rx = None;
             st.kernel_started = false;
@@ -1300,6 +1320,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     Ok(Session {
         notebook_id,
         state: Arc::new(Mutex::new(state)),
+        closed_tx: tokio::sync::watch::channel(false).0,
     })
 }
 
@@ -1388,6 +1409,7 @@ pub async fn open_notebook_path(
     Ok(Session {
         notebook_id,
         state: Arc::new(Mutex::new(state)),
+        closed_tx: tokio::sync::watch::channel(false).0,
     })
 }
 
@@ -1438,6 +1460,7 @@ pub async fn open_notebook(
     Ok(Session {
         notebook_id,
         state: Arc::new(Mutex::new(state)),
+        closed_tx: tokio::sync::watch::channel(false).0,
     })
 }
 
