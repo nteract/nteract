@@ -17,10 +17,10 @@ const ECOSYSTEM_PYPI: &str = "pypi";
 const ECOSYSTEM_CONDA: &str = "conda";
 const ECOSYSTEM_CONDA_CHANNEL: &str = "conda-channel";
 const ECOSYSTEM_PIXI_CHANNEL: &str = "pixi-channel";
-
-/// Prefix for allowlist keys that hold an exact dependency spec. Registry
-/// names normalize to `[a-z0-9-]`, so exact keys can never collide with them.
-const EXACT_SPEC_PREFIX: &str = "exact:";
+// Registry ecosystems can contain legacy keys with arbitrary punctuation.
+// Separate namespaces prevent those rows from approving an exact source.
+const ECOSYSTEM_PYPI_EXACT: &str = "pypi-exact";
+const ECOSYSTEM_CONDA_EXACT: &str = "conda-exact";
 
 /// Which installer grammar a dependency spec is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +37,13 @@ impl SpecSource {
         match self {
             Self::Pypi => ECOSYSTEM_PYPI,
             Self::Conda { .. } => ECOSYSTEM_CONDA,
+        }
+    }
+
+    fn exact_ecosystem(self) -> &'static str {
+        match self {
+            Self::Pypi => ECOSYSTEM_PYPI_EXACT,
+            Self::Conda { .. } => ECOSYSTEM_CONDA_EXACT,
         }
     }
 
@@ -96,7 +103,33 @@ fn classify_pypi_spec(spec: &str) -> Option<SpecIdentity> {
     let name_end = requirement
         .find(|ch: char| !is_registry_name_char(ch))
         .unwrap_or(requirement.len());
-    let Some(name) = normalize_registry_name(&requirement[..name_end]) else {
+    let raw_name = &requirement[..name_end];
+    // uv accepts bare archive filenames as local sources, including wheel
+    // filenames with extras. Cover the formats supported by the pinned uv
+    // fallback as well as system uv; their punctuation must not collapse into
+    // an approved registry name.
+    let lower_name = raw_name.to_ascii_lowercase();
+    if [
+        ".whl",
+        ".zip",
+        ".tar",
+        ".tar.gz",
+        ".tar.bz2",
+        ".tar.xz",
+        ".tar.zst",
+        ".tgz",
+        ".tar.lz",
+        ".tar.lzma",
+        ".tbz",
+        ".txz",
+        ".tlz",
+    ]
+    .iter()
+    .any(|suffix| lower_name.ends_with(suffix))
+    {
+        return exact();
+    }
+    let Some(name) = normalize_registry_name(raw_name) else {
         return exact();
     };
 
@@ -126,6 +159,12 @@ fn classify_conda_spec(spec: &str) -> Option<SpecIdentity> {
     }
     let exact = || Some(SpecIdentity::Exact(spec.to_string()));
 
+    // Rattler strips comments before parsing channel qualifiers. Avoid
+    // interpreting a `::` inside a comment as the package's source.
+    if spec.contains('#') {
+        return exact();
+    }
+
     // Match kernel-env's installer, which treats the first `::` as a channel
     // qualifier (`kernel_env::channels::parse_match_spec`).
     let (channel, package_spec) = match spec.split_once("::") {
@@ -133,6 +172,12 @@ fn classify_conda_spec(spec: &str) -> Option<SpecIdentity> {
         None => (None, spec),
     };
     if channel.is_some_and(str::is_empty) {
+        return exact();
+    }
+    // Notebook-level `defaults` expands to Anaconda's official repositories,
+    // but rattler resolves `defaults::name` to anaconda.org/defaults. That
+    // distinct source must not inherit the notebook channel's approval.
+    if channel == Some("defaults") {
         return exact();
     }
 
@@ -211,9 +256,14 @@ fn identities_for_spec(source: SpecSource, raw_spec: &str) -> Vec<PackageIdentit
         raw_spec: raw_spec.to_string(),
         normalized_name,
     };
+    let exact_package = |spec: String| PackageIdentity {
+        ecosystem: source.exact_ecosystem(),
+        raw_spec: raw_spec.to_string(),
+        normalized_name: spec,
+    };
     match (identity, source) {
         (SpecIdentity::Registry(name), _) => vec![package(name)],
-        (SpecIdentity::Exact(spec), _) => vec![package(format!("{EXACT_SPEC_PREFIX}{spec}"))],
+        (SpecIdentity::Exact(spec), _) => vec![exact_package(spec)],
         (
             SpecIdentity::ChannelRegistry { channel, name },
             SpecSource::Conda { channel_ecosystem },
@@ -227,7 +277,7 @@ fn identities_for_spec(source: SpecSource, raw_spec: &str) -> Vec<PackageIdentit
         ],
         // Only the conda grammar produces channel identities.
         (SpecIdentity::ChannelRegistry { .. }, SpecSource::Pypi) => {
-            vec![package(format!("{EXACT_SPEC_PREFIX}{}", raw_spec.trim()))]
+            vec![exact_package(raw_spec.trim().to_string())]
         }
     }
 }
@@ -741,6 +791,7 @@ mod tests {
             "numpy[extra] @ git+https://example.test/numpy.git",
             "git+https://example.test/numpy.git",
             "https://example.test/numpy-2.0-py3-none-any.whl",
+            "scipy-0.0.4300-py3-none-any.whl[extra]",
             "./vendor/numpy",
             "-e ./vendor/numpy",
             "--index-url=https://example.test/simple",
@@ -762,6 +813,122 @@ mod tests {
                 exact(spec),
                 "conda spec {spec:?}"
             );
+        }
+    }
+
+    #[test]
+    fn bare_archives_do_not_inherit_registry_approval() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = seeded_store(&tmp);
+        for spec in [
+            "scipy-0.0.4300-py3-none-any.whl",
+            "scipy-0.0.4300.tar.gz",
+            "scipy-0.0.4300.zip",
+            "scipy-0.0.4300.tar.bz2",
+            "scipy-0.0.4300.tar.xz",
+            "scipy-0.0.4300.tar.zst",
+            "scipy-0.0.4300.tgz",
+            "scipy-0.0.4300.tar",
+            "scipy-0.0.4300.tar.lz",
+            "scipy-0.0.4300.tar.lzma",
+            "scipy-0.0.4300.tbz",
+            "scipy-0.0.4300.txz",
+            "scipy-0.0.4300.tlz",
+        ] {
+            // This is also a legal registry name after PEP 503 normalization.
+            // uv interprets the original bare archive argument as a local file.
+            let registry_name = normalize_registry_name(spec).unwrap();
+            store.seed_defaults("pypi", &[&registry_name]).unwrap();
+            let info = runt_trust::TrustInfo {
+                uv_dependencies: vec![spec.into()],
+                ..empty_info()
+            };
+            assert!(
+                !store.all_dependencies_approved(&info).unwrap(),
+                "registry approval must not cover archive {spec:?}"
+            );
+            assert_eq!(classify_spec(SpecSource::Pypi, spec), exact(spec));
+            store.add_from_info(&info, "test").unwrap();
+            assert!(store.all_dependencies_approved(&info).unwrap());
+        }
+    }
+
+    #[test]
+    fn conda_comments_do_not_change_trust_parsing() {
+        for spec in [
+            "numpy # note::scipy",
+            "https://example.test/numpy-1.0-0.conda # note::scipy",
+        ] {
+            // The installer leaves these non-alias prefixes unchanged, then
+            // rattler strips comments before interpreting channel qualifiers.
+            let parsed = MatchSpec::from_str(spec, ParseMatchSpecOptions::strict()).unwrap();
+            assert_eq!(parsed.name.as_exact().unwrap().as_normalized(), "numpy");
+            assert_eq!(classify_spec(CONDA, spec), exact(spec));
+        }
+    }
+
+    #[test]
+    fn defaults_qualifier_is_not_notebook_defaults() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = seeded_store(&tmp);
+        store.seed_default_channels(&["defaults"]).unwrap();
+        let spec = "defaults::numpy";
+        let parsed = MatchSpec::from_str(spec, ParseMatchSpecOptions::strict()).unwrap();
+        assert_eq!(
+            parsed.channel.unwrap().base_url.as_str(),
+            "https://conda.anaconda.org/defaults/"
+        );
+        for pixi in [false, true] {
+            let mut info = empty_info();
+            if pixi {
+                info.pixi_dependencies.push(spec.into());
+            } else {
+                info.conda_dependencies.push(spec.into());
+            }
+            assert!(!store.all_dependencies_approved(&info).unwrap());
+            assert_eq!(classify_spec(CONDA, spec), exact(spec));
+        }
+        let notebook_defaults = runt_trust::TrustInfo {
+            conda_dependencies: vec!["numpy".into()],
+            conda_channels: vec!["defaults".into()],
+            ..empty_info()
+        };
+        assert!(store.all_dependencies_approved(&notebook_defaults).unwrap());
+    }
+
+    #[test]
+    fn legacy_keys_cannot_approve_exact_sources() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("trusted.sqlite");
+        // The old normalizer preserved colons, slashes and plus signs. These
+        // are real old normalized keys, with no dots/underscores to transform.
+        let legacy_key = "exact:git+https://source/repo";
+        {
+            let store = TrustedPackageStore::open(path.clone()).unwrap();
+            let StoreInner::Sqlite { conn } = store.inner.as_ref() else {
+                unreachable!();
+            };
+            for ecosystem in ["pypi", "conda"] {
+                conn.lock()
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO trusted_packages VALUES (?1, ?2, 'legacy', 'legacy')",
+                        params![ecosystem, legacy_key],
+                    )
+                    .unwrap();
+            }
+        }
+        let store = TrustedPackageStore::open(path).unwrap();
+        for source in [SpecSource::Pypi, CONDA] {
+            let mut info = empty_info();
+            let specs = match source {
+                SpecSource::Pypi => &mut info.uv_dependencies,
+                SpecSource::Conda { .. } => &mut info.conda_dependencies,
+            };
+            specs.push("git+https://source/repo".into());
+            assert!(!store.all_dependencies_approved(&info).unwrap());
+            store.add_from_info(&info, "test").unwrap();
+            assert!(store.all_dependencies_approved(&info).unwrap());
         }
     }
 
