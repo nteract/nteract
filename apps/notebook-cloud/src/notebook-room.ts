@@ -2207,9 +2207,18 @@ export class NotebookRoom {
   }
 
   private async startManagedPython(notebookId: string, sessionId: string): Promise<void> {
-    const next = this.managedPythonStartup
+    const admitted = this.managedPythonStartup
       .catch(() => undefined)
-      .then(() => this.startManagedPythonNow(notebookId, sessionId))
+      .then(() => this.startManagedPythonNow(notebookId, sessionId));
+    // Serialize entry creation, not package restoration. Synced execution can
+    // be admitted now; its wake still waits for entry.ready. Later requests on
+    // the same socket must remain able to interrupt the restoring session.
+    this.managedPythonStartup = admitted.then(
+      () => undefined,
+      () => undefined,
+    );
+    const ready = admitted
+      .then((entry) => entry?.ready)
       .catch(async (error) => {
         // Construction and catalog lookup can fail before a runtime entry
         // exists. Never leave the selected attachment connecting forever.
@@ -2236,14 +2245,25 @@ export class NotebookRoom {
         }
         throw error;
       });
-    this.managedPythonStartup = next;
-    return next;
+    this.state.waitUntil(
+      ready.catch((error) => {
+        cloudLog("error", "managed_python.start_failed", {
+          notebook_id: notebookId,
+          runtime_session_id: sessionId,
+          error: errorMessage(error),
+        });
+      }),
+    );
+    await admitted;
   }
 
-  private async startManagedPythonNow(notebookId: string, sessionId: string): Promise<void> {
+  private async startManagedPythonNow(
+    notebookId: string,
+    sessionId: string,
+  ): Promise<{ ready: Promise<void> } | undefined> {
     if (!managedPythonStub(this.env)) return;
     const existing = this.managedPython.get(notebookId);
-    if (existing?.runtime.sessionId === sessionId) return existing.ready;
+    if (existing?.runtime.sessionId === sessionId) return existing;
     const notebook = await getNotebookRow(this.env, notebookId);
     if (!notebook) throw new Error("Managed Python notebook no longer exists");
     const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
@@ -2253,7 +2273,7 @@ export class NotebookRoom {
       throw new Error("Managed Python compute owner no longer has owner access");
     // Recheck after storage I/O: concurrent requests can join the same startup.
     const concurrent = this.managedPython.get(notebookId);
-    if (concurrent?.runtime.sessionId === sessionId) return concurrent.ready;
+    if (concurrent?.runtime.sessionId === sessionId) return concurrent;
     if (concurrent) {
       this.managedPython.delete(notebookId);
       this.broadcastManagedPythonPresence(notebookId, concurrent.runtime, false);
@@ -2304,7 +2324,7 @@ export class NotebookRoom {
         await this.failManagedPython(notebookId, runtime, error);
         throw error;
       });
-    return entry.ready;
+    return entry;
   }
 
   private async failManagedPython(

@@ -8,6 +8,132 @@ import { fixture, sync } from "./preview-python-helpers.mjs";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { encodeTypedFrame } from "../src/protocol.ts";
 
+for (const failurePhase of ["before_install", "after_install"])
+  test(`package publication failure preserves usable Python: ${failurePhase}`, async (t) => {
+    await initializeTestRuntimedWasm();
+    const { host } = await fixture(t);
+    host.set_workstation_attachment_json(
+      JSON.stringify({
+        workstation_id: "celld-preview-python",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "session",
+      }),
+    );
+    let installs = 0;
+    let executions = 0;
+    let failCheckpoint = false;
+    let injectFailure = false;
+    const pool = new SessionPool({
+      warmCount: 0,
+      create: async () => ({
+        info: { installed: [] },
+        install: async () => {
+          installs++;
+          return { status: "ready", installed: ["six==1.0"] };
+        },
+        execute: async () => {
+          executions++;
+          return { success: true, execution_count: 1, outputs: [] };
+        },
+        dispose: async () => {},
+      }),
+    });
+    const service = createProviderService(pool, undefined, {
+      resolve: async (requirements) => ({ requirements, wheels: [] }),
+    });
+    const states = [];
+    const materializer = {
+      getCloudPackageManifest: async () => null,
+      setCloudPackageState: async (sessionId, value) => {
+        states.push(value.managed_packages);
+        return host.set_cloud_package_state_json(sessionId, JSON.stringify(value));
+      },
+      syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveFrame: async (peer, frame) =>
+        host.receive_peer_frame(
+          peer.id,
+          peer.identity.principal,
+          peer.identity.actorLabel,
+          peer.identity.scope,
+          false,
+          encodeTypedFrame(frame.type, frame.payload),
+        ),
+      checkpoint: async () => {
+        if (failCheckpoint) {
+          failCheckpoint = false;
+          throw new Error("checkpoint unavailable");
+        }
+      },
+      removePeer: async (id) => host.remove_peer(id),
+    };
+    const runtime = new ManagedPythonRoom(
+      {
+        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+        PREVIEW_PYTHON_SESSIONS: {
+          idFromName: (name) => name,
+          get: () => ({
+            fetch: async (request) => {
+              const result = await service.fetch(request);
+              if (
+                injectFailure &&
+                failurePhase === "after_install" &&
+                new URL(request.url).pathname === "/packages"
+              ) {
+                injectFailure = false;
+                failCheckpoint = true;
+              }
+              return result;
+            },
+          }),
+        },
+      },
+      materializer,
+      "notebook",
+      "user:dev:owner",
+      "session",
+      (result) => runtime.accept(result),
+    );
+    try {
+      await runtime.start();
+      injectFailure = true;
+      failCheckpoint = failurePhase === "before_install";
+      const manifest = { version: 1, pyodide: "0.28.3", requirements: [], wheels: [] };
+      await assert.rejects(
+        runtime.installPackages(manifest, "add", "six"),
+        /checkpoint unavailable/,
+      );
+      assert.equal(installs, failurePhase === "after_install" ? 1 : 0);
+      const inventory = await (
+        await service.fetch(
+          new Request("https://provider/packages/inventory", {
+            method: "POST",
+            body: JSON.stringify({
+              ownerPrincipal: "user:dev:owner",
+              notebookId: "notebook",
+              sessionId: "session",
+            }),
+          }),
+        )
+      ).json();
+      assert.deepEqual(inventory.installed, failurePhase === "after_install" ? ["six==1.0"] : []);
+      assert.ok(states.every((state) => !state.needs_restart));
+      assert.equal(
+        states.at(-1).phase,
+        "error",
+        "recovered publication clears the busy phase for retry",
+      );
+      await runtime.wake();
+      assert.equal(executions, 1, "publication failure must not block accepted execution");
+    } finally {
+      await runtime.close();
+      await pool.close();
+    }
+  });
+
 for (const outcome of [
   "restored",
   "restore_failure",

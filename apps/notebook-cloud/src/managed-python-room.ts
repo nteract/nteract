@@ -300,12 +300,24 @@ export class ManagedPythonRoom {
       let result: PackageResult;
       for (;;) {
         this.assertPackageSession();
-        result = (await this.call("/packages", {
-          manifest,
-          operation,
-          requirement,
-          operation_id: attemptId,
-        })) as PackageResult;
+        try {
+          result = (await this.call("/packages", {
+            manifest,
+            operation,
+            requirement,
+            operation_id: attemptId,
+          })) as PackageResult;
+        } catch {
+          // Only an unconfirmed provider call makes installed state uncertain.
+          // Progress/checkpoint failures before or after it remain retryable.
+          this.assertPackageSession();
+          this.packagesBlocked = true;
+          const error =
+            "The package operation could not be confirmed. Restart Python to restore saved requirements.";
+          this.handle.set_kernel_error(error);
+          await this.publishPackageState("error", error);
+          return { status: "error", error, needs_restart: true };
+        }
         this.assertPackageSession();
         if (
           operation !== "restore" ||
@@ -337,14 +349,17 @@ export class ManagedPythonRoom {
         await this.publishPackageState("error", result.error);
       }
       return result;
-    } catch {
-      this.packagesBlocked = true;
+    } catch (error) {
       this.assertPackageSession();
-      const error =
-        "The package operation could not be confirmed. Restart Python to restore saved requirements.";
-      this.handle.set_kernel_error(error);
-      await this.publishPackageState("error", error);
-      return { status: "error", error, needs_restart: true };
+      if (!this.packagesBlocked) {
+        // Clear transient progress when publication recovers, without turning
+        // a confirmed install (or work never sent) into an uncertain runtime.
+        await this.publishPackageState(
+          "error",
+          "Package changes could not be saved. Check the connection and try again.",
+        ).catch(() => undefined);
+      }
+      throw error;
     } finally {
       this.installingPackages = false;
     }

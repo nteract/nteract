@@ -34,7 +34,8 @@ import {
   encodeTypedFrame,
   splitTypedFrame,
 } from "../src/protocol.ts";
-import { decodePresenceFrame, encodePresenceFrame } from "../src/runtimed-wasm.ts";
+import { decodePresenceFrame, encodePresenceFrame, NotebookHandle } from "../src/runtimed-wasm.ts";
+import { ManagedPythonRoom } from "../src/managed-python-room.ts";
 import { RoomMaterializer, type RoomHostFrameResult } from "../src/room-materializer.ts";
 import { roomSummaryKey, type NotebookRoomSummary } from "../src/storage.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
@@ -44,6 +45,181 @@ before(async () => {
 });
 
 describe("NotebookRoom owner package operations", () => {
+  it(
+    "admits synced execution and interrupts a pending saved-package restore",
+    { timeout: 3000 },
+    async () => {
+      const state = hibernatedState([]);
+      const db = new NotebookOwnerD1();
+      const prepare = db.prepare.bind(db);
+      db.prepare = (query) => {
+        const statement = prepare(query);
+        if (query.includes("FROM notebook_acl"))
+          statement.all = async <T>() =>
+            d1OkResult<T>([
+              {
+                scope: "owner",
+                subject_kind: "principal",
+                subject: "user:dev:alice",
+                notebook_id: "demo",
+              } as T,
+            ]);
+        return statement;
+      };
+      const requests: string[] = [];
+      let restoring!: () => void;
+      const restoreEntered = new Promise<void>((resolve) => {
+        restoring = resolve;
+      });
+      const env = {
+        DB: db,
+        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+        PREVIEW_PYTHON_SESSIONS: {
+          idFromName: (name: string) => name,
+          get: () => ({
+            fetch: async (request: Request) => {
+              const path = new URL(request.url).pathname;
+              requests.push(path);
+              if (path === "/packages/inventory") return Response.json({ installed: [] });
+              if (path === "/packages") {
+                restoring();
+                return Response.json({
+                  status: "error",
+                  code: "planner_busy",
+                  error: "Another package installation is active",
+                  needs_restart: false,
+                });
+              }
+              return Response.json({ ok: true });
+            },
+          }),
+        },
+      } as unknown as Env;
+      const room = new NotebookRoom(state.state, env);
+      await state.drain();
+      const harness = roomHarness(room);
+      const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+      harness.materializers.set("demo", materializer as never);
+      await materializer.setWorkstationAttachment({
+        workstation_id: "celld-preview-python",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "restore-session",
+      });
+      const manifest = { version: 1, pyodide: "0.28.3", requirements: ["six"], wheels: [] };
+      await materializer.compareSetCloudPackageManifest(null, manifest);
+      const socket = new FakeSocket();
+      const peer = {
+        id: "owner",
+        socket: socket.asCloudflareWebSocket(),
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+        ),
+        connectedAt: new Date().toISOString(),
+        workstation: null,
+      };
+      socket.serializeAttachment({
+        notebookId: "demo",
+        peerId: peer.id,
+        identity: peer.identity,
+        connectedAt: peer.connectedAt,
+      });
+      harness.peers.set(peer.id, peer);
+      const owner = NotebookHandle.create_bootstrap(peer.identity.actorLabel);
+      let outbound = (await materializer.syncPeer(peer)).outbound;
+      for (let round = 0; round < 8 && outbound.length; round++) {
+        const next = [];
+        for (const frame of outbound) {
+          if (frame.peer_id !== peer.id || frame.frame_type !== FrameType.AUTOMERGE_SYNC) continue;
+          for (const event of owner.receive_frame(
+            encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)),
+          )) {
+            if (event.reply)
+              next.push(
+                ...(
+                  await materializer.receiveFrame(peer, {
+                    type: FrameType.AUTOMERGE_SYNC,
+                    payload: new Uint8Array(event.reply),
+                  })
+                ).outbound,
+              );
+          }
+        }
+        outbound = next;
+      }
+      const cell = JSON.parse(owner.get_cells_json())[0];
+      owner.update_source(cell.id, "print('synced before execution')");
+      const heads = owner.get_heads_hex();
+      assert.equal(await materializer.waitForNotebookHeads(heads, 1), false);
+      const runtime = new ManagedPythonRoom(
+        env,
+        materializer,
+        "demo",
+        "user:dev:alice",
+        "restore-session",
+        (result) => runtime.accept(result),
+      );
+      const ready = runtime.start();
+      const settled = ready.catch((error: unknown) => error);
+      Object.assign(room, { managedPython: new Map([["demo", { runtime, ready }]]) });
+      const request = (id: string, action: string, extra = {}) =>
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(JSON.stringify({ id, action, ...extra })),
+        );
+      const interruptResponse = () =>
+        socket.sent.find(
+          (frame) =>
+            frame[0] === FrameType.RESPONSE &&
+            JSON.parse(new TextDecoder().decode(frame.slice(1))).id === "interrupt",
+        );
+      try {
+        await restoreEntered;
+        await room.webSocketMessage(
+          peer.socket,
+          request("run", "execute_cell", { cell_id: cell.id, required_heads: heads }),
+        );
+        await room.webSocketMessage(peer.socket, request("interrupt", "interrupt_execution"));
+        for (let round = 0; round < 10; round++)
+          await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(
+          socket.sent.length,
+          0,
+          "later requests cannot overtake unsynced execution intent",
+        );
+        assert.ok(!requests.includes("/close"));
+        const sync = owner.flush_local_changes();
+        assert.ok(sync);
+        await room.webSocketMessage(peer.socket, encodeTypedFrame(FrameType.AUTOMERGE_SYNC, sync));
+        for (let round = 0; round < 50 && !interruptResponse(); round++)
+          await new Promise((resolve) => setImmediate(resolve));
+        assert.ok(
+          interruptResponse(),
+          "interrupt must complete while saved-package restoration is waiting",
+        );
+        assert.equal(
+          JSON.parse(new TextDecoder().decode(interruptResponse()!.slice(1))).result,
+          "interrupt_sent",
+        );
+        assert.ok(requests.includes("/close"));
+        assert.ok(
+          !requests.includes("/execute"),
+          "queued code cannot execute before restoration finishes",
+        );
+        assert.match(String(await settled), /expired|replaced/i);
+        assert.deepEqual(await materializer.getCloudPackageManifest(), manifest);
+      } finally {
+        if (!requests.includes("/close")) await runtime.close();
+        await settled;
+        await state.drain();
+        owner.free();
+      }
+    },
+  );
+
   for (const outcome of ["success", "failure", "concurrent_edit", "interrupt"] as const) {
     it(
       `owns package completion after transport admission: ${outcome}`,
