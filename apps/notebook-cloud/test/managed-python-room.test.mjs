@@ -1,110 +1,157 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ManagedPythonRoom } from "../src/managed-python-room.ts";
+import { ComputeAllocation } from "../src/compute-allocation.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 import { fixture, sync } from "./preview-python-helpers.mjs";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { encodeTypedFrame } from "../src/protocol.ts";
 
 for (const allocationEnabled of [false, true])
-  for (const staleQueue of [false, true])
-    test(`managed room publishes execution and repairs stale queue: ${staleQueue}, allocation=${allocationEnabled}`, async (t) => {
-      await initializeTestRuntimedWasm();
-      const { host, peer, publish } = await fixture(t);
-      if (staleQueue) {
-        const id = Object.keys(peer.get_runtime_state().executions)[0];
-        peer.set_execution_done(id, true);
-        await publish();
-      }
-      host.set_workstation_attachment_json(
-        JSON.stringify({
-          workstation_id: "celld-preview-python",
-          display_name: "Python (sandboxed)",
-          provider: "celld-pyodide",
-          default_environment_label: "Python",
-          environment_policy: "curated",
-          status: "connecting",
-          runtime_session_id: "session",
-        }),
-      );
-      const requests = [];
-      const env = {
-        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
-        PREVIEW_PYTHON_SESSIONS: {
-          idFromName: (n) => n,
-          get: () => ({
-            fetch: async (request) => {
-              const body = await request.json();
-              requests.push({ path: new URL(request.url).pathname, ...body });
-              if (new URL(request.url).pathname === "/execute")
-                return Response.json({
-                  execution_count: 1,
-                  success: true,
-                  outputs: [{ output_type: "stream", name: "stdout", text: "managed output\n" }],
-                });
-              return Response.json({ ok: true });
-            },
+  for (const uncertainInspect of allocationEnabled ? [false, true] : [false])
+    for (const staleQueue of [false, true])
+      test(`managed room publishes execution and repairs stale queue: ${staleQueue}, allocation=${allocationEnabled}, uncertainInspect=${uncertainInspect}`, async (t) => {
+        await initializeTestRuntimedWasm();
+        const { host, peer, publish } = await fixture(t);
+        if (staleQueue) {
+          const id = Object.keys(peer.get_runtime_state().executions)[0];
+          peer.set_execution_done(id, true);
+          await publish();
+        }
+        host.set_workstation_attachment_json(
+          JSON.stringify({
+            workstation_id: "celld-preview-python",
+            display_name: "Python (sandboxed)",
+            provider: "celld-pyodide",
+            default_environment_label: "Python",
+            environment_policy: "curated",
+            status: "connecting",
+            runtime_session_id: "session",
           }),
-        },
-      };
-      const materializer = {
-        syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
-        receiveFrame: async (peer, frame) =>
-          host.receive_peer_frame(
-            peer.id,
-            peer.identity.principal,
-            peer.identity.actorLabel,
-            peer.identity.scope,
-            false,
-            encodeTypedFrame(frame.type, frame.payload),
-          ),
-        checkpoint: async () => {},
-        removePeer: async (id) => host.remove_peer(id),
-      };
-      if (allocationEnabled)
-        env.COMPUTE_ALLOCATIONS = {
-          idFromName: (name) => name,
-          get: (name) => ({
-            fetch: async (request) => {
-              assert.deepEqual(JSON.parse(name), ["user:dev:owner", "notebook", "session"]);
-              const path = new URL(request.url).pathname;
-              assert.ok(["/ensure", "/release"].includes(path));
-              requests.push({ path, ...(await request.json()) });
-              return Response.json({
-                allocation: { phase: path === "/ensure" ? "ready" : "released" },
-              });
-            },
-          }),
+        );
+        const requests = [];
+        let failInspection = uncertainInspect;
+        const env = {
+          NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+          PREVIEW_PYTHON_SESSIONS: {
+            idFromName: (n) => n,
+            get: () => ({
+              fetch: async (request) => {
+                const body = await request.json();
+                requests.push({ path: new URL(request.url).pathname, ...body });
+                if (new URL(request.url).pathname === "/inspect") {
+                  if (failInspection) {
+                    failInspection = false;
+                    return Response.json(
+                      { error: "temporary inspection failure" },
+                      { status: 503 },
+                    );
+                  }
+                  return Response.json({ phase: "ready", lastUsed: Date.now(), busy: false });
+                }
+                if (new URL(request.url).pathname === "/execute")
+                  return Response.json({
+                    execution_count: 1,
+                    success: true,
+                    outputs: [{ output_type: "stream", name: "stdout", text: "managed output\n" }],
+                  });
+                return Response.json({ ok: true });
+              },
+            }),
+          },
         };
-      const runtime = new ManagedPythonRoom(
-        env,
-        materializer,
-        "notebook",
-        "user:dev:owner",
-        "session",
-        (result) => runtime.accept(result),
-      );
-      await runtime.start();
-      await runtime.wake();
-      assert.equal(requests[0].path, allocationEnabled ? "/ensure" : "/open");
-      const executed = requests.find((r) => r.path === "/execute");
-      if (!staleQueue) {
-        assert.equal(executed.ownerPrincipal, "user:dev:owner");
-        assert.equal(executed.notebookId, "notebook");
-        assert.equal(executed.sessionId, "session");
-        assert.equal(executed.execution.source, "print('accepted from notebook')");
-      } else assert.equal(executed, undefined);
-      const viewer = new RuntimeStatePeerHandle("user:dev:viewer/test");
-      t.after(() => viewer.free());
-      sync(host, viewer, "viewer", "viewer", true);
-      const execution = Object.values(viewer.get_runtime_state().executions)[0];
-      assert.equal(execution.status, "done");
-      if (!staleQueue) assert.deepEqual(execution.outputs[0].text, { inline: "managed output\n" });
-      assert.equal(viewer.get_runtime_state().queue.executing, null);
-      assert.deepEqual(viewer.get_runtime_state().queue.queued, []);
-      await runtime.close();
-      assert.equal(requests.at(-1).path, allocationEnabled ? "/release" : "/close");
-    });
+        const materializer = {
+          syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+          receiveFrame: async (peer, frame) =>
+            host.receive_peer_frame(
+              peer.id,
+              peer.identity.principal,
+              peer.identity.actorLabel,
+              peer.identity.scope,
+              false,
+              encodeTypedFrame(frame.type, frame.payload),
+            ),
+          checkpoint: async () => {},
+          removePeer: async (id) => host.remove_peer(id),
+        };
+        if (allocationEnabled) {
+          const records = new Map();
+          const allocation = new ComputeAllocation(
+            {
+              storage: {
+                get: async (key) => structuredClone(records.get(key)),
+                put: async (key, value) => {
+                  records.set(key, structuredClone(value));
+                },
+                setAlarm: async () => {},
+              },
+              waitUntil: (pending) => pending.catch(() => {}),
+            },
+            env,
+          );
+          if (uncertainInspect) {
+            // Simulate reattaching a room to a previously confirmed interpreter.
+            const ready = await allocation.fetch(
+              new Request("https://allocation/ensure", {
+                method: "POST",
+                body: JSON.stringify({
+                  ownerPrincipal: "user:dev:owner",
+                  notebookId: "notebook",
+                  sessionId: "session",
+                }),
+              }),
+            );
+            assert.equal(ready.status, 200);
+            requests.length = 0;
+          }
+          env.COMPUTE_ALLOCATIONS = {
+            idFromName: (name) => name,
+            get: (name) => ({
+              fetch: async (request) => {
+                assert.deepEqual(JSON.parse(name), ["user:dev:owner", "notebook", "session"]);
+                const path = new URL(request.url).pathname;
+                assert.ok(["/ensure", "/release"].includes(path));
+                requests.push({ path, ...(await request.clone().json()) });
+                return allocation.fetch(request);
+              },
+            }),
+          };
+        }
+        const runtime = new ManagedPythonRoom(
+          env,
+          materializer,
+          "notebook",
+          "user:dev:owner",
+          "session",
+          (result) => runtime.accept(result),
+        );
+        await runtime.start();
+        if (uncertainInspect) {
+          assert.ok(requests.some((r) => r.path === "/inspect"));
+          assert.ok(!requests.some((r) => r.path === "/release" || r.path === "/close"));
+        }
+        await runtime.wake();
+        assert.equal(requests[0].path, allocationEnabled ? "/ensure" : "/open");
+        const executed = requests.find((r) => r.path === "/execute");
+        if (!staleQueue) {
+          assert.equal(executed.ownerPrincipal, "user:dev:owner");
+          assert.equal(executed.notebookId, "notebook");
+          assert.equal(executed.sessionId, "session");
+          assert.equal(executed.execution.source, "print('accepted from notebook')");
+        } else assert.equal(executed, undefined);
+        const viewer = new RuntimeStatePeerHandle("user:dev:viewer/test");
+        t.after(() => viewer.free());
+        sync(host, viewer, "viewer", "viewer", true);
+        const execution = Object.values(viewer.get_runtime_state().executions)[0];
+        assert.equal(execution.status, "done");
+        if (!staleQueue)
+          assert.deepEqual(execution.outputs[0].text, { inline: "managed output\n" });
+        assert.equal(viewer.get_runtime_state().queue.executing, null);
+        assert.deepEqual(viewer.get_runtime_state().queue.queued, []);
+        await runtime.close();
+        assert.equal(requests.at(-1).path, "/close");
+        if (allocationEnabled) assert.equal(requests.at(-2).path, "/release");
+      });
 
 test("managed lifecycle updates cannot overwrite a replacement session", async () => {
   await initializeTestRuntimedWasm();

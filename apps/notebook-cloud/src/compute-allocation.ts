@@ -209,8 +209,20 @@ export class ComputeAllocation {
       if (
         !(error instanceof SessionLost) &&
         !(record.phase === "allocating" && error instanceof ProviderRejected)
-      )
+      ) {
+        if (record.phase === "ready") {
+          // Reattachment uses the last confirmed allocation. An inconclusive
+          // health probe must not send the room down its startup-failed cleanup
+          // path and destroy a used interpreter. The alarm retries inspection;
+          // executions still reach the existing session directly.
+          cloudLog("warn", "compute_allocation_inspection_deferred", {
+            notebook_id: record.notebookId,
+            session_id: record.sessionId,
+          });
+          return;
+        }
         throw error;
+      }
       await this.mutate(async () => {
         const current = await this.state.storage.get<Allocation>(RECORD);
         if (current?.desired === "running")

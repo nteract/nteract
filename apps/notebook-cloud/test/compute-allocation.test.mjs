@@ -196,7 +196,7 @@ for (const phaseName of ["allocating", "ready"]) {
         if (failure === "transport") throw Error("connection interrupted");
         return Response.json({ error: "Provider temporarily unavailable" }, { status: 503 });
       });
-      assert.equal((await f.call("/ensure")).status, 409);
+      assert.equal((await f.call("/ensure")).status, phaseName === "ready" ? 200 : 409);
       assert.equal(await phase(f), phaseName);
       assert.ok(!f.paths.includes("/close"));
       assert.equal(f.counts().disposed, 0);
