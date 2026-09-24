@@ -72,6 +72,11 @@ pub struct QueryDaemonOptions {
 #[napi(object)]
 pub struct DaemonInfo {
     pub version: String,
+    pub protocol_version: u32,
+    /// Zero means the daemon predates semantic API version reporting.
+    pub daemon_api_version: u32,
+    /// Shared Rust compatibility diagnostic; absent when supported by this client.
+    pub compatibility_error: Option<String>,
     pub socket_path: String,
     pub is_dev_mode: bool,
     pub blob_port: Option<u32>,
@@ -298,11 +303,17 @@ pub async fn query_daemon_info(options: Option<QueryDaemonOptions>) -> Result<Op
     Ok(
         runtimed_client::singleton::query_daemon_info(socket_path.clone())
             .await
-            .map(|info| DaemonInfo {
-                version: info.version,
-                socket_path: socket_path.to_string_lossy().into_owned(),
-                is_dev_mode: info.worktree_path.is_some(),
-                blob_port: info.blob_port.map(u32::from),
+            .map(|info| {
+                let compatibility_error = runtimed_client::singleton::compatibility_error(&info);
+                DaemonInfo {
+                    version: info.version,
+                    protocol_version: info.protocol_version,
+                    daemon_api_version: info.daemon_api_version,
+                    compatibility_error,
+                    socket_path: socket_path.to_string_lossy().into_owned(),
+                    is_dev_mode: info.worktree_path.is_some(),
+                    blob_port: info.blob_port.map(u32::from),
+                }
             }),
     )
 }

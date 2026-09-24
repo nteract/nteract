@@ -1,14 +1,16 @@
 // @vitest-environment node
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import type { ExecutionViewChangeset } from "../src/index";
+import { afterAll, beforeAll, describe, expect, expectTypeOf, it, vi } from "vite-plus/test";
+import type { ExecutionViewChangeset, SessionStatus } from "../src/index";
 
 const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -107,14 +109,27 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
       session.onCellChange((json) => {
         events.cell = json;
       }),
+      session.onSessionStatus((json) => {
+        events.status = json;
+      }),
     ];
     try {
       await session.createCell("value = 42");
-      await expect.poll(() => Object.keys(events).sort()).toEqual(["cell", "execution", "runtime"]);
+      await expect
+        .poll(() => Object.keys(events).sort())
+        .toEqual(["cell", "execution", "runtime", "status"]);
       for (const value of Object.values(events)) expect(typeof value).toBe("string");
       expect(JSON.parse(events.cell as string)).toBeNull();
       expect(JSON.parse(events.execution as string)).toHaveProperty("queue");
       expect(JSON.parse(events.runtime as string)).toBeTypeOf("object");
+      await expect
+        .poll(() => JSON.parse(events.status as string))
+        .toMatchObject({
+          connection: "Connected",
+          notebook_doc: "Interactive",
+          runtime_state: "Ready",
+          initial_load: "NotNeeded",
+        } satisfies SessionStatus);
     } finally {
       for (const subscription of subscriptions) subscription.dispose();
       try {
@@ -223,4 +238,111 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
     },
     120000,
   );
+});
+
+// The real binding talks to a controlled pool endpoint so old/new daemon
+// metadata goes through Rust deserialization and the shared compatibility policy.
+describe.skipIf(!nativeEnabled)("@runtimed/node daemon compatibility probe", () => {
+  const compatible = {
+    type: "daemon_info",
+    // Keep this supported fixture aligned with notebook-wire and
+    // runtimed-client/src/protocol.rs when their compatibility versions change.
+    protocol_version: 4,
+    daemon_api_version: 1,
+    daemon_version: "0.0.0+different-build",
+    pid: 123,
+    started_at: "2026-01-01T00:00:00Z",
+    blob_port: 12345,
+  };
+
+  async function probe(response: Record<string, unknown>) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rnp-"));
+    const socketPath =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\rnp-${randomUUID()}`
+        : path.join(directory, "probe.sock");
+    const requests: unknown[] = [];
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      let bytes = Buffer.alloc(0);
+      let preambleRead = false;
+      socket.on("data", (chunk) => {
+        bytes = Buffer.concat([bytes, chunk]);
+        if (!preambleRead) {
+          if (bytes.length < 5) return;
+          bytes = bytes.subarray(5);
+          preambleRead = true;
+        }
+        while (bytes.length >= 4) {
+          const length = bytes.readUInt32BE();
+          if (bytes.length < length + 4) return;
+          requests.push(JSON.parse(bytes.subarray(4, length + 4).toString()));
+          bytes = bytes.subarray(length + 4);
+          if (requests.length === 2) {
+            const payload = Buffer.from(JSON.stringify(response));
+            const header = Buffer.alloc(4);
+            header.writeUInt32BE(payload.length);
+            socket.end(Buffer.concat([header, payload]));
+          }
+        }
+      });
+    });
+    try {
+      server.listen(socketPath);
+      await once(server, "listening");
+      const api: typeof import("../src/relay") = require("../src/relay.cjs");
+      const result = await api.queryDaemonInfo({ socketPath });
+      expect(requests).toEqual([{ channel: "pool" }, { type: "get_daemon_info" }]);
+      return { result, socketPath };
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it("preserves reported versions and accepts a different artifact build", async () => {
+    const rootApi: typeof import("../src/index") = require("../src/index.cjs");
+    const relayApi: typeof import("../src/relay") = require("../src/relay.cjs");
+    expect(rootApi.queryDaemonInfo).toBe(relayApi.queryDaemonInfo);
+    expectTypeOf<typeof rootApi.queryDaemonInfo>().toEqualTypeOf<typeof relayApi.queryDaemonInfo>();
+    expectTypeOf<import("../src/relay").DaemonInfo>().toEqualTypeOf<
+      import("../src/binding").DaemonInfo
+    >();
+    const { result, socketPath } = await probe(compatible);
+    expect(result).toMatchObject({
+      version: compatible.daemon_version,
+      protocolVersion: 4,
+      daemonApiVersion: 1,
+      socketPath,
+      isDevMode: false,
+      blobPort: 12345,
+    });
+    expect(result?.compatibilityError).toBeUndefined();
+  });
+
+  it.each([
+    ["older wire", { protocol_version: 0 }, /wire protocol 0/],
+    ["newer wire", { protocol_version: 99 }, /wire protocol 99/],
+    ["missing semantic API", { daemon_api_version: undefined }, /daemon API 0 is older/],
+    ["newer semantic API", { daemon_api_version: 99 }, /daemon API 99 is newer/],
+  ])("reports %s without hiding the responding daemon", async (_name, overrides, diagnostic) => {
+    const { result } = await probe({ ...compatible, ...overrides });
+    expect(result).not.toBeNull();
+    expect(result?.compatibilityError).toMatch(diagnostic);
+    expect(result?.daemonApiVersion).toBe(
+      "daemon_api_version" in overrides
+        ? (overrides.daemon_api_version ?? 0)
+        : compatible.daemon_api_version,
+    );
+  });
+
+  it("returns null for unavailable metadata", async () => {
+    const { result, socketPath } = await probe({ type: "error", message: "Unknown request" });
+    expect(result).toBeNull();
+    const api: typeof import("../src/relay") = require("../src/relay.cjs");
+    await expect(api.queryDaemonInfo({ socketPath })).resolves.toBeNull();
+  });
 });

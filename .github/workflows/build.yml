@@ -164,6 +164,10 @@ jobs:
               - "packages/runtimed-node/**"
               - "plugins/nteract/pi/**"
               - "crates/runtimed-node/**"
+              - "crates/runtimed-client/**"
+              - "crates/notebook-protocol/**"
+              - "crates/notebook-wire/**"
+              - "crates/notebook-sync/**"
               - "crates/runtimed/**"
               - "package.json"
               - "pnpm-lock.yaml"
@@ -971,6 +975,11 @@ jobs:
 
       - name: Build runtimed-node N-API package
         run: pnpm --dir packages/runtimed-node build:debug
+
+      # Runtime test transforms erase expectTypeOf/satisfies checks. Check
+      # public declarations against native types after building the binding.
+      - name: Check runtimed-node public type contracts
+        run: pnpm --dir packages/runtimed-node typecheck:contracts
 
       - name: Build daemon for native session tests
         run: cargo build -p runtimed

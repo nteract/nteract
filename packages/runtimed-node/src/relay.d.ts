@@ -32,6 +32,11 @@ export interface QueryDaemonOptions {
 
 export interface DaemonInfo {
   version: string;
+  protocolVersion: number;
+  /** Zero means the daemon predates semantic API version reporting. */
+  daemonApiVersion: number;
+  /** Shared Rust compatibility diagnostic; absent when supported by this client. */
+  compatibilityError?: string;
   socketPath: string;
   isDevMode: boolean;
   blobPort?: number;
@@ -82,5 +87,9 @@ export function connectRelay(notebookId: string, options?: OpenRelayOptions): Pr
 export function defaultSocketPath(): string;
 /** Resolve a stable or nightly daemon endpoint independently of this package's build channel. */
 export function socketPathForChannel(channel: "stable" | "nightly"): string;
-/** Return null until the selected daemon is ready to answer pool requests. */
+/**
+ * Return null when metadata is unavailable. A responding incompatible daemon
+ * returns metadata with compatibilityError. This probe does not authenticate
+ * a process or guarantee compatibility of a later notebook connection.
+ */
 export function queryDaemonInfo(options?: QueryDaemonOptions): Promise<DaemonInfo | null>;

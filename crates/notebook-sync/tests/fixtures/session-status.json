@@ -1,0 +1,8 @@
+[
+  {"connection":"Connected","notebook_doc":"Pending","runtime_state":"Pending","initial_load":"Streaming"},
+  {"connection":"Connected","notebook_doc":"Syncing","runtime_state":"Syncing","initial_load":"Streaming"},
+  {"connection":"Connected","notebook_doc":"Interactive","runtime_state":"Ready","initial_load":"NotNeeded"},
+  {"connection":"Connected","notebook_doc":"Interactive","runtime_state":"Ready","initial_load":"Ready"},
+  {"connection":"Connected","notebook_doc":"Syncing","runtime_state":"Pending","initial_load":{"Failed":{"reason":"bootstrap rejected"}}},
+  {"connection":"Disconnected","notebook_doc":"Interactive","runtime_state":"Ready","initial_load":"Ready"}
+]

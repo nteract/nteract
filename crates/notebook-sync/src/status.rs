@@ -112,3 +112,68 @@ impl From<SessionSyncStatusWire> for SyncStatus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Also consumed by the Node wrapper/type contract test. Native callbacks
+    /// serialize SyncStatus directly, independently of SessionSyncStatusWire.
+    #[test]
+    fn node_session_status_serialization_contract() {
+        let phases = [
+            (
+                ConnectionState::Connected,
+                NotebookDocPhase::Pending,
+                RuntimeStatePhase::Pending,
+                InitialLoadPhase::Streaming,
+            ),
+            (
+                ConnectionState::Connected,
+                NotebookDocPhase::Syncing,
+                RuntimeStatePhase::Syncing,
+                InitialLoadPhase::Streaming,
+            ),
+            (
+                ConnectionState::Connected,
+                NotebookDocPhase::Interactive,
+                RuntimeStatePhase::Ready,
+                InitialLoadPhase::NotNeeded,
+            ),
+            (
+                ConnectionState::Connected,
+                NotebookDocPhase::Interactive,
+                RuntimeStatePhase::Ready,
+                InitialLoadPhase::Ready,
+            ),
+            (
+                ConnectionState::Connected,
+                NotebookDocPhase::Syncing,
+                RuntimeStatePhase::Pending,
+                InitialLoadPhase::Failed {
+                    reason: "bootstrap rejected".into(),
+                },
+            ),
+            (
+                ConnectionState::Disconnected,
+                NotebookDocPhase::Interactive,
+                RuntimeStatePhase::Ready,
+                InitialLoadPhase::Ready,
+            ),
+        ];
+        let statuses: Vec<_> = phases
+            .into_iter()
+            .map(
+                |(connection, notebook_doc, runtime_state, initial_load)| SyncStatus {
+                    connection,
+                    notebook_doc,
+                    runtime_state,
+                    initial_load,
+                },
+            )
+            .collect();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/session-status.json")).unwrap();
+        assert_eq!(serde_json::to_value(statuses).unwrap(), fixture);
+    }
+}

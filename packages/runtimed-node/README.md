@@ -75,17 +75,22 @@ Hosts that supervise the daemon can use `defaultSocketPath()`,
 `socketPathForChannel("stable" | "nightly")`, and
 `queryDaemonInfo({ socketPath })` from the same subpath. The explicit channel
 resolver is useful when the host's release channel differs from the package's
-compile-time default. The query returns `null` until the daemon is ready, so
-the host does not need to duplicate the pool wire protocol just to probe
-readiness.
+compile-time default. The query returns `null` when metadata is unavailable,
+including absent or unready endpoints and older daemons that cannot answer the
+query. A responding daemon returns `protocolVersion`, `daemonApiVersion`, and
+an optional `compatibilityError` computed by the shared Rust client checker.
+The semantic API version is zero when the daemon does not report it. Hosts can
+surface the diagnostic without duplicating supported-version policy in JavaScript;
+the probe never starts or replaces a daemon.
 
 `RelaySession.info.daemonVersion` is the identity carried by that notebook's
 exact handshake. It is intentionally left undefined when an older daemon omits
 it rather than being filled from a later pool query, which could race a daemon
 restart. Treat that artifact version as diagnostic metadata. Compatibility is
 determined by the negotiated protocol number and, for optional semantics, the
-capabilities advertised by the connection. Use `queryDaemonInfo()` only for
-readiness and diagnostics.
+capabilities advertised by the connection. The pool probe is a compatibility
+preflight and diagnostic, not authentication or proof about a later notebook
+connection: the daemon can change between the probe and that connection.
 
 Frames include the one-byte notebook frame discriminator and omit the daemon
 socket's length prefix; an empty buffer is not a frame and is rejected. The
@@ -349,6 +354,18 @@ value and unsubscribe contract. It wraps the same instance and holds no second
 copy of notebook state. Cells, output content, and a complete Svelte shell are
 separate follow-ups.
 
+### Session status
+
+`session.sessionStatus$` forwards the native `SyncStatus` JSON unchanged.
+`connection` is `"Connected"` or `"Disconnected"`; `notebook_doc` is `"Pending"`,
+`"Syncing"`, or `"Interactive"`; `runtime_state` is `"Pending"`, `"Syncing"`, or
+`"Ready"`. `initial_load` is `"NotNeeded"`, `"Streaming"`, `"Ready"`, or
+`{ Failed: { reason: string } }`. These are case-sensitive values, distinct
+from the session-control wire representation. Subscribe to detect connection
+loss and bootstrap failures; `close()` completes the stream.
+Callers using the earlier lowercase declarations or `initial_load.phase` must
+update their comparisons to these native values; runtime serialization is unchanged.
+
 ### Native session verification
 
 Build the native binding and daemon, then run the callback and shared-store
@@ -356,6 +373,7 @@ contract against an isolated daemon. CI runs this check without a Python kernel:
 
 ```bash
 pnpm --dir packages/runtimed-node build:debug
+pnpm --dir packages/runtimed-node typecheck:contracts
 cargo xtask artifacts ensure runtime,sift,renderer
 cargo build -p runtimed
 RUNTIMED_NODE_NATIVE_INTEGRATION=1 \
