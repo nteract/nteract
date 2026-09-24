@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { OperatorStore } from "./store.ts";
 import { bytes, cpu, currentHost, format, memory, timestamp, type Metrics } from "./metrics.ts";
 import { HistoryCharts } from "./charts.tsx";
-import { endpointName, fleetGroups, historyCoverage, measured } from "./projections.ts";
+import { endpointName, fleetGroups, fleetKnown, historyCoverage, measured } from "./projections.ts";
 import "./style.css";
 
 const store = new OperatorStore();
@@ -27,7 +27,9 @@ function Fleet({ data }: { data: Metrics }) {
       </p>
       {!groups.known && (
         <p className="notice">
-          Current fleet state is unknown. Last observed deployments are shown for reference.
+          {data.stale
+            ? "Current fleet state is unknown. Last observed deployments are shown for reference."
+            : "Managed preview discovery is unavailable. Their last observed state is shown for reference; original app measurements are independent."}
         </p>
       )}
       {!data.previews.some((p) => p.id === "app") && (
@@ -43,7 +45,7 @@ function Fleet({ data }: { data: Metrics }) {
               <div className="section-heading">
                 <h3>{endpointName(preview.id)}</h3>
                 <Badge variant="outline">
-                  {groups.known ? preview.status : `Last: ${preview.status}`}
+                  {fleetKnown(data, preview.id) ? preview.status : `Last: ${preview.status}`}
                 </Badge>
               </div>
               <p className="revision">
@@ -61,15 +63,16 @@ function Fleet({ data }: { data: Metrics }) {
                 const fleet = current.find(
                   (o) => o.kind === "fleet" && o.preview === preview.id && o.role === role,
                 );
-                const s = groups.known && measured(service) ? service!.values : {};
-                const f = groups.known && measured(fleet) ? fleet!.values : {};
+                const known = fleetKnown(data, preview.id);
+                const s = known && measured(service) ? service!.values : {};
+                const f = known && measured(fleet) ? fleet!.values : {};
                 return (
                   <div className="fleet-role" key={role}>
                     <div>
                       <strong>{role}</strong>
-                      <small>{groups.known ? (service?.status ?? "unmeasured") : "unknown"}</small>
+                      <small>{known ? (service?.status ?? "unmeasured") : "unknown"}</small>
                     </div>
-                    {groups.known && fleet?.status !== "ok" && (
+                    {known && fleet?.status !== "ok" && (
                       <p className="caption">Fleet census: {fleet?.status ?? "unmeasured"}</p>
                     )}
                     <dl>
@@ -174,6 +177,8 @@ function Dashboard({ data, hours }: { data: Metrics; hours: number }) {
           <p className="caption">
             Observed process replacements include manual starts. Times mark collection, not the
             exact restart.
+            {data.processChanges.length > 10 &&
+              ` Showing the latest 10 of ${data.processChanges.length} returned observations; the JSON export includes the full returned history.`}
           </p>
           {data.processChanges.length ? (
             <ul className="events">

@@ -4,6 +4,7 @@ import { currentHost, isMetrics, type Metrics, type Observation } from "../viewe
 import {
   chartPath,
   fleetGroups,
+  fleetKnown,
   historyCoverage,
   hostSeries,
   residentSeries,
@@ -109,6 +110,25 @@ test("partial host data preserves measured memory and CPU while missing values a
   assert.equal(currentHost(data), b);
   data.gaps = [{ from: 130000, to: 170000 }];
   assert.equal(hostSeries(data)[0].points[1].value, null);
+});
+test("fresh original-app measurements are independent of managed discovery, while stale data stays unknown", () => {
+  const data = fixture();
+  data.latest!.discovery_status = "error";
+  data.observations = [row("fleet", data.latest!.at, "app", { resident_objects: 3 })];
+  assert.equal(fleetKnown(data, "app"), true);
+  assert.equal(fleetKnown(data, "main"), false);
+  assert.equal(fleetKnown({ ...data, stale: true }, "app"), false);
+  assert.equal(fleetKnown({ ...data, observations: [] }, "app"), false);
+});
+
+test("an all-zero census derives class names from the observations", () => {
+  const data = fixture();
+  data.observations = [
+    row("fleet", 180000, "main", { resident_objects: 0 }),
+    { ...row("class", 180000, "main", { resident_objects: 0 }), class: "WorkstationEvents" },
+  ];
+  assert.equal(residentSeries(data)[0].name, "WorkstationEvents");
+  assert.equal(residentSeries(data)[0].points[0].value, 0);
 });
 
 test("resident totals retain healthy fleets with explicit partial coverage and break across unknown captures", () => {

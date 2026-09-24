@@ -70,6 +70,9 @@ function Chart({
                   {bars && (
                     <line x1={x(p.at)} x2={x(p.at)} y1={175} y2={y(p.value!)} className="bar" />
                   )}
+                  {bars && p.value === 0 && (
+                    <line x1={x(p.at) - 5} x2={x(p.at) + 5} y1={175} y2={175} className="zero" />
+                  )}
                   <circle cx={x(p.at)} cy={y(p.value!)} r="2.5">
                     <title>
                       {timestamp(p.at)} · {s.name}: {format(p.value, percent ? "%" : "")}
@@ -104,6 +107,34 @@ function Chart({
           </li>
         ))}
       </ul>
+      <details className="chart-data">
+        <summary>View measurements and coverage</summary>
+        <div className="chart-table" tabIndex={0} role="region" aria-label={`${label} data`}>
+          <table>
+            <caption>{label}</caption>
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Series</th>
+                <th scope="col">Value</th>
+                <th scope="col">Coverage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {series.flatMap((s) =>
+                s.points.map((p) => (
+                  <tr key={`${s.name}-${p.at}`}>
+                    <td>{timestamp(p.at)}</td>
+                    <td>{s.name}</td>
+                    <td>{p.value === null ? "Unknown" : format(p.value, percent ? "%" : "")}</td>
+                    <td>{p.detail ?? "Recorded sample"}</td>
+                  </tr>
+                )),
+              )}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </>
   );
 }
@@ -143,8 +174,8 @@ export function HistoryCharts({ data, hours }: { data: Metrics; hours: number })
             empty="No measured Durable Object census in this range."
           />
           <p className="caption">
-            Application fleets grouped by class. Totals include only measured fleets; hover a point
-            for coverage. Residency does not indicate people or activity.
+            Application fleets grouped by class. Totals include only measured fleets; open the
+            measurements table for coverage. Residency does not indicate people or activity.
           </p>
         </section>
         <section>
@@ -163,7 +194,8 @@ export function HistoryCharts({ data, hours }: { data: Metrics; hours: number })
           <p className="caption">
             Distinct rooms per half hour and managed deployment incarnation. Application-reported,
             not simultaneous occupancy or unique people. Empty windows are unknown; journal gaps
-            reduce coverage. The original app deployment is not included.
+            reduce coverage. The original app deployment is not included. A short baseline mark
+            indicates a reported zero; unreported windows have no mark.
           </p>
         </section>
       </div>

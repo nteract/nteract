@@ -12,6 +12,11 @@ export interface Series {
 }
 export const measured = (row?: Observation) => row && ["ok", "partial"].includes(row.status);
 export const endpointName = (id: string) => (id === "app" ? "app.runt.run" : id);
+export const fleetKnown = (data: Metrics, id: string) =>
+  !data.stale &&
+  !!data.latest &&
+  (data.latest.discovery_status === "ok" ||
+    (id === "app" && data.observations.some((o) => o.preview === id && o.at === data.latest!.at)));
 
 export function fleetGroups(data: Metrics) {
   const known = !data.stale && data.latest?.discovery_status === "ok";
@@ -50,7 +55,7 @@ export function residentSeries(data: Metrics): Series[] {
   const names = [
     ...new Set(classes.filter((o) => (o.values.resident_objects ?? 0) > 0).map((o) => o.class)),
   ].sort();
-  if (!names.length && classes.length) names.push("NotebookRoom");
+  if (!names.length) names.push(...new Set(classes.map((o) => o.class)));
   const byTime = new Map<number, Observation[]>();
   for (const row of data.observations) {
     if (row.role !== "main" || !["fleet", "class"].includes(row.kind)) continue;

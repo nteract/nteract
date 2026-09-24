@@ -140,6 +140,36 @@ section {
   stroke: var(--series-color);
   stroke-width: 8;
 }
+.series .zero {
+  stroke: var(--series-color);
+  stroke-width: 3;
+}
+.chart-data {
+  margin-top: 12px;
+  font-size: 12px;
+}
+.chart-data summary {
+  cursor: pointer;
+}
+.chart-table {
+  max-height: 300px;
+  overflow: auto;
+  margin-top: 12px;
+}
+.chart-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.chart-table caption {
+  text-align: left;
+  margin-bottom: 8px;
+}
+.chart-table th,
+.chart-table td {
+  text-align: left;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
 .series-0 {
   --series-color: #3b6c91;
 }
