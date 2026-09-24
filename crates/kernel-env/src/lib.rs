@@ -28,7 +28,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 #[cfg(feature = "runtime")]
-mod channels;
+pub mod channels;
 #[cfg(feature = "runtime")]
 pub mod conda;
 #[cfg(feature = "runtime")]
@@ -44,6 +44,8 @@ pub mod platform;
 pub mod progress;
 #[cfg(feature = "runtime")]
 pub use kernel_launch::CommandOutputExt;
+#[cfg(feature = "runtime")]
+pub mod python;
 #[cfg(feature = "runtime")]
 pub mod repodata;
 #[cfg(feature = "runtime")]

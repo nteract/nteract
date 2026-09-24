@@ -29,6 +29,9 @@ pub struct LockFile {
     pub platform: String,
     /// Original dependency specs (e.g. `["python>=3.13", "numpy"]`).
     pub specs: Vec<String>,
+    /// Optional solver constraints (not required packages).
+    #[serde(default)]
+    pub constraints: Vec<String>,
     /// Channels used for the solve (e.g. `["conda-forge"]`).
     pub channels: Vec<String>,
     /// Fully resolved packages from the solver.
@@ -42,9 +45,16 @@ impl LockFile {
             version: 1,
             platform: crate::conda_solve_platform().to_string(),
             specs,
+            constraints: Vec::new(),
             channels,
             packages,
         }
+    }
+
+    /// Record the ABI constraints used for this solve.
+    pub fn with_constraints(mut self, constraints: Vec<String>) -> Self {
+        self.constraints = constraints;
+        self
     }
 
     /// Write the lock file to `<env_path>/.lock.json`.
@@ -70,12 +80,12 @@ impl LockFile {
         }
     }
 
-    /// Check if this lock matches the given specs and channels (order-independent).
+    /// Check specs without regard to order, preserving channel priority order.
     pub fn matches(&self, specs: &[String], channels: &[String]) -> bool {
         self.version == 1
             && self.platform == crate::conda_solve_platform().to_string()
             && sorted_eq(&self.specs, specs)
-            && sorted_eq(&self.channels, channels)
+            && self.channels == channels
     }
 }
 
@@ -105,8 +115,7 @@ pub async fn install_from_lock(
 
     handler.on_progress(env_type, crate::progress::EnvProgressPhase::LockFileHit);
 
-    let download_client = reqwest::Client::builder().build()?;
-    let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
+    let download_client = crate::channels::download_client()?;
 
     let install_platform = crate::conda_solve_platform();
 
@@ -158,6 +167,12 @@ mod tests {
         assert!(!lock.matches(&["numpy".into()], &["defaults".into()]));
     }
 
+    #[test]
+    fn lock_preserves_channel_priority() {
+        let lock = LockFile::new(vec![], vec!["main".into(), "main-x".into()], vec![]);
+        assert!(!lock.matches(&[], &["main-x".into(), "main".into()]));
+    }
+
     #[tokio::test]
     async fn test_lock_file_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -165,11 +180,13 @@ mod tests {
             vec!["numpy".into(), "pandas".into()],
             vec!["conda-forge".into()],
             vec![],
-        );
+        )
+        .with_constraints(vec!["python_abi[build='^.*_cp[0-9]+$']".into()]);
         lock.write_to(dir.path()).await.unwrap();
         let loaded = LockFile::read_from(dir.path()).await.unwrap();
         assert_eq!(loaded.version, 1);
         assert_eq!(loaded.specs, lock.specs);
+        assert_eq!(loaded.constraints, lock.constraints);
         assert_eq!(loaded.channels, lock.channels);
         assert_eq!(loaded.platform, crate::conda_solve_platform().to_string());
     }

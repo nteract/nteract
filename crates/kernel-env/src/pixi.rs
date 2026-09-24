@@ -16,7 +16,7 @@
 use anyhow::{anyhow, Context, Result};
 use log::{debug, info, warn};
 use rattler::{default_cache_dir, install::Installer};
-use rattler_conda_types::{ChannelConfig, MatchSpec, ParseMatchSpecOptions, Platform};
+use rattler_conda_types::{ChannelConfig, Platform};
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -62,7 +62,7 @@ pub fn default_cache_dir_pixi() -> PathBuf {
 /// This produces a valid pixi manifest that records the installed packages,
 /// channels, and platform. The environment can later be extended by pixi CLI
 /// or pixi API if needed.
-fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) -> String {
+fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) -> Result<String> {
     let platform = crate::conda_solve_platform().to_string();
 
     let channels_str = channels
@@ -74,18 +74,47 @@ fn generate_pixi_manifest(name: &str, packages: &[String], channels: &[String]) 
     let deps_str = packages
         .iter()
         .map(|p| {
+            if p.contains("::") {
+                let specs = crate::python::parse_specs(std::slice::from_ref(p))?;
+                let spec = &specs[0];
+                let name = spec
+                    .name
+                    .as_exact()
+                    .context("Pixi dependencies need an exact package name")?;
+                let version = spec
+                    .version
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "*".into());
+                let channel = spec
+                    .channel
+                    .as_ref()
+                    .context("Missing dependency channel")?;
+                let build = spec
+                    .build
+                    .as_ref()
+                    .map(|build| format!(", build = \"{build}\""))
+                    .unwrap_or_default();
+                return Ok(format!(
+                    "{} = {{ version = \"{}\", channel = \"{}\"{} }}",
+                    name.as_normalized(),
+                    version,
+                    channel.base_url,
+                    build
+                ));
+            }
             // Split "package>=version" into name and version spec
             if let Some(idx) = p.find(['>', '<', '=', '!']) {
                 let (name, version) = p.split_at(idx);
-                format!("{} = \"{}\"", name.trim(), version.trim())
+                Ok(format!("{} = \"{}\"", name.trim(), version.trim()))
             } else {
-                format!("{} = \"*\"", p)
+                Ok(format!("{} = \"*\"", p))
             }
         })
-        .collect::<Vec<_>>()
+        .collect::<Result<Vec<_>>>()?
         .join("\n");
 
-    format!(
+    Ok(format!(
         r#"[workspace]
 channels = [{channels}]
 name = "{name}"
@@ -101,7 +130,7 @@ version = "0.1.0"
         name = name,
         platform = platform,
         deps = deps_str,
-    )
+    ))
 }
 
 /// Create a pixi-compatible environment using rattler.
@@ -149,7 +178,14 @@ pub async fn create_pixi_environment(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "runtimed-pixi".to_string());
-    let manifest = generate_pixi_manifest(&project_name, packages, &channels);
+    let channel_config = ChannelConfig::default_with_root_dir(project_dir.to_path_buf());
+    let manifest_channels =
+        parse_channels(&channels, &channel_config, crate::conda_solve_platform())?
+            .iter()
+            .map(|channel| channel.base_url.to_string())
+            .collect::<Vec<_>>();
+    let manifest = generate_pixi_manifest(&project_name, packages, &manifest_channels)?;
+
     let manifest_path = project_dir.join("pixi.toml");
     tokio::fs::write(&manifest_path, &manifest).await?;
     debug!(
@@ -212,14 +248,7 @@ async fn install_pixi_env(
     let install_platform = crate::conda_solve_platform();
     let channels = parse_channels(channels, &channel_config, install_platform)?;
 
-    // Build specs -- always include python
-    let match_spec_options = ParseMatchSpecOptions::strict();
-    let mut specs: Vec<MatchSpec> = vec![MatchSpec::from_str("python>=3.13", match_spec_options)?];
-
-    for pkg in packages {
-        let spec = MatchSpec::from_str(pkg, match_spec_options)?;
-        specs.push(spec);
-    }
+    let (specs, constraints) = crate::python::solve_specs(packages)?;
 
     // Rattler cache
     let rattler_cache_dir = default_cache_dir()
@@ -228,8 +257,7 @@ async fn install_pixi_env(
         .map_err(|e| anyhow!("could not create rattler cache directory: {}", e))?;
 
     // HTTP client
-    let download_client = reqwest::Client::builder().build()?;
-    let download_client = reqwest_middleware::ClientBuilder::new(download_client).build();
+    let download_client = crate::channels::download_client()?;
 
     // Query repodata with offline-first strategy
     let platforms = vec![install_platform, Platform::NoArch];
@@ -260,6 +288,7 @@ async fn install_pixi_env(
     let solver_task = SolverTask {
         virtual_packages,
         specs,
+        constraints,
         ..SolverTask::from_iter(&repo_data)
     };
 
@@ -273,7 +302,7 @@ async fn install_pixi_env(
                     message: error_msg.clone(),
                 },
             );
-            return Err(anyhow!(error_msg));
+            return Err(anyhow!(e).context(error_msg));
         }
     };
     let required_packages = solver_result.records;
@@ -319,7 +348,7 @@ async fn install_pixi_env(
                     message: error_msg.clone(),
                 },
             );
-            return Err(anyhow!(error_msg));
+            return Err(anyhow!(e).context(error_msg));
         }
     }
 
@@ -434,7 +463,8 @@ mod tests {
                 "numpy>=1.24".to_string(),
             ],
             &["conda-forge".to_string()],
-        );
+        )
+        .unwrap();
 
         assert!(manifest.contains("[workspace]"));
         assert!(manifest.contains("name = \"test-project\""));
@@ -452,7 +482,8 @@ mod tests {
             "test",
             &["pandas".to_string()],
             &["conda-forge".to_string(), "defaults".to_string()],
-        );
+        )
+        .unwrap();
 
         assert!(manifest.contains("\"conda-forge\", \"defaults\""));
     }
@@ -468,7 +499,8 @@ mod tests {
                 "matplotlib!=3.7".to_string(),
             ],
             &["conda-forge".to_string()],
-        );
+        )
+        .unwrap();
 
         assert!(manifest.contains("numpy = \">=1.24\""));
         assert!(manifest.contains("pandas = \"<2.0\""));
@@ -482,9 +514,29 @@ mod tests {
             "test",
             &["python".to_string()],
             &["conda-forge".to_string()],
-        );
+        )
+        .unwrap();
 
         let platform = crate::conda_solve_platform().to_string();
         assert!(manifest.contains(&format!("platforms = [\"{}\"]", platform)));
+    }
+
+    #[test]
+    fn manifest_records_qualified_channel_aliases() {
+        let manifest = generate_pixi_manifest(
+            "test",
+            &["main::numpy>=1.24".into(), "main-x::a2wsgi".into()],
+            &[
+                "https://repo.anaconda.com/pkgs/main/".into(),
+                "https://repo.anaconda.cloud/repo/main-x/".into(),
+            ],
+        )
+        .unwrap();
+        assert!(manifest.contains(
+            "numpy = { version = \">=1.24\", channel = \"https://repo.anaconda.com/pkgs/main/\" }"
+        ));
+        assert!(manifest.contains(
+            "a2wsgi = { version = \"*\", channel = \"https://repo.anaconda.cloud/repo/main-x/\" }"
+        ));
     }
 }
