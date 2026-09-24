@@ -107,6 +107,7 @@ import { useDenoConfig } from "./hooks/useDenoConfig";
 import { type EnvSyncState, useDependencies } from "./hooks/useDependencies";
 import { useEnvProgress } from "./hooks/useEnvProgress";
 import { useDaemonInfo, useGitInfo } from "./hooks/useGitInfo";
+import { useHostUsername } from "./hooks/useHostUsername";
 import { useGlobalFind } from "./hooks/useGlobalFind";
 import { resolveOutputValue } from "./hooks/useManifestResolver";
 import { usePixiDetection } from "./hooks/usePixiDetection";
@@ -350,8 +351,7 @@ function AppContent() {
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
 
-  // OS username for presence labels (injected by Tauri initialization_script)
-  const peerLabel = (window as unknown as Record<string, string>).__NTERACT_USERNAME__ ?? "";
+  const peerLabel = useHostUsername();
 
   // Start dispatching presence events to CodeMirror EditorViews
   useEffect(() => {
@@ -810,7 +810,7 @@ function AppContent() {
     openNotebookRailPanel("comments");
   }, []);
 
-  // The OS full name only labels the local author. We feed it through a peers
+  // The host-provided name only labels the local author. We feed it through a peers
   // entry keyed by the local principal, mirroring the cloud presence model, so
   // synced peers and agents resolve their own labels instead of inheriting this
   // machine's user name.
