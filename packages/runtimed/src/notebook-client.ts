@@ -193,6 +193,29 @@ export class NotebookClient {
     }
   }
 
+  /** Ask the daemon's agent to answer a prompt cell (daemon reads it from the synced document). */
+  async runPromptCell(cellId: string): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest(
+        { type: "run_prompt_cell", cell_id: cellId },
+        this.requiredHeadsOptions(),
+      );
+    } catch (e) {
+      this.log.error("[notebook-client] Run prompt failed:", e);
+      throw e;
+    }
+  }
+
+  /** Stop the agent answering a prompt cell. */
+  async cancelPromptCell(cellId: string): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({ type: "cancel_prompt_cell", cell_id: cellId });
+    } catch (e) {
+      this.log.error("[notebook-client] Cancel prompt failed:", e);
+      throw e;
+    }
+  }
+
   /** Interrupt kernel execution. */
   async interruptKernel(): Promise<NotebookResponse> {
     try {

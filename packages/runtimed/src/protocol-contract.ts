@@ -21,6 +21,8 @@ export const NOTEBOOK_REQUEST_TYPES = [
   "execute_cell_guarded",
   "interrupt_execution",
   "shutdown_kernel",
+  "run_prompt_cell",
+  "cancel_prompt_cell",
   "run_all_cells",
   "run_all_cells_guarded",
   "send_comm",

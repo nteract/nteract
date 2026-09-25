@@ -1117,6 +1117,13 @@ pub(crate) struct ActiveKernelLaunch {
     pub env_source: notebook_protocol::connection::EnvSource,
 }
 
+/// The prompt cell whose agent run is in progress. A room runs one prompt at
+/// a time; `cancel` asks the run's task to interrupt the agent process.
+pub(crate) struct ActivePromptRun {
+    pub cell_id: String,
+    pub cancel: Arc<tokio::sync::Notify>,
+}
+
 impl Drop for SourceReconciliationClaim {
     fn drop(&mut self) {
         self.room
@@ -1586,6 +1593,8 @@ pub struct NotebookRoom {
     pub runtime_agent_launched_config: Arc<RwLock<Option<LaunchedEnvConfig>>>,
     /// Daemon-local authority for idempotent `LaunchKernel` responses.
     pub(crate) active_kernel_launch: std::sync::Mutex<Option<ActiveKernelLaunch>>,
+    /// Daemon-local slot for the room's single in-progress prompt run.
+    pub(crate) active_prompt_run: std::sync::Mutex<Option<ActivePromptRun>>,
     /// Channel for sending RPC requests (LaunchKernel, Interrupt, etc.) to the
     /// runtime agent's sync connection. Set when runtime agent connects via
     /// socket, cleared on disconnect.
@@ -2282,6 +2291,7 @@ impl NotebookRoom {
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
             runtime_agent_launched_config: Arc::new(RwLock::new(None)),
             active_kernel_launch: std::sync::Mutex::new(None),
+            active_prompt_run: std::sync::Mutex::new(None),
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
             pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
             runtime_agent_generation: Arc::new(AtomicU64::new(0)),

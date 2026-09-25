@@ -117,7 +117,7 @@ import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
 import { registerInsertCellCommand } from "./lib/insert-cell-command";
 import { getBlobResolver, useBlobPort, useBlobResolver } from "./lib/blob-port";
-import { useRuntimeState } from "./lib/runtime-state";
+import { usePromptRuns, useRuntimeState } from "./lib/runtime-state";
 import {
   outputCommentAnchorMatchesLiveState,
   useDemoteDetachedOutputCommentThreads,
@@ -389,6 +389,7 @@ function AppContent() {
     applyExecutionCountFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
+    setCellMetadataAt,
     flushSync,
     getHandle,
     getEngine,
@@ -505,6 +506,7 @@ function AppContent() {
   // derivers below and the path read further down. Single subscription
   // point; the derivers are pure and don't add re-renders.
   const runtimeState = useRuntimeState();
+  const promptRuns = usePromptRuns();
 
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
@@ -1600,6 +1602,34 @@ function AppContent() {
     [addCell, shellCapabilities.canEditStructure],
   );
 
+  const handleAddPromptCell = useCallback(
+    (afterCellId?: string | null) => {
+      const cell = handleAddCell("raw", afterCellId);
+      if (cell) setCellMetadataAt(cell.id, ["nteract", "prompt"], { mode: "explore" });
+      return cell;
+    },
+    [handleAddCell, setCellMetadataAt],
+  );
+
+  const [promptRunError, setPromptRunError] = useState<string | null>(null);
+  const handleRunPromptCell = useCallback(
+    (cellId: string) => {
+      void notebookClient.runPromptCell(cellId).then(
+        (response) => {
+          setPromptRunError(response.result === "error" ? response.error : null);
+        },
+        (error: unknown) => setPromptRunError(String(error)),
+      );
+    },
+    [notebookClient],
+  );
+  const handleCancelPromptCell = useCallback(
+    (cellId: string) => {
+      void notebookClient.cancelPromptCell(cellId);
+    },
+    [notebookClient],
+  );
+
   // Cmd+S keyboard shortcut. The native menu item is routed through
   // host.commands.run("notebook.save") by the Tauri menu bridge.
   useEffect(() => {
@@ -2079,14 +2109,28 @@ function AppContent() {
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
           notices={
-            sourceIssueNotice ? (
-              <NotebookNotice
-                tone="warning"
-                title={sourceIssueNotice.title}
-                data-testid="notebook-file-source-issue"
-              >
-                {sourceIssueNotice.message}
-              </NotebookNotice>
+            sourceIssueNotice || promptRunError ? (
+              <>
+                {sourceIssueNotice ? (
+                  <NotebookNotice
+                    tone="warning"
+                    title={sourceIssueNotice.title}
+                    data-testid="notebook-file-source-issue"
+                  >
+                    {sourceIssueNotice.message}
+                  </NotebookNotice>
+                ) : null}
+                {promptRunError ? (
+                  <NotebookNotice
+                    tone="warning"
+                    title="The prompt could not run"
+                    onDismiss={() => setPromptRunError(null)}
+                    data-testid="prompt-run-error"
+                  >
+                    {promptRunError}
+                  </NotebookNotice>
+                ) : null}
+              </>
             ) : null
           }
           toolbarPlacement="stage-content"
@@ -2304,11 +2348,16 @@ function AppContent() {
                   onDeleteCell={deleteCell}
                   onUpdateCellSource={updateCellSource}
                   onAddCell={handleAddCell}
+                  onAddPromptCell={handleAddPromptCell}
                   onMoveCell={moveCell}
                   onChangeCellType={setCellType}
                   onReportOutputMatchCount={globalFind.reportOutputMatchCount}
                   onSetCellSourceHidden={setCellSourceHidden}
                   onSetCellOutputsHidden={setCellOutputsHidden}
+                  onSetCellMetadataAt={setCellMetadataAt}
+                  promptRuns={promptRuns}
+                  onRunPromptCell={handleRunPromptCell}
+                  onCancelPromptCell={handleCancelPromptCell}
                   onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
                   onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
                   onActivateCommentThread={commentsUiSurface.onActivateCommentThread}

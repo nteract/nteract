@@ -51,6 +51,7 @@ export interface NotebookControllerHandle {
     cellId: string,
     hidden: boolean,
   ): LocalMutationResult<boolean>;
+  update_cell_metadata_at_value(cellId: string, path: string[], value: unknown): boolean;
   has_cells_map?(): boolean;
 }
 
@@ -84,6 +85,7 @@ export interface NotebookController {
   setCellType: (cellId: string, cellType: NotebookControllerCellType) => void;
   setCellSourceHidden: (cellId: string, hidden: boolean) => void;
   setCellOutputsHidden: (cellId: string, hidden: boolean) => void;
+  setCellMetadataAt: (cellId: string, path: string[], value: unknown) => void;
 }
 
 export function createNotebookController<THandle extends NotebookControllerHandle>({
@@ -307,6 +309,13 @@ export function createNotebookController<THandle extends NotebookControllerHandl
         }
         return { changed: !!handle.set_cell_outputs_hidden(cellId, hidden), eventApplied: false };
       });
+    },
+
+    setCellMetadataAt(cellId, path, value) {
+      commit("visibility", canEditVisibility, (handle) => ({
+        changed: !!handle.update_cell_metadata_at_value(cellId, path, value),
+        eventApplied: false,
+      }));
     },
   };
 }

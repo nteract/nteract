@@ -97,7 +97,9 @@
 //!       head_revision: Uint
 //!       checkpoint: Map|null (blob-backed full document checkpoint)
 //!       patch_tail: List[Map] (bounded blob-backed transactions after checkpoint)
-//!   file_checkpoint/       Map (additive; absent in frozen schema v2 genesis)
+//!   prompt_runs/           Map (keyed by prompt cell_id; additive after v2 genesis)
+//!     {cell_id}: Str       (ISO timestamp the daemon started the agent run)
+//!   file_checkpoint/      Map (additive; absent in frozen schema v2 genesis)
 //!     exported_heads: List[Str] (NotebookDoc Automerge heads in hex)
 //!     save_sequence: Uint|null  (monotonic committed file replacement sequence)
 //!     source_issue_kind: Str    ("" | "conflict" | "degraded")
@@ -485,6 +487,10 @@ pub struct RuntimeState {
     /// Kernel-owned Bokeh document sessions keyed by session_id.
     #[serde(default)]
     pub bokeh_sessions: HashMap<String, BokehSessionState>,
+    /// Prompt cells with an agent run in progress, keyed by cell_id, valued
+    /// by the ISO timestamp the daemon started the run.
+    #[serde(default)]
+    pub prompt_runs: HashMap<String, String>,
     /// Daemon-observed project file context (see [`ProjectContext`]).
     /// Flows through the normal sync path so WASM / Python / MCP
     /// consumers read it alongside the rest of runtime state.
@@ -3242,6 +3248,40 @@ impl RuntimeStateDoc {
         comms
     }
 
+    // ── Prompt runs ─────────────────────────────────────────────────
+
+    /// Mark a prompt cell as having an agent run in progress.
+    pub fn set_prompt_run(
+        &mut self,
+        cell_id: &str,
+        started_at: &str,
+    ) -> Result<(), RuntimeStateError> {
+        let prompt_runs = self.get_or_create_root_map("prompt_runs")?;
+        self.doc.put(&prompt_runs, cell_id, started_at)?;
+        Ok(())
+    }
+
+    /// Remove a prompt cell's in-progress marker.
+    pub fn clear_prompt_run(&mut self, cell_id: &str) -> Result<(), RuntimeStateError> {
+        if let Some(prompt_runs) = self.get_map("prompt_runs") {
+            self.doc.delete(&prompt_runs, cell_id)?;
+        }
+        Ok(())
+    }
+
+    fn get_prompt_runs(&self) -> HashMap<String, String> {
+        let Some(prompt_runs) = self.get_map("prompt_runs") else {
+            return HashMap::new();
+        };
+        self.doc
+            .keys(&prompt_runs)
+            .map(|cell_id| {
+                let started_at = self.read_str(&prompt_runs, &cell_id);
+                (cell_id, started_at)
+            })
+            .collect()
+    }
+
     // ── Bokeh document sessions ─────────────────────────────────────
 
     /// Insert or atomically replace one Bokeh document session record.
@@ -3503,6 +3543,7 @@ impl RuntimeStateDoc {
             executions,
             comms,
             bokeh_sessions,
+            prompt_runs: self.get_prompt_runs(),
             project_context: self.project_context(),
             workstation,
         }
@@ -6642,6 +6683,62 @@ mod tests {
         let doc = RuntimeStateDoc::new();
         // No execution entry → empty outputs
         assert!(doc.get_outputs("nope").is_empty());
+    }
+
+    // ── Prompt run tests ─────────────────────────────────────────
+
+    #[test]
+    fn prompt_run_roundtrips_through_runtime_state() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_prompt_run("cell-1", "2026-09-23T10:00:00Z")
+            .unwrap();
+
+        assert_eq!(
+            doc.read_state().prompt_runs.get("cell-1"),
+            Some(&"2026-09-23T10:00:00Z".to_string())
+        );
+    }
+
+    #[test]
+    fn clear_prompt_run_removes_only_that_cell() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_prompt_run("cell-1", "2026-09-23T10:00:00Z")
+            .unwrap();
+        doc.set_prompt_run("cell-2", "2026-09-23T10:00:01Z")
+            .unwrap();
+
+        doc.clear_prompt_run("cell-1").unwrap();
+
+        let prompt_runs = doc.read_state().prompt_runs;
+        assert!(!prompt_runs.contains_key("cell-1"));
+        assert!(prompt_runs.contains_key("cell-2"));
+    }
+
+    #[test]
+    fn prompt_runs_sync_to_a_late_peer() {
+        let mut daemon = RuntimeStateDoc::new();
+        daemon
+            .set_prompt_run("cell-1", "2026-09-23T10:00:00Z")
+            .unwrap();
+
+        let mut peer = RuntimeStateDoc::new_empty();
+        let mut daemon_sync = sync::State::new();
+        let mut peer_sync = sync::State::new();
+        for _ in 0..10 {
+            if let Some(message) = daemon.generate_sync_message(&mut daemon_sync) {
+                peer.doc_mut()
+                    .sync()
+                    .receive_sync_message(&mut peer_sync, message)
+                    .unwrap();
+            }
+            if let Some(message) = peer.generate_sync_message(&mut peer_sync) {
+                daemon
+                    .receive_sync_message(&mut daemon_sync, message)
+                    .unwrap();
+            }
+        }
+
+        assert!(peer.read_state().prompt_runs.contains_key("cell-1"));
     }
 
     // ── Bokeh document session tests ─────────────────────────────

@@ -400,6 +400,11 @@ export interface RuntimeState {
   comms: Record<string, CommDocEntry>;
   bokeh_sessions: Record<string, BokehSessionState>;
   /**
+   * Prompt cells with an agent run in progress, keyed by cell_id, valued by
+   * the ISO timestamp the daemon started the run.
+   */
+  prompt_runs: Record<string, string>;
+  /**
    * Daemon-observed project file context. Clients read this instead of
    * walking the filesystem themselves.
    */
@@ -456,6 +461,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   executions: {},
   comms: {},
   bokeh_sessions: {},
+  prompt_runs: {},
   project_context: { state: "Pending" },
   workstation: null,
 };

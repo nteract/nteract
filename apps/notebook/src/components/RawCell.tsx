@@ -26,6 +26,7 @@ import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { RawCell as RawCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 import { EditorContextMenu } from "./EditorContextMenu";
+import { PromptCellHeader, type PromptCellHeaderProps } from "./PromptCellHeader";
 
 interface RawCellProps {
   cell: RawCellType;
@@ -44,9 +45,11 @@ interface RawCellProps {
   isDragging?: boolean;
   /** Content for the right gutter (e.g., delete button) */
   rightGutterContent?: ReactNode;
+  pinActions?: boolean;
   readOnly?: boolean;
   onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   onActivateCommentThread?: (threadId: string) => void;
+  prompt?: PromptCellHeaderProps;
 }
 
 export const RawCell = memo(function RawCell({
@@ -62,9 +65,11 @@ export const RawCell = memo(function RawCell({
   dragHandleProps,
   isDragging,
   rightGutterContent,
+  pinActions,
   readOnly = false,
   onCreateSourceComment,
   onActivateCommentThread,
+  prompt,
 }: RawCellProps) {
   const isFocused = useIsCellFocused(cell.id);
   const isEditorTarget = useIsCellEditorTarget(cell.id);
@@ -212,7 +217,7 @@ export const RawCell = memo(function RawCell({
   const navigationKeyMap = useCellKeyboardNavigation({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
     onFocusNext: handleFocusNextOrCreate,
-    onExecute: () => {}, // No-op for raw cells, enables Shift+Enter navigation
+    onExecute: () => prompt?.onRun?.(),
     onDelete,
     onEnterCommandMode,
     cellId: cell.id,
@@ -235,7 +240,7 @@ export const RawCell = memo(function RawCell({
   return (
     <CellContainer
       id={cell.id}
-      cellType="raw"
+      cellType={prompt ? "ai" : "raw"}
       isFocused={isFocused}
       isPreviousCellFromFocused={isPreviousCellFromFocused}
       isNextCellFromFocused={isNextCellFromFocused}
@@ -244,13 +249,18 @@ export const RawCell = memo(function RawCell({
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
       rightGutterContent={rightGutterContent}
+      pinActions={pinActions}
       codeContent={
         <>
-          <div className="flex items-center gap-1 py-1">
-            <span className="text-xs text-muted-foreground font-mono">
-              {format === "plain" ? "raw" : `raw (${format})`}
-            </span>
-          </div>
+          {prompt ? (
+            <PromptCellHeader {...prompt} />
+          ) : (
+            <div className="flex items-center gap-1 py-1">
+              <span className="text-xs text-muted-foreground font-mono">
+                {format === "plain" ? "raw" : `raw (${format})`}
+              </span>
+            </div>
+          )}
           <div>
             <EditorContextMenu
               cellId={cell.id}
@@ -266,7 +276,7 @@ export const RawCell = memo(function RawCell({
                 lineWrapping
                 keyMap={keyMap}
                 extensions={[crdtBridgeExt, ...searchExtensions]}
-                placeholder="Enter raw content..."
+                placeholder={prompt ? "Ask about the cells above..." : "Enter raw content..."}
                 className="min-h-[2rem]"
                 autoFocus={isEditorTarget}
                 readOnly={readOnly}

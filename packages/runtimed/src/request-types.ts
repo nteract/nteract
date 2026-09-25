@@ -115,6 +115,8 @@ export type NotebookRequest =
     }
   | { type: "interrupt_execution" }
   | { type: "shutdown_kernel" }
+  | { type: "run_prompt_cell"; cell_id: string }
+  | { type: "cancel_prompt_cell"; cell_id: string }
   | { type: "run_all_cells"; cell_execution_ids?: Record<string, string> | null }
   | {
       type: "run_all_cells_guarded";
