@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { asyncScheduler, filter, fromEvent, merge } from "rxjs";
 import { useCloudStores } from "./cloud-stores-context";
 import { useCloudNotebookHomeState } from "./use-cloud-notebook-home-store";
@@ -103,6 +103,7 @@ export function CloudNotebookListView({
     CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const listContentRef = useRef<HTMLElement>(null);
   const auth = useCloudAuthStore();
   const [bootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
@@ -150,6 +151,7 @@ export function CloudNotebookListView({
   const [showInitialSessionCheck, setShowInitialSessionCheck] = useState(
     !signedIn && appSessionStatus.status !== "ready",
   );
+  const [sessionCheckAttempt, setSessionCheckAttempt] = useState(0);
   useEffect(() => {
     if (signedIn || appSessionStatus.status === "ready") setShowInitialSessionCheck(false);
   }, [signedIn, appSessionStatus.status]);
@@ -158,6 +160,7 @@ export function CloudNotebookListView({
     !canFetchNotebookList &&
     authState.mode === "anonymous" &&
     appSessionStatus.status !== "ready";
+  const initialCheckFailed = checkingInitialCookieSession && appSessionStatus.status === "error";
   const waitingForSession = waitingForAppSession || checkingInitialCookieSession;
   const appSessionWaitDeadline =
     appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
@@ -186,17 +189,14 @@ export function CloudNotebookListView({
       identityKey,
       gate: canFetchNotebookList ? "open" : waitingForSession ? "waiting" : "closed",
       seed,
-      waitMs:
-        checkingInitialCookieSession && appSessionStatus.status === "error"
-          ? 0
-          : Math.max(0, appSessionWaitDeadline),
+      waitMs: initialCheckFailed ? 0 : Math.max(0, appSessionWaitDeadline),
       scheduler: asyncScheduler,
       load: async (signal) => {
         // The deadline bounds feedback while cookie auth is unresolved. It
         // must not fetch a list under an identity we cannot yet display.
         if (checkingInitialCookieSession) {
           throw new Error(
-            appSessionStatus.status === "error"
+            initialCheckFailed
               ? "Couldn't confirm your sign-in. Retry to check again."
               : "Still checking your sign-in. Retry to check again.",
           );
@@ -230,20 +230,25 @@ export function CloudNotebookListView({
     });
   }, [
     appSessionStatus.session,
-    appSessionStatus.status,
     appSessionWaitDeadline,
     authState,
     canFetchNotebookList,
     checkingInitialCookieSession,
     hasAppSession,
     identityKey,
+    initialCheckFailed,
     notebookHome,
+    sessionCheckAttempt,
     waitingForSession,
   ]);
 
   const refreshList = () => {
-    if (checkingInitialCookieSession) auth.refreshAppSessionStatus();
-    else notebookHome.refresh();
+    if (checkingInitialCookieSession) {
+      // Keep focus in the list when the Retry button is replaced by progress.
+      listContentRef.current?.focus({ preventScroll: true });
+      setSessionCheckAttempt((attempt) => attempt + 1);
+      auth.refreshAppSessionStatus();
+    } else notebookHome.refresh();
   };
 
   const openCreateForm = () => {
@@ -514,7 +519,12 @@ export function CloudNotebookListView({
         }
       />
 
-      <section className="cloud-notebook-list-content" aria-label="Notebook list">
+      <section
+        ref={listContentRef}
+        className="cloud-notebook-list-content"
+        aria-label="Notebook list"
+        tabIndex={-1}
+      >
         {listState.kind === "loading" ? (
           <CloudNotebookDashboardLoading />
         ) : listState.kind === "signed_out" ? (

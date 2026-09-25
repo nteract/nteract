@@ -237,8 +237,17 @@ describe("CloudNotebookListView", () => {
       expect(screen.getByText("Still checking your sign-in. Retry to check again.")).toBeTruthy();
       expect(fetchMock).not.toHaveBeenCalled();
       expect(screen.queryByText("Bring computation to life.")).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      const retry = screen.getByRole("button", { name: "Retry" });
+      retry.focus();
+      fireEvent.click(retry);
       expect(readSession).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notebook list" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5);
+      });
+      expect(screen.getByText("Still checking your sign-in. Retry to check again.")).toBeTruthy();
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       dispose();
@@ -279,6 +288,52 @@ describe("CloudNotebookListView", () => {
       expect(readSession).toHaveBeenCalledTimes(2);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "No notebooks yet" })).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notebook list" }));
+    } finally {
+      dispose();
+    }
+  });
+
+  it("keeps a dev-auth list request alive when an unrelated session check settles", async () => {
+    let resolveSession!: (status: CloudAppSessionStatus) => void;
+    const session = new Promise<CloudAppSessionStatus>((resolve) => {
+      resolveSession = resolve;
+    });
+    let resolveList!: (response: Response) => void;
+    const list = new Promise<Response>((resolve) => {
+      resolveList = resolve;
+    });
+    const fetchMock = vi.fn(() => list);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = new CloudAuthStore({
+      readAuthState: () => ({
+        mode: "dev",
+        token: "test-token",
+        user: "alice",
+        oidcClaims: null,
+        requestedScope: "owner",
+        problem: null,
+      }),
+    });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      { readAppSessionStatus: () => session },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        resolveSession({ ok: true, session: null });
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        resolveList(new Response(JSON.stringify({ ok: true, notebooks: [] })));
+      });
       expect(screen.getByRole("heading", { name: "No notebooks yet" })).toBeTruthy();
     } finally {
       dispose();
