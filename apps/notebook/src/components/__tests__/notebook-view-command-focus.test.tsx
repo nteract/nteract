@@ -7,6 +7,7 @@ import {
   flushCellUIState,
   getActiveInteractionTarget,
   setActiveInteractionTarget,
+  setFocusedCellId,
   setSearchCurrentMatch,
   setSearchQuery,
 } from "@/components/notebook/state/cell-ui-state";
@@ -99,9 +100,20 @@ async function press(key: string, modifiers: KeyboardEventInit = {}) {
   return allowedDefault;
 }
 
-async function mountNotebook(cells: NotebookCell[] = [markdown, code, raw]) {
+async function mountNotebook(cells: NotebookCell[] = [markdown, code, raw], allowInsert = false) {
   replaceNotebookCells(cells);
-  const onAddCell = vi.fn(() => null);
+  const onAddCell = vi.fn((cellType: "code" | "markdown") => {
+    if (!allowInsert) return null;
+    const added: NotebookCell = { ...code, id: "inserted-cell", cell_type: cellType, source: "" };
+    cells = [...cells, added];
+    replaceNotebookCells(cells);
+    // The host controller selects a newly added cell. The shared view owns
+    // whether the initiating keyboard action should also enter its editor.
+    setFocusedCellId(added.id);
+    flushCellUIState();
+    view.rerender(notebook(cells));
+    return added;
+  });
   const host = createFixtureNotebookHost();
   const notebook = (currentCells: NotebookCell[], isLoading = false) => (
     <NotebookHostProvider host={host}>
@@ -221,6 +233,71 @@ afterEach(() => {
 });
 
 describe("NotebookView command focus", () => {
+  it("keeps command-mode insertion selected and leaves Shift+Enter outside its contract", async () => {
+    const { onAddCell } = await mountNotebook([code], true);
+    await selectCell(code.id);
+    await press("Enter", { shiftKey: true });
+    expectCommandFocus(code.id);
+    expect(onAddCell).not.toHaveBeenCalled();
+    await press("b");
+    expectCommandFocus("inserted-cell");
+    await press("ArrowDown");
+    expect(onAddCell).toHaveBeenCalledTimes(1);
+    await press("Enter");
+    expectEditorFocus("inserted-cell");
+  });
+
+  it.each(
+    [code, markdown, raw].flatMap((cell) =>
+      ["ArrowDown", "Shift+Enter"].map((key) => ({ cell, key, type: cell.cell_type })),
+    ),
+  )("enters the new editor after $key in the last $type editor", async ({ cell, key }) => {
+    await mountNotebook([cell], true);
+    await selectCell(cell.id);
+    await press("Enter");
+    const content = document.querySelector<HTMLElement>(`[data-cell-id="${cell.id}"] .cm-content`)!;
+    const editor = EditorView.findFromDOM(content)!;
+    act(() => editor.dispatch({ selection: { anchor: editor.state.doc.length } }));
+    await press(key === "Shift+Enter" ? "Enter" : key, { shiftKey: key === "Shift+Enter" });
+    expectEditorFocus("inserted-cell");
+  });
+
+  it("discards deferred markdown focus after the user focuses another editor", async () => {
+    await mountNotebook([markdown, code]);
+    await selectCell(markdown.id);
+    act(() => {
+      fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    });
+    const codeContent = document.querySelector<HTMLElement>(
+      `[data-cell-id="${code.id}"] .cm-content`,
+    )!;
+    act(() => {
+      fireEvent.mouseDown(codeContent);
+      codeContent.focus();
+    });
+    expectEditorFocus(code.id);
+    await settleFocus();
+    expectEditorFocus(code.id);
+  });
+
+  it.each([code, markdown])(
+    "keeps the real $cell_type editor and caret when an empty markdown cell materializes remotely",
+    async (cell) => {
+      const { rerenderCells } = await mountNotebook([cell]);
+      await selectCell(cell.id);
+      await press("Enter");
+      const content = document.querySelector<HTMLElement>(
+        `[data-cell-id="${cell.id}"] .cm-content`,
+      )!;
+      const editor = EditorView.findFromDOM(content)!;
+      act(() => editor.dispatch({ selection: { anchor: 3, head: 5 } }));
+      await rerenderCells([cell, { ...markdown, id: "new-remote-markdown", source: "" }]);
+      expectEditorFocus(cell.id);
+      expect(editor.state.selection.main.anchor).toBe(3);
+      expect(editor.state.selection.main.head).toBe(5);
+    },
+  );
+
   it.each([code, raw, markdown])(
     "cycles Enter/Escape between command focus and the real $cell_type editor",
     async (cell) => {
