@@ -10,6 +10,7 @@ export interface PythonExecutionResult {
 }
 export type PythonLiveEvent =
   | { type: "stream"; name: "stdout" | "stderr"; text: string }
+  | { type: "clear"; wait: boolean }
   | { type: "boundary" }
   | { type: "live_stopped" };
 export class PythonRuntimePeer {

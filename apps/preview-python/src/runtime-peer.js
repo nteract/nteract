@@ -5,11 +5,35 @@
  * prepareOutputs() uploads blobs and returns canonical output manifests without
  * mutating the peer. This keeps async output preparation behind session fencing.
  */
-// Live output bounds: stop in-place updates past this much text per execution
-// (large text becomes blobs; the batch still carries everything), and sync live
-// changes to peers at most this often, without a storage checkpoint.
-const LIVE_STREAM_BYTES = 64 * 1024;
-const LIVE_PUBLISH_INTERVAL_MS = 150;
+// Live output bounds. Each live record stays below the 1 KiB inline-content
+// threshold so live updates never create blobs; records, document writes and
+// buffered events are capped per execution (the batch still carries
+// everything). Live changes reach peers at most every flush interval, through
+// sync only, without a storage checkpoint.
+const LIVE_RECORD_BYTES = 960;
+const LIVE_MAX_RECORDS = 48;
+const LIVE_MAX_WRITES = 400;
+const LIVE_MAX_PENDING = 256;
+const LIVE_FLUSH_INTERVAL_MS = 150;
+const utf8 = new TextEncoder();
+
+function utf8Length(text) {
+  return utf8.encode(text).length;
+}
+
+/** Split `text` so the first part is at most `maxBytes` UTF-8 bytes. */
+function splitUtf8(text, maxBytes) {
+  if (maxBytes <= 0) return ["", text];
+  let bytes = 0;
+  let index = 0;
+  for (const char of text) {
+    const size = utf8Length(char);
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    index += char.length;
+  }
+  return [text.slice(0, index), text.slice(index)];
+}
 
 export class PythonRuntimePeer {
   #peer;
@@ -38,65 +62,130 @@ export class PythonRuntimePeer {
   }
 
   /**
-   * Live stream text while a cell runs (advisory). One record per stream run
-   * is replaced in place; the final batch replaces every live record before
-   * the execution becomes terminal, so room state ends identical to batch mode.
+   * Live stream text while a cell runs (advisory). Events only update an
+   * in-memory buffer; the document is written on a timer, each live record at
+   * most once per flush. Records stay below the inline-content threshold (no
+   * blobs) and are bounded per execution. On success the validated batch
+   * replaces every live record before the execution becomes terminal; if the
+   * session fails mid-cell, the partial live output stays with the error.
    */
   #onLive(executionId, event) {
     const live = this.#live;
-    if (!live || live.executionId !== executionId || live.closed) return;
-    live.chain = live.chain.then(async () => {
-      if (
-        live.closed ||
-        live.stopped ||
-        this.#closed ||
-        !this.#current(this.#peer.get_runtime_state())
-      )
-        return;
-      if (event.type === "live_stopped") {
-        live.stopped = true;
-        return;
-      }
-      if (event.type === "boundary") {
+    if (!live || live.executionId !== executionId || live.closed || live.stopped) return;
+    const last = live.pending.at(-1);
+    if (event.type === "live_stopped") {
+      live.stopped = true;
+      live.pending = [];
+      return;
+    }
+    if (event.type === "stream") {
+      if (last?.type === "stream" && last.name === event.name) last.text += event.text;
+      else live.pending.push({ type: "stream", name: event.name, text: event.text });
+    } else if (event.type === "boundary") {
+      if (last?.type !== "boundary") live.pending.push({ type: "boundary" });
+    } else if (event.type === "clear") {
+      live.pending.push({ type: "clear", wait: event.wait === true });
+    } else return;
+    // Guest output is untrusted: a flood of structural events stops live mode.
+    if (live.pending.length > LIVE_MAX_PENDING) {
+      live.stopped = true;
+      live.pending = [];
+      return;
+    }
+    this.#scheduleLiveFlush();
+  }
+
+  #scheduleLiveFlush() {
+    if (this.#liveTimer) return;
+    this.#liveTimer = setTimeout(() => {
+      this.#liveTimer = undefined;
+      const live = this.#live;
+      if (!live || live.closed) return;
+      live.chain = live.chain
+        .then(() => this.#flushLive(live))
+        .catch(() => {
+          // Live output is advisory; the final batch is still published.
+          live.stopped = true;
+        });
+    }, LIVE_FLUSH_INTERVAL_MS);
+  }
+
+  #clearLive(live) {
+    this.#peer.clear_execution_outputs(live.executionId);
+    live.record = null;
+    live.records = 0;
+    live.written = true;
+    live.writes++;
+  }
+
+  async #flushLive(live) {
+    if (live.closed || live.stopped || this.#closed || !live.pending.length) return;
+    if (!this.#current(this.#peer.get_runtime_state())) {
+      live.stopped = true;
+      return;
+    }
+    const touched = new Set();
+    for (const op of live.pending.splice(0)) {
+      if (op.type === "boundary") {
         live.record = null;
-        return;
+        continue;
       }
-      live.bytes += event.text.length;
-      if (live.bytes > LIVE_STREAM_BYTES) {
+      if (op.type === "clear") {
+        if (op.wait) live.clearBeforeNext = true;
+        else {
+          touched.clear();
+          this.#clearLive(live);
+        }
+        continue;
+      }
+      if (live.clearBeforeNext) {
+        live.clearBeforeNext = false;
+        touched.clear();
+        this.#clearLive(live);
+      }
+      let text = op.text;
+      while (text && !live.stopped) {
+        let record = live.record?.name === op.name ? live.record : null;
+        const used = record ? utf8Length(record.text) : 0;
+        if (!record || used >= LIVE_RECORD_BYTES) {
+          if (live.records >= LIVE_MAX_RECORDS) {
+            live.stopped = true;
+            break;
+          }
+          record = { name: op.name, text: "", outputId: null };
+          live.records++;
+        }
+        const [piece, rest] = splitUtf8(text, LIVE_RECORD_BYTES - utf8Length(record.text));
+        if (!piece) {
+          // The next character does not fit; start a new record.
+          live.record = null;
+          continue;
+        }
+        record.text += piece;
+        text = rest;
+        live.record = record;
+        touched.add(record);
+      }
+    }
+    for (const record of touched) {
+      if (live.writes >= LIVE_MAX_WRITES) {
         live.stopped = true;
-        return;
+        break;
       }
-      const record =
-        live.record?.name === event.name
-          ? live.record
-          : { name: event.name, text: "", outputId: null };
-      record.text += event.text;
       const [manifest] = await this.#prepare([
         { output_type: "stream", name: record.name, text: record.text },
       ]);
       if (live.closed) return;
       if (record.outputId) {
         manifest.output_id = record.outputId;
-        this.#peer.replace_output_json(executionId, record.outputId, JSON.stringify(manifest));
+        this.#peer.replace_output_json(live.executionId, record.outputId, JSON.stringify(manifest));
       } else {
-        record.outputId = this.#peer.append_output_json(executionId, JSON.stringify(manifest));
+        record.outputId = this.#peer.append_output_json(live.executionId, JSON.stringify(manifest));
       }
-      live.record = record;
       live.written = true;
-      this.#scheduleLivePublish();
-    });
-    live.chain = live.chain.catch(() => {
-      // Live output is advisory; the final batch is still published.
-      live.stopped = true;
-    });
-  }
-
-  #scheduleLivePublish() {
-    if (this.#liveTimer || !this.#publishLive) return;
-    this.#liveTimer = setTimeout(() => {
-      this.#liveTimer = undefined;
-      if (this.#live && !this.#live.closed) void this.#publishLive().catch(() => undefined);
-    }, LIVE_PUBLISH_INTERVAL_MS);
+      live.writes++;
+    }
+    if (live.written && this.#publishLive) await this.#publishLive();
   }
 
   async #closeLive() {
@@ -115,7 +204,6 @@ export class PythonRuntimePeer {
       throw new Error("Preview Python runtime peer session expired");
     }
   }
-
   drain() {
     this.#draining ??= this.#drain()
       .catch((error) => {
@@ -212,8 +300,11 @@ export class PythonRuntimePeer {
         this.#live = {
           executionId,
           chain: Promise.resolve(),
+          pending: [],
           record: null,
-          bytes: 0,
+          records: 0,
+          writes: 0,
+          clearBeforeNext: false,
           written: false,
           stopped: false,
           closed: false,

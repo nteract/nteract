@@ -285,10 +285,9 @@ test("Interrupt between claiming an entry and invoking Python never runs it", as
 
 test("live stream output updates one record in place, then the batch replaces it", async (t) => {
   const { host, peer, publish } = await fixture(t);
-  // Read the room host's state through a fresh viewer each time. (An
-  // incrementally synced RuntimeStatePeerHandle in this harness does not
-  // reflect in-place output edits; the browser's handle does, as local celld
-  // QA shows.)
+  // Read the room host's state through a fresh viewer each time: the harness
+  // sync() drops host broadcast frames addressed to other peers, so a
+  // long-lived observer here would miss changes it was never forwarded.
   let observers = 0;
   const observed = () => {
     const observer = new RuntimeStatePeerHandle(`user:dev:live-observer-${++observers}/test`);
@@ -360,4 +359,121 @@ test("live stream output updates one record in place, then the batch replaces it
   );
   assert.deepEqual(final.outputs[0].text, { inline: "a\nb\n" });
   await bridge.close();
+});
+
+async function liveBridge(t, execute, { blobs = [] } = {}) {
+  const { host, peer, publish } = await fixture(t);
+  const read = () => {
+    const observer = new RuntimeStatePeerHandle(`user:dev:reader-${crypto.randomUUID()}/test`);
+    try {
+      sync(host, observer, `reader-${crypto.randomUUID()}`, "viewer", true);
+      return Object.values(observer.get_runtime_state().executions)[0];
+    } finally {
+      observer.free();
+    }
+  };
+  const bridge = new PythonRuntimePeer({
+    peer,
+    sessionKey: "session",
+    isCurrent: () => true,
+    publish,
+    publishLive: async () => sync(host, peer, "runtime", "runtime_peer", true),
+    pool: {
+      execute: (_key, _execution, options) => execute(options.onLive, read),
+      release: async () => {},
+    },
+    prepareOutputs: createOutputPreparer({
+      prepareContent: prepare_output_content,
+      putBlob: async (blob) => {
+        blobs.push(blob);
+      },
+    }),
+  });
+  t.after(() => bridge.close());
+  return { bridge, read };
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 250));
+
+test("live text over the inline threshold never uploads blobs while running", async (t) => {
+  const blobs = [];
+  let blobsWhileRunning;
+  let liveRecords;
+  const long = "x".repeat(99) + "\n";
+  const { bridge, read } = await liveBridge(
+    t,
+    async (onLive, observed) => {
+      for (let i = 0; i < 30; i++) onLive({ type: "stream", name: "stdout", text: long });
+      await tick();
+      liveRecords = observed().outputs;
+      blobsWhileRunning = blobs.length;
+      return {
+        execution_count: 1,
+        success: true,
+        outputs: [{ output_type: "stream", name: "stdout", text: long.repeat(30) }],
+      };
+    },
+    { blobs },
+  );
+  await bridge.drain();
+  assert.equal(blobsWhileRunning, 0, "live records stay inline");
+  assert.ok(liveRecords.length >= 4, "3,000 bytes span several sub-1 KiB live records");
+  assert.ok(liveRecords.every((o) => new TextEncoder().encode(o.text.inline).length <= 960));
+  assert.equal(liveRecords.map((o) => o.text.inline).join(""), long.repeat(30));
+  // Only the final batch may use a blob for the long text.
+  const final = read();
+  assert.equal(final.outputs.length, 1);
+  assert.equal(final.status, "done");
+});
+
+test("boundary floods cannot create unbounded live records", async (t) => {
+  let observedCount;
+  const { bridge } = await liveBridge(t, async (onLive, observed) => {
+    for (let round = 0; round < 5; round++) {
+      for (let i = 0; i < 40; i++) {
+        onLive({ type: "stream", name: "stdout", text: "y" });
+        onLive({ type: "boundary" });
+      }
+      await tick();
+    }
+    observedCount = observed().outputs.length;
+    return { execution_count: 1, success: true, outputs: [] };
+  });
+  await bridge.drain();
+  assert.ok(observedCount <= 48, `live records capped (saw ${observedCount})`);
+});
+
+test("live clear_output clears earlier live records", async (t) => {
+  let afterClear;
+  let afterWaitClear;
+  const { bridge } = await liveBridge(t, async (onLive, observed) => {
+    onLive({ type: "stream", name: "stdout", text: "first\n" });
+    await tick();
+    onLive({ type: "clear", wait: false });
+    onLive({ type: "stream", name: "stdout", text: "second\n" });
+    await tick();
+    afterClear = observed().outputs.map((o) => o.text.inline);
+    onLive({ type: "clear", wait: true });
+    await tick();
+    onLive({ type: "stream", name: "stdout", text: "third\n" });
+    await tick();
+    afterWaitClear = observed().outputs.map((o) => o.text.inline);
+    return { execution_count: 1, success: true, outputs: [] };
+  });
+  await bridge.drain();
+  assert.deepEqual(afterClear, ["second\n"]);
+  assert.deepEqual(afterWaitClear, ["third\n"]);
+});
+
+test("a failed execution keeps its partial live output with the error", async (t) => {
+  const { bridge, read } = await liveBridge(t, async (onLive) => {
+    onLive({ type: "stream", name: "stdout", text: "partial\n" });
+    await tick();
+    throw new Error("Preview Python execution deadline exceeded; restart required");
+  });
+  await assert.rejects(bridge.drain(), /deadline/);
+  const execution = read();
+  assert.equal(execution.status, "error");
+  assert.deepEqual(execution.outputs[0].text, { inline: "partial\n" });
+  assert.equal(execution.outputs.at(-1).output_type, "error");
 });

@@ -725,3 +725,72 @@ test("managed lifecycle updates cannot overwrite a replacement session", async (
     true,
   );
 });
+
+test("managed live execute reads split NDJSON, accepts older providers and rejects trailing output", async () => {
+  const responses = [];
+  const env = {
+    NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+    PREVIEW_PYTHON_SESSIONS: {
+      idFromName: (n) => n,
+      get: () => ({
+        fetch: async (request) => {
+          assert.equal((await request.json()).stream, true);
+          return responses.shift()();
+        },
+      }),
+    },
+  };
+  const runtime = new ManagedPythonRoom(
+    env,
+    { removePeer: async () => {} },
+    "notebook",
+    "user:dev:owner",
+    "session",
+    () => {},
+  );
+  const ndjson = (chunks) =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+          controller.close();
+        },
+      }),
+      { headers: { "content-type": "application/x-ndjson" } },
+    );
+  const execution = { execution_id: "e", cell_id: "c", source: "print('a')" };
+  const result = { execution_count: 1, success: true, outputs: [] };
+  const events = [];
+  responses.push(() =>
+    ndjson([
+      '{"type":"stream","name":"stdout","te',
+      'xt":"a\\n"}\n{"type":"res',
+      `ult","result":${JSON.stringify(result)}}\n`,
+    ]),
+  );
+  assert.deepEqual(await runtime.executeLive(execution, (event) => events.push(event)), result);
+  assert.deepEqual(events, [{ type: "stream", name: "stdout", text: "a\n" }]);
+  // A provider that predates live output answers with the plain batch.
+  responses.push(() => Response.json(result));
+  assert.deepEqual(await runtime.executeLive(execution, () => {}), result);
+  responses.push(() => ndjson(['{"type":"error","error":"Error: boom"}\n']));
+  await assert.rejects(
+    runtime.executeLive(execution, () => {}),
+    /boom/,
+  );
+  responses.push(() =>
+    ndjson([
+      `{"type":"result","result":${JSON.stringify(result)}}\n`,
+      '{"type":"stream","name":"stdout","text":"late"}\n',
+    ]),
+  );
+  await assert.rejects(
+    runtime.executeLive(execution, () => {}),
+    /continued after/,
+  );
+  responses.push(() => ndjson(['{"type":"stream","name":"stdout","text":"x"}\n']));
+  await assert.rejects(
+    runtime.executeLive(execution, () => {}),
+    /without a result/,
+  );
+});
