@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import { CloudAuthStoreProvider } from "../cloud-auth-context";
 import { CloudAuthStore } from "../cloud-auth-store";
+import type { CloudAppSessionStatus } from "../app-session";
 import { cloudNotebookHomeStore } from "../cloud-notebook-home-store";
 import type { CloudViewerAuthConfig } from "../cloud-viewer-types";
 import type { CloudPrototypeAuthState } from "../collaborator-auth";
@@ -48,6 +49,390 @@ describe("CloudNotebookListView", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("keeps the dashboard shell through a cookie-only session check and delayed list", async () => {
+    let resolveSession!: (status: CloudAppSessionStatus) => void;
+    const session = new Promise<CloudAppSessionStatus>((resolve) => {
+      resolveSession = resolve;
+    });
+    let resolveList!: (response: Response) => void;
+    const list = new Promise<Response>((resolve) => {
+      resolveList = resolve;
+    });
+    const fetchMock = vi.fn(() => list);
+    vi.stubGlobal("fetch", fetchMock);
+    // A previous account's browser cache is not identity authority for a
+    // cookie-only boot, even while the server is slow to confirm the session.
+    writeCachedCloudNotebookList(storage, oidcAuth("previous@example.test"), null, [
+      notebook("private", "Previous account private notebook"),
+    ]);
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      {
+        readAppSessionStatus: () => session,
+      },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+      expect(screen.getByRole("searchbox", { name: "Search notebooks" })).toHaveProperty(
+        "disabled",
+        true,
+      );
+      expect(screen.getByRole("button", { name: "New notebook" })).toHaveProperty("disabled", true);
+      expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+      expect(screen.queryByText("Previous account private notebook")).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveSession({
+          ok: true,
+          session: {
+            provider: "oidc",
+            expires_at: 9_999_999_999,
+            cache_key: "new-account",
+            display_name: "New Account",
+          },
+        });
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "New Account" })).toBeTruthy();
+      expect(screen.queryByText("Previous account private notebook")).toBeNull();
+
+      await act(async () => {
+        resolveList(
+          new Response(
+            JSON.stringify({ ok: true, notebooks: [notebook("new", "Current account notebook")] }),
+          ),
+        );
+      });
+      expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Current account notebook" })).toBeTruthy();
+      expect(screen.queryByRole("status", { name: "Loading notebooks" })).toBeNull();
+      expect(screen.getByRole("searchbox", { name: "Search notebooks" })).toHaveProperty(
+        "disabled",
+        false,
+      );
+    } finally {
+      dispose();
+    }
+  });
+
+  it("shows sign-in only after the cookie session check confirms signed-out", async () => {
+    let resolveSession!: (status: CloudAppSessionStatus) => void;
+    const session = new Promise<CloudAppSessionStatus>((resolve) => {
+      resolveSession = resolve;
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      {
+        readAppSessionStatus: () => session,
+      },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+      expect(screen.queryByText("Bring computation to life.")).toBeNull();
+      await act(async () => {
+        resolveSession({ ok: true, session: null });
+      });
+      expect(screen.getByText("Bring computation to life.")).toBeTruthy();
+      expect(screen.queryByRole("status", { name: "Loading notebooks" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "New notebook" })).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("keeps sign-out visible during the follow-up cookie session check", async () => {
+    const fetchMock = vi.fn(
+      async (_url, init?: RequestInit) =>
+        new Response(
+          JSON.stringify(
+            init?.method === "DELETE"
+              ? { ok: true }
+              : {
+                  ok: true,
+                  notebooks: [notebook("before-signout", "Before sign-out")],
+                },
+          ),
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const readSession = vi.fn(() => new Promise<CloudAppSessionStatus>(() => {}));
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      {
+        authConfig,
+        initialSession: {
+          provider: "oidc",
+          expires_at: 9_999_999_999,
+          cache_key: "signout",
+          display_name: "Test Account",
+        },
+      },
+      { readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      fireEvent.keyDown(screen.getByRole("button", { name: "Test Account" }), {
+        key: "Enter",
+        code: "Enter",
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+      });
+      expect(readSession).toHaveBeenCalledTimes(1);
+      expect(store.appSessionSnapshot.status).toBe("loading");
+      expect(screen.getByText("Bring computation to life.")).toBeTruthy();
+      expect(screen.queryByRole("status", { name: "Loading notebooks" })).toBeNull();
+      expect(screen.queryByText("Before sign-out")).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("bounds slow cookie-session feedback without fetching notebooks before confirmation", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const readSession = vi.fn(() => new Promise<CloudAppSessionStatus>(() => {}));
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      { readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} appSessionWaitDeadlineMs={5} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5);
+      });
+      expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByText("Still checking your sign-in. Retry to check again.")).toBeTruthy();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.queryByText("Bring computation to life.")).toBeNull();
+      const retry = screen.getByRole("button", { name: "Retry" });
+      retry.focus();
+      fireEvent.click(retry);
+      expect(readSession).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notebook list" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5);
+      });
+      expect(screen.getByText("Still checking your sign-in. Retry to check again.")).toBeTruthy();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("retries a failed cookie session check and keeps the heading for an empty list", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, notebooks: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const readSession = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Session service unavailable"))
+      .mockResolvedValue({
+        ok: true,
+        session: { provider: "oidc", expires_at: 9_999_999_999, cache_key: "recovered" },
+      });
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      { readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByText("Couldn't confirm your sign-in. Retry to check again.")).toBeTruthy();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.queryByText("Bring computation to life.")).toBeNull();
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      });
+      expect(readSession).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "No notebooks yet" })).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notebook list" }));
+    } finally {
+      dispose();
+    }
+  });
+
+  it("keeps a dev-auth list request alive when an unrelated session check settles", async () => {
+    let resolveSession!: (status: CloudAppSessionStatus) => void;
+    const session = new Promise<CloudAppSessionStatus>((resolve) => {
+      resolveSession = resolve;
+    });
+    let resolveList!: (response: Response) => void;
+    const list = new Promise<Response>((resolve) => {
+      resolveList = resolve;
+    });
+    const fetchMock = vi.fn(() => list);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = new CloudAuthStore({
+      readAuthState: () => ({
+        mode: "dev",
+        token: "test-token",
+        user: "alice",
+        oidcClaims: null,
+        requestedScope: "owner",
+        problem: null,
+      }),
+    });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      { readAppSessionStatus: () => session },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        resolveSession({ ok: true, session: null });
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        resolveList(new Response(JSON.stringify({ ok: true, notebooks: [] })));
+      });
+      expect(screen.getByRole("heading", { name: "No notebooks yet" })).toBeTruthy();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("retains Retry focus through a late session failure and automatic server recheck", async () => {
+    let rejectSession!: (error: Error) => void;
+    const session = new Promise<CloudAppSessionStatus>((_resolve, reject) => {
+      rejectSession = reject;
+    });
+    const readSession = vi
+      .fn()
+      .mockReturnValueOnce(session)
+      .mockImplementation(() => new Promise<CloudAppSessionStatus>(() => {}));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const serverConfig: CloudViewerAuthConfig = {
+      localDev: null,
+      oidc: {
+        flow: "server",
+        issuer: "https://issuer.test",
+        clientId: "client-id",
+        redirectUri: `${window.location.origin}/oidc`,
+      },
+    };
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      { authConfig: serverConfig, initialSession: null },
+      { readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={serverConfig} appSessionWaitDeadlineMs={5} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5);
+      });
+      screen.getByRole("button", { name: "Retry" }).focus();
+      await act(async () => {
+        rejectSession(new Error("Late gateway error"));
+      });
+      expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notebook list" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText("Couldn't confirm your sign-in. Retry to check again.")).toBeTruthy();
+      screen.getByRole("button", { name: "Retry" }).focus();
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(readSession).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notebook list" }));
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("keeps Retry focused when same-identity credentials change without replacing the error", async () => {
+    let authState: CloudPrototypeAuthState = {
+      mode: "dev",
+      token: "first-token",
+      user: "alice",
+      oidcClaims: null,
+      requestedScope: "owner",
+      problem: null,
+    };
+    const fetchMock = vi.fn(async () => new Response("Service unavailable", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = new CloudAuthStore({ readAuthState: () => authState });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      { readAppSessionStatus: () => new Promise<CloudAppSessionStatus>(() => {}) },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const retry = screen.getByRole("button", { name: "Retry" });
+      retry.focus();
+      await act(async () => {
+        authState = { ...authState, token: "renewed-token" };
+        store.refreshAuthState();
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("button", { name: "Retry" })).toBe(retry);
+      expect(document.activeElement).toBe(retry);
+    } finally {
+      dispose();
+    }
   });
 
   it("turns persistent app-session waits into a retryable list error", async () => {
@@ -436,6 +821,17 @@ function oidcAuth(
       sub: subject,
     },
     requestedScope: "viewer",
+    problem: null,
+  };
+}
+
+function anonymousAuth(): CloudPrototypeAuthState {
+  return {
+    mode: "anonymous",
+    token: null,
+    user: null,
+    oidcClaims: null,
+    requestedScope: null,
     problem: null,
   };
 }

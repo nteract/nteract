@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { asyncScheduler, filter, fromEvent, merge } from "rxjs";
 import { useCloudStores } from "./cloud-stores-context";
 import { useCloudNotebookHomeState } from "./use-cloud-notebook-home-store";
@@ -43,6 +43,8 @@ import { cloudResponseError } from "./cloud-response";
 import { clearCloudAppSession } from "./app-session";
 import {
   CloudNotebookDashboard,
+  CloudNotebookDashboardLoading,
+  CloudNotebookDashboardState,
   CloudNotebookDashboardSearchInput,
 } from "./cloud-notebook-dashboard-view";
 import {
@@ -101,6 +103,8 @@ export function CloudNotebookListView({
     CLOUD_VIEWER_COLOR_THEME_STORAGE_KEY,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const listContentRef = useRef<HTMLElement>(null);
+  const retryButtonRef = useRef<HTMLButtonElement>(null);
   const auth = useCloudAuthStore();
   const [bootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
@@ -143,6 +147,22 @@ export function CloudNotebookListView({
     signedIn,
     waitingForAppSession,
   } = hostedAuth;
+  // This is a startup presentation choice, not a second auth state: once the
+  // session is known, sign-out and background checks keep their settled UI.
+  const [showInitialSessionCheck, setShowInitialSessionCheck] = useState(
+    !signedIn && appSessionStatus.status !== "ready",
+  );
+  const [sessionCheckAttempt, setSessionCheckAttempt] = useState(0);
+  useEffect(() => {
+    if (signedIn || appSessionStatus.status === "ready") setShowInitialSessionCheck(false);
+  }, [signedIn, appSessionStatus.status]);
+  const checkingInitialCookieSession =
+    showInitialSessionCheck &&
+    !canFetchNotebookList &&
+    authState.mode === "anonymous" &&
+    appSessionStatus.status !== "ready";
+  const initialCheckFailed = checkingInitialCookieSession && appSessionStatus.status === "error";
+  const waitingForSession = waitingForAppSession || checkingInitialCookieSession;
   const appSessionWaitDeadline =
     appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
   const dashboardModel = useMemo(
@@ -166,13 +186,24 @@ export function CloudNotebookListView({
       authState,
       hasAppSession,
     );
-    return notebookHome.activate({
+    const retryWasFocused =
+      retryButtonRef.current !== null && retryButtonRef.current === document.activeElement;
+    const deactivate = notebookHome.activate({
       identityKey,
-      gate: canFetchNotebookList ? "open" : waitingForAppSession ? "waiting" : "closed",
+      gate: canFetchNotebookList ? "open" : waitingForSession ? "waiting" : "closed",
       seed,
-      waitMs: Math.max(0, appSessionWaitDeadline),
+      waitMs: initialCheckFailed ? 0 : Math.max(0, appSessionWaitDeadline),
       scheduler: asyncScheduler,
       load: async (signal) => {
+        // The deadline bounds feedback while cookie auth is unresolved. It
+        // must not fetch a list under an identity we cannot yet display.
+        if (checkingInitialCookieSession) {
+          throw new Error(
+            initialCheckFailed
+              ? "Couldn't confirm your sign-in. Retry to check again."
+              : "Still checking your sign-in. Retry to check again.",
+          );
+        }
         const response = await fetchCloudNotebookList(
           authState,
           AbortSignal.any([signal, AbortSignal.timeout(CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS)]),
@@ -200,18 +231,34 @@ export function CloudNotebookListView({
         }),
       clear: clearCachedCloudNotebookListFromLocalStorage,
     });
+    // Activation resets unknown identities synchronously, before React
+    // replaces Retry. Same-identity refreshes keep the error and its focus.
+    if (retryWasFocused && notebookHome.snapshot.list.kind !== "error") {
+      listContentRef.current?.focus({ preventScroll: true });
+    }
+    return deactivate;
   }, [
     appSessionStatus.session,
     appSessionWaitDeadline,
     authState,
     canFetchNotebookList,
+    checkingInitialCookieSession,
     hasAppSession,
     identityKey,
+    initialCheckFailed,
     notebookHome,
-    waitingForAppSession,
+    sessionCheckAttempt,
+    waitingForSession,
   ]);
 
-  const refreshList = () => notebookHome.refresh();
+  const refreshList = () => {
+    if (checkingInitialCookieSession) {
+      // Keep focus in the list when the Retry button is replaced by progress.
+      listContentRef.current?.focus({ preventScroll: true });
+      setSessionCheckAttempt((attempt) => attempt + 1);
+      auth.refreshAppSessionStatus();
+    } else notebookHome.refresh();
+  };
 
   const openCreateForm = () => {
     if (!signedIn) {
@@ -366,7 +413,7 @@ export function CloudNotebookListView({
             <span className="nb-brand-scope">{headerDetail}</span>
           </a>
           <span className="nb-header-spacer" />
-          {signedIn ? (
+          {signedIn || waitingForSession ? (
             <>
               <label className="nb-search">
                 <Search aria-hidden="true" />
@@ -381,7 +428,7 @@ export function CloudNotebookListView({
                   type="button"
                   variant="outline"
                   aria-label="Refresh notebooks"
-                  disabled={listState.kind === "loading"}
+                  disabled={!signedIn || listState.kind === "loading"}
                   onClick={refreshList}
                 >
                   <RotateCcw aria-hidden="true" />
@@ -389,7 +436,7 @@ export function CloudNotebookListView({
                 </Button>
                 <Button
                   type="button"
-                  disabled={createState === "starting"}
+                  disabled={!signedIn || createState === "starting"}
                   onClick={openCreateForm}
                 >
                   {createState === "starting" ? (
@@ -399,20 +446,24 @@ export function CloudNotebookListView({
                   )}
                   {createState === "starting" ? "Creating" : "New notebook"}
                 </Button>
-                <NotebookAccountMenu
-                  actor={currentUserActor}
-                  detail={displayName ?? headerDetail}
-                  accountDetail={currentUserAccountDetail}
-                >
-                  <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
-                    <Settings aria-hidden="true" />
-                    Settings
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={signOut}>
-                    <LogOut aria-hidden="true" />
-                    Sign out
-                  </DropdownMenuItem>
-                </NotebookAccountMenu>
+                {signedIn ? (
+                  <NotebookAccountMenu
+                    actor={currentUserActor}
+                    detail={displayName ?? headerDetail}
+                    accountDetail={currentUserAccountDetail}
+                  >
+                    <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                      <Settings aria-hidden="true" />
+                      Settings
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={signOut}>
+                      <LogOut aria-hidden="true" />
+                      Sign out
+                    </DropdownMenuItem>
+                  </NotebookAccountMenu>
+                ) : (
+                  <span className="nb-account-pending" aria-hidden="true" />
+                )}
               </div>
             </>
           ) : null}
@@ -477,32 +528,37 @@ export function CloudNotebookListView({
         }
       />
 
-      <section className="cloud-notebook-list-content" aria-label="Notebook list">
+      <section
+        ref={listContentRef}
+        className="cloud-notebook-list-content"
+        aria-label="Notebook list"
+        tabIndex={-1}
+      >
         {listState.kind === "loading" ? (
-          <div className="nb-loading" role="status" aria-label="Loading notebooks">
-            <span className="sr-only">Loading notebooks</span>
-            {Array.from({ length: 6 }, (_, index) => (
-              <div key={index} className="nb-loading-row" aria-hidden="true">
-                <span className="nb-loading-bar" data-w="title" />
-                <span className="nb-loading-bar" data-w="meta" />
-                <span className="nb-loading-bar" data-w="meta" />
-                <span className="nb-loading-bar" data-w="time" />
-              </div>
-            ))}
-          </div>
+          <CloudNotebookDashboardLoading />
         ) : listState.kind === "signed_out" ? (
           <CloudNotebookSignedOutPanel authConfig={authConfig} authState={authState} />
         ) : listState.kind === "error" ? (
-          <div className="cloud-notebook-list-state" data-kind="error" role="alert">
-            <AlertCircle aria-hidden="true" />
-            <span>{listState.message}</span>
-            <Button type="button" variant="outline" size="sm" onClick={refreshList}>
-              <RotateCcw aria-hidden="true" />
-              Retry
-            </Button>
-          </div>
+          <CloudNotebookDashboardState summary="Unable to load notebooks">
+            <div className="cloud-notebook-list-state" data-kind="error" role="alert">
+              <AlertCircle aria-hidden="true" />
+              <span>{listState.message}</span>
+              <Button
+                ref={retryButtonRef}
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={refreshList}
+              >
+                <RotateCcw aria-hidden="true" />
+                Retry
+              </Button>
+            </div>
+          </CloudNotebookDashboardState>
         ) : listState.notebooks.length === 0 ? (
-          <CloudNotebookListEmptyState signedIn={signedIn} onNewNotebook={openCreateForm} />
+          <CloudNotebookDashboardState summary="0 notebooks">
+            <CloudNotebookListEmptyState signedIn={signedIn} onNewNotebook={openCreateForm} />
+          </CloudNotebookDashboardState>
         ) : dashboardModel ? (
           <CloudNotebookDashboard
             model={dashboardModel}
