@@ -720,17 +720,14 @@ jobs:
       - name: Locate signing tools
         shell: pwsh
         run: |
-          # Find signtool.exe from the Windows SDK
+          # trusted-signing-cli uses an x64 signing DLL, even for ARM64 binaries.
+          # SignTool must match the DLL architecture, not the application target.
           $sdkRoot = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots" -Name KitsRoot10).KitsRoot10
-          $signtool = $null
-          foreach ($arch in @("arm64", "x64")) {
-            $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
-              Where-Object { $_.FullName -match "\\$arch\\" } |
-              Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
-              Select-Object -First 1
-            if ($signtool) { break }
-          }
-          if (-not $signtool) { throw "signtool.exe not found" }
+          $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
+            Where-Object { $_.FullName -match "\\x64\\" } |
+            Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw "x64 signtool.exe not found; trusted-signing-cli requires the x64 Windows SDK signing tool" }
           Write-Host "Found signtool: $($signtool.FullName)"
           "SIGNTOOL_PATH=$($signtool.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
 
@@ -930,16 +927,14 @@ jobs:
       - name: Locate signing tools
         shell: pwsh
         run: |
+          # trusted-signing-cli uses an x64 signing DLL, even for ARM64 binaries.
+          # SignTool must match the DLL architecture, not the application target.
           $sdkRoot = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots" -Name KitsRoot10).KitsRoot10
-          $signtool = $null
-          foreach ($arch in @("arm64", "x64")) {
-            $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
-              Where-Object { $_.FullName -match "\\$arch\\" } |
-              Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
-              Select-Object -First 1
-            if ($signtool) { break }
-          }
-          if (-not $signtool) { throw "signtool.exe not found" }
+          $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
+            Where-Object { $_.FullName -match "\\x64\\" } |
+            Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw "x64 signtool.exe not found; trusted-signing-cli requires the x64 Windows SDK signing tool" }
           Write-Host "Found signtool: $($signtool.FullName)"
           "SIGNTOOL_PATH=$($signtool.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
 
