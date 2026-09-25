@@ -18,6 +18,7 @@ import {
   type NotebookShellCapabilities,
   type NotebookShellRuntimeTargetProjection,
 } from "./capabilities";
+import { flushCellUIState, setActiveInteractionTarget } from "./state/cell-ui-state";
 
 export type { NotebookCommandRuntimeState } from "./capabilities";
 
@@ -64,7 +65,10 @@ export interface NotebookCommandToolbarProps {
   startDisabled?: boolean;
   addCellControlsDisabled?: boolean;
   addAfterCellId?: string | null;
-  onAddCell?: (type: "code" | "markdown", afterCellId?: string | null) => unknown;
+  onAddCell?: (
+    type: "code" | "markdown",
+    afterCellId?: string | null,
+  ) => { id: string } | null | void;
   onStartRuntime?: () => void;
   onInterruptRuntime?: () => void;
   onRestartRuntime?: () => void;
@@ -135,6 +139,15 @@ export function NotebookCommandToolbar({
     Boolean(authControls) &&
     (auth.canSignIn || auth.canUseAuthenticatedIdentity || auth.needsAttention);
 
+  const addMarkdownCell = () => {
+    const added = onAddCell?.("markdown", addAfterCellId);
+    if (!added) return;
+    // A local insertion can enter editing; a remotely materialized empty
+    // markdown cell must never infer that intent from its source alone.
+    setActiveInteractionTarget({ kind: "editor", cellId: added.id });
+    flushCellUIState();
+  };
+
   return (
     <div
       data-testid="notebook-toolbar"
@@ -159,7 +172,7 @@ export function NotebookCommandToolbar({
           </button>
           <button
             type="button"
-            onClick={() => onAddCell?.("markdown", addAfterCellId)}
+            onClick={addMarkdownCell}
             disabled={addCellControlsDisabled}
             className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
             title={addCellControlsDisabled ? "Checking edit access" : "Add markdown cell"}

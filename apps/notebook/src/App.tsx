@@ -115,6 +115,7 @@ import { usePoolState } from "./hooks/usePoolState";
 import { useTrust } from "./hooks/useTrust";
 import { useUpdater } from "./hooks/useUpdater";
 import { startAttributionDispatch } from "./lib/attribution-registry";
+import { registerInsertCellCommand } from "./lib/insert-cell-command";
 import { getBlobResolver, useBlobPort, useBlobResolver } from "./lib/blob-port";
 import { useRuntimeState } from "./lib/runtime-state";
 import {
@@ -1773,10 +1774,7 @@ function AppContent() {
       host.commands.register("notebook.clone", () => {
         commandHandlersRef.current.cloneNotebook();
       }),
-      host.commands.register("notebook.insertCell", ({ type }) => {
-        const h = commandHandlersRef.current;
-        h.handleAddCell(type, getFocusedCellId());
-      }),
+      registerInsertCellCommand(host.commands, () => commandHandlersRef.current.handleAddCell),
       host.commands.register("notebook.changeCellType", ({ type }) => {
         const focusedCellId = getFocusedCellId();
         if (!focusedCellId) return;

@@ -586,6 +586,17 @@ function NotebookViewContent({
   cellIdsRef.current = cellIds;
   const { focusCell } = useEditorRegistry();
 
+  const addCellFromControl = useCallback<AddCellHandler>(
+    (type, afterCellId) => {
+      const added = onAddCell(type, afterCellId);
+      if (added && type === "markdown") {
+        focusInteractionTarget({ kind: "editor", cellId: added.id });
+      }
+      return added;
+    },
+    [focusInteractionTarget, onAddCell],
+  );
+
   const enterEditMode = useCallback((): boolean => {
     const cellId = getFocusedCellId();
     if (!cellId) return false;
@@ -1047,6 +1058,17 @@ function NotebookViewContent({
         focusCell(targetCellId, typeof target.line === "number" ? { line: target.line } : "start");
       };
 
+      // Editor-origin navigation must keep editing when it creates a cell.
+      // The host's add callback selects the new cell; explicitly request its
+      // editor here, including when materialization/registration is pending.
+      // Command-mode A/B insertion continues to call onAddCell directly.
+      const onInsertCellAfter = () => {
+        const added = onAddCell(cell.cell_type === "markdown" ? "markdown" : "code", cell.id);
+        if (!added) return;
+        focusInteractionTarget({ kind: "editor", cellId: added.id });
+        focusCell(added.id, "start");
+      };
+
       // Escape hands off from editing to Jupyter-style command mode: the
       // cell stays selected but its editor no longer holds DOM focus.
       const onEnterCommandMode = () => {
@@ -1171,7 +1193,7 @@ function NotebookViewContent({
             onFocusNext={onFocusNext}
             onEnterCommandMode={onEnterCommandMode}
             onNavigateToCell={onNavigateToCell}
-            onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
+            onInsertCellAfter={canMutateCells ? onInsertCellAfter : undefined}
             onChangeCellType={
               canMutateCells && onChangeCellType
                 ? (type: "code" | "markdown") => onChangeCellType(cell.id, type)
@@ -1258,7 +1280,7 @@ function NotebookViewContent({
             onPreviewFocusPrevious={() => focusRenderedCell("previous")}
             onPreviewFocusNext={() => focusRenderedCell("next")}
             onEnterCommandMode={onEnterCommandMode}
-            onInsertCellAfter={canMutateCells ? () => onAddCell("markdown", cell.id) : undefined}
+            onInsertCellAfter={canMutateCells ? onInsertCellAfter : undefined}
             onChangeCellType={
               canMutateCells && onChangeCellType
                 ? (type: "code" | "markdown") => onChangeCellType(cell.id, type)
@@ -1293,7 +1315,7 @@ function NotebookViewContent({
           onFocusPrevious={onFocusPrevious}
           onFocusNext={onFocusNext}
           onEnterCommandMode={onEnterCommandMode}
-          onInsertCellAfter={canMutateCells ? () => onAddCell("code", cell.id) : undefined}
+          onInsertCellAfter={canMutateCells ? onInsertCellAfter : undefined}
           onChangeCellType={
             canMutateCells && onChangeCellType
               ? (type: "code" | "markdown") => onChangeCellType(cell.id, type)
@@ -1416,7 +1438,7 @@ function NotebookViewContent({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => onAddCell("code")}
+                    onClick={() => addCellFromControl("code")}
                     className="gap-1"
                   >
                     <Plus className="size-3" />
@@ -1425,7 +1447,7 @@ function NotebookViewContent({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => onAddCell("markdown")}
+                    onClick={() => addCellFromControl("markdown")}
                     className="gap-1"
                   >
                     <Plus className="size-3" />
@@ -1455,7 +1477,7 @@ function NotebookViewContent({
                     cellId={cellId}
                     index={index}
                     renderCell={renderCell}
-                    onAddCell={onAddCell}
+                    onAddCell={addCellFromControl}
                     onDeleteCell={handleDeleteCell}
                     isLastCell={index === cellIds.length - 1}
                     isHiddenInGroup={group != null && !group.isFirst}

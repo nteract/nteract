@@ -1069,19 +1069,19 @@ export const MarkdownCell = memo(function MarkdownCell({
     [navigationKeyMap, applyInlineFormatting, applyLinkFormatting, applyQuoteFormatting],
   );
 
-  // Focus editor when entering edit mode (after initial mount)
-  const initialMountRef = useRef(true);
+  // An empty markdown cell can materialize on every peer with its editor
+  // visible. Only this peer's explicit editor target may request DOM focus.
+  // Recheck at delivery time so rapid navigation cannot reclaim the caret.
   useEffect(() => {
-    if (initialMountRef.current) {
-      initialMountRef.current = false;
-      return;
-    }
-    if (editing) {
-      requestAnimationFrame(() => {
+    if (!editing || !isEditorTarget) return;
+    const frame = requestAnimationFrame(() => {
+      const target = getActiveInteractionTarget();
+      if (target?.kind === "editor" && target.cellId === cell.id) {
         editorRef.current?.focus();
-      });
-    }
-  }, [editing]);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [cell.id, editing, isEditorTarget]);
 
   // Forward search query to the markdown iframe
   useEffect(() => {
@@ -1158,7 +1158,6 @@ export const MarkdownCell = memo(function MarkdownCell({
                     contentAttributes={MARKDOWN_EDITOR_CONTENT_ATTRIBUTES}
                     placeholder="Enter markdown..."
                     className="min-h-[2rem]"
-                    autoFocus={editing}
                     readOnly={readOnly}
                   />
                 </EditorContextMenu>

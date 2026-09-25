@@ -6,6 +6,7 @@ import {
   type NotebookInteractionTarget,
 } from "runtimed";
 import { getCellIdsSnapshot, subscribeIds } from "./cell-store";
+import { clearPendingCellFocus } from "./editor-registry";
 import { getNotebookQueueProjection, subscribeNotebookQueueProjection } from "./execution-store";
 
 export interface NotebookFindMatch {
@@ -123,6 +124,9 @@ export function setActiveInteractionTarget(target: NotebookInteractionTarget | n
   const current = _interactionStore.getSnapshot().activeTarget;
   if (notebookInteractionTargetsEqual(current, target)) return;
 
+  // A later local interaction supersedes an editor focus request that is
+  // still waiting for its cell to materialize or register.
+  clearPendingCellFocus();
   _interactionStore.setActiveTarget(target);
   setDerivedFocusedCellId(notebookInteractionTargetCellId(target));
   _dirtySubscribers.add(_interactionSubscribers);

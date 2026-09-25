@@ -1,5 +1,5 @@
 import { EditorView } from "@codemirror/view";
-import { NotebookHostProvider } from "@nteract/notebook-host";
+import { createCommandRegistry, NotebookHostProvider } from "@nteract/notebook-host";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { CrdtBridgeProvider } from "@/components/notebook/crdt-bridge";
@@ -7,6 +7,7 @@ import {
   flushCellUIState,
   getActiveInteractionTarget,
   setActiveInteractionTarget,
+  setFocusedCellId,
   setSearchCurrentMatch,
   setSearchQuery,
 } from "@/components/notebook/state/cell-ui-state";
@@ -15,8 +16,21 @@ import { resetNotebookExecutions } from "@/components/notebook/state/execution-s
 import { resetNotebookOutputs } from "@/components/notebook/state/output-store";
 import { clearOutputFocusedCellId } from "@/components/notebook/state/output-focus-store";
 import { createFixtureNotebookHost } from "../../../../elements/components/fixture-notebook-host";
+import { wireTauriMenuBridge } from "../../../../../packages/notebook-host/src/tauri/menu-bridge";
+import { registerInsertCellCommand } from "../../lib/insert-cell-command";
 import type { NotebookCell } from "../../types";
 import { NotebookView } from "../NotebookView";
+
+const menuListeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({
+    listen: async (name: string, handler: (event: { payload: unknown }) => void) => {
+      menuListeners.set(name, handler);
+      return () => menuListeners.delete(name);
+    },
+    setZoom: vi.fn(),
+  }),
+}));
 
 vi.mock("@/components/isolated/iframe-libraries", () => ({
   injectPluginsForMimes: vi.fn(async () => {}),
@@ -99,10 +113,28 @@ async function press(key: string, modifiers: KeyboardEventInit = {}) {
   return allowedDefault;
 }
 
-async function mountNotebook(cells: NotebookCell[] = [markdown, code, raw]) {
+async function mountNotebook(
+  cells: NotebookCell[] = [markdown, code, raw],
+  allowInsert = false,
+  { deferInsert = false, canMutate = true } = {},
+) {
   replaceNotebookCells(cells);
-  const onAddCell = vi.fn(() => null);
-  const host = createFixtureNotebookHost();
+  const materialize = () => {
+    replaceNotebookCells(cells);
+    view.rerender(notebook(cells));
+  };
+  const onAddCell = vi.fn((cellType: "code" | "markdown" | "raw") => {
+    if (!allowInsert) return null;
+    const added: NotebookCell = { ...code, id: "inserted-cell", cell_type: cellType, source: "" };
+    cells = [...cells, added];
+    // The host controller selects a newly added cell. The shared view owns
+    // whether the initiating keyboard action should also enter its editor.
+    setFocusedCellId(added.id);
+    flushCellUIState();
+    if (!deferInsert) materialize();
+    return added;
+  });
+  const host = { ...createFixtureNotebookHost(), commands: createCommandRegistry() };
   const notebook = (currentCells: NotebookCell[], isLoading = false) => (
     <NotebookHostProvider host={host}>
       <CrdtBridgeProvider getHandle={() => null} onSyncNeeded={() => {}} localActor="focus-test">
@@ -110,7 +142,7 @@ async function mountNotebook(cells: NotebookCell[] = [markdown, code, raw]) {
           cellIds={currentCells.map((cell) => cell.id)}
           isLoading={isLoading}
           autoFocusFirstCell={false}
-          canAcceptCellMutations
+          canAcceptCellMutations={canMutate}
           onFocusCell={() => {}}
           onExecuteCell={() => {}}
           onInterruptKernel={() => {}}
@@ -132,7 +164,7 @@ async function mountNotebook(cells: NotebookCell[] = [markdown, code, raw]) {
     await settleFocus();
     expect(screen.queryByText("This cell encountered an error")).toBeNull();
   };
-  return { onAddCell, rerenderCells };
+  return { onAddCell, rerenderCells, host, materialize };
 }
 
 async function selectCell(cellId: string) {
@@ -221,6 +253,148 @@ afterEach(() => {
 });
 
 describe("NotebookView command focus", () => {
+  it("enters the new markdown editor through the native menu command dispatch", async () => {
+    const { onAddCell, host } = await mountNotebook([code], true);
+    await selectCell(code.id);
+    await press("Enter");
+    const unregister = registerInsertCellCommand(host.commands, () => onAddCell);
+    const unlisten = wireTauriMenuBridge(host);
+    try {
+      act(() => menuListeners.get("menu:insert-cell")!({ payload: "markdown" }));
+      await settleFocus();
+      expect(onAddCell).toHaveBeenCalledWith("markdown", code.id);
+      expectEditorFocus("inserted-cell");
+    } finally {
+      unlisten();
+      unregister();
+    }
+  });
+
+  it.each(["stay", "another-editor", "command-mode"])(
+    "honors the latest focus intent when an inserted editor registers after %s",
+    async (destination) => {
+      const { materialize } = await mountNotebook([markdown, code], true, { deferInsert: true });
+      await selectCell(code.id);
+      await press("Enter");
+      const originalContent = document.querySelector<HTMLElement>(
+        `[data-cell-id="${code.id}"] .cm-content`,
+      )!;
+      const originalEditor = EditorView.findFromDOM(originalContent)!;
+      act(() =>
+        originalEditor.dispatch({ selection: { anchor: originalEditor.state.doc.length } }),
+      );
+      await press("ArrowDown");
+      expect(getActiveInteractionTarget()).toEqual({ kind: "editor", cellId: "inserted-cell" });
+      expect(document.querySelector('[data-cell-id="inserted-cell"]')).toBeNull();
+      if (destination === "another-editor") {
+        act(() => {
+          fireEvent.mouseDown(originalContent);
+          originalContent.focus();
+          originalEditor.dispatch({ selection: { anchor: 3, head: 5 } });
+        });
+      } else if (destination === "command-mode") {
+        await selectCell("inserted-cell");
+      }
+      act(materialize);
+      await settleFocus();
+      if (destination === "stay") {
+        expectEditorFocus("inserted-cell");
+      } else if (destination === "command-mode") {
+        expectCommandFocus("inserted-cell");
+      } else {
+        expectEditorFocus(code.id);
+        expect(originalEditor.state.selection.main.anchor).toBe(3);
+        expect(originalEditor.state.selection.main.head).toBe(5);
+      }
+    },
+  );
+
+  it.each([code, markdown])(
+    "does not insert after the last $cell_type editor when structure edits are disabled",
+    async (cell) => {
+      const { onAddCell } = await mountNotebook([cell], true, { canMutate: false });
+      await selectCell(cell.id);
+      await press("Enter");
+      const content = document.querySelector<HTMLElement>(
+        `[data-cell-id="${cell.id}"] .cm-content`,
+      )!;
+      const editor = EditorView.findFromDOM(content)!;
+      act(() => editor.dispatch({ selection: { anchor: editor.state.doc.length } }));
+      await press("ArrowDown");
+      await press("Enter", { shiftKey: true });
+      expect(onAddCell).not.toHaveBeenCalled();
+      expect(document.querySelector('[data-cell-id="inserted-cell"]')).toBeNull();
+    },
+  );
+
+  it.each(["a", "b"])(
+    "keeps command-mode %s insertion selected and leaves Shift+Enter outside its contract",
+    async (insertKey) => {
+      const { onAddCell } = await mountNotebook([code], true);
+      await selectCell(code.id);
+      await press("Enter", { shiftKey: true });
+      expectCommandFocus(code.id);
+      expect(onAddCell).not.toHaveBeenCalled();
+      await press(insertKey);
+      expectCommandFocus("inserted-cell");
+      await press("ArrowDown");
+      expect(onAddCell).toHaveBeenCalledTimes(1);
+      await press("Enter");
+      expectEditorFocus("inserted-cell");
+    },
+  );
+
+  it.each(
+    [code, markdown, raw].flatMap((cell) =>
+      ["ArrowDown", "Shift+Enter"].map((key) => ({ cell, key, type: cell.cell_type })),
+    ),
+  )("enters the new editor after $key in the last $type editor", async ({ cell, key }) => {
+    await mountNotebook([cell], true);
+    await selectCell(cell.id);
+    await press("Enter");
+    const content = document.querySelector<HTMLElement>(`[data-cell-id="${cell.id}"] .cm-content`)!;
+    const editor = EditorView.findFromDOM(content)!;
+    act(() => editor.dispatch({ selection: { anchor: editor.state.doc.length } }));
+    await press(key === "Shift+Enter" ? "Enter" : key, { shiftKey: key === "Shift+Enter" });
+    expectEditorFocus("inserted-cell");
+  });
+
+  it("discards deferred markdown focus after the user focuses another editor", async () => {
+    await mountNotebook([markdown, code]);
+    await selectCell(markdown.id);
+    act(() => {
+      fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    });
+    const codeContent = document.querySelector<HTMLElement>(
+      `[data-cell-id="${code.id}"] .cm-content`,
+    )!;
+    act(() => {
+      fireEvent.mouseDown(codeContent);
+      codeContent.focus();
+    });
+    expectEditorFocus(code.id);
+    await settleFocus();
+    expectEditorFocus(code.id);
+  });
+
+  it.each([code, markdown])(
+    "keeps the real $cell_type editor and caret when an empty markdown cell materializes remotely",
+    async (cell) => {
+      const { rerenderCells } = await mountNotebook([cell]);
+      await selectCell(cell.id);
+      await press("Enter");
+      const content = document.querySelector<HTMLElement>(
+        `[data-cell-id="${cell.id}"] .cm-content`,
+      )!;
+      const editor = EditorView.findFromDOM(content)!;
+      act(() => editor.dispatch({ selection: { anchor: 3, head: 5 } }));
+      await rerenderCells([cell, { ...markdown, id: "new-remote-markdown", source: "" }]);
+      expectEditorFocus(cell.id);
+      expect(editor.state.selection.main.anchor).toBe(3);
+      expect(editor.state.selection.main.head).toBe(5);
+    },
+  );
+
   it.each([code, raw, markdown])(
     "cycles Enter/Escape between command focus and the real $cell_type editor",
     async (cell) => {
