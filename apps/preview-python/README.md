@@ -117,6 +117,18 @@ interpreter mutation requires a restart; cancelled executions are not replayed.
 Editors and viewers can inspect package state but cannot install or remove packages.
 Desktop environments continue to use uv, conda or pixi.
 
+Package operations share one active acquisition/install buffer set per deployment,
+with at most four FIFO waiters and one outstanding request per owner. Waiting
+owns no artifact buffers and can be cancelled. A queued turn can wait up to ten
+minutes under contention; active acquisition/install is limited to two minutes.
+The browser response deadline includes both budgets and thirty seconds for the
+final room checkpoint. The room's three-minute capacity retry window applies
+only to rejected admission, not to a request already holding its FIFO place.
+Adds have a five-second per-owner cooldown with bounded recent-owner bookkeeping.
+The resolver can create one additional planner interpreter per deployment outside
+the tenant session quota. It is disposed after each resolution; unconfirmed
+cleanup retains its reservation until provider recovery.
+
 The package integration test owns its celld process and temporary storage. It
 requires network access for the provider's PyPI acquisition and checks install,
 import/output, unsupported-package failure, restore into fresh compute and denied

@@ -1,4 +1,5 @@
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import {
   PackageResolver,
@@ -7,6 +8,7 @@ import {
   safePackageFailure,
 } from "../src/package-resolver.js";
 import {
+  PACKAGE_RUNTIME_VERSION,
   installPackageManifest,
   packageManifest,
   removeRequirement,
@@ -198,7 +200,7 @@ test("planner abort disposes the interpreter and leaves no reusable busy reserva
   await started.promise;
   abort.abort();
   await assert.rejects(pending, /abort/i);
-  assert.ok(disposals > 0);
+  assert.equal(disposals, 1, "abort and finally share one host cleanup");
   await resolver.resolve([]);
 });
 
@@ -225,7 +227,7 @@ test("stale locks retain intent until explicit removal or clearing", () => {
   const oneRemoved = removeSavedRequirement(stale, "six");
   assert.deepEqual(oneRemoved.requirements, ["requests"]);
   assert.equal(oneRemoved.pyodide, "old");
-  assert.throws(() => packageManifest(oneRemoved), /rebuilt/);
+  assert.throws(() => packageManifest(oneRemoved), /Clear saved packages/);
   assert.deepEqual(removeSavedRequirement(oneRemoved, "requests"), empty);
   assert.deepEqual(stale.requirements, ["six", "requests"]);
 });
@@ -362,3 +364,129 @@ test("partial mutation blocks later execution until a fresh session", async () =
   assert.throws(() => pool.packageInventory("tenant"), /restart/);
   await pool.close();
 });
+
+test("package lock runtime version follows the pinned interpreter", async () => {
+  const lock = JSON.parse(
+    await readFile(
+      new URL("../../../packages/pyodide-runtime/runtime-lock.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.equal(PACKAGE_RUNTIME_VERSION, lock.pyodide);
+});
+
+test("a long add cannot make a restore lose its FIFO turn to a later owner", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const admission = new PackageAdmission();
+  const first = deferred(),
+    entered = deferred(),
+    restore = deferred(),
+    restoring = deferred();
+  const order = [];
+  let active = 0;
+  const operation = (name, started, held) => async () => {
+    assert.equal(++active, 1, "only one acquisition/install buffer set is owned");
+    order.push(name);
+    started?.resolve();
+    if (held) await held.promise;
+    active--;
+  };
+  const a = admission.run("alice", signal(), operation("add-a", entered, first));
+  await entered.promise;
+  const c = admission.run("carol", signal(), operation("restore", restoring, restore), {
+    cooldown: false,
+  });
+  t.mock.timers.tick(88_000);
+  const b = admission.run("bob", signal(), operation("add-b"));
+  t.mock.timers.tick(2_000);
+  first.resolve();
+  await a;
+  await restoring.promise;
+  assert.deepEqual(order, ["add-a", "restore"], "restore kept its original turn through a90s add");
+  restore.resolve();
+  await Promise.all([b, c]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["add-a", "restore", "add-b"]);
+  assert.deepEqual(admission.status, { active: false, waiting: 0 });
+});
+
+test("queued timeout and cancellation release bounded owner reservations", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const admission = new PackageAdmission();
+  const held = deferred(),
+    entered = deferred();
+  const active = admission.run("active", signal(), async () => {
+    entered.resolve();
+    await held.promise;
+  });
+  await entered.promise;
+  const abort = new AbortController();
+  const cancelled = admission.run("cancelled", abort.signal, async () =>
+    assert.fail("cancelled operation ran"),
+  );
+  const cancellation = assert.rejects(cancelled, /abort/i);
+  abort.abort();
+  await cancellation;
+  const expiry = assert.rejects(
+    admission.run("waiting", signal(), async () => assert.fail("expired operation ran"), {
+      cooldown: false,
+    }),
+    { code: "planner_busy" },
+  );
+  t.mock.timers.tick(600_000);
+  await expiry;
+  assert.deepEqual(admission.status, { active: true, waiting: 0 });
+  held.resolve();
+  await active;
+  await admission.run("waiting", signal(), async () => {}, { cooldown: false });
+  await admission.run("cancelled", signal(), async () => {});
+});
+
+test("cooldown survives another owner's turn and retains bounded bookkeeping", async () => {
+  let now = 0;
+  const admission = new PackageAdmission({ clock: () => now });
+  for (let i = 0; i < 32; i++) await admission.run(`owner-${i}`, signal(), async () => {});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.throws(() => admission.run("owner-0", signal(), async () => {}), { code: "add_cooldown" });
+  assert.throws(() => admission.run("owner-32", signal(), async () => {}), {
+    code: "planner_busy",
+  });
+  now = 5_000;
+  await admission.run("owner-0", signal(), async () => {});
+});
+
+for (const cleanupFails of [false, true])
+  test(`abort waits for one asynchronous planner cleanup, failure=${cleanupFails}`, async () => {
+    const planning = deferred(),
+      ended = deferred(),
+      cleanup = deferred(),
+      disposing = deferred();
+    let disposals = 0;
+    const resolver = new PackageResolver({
+      create: async () => ({
+        plan: async () => {
+          planning.resolve();
+          await ended.promise;
+          return { status: "ready", wheels: [] };
+        },
+        dispose: async () => {
+          disposals++;
+          ended.resolve();
+          disposing.resolve();
+          await cleanup.promise;
+          if (cleanupFails) throw new Error("unconfirmed termination");
+        },
+      }),
+    });
+    const abort = new AbortController();
+    const pending = resolver.resolve(["six"], { signal: abort.signal });
+    const rejected = assert.rejects(pending, /abort/i);
+    await planning.promise;
+    abort.abort();
+    await disposing.promise;
+    assert.equal(resolver.status, "busy");
+    cleanup.resolve();
+    await rejected;
+    assert.equal(disposals, 1);
+    assert.equal(resolver.status, cleanupFails ? "recovery_required" : "ready");
+  });

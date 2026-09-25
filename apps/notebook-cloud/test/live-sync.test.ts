@@ -567,6 +567,55 @@ describe("cloud live sync", () => {
     }
   });
 
+  it("keeps an acknowledged package request pending through queue and install budgets", async (t) => {
+    const fake = installFakeWebSocket();
+    const transport = createTransport({ livenessPingIntervalMs: 0 });
+    try {
+      const socket = await waitForSocket(0);
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let settled = false;
+      const pending = transport.changeCloudPackage("add", "six").finally(() => {
+        settled = true;
+      });
+      await nextMicrotask();
+      const frame = socket.sent[0];
+      const request = JSON.parse(new TextDecoder().decode(frame.slice(1)));
+      assert.equal(request.action, "cloud_package_change");
+      socket.control({
+        type: "cloud_frame_accepted",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        byte_length: frame.byteLength - 1,
+        timestamp: "2026-09-25T00:00:00Z",
+      });
+      t.mock.timers.tick(720_001);
+      await nextMicrotask();
+      assert.equal(settled, false, "queue plus active work cannot cause a false browser failure");
+      const payload = new TextEncoder().encode(
+        JSON.stringify({
+          id: request.id,
+          result: "sync_environment_complete",
+          synced_packages: ["six"],
+        }),
+      );
+      const response = new Uint8Array(payload.length + 1);
+      response[0] = FrameType.RESPONSE;
+      response.set(payload, 1);
+      socket.message(response.buffer);
+      assert.deepEqual(await pending, {
+        result: "sync_environment_complete",
+        synced_packages: ["six"],
+      });
+    } finally {
+      transport.disconnect();
+      fake.restore();
+    }
+  });
+
   it("waits for a runtime peer response for hosted completion requests", async () => {
     const fake = installFakeWebSocket();
     try {

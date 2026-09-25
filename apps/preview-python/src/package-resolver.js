@@ -1,3 +1,5 @@
+import { PACKAGE_OPERATION_MS } from "./package-limits.js";
+
 const MAX_WHEEL_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 24 * 1024 * 1024;
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
@@ -279,10 +281,18 @@ export class PackageResolver {
     this.#busy = true;
     let planner;
     let retained = false;
-    const deadline = AbortSignal.timeout(120_000);
+    let cleanup;
+    const disposePlanner = () => {
+      // Abort and finally can overlap while host termination is pending.
+      // Both must await the same cleanup result, including an unknown result.
+      if (!planner) return Promise.resolve();
+      cleanup ??= Promise.resolve().then(() => planner.dispose());
+      return cleanup;
+    };
+    const deadline = AbortSignal.timeout(PACKAGE_OPERATION_MS);
     const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const terminate = () => {
-      void planner?.dispose().catch(() => {
+      void disposePlanner().catch(() => {
         retained = true;
       });
     };
@@ -313,7 +323,7 @@ export class PackageResolver {
     } finally {
       combined.removeEventListener("abort", terminate);
       try {
-        await planner?.dispose();
+        await disposePlanner();
       } catch {
         retained = true;
       }

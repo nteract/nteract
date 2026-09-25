@@ -1,5 +1,6 @@
-import { useMemo, useSyncExternalStore } from "react";
-import { sendAutomergeSyncFrame, type NotebookTransport } from "runtimed";
+import { useMemo } from "react";
+import { useNotebookMetadataStore } from "@/components/notebook/state/notebook-metadata";
+import { NotebookMetadataStore, sendAutomergeSyncFrame, type NotebookTransport } from "runtimed";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { logger } from "./logger";
 
@@ -15,9 +16,7 @@ import { logger } from "./logger";
 // ---------------------------------------------------------------------------
 
 let _handle: NotebookHandle | null = null;
-let _snapshotCache: NotebookMetadataSnapshot | null = null;
-let _fingerprint: string | null = null;
-const _subscribers = new Set<() => void>();
+const metadataStore = new NotebookMetadataStore<NotebookMetadataSnapshot>();
 
 // Module-level transport reference for the outbound sync helper below.
 // Wired at boot by main.tsx via setMetadataTransport(host.transport) so the
@@ -29,78 +28,16 @@ export function setMetadataTransport(transport: NotebookTransport | null): void 
   _transport = transport;
 }
 
-/**
- * Read the current metadata snapshot from the WASM handle as a typed object.
- * Returns null if no handle is set or the WASM method returns a non-object.
- */
-function readSnapshot(): NotebookMetadataSnapshot | null {
-  const raw = _handle?.get_metadata_snapshot();
-  return raw && typeof raw === "object"
-    ? (raw as NotebookMetadataSnapshot)
-    : null;
-}
-
-/**
- * Notify subscribers that the Automerge doc may have changed.
- *
- * Uses a fingerprint (cheap JSON string from WASM) to detect whether
- * metadata actually changed. If the fingerprint is identical, this is
- * a no-op — no snapshot deserialization, no subscriber notifications.
- *
- * This is called on every sync batch (including cell-only changes),
- * so the fingerprint gate is critical for avoiding unnecessary work
- * during high-frequency output streaming.
- */
+/** Refresh the shared fingerprint-gated projection after a document change. */
 export function notifyMetadataChanged(): void {
-  const newFingerprint = _handle?.get_metadata_fingerprint() ?? null;
-  if (newFingerprint === _fingerprint) return;
-  _fingerprint = newFingerprint;
-  _snapshotCache = readSnapshot();
-  for (const cb of _subscribers) cb();
+  if (_handle) metadataStore.refresh(_handle);
 }
 
-/**
- * Force-notify all subscribers regardless of fingerprint.
- *
- * Used by setNotebookHandle (bootstrap/reconnect) where the handle
- * itself changed and the old fingerprint is meaningless.
- */
-function forceNotifyMetadataChanged(): void {
-  _fingerprint = _handle?.get_metadata_fingerprint() ?? null;
-  _snapshotCache = readSnapshot();
-  for (const cb of _subscribers) cb();
-}
-
-/**
- * Register the active NotebookHandle. Called by useAutomergeNotebook
- * after bootstrap and cleared on unmount.
- */
+/** Register the active handle; Desktop write helpers retain their existing owner. */
 export function setNotebookHandle(handle: NotebookHandle | null): void {
   _handle = handle;
-  forceNotifyMetadataChanged();
-}
-
-/**
- * Subscribe to metadata changes. Used by useSyncExternalStore.
- */
-function subscribe(callback: () => void): () => void {
-  _subscribers.add(callback);
-  return () => _subscribers.delete(callback);
-}
-
-/**
- * Get the current metadata snapshot as a native JS object.
- * Used as the getSnapshot function for useSyncExternalStore.
- * Returns the cached value — only updated when notifyMetadataChanged() fires.
- */
-function getSnapshot(): NotebookMetadataSnapshot | null {
-  // _snapshotCache is always set by notifyMetadataChanged() before
-  // any subscriber fires. This lazy init handles the first read
-  // before any notification has occurred.
-  if (_snapshotCache === null) {
-    _snapshotCache = readSnapshot();
-  }
-  return _snapshotCache;
+  if (handle) metadataStore.refresh(handle);
+  else metadataStore.reset();
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +49,7 @@ function getSnapshot(): NotebookMetadataSnapshot | null {
  * Re-renders when the Automerge doc changes (bootstrap, sync, writes).
  */
 export function useNotebookMetadata(): NotebookMetadataSnapshot | null {
-  return useSyncExternalStore(subscribe, getSnapshot);
+  return useNotebookMetadataStore(metadataStore);
 }
 
 /**
@@ -125,7 +62,7 @@ export function useNotebookMetadata(): NotebookMetadataSnapshot | null {
  */
 export function useDetectRuntime(): "python" | "deno" | null {
   // Subscribe to metadata changes so we re-render when the doc updates.
-  useSyncExternalStore(subscribe, getSnapshot);
+  useNotebookMetadataStore(metadataStore);
   if (!_handle) return null;
   return (_handle.detect_runtime() as "python" | "deno") ?? null;
 }
@@ -512,7 +449,9 @@ export async function setDenoFlexibleNpmImports(
   enabled: boolean,
 ): Promise<boolean> {
   if (!_handle) return false;
-  const snapshot = readSnapshot();
+  // Writes need their own mutable value, never the published read cache.
+  const raw = _handle.get_metadata_snapshot();
+  const snapshot = raw && typeof raw === "object" ? (raw as NotebookMetadataSnapshot) : null;
   if (!snapshot) return false;
   try {
     if (!snapshot.runt.deno) {

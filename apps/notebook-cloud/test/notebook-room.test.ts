@@ -4349,6 +4349,96 @@ describe("NotebookRoom materialized sync routing", () => {
     });
   }
 
+  for (const failure of ["needs_restart", "unconfirmed"] as const) {
+    it(`terminalizes queued work after ${failure} package installation and recovers without replay`, async (t) => {
+      let entered!: () => void;
+      let release!: () => void;
+      const installing = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        packageResponse: async () => {
+          entered();
+          await held;
+          if (failure === "unconfirmed") throw new Error("provider connection lost");
+          return Response.json({
+            status: "error",
+            error: "Installation needs a restart",
+            needs_restart: true,
+          });
+        },
+      });
+      t.after(() => fixture.close());
+      const owner = await fixture.connect("owner");
+      await fixture.seed(owner);
+      fixture.releaseOpen(Response.json({ ok: true }));
+      await fixture.execute(owner);
+      await fixture.drain();
+      const result = owner.response("install");
+      await fixture.room.webSocketMessage(
+        owner.peer.socket,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({
+              id: "install",
+              action: "cloud_package_change",
+              operation: "add",
+              requirement: "six",
+            }),
+          ),
+        ),
+      );
+      await installing;
+      await fixture.execute(owner);
+      await owner.sync();
+      const queued = Object.entries(owner.runtimeState().executions).find(
+        ([, value]) => value.status === "queued",
+      );
+      assert.ok(queued, "execution is acknowledged while installation is pending");
+      release();
+      assert.equal((await result).needs_restart, true);
+      await fixture.drain();
+      await owner.sync();
+      const failed = owner.runtimeState();
+      assert.equal(failed.executions[queued[0]].status, "cancelled");
+      assert.deepEqual(failed.queue.queued, []);
+      assert.equal(failed.workstation?.status, "error");
+      const ran = fixture.requests.filter((request) => request.path === "/execute").length;
+      await fixture.execute(owner);
+      await fixture.drain();
+      assert.match(String(owner.rejections().at(-1)?.reason), /restart|confirmed/i);
+      assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, ran);
+      await fixture.startReplacement();
+      await fixture.drain();
+      await owner.sync();
+      assert.equal(owner.runtimeState().workstation?.status, "ready");
+      assert.equal(owner.runtimeState().executions[queued[0]].status, "cancelled");
+      assert.equal(
+        fixture.requests.filter((request) => request.path === "/execute").length,
+        ran,
+        "recovery does not replay cancelled intent",
+      );
+      assert.equal(
+        (await fixture.materializer.transitionManagedPythonSession("managed-job", "ready"))
+          .ignored_stale,
+        true,
+      );
+      await assert.rejects(
+        fixture.materializer.compareSetCloudPackageManifest(
+          null,
+          { version: 1, pyodide: "0.28.3", requirements: ["six"], wheels: [] },
+          "managed-job",
+        ),
+        /session/i,
+      );
+      assert.equal(await fixture.materializer.getCloudPackageManifest(), null);
+    });
+  }
+
   it("terminalizes managed intent without starting compute for a revoked attach-job owner", async (t) => {
     const fixture = await managedPythonAdmissionFixture("connecting", { ownerAuthorized: false });
     t.after(() => fixture.close());
@@ -6190,6 +6280,7 @@ async function managedPythonAdmissionFixture(
     ownerAuthorized?: boolean;
     holdOwnerLookup?: boolean;
     closeResponse?: Response;
+    packageResponse?: () => Promise<Response>;
   } = {},
 ) {
   const state = hibernatedState([]);
@@ -6248,7 +6339,7 @@ async function managedPythonAdmissionFixture(
           requests.push({ path, ...(await request.json()) });
           if (path === "/open") {
             enteredOpen();
-            return options.immediateOpen ?? opening;
+            return (options.immediateOpen ?? (await opening)).clone();
           }
           if (path === "/execute")
             return Response.json({
@@ -6257,6 +6348,7 @@ async function managedPythonAdmissionFixture(
               outputs: [{ output_type: "stream", name: "stdout", text: "ready once\n" }],
             });
           if (path === "/close" && options.closeResponse) return options.closeResponse;
+          if (path === "/packages" && options.packageResponse) return options.packageResponse();
           return Response.json({ ok: true });
         },
       }),
@@ -6339,6 +6431,11 @@ async function managedPythonAdmissionFixture(
           responses.set(requestId, resolve);
         }),
       runtimeState: () => client.get_runtime_state() as ManagedAdmissionRuntimeState,
+      rejections: () =>
+        socket.sent
+          .filter((frame) => frame[0] === FrameType.SESSION_CONTROL)
+          .map((frame) => decodeJsonPayload<Record<string, unknown>>(frame.slice(1)))
+          .filter((control) => control.type === "cloud_frame_rejected"),
       accepted: () =>
         socket.sent.some((frame) => {
           if (frame[0] !== FrameType.SESSION_CONTROL) return false;
@@ -6359,6 +6456,21 @@ async function managedPythonAdmissionFixture(
     ownerLookupEntered,
     releaseOwnerLookup,
     drain: state.drain,
+    startReplacement: async () => {
+      db.attachJobs.push({ ...db.attachJobs[0], id: "replacement-job", status: "accepted" });
+      const attachment = await materializer.getWorkstationAttachment();
+      const changed = await materializer.setWorkstationAttachment({
+        ...attachment!,
+        runtime_session_id: "replacement-job",
+        status: "connecting",
+      });
+      (
+        room as unknown as { deliverRoomHostFrames(n: string, result: RoomHostFrameResult): void }
+      ).deliverRoomHostFrames("demo", changed);
+      await (
+        room as unknown as { startManagedPython(n: string, s: string): Promise<void> }
+      ).startManagedPython("demo", "replacement-job");
+    },
     seed: async (connection: Awaited<ReturnType<typeof connect>>) => {
       connection.client.update_source(initialHostedCellIdForTest("demo"), "print('ready once')");
       const source = connection.client.flush_local_changes();

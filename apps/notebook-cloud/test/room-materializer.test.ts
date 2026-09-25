@@ -1,5 +1,6 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { NotebookMetadataStore } from "runtimed";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -644,6 +645,53 @@ describe("RoomHostHandle", () => {
 });
 
 describe("RoomMaterializer", () => {
+  it("projects a saved package change when sync has no changed notebook cells", async () => {
+    const materializer = new RoomMaterializer("demo", fakeState(), {} as Env);
+    const identity = authenticateDevRequest(
+      new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+    );
+    const peer = { id: "owner", identity };
+    const owner = NotebookHandle.create_bootstrap(identity.actorLabel);
+    const store = new NotebookMetadataStore();
+    try {
+      await syncMaterializerWithClient(materializer, peer, owner);
+      store.refresh(owner);
+      const before = store.getSnapshot();
+      const manifest = {
+        version: 1,
+        pyodide: "0.28.3",
+        requirements: ["snowballstemmer>=2,<4"],
+        wheels: [],
+      };
+      const changed = await materializer.compareSetCloudPackageManifest(null, manifest);
+      let metadataOnly = false;
+      for (const frame of changed.outbound) {
+        if (frame.peer_id !== peer.id || frame.frame_type !== FrameType.AUTOMERGE_SYNC) continue;
+        for (const event of owner.receive_frame(
+          encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)),
+        )) {
+          if (event.type !== "sync_applied" || !event.changed) continue;
+          assert.deepEqual(event.changeset, {
+            changed: [],
+            added: [],
+            removed: [],
+            order_changed: false,
+          });
+          metadataOnly = true;
+          store.refresh(owner);
+        }
+      }
+      assert.ok(metadataOnly);
+      assert.notEqual(store.getSnapshot(), before);
+      assert.deepEqual(
+        (store.getSnapshot() as { runt: { pyodide: unknown } }).runt.pyodide,
+        manifest,
+      );
+    } finally {
+      owner.free();
+    }
+  });
+
   it("preserves concurrent owner package edits and persists successful package intent", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);

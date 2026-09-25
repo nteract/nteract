@@ -50,6 +50,7 @@ export { BUSY_THROTTLE_MS, RuntimeStateStore, throttleBusyStatus } from "./runti
 
 // Observable store base + free select helper (source stores extend this)
 export { ObservableStore, select } from "./observable-store";
+export { NotebookMetadataStore, type NotebookMetadataHandle } from "./notebook-metadata-store";
 
 // Polling + fetch-on-input primitives (injected scheduler/fetch, abort-wired)
 export {

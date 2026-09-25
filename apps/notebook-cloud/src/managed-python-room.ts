@@ -187,7 +187,7 @@ export class ManagedPythonRoom {
     } catch {
       this.packagesBlocked = true;
       const error =
-        "Saved packages cannot be restored for this Python version. Remove incompatible requirements or clear saved packages, then restart Python.";
+        "Saved packages cannot be restored for this Python version. Clear saved packages or remove every saved requirement, then restart Python and add the packages again.";
       await this.publishPackageState("error", error);
       throw new Error(error);
     }

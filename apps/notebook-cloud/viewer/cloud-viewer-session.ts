@@ -1,6 +1,8 @@
+import { useNotebookMetadataStore } from "@/components/notebook/state/notebook-metadata";
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   IndexedDbStorageAdapter,
+  NotebookMetadataStore,
   clearPersistedNotebookDoc,
   type BlobResolver,
   type CellChangeset,
@@ -248,7 +250,8 @@ export function useCloudViewerSession({
     message: loadingPolicy.initialStatusMessage,
   });
   const [, setCells] = useState<ResolvedCell[]>([]);
-  const [notebookMetadata, setNotebookMetadata] = useState<unknown>(null);
+  const [metadataStore] = useState(() => new NotebookMetadataStore());
+  const notebookMetadata = useNotebookMetadataStore(metadataStore);
   const notebookLanguageRef = useRef("python");
   const liveRuntimeRef = useRef<CloudSyncRuntime | null>(null);
   const materializeLiveRuntimeRef = useRef<((runtime: CloudSyncRuntime) => void) | null>(null);
@@ -448,6 +451,12 @@ export function useCloudViewerSession({
     [config.notebookId],
   );
 
+  // A new notebook/revision cannot inherit metadata or fallback ownership.
+  useEffect(() => {
+    metadataStore.reset();
+    return () => metadataStore.reset();
+  }, [metadataStore, config.notebookId, config.headsHash]);
+
   // True unmount: nothing is preserved across a session teardown — clear
   // every store the projection paints (the live effect's cleanup preserves
   // them for same-notebook re-runs, so it cannot be the unmount janitor).
@@ -598,7 +607,7 @@ export function useCloudViewerSession({
         });
         if (cancelled || liveMaterializedRef.current) return;
         notebookLanguageRef.current = materialized.notebookLanguage;
-        setNotebookMetadata(materialized.metadata);
+        metadataStore.acceptSnapshot(materialized.metadata);
 
         snapshotResolvedRef.current = true;
         await projectCloudWidgetComms(
@@ -821,6 +830,7 @@ export function useCloudViewerSession({
       const liveRuntime = liveRuntimeRef.current;
       if (!liveRuntime) return Promise.resolve();
       liveRuntimeRef.current = null;
+      metadataStore.detach(liveRuntime.handle);
       setCrdtCommWriter(null);
       // Invalidate in-flight materializations before the handle is freed —
       // their shouldContinue/sequence guards trip instead of touching a
@@ -1052,7 +1062,7 @@ export function useCloudViewerSession({
       }
       if (disposed || sequence !== materializeSequence) return;
       notebookLanguageRef.current = materialized.notebookLanguage;
-      setNotebookMetadata(materialized.metadata);
+      metadataStore.refresh(liveRuntime.handle);
       applyExecutionViewChangeset(liveRuntime.handle.project_execution_view_changeset?.());
 
       await projectCloudWidgetComms(
@@ -1206,7 +1216,7 @@ export function useCloudViewerSession({
           }),
         acceptMetadata: (materialized) => {
           notebookLanguageRef.current = materialized.notebookLanguage;
-          setNotebookMetadata(materialized.metadata);
+          metadataStore.acceptSnapshot(materialized.metadata);
         },
         projectWidgets: (materialized, shouldContinue) =>
           projectCloudWidgetComms(
@@ -1524,6 +1534,8 @@ export function useCloudViewerSession({
           // window it is the collaborator backlog, with accepted local
           // mutation echoes discounted by the offline-merge tracker.
           liveRuntime.engine.notebookDocChanged$.subscribe(() => {
+            if (disposed || liveRuntimeRef.current !== liveRuntime) return;
+            metadataStore.refresh(liveRuntime.handle);
             offlineMergeTracker.noteLocalDocActivity();
           }),
           liveRuntime.engine.notebookDocFlushDelivered$.subscribe(() => {

@@ -1,4 +1,13 @@
 import { PackageOperationError } from "./package-resolver.js";
+import { PACKAGE_QUEUE_WAIT_MS } from "./package-limits.js";
+
+const MAX_WAITING = 4;
+const MAX_COOLDOWN_OWNERS = 32;
+
+// Active package work is bounded to 120s. Keep FIFO positions through all
+// preceding turns (plus cleanup), instead of expiring every 20s and making
+// restores race new adds during their retry backoff. No artifact buffers are
+// acquired while waiting; abort removes a queued entry immediately.
 
 /** One acquisition/install buffer set for this provider, shared by adds and
  * restores. One outstanding request per owner and FIFO admission prevent an
@@ -8,8 +17,7 @@ export class PackageAdmission {
   #active = null;
   #queue = [];
   #owners = new Set();
-  #lastOwner;
-  #lastFinished = 0;
+  #lastFinished = new Map();
   #clock;
   constructor({ clock = Date.now } = {}) {
     this.#clock = clock;
@@ -21,12 +29,17 @@ export class PackageAdmission {
 
   run(owner, signal, operation, { cooldown = true } = {}) {
     signal.throwIfAborted();
-    if (this.#owners.has(owner) || this.#queue.length >= 4) {
+    const now = this.#clock();
+    for (const [principal, finished] of this.#lastFinished)
+      if (now - finished >= 5_000) this.#lastFinished.delete(principal);
+    if (this.#owners.has(owner) || this.#queue.length >= MAX_WAITING) {
       throw new PackageOperationError("planner_busy");
     }
-    if (cooldown && this.#lastOwner === owner && this.#clock() - this.#lastFinished < 5_000) {
+    if (cooldown && this.#lastFinished.has(owner)) {
       throw new PackageOperationError("add_cooldown");
     }
+    if (cooldown && this.#lastFinished.size + this.#owners.size >= MAX_COOLDOWN_OWNERS)
+      throw new PackageOperationError("planner_busy");
     this.#owners.add(owner);
     return new Promise((resolve, reject) => {
       const entry = {
@@ -50,7 +63,10 @@ export class PackageAdmission {
       };
       entry.abort = () => remove(signal.reason);
       signal.addEventListener("abort", entry.abort, { once: true });
-      entry.timer = setTimeout(() => remove(new PackageOperationError("planner_busy")), 20_000);
+      entry.timer = setTimeout(
+        () => remove(new PackageOperationError("planner_busy")),
+        PACKAGE_QUEUE_WAIT_MS,
+      );
       this.#queue.push(entry);
       this.#pump();
     });
@@ -71,8 +87,7 @@ export class PackageAdmission {
       .then(entry.resolve, entry.reject)
       .finally(() => {
         if (entry.cooldown) {
-          this.#lastOwner = entry.owner;
-          this.#lastFinished = this.#clock();
+          this.#lastFinished.set(entry.owner, this.#clock());
         }
         this.#owners.delete(entry.owner);
         this.#active = null;

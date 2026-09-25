@@ -68,6 +68,7 @@ import {
 import {
   createWorkstationAttachJob,
   getNotebookRow,
+  getCanonicalPrincipalForTransport,
   getDefaultWorkstationId,
   getWorkstationRow,
   grantNotebookAclRow,
@@ -1281,6 +1282,11 @@ export class NotebookRoom {
                     error: result.error,
                     needs_restart: result.needs_restart,
                   };
+                  if (result.needs_restart) {
+                    // Acknowledged executions must reach a terminal state even
+                    // when installation leaves this interpreter unusable.
+                    await this.failManagedPython(notebookId, managed.runtime, result.error);
+                  }
                 } else {
                   next = result.manifest;
                   sessionId = managed.runtime.sessionId;
@@ -2207,7 +2213,15 @@ export class NotebookRoom {
     const materializer = this.materializerFor(notebookId);
     if (await materializer.getWorkstationAttachment()) return;
     const notebook = await getNotebookRow(this.env, notebookId);
-    if (!notebook || notebook.owner_principal !== peer.identity.principal) return;
+    const ownerPrincipal =
+      (await getCanonicalPrincipalForTransport(this.env, peer.identity.principal)) ??
+      peer.identity.principal;
+    if (
+      !notebook ||
+      notebook.owner_principal !== ownerPrincipal ||
+      !(await managedPythonOwnerCanExecute(this.env, notebookId, peer.identity.principal))
+    )
+      return;
     const workstation = await ensureManagedPythonWorkstation(this.env, notebook.owner_principal);
     if (
       !workstation ||

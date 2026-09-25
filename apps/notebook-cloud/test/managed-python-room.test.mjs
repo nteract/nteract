@@ -156,6 +156,7 @@ for (const outcome of [
   "stale_lock",
   "contention_success",
   "contention_other_owner",
+  "contention_other_owner_cancel",
   "contention_cancel",
   "contention_timeout",
 ]) {
@@ -190,7 +191,7 @@ for (const outcome of [
       const waitingForCapacity = new Promise((resolve) => {
         waiting = resolve;
       });
-      let service, pool, releaseAdd, addResult;
+      let service, pool, releaseAdd, addResult, releaseAhead, aheadResult, aheadStarted;
       if (outcome.startsWith("contention")) {
         const gate = new Promise((resolve) => {
           releaseAdd = resolve;
@@ -201,7 +202,7 @@ for (const outcome of [
         });
         pool = new SessionPool({
           warmCount: 0,
-          maxSessions: 2,
+          maxSessions: 4,
           maxSessionsPerOwner: 2,
           create: async () => ({
             info: { installed: [] },
@@ -209,16 +210,29 @@ for (const outcome of [
             dispose: async () => {},
           }),
         });
+        let enterAhead;
+        aheadStarted = new Promise((resolve) => {
+          enterAhead = resolve;
+        });
+        const aheadGate = new Promise((resolve) => {
+          releaseAhead = resolve;
+        });
         service = createProviderService(pool, undefined, {
           resolve: async (requirements) => {
-            entered();
-            await gate;
+            if (requirements.includes("ahead")) {
+              enterAhead();
+              await aheadGate;
+            } else {
+              entered();
+              await gate;
+            }
             return { requirements, wheels: [] };
           },
         });
         const firstIdentity = {
-          ownerPrincipal:
-            outcome === "contention_other_owner" ? "user:dev:other" : "user:dev:owner",
+          ownerPrincipal: outcome.startsWith("contention_other_owner")
+            ? "user:dev:other"
+            : "user:dev:owner",
           notebookId: "other-notebook",
           sessionId: "add-session",
         };
@@ -238,11 +252,29 @@ for (const outcome of [
         });
         t.after(async () => {
           releaseAdd();
+          releaseAhead();
           await addResult;
+          await aheadResult;
           await pool.close();
         });
         await firstStarted;
         t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+        if (outcome.startsWith("contention_other_owner")) {
+          const aheadIdentity = {
+            ownerPrincipal: "user:dev:ahead",
+            notebookId: "ahead",
+            sessionId: "ahead",
+          };
+          await post("/open", aheadIdentity);
+          aheadResult = post("/packages", {
+            ...aheadIdentity,
+            operation: "add",
+            requirement: "ahead",
+            manifest: null,
+            operation_id: "ahead",
+          });
+          await new Promise((resolve) => setImmediate(resolve));
+        }
       }
       const materializer = {
         getCloudPackageManifest: async () => JSON.parse(host.get_cloud_package_manifest_json()),
@@ -309,9 +341,7 @@ for (const outcome of [
           () => null,
           (error) => error,
         );
-        if (outcome === "contention_other_owner") {
-          // A foreign owner's restore first waits in FIFO; expiry of that
-          // 20-second slot must lead to retry, not failed interpreter startup.
+        if (outcome.startsWith("contention_other_owner")) {
           for (
             let round = 0;
             round < 100 && !requests.some((request) => request.path === "/packages");
@@ -319,7 +349,44 @@ for (const outcome of [
           )
             await new Promise((resolve) => setImmediate(resolve));
           await new Promise((resolve) => setImmediate(resolve));
-          t.mock.timers.tick(20_000);
+          t.mock.timers.tick(90_000);
+          releaseAdd();
+          await addResult;
+          await aheadStarted;
+          t.mock.timers.tick(100_000); // Two legal active turns, past the room's180s retry window.
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(states.at(-1).phase, "restoring");
+          assert.equal(
+            requests.filter((request) => request.path === "/packages").length,
+            1,
+            "a retained request is not retried at180s",
+          );
+          const health = await (await service.fetch(new Request("https://provider/health"))).json();
+          assert.deepEqual(
+            { active: health.packages.active, waiting: health.packages.waiting },
+            { active: true, waiting: 1 },
+          );
+          if (outcome.endsWith("cancel")) {
+            const publications = states.length;
+            await runtime.close();
+            assert.match((await started).message, /expired/);
+            releaseAhead();
+            await aheadResult;
+            assert.equal(
+              states.length,
+              publications,
+              "queued cancellation cannot later publish ready",
+            );
+          } else {
+            releaseAhead();
+            await aheadResult;
+            assert.equal(await started, null);
+            assert.equal(states.at(-1).phase, "ready");
+            assert.equal(requests.filter((request) => request.path === "/packages").length, 1);
+            await runtime.close();
+          }
+          await pool.close();
+          return;
         }
         await waitingForCapacity;
         await new Promise((resolve) => setImmediate(resolve));

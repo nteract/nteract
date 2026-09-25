@@ -1,3 +1,4 @@
+import { PACKAGE_REQUEST_TIMEOUT_MS } from "../../preview-python/src/package-limits.js";
 import { isRuntimedWasmAssetFailure } from "./runtimed-wasm-failure";
 import { markCloudViewerLoadMilestone } from "./load-milestones";
 import { BehaviorSubject, ReplaySubject, type Observable } from "rxjs";
@@ -1411,7 +1412,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
         JSON.stringify({ id, action: "cloud_package_change", operation, requirement }),
       ),
       id,
-      180_000,
+      PACKAGE_REQUEST_TIMEOUT_MS,
       "package change",
     );
   }

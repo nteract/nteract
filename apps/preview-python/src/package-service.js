@@ -3,6 +3,7 @@ import {
   validateLockedWheel,
   validateRequirements,
 } from "./package-resolver.js";
+import { PACKAGE_OPERATION_MS } from "./package-limits.js";
 
 export const PACKAGE_RUNTIME_VERSION = "0.28.3";
 export const packageName = (requirement) =>
@@ -20,7 +21,9 @@ export function packageManifest(value) {
     !Array.isArray(value.wheels) ||
     value.wheels.length > 32
   )
-    throw new Error("This notebook's package lock needs to be rebuilt for this Python runtime.");
+    throw new Error(
+      "This notebook's package lock is incompatible with this Python runtime. Clear saved packages, restart Python, then add the packages again.",
+    );
   const requirements = validateRequirements(value.requirements);
   const wheels = value.wheels.map(validateLockedWheel);
   if (new Set(wheels.map((wheel) => wheel.name)).size !== wheels.length)
@@ -52,7 +55,7 @@ export function removeSavedRequirement(value, requirement) {
     const remaining = requirements.filter((req) => packageName(req) !== packageName(requirement));
     if (!remaining.length) return packageManifest(null);
     // Retain user intent and the stale lock marker. A remaining stale lock must
-    // still block execution until the owner removes it or explicitly rebuilds.
+    // still block execution until the owner removes all requirements or clears them.
     return { ...value, requirements: remaining };
   }
 }
@@ -75,7 +78,7 @@ function inventory(value) {
 /** Trusted provider operation, executed under the tenant pool's busy guard. */
 export async function installPackageManifest({ runtime, installed, signal }, input, resolver) {
   const sessionSignal = signal;
-  signal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
+  signal = AbortSignal.any([signal, AbortSignal.timeout(PACKAGE_OPERATION_MS)]);
   const previous = packageManifest(input.manifest);
   let plan;
   if (input.operation === "restore") {
