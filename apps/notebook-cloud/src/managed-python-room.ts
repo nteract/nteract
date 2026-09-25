@@ -78,8 +78,9 @@ export class ManagedPythonRoom {
         await this.synchronize();
         await materializer.checkpoint();
       },
-      // Live stdout/stderr reaches connected peers through sync only; the
-      // terminal batch is checkpointed by publish().
+      // Live stdout/stderr reaches connected peers through sync only. Other
+      // room writes may checkpoint it mid-cell; on success the terminal batch
+      // replaces it and is checkpointed by publish().
       publishLive: () => this.synchronize(),
       pool: {
         execute: async (_key, execution, options) =>
@@ -173,6 +174,8 @@ export class ManagedPythonRoom {
     let failure: string | undefined;
     const handle = (line: string) => {
       if (!line) return;
+      if (result !== undefined || failure !== undefined)
+        throw new Error("Python provider output continued after its result");
       const event = JSON.parse(line) as {
         type?: string;
         result?: PythonExecutionResult;
@@ -194,6 +197,9 @@ export class ManagedPythonRoom {
         }
       }
       handle(buffered + decoder.decode());
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      throw error;
     } finally {
       reader.releaseLock();
     }

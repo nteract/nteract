@@ -187,8 +187,8 @@ export async function createCelldRuntime(
       install: (payload) => packageOperation("install", payload),
       /**
        * `onLive`, when given, receives validated live events while the cell
-       * runs: {type:"stream", name, text}, {type:"boundary"} or
-       * {type:"live_stopped"}. They are advisory; the resolved result stays the
+       * runs: {type:"stream", name, text}, {type:"clear", wait},
+       * {type:"boundary"} or {type:"live_stopped"}. They are advisory; the resolved result stays the
        * authoritative, validated batch.
        */
       async execute(execution, { onLive } = {}) {
@@ -255,6 +255,7 @@ export async function createCelldRuntime(
           let result;
           const handle = (line) => {
             if (!line) return;
+            if (result !== undefined) throw new Error("Python output continued after its result");
             if (line.length > maxOutputBytes + 64) throw new Error("Python output limit exceeded");
             const event = JSON.parse(line);
             if (event?.type === "result") {
@@ -262,19 +263,23 @@ export async function createCelldRuntime(
               return;
             }
             if (!live) return;
+            // Every live event costs budget, so empty or structural events
+            // cannot create unbounded work downstream.
+            liveBytes += 64 + (typeof event?.text === "string" ? event.text.length : 0);
+            if (liveBytes > MAX_LIVE_BYTES) {
+              live = false;
+              safely(deliver, { type: "live_stopped" });
+              return;
+            }
             if (event?.type === "stream") {
               if (
                 (event.name !== "stdout" && event.name !== "stderr") ||
                 typeof event.text !== "string"
               )
                 throw new Error("Invalid live Python output");
-              liveBytes += event.text.length;
-              if (liveBytes > MAX_LIVE_BYTES) {
-                live = false;
-                safely(deliver, { type: "live_stopped" });
-                return;
-              }
               safely(deliver, { type: "stream", name: event.name, text: event.text });
+            } else if (event?.type === "clear") {
+              safely(deliver, { type: "clear", wait: event.wait === true });
             } else if (event?.type === "boundary" || event?.type === "live_stopped") {
               if (event.type === "live_stopped") live = false;
               safely(deliver, { type: event.type });
@@ -297,6 +302,9 @@ export async function createCelldRuntime(
               }
             }
             handle(buffered + decoder.decode());
+          } catch (error) {
+            await reader.cancel().catch(() => undefined);
+            throw error;
           } finally {
             reader.releaseLock();
           }

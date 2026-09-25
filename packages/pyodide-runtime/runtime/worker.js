@@ -135,15 +135,16 @@ export default {
         };
         streamOwnsBusy = true;
         void (async () => {
-          const pending = evaluate(payload.source, payload.execution_id, payload.cell_id, sink);
+          let pending;
           try {
+            pending = evaluate(payload.source, payload.execution_id, payload.cell_id, sink);
             const result = await pending;
             await writer.write(encoder.encode(`{"type":"result","result":${result}}\n`));
             await writer.close();
           } catch (error) {
             await writer.abort(error).catch(() => undefined);
           } finally {
-            pending.destroy();
+            pending?.destroy();
             busy = false;
             interruptRequested = false;
           }

@@ -97,7 +97,10 @@ def buffer_live(output):
         return
     if output["output_type"] != "stream":
         flush_live_stream(everything=True)
-        send_live({"type": "boundary"})
+        if output["output_type"] == "clear_output":
+            send_live({"type": "clear", "wait": bool(output.get("wait"))})
+        else:
+            send_live({"type": "boundary"})
         return
     if live_pending is not None and live_pending[0] != output["name"]:
         flush_live_stream(everything=True)

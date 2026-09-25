@@ -254,13 +254,15 @@ rather than to each `print` argument and newline.
 
 stdout and stderr also stream while a cell runs. The guest sends complete lines
 at its checkpoints (output writes, `time.sleep`, awaits); the runtime peer grows
-one live record per stream run in place and syncs it to connected peers without
-a storage checkpoint, at most every 150 ms. Rich outputs still arrive when the
-cell finishes, and before the execution becomes terminal the live records are
-replaced by the validated batch, so persisted state matches batch mode. Live
-updates stop after 64 KiB of text per execution; the batch still carries
-everything. A cell that never yields streams nothing until it ends. Widget comms
-are not implemented yet.
+live records in place and syncs them to connected peers at most every 150 ms,
+without its own storage checkpoint. Each live record stays below the inline
+content threshold (no blobs), and live records, document writes and buffered
+events are capped per execution; past those caps live updates stop and the
+batch still carries everything. `clear_output` clears live output too. Rich
+outputs arrive when the cell finishes. On success the validated batch replaces
+the live records before the execution becomes terminal; if the session fails
+mid-cell, the partial live output stays with the error. A cell that never
+yields streams nothing until it ends. Widget comms are not implemented yet.
 
 The deployment admits at most four interpreters and each authenticated compute
 owner may hold at most two sessions. The server's attach job identifies that
