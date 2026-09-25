@@ -524,6 +524,9 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
     /const getCurrentCloudRuntime = useCallback\(\(\) => liveRuntimeRef\.current, \[liveRuntimeRef\]\)/,
   );
   assert.match(sourceText, /onExecuteCell=\{handleCloudExecuteCell\}/);
+  // A running cell's "Stop execution" uses the same cancellable Interrupt.
+  assert.match(sourceText, /onInterruptKernel=\{handleCloudInterruptRuntime\}/);
+  assert.doesNotMatch(sourceText, /onInterruptKernel=\{\(\) => \{\}\}/);
   assert.match(
     sourceText,
     /canRequestCloudCellExecution \? handleCloudRequestExecuteCell : undefined/,

@@ -1997,7 +1997,9 @@ export function NotebookViewer({
                 onRequestExecuteCell={
                   canRequestCloudCellExecution ? handleCloudRequestExecuteCell : undefined
                 }
-                onInterruptKernel={() => {}}
+                // A running cell's Stop is the same owner-gated Interrupt as the
+                // toolbar (the button is inert when the cell cannot execute).
+                onInterruptKernel={handleCloudInterruptRuntime}
                 onDeleteCell={handleCloudDeleteCell}
                 onAddCell={handleCloudAddCell}
                 onMoveCell={handleCloudMoveCell}
