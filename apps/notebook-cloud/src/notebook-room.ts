@@ -1452,6 +1452,24 @@ export class NotebookRoom {
         peer.id,
       );
       if (!forwardedRuntimePeerId) {
+        // Interrupt with nothing attached (e.g. a replacement workstation is
+        // still connecting): accepted work would otherwise run as soon as the
+        // replacement attaches. Cancel it instead; nothing else changes.
+        if (
+          forwardedRequestAction === "interrupt_execution" &&
+          (await this.cancelUnstartedExecutions(notebookId))
+        ) {
+          this.sendFrameToPeer(
+            notebookId,
+            peer,
+            encodeJsonFrame(FrameType.RESPONSE, {
+              id: requestMetadata?.id,
+              result: "interrupt_sent",
+            }),
+          );
+          this.resetRejectedFrameStreak(peer);
+          return;
+        }
         this.rejectFrame(
           notebookId,
           peer,
@@ -2149,6 +2167,23 @@ export class NotebookRoom {
 
   private sendFailureCloseOptions(): PeerCloseOptions {
     return this.runtimePeerWatchSuppressed() ? { suppressRuntimePeerWatch: true } : {};
+  }
+
+  /** Returns true when there was accepted work to cancel. */
+  private async cancelUnstartedExecutions(notebookId: string): Promise<boolean> {
+    const materializer = this.materializerFor(notebookId);
+    if (typeof materializer.cancelUnstartedExecutions !== "function") return false;
+    const activity = await materializer.getRuntimeExecutionActivity?.();
+    if (activity && !activity.executing && activity.queueDepth === 0) return false;
+    const result = await materializer.cancelUnstartedExecutions();
+    if (!result.changed) return false;
+    this.deliverRoomHostFrames(notebookId, result);
+    await this.checkpointRoomHost(notebookId, materializer, "interrupt_without_runtime_peer");
+    cloudLog("info", "room.interrupt.cancelled_unstarted", {
+      notebook_id: notebookId,
+      outbound_frame_count: result.outbound.length,
+    });
+    return true;
   }
 
   private async forwardRequestToActiveRuntimePeer(

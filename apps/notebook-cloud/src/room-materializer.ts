@@ -139,6 +139,13 @@ export class RoomMaterializer {
     return this.withHost((host) => normalizeResult(host.reconcile_runtime_peer_gone(reason)));
   }
 
+  /// Interrupt with no runtime peer attached: cancel accepted work that never
+  /// ran, leaving kernel lifecycle and workstation attachment unchanged. See
+  /// `RoomHostHandle::cancel_unstarted_executions`.
+  async cancelUnstartedExecutions(): Promise<RoomHostFrameResult> {
+    return this.withHost((host) => normalizeResult(host.cancel_unstarted_executions()));
+  }
+
   async getRuntimeQueueDepth(): Promise<number> {
     return this.withHost((host) => Math.max(0, Math.trunc(host.get_runtime_queue_depth())));
   }

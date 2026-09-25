@@ -211,3 +211,62 @@ for (const [outcome, keepsSession] of [
     assert.equal(body.result, "interrupt_sent");
   });
 }
+for (const queued of [true, false]) {
+  test(`interrupt with no runtime peer attached ${queued ? "cancels accepted work" : "is rejected when nothing is pending"}`, async () => {
+    const room = new NotebookRoom(
+      {
+        id: { toString: () => "demo" },
+        storage: { get: async () => undefined, put: async () => {}, delete: async () => {} },
+        waitUntil: () => {},
+      },
+      {},
+    );
+    const sent = [];
+    const peer = {
+      id: "owner",
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:test&scope=owner"),
+      ),
+      socket: { send: (frame) => sent.push(new Uint8Array(frame)), close: () => {} },
+      connectedAt: new Date().toISOString(),
+      consecutiveRejectedFrames: 0,
+    };
+    room.peers.set(peer.id, peer);
+    let cancelled = 0;
+    let checkpoints = 0;
+    room.materializers.set("demo", {
+      // A bring-your-own workstation replacement is still connecting.
+      getWorkstationAttachment: async () => ({
+        workstation_id: "laptop",
+        runtime_session_id: "replacement",
+        status: "connecting",
+      }),
+      getRuntimeExecutionActivity: async () => ({ executing: false, queueDepth: queued ? 2 : 0 }),
+      cancelUnstartedExecutions: async () => {
+        cancelled++;
+        return { changed: true, outbound: [] };
+      },
+      checkpoint: async () => {
+        checkpoints++;
+      },
+    });
+    await room.handleMessage(
+      "demo",
+      peer,
+      encodeJsonFrame(FrameType.REQUEST, { id: "interrupt", action: "interrupt_execution" }),
+    );
+    const messages = sent.map((frame) => ({
+      type: frame[0],
+      body: JSON.parse(new TextDecoder().decode(frame.slice(1))),
+    }));
+    if (queued) {
+      assert.equal(cancelled, 1);
+      assert.ok(checkpoints >= 1, "the cancellation is persisted");
+      const response = messages.find((m) => m.type === FrameType.RESPONSE);
+      assert.equal(response.body.result, "interrupt_sent");
+    } else {
+      assert.equal(cancelled, 0);
+      assert.ok(messages.some((m) => m.body.type === "cloud_frame_rejected"));
+    }
+  });
+}
