@@ -35,6 +35,12 @@ CHECKPOINT_INTERVAL_S = 0.05
 CHECKPOINT_EVERY_WRITES = 128
 last_yield = float("-inf")
 writes_since_yield = 0
+# Live stream deltas (execute with stream=true). Only complete lines are sent,
+# at checkpoints and on the watcher tick; the final batch stays authoritative.
+MAX_LIVE_STREAM_BYTES = 256 * 1024
+live_sink = None
+live_pending = None
+live_sent_bytes = 0
 # Tasks currently suspended in a synchronous frame (JSPI). The watcher leaves
 # them alone: the frame raises KeyboardInterrupt itself when it resumes.
 suspended_tasks = set()
@@ -58,6 +64,53 @@ def suspend(awaitable):
     finally:
         if task is not None:
             suspended_tasks.discard(task)
+
+
+def send_live(event):
+    if live_sink is not None:
+        live_sink(json.dumps(event))
+
+
+def flush_live_stream(everything=False):
+    """Send buffered stream text up to the last newline (or all of it)."""
+    global live_pending, live_sent_bytes
+    if live_sink is None or live_pending is None:
+        return
+    name, text = live_pending
+    cut = len(text) if everything else text.rfind("\n") + 1
+    if cut <= 0:
+        return
+    chunk, rest = text[:cut], text[cut:]
+    live_pending = (name, rest) if rest else None
+    if live_sent_bytes + len(chunk) > MAX_LIVE_STREAM_BYTES:
+        # Stop live updates; the final batch still carries every output.
+        live_pending = None
+        stop_live()
+        return
+    live_sent_bytes += len(chunk)
+    send_live({"type": "stream", "name": name, "text": chunk})
+
+
+def buffer_live(output):
+    global live_pending
+    if live_sink is None:
+        return
+    if output["output_type"] != "stream":
+        flush_live_stream(everything=True)
+        send_live({"type": "boundary"})
+        return
+    if live_pending is not None and live_pending[0] != output["name"]:
+        flush_live_stream(everything=True)
+    name = output["name"]
+    previous = live_pending[1] if live_pending is not None else ""
+    live_pending = (name, previous + output["text"])
+
+
+def stop_live():
+    global live_sink
+    if live_sink is not None:
+        send_live({"type": "live_stopped"})
+    live_sink = None
 
 
 def honor_interrupt(context):
@@ -84,6 +137,7 @@ def checkpoint():
         return
     last_yield = now
     writes_since_yield = 0
+    flush_live_stream()
     if can_run_sync():
         suspend(nteract_control.turn())
     honor_interrupt(context)
@@ -94,6 +148,7 @@ def interruptible_sleep(seconds):
     if context is None or context["closed"]:
         return _blocking_sleep(seconds)
     honor_interrupt(context)
+    flush_live_stream()
     if can_run_sync():
         suspend(asyncio.sleep(seconds))
     else:
@@ -125,6 +180,7 @@ def emit(output):
             raise RuntimeError("Python output limit exceeded")
         output_bytes += size
         previous["text"] += output["text"]
+        buffer_live(output)
         checkpoint()
         return
     size = len(json.dumps(output).encode("utf-8"))
@@ -132,6 +188,7 @@ def emit(output):
         raise RuntimeError("Python output limit exceeded")
     output_bytes += size
     active_outputs.append(output)
+    buffer_live(output)
     checkpoint()
 
 
@@ -280,6 +337,7 @@ async def watch_interrupt(context, task):
     """Cancel the cell at its current await when Interrupt is requested."""
     while not task.done() and not context.get("body_done"):
         await asyncio.sleep(0.02)
+        flush_live_stream()
         if task.done() or context.get("body_done") or task in suspended_tasks:
             continue
         if nteract_control.consume():
@@ -295,8 +353,9 @@ def show_interrupt(shell, etype, evalue, tb, tb_offset=None):
         shell._showtraceback(etype, evalue, [])
 
 
-async def evaluate(source, execution_id, cell_id):
+async def evaluate(source, execution_id, cell_id, sink=None):
     global active_outputs, active_execution, output_bytes, last_yield, writes_since_yield
+    global live_sink, live_pending, live_sent_bytes
     if active_execution is not None:
         raise RuntimeError("Python session is already executing")
     execution = {
@@ -311,6 +370,9 @@ async def evaluate(source, execution_id, cell_id):
     context = {"execution": execution, "closed": False, "interrupted": False}
     token = output_context.set(context)
     output_bytes = 0
+    live_sink = sink
+    live_pending = None
+    live_sent_bytes = 0
     # The first output of each cell is a checkpoint.
     last_yield = float("-inf")
     writes_since_yield = 0
@@ -360,6 +422,8 @@ async def evaluate(source, execution_id, cell_id):
         output_context.reset(token)
         active_outputs = None
         active_execution = None
+        live_sink = None
+        live_pending = None
         nteract_control.consume()
     return json.dumps({**execution, "success": success, "outputs": outputs})
 

@@ -52,7 +52,7 @@ export class SessionPool {
           return {
             runtime: {
               info: runtime.info,
-              execute: (execution) => runtime.execute(execution),
+              execute: (execution, options) => runtime.execute(execution, options),
               interrupt: (options) =>
                 typeof runtime.interrupt === "function"
                   ? runtime.interrupt(options)
@@ -176,7 +176,7 @@ export class SessionPool {
     return session.ready;
   }
 
-  async execute(key, execution) {
+  async execute(key, execution, options) {
     const session = this.#sessions.get(key);
     if (!session) throw new Error("Session expired; allocate a new runtime session");
     await session.ready;
@@ -192,7 +192,7 @@ export class SessionPool {
       throw new Error("Session execution limit reached; restart");
     session.executions.add(execution.execution_id);
     session.busy = true;
-    const running = session.runtime.execute(execution);
+    const running = session.runtime.execute(execution, options);
     session.running = running;
     try {
       const result = await running;

@@ -117,3 +117,56 @@ test("private /interrupt is identity-scoped and never releases the session", asy
   assert.equal(pool.inspect(JSON.stringify(["alice", "n", "s"])).phase, "ready");
   await pool.close();
 });
+
+test("streamed /execute forwards live events and ends with the result or an error", async () => {
+  let fail = false;
+  const pool = new SessionPool({
+    maxSessions: 1,
+    warmCount: 0,
+    create: async () => ({
+      info: {},
+      execute: async (execution, options) => {
+        options?.onLive?.({ type: "stream", name: "stdout", text: "tick\n" });
+        if (fail) throw new Error("boom");
+        return { execution_id: execution.execution_id, success: true, outputs: [] };
+      },
+      dispose: async () => {},
+    }),
+  });
+  const service = createProviderService(pool);
+  const identity = { ownerPrincipal: "alice", notebookId: "n", sessionId: "s" };
+  const request = (path, input) =>
+    service.fetch(
+      new Request("https://private.invalid" + path, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    );
+  await request("/open", identity);
+  const lines = async (response) =>
+    (await response.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+  const streamed = await request("/execute", {
+    ...identity,
+    execution: { cell_id: "c", execution_id: "e1" },
+    stream: true,
+  });
+  assert.equal(streamed.headers.get("content-type"), "application/x-ndjson");
+  const events = await lines(streamed);
+  assert.deepEqual(events[0], { type: "stream", name: "stdout", text: "tick\n" });
+  assert.equal(events.at(-1).type, "result");
+  assert.equal(events.at(-1).result.execution_id, "e1");
+  fail = true;
+  const failed = await lines(
+    await request("/execute", {
+      ...identity,
+      execution: { cell_id: "c", execution_id: "e2" },
+      stream: true,
+    }),
+  );
+  assert.equal(failed.at(-1).type, "error");
+  assert.match(failed.at(-1).error, /boom/);
+  await pool.close();
+});

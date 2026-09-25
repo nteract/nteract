@@ -260,6 +260,35 @@ test(
       );
       assert.equal(control.requested, false, "completion clears the request");
     });
+    await t.test("live mode sends complete stream lines and keeps the batch", async () => {
+      python.runPython("CHECKPOINT_EVERY_WRITES = 1");
+      t.after(() => python.runPython("CHECKPOINT_EVERY_WRITES = 128"));
+      const events = [];
+      const executionId = `attempt-${++sequence}`;
+      const source = "print('a')\nprint('b', end='')\ndisplay('x')\nprint('c')";
+      const pending = evaluate(source, executionId, "cell", (line) =>
+        events.push(JSON.parse(line)),
+      );
+      let result;
+      try {
+        result = validateExecutionResult(JSON.parse(await pending), executionId, {
+          cellId: "cell",
+          sourceHash: "sha256:" + createHash("sha256").update(source).digest("hex"),
+        });
+      } finally {
+        pending.destroy();
+      }
+      assert.deepEqual(events, [
+        { type: "stream", name: "stdout", text: "a\n" },
+        { type: "stream", name: "stdout", text: "b" },
+        { type: "boundary" },
+        { type: "stream", name: "stdout", text: "c\n" },
+      ]);
+      assert.deepEqual(
+        result.outputs.map((o) => (o.output_type === "stream" ? o.text : o.output_type)),
+        ["a\nb", "display_data", "c\n"],
+      );
+    });
     await t.test(
       "an Interrupt request left after a cell does not reach the next cell",
       async () => {

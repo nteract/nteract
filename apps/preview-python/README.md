@@ -250,8 +250,17 @@ output model. Display updates preserve output IDs and can update matching
 outputs from earlier executions. A deferred clear waits for the next output in
 that execution. Consecutive writes to the same stream coalesce into one output
 record, so the per-execution output-count limit applies to distinct outputs
-rather than to each `print` argument and newline. Outputs are still delivered as a batch when execution completes;
-progressive streaming and widget comms are not implemented yet.
+rather than to each `print` argument and newline.
+
+stdout and stderr also stream while a cell runs. The guest sends complete lines
+at its checkpoints (output writes, `time.sleep`, awaits); the runtime peer grows
+one live record per stream run in place and syncs it to connected peers without
+a storage checkpoint, at most every 150 ms. Rich outputs still arrive when the
+cell finishes, and before the execution becomes terminal the live records are
+replaced by the validated batch, so persisted state matches batch mode. Live
+updates stop after 64 KiB of text per execution; the batch still carries
+everything. A cell that never yields streams nothing until it ends. Widget comms
+are not implemented yet.
 
 The deployment admits at most four interpreters and each authenticated compute
 owner may hold at most two sessions. The server's attach job identifies that
