@@ -252,8 +252,14 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
     true,
   );
   while (tasks.size) await Promise.all(tasks);
-  assert.equal(calls.filter((call) => call.path === "/open").length, 2);
   const resumed = await materializer.getWorkstationAttachment();
+  assert.equal(calls.filter((call) => call.path === "/open").length, 1);
+  // Resume now selects a session without allocating compute. The room starts
+  // it after accepting execution intent; exercise that startup boundary
+  // explicitly here so this test keeps checking the stored billing owner.
+  await room.startManagedPython("coowner", resumed.runtime_session_id);
+  while (tasks.size) await Promise.all(tasks);
+  assert.equal(calls.filter((call) => call.path === "/open").length, 2);
   await room.markSelectedRuntimeSessionCompletedForIdle("coowner");
   assert.equal(
     sqlite
@@ -272,6 +278,9 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
   while (tasks.size) await Promise.all(tasks);
   const afterIdle = await materializer.getWorkstationAttachment();
   assert.notEqual(afterIdle.runtime_session_id, resumed.runtime_session_id);
+  assert.equal(calls.filter((call) => call.path === "/open").length, 2);
+  await room.startManagedPython("coowner", afterIdle.runtime_session_id);
+  while (tasks.size) await Promise.all(tasks);
   assert.equal(calls.filter((call) => call.path === "/open").length, 3);
   assert.ok(calls.every((call) => call.ownerPrincipal === "user:dev:bob"));
   for (const scope of ["owner", "runtime_peer"]) {

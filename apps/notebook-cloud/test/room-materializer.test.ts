@@ -699,6 +699,77 @@ describe("RoomMaterializer", () => {
     }
   });
 
+  for (const change of ["failure", "replacement"] as const)
+    it(`rejects managed execution if ${change} wins admission`, async () => {
+      const materializer = new RoomMaterializer("managed-admission", fakeState(), {} as Env);
+      const owner = NotebookHandle.create_bootstrap("user:dev:alice/browser:test");
+      const peer = {
+        id: "owner",
+        identity: authenticateDevRequest(
+          new Request(
+            "https://cloud.test/n/demo/sync?user=alice&operator=browser:test&scope=owner",
+          ),
+        ),
+      };
+      const attachment = {
+        workstation_id: "celld-preview-python",
+        display_name: "Python (sandboxed)",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "original",
+      };
+      try {
+        await syncMaterializerWithClient(materializer, peer, owner);
+        const cell = JSON.parse(owner.get_cells_json())[0];
+        await materializer.setWorkstationAttachment(attachment);
+        // The change is queued before admission, without awaiting it. Checking
+        // the selected session outside the host operation would miss this race.
+        const changing =
+          change === "failure"
+            ? materializer.transitionManagedPythonSession("original", "error", "startup failed")
+            : materializer.setWorkstationAttachment({
+                ...attachment,
+                runtime_session_id: "replacement",
+                status_message: "Waiting for Python (sandboxed) to accept the compute request.",
+              });
+        const frame = {
+          type: FrameType.REQUEST,
+          payload: new TextEncoder().encode(
+            JSON.stringify({ id: "first-play", action: "execute_cell", cell_id: cell.id }),
+          ),
+        };
+        await assert.rejects(
+          materializer.receiveFrame(peer, frame, { managedPythonSessionId: "original" }),
+          change === "failure" ? /startup failed/ : /session changed/,
+        );
+        await changing;
+        assert.equal(await materializer.getRuntimeQueueDepth(), 0);
+
+        await materializer.setWorkstationAttachment({
+          ...attachment,
+          runtime_session_id: "replacement",
+        });
+        // A later explicit Play may use the replacement; the rejected request
+        // was never turned into executable intent.
+        const accepted = await materializer.receiveFrame(
+          peer,
+          {
+            ...frame,
+            payload: new TextEncoder().encode(
+              JSON.stringify({ id: "later-play", action: "execute_cell", cell_id: cell.id }),
+            ),
+          },
+          { managedPythonSessionId: "replacement" },
+        );
+        assert.equal(accepted.runtime_state_changed, true);
+        assert.equal(await materializer.getRuntimeQueueDepth(), 1);
+      } finally {
+        owner.free();
+      }
+    });
+
   it("seeds a brand-new hosted room with one initial code cell", async () => {
     const state = fakeState();
     const materializer = new RoomMaterializer("demo", state, {} as Env);

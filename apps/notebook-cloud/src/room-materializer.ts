@@ -239,9 +239,13 @@ export class RoomMaterializer {
     );
   }
 
-  async receiveFrame(peer: RoomPeer, frame: TypedFrame): Promise<RoomHostFrameResult> {
+  async receiveFrame(
+    peer: RoomPeer,
+    frame: TypedFrame,
+    options: { managedPythonSessionId?: string } = {},
+  ): Promise<RoomHostFrameResult> {
     try {
-      return await this.receiveFrameWithCurrentHost(peer, frame);
+      return await this.receiveFrameWithCurrentHost(peer, frame, options);
     } catch (error) {
       if (!shouldRecoverReceiveFrame(frame, error)) {
         throw error;
@@ -260,10 +264,31 @@ export class RoomMaterializer {
   private async receiveFrameWithCurrentHost(
     peer: RoomPeer,
     frame: TypedFrame,
+    options: { managedPythonSessionId?: string },
   ): Promise<RoomHostFrameResult> {
     const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);
     return this.withHost((host) => {
+      if (options.managedPythonSessionId) {
+        const selected = normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json());
+        // Check and admit in the same host operation: a startup failure or
+        // replacement during request authorization must not leave orphaned work.
+        if (
+          selected?.workstation_id !== "celld-preview-python" ||
+          selected.runtime_session_id !== options.managedPythonSessionId ||
+          !["connecting", "ready"].includes(selected.status)
+        ) {
+          const failureReason =
+            selected?.workstation_id === "celld-preview-python" &&
+            selected.runtime_session_id === options.managedPythonSessionId &&
+            selected.status === "error"
+              ? selected.status_message
+              : null;
+          throw new Error(
+            failureReason || "Python session changed before execution. Run the cell again.",
+          );
+        }
+      }
       const result = normalizeResult(
         host.receive_peer_frame(
           peer.id,
