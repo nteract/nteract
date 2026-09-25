@@ -76,7 +76,12 @@ await build({
               .join("\n") +
             "export const wheels = " +
             JSON.stringify(
-              wheels.map(({ name, filename, sha256 }) => ({ name, filename, sha256 })),
+              wheels.map(({ name, version, filename, sha256 }) => ({
+                name,
+                version,
+                filename,
+                sha256,
+              })),
             ) +
             ";\n" +
             "export const libraries = [" +

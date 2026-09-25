@@ -1,4 +1,4 @@
-import { copyFile, cp, mkdir, readFile, readdir } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 
 /** Assemble immutable machine assets without exposing the build cache layout. */
 export async function assembleRuntimeAssets(destination) {
@@ -7,6 +7,12 @@ export async function assembleRuntimeAssets(destination) {
   await copyFile(new URL("runtime-lock.json", root), new URL("runtime-lock.json", destination));
   const wheels = JSON.parse(await readFile(new URL("dist/packages.json", root), "utf8"));
   await mkdir(new URL("wheels/", destination), { recursive: true });
+  // Public deployment facts, served with the existing immutable runtime assets.
+  // Reading package settings must not allocate or warm an interpreter.
+  await writeFile(
+    new URL("wheels/package-defaults.json", destination),
+    JSON.stringify(wheels.map(({ name, version }) => `${name}==${version}`).sort()),
+  );
   for (const { filename } of wheels) {
     await copyFile(
       new URL(`.scratch/packages/${filename}`, root),

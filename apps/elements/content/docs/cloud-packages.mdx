@@ -1,0 +1,26 @@
+---
+title: Cloud Python packages
+description: Saved requirements, installed packages, and cloud installation states.
+---
+
+import { CloudPackagesExample } from "@/components/cloud-packages-example";
+
+Cloud package installation uses the existing package rail, shared list rows,
+input and button primitives. The comparison shows the current read-only cloud
+list beside the proposed owner controls. Fixtures cover installation, failed
+installation, restoration after restart, disconnection, and a read-only peer.
+The width control constrains the package panel to 240 pixels for rail review.
+
+<CloudPackagesExample />
+
+Saved requirements come from NotebookDoc. The current session's observed package
+inventory and progress come from room-authored RuntimeStateDoc environment state.
+Installed packages never become user requirements automatically. Removal changes
+the next restart; it does not unload modules from a running interpreter.
+
+The package actions in this fixture update sample data only. The cloud host
+owns authorization, acquisition, installation, persistence, and restart.
+
+The originating installation work is Fábio Rosado's
+[PR #4291](https://github.com/nteract/nteract/pull/4291). This surface adapts its
+success/failure semantics to the shared notebook design.

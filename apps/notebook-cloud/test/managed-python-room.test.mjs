@@ -1,10 +1,487 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ManagedPythonRoom } from "../src/managed-python-room.ts";
+import { SessionPool } from "../../preview-python/src/session-pool.js";
+import { createProviderService } from "../../preview-python/src/provider-service.js";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 import { fixture, sync } from "./preview-python-helpers.mjs";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { encodeTypedFrame } from "../src/protocol.ts";
+
+for (const failurePhase of ["before_install", "after_install", "unconfirmed_install"])
+  test(`package publication failure preserves recovery state: ${failurePhase}`, async (t) => {
+    await initializeTestRuntimedWasm();
+    const { host } = await fixture(t);
+    host.set_workstation_attachment_json(
+      JSON.stringify({
+        workstation_id: "celld-preview-python",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "session",
+      }),
+    );
+    let installs = 0;
+    let executions = 0;
+    let failCheckpoint = false;
+    let injectFailure = false;
+    const pool = new SessionPool({
+      warmCount: 0,
+      create: async () => ({
+        info: { installed: [] },
+        install: async () => {
+          installs++;
+          return { status: "ready", installed: ["six==1.0"] };
+        },
+        execute: async () => {
+          executions++;
+          return { success: true, execution_count: 1, outputs: [] };
+        },
+        dispose: async () => {},
+      }),
+    });
+    const service = createProviderService(pool, undefined, {
+      resolve: async (requirements) => ({ requirements, wheels: [] }),
+    });
+    const states = [];
+    const materializer = {
+      getCloudPackageManifest: async () => null,
+      setCloudPackageState: async (sessionId, value) => {
+        states.push(value.managed_packages);
+        return host.set_cloud_package_state_json(sessionId, JSON.stringify(value));
+      },
+      syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveFrame: async (peer, frame) =>
+        host.receive_peer_frame(
+          peer.id,
+          peer.identity.principal,
+          peer.identity.actorLabel,
+          peer.identity.scope,
+          false,
+          encodeTypedFrame(frame.type, frame.payload),
+        ),
+      checkpoint: async () => {
+        if (failCheckpoint) {
+          failCheckpoint = false;
+          throw new Error("checkpoint unavailable");
+        }
+      },
+      removePeer: async (id) => host.remove_peer(id),
+    };
+    const runtime = new ManagedPythonRoom(
+      {
+        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+        PREVIEW_PYTHON_SESSIONS: {
+          idFromName: (name) => name,
+          get: () => ({
+            fetch: async (request) => {
+              const result = await service.fetch(request);
+              if (
+                injectFailure &&
+                failurePhase !== "before_install" &&
+                new URL(request.url).pathname === "/packages"
+              ) {
+                injectFailure = false;
+                failCheckpoint = true;
+                if (failurePhase === "unconfirmed_install")
+                  throw new Error("provider response was lost after install");
+              }
+              return result;
+            },
+          }),
+        },
+      },
+      materializer,
+      "notebook",
+      "user:dev:owner",
+      "session",
+      (result) => runtime.accept(result),
+    );
+    try {
+      await runtime.start();
+      injectFailure = true;
+      failCheckpoint = failurePhase === "before_install";
+      const manifest = { version: 1, pyodide: "0.28.3", requirements: [], wheels: [] };
+      if (failurePhase === "unconfirmed_install") {
+        const result = await runtime.installPackages(manifest, "add", "six");
+        assert.equal(result.status, "error");
+        assert.equal(
+          result.needs_restart,
+          true,
+          "failed error publication must preserve restart guidance",
+        );
+      } else {
+        await assert.rejects(
+          runtime.installPackages(manifest, "add", "six"),
+          /checkpoint unavailable/,
+        );
+      }
+      assert.equal(installs, failurePhase === "before_install" ? 0 : 1);
+      const inventory = await (
+        await service.fetch(
+          new Request("https://provider/packages/inventory", {
+            method: "POST",
+            body: JSON.stringify({
+              ownerPrincipal: "user:dev:owner",
+              notebookId: "notebook",
+              sessionId: "session",
+            }),
+          }),
+        )
+      ).json();
+      assert.deepEqual(inventory.installed, failurePhase === "before_install" ? [] : ["six==1.0"]);
+      assert.equal(states.at(-1).needs_restart, failurePhase === "unconfirmed_install");
+      assert.equal(
+        states.at(-1).phase,
+        "error",
+        "recovered publication clears the busy phase for retry",
+      );
+      await runtime.wake();
+      assert.equal(
+        executions,
+        failurePhase === "unconfirmed_install" ? 0 : 1,
+        "only unconfirmed provider work blocks accepted execution",
+      );
+    } finally {
+      await runtime.close();
+      await pool.close();
+    }
+  });
+
+for (const outcome of [
+  "restored",
+  "restore_failure",
+  "stale_lock",
+  "contention_success",
+  "contention_other_owner",
+  "contention_other_owner_cancel",
+  "contention_cancel",
+  "contention_timeout",
+]) {
+  test(
+    `managed startup preserves saved intent and reports package state: ${outcome}`,
+    { timeout: 10_000 },
+    async (t) => {
+      await initializeTestRuntimedWasm();
+      const { host } = await fixture(t);
+      const manifest = {
+        version: 1,
+        pyodide: outcome === "stale_lock" ? "old" : "0.28.3",
+        requirements: ["six>=1"],
+        wheels: [],
+      };
+      host.compare_set_cloud_package_manifest_json("null", JSON.stringify(manifest));
+      host.set_workstation_attachment_json(
+        JSON.stringify({
+          workstation_id: "celld-preview-python",
+          display_name: "Python",
+          provider: "celld-pyodide",
+          default_environment_label: "Python",
+          environment_policy: "curated",
+          status: "connecting",
+          runtime_session_id: "restore-session",
+        }),
+      );
+      const requests = [];
+      const states = [];
+      let runtime;
+      let waiting;
+      const waitingForCapacity = new Promise((resolve) => {
+        waiting = resolve;
+      });
+      let service, pool, releaseAdd, addResult, releaseAhead, aheadResult, aheadStarted;
+      if (outcome.startsWith("contention")) {
+        const gate = new Promise((resolve) => {
+          releaseAdd = resolve;
+        });
+        let entered;
+        const firstStarted = new Promise((resolve) => {
+          entered = resolve;
+        });
+        pool = new SessionPool({
+          warmCount: 0,
+          maxSessions: 4,
+          maxSessionsPerOwner: 2,
+          create: async () => ({
+            info: { installed: [] },
+            install: async () => ({ status: "ready", installed: ["six==1.0"] }),
+            dispose: async () => {},
+          }),
+        });
+        let enterAhead;
+        aheadStarted = new Promise((resolve) => {
+          enterAhead = resolve;
+        });
+        const aheadGate = new Promise((resolve) => {
+          releaseAhead = resolve;
+        });
+        service = createProviderService(pool, undefined, {
+          resolve: async (requirements) => {
+            if (requirements.includes("ahead")) {
+              enterAhead();
+              await aheadGate;
+            } else {
+              entered();
+              await gate;
+            }
+            return { requirements, wheels: [] };
+          },
+        });
+        const firstIdentity = {
+          ownerPrincipal: outcome.startsWith("contention_other_owner")
+            ? "user:dev:other"
+            : "user:dev:owner",
+          notebookId: "other-notebook",
+          sessionId: "add-session",
+        };
+        const post = (path, extra = {}) =>
+          service.fetch(
+            new Request("https://provider" + path, {
+              method: "POST",
+              body: JSON.stringify({ ...firstIdentity, ...extra }),
+            }),
+          );
+        await post("/open");
+        addResult = post("/packages", {
+          operation: "add",
+          requirement: "six",
+          manifest: null,
+          operation_id: "add",
+        });
+        t.after(async () => {
+          releaseAdd();
+          releaseAhead();
+          await addResult;
+          await aheadResult;
+          await pool.close();
+        });
+        await firstStarted;
+        t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+        if (outcome.startsWith("contention_other_owner")) {
+          const aheadIdentity = {
+            ownerPrincipal: "user:dev:ahead",
+            notebookId: "ahead",
+            sessionId: "ahead",
+          };
+          await post("/open", aheadIdentity);
+          aheadResult = post("/packages", {
+            ...aheadIdentity,
+            operation: "add",
+            requirement: "ahead",
+            manifest: null,
+            operation_id: "ahead",
+          });
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      }
+      const materializer = {
+        getCloudPackageManifest: async () => JSON.parse(host.get_cloud_package_manifest_json()),
+        setCloudPackageState: async (session, value) => {
+          states.push({ ...value.managed_packages, message: value.message });
+          if (value.message?.startsWith("Waiting for another")) waiting();
+          return host.set_cloud_package_state_json(session, JSON.stringify(value));
+        },
+        syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+        receiveFrame: async (peer, frame) =>
+          host.receive_peer_frame(
+            peer.id,
+            peer.identity.principal,
+            peer.identity.actorLabel,
+            peer.identity.scope,
+            false,
+            encodeTypedFrame(frame.type, frame.payload),
+          ),
+        checkpoint: async () => {},
+        removePeer: async (id) => host.remove_peer(id),
+      };
+      runtime = new ManagedPythonRoom(
+        {
+          NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+          PREVIEW_PYTHON_SESSIONS: {
+            idFromName: (name) => name,
+            get: () => ({
+              fetch: async (request) => {
+                const path = new URL(request.url).pathname;
+                requests.push({ path, ...(await request.clone().json()) });
+                if (service) {
+                  if (path === "/packages") {
+                    assert.equal(states.at(-1).phase, "restoring");
+                    assert.equal(
+                      states.at(-1).message,
+                      null,
+                      "a retry must clear waiting copy before acquisition and installation can begin",
+                    );
+                  }
+                  return service.fetch(request);
+                }
+                if (path === "/packages/inventory") return Response.json({ installed: [] });
+                if (path === "/packages")
+                  return Response.json(
+                    outcome === "restore_failure"
+                      ? { status: "error", error: "Download unavailable", needs_restart: false }
+                      : { status: "ready", installed: ["six==1.0"], manifest },
+                  );
+                return Response.json({ ok: true });
+              },
+            }),
+          },
+        },
+        materializer,
+        "notebook",
+        "user:dev:owner",
+        "restore-session",
+        (result) => runtime.accept(result),
+      );
+      if (service) {
+        // Exercise two notebook sessions through the real service, pool and
+        // admission lane; only the Python machine is a deterministic stub.
+        const started = runtime.start().then(
+          () => null,
+          (error) => error,
+        );
+        if (outcome.startsWith("contention_other_owner")) {
+          for (
+            let round = 0;
+            round < 100 && !requests.some((request) => request.path === "/packages");
+            round++
+          )
+            await new Promise((resolve) => setImmediate(resolve));
+          await new Promise((resolve) => setImmediate(resolve));
+          t.mock.timers.tick(90_000);
+          releaseAdd();
+          await addResult;
+          await aheadStarted;
+          t.mock.timers.tick(100_000); // Two legal active turns, past the room's180s retry window.
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(states.at(-1).phase, "restoring");
+          assert.equal(
+            requests.filter((request) => request.path === "/packages").length,
+            1,
+            "a retained request is not retried at180s",
+          );
+          const health = await (await service.fetch(new Request("https://provider/health"))).json();
+          assert.deepEqual(
+            { active: health.packages.active, waiting: health.packages.waiting },
+            { active: true, waiting: 1 },
+          );
+          if (outcome.endsWith("cancel")) {
+            const publications = states.length;
+            await runtime.close();
+            assert.match((await started).message, /expired/);
+            releaseAhead();
+            await aheadResult;
+            assert.equal(
+              states.length,
+              publications,
+              "queued cancellation cannot later publish ready",
+            );
+          } else {
+            releaseAhead();
+            await aheadResult;
+            assert.equal(await started, null);
+            assert.equal(states.at(-1).phase, "ready");
+            assert.equal(requests.filter((request) => request.path === "/packages").length, 1);
+            await runtime.close();
+          }
+          await pool.close();
+          return;
+        }
+        await waitingForCapacity;
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(states.at(-1).phase, "restoring");
+        assert.match(states.at(-1).message, /Waiting for another package installation/);
+        const health = await (await service.fetch(new Request("https://provider/health"))).json();
+        assert.equal(health.packages.active, true);
+        assert.equal(
+          health.packages.waiting,
+          0,
+          "same-owner retries do not occupy a second queue slot",
+        );
+        await runtime.wake();
+        assert.ok(!requests.some((request) => request.path === "/execute"));
+        if (outcome === "contention_success" || outcome === "contention_other_owner") {
+          releaseAdd();
+          assert.equal((await (await addResult).json()).status, "ready");
+          await new Promise((resolve) => setImmediate(resolve));
+          t.mock.timers.tick(1_000);
+          assert.equal(await started, null);
+          assert.equal(states.at(-1).phase, "ready");
+          const attempts = requests.filter((request) => request.path === "/packages");
+          assert.equal(attempts.length, 2);
+          assert.notEqual(attempts[0].operation_id, attempts[1].operation_id);
+          assert.equal(
+            states.at(-1).operation_id,
+            attempts[0].operation_id,
+            "logical progress remains correlated",
+          );
+          await runtime.close();
+        } else if (outcome === "contention_cancel") {
+          const publications = states.length;
+          await runtime.close();
+          assert.match((await started).message, /expired/);
+          t.mock.timers.tick(180_000);
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(requests.filter((request) => request.path === "/packages").length, 1);
+          assert.equal(
+            states.length,
+            publications,
+            "cancelled startup never publishes stale success or error",
+          );
+        } else {
+          for (let i = 0; i < 18; i++) {
+            t.mock.timers.tick(10_000);
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+          assert.match((await started).message, /Another package installation/);
+          assert.equal(states.at(-1).phase, "error");
+          assert.equal(states.at(-1).needs_restart, true);
+          assert.ok(!states.some((state) => state.phase === "ready"));
+          await runtime.close();
+        }
+        assert.deepEqual(JSON.parse(host.get_cloud_package_manifest_json()), manifest);
+        releaseAdd();
+        await addResult;
+        await pool.close();
+        return;
+      }
+      if (outcome === "restored") {
+        await runtime.start();
+        const before = { requests: requests.length, publications: states.length };
+        for (const operationId of ["", "x".repeat(129)])
+          await assert.rejects(
+            runtime.installPackages(manifest, "add", "six", operationId),
+            /Invalid package operation ID/,
+          );
+        assert.deepEqual(
+          { requests: requests.length, publications: states.length },
+          before,
+          "invalid client operation IDs cannot reach provider work or durable progress",
+        );
+      } else
+        await assert.rejects(
+          runtime.start(),
+          outcome === "stale_lock" ? /Saved packages cannot/ : /Download unavailable/,
+        );
+      assert.deepEqual(
+        JSON.parse(host.get_cloud_package_manifest_json()),
+        manifest,
+        "failed or successful restore cannot rewrite requirements",
+      );
+      assert.equal(states.at(-1).phase, outcome === "restored" ? "ready" : "error");
+      if (outcome === "stale_lock")
+        assert.ok(!requests.some((request) => request.path === "/packages"));
+      else {
+        const restore = requests.find((request) => request.path === "/packages");
+        assert.equal(restore.operation, "restore");
+        assert.deepEqual(restore.manifest, manifest);
+        assert.equal(states.at(-1).operation_id, restore.operation_id);
+      }
+      await runtime.close();
+    },
+  );
+}
 
 for (const staleQueue of [false, true])
   test(`managed room publishes execution and repairs stale queue: ${staleQueue}`, async (t) => {
@@ -47,6 +524,9 @@ for (const staleQueue of [false, true])
       },
     };
     const materializer = {
+      getCloudPackageManifest: async () => null,
+      setCloudPackageState: async (sessionId, value) =>
+        host.set_cloud_package_state_json(sessionId, JSON.stringify(value)),
       syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
       receiveFrame: async (peer, frame) =>
         host.receive_peer_frame(
@@ -136,6 +616,9 @@ for (const checkpointOutcome of ["complete", "close", "fail"])
       },
     };
     const materializer = {
+      getCloudPackageManifest: async () => null,
+      setCloudPackageState: async (sessionId, value) =>
+        host.set_cloud_package_state_json(sessionId, JSON.stringify(value)),
       syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
       receiveFrame: async (peer, frame) =>
         host.receive_peer_frame(

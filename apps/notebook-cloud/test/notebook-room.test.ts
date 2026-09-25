@@ -35,12 +35,481 @@ import {
   splitTypedFrame,
 } from "../src/protocol.ts";
 import { decodePresenceFrame, encodePresenceFrame, NotebookHandle } from "../src/runtimed-wasm.ts";
+import { ManagedPythonRoom } from "../src/managed-python-room.ts";
 import { RoomMaterializer, type RoomHostFrameResult } from "../src/room-materializer.ts";
 import { roomSummaryKey, type NotebookRoomSummary } from "../src/storage.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 
 before(async () => {
   await initializeTestRuntimedWasm();
+});
+
+describe("NotebookRoom owner package operations", () => {
+  it("fences execution before a managed startup entry exists", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    await state.drain();
+    const harness = roomHarness(room);
+    const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+    harness.materializers.set("demo", materializer as never);
+    await materializer.setWorkstationAttachment({
+      workstation_id: "celld-preview-python",
+      display_name: "Python",
+      provider: "celld-pyodide",
+      default_environment_label: "Python",
+      environment_policy: "curated",
+      status: "connecting",
+      runtime_session_id: "starting-session",
+    });
+    Object.assign(room, { ensureRuntimeForHostedExecution: async () => true });
+    const receive = materializer.receiveFrame.bind(materializer);
+    materializer.receiveFrame = async (peer, frame, expectedSession) => {
+      if (frame.type === FrameType.REQUEST)
+        await materializer.transitionManagedPythonSession(
+          "starting-session",
+          "error",
+          "startup failed before entry creation",
+        );
+      return receive(peer, frame, expectedSession);
+    };
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+      ),
+      connectedAt: new Date().toISOString(),
+      workstation: null,
+    };
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: peer.id,
+      identity: peer.identity,
+      connectedAt: peer.connectedAt,
+    });
+    harness.peers.set(peer.id, peer);
+    await room.webSocketMessage(
+      peer.socket,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({
+            id: "run",
+            action: "execute_cell",
+            cell_id: initialHostedCellIdForTest("demo"),
+          }),
+        ),
+      ),
+    );
+    await state.drain();
+    assert.equal(await materializer.getRuntimeQueueDepth(), 0);
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent.at(-1)!.slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.match(String(rejected.reason), /startup failed before entry creation/);
+  });
+
+  for (const outcome of ["interrupt", "revoked"] as const)
+    it(
+      `admits synced execution during saved-package restore: ${outcome}`,
+      { timeout: 3000 },
+      async () => {
+        const state = hibernatedState([]);
+        const db = new NotebookOwnerD1();
+        let ownerAccess = true;
+        const prepare = db.prepare.bind(db);
+        db.prepare = (query) => {
+          const statement = prepare(query);
+          if (query.includes("FROM workstation_attach_jobs"))
+            statement.first = async <T>() => ({ owner_principal: "user:dev:alice" }) as T;
+          if (query.includes("FROM notebook_acl"))
+            statement.all = async <T>() =>
+              d1OkResult<T>(
+                ownerAccess
+                  ? [
+                      {
+                        scope: "owner",
+                        subject_kind: "principal",
+                        subject: "user:dev:alice",
+                        notebook_id: "demo",
+                      } as T,
+                    ]
+                  : [],
+              );
+          return statement;
+        };
+        const requests: string[] = [];
+        let restoring!: () => void;
+        const restoreEntered = new Promise<void>((resolve) => {
+          restoring = resolve;
+        });
+        let finishRestore!: () => void;
+        const restoreReleased = new Promise<void>((resolve) => {
+          finishRestore = resolve;
+        });
+        const env = {
+          DB: db,
+          NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+          PREVIEW_PYTHON_SESSIONS: {
+            idFromName: (name: string) => name,
+            get: () => ({
+              fetch: async (request: Request) => {
+                const path = new URL(request.url).pathname;
+                requests.push(path);
+                if (path === "/packages/inventory") return Response.json({ installed: [] });
+                if (path === "/packages") {
+                  restoring();
+                  if (outcome === "revoked") {
+                    await restoreReleased;
+                    return Response.json({ status: "ready", installed: ["six==1.0"], manifest });
+                  }
+                  return Response.json({
+                    status: "error",
+                    code: "planner_busy",
+                    error: "Another package installation is active",
+                    needs_restart: false,
+                  });
+                }
+                return Response.json({ ok: true });
+              },
+            }),
+          },
+        } as unknown as Env;
+        const room = new NotebookRoom(state.state, env);
+        await state.drain();
+        const harness = roomHarness(room);
+        const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+        harness.materializers.set("demo", materializer as never);
+        await materializer.setWorkstationAttachment({
+          workstation_id: "celld-preview-python",
+          display_name: "Python",
+          provider: "celld-pyodide",
+          default_environment_label: "Python",
+          environment_policy: "curated",
+          status: "connecting",
+          runtime_session_id: "restore-session",
+        });
+        const manifest = { version: 1, pyodide: "0.28.3", requirements: ["six"], wheels: [] };
+        await materializer.compareSetCloudPackageManifest(null, manifest);
+        const socket = new FakeSocket();
+        const peer = {
+          id: "owner",
+          socket: socket.asCloudflareWebSocket(),
+          identity: authenticateDevRequest(
+            new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+          ),
+          connectedAt: new Date().toISOString(),
+          workstation: null,
+        };
+        socket.serializeAttachment({
+          notebookId: "demo",
+          peerId: peer.id,
+          identity: peer.identity,
+          connectedAt: peer.connectedAt,
+        });
+        harness.peers.set(peer.id, peer);
+        const owner = NotebookHandle.create_bootstrap(peer.identity.actorLabel);
+        let outbound = (await materializer.syncPeer(peer)).outbound;
+        for (let round = 0; round < 8 && outbound.length; round++) {
+          const next = [];
+          for (const frame of outbound) {
+            if (frame.peer_id !== peer.id || frame.frame_type !== FrameType.AUTOMERGE_SYNC)
+              continue;
+            for (const event of owner.receive_frame(
+              encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)),
+            )) {
+              if (event.reply)
+                next.push(
+                  ...(
+                    await materializer.receiveFrame(peer, {
+                      type: FrameType.AUTOMERGE_SYNC,
+                      payload: new Uint8Array(event.reply),
+                    })
+                  ).outbound,
+                );
+            }
+          }
+          outbound = next;
+        }
+        const cell = JSON.parse(owner.get_cells_json())[0];
+        owner.update_source(cell.id, "print('synced before execution')");
+        const heads = owner.get_heads_hex();
+        assert.equal(await materializer.waitForNotebookHeads(heads, 1), false);
+        const managedHarness = room as unknown as {
+          startManagedPython(notebookId: string, sessionId: string): Promise<void>;
+          managedPython: Map<string, { runtime: ManagedPythonRoom; ready: Promise<void> }>;
+        };
+        const starting = managedHarness
+          .startManagedPython("demo", "restore-session")
+          .catch((error: unknown) => error);
+        await restoreEntered;
+        const entry = managedHarness.managedPython.get("demo")!;
+        const runtime = entry.runtime;
+        const settled = entry.ready.catch((error: unknown) => error);
+        const request = (id: string, action: string, extra = {}) =>
+          encodeTypedFrame(
+            FrameType.REQUEST,
+            new TextEncoder().encode(JSON.stringify({ id, action, ...extra })),
+          );
+        const interruptResponse = () =>
+          socket.sent.find(
+            (frame) =>
+              frame[0] === FrameType.RESPONSE &&
+              JSON.parse(new TextDecoder().decode(frame.slice(1))).id === "interrupt",
+          );
+        try {
+          await restoreEntered;
+          await room.webSocketMessage(
+            peer.socket,
+            request("run", "execute_cell", { cell_id: cell.id, required_heads: heads }),
+          );
+          if (outcome === "interrupt")
+            await room.webSocketMessage(peer.socket, request("interrupt", "interrupt_execution"));
+          for (let round = 0; round < 10; round++)
+            await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(
+            await materializer.getRuntimeQueueDepth(),
+            0,
+            "later requests cannot overtake unsynced execution intent",
+          );
+          assert.ok(!requests.includes("/close"));
+          const sync = owner.flush_local_changes();
+          assert.ok(sync);
+          await room.webSocketMessage(
+            peer.socket,
+            encodeTypedFrame(FrameType.AUTOMERGE_SYNC, sync),
+          );
+          if (outcome === "revoked") {
+            for (
+              let round = 0;
+              round < 50 && (await materializer.getRuntimeQueueDepth()) === 0;
+              round++
+            )
+              await new Promise((resolve) => setImmediate(resolve));
+            assert.equal(
+              await materializer.getRuntimeQueueDepth(),
+              1,
+              "synced execution is queued while restore is pending",
+            );
+            assert.ok(!requests.includes("/execute"));
+            ownerAccess = false;
+            finishRestore();
+            await state.drain();
+            assert.match(String(await settled), /access was revoked/);
+            assert.equal((await materializer.getWorkstationAttachment())?.status, "error");
+            assert.equal(await materializer.getRuntimeQueueDepth(), 0);
+            assert.ok(requests.includes("/close"));
+            assert.ok(!requests.includes("/execute"), "revoked compute cannot run restored work");
+            return;
+          }
+          for (let round = 0; round < 50 && !interruptResponse(); round++)
+            await new Promise((resolve) => setImmediate(resolve));
+          assert.ok(
+            interruptResponse(),
+            "interrupt must complete while saved-package restoration is waiting",
+          );
+          assert.equal(
+            JSON.parse(new TextDecoder().decode(interruptResponse()!.slice(1))).result,
+            "interrupt_sent",
+          );
+          assert.ok(requests.includes("/close"));
+          assert.ok(
+            !requests.includes("/execute"),
+            "queued code cannot execute before restoration finishes",
+          );
+          assert.match(String(await settled), /expired|replaced/i);
+          assert.deepEqual(await materializer.getCloudPackageManifest(), manifest);
+        } finally {
+          finishRestore();
+          if (!requests.includes("/close")) await runtime.close();
+          await settled;
+          await starting;
+          await state.drain();
+          owner.free();
+        }
+      },
+    );
+
+  for (const outcome of ["success", "failure", "concurrent_edit", "interrupt"] as const) {
+    it(
+      `owns package completion after transport admission: ${outcome}`,
+      { timeout: 3000 },
+      async () => {
+        const state = hibernatedState([]);
+        const db = new NotebookOwnerD1();
+        const prepare = db.prepare.bind(db);
+        db.prepare = (query) => {
+          const statement = prepare(query);
+          if (query.includes("FROM notebook_acl"))
+            statement.all = async <T>() =>
+              d1OkResult<T>([
+                {
+                  scope: "owner",
+                  subject_kind: "principal",
+                  subject: "user:dev:alice",
+                  notebook_id: "demo",
+                } as T,
+              ]);
+          return statement;
+        };
+        const env = {} as Env;
+        env.DB = db;
+        const room = new NotebookRoom(state.state, env);
+        await state.drain();
+        const harness = roomHarness(room);
+        const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+        harness.materializers.set("demo", materializer as never);
+        await materializer.setWorkstationAttachment({
+          workstation_id: "celld-preview-python",
+          display_name: "Python",
+          provider: "celld-pyodide",
+          default_environment_label: "Python",
+          environment_policy: "curated",
+          status: "ready",
+          runtime_session_id: "package-session",
+        });
+        const baseline = { version: 1, pyodide: "0.28.3", requirements: ["six"], wheels: [] };
+        const next = { ...baseline, requirements: ["six", "requests"] };
+        await materializer.compareSetCloudPackageManifest(null, baseline);
+        const socket = new FakeSocket();
+        const peer = {
+          id: "owner",
+          socket: socket.asCloudflareWebSocket(),
+          identity: authenticateDevRequest(
+            new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+          ),
+          connectedAt: new Date().toISOString(),
+          workstation: null,
+        };
+        socket.serializeAttachment({
+          notebookId: "demo",
+          peerId: peer.id,
+          identity: peer.identity,
+          connectedAt: peer.connectedAt,
+        });
+        harness.peers.set(peer.id, peer);
+        let signalStarted!: () => void;
+        let finish!: (value: unknown) => void;
+        const started = new Promise<void>((resolve) => {
+          signalStarted = resolve;
+        });
+        const finished = new Promise<unknown>((resolve) => {
+          finish = resolve;
+        });
+        const runtime = {
+          ownerPrincipal: "user:dev:alice",
+          sessionId: "package-session",
+          presence: { peer_id: "runtime", connection_scope: "runtime_peer" },
+          installPackages: async () => {
+            signalStarted();
+            return finished;
+          },
+          wake: async () => {},
+          close: async () => {},
+          accept: () => {},
+        };
+        Object.assign(room, {
+          managedPython: new Map([["demo", { runtime, ready: Promise.resolve() }]]),
+        });
+        const request = (id: string, action: string, extra = {}) =>
+          encodeTypedFrame(
+            FrameType.REQUEST,
+            new TextEncoder().encode(JSON.stringify({ id, action, ...extra })),
+          );
+        await room.webSocketMessage(
+          peer.socket,
+          request("packages", "cloud_package_change", {
+            operation: "add",
+            requirement: "requests",
+          }),
+        );
+        await started;
+        assert.deepEqual(
+          await materializer.getCloudPackageManifest(),
+          baseline,
+          "ack is not a successful install",
+        );
+        if (outcome === "concurrent_edit")
+          await materializer.compareSetCloudPackageManifest(baseline, {
+            ...baseline,
+            requirements: ["owner-edit"],
+          });
+        if (outcome === "interrupt") {
+          await room.webSocketMessage(peer.socket, request("interrupt", "interrupt_execution"));
+          for (
+            let round = 0;
+            round < 10 &&
+            !socket.sent.some(
+              (frame) =>
+                frame[0] === FrameType.RESPONSE &&
+                JSON.parse(new TextDecoder().decode(frame.slice(1))).id === "interrupt",
+            );
+            round++
+          )
+            await new Promise((resolve) => setImmediate(resolve));
+          assert.ok(
+            socket.sent.some(
+              (frame) =>
+                frame[0] === FrameType.RESPONSE &&
+                JSON.parse(new TextDecoder().decode(frame.slice(1))).id === "interrupt",
+            ),
+            "interrupt must finish while install is still pending",
+          );
+        }
+        finish(
+          outcome === "failure"
+            ? { status: "error", error: "No compatible package", needs_restart: false }
+            : { status: "ready", manifest: next, installed: ["six==1", "requests==2"] },
+        );
+        await state.drain();
+        const responses = socket.sent
+          .filter((frame) => frame[0] === FrameType.RESPONSE)
+          .map((frame) => JSON.parse(new TextDecoder().decode(frame.slice(1))));
+        assert.equal(
+          responses.find((response) => response.id === "packages")?.result,
+          outcome === "success" ? "sync_environment_complete" : "sync_environment_failed",
+        );
+        assert.deepEqual(
+          ((await materializer.getCloudPackageManifest()) as typeof baseline).requirements,
+          outcome === "success"
+            ? next.requirements
+            : outcome === "concurrent_edit"
+              ? ["owner-edit"]
+              : baseline.requirements,
+        );
+        if (outcome === "success") {
+          await room.webSocketMessage(
+            peer.socket,
+            request("remove", "cloud_package_change", {
+              operation: "remove",
+              requirement: "requests",
+            }),
+          );
+          await state.drain();
+          assert.deepEqual(
+            ((await materializer.getCloudPackageManifest()) as typeof baseline).requirements,
+            ["six"],
+          );
+        }
+        if (outcome === "interrupt") {
+          await materializer.compareSetCloudPackageManifest(baseline, {
+            ...baseline,
+            pyodide: "old",
+            wheels: [{ malformed: true }],
+          });
+          await room.webSocketMessage(
+            peer.socket,
+            request("clear", "cloud_package_change", { operation: "clear", requirement: "" }),
+          );
+          await state.drain();
+          assert.deepEqual(
+            ((await materializer.getCloudPackageManifest()) as typeof baseline).requirements,
+            [],
+          );
+        }
+      },
+    );
+  }
 });
 
 describe("NotebookRoom presence rewrite", () => {
@@ -3880,6 +4349,130 @@ describe("NotebookRoom materialized sync routing", () => {
     });
   }
 
+  for (const failure of [
+    "needs_restart",
+    "needs_restart_checkpoint",
+    "needs_restart_publication",
+    "unconfirmed",
+  ] as const) {
+    it(`terminalizes queued work after ${failure} package installation and recovers without replay`, async (t) => {
+      let entered!: () => void;
+      let release!: () => void;
+      let terminalPublication = false;
+      const installing = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        packageResponse: async () => {
+          entered();
+          await held;
+          if (failure === "unconfirmed") throw new Error("provider connection lost");
+          terminalPublication = true;
+          return Response.json({
+            status: "error",
+            error: "Installation needs a restart",
+            needs_restart: true,
+          });
+        },
+      });
+      t.after(() => fixture.close());
+      const owner = await fixture.connect("owner");
+      await fixture.seed(owner);
+      fixture.releaseOpen(Response.json({ ok: true }));
+      await fixture.execute(owner);
+      await fixture.drain();
+      const result = owner.response("install");
+      await fixture.room.webSocketMessage(
+        owner.peer.socket,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({
+              id: "install",
+              action: "cloud_package_change",
+              operation: "add",
+              requirement: "six",
+            }),
+          ),
+        ),
+      );
+      await installing;
+      await fixture.execute(owner);
+      await owner.sync();
+      const queued = Object.entries(owner.runtimeState().executions).find(
+        ([, value]) => value.status === "queued",
+      );
+      assert.ok(queued, "execution is acknowledged while installation is pending");
+      if (failure === "needs_restart_checkpoint") {
+        const checkpoint = fixture.materializer.checkpoint.bind(fixture.materializer);
+        const transition = fixture.materializer.transitionManagedPythonSession.bind(
+          fixture.materializer,
+        );
+        t.mock.method(fixture.materializer, "checkpoint", async () => {
+          if (terminalPublication) throw new Error("checkpoint unavailable");
+          return checkpoint();
+        });
+        t.mock.method(
+          fixture.materializer,
+          "transitionManagedPythonSession",
+          (...args: Parameters<typeof transition>) => {
+            terminalPublication = false;
+            return transition(...args);
+          },
+        );
+      } else if (failure === "needs_restart_publication") {
+        t.mock.method(
+          fixture.materializer,
+          "setCloudPackageState",
+          async () => {
+            throw new Error("package state publication unavailable");
+          },
+          { times: 1 },
+        );
+      }
+      release();
+      assert.equal((await result).needs_restart, true);
+      await fixture.drain();
+      await owner.sync();
+      const failed = owner.runtimeState();
+      assert.equal(failed.executions[queued[0]].status, "cancelled");
+      assert.deepEqual(failed.queue.queued, []);
+      assert.equal(failed.workstation?.status, "error");
+      const ran = fixture.requests.filter((request) => request.path === "/execute").length;
+      await fixture.execute(owner);
+      await fixture.drain();
+      assert.match(String(owner.rejections().at(-1)?.reason), /restart|confirmed/i);
+      assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, ran);
+      await fixture.startReplacement();
+      await fixture.drain();
+      await owner.sync();
+      assert.equal(owner.runtimeState().workstation?.status, "ready");
+      assert.equal(owner.runtimeState().executions[queued[0]].status, "cancelled");
+      assert.equal(
+        fixture.requests.filter((request) => request.path === "/execute").length,
+        ran,
+        "recovery does not replay cancelled intent",
+      );
+      assert.equal(
+        (await fixture.materializer.transitionManagedPythonSession("managed-job", "ready"))
+          .ignored_stale,
+        true,
+      );
+      await assert.rejects(
+        fixture.materializer.compareSetCloudPackageManifest(
+          null,
+          { version: 1, pyodide: "0.28.3", requirements: ["six"], wheels: [] },
+          "managed-job",
+        ),
+        /session/i,
+      );
+      assert.equal(await fixture.materializer.getCloudPackageManifest(), null);
+    });
+  }
+
   it("terminalizes managed intent without starting compute for a revoked attach-job owner", async (t) => {
     const fixture = await managedPythonAdmissionFixture("connecting", { ownerAuthorized: false });
     t.after(() => fixture.close());
@@ -4536,6 +5129,27 @@ describe("NotebookRoom materialized sync routing", () => {
       const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
       assert.equal(rejected.type, "cloud_frame_rejected");
       assert.equal(rejected.reason, `${scope} cannot write request frames`);
+      await harness.handleMessage(
+        "demo",
+        peer,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({
+              id: "package-1",
+              action: "cloud_package_change",
+              operation: "add",
+              requirement: "six",
+            }),
+          ),
+        ),
+      );
+      assert.equal(materialized, 0, `${scope} package request reached room host`);
+      const packageRejected = decodeJsonPayload<Record<string, unknown>>(
+        socket.sent.at(-1)!.slice(1),
+      );
+      assert.equal(packageRejected.type, "cloud_frame_rejected");
+      assert.equal(packageRejected.reason, `${scope} cannot write request frames`);
     }
   });
 
@@ -5700,6 +6314,7 @@ async function managedPythonAdmissionFixture(
     ownerAuthorized?: boolean;
     holdOwnerLookup?: boolean;
     closeResponse?: Response;
+    packageResponse?: () => Promise<Response>;
   } = {},
 ) {
   const state = hibernatedState([]);
@@ -5758,7 +6373,7 @@ async function managedPythonAdmissionFixture(
           requests.push({ path, ...(await request.json()) });
           if (path === "/open") {
             enteredOpen();
-            return options.immediateOpen ?? opening;
+            return (options.immediateOpen ?? (await opening)).clone();
           }
           if (path === "/execute")
             return Response.json({
@@ -5767,6 +6382,7 @@ async function managedPythonAdmissionFixture(
               outputs: [{ output_type: "stream", name: "stdout", text: "ready once\n" }],
             });
           if (path === "/close" && options.closeResponse) return options.closeResponse;
+          if (path === "/packages" && options.packageResponse) return options.packageResponse();
           return Response.json({ ok: true });
         },
       }),
@@ -5849,6 +6465,11 @@ async function managedPythonAdmissionFixture(
           responses.set(requestId, resolve);
         }),
       runtimeState: () => client.get_runtime_state() as ManagedAdmissionRuntimeState,
+      rejections: () =>
+        socket.sent
+          .filter((frame) => frame[0] === FrameType.SESSION_CONTROL)
+          .map((frame) => decodeJsonPayload<Record<string, unknown>>(frame.slice(1)))
+          .filter((control) => control.type === "cloud_frame_rejected"),
       accepted: () =>
         socket.sent.some((frame) => {
           if (frame[0] !== FrameType.SESSION_CONTROL) return false;
@@ -5869,6 +6490,21 @@ async function managedPythonAdmissionFixture(
     ownerLookupEntered,
     releaseOwnerLookup,
     drain: state.drain,
+    startReplacement: async () => {
+      db.attachJobs.push({ ...db.attachJobs[0], id: "replacement-job", status: "accepted" });
+      const attachment = await materializer.getWorkstationAttachment();
+      const changed = await materializer.setWorkstationAttachment({
+        ...attachment!,
+        runtime_session_id: "replacement-job",
+        status: "connecting",
+      });
+      (
+        room as unknown as { deliverRoomHostFrames(n: string, result: RoomHostFrameResult): void }
+      ).deliverRoomHostFrames("demo", changed);
+      await (
+        room as unknown as { startManagedPython(n: string, s: string): Promise<void> }
+      ).startManagedPython("demo", "replacement-job");
+    },
     seed: async (connection: Awaited<ReturnType<typeof connect>>) => {
       connection.client.update_source(initialHostedCellIdForTest("demo"), "print('ready once')");
       const source = connection.client.flush_local_changes();
@@ -6479,3 +7115,132 @@ class FakeSocket {
     return this as unknown as CloudflareWebSocket;
   }
 }
+
+for (const race of ["failure", "replacement"] as const)
+  it(`rejects execution after managed ${race} during owner check`, { timeout: 3000 }, async () => {
+    const state = hibernatedState([]);
+    let ownerChecked!: () => void, releaseOwner!: () => void;
+    const checking = new Promise<void>((resolve) => {
+      ownerChecked = resolve;
+    });
+    const hold = new Promise<void>((resolve) => {
+      releaseOwner = resolve;
+    });
+    let first = true;
+    const db = new NotebookOwnerD1();
+    const prepare = db.prepare.bind(db);
+    db.prepare = (query) => {
+      const statement = prepare(query);
+      if (query.includes("FROM notebook_acl"))
+        statement.all = async <T>() => {
+          if (first) {
+            first = false;
+            ownerChecked();
+            await hold;
+          }
+          return d1OkResult<T>([
+            {
+              scope: "owner",
+              subject_kind: "principal",
+              subject: "user:dev:alice",
+              notebook_id: "demo",
+            } as T,
+          ]);
+        };
+      return statement;
+    };
+    const env = {
+      DB: db,
+      NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+      PREVIEW_PYTHON_SESSIONS: {
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async () => Response.json({}) }),
+      },
+    } as unknown as Env;
+    const room = new NotebookRoom(state.state, env);
+    await state.drain();
+    const harness = roomHarness(room);
+    const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+    harness.materializers.set("demo", materializer as never);
+    await materializer.setWorkstationAttachment({
+      workstation_id: "celld-preview-python",
+      display_name: "Python",
+      provider: "celld-pyodide",
+      default_environment_label: "Python",
+      environment_policy: "curated",
+      status: "connecting",
+      runtime_session_id: "restore-session",
+    });
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+      ),
+      connectedAt: new Date().toISOString(),
+      workstation: null,
+    };
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: peer.id,
+      identity: peer.identity,
+      connectedAt: peer.connectedAt,
+    });
+    harness.peers.set(peer.id, peer);
+    const runtime = {
+      ownerPrincipal: "user:dev:alice",
+      sessionId: "restore-session",
+      presence: { peer_id: "runtime", connection_scope: "runtime_peer" },
+      wake: async () => {},
+      close: async () => {},
+      accept: () => {},
+    };
+    Object.assign(room, {
+      managedPython: new Map([["demo", { runtime, ready: Promise.resolve() }]]),
+    });
+    await room.webSocketMessage(
+      peer.socket,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({
+            id: "run",
+            action: "execute_cell",
+            cell_id: initialHostedCellIdForTest("demo"),
+          }),
+        ),
+      ),
+    );
+    await checking;
+    if (race === "failure") {
+      await (
+        room as unknown as { failManagedPython(n: string, r: unknown, error: Error): Promise<void> }
+      ).failManagedPython("demo", runtime, new Error("saved package restore failed"));
+    } else {
+      const current = await materializer.getWorkstationAttachment();
+      await materializer.setWorkstationAttachment({
+        ...current!,
+        status: "ready",
+        runtime_session_id: "replacement",
+      });
+      Object.assign(room, {
+        managedPython: new Map([
+          ["demo", { runtime: { ...runtime, sessionId: "replacement" }, ready: Promise.resolve() }],
+        ]),
+      });
+    }
+    assert.equal(await materializer.getRuntimeQueueDepth(), 0);
+    releaseOwner();
+    await state.drain();
+    const attachment = await materializer.getWorkstationAttachment();
+    const queued = await materializer.getRuntimeQueueDepth();
+    assert.equal(attachment?.status, race === "failure" ? "error" : "ready");
+    assert.equal(queued, 0, "a late request cannot queue for a failed or replacement session");
+    const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent.at(-1)!.slice(1));
+    assert.equal(rejected.type, "cloud_frame_rejected");
+    assert.match(
+      String(rejected.reason),
+      race === "failure" ? /saved package restore failed/ : /session changed/,
+    );
+  });

@@ -606,6 +606,45 @@ impl NotebookDoc {
 // ── Typed metadata helpers ──────────────────────────────────────────
 
 impl NotebookDoc {
+    /// Read cloud package intent without parsing unrelated environment metadata.
+    pub fn get_pyodide_manifest(&self) -> Option<serde_json::Value> {
+        let meta = self.metadata_map_id()?;
+        let (automerge::Value::Object(ObjType::Map), runt) =
+            self.doc.get(&meta, "runt").ok().flatten()?
+        else {
+            return None;
+        };
+        read_json_value(&self.doc, &runt, "pyodide")
+    }
+
+    /// Change only the package leaf. Legacy or unparseable sibling values must
+    /// survive an install/removal, including values a typed snapshot omits.
+    pub fn set_pyodide_manifest(
+        &mut self,
+        value: &serde_json::Value,
+    ) -> Result<(), AutomergeError> {
+        let meta = match self.metadata_map_id() {
+            Some(meta) => meta,
+            None => self
+                .doc
+                .put_object(automerge::ROOT, "metadata", ObjType::Map)?,
+        };
+        let runt = match self.doc.get(&meta, "runt")? {
+            Some((automerge::Value::Object(ObjType::Map), runt)) => runt,
+            None => {
+                let runt = self.doc.put_object(&meta, "runt", ObjType::Map)?;
+                self.doc.put(&runt, "schema_version", "1")?;
+                runt
+            }
+            Some(_) => {
+                return Err(AutomergeError::InvalidObjId(
+                    "runt metadata must be a map; original value preserved".into(),
+                ))
+            }
+        };
+        update_json_at_key(&mut self.doc, &runt, "pyodide", value)
+    }
+
     /// Read the notebook metadata as a typed snapshot.
     ///
     /// Reads native Automerge keys (`kernelspec`, `language_info`, `runt`).
@@ -617,8 +656,15 @@ impl NotebookDoc {
             .and_then(|v| serde_json::from_value::<metadata::KernelspecSnapshot>(v).ok());
         let language_info = read_json_value(&self.doc, &meta_id, "language_info")
             .and_then(|v| serde_json::from_value::<metadata::LanguageInfoSnapshot>(v).ok());
-        let runt = read_json_value(&self.doc, &meta_id, "runt")
+        let mut runt = read_json_value(&self.doc, &meta_id, "runt")
             .and_then(|v| serde_json::from_value::<metadata::RuntMetadata>(v).ok());
+        // Package recovery must remain visible when a legacy sibling prevents
+        // typed environment parsing. This is a projection, never a writeback.
+        if let Some(manifest) = self.get_pyodide_manifest() {
+            runt.get_or_insert_with(Default::default)
+                .extra
+                .insert("pyodide".into(), manifest);
+        }
 
         let extras = scan_metadata_extras(&self.doc, &meta_id);
 
@@ -3359,6 +3405,51 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pyodide_manifest_preserves_unparseable_metadata_siblings() {
+        for runt in [
+            serde_json::json!({"uv": "{\"dependencies\":[\"old\"]}", "env_id": "keep", "vendor": [1, {"untyped": true}]}),
+            serde_json::json!({"schema_version": "1", "uv": "not valid typed metadata", "env_id": 7}),
+        ] {
+            let mut doc = NotebookDoc::new("packages");
+            let kernelspec = serde_json::json!({"name": false, "extra": "preserve"});
+            let language = serde_json::json!(["legacy", 12]);
+            doc.set_metadata_value("runt", &runt).unwrap();
+            doc.set_metadata_value("kernelspec", &kernelspec).unwrap();
+            doc.set_metadata_value("language_info", &language).unwrap();
+            let manifest = serde_json::json!({"requirements": ["six"], "wheels": []});
+            doc.set_pyodide_manifest(&manifest).unwrap();
+            assert_eq!(doc.get_pyodide_manifest(), Some(manifest.clone()));
+            assert_eq!(
+                doc.get_metadata_snapshot()
+                    .unwrap()
+                    .runt
+                    .extra
+                    .get("pyodide"),
+                Some(&manifest)
+            );
+            let mut expected = runt.clone();
+            expected["pyodide"] = manifest;
+            assert_eq!(doc.get_metadata_value("runt"), Some(expected));
+            doc.set_pyodide_manifest(&serde_json::Value::Null).unwrap();
+            let mut after_removal = doc.get_metadata_value("runt").unwrap();
+            after_removal.as_object_mut().unwrap().remove("pyodide");
+            assert_eq!(after_removal, runt);
+            assert_eq!(doc.get_metadata_value("kernelspec"), Some(kernelspec));
+            assert_eq!(doc.get_metadata_value("language_info"), Some(language));
+        }
+    }
+
+    #[test]
+    fn pyodide_manifest_refuses_to_replace_scalar_runt_metadata() {
+        let mut doc = NotebookDoc::new("packages");
+        doc.set_metadata_value("runt", &serde_json::json!("legacy opaque data"))
+            .unwrap();
+        let before = doc.save();
+        assert!(doc.set_pyodide_manifest(&serde_json::json!({})).is_err());
+        assert_eq!(doc.save(), before);
+    }
 
     #[test]
     fn test_empty_doc_has_bootstrap_skeleton() {

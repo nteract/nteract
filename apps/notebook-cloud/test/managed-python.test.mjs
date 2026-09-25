@@ -17,6 +17,7 @@ import {
   ensureManagedPythonWorkstation,
   MANAGED_PYTHON_WORKSTATION,
   managedPythonSessionOwner,
+  managedPythonPackageDefaults,
 } from "../src/managed-python.ts";
 import {
   registerWorkstation,
@@ -27,6 +28,39 @@ import {
 
 const sqlite = new DatabaseSync(":memory:");
 after(() => sqlite.close());
+
+test("included package settings read the shipped asset without starting or probing Python", async () => {
+  const requested = [];
+  const included = ["numpy==2.2.5", "pandas==2.2.3"];
+  const env = {
+    NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+    ASSETS: {
+      fetch: async (request) => {
+        requested.push(new URL(request.url).pathname);
+        return Response.json(included);
+      },
+    },
+    PREVIEW_PYTHON_SESSIONS: {
+      get() {
+        throw new Error("Package settings must not start Python");
+      },
+    },
+  };
+  assert.deepEqual(await managedPythonPackageDefaults(env), included);
+  assert.deepEqual(requested, ["/__preview-python-packages/package-defaults.json"]);
+  assert.deepEqual(
+    await managedPythonPackageDefaults({ ...env, NOTEBOOK_CLOUD_PYTHON_PROVIDER: undefined }),
+    [],
+  );
+  assert.equal(requested.length, 1);
+  assert.deepEqual(
+    await managedPythonPackageDefaults({
+      ...env,
+      ASSETS: { fetch: async () => new Response("missing", { status: 404 }) },
+    }),
+    [],
+  );
+});
 
 function database(sqlite) {
   return {
@@ -94,70 +128,78 @@ test("managed discovery is opt-in, owner-scoped, idempotent and preserves defaul
 
 for (const scope of ["owner", "editor", "viewer"])
   for (const selection of ["none", "notebook", "default"])
-    test(`lazy Python selection: scope=${scope}, existing=${selection}`, async () => {
-      const principal = `owner-${scope}-${selection}`;
-      const calls = [];
-      const env = {
-        DB: database(sqlite),
-        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
-        PREVIEW_PYTHON_SESSIONS: {
-          idFromName: (n) => n,
-          get: () => ({
-            fetch: async (request) => {
-              calls.push(new URL(request.url).pathname);
-              return Response.json({ provider: "celld-pyodide", version: 1 });
-            },
-          }),
-        },
-      };
-      await createNotebookWithOwnerAcl(env, principal, {
-        principal: principal,
-        actorLabel: "alice/browser",
-        scope: "owner",
-      });
-      if (selection === "default") {
-        await registerWorkstation(env, principal, {
-          workstationId: "explicit",
-          displayName: "Chosen compute",
+    for (const account of ["direct", "linked", "unrelated"])
+      test(`lazy Python selection: scope=${scope}, existing=${selection}, account=${account}`, async () => {
+        const principal = `owner-${scope}-${selection}-${account}`;
+        const transportPrincipal = account === "direct" ? principal : `transport-${principal}`;
+        const calls = [];
+        const env = {
+          DB: database(sqlite),
+          NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+          PREVIEW_PYTHON_SESSIONS: {
+            idFromName: (n) => n,
+            get: () => ({
+              fetch: async (request) => {
+                calls.push(new URL(request.url).pathname);
+                return Response.json({ provider: "celld-pyodide", version: 1 });
+              },
+            }),
+          },
+        };
+        await createNotebookWithOwnerAcl(env, principal, {
+          principal: principal,
+          actorLabel: "alice/browser",
+          scope: "owner",
         });
-        await setDefaultWorkstation(env, principal, "explicit");
-      }
-      const room = new NotebookRoom(
-        {
-          id: { toString: () => principal },
-          storage: { get: async () => undefined },
-          waitUntil: () => {},
-        },
-        env,
-      );
-      let selected = selection === "notebook" ? { workstation_id: "explicit" } : null;
-      room.materializers.set(principal, {
-        getWorkstationAttachment: async () => selected,
-        setWorkstationAttachment: async (value, options) => {
-          assert.equal(options.onlyIfAbsent, true);
-          selected = value;
-          return { changed: true, outbound: [] };
-        },
-      });
-      room.scheduleRoomHostCheckpoint = () => {};
-      await room.selectManagedPythonForOwner(principal, {
-        identity: { scope, principal: principal },
-      });
-      if (scope === "owner" && selection === "none") {
-        assert.equal(selected.workstation_id, MANAGED_PYTHON_WORKSTATION);
-        assert.equal(selected.status, "idle");
-        assert.equal(selected.runtime_session_id, null);
-      } else
-        assert.equal(
-          selected?.workstation_id ?? null,
-          selection === "notebook" ? "explicit" : null,
+        if (account === "linked")
+          await env.DB.prepare(
+            "INSERT INTO principal_account_links (transport_principal, canonical_principal, provider) VALUES (?, ?, ?)",
+          )
+            .bind(transportPrincipal, principal, "test")
+            .run();
+        if (selection === "default") {
+          await registerWorkstation(env, principal, {
+            workstationId: "explicit",
+            displayName: "Chosen compute",
+          });
+          await setDefaultWorkstation(env, principal, "explicit");
+        }
+        const room = new NotebookRoom(
+          {
+            id: { toString: () => principal },
+            storage: { get: async () => undefined },
+            waitUntil: () => {},
+          },
+          env,
         );
-      assert.ok(
-        calls.every((path) => path === "/health"),
-        "selection must not allocate Python",
-      );
-      if (scope !== "owner") assert.equal(calls.length, 0);
-    });
+        let selected = selection === "notebook" ? { workstation_id: "explicit" } : null;
+        room.materializers.set(principal, {
+          getWorkstationAttachment: async () => selected,
+          setWorkstationAttachment: async (value, options) => {
+            assert.equal(options.onlyIfAbsent, true);
+            selected = value;
+            return { changed: true, outbound: [] };
+          },
+        });
+        room.scheduleRoomHostCheckpoint = () => {};
+        await room.selectManagedPythonForOwner(principal, {
+          identity: { scope, principal: transportPrincipal },
+        });
+        if (scope === "owner" && selection === "none" && account !== "unrelated") {
+          assert.equal(selected.workstation_id, MANAGED_PYTHON_WORKSTATION);
+          assert.equal(selected.status, "idle");
+          assert.equal(selected.runtime_session_id, null);
+        } else
+          assert.equal(
+            selected?.workstation_id ?? null,
+            selection === "notebook" ? "explicit" : null,
+          );
+        assert.ok(
+          calls.every((path) => path === "/health"),
+          "selection must not allocate Python",
+        );
+        if (scope !== "owner") assert.equal(calls.length, 0);
+      });
 
 test("managed startup, failure and resume charge the attach-job owner rather than notebook creator", async () => {
   await initializeTestRuntimedWasm();

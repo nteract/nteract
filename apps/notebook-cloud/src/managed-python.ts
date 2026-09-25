@@ -34,6 +34,29 @@ export function managedPythonStub(env: Env) {
   );
 }
 
+/** Read only shipped package facts; discovery here never calls the interpreter provider. */
+export async function managedPythonPackageDefaults(env: Env): Promise<string[]> {
+  if (env.NOTEBOOK_CLOUD_PYTHON_PROVIDER !== "celld" || !env.ASSETS) return [];
+  try {
+    const response = await env.ASSETS.fetch(
+      new Request("https://assets.internal/__preview-python-packages/package-defaults.json"),
+    );
+    if (!response.ok) return [];
+    const value: unknown = await response.json();
+    if (
+      !Array.isArray(value) ||
+      value.length > 256 ||
+      value.some(
+        (spec) => typeof spec !== "string" || !/^[a-z0-9][a-z0-9-]*==[A-Za-z0-9.!+_-]+$/.test(spec),
+      )
+    )
+      return [];
+    return value;
+  } catch {
+    return [];
+  }
+}
+
 /** Caller supplies the server-authenticated canonical principal. No browser credentials enter Python. */
 export async function ensureManagedPythonWorkstation(env: Env, ownerPrincipal: string) {
   const provider = managedPythonStub(env);

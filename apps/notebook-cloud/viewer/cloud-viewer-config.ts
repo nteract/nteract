@@ -58,6 +58,9 @@ function loadConfig(): CloudViewerConfig {
     workstationsEndpoint: parsed.workstationsEndpoint,
     workstationDefaultEndpoint: parsed.workstationDefaultEndpoint,
     workstationAttachEndpoint: parsed.workstationAttachEndpoint,
+    includedPythonPackages: Array.isArray(parsed.includedPythonPackages)
+      ? parsed.includedPythonPackages.filter((spec): spec is string => typeof spec === "string")
+      : [],
     hostCapabilities: {
       canManageSharing: Boolean(parsed.hostCapabilities?.canManageSharing),
       canSubmitExecutionRequests: Boolean(parsed.hostCapabilities?.canSubmitExecutionRequests),

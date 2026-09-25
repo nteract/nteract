@@ -740,6 +740,41 @@ impl RoomHostHandle {
             .map_err(|error| JsError::new(&format!("serialize workstation attachment: {error}")))
     }
 
+    pub fn get_cloud_package_manifest_json(&self) -> String {
+        self.engine.cloud_package_manifest().to_string()
+    }
+
+    pub fn set_cloud_package_state_json(
+        &mut self,
+        session_id: &str,
+        value: &str,
+    ) -> Result<JsValue, JsError> {
+        let value =
+            serde_json::from_str(value).map_err(|_| JsError::new("invalid package state"))?;
+        let result = self
+            .engine
+            .set_cloud_package_state(session_id, value)
+            .map_err(room_host_js_error)?;
+        serialize_to_js(&result).map_err(|e| JsError::new(&format!("serialize package state: {e}")))
+    }
+
+    pub fn compare_set_cloud_package_manifest_json(
+        &mut self,
+        expected: &str,
+        next: &str,
+    ) -> Result<JsValue, JsError> {
+        let expected =
+            serde_json::from_str(expected).map_err(|_| JsError::new("invalid package baseline"))?;
+        let next =
+            serde_json::from_str(next).map_err(|_| JsError::new("invalid package manifest"))?;
+        let result = self
+            .engine
+            .compare_set_cloud_package_manifest(&expected, next)
+            .map_err(room_host_js_error)?;
+        serialize_to_js(&result)
+            .map_err(|e| JsError::new(&format!("serialize package result: {e}")))
+    }
+
     pub fn get_runtime_queue_depth(&self) -> usize {
         self.engine.runtime_queue_depth()
     }
