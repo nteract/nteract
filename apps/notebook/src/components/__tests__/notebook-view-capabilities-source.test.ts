@@ -28,7 +28,7 @@ describe("NotebookView shell capabilities", () => {
       /onDelete=\{canMutateCells \? \(\) => handleDeleteCell\(cell\.id\) : undefined\}/,
     );
     expect(sourceText).toMatch(
-      /onInsertCellAfter=\{canMutateCells \? \(\) => onAddCell\("markdown", cell\.id\) : undefined\}/,
+      /onInsertCellAfter=\{canMutateCells \? onInsertCellAfter : undefined\}/,
     );
     expect(sourceText).toMatch(/canMutateCells && onSetCellSourceHidden/);
     expect(sourceText).toMatch(/canMutateCells && onSetCellOutputsHidden/);

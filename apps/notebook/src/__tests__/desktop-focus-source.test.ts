@@ -9,6 +9,10 @@ describe("desktop focused cell source of truth", () => {
       "utf8",
     );
     const appSourceText = readFileSync(join(process.cwd(), "apps/notebook/src/App.tsx"), "utf8");
+    const insertCommandSourceText = readFileSync(
+      join(process.cwd(), "apps/notebook/src/lib/insert-cell-command.ts"),
+      "utf8",
+    );
 
     expect(hookSourceText).not.toMatch(/\[focusedCellId, setFocusedCellId\] = useState/);
     expect(hookSourceText).toMatch(/onFocusCell: focusCellInStore/);
@@ -18,7 +22,10 @@ describe("desktop focused cell source of truth", () => {
     expect(appSourceText).toMatch(
       /useNotebookCellUIStateBridge\(\{\s*searchQuery: globalFind\.query,\s*searchCurrentMatch: globalFind\.currentMatch,\s*\}\);/,
     );
-    expect(appSourceText).toMatch(/h\.handleAddCell\(type, getFocusedCellId\(\)\)/);
+    expect(appSourceText).toMatch(
+      /registerInsertCellCommand\(host\.commands, \(\) => commandHandlersRef\.current\.handleAddCell\)/,
+    );
+    expect(insertCommandSourceText).toMatch(/getAddCell\(\)\(type, getFocusedCellId\(\)\)/);
     expect(appSourceText).toMatch(/onFocusCell=\{handleNotebookViewFocus\}/);
   });
 });
