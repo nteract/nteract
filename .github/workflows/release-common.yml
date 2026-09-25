@@ -665,7 +665,7 @@ jobs:
         uses: ./.github/actions/install-tauri-cli
 
       - name: Install trusted-signing-cli
-        run: cargo binstall trusted-signing-cli --no-confirm --locked --force
+        run: cargo binstall trusted-signing-cli --version '=0.11.0' --no-confirm --locked --force
 
       - name: Set version in tauri.conf.json
         shell: pwsh
@@ -865,9 +865,9 @@ jobs:
         shell: bash
         run: |
           if command -v cargo-binstall >/dev/null 2>&1; then
-            cargo binstall trusted-signing-cli --no-confirm --locked --force
+            cargo binstall trusted-signing-cli --version '=0.11.0' --no-confirm --locked --force
           else
-            cargo install trusted-signing-cli --locked --force
+            cargo install trusted-signing-cli --version '=0.11.0' --locked --force
           fi
 
       - name: Set version in tauri.conf.json
