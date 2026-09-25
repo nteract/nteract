@@ -4349,10 +4349,16 @@ describe("NotebookRoom materialized sync routing", () => {
     });
   }
 
-  for (const failure of ["needs_restart", "unconfirmed"] as const) {
+  for (const failure of [
+    "needs_restart",
+    "needs_restart_checkpoint",
+    "needs_restart_publication",
+    "unconfirmed",
+  ] as const) {
     it(`terminalizes queued work after ${failure} package installation and recovers without replay`, async (t) => {
       let entered!: () => void;
       let release!: () => void;
+      let terminalPublication = false;
       const installing = new Promise<void>((resolve) => {
         entered = resolve;
       });
@@ -4364,6 +4370,7 @@ describe("NotebookRoom materialized sync routing", () => {
           entered();
           await held;
           if (failure === "unconfirmed") throw new Error("provider connection lost");
+          terminalPublication = true;
           return Response.json({
             status: "error",
             error: "Installation needs a restart",
@@ -4399,6 +4406,33 @@ describe("NotebookRoom materialized sync routing", () => {
         ([, value]) => value.status === "queued",
       );
       assert.ok(queued, "execution is acknowledged while installation is pending");
+      if (failure === "needs_restart_checkpoint") {
+        const checkpoint = fixture.materializer.checkpoint.bind(fixture.materializer);
+        const transition = fixture.materializer.transitionManagedPythonSession.bind(
+          fixture.materializer,
+        );
+        t.mock.method(fixture.materializer, "checkpoint", async () => {
+          if (terminalPublication) throw new Error("checkpoint unavailable");
+          return checkpoint();
+        });
+        t.mock.method(
+          fixture.materializer,
+          "transitionManagedPythonSession",
+          (...args: Parameters<typeof transition>) => {
+            terminalPublication = false;
+            return transition(...args);
+          },
+        );
+      } else if (failure === "needs_restart_publication") {
+        t.mock.method(
+          fixture.materializer,
+          "setCloudPackageState",
+          async () => {
+            throw new Error("package state publication unavailable");
+          },
+          { times: 1 },
+        );
+      }
       release();
       assert.equal((await result).needs_restart, true);
       await fixture.drain();

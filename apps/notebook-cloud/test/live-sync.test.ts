@@ -592,7 +592,9 @@ describe("cloud live sync", () => {
         byte_length: frame.byteLength - 1,
         timestamp: "2026-09-25T00:00:00Z",
       });
-      t.mock.timers.tick(720_001);
+      // Twelve minutes queued, thirty seconds finishing a prior cell, then
+      // acquisition and installation's separate two-minute/30-second limits.
+      t.mock.timers.tick(900_001);
       await nextMicrotask();
       assert.equal(settled, false, "queue plus active work cannot cause a false browser failure");
       const payload = new TextEncoder().encode(

@@ -1,11 +1,11 @@
 import { PackageOperationError } from "./package-resolver.js";
-import { PACKAGE_QUEUE_WAIT_MS } from "./package-limits.js";
+import { PACKAGE_MAX_WAITING, PACKAGE_QUEUE_WAIT_MS } from "./package-limits.js";
 
-const MAX_WAITING = 4;
 const MAX_COOLDOWN_OWNERS = 32;
 
-// Active package work is bounded to 120s. Keep FIFO positions through all
-// preceding turns (plus cleanup), instead of expiring every 20s and making
+// Acquisition has 120s and installation has a separate 30s wall deadline.
+// Keep FIFO positions through preceding turns and their cleanup allowance,
+// instead of expiring every 20s and making
 // restores race new adds during their retry backoff. No artifact buffers are
 // acquired while waiting; abort removes a queued entry immediately.
 
@@ -32,7 +32,7 @@ export class PackageAdmission {
     const now = this.#clock();
     for (const [principal, finished] of this.#lastFinished)
       if (now - finished >= 5_000) this.#lastFinished.delete(principal);
-    if (this.#owners.has(owner) || this.#queue.length >= MAX_WAITING) {
+    if (this.#owners.has(owner) || this.#queue.length >= PACKAGE_MAX_WAITING) {
       throw new PackageOperationError("planner_busy");
     }
     if (cooldown && this.#lastFinished.has(owner)) {

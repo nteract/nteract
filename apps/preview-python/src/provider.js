@@ -5,6 +5,7 @@ import { createProviderService } from "./provider-service.js";
 import { ensureHousekeepingAlarm, runHousekeepingAlarm } from "./housekeeping.js";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { PackageResolver } from "./package-resolver.js";
+import { PACKAGE_INSTALL_MS } from "./package-limits.js";
 import packages from "../dist/packages.json";
 const packageNames = new Set(packages.map((entry) => entry.filename));
 
@@ -27,7 +28,7 @@ export class PreviewPythonSessions {
     this.state = state;
     this.pool = new SessionPool({
       create: () => {
-        const pending = createCelldRuntime(env);
+        const pending = createCelldRuntime(env, { wallMs: PACKAGE_INSTALL_MS });
         // A clean replacement starts in the background after allocation.
         // Keep its I/O alive after the request that triggered warming ends.
         state.waitUntil(pending.catch(() => undefined));
@@ -38,7 +39,9 @@ export class PreviewPythonSessions {
       warmCount: 1,
       idleMs: PROVIDER_ORPHAN_IDLE_MS,
     });
-    this.packageResolver = new PackageResolver({ create: () => createCelldRuntime(env) });
+    this.packageResolver = new PackageResolver({
+      create: () => createCelldRuntime(env, { wallMs: PACKAGE_INSTALL_MS }),
+    });
     this.service = createProviderService(this.pool, state.storage, this.packageResolver);
   }
   async fetch(request) {

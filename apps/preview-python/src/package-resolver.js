@@ -1,4 +1,4 @@
-import { PACKAGE_OPERATION_MS } from "./package-limits.js";
+import { PACKAGE_ACQUISITION_MS } from "./package-limits.js";
 
 const MAX_WHEEL_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 24 * 1024 * 1024;
@@ -289,7 +289,7 @@ export class PackageResolver {
       cleanup ??= Promise.resolve().then(() => planner.dispose());
       return cleanup;
     };
-    const deadline = AbortSignal.timeout(PACKAGE_OPERATION_MS);
+    const deadline = AbortSignal.timeout(PACKAGE_ACQUISITION_MS);
     const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const terminate = () => {
       void disposePlanner().catch(() => {

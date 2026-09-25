@@ -119,10 +119,15 @@ Desktop environments continue to use uv, conda or pixi.
 
 Package operations share one active acquisition/install buffer set per deployment,
 with at most four FIFO waiters and one outstanding request per owner. Waiting
-owns no artifact buffers and can be cancelled. A queued turn can wait up to ten
-minutes under contention; active acquisition/install is limited to two minutes.
-The browser response deadline includes both budgets and thirty seconds for the
-final room checkpoint. The room's three-minute capacity retry window applies
+owns no artifact buffers and can be cancelled. Acquisition has a two-minute
+deadline, followed by installation's separate thirty-second wall deadline.
+A queued turn can wait up to twelve minutes: four preceding turns with thirty
+seconds each allowed for cleanup. The browser allows another two and a half
+minutes for active work and a minute for an already-running cell and the final
+room checkpoint, for a total of fifteen and a half minutes. Host termination or
+persistence stalls can still produce an unconfirmed result; these allowances
+do not establish a host-level completion guarantee.
+The room's three-minute capacity retry window applies
 only to rejected admission, not to a request already holding its FIFO place.
 Adds have a five-second per-owner cooldown with bounded recent-owner bookkeeping.
 The resolver can create one additional planner interpreter per deployment outside

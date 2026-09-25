@@ -351,9 +351,15 @@ export class ManagedPythonRoom {
         await this.publishPackageState("ready");
       } else {
         this.packagesBlocked = result.needs_restart;
-        if (this.packagesBlocked)
+        if (this.packagesBlocked) {
           this.handle.set_kernel_error("Package installation needs a restart");
-        await this.publishPackageState("error", result.error);
+          // The room must receive the terminal result even if publishing its
+          // explanation fails, so it can fence this session and cancel its queue.
+          await this.publishPackageState("error", result.error).catch(() => undefined);
+          this.assertPackageSession();
+        } else {
+          await this.publishPackageState("error", result.error);
+        }
       }
       return result;
     } catch (error) {

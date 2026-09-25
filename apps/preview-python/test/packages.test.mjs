@@ -16,6 +16,12 @@ import {
 } from "../src/package-service.js";
 import { SessionPool } from "../src/session-pool.js";
 import { PackageAdmission } from "../src/package-admission.js";
+import {
+  PACKAGE_ACQUISITION_MS,
+  PACKAGE_INSTALL_MS,
+  PACKAGE_MAX_WAITING,
+  PACKAGE_QUEUE_WAIT_MS,
+} from "../src/package-limits.js";
 
 const wheel = (name, dependencies = []) => ({
   name,
@@ -410,6 +416,32 @@ test("a long add cannot make a restore lose its FIFO turn to a later owner", asy
   assert.deepEqual(admission.status, { active: false, waiting: 0 });
 });
 
+test("the last FIFO waiter survives acquisition, installation and cleanup ahead of it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const admission = new PackageAdmission();
+  const entered = Array.from({ length: PACKAGE_MAX_WAITING + 1 }, deferred);
+  const held = Array.from({ length: PACKAGE_MAX_WAITING }, deferred);
+  let active = 0;
+  const turns = entered.map((started, index) =>
+    admission.run(`owner-${index}`, signal(), async () => {
+      assert.equal(++active, 1);
+      started.resolve();
+      if (held[index]) await held[index].promise;
+      active--;
+    }),
+  );
+  for (let index = 0; index < held.length; index++) {
+    await entered[index].promise;
+    // Each legal turn uses both deadlines plus some confirmed cleanup time.
+    t.mock.timers.tick(PACKAGE_ACQUISITION_MS + PACKAGE_INSTALL_MS + 15_000);
+    held[index].resolve();
+  }
+  await entered.at(-1).promise;
+  await Promise.all(turns);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(admission.status, { active: false, waiting: 0 });
+});
+
 test("queued timeout and cancellation release bounded owner reservations", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const admission = new PackageAdmission();
@@ -433,7 +465,7 @@ test("queued timeout and cancellation release bounded owner reservations", async
     }),
     { code: "planner_busy" },
   );
-  t.mock.timers.tick(600_000);
+  t.mock.timers.tick(PACKAGE_QUEUE_WAIT_MS);
   await expiry;
   assert.deepEqual(admission.status, { active: true, waiting: 0 });
   held.resolve();

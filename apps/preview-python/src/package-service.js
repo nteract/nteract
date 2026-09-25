@@ -3,7 +3,7 @@ import {
   validateLockedWheel,
   validateRequirements,
 } from "./package-resolver.js";
-import { PACKAGE_OPERATION_MS } from "./package-limits.js";
+import { PACKAGE_ACQUISITION_MS } from "./package-limits.js";
 
 export const PACKAGE_RUNTIME_VERSION = "0.28.3";
 export const packageName = (requirement) =>
@@ -78,7 +78,7 @@ function inventory(value) {
 /** Trusted provider operation, executed under the tenant pool's busy guard. */
 export async function installPackageManifest({ runtime, installed, signal }, input, resolver) {
   const sessionSignal = signal;
-  signal = AbortSignal.any([signal, AbortSignal.timeout(PACKAGE_OPERATION_MS)]);
+  signal = AbortSignal.any([signal, AbortSignal.timeout(PACKAGE_ACQUISITION_MS)]);
   const previous = packageManifest(input.manifest);
   let plan;
   if (input.operation === "restore") {
