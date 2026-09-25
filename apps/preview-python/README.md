@@ -89,9 +89,45 @@ The alarm arms its next sweep first and logs cleanup failures without rejecting
 the sweep; failure to store the next alarm still propagates.
 
 Provider bookkeeping tests do not qualify the native or hosted lifecycle.
-The separate [HTTP shared-promise ownership defect](https://github.com/nteract/nteract/issues/4296)
-and [stale-activation Storage/WebSocket authority defect](https://github.com/nteract/nteract/issues/4295)
-remain runtime qualification gates.
+Qualification must exercise the supported deployment's execution and cleanup
+paths, including the ownership boundaries tracked in
+[HTTP shared-promise ownership](https://github.com/nteract/nteract/issues/4296)
+and [stale-activation Storage/WebSocket authority](https://github.com/nteract/nteract/issues/4295).
+
+## Notebook packages
+
+The shared package rail shows the shipped Python packages and versions before
+starting compute. The build generates this inventory from the pinned wheel
+closure; it is not the full Pyodide package catalog. A ready interpreter verifies
+the shipped versions and reports its current installed inventory separately.
+
+Notebook owners can install supported PyPI packages into a running cloud Python
+session. The trusted provider resolves and downloads bounded, hash-verified
+pure-Python wheels. Installation runs offline in the notebook's interpreter;
+guest networking remains disabled. Native packages outside the shipped Pyodide
+environment, source builds, direct URLs and custom indexes are unsupported.
+
+Successful requests are saved in NotebookDoc with a resolved wheel manifest.
+Fresh compute restores those wheels before executing queued notebook cells.
+The rail distinguishes saved requirements, installed additions (including their
+dependencies), and included defaults. Removing a saved requirement changes the
+next fresh session; it does not unload a package from the running interpreter.
+Failed or uncertain installations do not save new requirements. An uncertain
+interpreter mutation requires a restart; cancelled executions are not replayed.
+Editors and viewers can inspect package state but cannot install or remove packages.
+Desktop environments continue to use uv, conda or pixi.
+
+The package integration test owns its celld process and temporary storage. It
+requires network access for the provider's PyPI acquisition and checks install,
+import/output, unsupported-package failure, restore into fresh compute and denied
+guest network access:
+
+```sh
+CELLD_BIN=/absolute/path/to/celld NTERACT_PACKAGE_NETWORK_TEST=1 \
+  node --test apps/preview-python/test/packages-celld.test.mjs
+```
+
+## Runtime qualification
 
 Run the real isolated-server test with a qualified experimental celld binary:
 

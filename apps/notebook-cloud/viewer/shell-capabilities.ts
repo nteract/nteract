@@ -201,7 +201,9 @@ export function cloudNotebookShellCapabilities({
     },
     packages: {
       canView: true,
-      canManage: false,
+      canManage:
+        connectionScope === "owner" &&
+        workstationAttachment?.workstation_id === "celld-preview-python",
     },
     sharing: {
       canManage: Boolean(hostCapabilities?.canManageSharing),

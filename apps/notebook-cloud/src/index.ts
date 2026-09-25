@@ -10,7 +10,11 @@ import type {
 import type { NotebookComputeSessionSummary } from "runtimed";
 import { projectNotebookWorkstationAttachmentFromClaim, type BlobRef } from "runtimed";
 import { NotebookRoom } from "./notebook-room.ts";
-import { ensureManagedPythonWorkstation, MANAGED_PYTHON_WORKSTATION } from "./managed-python.ts";
+import {
+  ensureManagedPythonWorkstation,
+  managedPythonPackageDefaults,
+  MANAGED_PYTHON_WORKSTATION,
+} from "./managed-python.ts";
 import {
   AuthError,
   BEARER_AUTH_TOKEN_PROTOCOL_PREFIX,
@@ -6088,6 +6092,7 @@ async function viewer(
     workstationsEndpoint: "/api/workstations",
     workstationDefaultEndpoint: "/api/workstations/default",
     workstationAttachEndpoint: `${notebookApiBasePath}/workstation-attachments`,
+    includedPythonPackages: await managedPythonPackageDefaults(env),
     hostCapabilities: {
       canManageSharing: true,
     },

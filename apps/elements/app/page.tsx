@@ -49,6 +49,12 @@ const catalogGroups = [
     title: "Shell",
     entries: [
       {
+        title: "Cloud Python packages",
+        description: "Package installation, saved requirements, and session state.",
+        href: "/docs/cloud-packages",
+        icon: PackageCheck,
+      },
+      {
         title: "Notebook shell capabilities",
         description: "Host capability facts for shared notebook chrome.",
         href: "/docs/notebook-shell-capabilities",

@@ -135,6 +135,7 @@ export interface CloudViewerConfig {
   workstationsEndpoint?: string;
   workstationDefaultEndpoint?: string;
   workstationAttachEndpoint?: string;
+  includedPythonPackages?: string[];
   hostCapabilities?: {
     canManageSharing?: boolean;
     canSubmitExecutionRequests?: boolean;

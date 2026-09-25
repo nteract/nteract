@@ -15,7 +15,7 @@ export async function preparePackages(root, runtime) {
     selected.set(name, entry);
     entry.depends.forEach(visit);
   }
-  ["ipython", "pandas"].forEach(visit);
+  ["ipython", "pandas", "micropip"].forEach(visit);
   const cache = resolve(root, ".scratch/packages");
   await mkdir(cache, { recursive: true });
   const wheels = [];
@@ -36,7 +36,13 @@ export async function preparePackages(root, runtime) {
     if (createHash("sha256").update(bytes).digest("hex") !== entry.sha256)
       throw new Error(`Package hash mismatch: ${name}`);
     await writeFile(path, bytes);
-    wheels.push({ name, filename: entry.file_name, sha256: entry.sha256, bytes });
+    wheels.push({
+      name,
+      version: entry.version,
+      filename: entry.file_name,
+      sha256: entry.sha256,
+      bytes,
+    });
   }
   const python = await loadPyodide({ indexURL: runtime + "/" });
   for (const wheel of wheels)

@@ -17,6 +17,7 @@ import {
   ensureManagedPythonWorkstation,
   MANAGED_PYTHON_WORKSTATION,
   managedPythonSessionOwner,
+  managedPythonPackageDefaults,
 } from "../src/managed-python.ts";
 import {
   registerWorkstation,
@@ -27,6 +28,39 @@ import {
 
 const sqlite = new DatabaseSync(":memory:");
 after(() => sqlite.close());
+
+test("included package settings read the shipped asset without starting or probing Python", async () => {
+  const requested = [];
+  const included = ["numpy==2.2.5", "pandas==2.2.3"];
+  const env = {
+    NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+    ASSETS: {
+      fetch: async (request) => {
+        requested.push(new URL(request.url).pathname);
+        return Response.json(included);
+      },
+    },
+    PREVIEW_PYTHON_SESSIONS: {
+      get() {
+        throw new Error("Package settings must not start Python");
+      },
+    },
+  };
+  assert.deepEqual(await managedPythonPackageDefaults(env), included);
+  assert.deepEqual(requested, ["/__preview-python-packages/package-defaults.json"]);
+  assert.deepEqual(
+    await managedPythonPackageDefaults({ ...env, NOTEBOOK_CLOUD_PYTHON_PROVIDER: undefined }),
+    [],
+  );
+  assert.equal(requested.length, 1);
+  assert.deepEqual(
+    await managedPythonPackageDefaults({
+      ...env,
+      ASSETS: { fetch: async () => new Response("missing", { status: 404 }) },
+    }),
+    [],
+  );
+});
 
 function database(sqlite) {
   return {

@@ -4,7 +4,9 @@ import "pyodide/pyodide.asm.js";
 import { loadPyodide } from "pyodide";
 import lockFileContents from "pyodide/pyodide-lock.json";
 import source from "./session.py";
+import packageSource from "./packages.py";
 import bootstrap from "nteract:python-bootstrap";
+import { includedPackageInventory } from "./package-inventory.js";
 
 // The supervisor serializes this session. The guard also rejects accidental
 // concurrent admission rather than mixing Python globals/output attribution.
@@ -35,19 +37,63 @@ async function initialize(env) {
   for (const [name, contents] of Object.entries(bootstrap))
     python.FS.writeFile(`/packages/site-packages/nteract_kernel_launcher/${name}`, contents);
   python.runPython(source);
-  return { python, evaluate: python.globals.get("evaluate") };
+  python.runPython(packageSource);
+  const inventory = python.globals.get("inventory");
+  const initial = inventory();
+  let included;
+  try {
+    included = includedPackageInventory(wheels, initial.toJs());
+  } finally {
+    initial.destroy();
+  }
+  return {
+    python,
+    evaluate: python.globals.get("evaluate"),
+    plan: python.globals.get("plan_packages"),
+    install: python.globals.get("install_packages"),
+    inventory,
+    included,
+  };
 }
+let role;
 export default {
   async fetch(request, env) {
-    const { python, evaluate } = await (ready ??= initialize(env));
-    if (new URL(request.url).pathname === "/ready") {
-      return Response.json({ instanceId, linearMemory: python._module.HEAPU8.byteLength });
+    const { python, evaluate, plan, install, inventory, included } = await (ready ??=
+      initialize(env));
+    const path = new URL(request.url).pathname;
+    if (path === "/ready") {
+      const packages = inventory();
+      try {
+        return Response.json({
+          instanceId,
+          linearMemory: python._module.HEAPU8.byteLength,
+          installed: packages.toJs(),
+          included,
+        });
+      } finally {
+        packages.destroy();
+      }
     }
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
     if (busy) return new Response("Session is executing", { status: 409 });
     busy = true;
     try {
       const payload = await request.json();
+      if (path === "/plan" || path === "/install") {
+        const nextRole = path === "/plan" ? "planner" : "tenant";
+        if (role && role !== nextRole)
+          return new Response("Session role mismatch", { status: 409 });
+        role = nextRole;
+        const pending = (path === "/plan" ? plan : install)(JSON.stringify(payload));
+        try {
+          return new Response(await pending, { headers: { "content-type": "application/json" } });
+        } finally {
+          pending.destroy();
+        }
+      }
+      if (path !== "/execute" || role === "planner")
+        return new Response("Not found", { status: 404 });
+      role = "tenant";
       if (
         typeof payload.source !== "string" ||
         typeof payload.execution_id !== "string" ||
