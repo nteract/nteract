@@ -512,6 +512,24 @@ test("cloud edit mode chrome renders through the shared shell component", () => 
   assert.match(sourceText, /onRestartRuntime=\{handleCloudRestartRuntime\}/);
   assert.match(sourceText, /onRunAllCells=\{handleCloudRunAllCells\}/);
   assert.match(sourceText, /onRestartAndRunAll=\{handleCloudRestartAndRunAll\}/);
+  // Every toolbar and cell execution handler comes from the cancellable
+  // command hook (behavior: viewer/__tests__/use-cloud-runtime-commands.test.tsx),
+  // so no inline continuation can outlive Interrupt, Restart, or teardown.
+  assert.match(
+    sourceText,
+    /const \{\s*executeCell: handleCloudExecuteCell,\s*requestExecuteCell: handleCloudRequestExecuteCell,\s*runAllCells: handleCloudRunAllCells,\s*startRuntime: handleCloudStartRuntime,\s*interruptRuntime: handleCloudInterruptRuntime,\s*restartRuntime: handleCloudRestartRuntime,\s*restartAndRunAll: handleCloudRestartAndRunAll,\s*\} = useCloudRuntimeCommands\(\{\s*createClient: createCloudNotebookClient,\s*getCurrentRuntime: getCurrentCloudRuntime,\s*onStartSelectedWorkstation,\s*canRequestCellExecution: canRequestCloudCellExecution,\s*roomKey: config\.notebookId,\s*\}\)/,
+  );
+  assert.match(
+    sourceText,
+    /const getCurrentCloudRuntime = useCallback\(\(\) => liveRuntimeRef\.current, \[liveRuntimeRef\]\)/,
+  );
+  assert.match(sourceText, /onExecuteCell=\{handleCloudExecuteCell\}/);
+  assert.match(
+    sourceText,
+    /canRequestCloudCellExecution \? handleCloudRequestExecuteCell : undefined/,
+  );
+  assert.doesNotMatch(sourceText, /\.flushAndWait\(\)/);
+  assert.doesNotMatch(sourceText, /client\.(runAllCells|executeCell|interruptKernel)\(/);
   assert.doesNotMatch(sourceText, /CloudNotebookEditModePlaceholder/);
   assert.doesNotMatch(sourceText, /CloudNotebookCommandToolbarPlaceholder/);
   assert.doesNotMatch(cssText, /cloud-edit-mode-placeholder/);
