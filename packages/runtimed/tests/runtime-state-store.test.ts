@@ -133,6 +133,17 @@ describe("RuntimeStateStore", () => {
     expect(seen.map((q) => q.executing?.execution_id ?? null)).toEqual([null, "e1", null]);
   });
 
+  it("promptRuns$ emits only when the set of running prompts changes", () => {
+    const store = new RuntimeStateStore();
+    const seen = collect(store.promptRuns$);
+
+    store.set(stateWith({ prompt_runs: { p1: "2026-09-23T10:00:00Z" } }));
+    store.set(stateWith({ prompt_runs: { p1: "2026-09-23T10:00:00Z" }, last_saved: "later" }));
+    store.set(stateWith({ prompt_runs: {} }));
+
+    expect(seen).toEqual([{}, { p1: "2026-09-23T10:00:00Z" }, {}]);
+  });
+
   it("workstation$ dedups by attachment cache key across daemon ticks", () => {
     const store = new RuntimeStateStore();
     const attachment = {

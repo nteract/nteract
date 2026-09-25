@@ -594,6 +594,13 @@ export function useNotebook() {
     [notebookController],
   );
 
+  const setCellMetadataAt = useCallback(
+    (cellId: string, path: string[], value: unknown) => {
+      notebookController.setCellMetadataAt(cellId, path, value);
+    },
+    [notebookController],
+  );
+
   const setCellOutputsHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       notebookController.setCellOutputsHidden(cellId, hidden);
@@ -718,6 +725,7 @@ export function useNotebook() {
     applyExecutionCountFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
+    setCellMetadataAt,
     flushSync,
     // CRDT bridge context deps
     getHandle,

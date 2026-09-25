@@ -497,6 +497,8 @@ fn request_required_scope(
         | NotebookRequest::Complete { .. }
         | NotebookRequest::InterruptExecution {}
         | NotebookRequest::ShutdownKernel {}
+        | NotebookRequest::RunPromptCell { .. }
+        | NotebookRequest::CancelPromptCell { .. }
         | NotebookRequest::RunAllCells { .. }
         | NotebookRequest::RunAllCellsGuarded { .. }
         | NotebookRequest::SaveNotebook { .. }
@@ -597,6 +599,30 @@ mod tests {
             blob_store,
             true,
         ))
+    }
+
+    #[test]
+    fn prompt_cell_requests_are_owner_only() {
+        let requests = [
+            NotebookRequest::RunPromptCell {
+                cell_id: "prompt-1".to_string(),
+            },
+            NotebookRequest::CancelPromptCell {
+                cell_id: "prompt-1".to_string(),
+            },
+        ];
+
+        for request in requests {
+            assert!(request_allowed_for_scope(&request, ConnectionScope::Owner));
+            assert!(!request_allowed_for_scope(
+                &request,
+                ConnectionScope::Editor
+            ));
+            assert!(!request_allowed_for_scope(
+                &request,
+                ConnectionScope::Viewer
+            ));
+        }
     }
 
     #[test]

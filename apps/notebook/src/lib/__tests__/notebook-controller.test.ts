@@ -72,6 +72,7 @@ function createHandle(): NotebookControllerHandle & {
     set_cell_outputs_hidden() {
       return true;
     },
+    update_cell_metadata_at_value: vi.fn(() => true),
     has_cells_map() {
       return true;
     },
@@ -137,6 +138,45 @@ describe("createNotebookController", () => {
     expect(handle.sources.get("cell-a")).toBe("old");
     expect(getCellById("cell-a")?.source).toBe("old");
     expect(engine.scheduleFlush).not.toHaveBeenCalled();
+  });
+
+  it("writes cell metadata at a path through the handle as a visibility mutation", () => {
+    const handle = createHandle();
+    const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const afterMutation = vi.fn();
+    const controller = createNotebookController({
+      getHandle: () => handle,
+      getEngine: () => engine,
+      canWriteCellSource: () => true,
+      canEditStructure: () => true,
+      afterMutation,
+    });
+
+    controller.setCellMetadataAt("cell-a", ["nteract", "context_exclude"], true);
+
+    expect(handle.update_cell_metadata_at_value).toHaveBeenCalledWith(
+      "cell-a",
+      ["nteract", "context_exclude"],
+      true,
+    );
+    expect(afterMutation).toHaveBeenCalledWith(handle, "visibility");
+    expect(engine.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not write cell metadata when visibility edits are denied", () => {
+    const handle = createHandle();
+    const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const controller = createNotebookController({
+      getHandle: () => handle,
+      getEngine: () => engine,
+      canWriteCellSource: () => true,
+      canEditStructure: () => false,
+    });
+
+    controller.setCellMetadataAt("cell-a", ["nteract", "context_exclude"], true);
+
+    expect(handle.update_cell_metadata_at_value).not.toHaveBeenCalled();
+    expect(engine.flush).not.toHaveBeenCalled();
   });
 
   it("lets hosts choose scheduled sync for structural mutations", () => {

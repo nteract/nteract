@@ -125,6 +125,11 @@ pub fn load_settings() -> SyncedSettings {
             .get("disable_auto_format")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.disable_auto_format),
+        agent_command: json
+            .get("agent_command")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or(defaults.agent_command),
         redact_env_values_in_outputs: json
             .get("redact_env_values_in_outputs")
             .and_then(|v| v.as_bool())

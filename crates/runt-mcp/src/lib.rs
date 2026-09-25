@@ -59,6 +59,9 @@ const MAX_AGENT_SLUG_LENGTH: usize = 64;
 /// rejoin wins the race with the child's first forwarded tool call.
 pub const OPERATOR_CLIENT_ENV_VAR: &str = "NTERACT_MCP_OPERATOR_CLIENT";
 pub const OPERATOR_SESSION_ENV_VAR: &str = "NTERACT_MCP_OPERATOR_SESSION";
+/// Limits this server to one local notebook, for agents the daemon starts to
+/// answer a prompt cell.
+pub const PIN_NOTEBOOK_ENV_VAR: &str = "NTERACT_MCP_PIN_NOTEBOOK";
 
 /// The operator suffix for an MCP client: `agent:<slug>:<session>`.
 ///
@@ -127,6 +130,9 @@ pub struct NteractMcp {
     /// enables strict admission for custom or shared alternate endpoints.
     local_runtime_admission: Option<LocalRuntimeAdmission>,
     attachments: Arc<attachments::AttachmentRegistry>,
+    /// The only local notebook this server may connect to, when the daemon
+    /// started it for a prompt cell (`NTERACT_MCP_PIN_NOTEBOOK`).
+    pinned_notebook: Option<String>,
     session: Arc<RwLock<Option<NotebookSession>>>,
     /// Explicit tool intent epoch used to invalidate daemon auto-rejoin work.
     /// The epoch is advanced while holding the active-session write lock so a
@@ -255,6 +261,7 @@ impl NteractMcp {
             }),
             local_runtime_admission: None,
             attachments: Arc::default(),
+            pinned_notebook: std::env::var(PIN_NOTEBOOK_ENV_VAR).ok(),
             session: Arc::new(RwLock::new(None)),
             session_intent_epoch: Arc::new(AtomicU64::new(0)),
             session_activation: Arc::new(SessionActivation::default()),
@@ -305,6 +312,12 @@ impl NteractMcp {
 
     /// Opt canonical clients into non-destructive local runtime admission.
     /// Construction is read-only; only local connect/create calls may start it.
+    #[cfg(test)]
+    pub(crate) fn with_pinned_notebook(mut self, notebook_id: &str) -> Self {
+        self.pinned_notebook = Some(notebook_id.to_string());
+        self
+    }
+
     pub fn with_local_runtime_admission(
         mut self,
         launch: Option<runtimed_client::startup::RuntimeLaunch>,
