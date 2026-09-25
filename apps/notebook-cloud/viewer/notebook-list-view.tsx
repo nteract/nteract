@@ -43,6 +43,7 @@ import { cloudResponseError } from "./cloud-response";
 import { clearCloudAppSession } from "./app-session";
 import {
   CloudNotebookDashboard,
+  CloudNotebookDashboardLoading,
   CloudNotebookDashboardSearchInput,
 } from "./cloud-notebook-dashboard-view";
 import {
@@ -143,6 +144,11 @@ export function CloudNotebookListView({
     signedIn,
     waitingForAppSession,
   } = hostedAuth;
+  // A cookie-only login has no browser identity until the session GET settles.
+  // Keep the dashboard shell while that request is pending, just as we do for
+  // the browser-token session exchange, instead of flashing the sign-in panel.
+  const waitingForSession =
+    waitingForAppSession || (!canFetchNotebookList && appSessionStatus.status === "loading");
   const appSessionWaitDeadline =
     appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
   const dashboardModel = useMemo(
@@ -168,7 +174,7 @@ export function CloudNotebookListView({
     );
     return notebookHome.activate({
       identityKey,
-      gate: canFetchNotebookList ? "open" : waitingForAppSession ? "waiting" : "closed",
+      gate: canFetchNotebookList ? "open" : waitingForSession ? "waiting" : "closed",
       seed,
       waitMs: Math.max(0, appSessionWaitDeadline),
       scheduler: asyncScheduler,
@@ -208,7 +214,7 @@ export function CloudNotebookListView({
     hasAppSession,
     identityKey,
     notebookHome,
-    waitingForAppSession,
+    waitingForSession,
   ]);
 
   const refreshList = () => notebookHome.refresh();
@@ -366,7 +372,7 @@ export function CloudNotebookListView({
             <span className="nb-brand-scope">{headerDetail}</span>
           </a>
           <span className="nb-header-spacer" />
-          {signedIn ? (
+          {signedIn || waitingForSession ? (
             <>
               <label className="nb-search">
                 <Search aria-hidden="true" />
@@ -381,7 +387,7 @@ export function CloudNotebookListView({
                   type="button"
                   variant="outline"
                   aria-label="Refresh notebooks"
-                  disabled={listState.kind === "loading"}
+                  disabled={!signedIn || listState.kind === "loading"}
                   onClick={refreshList}
                 >
                   <RotateCcw aria-hidden="true" />
@@ -389,7 +395,7 @@ export function CloudNotebookListView({
                 </Button>
                 <Button
                   type="button"
-                  disabled={createState === "starting"}
+                  disabled={!signedIn || createState === "starting"}
                   onClick={openCreateForm}
                 >
                   {createState === "starting" ? (
@@ -399,20 +405,24 @@ export function CloudNotebookListView({
                   )}
                   {createState === "starting" ? "Creating" : "New notebook"}
                 </Button>
-                <NotebookAccountMenu
-                  actor={currentUserActor}
-                  detail={displayName ?? headerDetail}
-                  accountDetail={currentUserAccountDetail}
-                >
-                  <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
-                    <Settings aria-hidden="true" />
-                    Settings
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={signOut}>
-                    <LogOut aria-hidden="true" />
-                    Sign out
-                  </DropdownMenuItem>
-                </NotebookAccountMenu>
+                {signedIn ? (
+                  <NotebookAccountMenu
+                    actor={currentUserActor}
+                    detail={displayName ?? headerDetail}
+                    accountDetail={currentUserAccountDetail}
+                  >
+                    <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                      <Settings aria-hidden="true" />
+                      Settings
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={signOut}>
+                      <LogOut aria-hidden="true" />
+                      Sign out
+                    </DropdownMenuItem>
+                  </NotebookAccountMenu>
+                ) : (
+                  <span className="nb-account-pending" aria-hidden="true" />
+                )}
               </div>
             </>
           ) : null}
@@ -479,17 +489,7 @@ export function CloudNotebookListView({
 
       <section className="cloud-notebook-list-content" aria-label="Notebook list">
         {listState.kind === "loading" ? (
-          <div className="nb-loading" role="status" aria-label="Loading notebooks">
-            <span className="sr-only">Loading notebooks</span>
-            {Array.from({ length: 6 }, (_, index) => (
-              <div key={index} className="nb-loading-row" aria-hidden="true">
-                <span className="nb-loading-bar" data-w="title" />
-                <span className="nb-loading-bar" data-w="meta" />
-                <span className="nb-loading-bar" data-w="meta" />
-                <span className="nb-loading-bar" data-w="time" />
-              </div>
-            ))}
-          </div>
+          <CloudNotebookDashboardLoading />
         ) : listState.kind === "signed_out" ? (
           <CloudNotebookSignedOutPanel authConfig={authConfig} authState={authState} />
         ) : listState.kind === "error" ? (

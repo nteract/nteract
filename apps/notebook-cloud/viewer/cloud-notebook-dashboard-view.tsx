@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import {
   ArrowRight,
   BookOpen,
@@ -46,6 +46,38 @@ interface CloudNotebookDashboardRenameState {
   title: string;
 }
 
+function CloudNotebookDashboardHeading({
+  summary,
+  children,
+}: {
+  summary: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="nb-pagehead">
+      <div>
+        <h1>Notebooks</h1>
+        <p>{summary}</p>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+export function CloudNotebookDashboardLoading() {
+  return (
+    <div className="cloud-dashboard">
+      <CloudNotebookDashboardHeading
+        summary={
+          <span role="status" aria-label="Loading notebooks">
+            Loading notebooks…
+          </span>
+        }
+      />
+    </div>
+  );
+}
+
 export function CloudNotebookDashboard({
   model,
   canRename,
@@ -91,20 +123,20 @@ export function CloudNotebookDashboard({
 
   return (
     <div className="cloud-dashboard">
-      <div className="nb-pagehead">
-        <div>
-          <h1>Notebooks</h1>
-          <p>
+      <CloudNotebookDashboardHeading
+        summary={
+          <>
             {cloudNotebookDashboardCountSummary(totalCount, model.loadedCount)} · {activeCount}{" "}
             active now
-          </p>
-        </div>
+          </>
+        }
+      >
         {view.showResultCount ? (
           <span className="nb-result-count" aria-live="polite">
             {view.resultCount} notebook{view.resultCount === 1 ? "" : "s"}
           </span>
         ) : null}
-      </div>
+      </CloudNotebookDashboardHeading>
 
       <CloudNotebookDashboardFilterBar
         filterGroups={view.filterGroups}
