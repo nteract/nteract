@@ -708,6 +708,17 @@ impl RoomHostHandle {
         self.engine.remove_peer(peer_id);
     }
 
+    /// Interrupt with no runtime peer attached: cancel accepted work that
+    /// never ran without touching lifecycle or attachment.
+    pub fn cancel_unstarted_executions(&mut self) -> Result<JsValue, JsError> {
+        let result = self
+            .engine
+            .cancel_unstarted_executions()
+            .map_err(room_host_js_error)?;
+        serialize_to_js(&result)
+            .map_err(|error| JsError::new(&format!("serialize room result: {error}")))
+    }
+
     pub fn reconcile_runtime_peer_gone(&mut self, reason: &str) -> Result<JsValue, JsError> {
         let result = self
             .engine
