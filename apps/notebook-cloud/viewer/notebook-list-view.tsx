@@ -186,12 +186,9 @@ export function CloudNotebookListView({
       authState,
       hasAppSession,
     );
-    // Automatic session updates can replace Retry too. Move focus before
-    // activate resets the list, while the focused button is still mounted.
-    if (retryButtonRef.current && retryButtonRef.current === document.activeElement) {
-      listContentRef.current?.focus({ preventScroll: true });
-    }
-    return notebookHome.activate({
+    const retryWasFocused =
+      retryButtonRef.current !== null && retryButtonRef.current === document.activeElement;
+    const deactivate = notebookHome.activate({
       identityKey,
       gate: canFetchNotebookList ? "open" : waitingForSession ? "waiting" : "closed",
       seed,
@@ -234,6 +231,12 @@ export function CloudNotebookListView({
         }),
       clear: clearCachedCloudNotebookListFromLocalStorage,
     });
+    // Activation resets unknown identities synchronously, before React
+    // replaces Retry. Same-identity refreshes keep the error and its focus.
+    if (retryWasFocused && notebookHome.snapshot.list.kind !== "error") {
+      listContentRef.current?.focus({ preventScroll: true });
+    }
+    return deactivate;
   }, [
     appSessionStatus.session,
     appSessionWaitDeadline,

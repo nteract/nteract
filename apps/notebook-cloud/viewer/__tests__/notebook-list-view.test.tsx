@@ -396,6 +396,45 @@ describe("CloudNotebookListView", () => {
     }
   });
 
+  it("keeps Retry focused when same-identity credentials change without replacing the error", async () => {
+    let authState: CloudPrototypeAuthState = {
+      mode: "dev",
+      token: "first-token",
+      user: "alice",
+      oidcClaims: null,
+      requestedScope: "owner",
+      problem: null,
+    };
+    const fetchMock = vi.fn(async () => new Response("Service unavailable", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = new CloudAuthStore({ readAuthState: () => authState });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      { readAppSessionStatus: () => new Promise<CloudAppSessionStatus>(() => {}) },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const retry = screen.getByRole("button", { name: "Retry" });
+      retry.focus();
+      await act(async () => {
+        authState = { ...authState, token: "renewed-token" };
+        store.refreshAuthState();
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("button", { name: "Retry" })).toBe(retry);
+      expect(document.activeElement).toBe(retry);
+    } finally {
+      dispose();
+    }
+  });
+
   it("turns persistent app-session waits into a retryable list error", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(JSON.stringify({ error: "session unavailable" }), {
