@@ -29,7 +29,9 @@ export function createProviderService(pool, storage, packageResolver) {
       }
       if (
         request.method !== "POST" ||
-        !["/open", "/execute", "/close", "/packages", "/packages/inventory"].includes(path)
+        !["/open", "/execute", "/close", "/interrupt", "/packages", "/packages/inventory"].includes(
+          path,
+        )
       ) {
         return new Response("Not found", { status: 404 });
       }
@@ -76,6 +78,9 @@ export function createProviderService(pool, storage, packageResolver) {
           return Response.json(path === "/open" ? { info: result } : { ok: true });
         }
         if (path === "/packages/inventory") return Response.json(pool.packageInventory(key));
+        // Cooperative Interrupt never releases the session; the room decides
+        // whether a timeout falls back to /close (host termination).
+        if (path === "/interrupt") return Response.json(await pool.interrupt(key));
         if (path === "/packages") {
           try {
             return Response.json(

@@ -38,6 +38,18 @@ test(
     python.runPython(
       "import sys, os; sys.path.insert(0, '/packages/site-packages'); os.environ['LD_LIBRARY_PATH'] = '/packages/site-packages'",
     );
+    // Stand-in for the guest worker's control module (runtime/worker.js).
+    const control = {
+      requested: false,
+      pending: () => control.requested,
+      consume: () => {
+        const pending = control.requested;
+        control.requested = false;
+        return pending;
+      },
+      turn: () => new Promise((resolve) => setTimeout(resolve, 0)),
+    };
+    python.registerJsModule("nteract_control", control);
     python.runPython(await readFile(new URL("runtime/session.py", root), "utf8"));
     const evaluate = python.globals.get("evaluate");
     t.after(() => evaluate.destroy());
@@ -179,5 +191,84 @@ test(
         ["stdout:a\n", "stderr:b\n", "stdout:c\n", "display_data", "stdout:e\n"],
       );
     });
+    // Without JSPI (plain Node), checkpoints cannot yield, so these set the
+    // request before the cell starts; the celld probe covers delivery mid-cell.
+    await t.test("Interrupt raises KeyboardInterrupt at an output checkpoint", async () => {
+      await run("kept = 41");
+      control.requested = true;
+      const interrupted = await run("print('before')\nkept = 0");
+      assert.equal(interrupted.success, false);
+      assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
+      // The interrupted assignment never ran; earlier state is preserved.
+      assert.equal(value(await run("kept")), "41");
+    });
+    await t.test("Interrupt at a time.sleep checkpoint keeps the namespace", async () => {
+      control.requested = true;
+      const interrupted = await run("import time\nkept = 1\ntime.sleep(0)\nkept = 2");
+      assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
+      assert.equal(value(await run("kept")), "1");
+    });
+    await t.test("Interrupt at an await cancels the cell as KeyboardInterrupt", async () => {
+      const running = run("import asyncio\nkept = 5\nawait asyncio.sleep(30)\nkept = 6");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      control.requested = true;
+      const interrupted = await running;
+      assert.equal(interrupted.success, false);
+      assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
+      assert.equal(value(await run("kept")), "5");
+    });
+    await t.test("a printing background task cannot absorb the cell's Interrupt", async () => {
+      // Every write is a checkpoint here, and the background task raises the
+      // request immediately before its own print: only task ownership keeps
+      // it from absorbing the interrupt.
+      python.runPython("CHECKPOINT_EVERY_WRITES = 1");
+      t.after(() => python.runPython("CHECKPOINT_EVERY_WRITES = 128"));
+      const interrupted = await run(
+        [
+          "import asyncio, nteract_control",
+          "async def ticker():",
+          "    await asyncio.sleep(0.05)",
+          "    nteract_control.requested = True",
+          "    print('bg')",
+          "background = asyncio.create_task(ticker())",
+          "await asyncio.sleep(30)",
+        ].join("\n"),
+      );
+      assert.equal(interrupted.success, false);
+      assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
+      await run("background.cancel()");
+    });
+    await t.test("post_execute hooks cannot consume an Interrupt request", async () => {
+      python.runPython("CHECKPOINT_EVERY_WRITES = 1");
+      t.after(() => python.runPython("CHECKPOINT_EVERY_WRITES = 128"));
+      await run(
+        [
+          "import nteract_control",
+          "def late_hook():",
+          "    nteract_control.requested = True",
+          "    print('hook output')",
+          "get_ipython().events.register('post_execute', late_hook)",
+        ].join("\n"),
+      );
+      const hooked = await run("6 * 7");
+      await run("get_ipython().events.unregister('post_execute', late_hook)");
+      assert.equal(hooked.success, true);
+      assert.equal(
+        hooked.outputs.some((o) => o.data?.[tracebackMime]),
+        false,
+        "the hook's print must not raise KeyboardInterrupt",
+      );
+      assert.equal(control.requested, false, "completion clears the request");
+    });
+    await t.test(
+      "an Interrupt request left after a cell does not reach the next cell",
+      async () => {
+        await run("pass");
+        control.requested = true;
+        // Completion clears the request (the worker also clears it per request).
+        await run("pass");
+        assert.equal(value(await run("print('fine')\n6 * 7")), "42");
+      },
+    );
   },
 );

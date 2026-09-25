@@ -415,3 +415,137 @@ for (const operation of ["expire", "close"]) {
     await pool.close();
   });
 }
+
+function interruptible({ yields = true } = {}) {
+  // A fake interpreter whose running execution settles only when interrupted
+  // (yields) or never responds to the control request (a CPU-bound cell).
+  let finish;
+  const runtimes = [];
+  const pool = new SessionPool({
+    maxSessions: 2,
+    warmCount: 0,
+    create: async () => {
+      const runtime = {
+        info: { id: runtimes.length },
+        disposed: false,
+        interrupts: 0,
+        execute: (execution) =>
+          new Promise((resolve) => {
+            finish = (success) =>
+              resolve({ execution_id: execution.execution_id, success, outputs: [] });
+          }),
+        interrupt: async () => {
+          runtime.interrupts++;
+          if (!yields) return new Promise(() => {});
+          queueMicrotask(() => finish(false));
+          return true;
+        },
+        dispose: async () => {
+          runtime.disposed = true;
+        },
+      };
+      runtimes.push(runtime);
+      return runtime;
+    },
+  });
+  return { pool, runtimes, finish: (success) => finish(success) };
+}
+
+test("cooperative interrupt settles the running execution and keeps the session", async () => {
+  const { pool, runtimes } = interruptible();
+  await pool.open("owner/notebook/1");
+  const running = pool.execute("owner/notebook/1", { execution_id: "a" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await pool.interrupt("owner/notebook/1", { graceMs: 1000 }), {
+    status: "interrupted",
+  });
+  assert.equal((await running).success, false);
+  assert.equal(runtimes[0].interrupts, 1);
+  assert.equal(runtimes[0].disposed, false);
+  assert.equal(pool.inspect("owner/notebook/1").phase, "ready");
+  // The interpreter stays usable for an explicit later execution.
+  const next = pool.execute("owner/notebook/1", { execution_id: "b" });
+  await new Promise((resolve) => setImmediate(resolve));
+  runtimes[0].interrupt();
+  assert.equal((await next).execution_id, "b");
+  await pool.close();
+});
+
+test("cooperative interrupt with nothing running is a no-op", async () => {
+  const { pool, runtimes } = interruptible();
+  assert.deepEqual(await pool.interrupt("owner/notebook/absent"), { status: "not_running" });
+  await pool.open("owner/notebook/1");
+  assert.deepEqual(await pool.interrupt("owner/notebook/1"), { status: "not_running" });
+  assert.equal(runtimes[0].interrupts, 0);
+  await pool.close();
+});
+
+test("a cell that never yields times out without the pool releasing it", async () => {
+  const { pool, runtimes, finish } = interruptible({ yields: false });
+  await pool.open("owner/notebook/1");
+  const running = pool.execute("owner/notebook/1", { execution_id: "a" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const started = Date.now();
+  assert.deepEqual(await pool.interrupt("owner/notebook/1", { graceMs: 50 }), {
+    status: "timeout",
+  });
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(runtimes[0].disposed, false, "the room decides whether to terminate");
+  finish(true);
+  await running;
+  await pool.close();
+});
+
+test("an execution that finishes while the request is in flight reports settled", async () => {
+  const { pool, runtimes, finish } = interruptible({ yields: false });
+  await pool.open("owner/notebook/1");
+  const running = pool.execute("owner/notebook/1", { execution_id: "a" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const interrupting = pool.interrupt("owner/notebook/1", { graceMs: 1000 });
+  finish(true);
+  assert.deepEqual(await interrupting, { status: "interrupted" });
+  assert.equal((await running).success, true);
+  assert.equal(runtimes[0].disposed, false);
+  await pool.close();
+});
+
+test("a package operation is not interrupted cooperatively", async () => {
+  const { pool } = interruptible();
+  await pool.open("owner/notebook/1");
+  let release;
+  const installing = pool.packages(
+    "owner/notebook/1",
+    "op-1",
+    () => new Promise((resolve) => (release = resolve)),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await pool.interrupt("owner/notebook/1"), { status: "busy" });
+  release({ status: "ready", installed: [] });
+  await installing;
+  await pool.close();
+});
+
+test("an execution that fails during the grace period reports ended, not interrupted", async () => {
+  let fail;
+  const pool = new SessionPool({
+    maxSessions: 1,
+    warmCount: 0,
+    create: async () => ({
+      info: {},
+      execute: () =>
+        new Promise((_, reject) => {
+          fail = () => reject(new Error("CPU limit exceeded"));
+        }),
+      interrupt: () => new Promise(() => {}),
+      dispose: async () => {},
+    }),
+  });
+  await pool.open("owner/notebook/1");
+  const running = pool.execute("owner/notebook/1", { execution_id: "a" }).catch((error) => error);
+  await new Promise((resolve) => setImmediate(resolve));
+  const interrupting = pool.interrupt("owner/notebook/1", { graceMs: 1000 });
+  fail();
+  assert.deepEqual(await interrupting, { status: "ended" });
+  assert.match(String(await running), /CPU limit/);
+  await pool.close();
+});

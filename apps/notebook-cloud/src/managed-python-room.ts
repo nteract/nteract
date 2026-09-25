@@ -205,6 +205,29 @@ export class ManagedPythonRoom {
     await this.materializer.checkpoint();
   }
 
+  /**
+   * Cooperative Interrupt: cancel queued intent, then ask the provider to raise
+   * KeyboardInterrupt in the running cell while keeping the interpreter. The
+   * room terminates the session unless this reports "interrupted".
+   */
+  async interrupt(): Promise<"interrupted" | "not_running" | "timeout" | "busy" | "ended"> {
+    if (!this.active) throw new Error("Managed session expired");
+    // Package operations mutate interpreter state; keep the terminating path.
+    if (this.installingPackages || this.packagesBlocked) return "busy";
+    await this.bridge.interrupt();
+    const result = (await this.call("/interrupt")) as { status?: unknown };
+    switch (result.status) {
+      case "interrupted":
+      case "not_running":
+      case "timeout":
+      case "busy":
+      case "ended":
+        return result.status;
+      default:
+        throw new Error("Python provider returned an unknown interrupt result");
+    }
+  }
+
   wake(): Promise<void> {
     if (this.installingPackages || this.packagesBlocked) return Promise.resolve();
     this.wakeRequested = true;

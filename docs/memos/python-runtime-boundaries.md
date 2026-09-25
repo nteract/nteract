@@ -65,6 +65,13 @@ browser paint separately before removing waits. A CPU-heavy interpreter and a
 second notebook should be exercised concurrently to distinguish application
 serialization from celld event-loop starvation.
 
+Interrupt is cooperative first. The guest exposes a control flag that Python
+checks at output writes, `time.sleep` (a JSPI suspension) and awaits, raising
+`KeyboardInterrupt` in the cell's own frames. Pyodide's interrupt buffer is not
+used: its check can fire inside unraisable callbacks, where the exception is
+lost. Cells that never yield still need host termination; see the provider
+README for the fallback conditions.
+
 A future streaming protocol should carry execution identity and monotonic output
 sequence on every event, with bounded buffering and a terminal marker after the
 last accepted output. Display updates, clear-output ordering, cancellation, and

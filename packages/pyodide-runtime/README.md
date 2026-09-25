@@ -34,5 +34,8 @@ Shell commands fail explicitly; this does not grant subprocess or network access
 Output remains a bounded batch per execution. Background tasks cannot publish
 into another execution's output capture. This is not full desktop kernel parity:
 stdin, completion/inspection requests, widgets, Arrow buffer transport, and the
-remaining launcher extensions are not wired here. Interrupted/deadline-terminated
-interpreters lose variables. Neither prepared nor user-session snapshots exist.
+remaining launcher extensions are not wired here. `RuntimeControl.interrupt()`
+requests a `KeyboardInterrupt` that the cell honors at output writes,
+`time.sleep` and awaits, keeping its variables; a cell that never yields, or any
+deadline-terminated interpreter, loses variables. Neither prepared nor
+user-session snapshots exist.

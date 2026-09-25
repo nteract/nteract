@@ -124,3 +124,90 @@ test("managed startup errors before runtime registration are surfaced", async ()
   await assert.rejects(room.startManagedPython("demo", "session"), /constructor failed/);
   assert.equal(failed, true);
 });
+
+for (const [outcome, keepsSession] of [
+  ["interrupted", true],
+  // Idle Interrupt still terminates: it is how an owner frees a quota slot.
+  ["not_running", false],
+  ["timeout", false],
+  ["ended", false],
+  ["busy", false],
+  ["throws", false],
+  ["connecting", false],
+]) {
+  test(`cooperative managed interrupt: ${outcome}`, async () => {
+    const values = new Map();
+    const room = new NotebookRoom(
+      {
+        id: { toString: () => "demo" },
+        storage: {
+          get: async (key) => values.get(key),
+          put: async (key, value) => values.set(key, value),
+          delete: async (key) => values.delete(key),
+          list: async () => new Map(values),
+        },
+        waitUntil: () => {},
+      },
+      {},
+    );
+    const sent = [];
+    const peer = {
+      id: "owner",
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:test&scope=owner"),
+      ),
+      socket: { send: (frame) => sent.push(new Uint8Array(frame)), close: () => {} },
+      connectedAt: new Date().toISOString(),
+      consecutiveRejectedFrames: 0,
+    };
+    room.peers.set(peer.id, peer);
+    let closed = 0;
+    let interrupts = 0;
+    const runtime = {
+      sessionId: "session",
+      presence: {
+        peer_id: "managed",
+        actor_label: "user:dev:alice/managed",
+        connection_scope: "runtime_peer",
+        participant_key: "managed",
+      },
+      interrupt: async () => {
+        interrupts++;
+        if (outcome === "throws") throw Error("provider has no /interrupt");
+        return outcome;
+      },
+      close: async () => {
+        closed++;
+      },
+    };
+    room.managedPython.set("demo", { runtime, ready: Promise.resolve() });
+    let failed = 0;
+    room.materializers.set("demo", {
+      getWorkstationAttachment: async () => ({
+        workstation_id: "celld-preview-python",
+        runtime_session_id: "session",
+        status: outcome === "connecting" ? "connecting" : "ready",
+      }),
+      transitionManagedPythonSession: async (id, status, reason) => {
+        assert.equal(id, "session");
+        assert.equal(status, "error");
+        assert.match(reason, /Variables were discarded/);
+        failed++;
+        return { changed: true, outbound: [] };
+      },
+      checkpoint: async () => {},
+    });
+    await room.handleMessage(
+      "demo",
+      peer,
+      encodeJsonFrame(FrameType.REQUEST, { id: "interrupt", action: "interrupt_execution" }),
+    );
+    assert.equal(interrupts, outcome === "connecting" ? 0 : 1);
+    assert.equal(closed, keepsSession ? 0 : 1);
+    assert.equal(failed, keepsSession ? 0 : 1);
+    assert.equal(room.managedPython.size, keepsSession ? 1 : 0);
+    const response = sent.find((frame) => frame[0] === FrameType.RESPONSE);
+    const body = JSON.parse(new TextDecoder().decode(response.slice(1)));
+    assert.equal(body.result, "interrupt_sent");
+  });
+}

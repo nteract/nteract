@@ -310,12 +310,22 @@ try {
     "data-execution-state",
     "running",
   );
+  // A running cell is interrupted cooperatively and keeps its variables.
   const interruptStarted = performance.now();
+  await owner.getByRole("button", { name: "Interrupt kernel", exact: true }).click();
+  await expect(owner.getByText("KeyboardInterrupt", { exact: false }).first()).toBeVisible({
+    timeout: 10000,
+  });
+  measurements.interruptToKeyboardInterruptMs = performance.now() - interruptStarted;
+  await execute("print('managed interrupt kept', interrupted_value)", "managed interrupt kept 123");
+  // Interrupt with nothing running still terminates the session (and frees
+  // its slot); Start compute creates a clean replacement.
+  const detachStarted = performance.now();
   await owner.getByRole("button", { name: "Interrupt kernel", exact: true }).click();
   await expect(owner.getByRole("button", { name: "Start compute", exact: true })).toBeVisible({
     timeout: 10000,
   });
-  measurements.interruptToDetachedMs = performance.now() - interruptStarted;
+  measurements.interruptToDetachedMs = performance.now() - detachStarted;
   await owner.getByRole("button", { name: "Start compute", exact: true }).click();
   await expect(owner.getByRole("button", { name: "Restart kernel", exact: true })).toBeVisible({
     timeout: 60000,

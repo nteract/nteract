@@ -196,3 +196,89 @@ test("display updates cross executions and clear wait preserves indexed output s
   assert.ok(executions.every((e) => e.status === "done" && e.success));
   await bridge.close();
 });
+
+test("Interrupt cancels queued work, keeps the interrupted result, and a new Run executes", async (t) => {
+  const { host, owner, peer, request, publish } = await fixture(t);
+  owner.add_cell(1, "queued", "code");
+  owner.update_source("queued", "42");
+  sync(host, owner, "owner", "owner");
+  sync(host, peer, "runtime", "runtime_peer", true, request("owner", "queued").outbound);
+  const calls = [];
+  let finish;
+  const bridge = new PythonRuntimePeer({
+    peer,
+    sessionKey: "session",
+    isCurrent: () => true,
+    publish,
+    pool: {
+      execute: (_key, execution) => {
+        calls.push(execution.cell_id);
+        if (calls.length > 1)
+          return Promise.resolve({ execution_count: calls.length, success: true, outputs: [] });
+        return new Promise((resolve) => {
+          finish = () =>
+            resolve({
+              execution_count: 1,
+              success: false,
+              outputs: [
+                { output_type: "error", ename: "KeyboardInterrupt", evalue: "", traceback: [] },
+              ],
+            });
+        });
+      },
+      release: async () => {},
+    },
+    prepareOutputs: async () => [],
+  });
+  const draining = bridge.drain();
+  while (!finish) await new Promise((resolve) => setImmediate(resolve));
+  await bridge.interrupt();
+  const queued = Object.values(peer.get_runtime_state().executions).find(
+    (e) => e.cell_id === "queued",
+  );
+  assert.equal(queued.status, "cancelled");
+  finish();
+  await draining;
+  assert.deepEqual(calls, ["code"]);
+  const interrupted = Object.values(peer.get_runtime_state().executions).find(
+    (e) => e.cell_id === "code",
+  );
+  assert.equal(interrupted.status, "error");
+  assert.equal(interrupted.success, false);
+  // Fresh explicit intent after the interrupt runs normally.
+  sync(host, peer, "runtime", "runtime_peer", true, request("owner", "queued").outbound);
+  await bridge.drain();
+  assert.deepEqual(calls, ["code", "queued"]);
+  await bridge.close();
+});
+
+test("Interrupt between claiming an entry and invoking Python never runs it", async (t) => {
+  const { host, peer } = await fixture(t);
+  let bridge;
+  let interrupted = false;
+  bridge = new PythonRuntimePeer({
+    peer,
+    sessionKey: "session",
+    isCurrent: () => true,
+    publish: async () => {
+      sync(host, peer, "runtime", "runtime_peer", true);
+      if (!interrupted && peer.get_runtime_state().queue.executing) {
+        interrupted = true;
+        await bridge.interrupt();
+      }
+    },
+    pool: {
+      execute: async () => assert.fail("claimed entry ran after Interrupt"),
+      release: async () => {},
+    },
+    prepareOutputs: async () => [],
+  });
+  await bridge.drain();
+  assert.equal(interrupted, true);
+  const [execution] = Object.values(peer.get_runtime_state().executions);
+  assert.equal(execution.status, "error");
+  assert.equal(execution.success, false);
+  assert.equal(execution.outputs[0].ename, "KeyboardInterrupt");
+  assert.equal(peer.get_runtime_state().queue.executing, null);
+  await bridge.close();
+});

@@ -59,9 +59,23 @@ storage. Python-side limits alone are not a security boundary.
 
 Execution has independent CPU and wall deadlines. Expiration destroys the
 interpreter, so variables are lost; it is not a resumable Python interrupt.
-The cloud Interrupt action uses the same destructive session termination and
-fences its runtime peer immediately. Start compute creates a clean replacement.
-Only notebook owners can interrupt, and unconfirmed cleanup returns an error.
+
+The cloud Interrupt action is cooperative first. Queued cells are cancelled, and
+a private control call asks the running cell to raise `KeyboardInterrupt` while
+keeping the interpreter and its variables. The guest honors the request at
+nteract-owned checkpoints: output writes, `time.sleep` (which suspends through
+JSPI) and awaits. The celld guest clock does not advance during synchronous
+execution, so output checkpoints are gated on write count as well as time. A
+cell that never yields, a package operation, a starting session or a cell that
+does not settle within three seconds falls back to destructive session
+termination, which fences its runtime peer immediately. Interrupt with no cell
+running also terminates the session, as before; it is currently how an owner
+frees a session slot. Background tasks started by the cell keep running after a
+cooperative interrupt, and `time.sleep` inside a cell lets such tasks run. Start compute then
+creates a clean replacement. Only notebook owners can interrupt, and unconfirmed
+cleanup returns an error. Python code can reach the guest's own control flag, so
+this is a convenience, not a security boundary; host termination remains the
+backstop.
 The current celld loader does not forward fetch cancellation and registry
 disposal waits for outstanding calls. The adapter therefore invokes a private
 named control method with a tiny CPU budget to trigger celld's isolate
