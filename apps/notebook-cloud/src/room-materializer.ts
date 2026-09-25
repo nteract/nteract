@@ -277,8 +277,17 @@ export class RoomMaterializer {
           selected?.workstation_id !== "celld-preview-python" ||
           selected.runtime_session_id !== options.managedPythonSessionId ||
           !["connecting", "ready"].includes(selected.status)
-        )
-          throw new Error(selected?.status_message || "Python session changed before execution");
+        ) {
+          const failureReason =
+            selected?.workstation_id === "celld-preview-python" &&
+            selected.runtime_session_id === options.managedPythonSessionId &&
+            selected.status === "error"
+              ? selected.status_message
+              : null;
+          throw new Error(
+            failureReason || "Python session changed before execution. Run the cell again.",
+          );
+        }
       }
       const result = normalizeResult(
         host.receive_peer_frame(

@@ -732,6 +732,7 @@ describe("RoomMaterializer", () => {
             : materializer.setWorkstationAttachment({
                 ...attachment,
                 runtime_session_id: "replacement",
+                status_message: "Waiting for Python (sandboxed) to accept the compute request.",
               });
         const frame = {
           type: FrameType.REQUEST,
