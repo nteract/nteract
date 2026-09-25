@@ -1371,8 +1371,33 @@ export class NotebookRoom {
           const error = new Error(
             "Python interrupted; restart compute to continue. Variables were discarded.",
           );
-          if (managed) await this.failManagedPython(notebookId, managed.runtime, error, true);
-          else if (startingSessionId) {
+          if (managed) {
+            // A running cell gets a cooperative KeyboardInterrupt first and the
+            // interpreter keeps its variables. Everything else terminates as
+            // before: nothing running (Interrupt is also how an owner frees a
+            // quota slot today), a starting session, a package operation, or a
+            // cell that does not yield in time.
+            const cooperative =
+              interruptAttachment?.workstation_id === MANAGED_PYTHON_WORKSTATION &&
+              interruptAttachment.status === "ready" &&
+              interruptAttachment.runtime_session_id === managed.runtime.sessionId
+                ? await Promise.resolve()
+                    .then(() => managed.runtime.interrupt())
+                    .catch((failure: unknown) => {
+                      cloudLog("warn", "managed_python.interrupt_failed", {
+                        notebook_id: notebookId,
+                        error: String(failure).slice(0, 500),
+                      });
+                      return "error" as const;
+                    })
+                : "not_ready";
+            cloudLog("info", "managed_python.interrupt", {
+              notebook_id: notebookId,
+              outcome: cooperative,
+            });
+            if (cooperative !== "interrupted")
+              await this.failManagedPython(notebookId, managed.runtime, error, true);
+          } else if (startingSessionId) {
             // Startup may still be resolving its owner, before a local runtime
             // exists. Fence that session now so it cannot run the queued work.
             const ownerPrincipal = await this.failManagedPythonSession(

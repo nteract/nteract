@@ -32,5 +32,7 @@ export class PythonRuntimePeer {
     prepareOutputs(outputs: Record<string, unknown>[]): Promise<Record<string, unknown>[]>;
   });
   drain(): Promise<void>;
+  /** Cancel queued intent; the provider interrupts the running cell. */
+  interrupt(): Promise<void>;
   close(): Promise<void>;
 }

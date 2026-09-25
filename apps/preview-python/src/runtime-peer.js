@@ -15,6 +15,8 @@ export class PythonRuntimePeer {
   #closed = false;
   #halted = false;
   #draining;
+  #interruptEpoch = 0;
+  #interrupting;
 
   constructor({ peer, pool, sessionKey, isCurrent, publish, prepareOutputs }) {
     this.#peer = peer;
@@ -43,9 +45,45 @@ export class PythonRuntimePeer {
     return this.#draining;
   }
 
+  /**
+   * Interrupt cancels intent that has not started, as desktop kernels do. The
+   * running cell is interrupted by the provider; its result arrives through
+   * drain. Work queued after this call is a new explicit action and runs.
+   */
+  interrupt() {
+    this.#interrupting ??= this.#interrupt().finally(() => {
+      this.#interrupting = undefined;
+    });
+    return this.#interrupting;
+  }
+
+  async #interrupt() {
+    this.#assertCurrent();
+    this.#interruptEpoch++;
+    // Include room-accepted work that has not reached this peer yet.
+    await this.#publish();
+    this.#assertCurrent();
+    let cancelled = false;
+    for (const [executionId, execution] of Object.entries(
+      this.#peer.get_runtime_state().executions ?? {},
+    )) {
+      if (execution.status === "queued") {
+        this.#peer.set_execution_cancelled(executionId);
+        cancelled = true;
+      }
+    }
+    if (!cancelled) return;
+    this.#peer.refresh_execution_queue();
+    await this.#publish();
+  }
+
   async #drain() {
     while (!this.#closed && !this.#halted) {
       this.#assertCurrent();
+      // Never claim an entry while Interrupt is still cancelling pre-click work.
+      if (this.#interrupting) await this.#interrupting.catch(() => undefined);
+      this.#assertCurrent();
+      const epoch = this.#interruptEpoch;
       const entry = Object.entries(this.#peer.get_runtime_state().executions ?? {})
         .filter(([, execution]) => execution.status === "queued")
         .sort(
@@ -67,6 +105,25 @@ export class PythonRuntimePeer {
       this.#peer.refresh_execution_queue();
       await this.#publish();
       this.#assertCurrent();
+      if (epoch !== this.#interruptEpoch) {
+        // Interrupt arrived after this entry was claimed but before Python saw
+        // it. Do not execute stale intent. A runtime peer may not move running
+        // back to cancelled, so finish it as interrupted without running.
+        this.#peer.append_output_json(
+          executionId,
+          JSON.stringify({
+            output_type: "error",
+            output_id: crypto.randomUUID(),
+            ename: "KeyboardInterrupt",
+            evalue: "Interrupted before this cell started",
+            traceback: { inline: "[]" },
+          }),
+        );
+        this.#peer.set_execution_done(executionId, false);
+        this.#peer.refresh_execution_queue();
+        await this.#publish();
+        continue;
+      }
       let result;
       try {
         result = await this.#pool.execute(this.#key, {

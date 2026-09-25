@@ -1,12 +1,17 @@
 """IPython notebook semantics inside one jailed, session-owned interpreter."""
 
+import asyncio
 import contextlib
 import hashlib
 import io
 import json
 import sys
+import time
 import traceback
 from contextvars import ContextVar
+
+import nteract_control
+from pyodide.ffi import can_run_sync, run_sync
 
 import matplotlib
 from IPython.core.compilerop import CachingCompiler
@@ -23,13 +28,88 @@ output_bytes = 0
 output_context = ContextVar("nteract_execution_output", default=None)
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_OUTPUTS = 1000
+# Interrupt checkpoints. The host clock does not advance during synchronous
+# guest execution (as in Workers), so yields are gated on output writes as well
+# as on elapsed time. Each yield costs one macrotask turn.
+CHECKPOINT_INTERVAL_S = 0.05
+CHECKPOINT_EVERY_WRITES = 128
+last_yield = float("-inf")
+writes_since_yield = 0
+# Tasks currently suspended in a synchronous frame (JSPI). The watcher leaves
+# them alone: the frame raises KeyboardInterrupt itself when it resumes.
+suspended_tasks = set()
+_blocking_sleep = time.sleep
 
 
-def emit(output):
-    global output_bytes
+def current_task():
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
+def suspend(awaitable):
+    """Suspend this synchronous frame via JSPI."""
+    task = current_task()
+    if task is not None:
+        suspended_tasks.add(task)
+    try:
+        run_sync(awaitable)
+    finally:
+        if task is not None:
+            suspended_tasks.discard(task)
+
+
+def honor_interrupt(context):
+    """Raise KeyboardInterrupt in the cell's own frames only.
+
+    Background tasks share the output context, and post_execute hooks run while
+    capture is open; neither may consume the request.
+    """
+    if context.get("body_done") or current_task() is not context.get("task"):
+        return
+    if nteract_control.consume():
+        context["interrupted"] = True
+        raise KeyboardInterrupt
+
+
+def checkpoint():
+    """At most every few writes/ms: yield a host turn (JSPI), then honor Interrupt."""
+    global last_yield, writes_since_yield
     context = output_context.get()
     if context is None or context["closed"]:
         return
+    now = time.monotonic()
+    if writes_since_yield < CHECKPOINT_EVERY_WRITES and now - last_yield < CHECKPOINT_INTERVAL_S:
+        return
+    last_yield = now
+    writes_since_yield = 0
+    if can_run_sync():
+        suspend(nteract_control.turn())
+    honor_interrupt(context)
+
+
+def interruptible_sleep(seconds):
+    context = output_context.get()
+    if context is None or context["closed"]:
+        return _blocking_sleep(seconds)
+    honor_interrupt(context)
+    if can_run_sync():
+        suspend(asyncio.sleep(seconds))
+    else:
+        _blocking_sleep(seconds)
+    honor_interrupt(context)
+
+
+time.sleep = interruptible_sleep
+
+
+def emit(output):
+    global output_bytes, writes_since_yield
+    context = output_context.get()
+    if context is None or context["closed"]:
+        return
+    writes_since_yield += 1
     previous = active_outputs[-1] if active_outputs else None
     if (
         output["output_type"] == "stream"
@@ -45,12 +125,14 @@ def emit(output):
             raise RuntimeError("Python output limit exceeded")
         output_bytes += size
         previous["text"] += output["text"]
+        checkpoint()
         return
     size = len(json.dumps(output).encode("utf-8"))
     if output_bytes + size > MAX_OUTPUT_BYTES or len(active_outputs) >= MAX_OUTPUTS:
         raise RuntimeError("Python output limit exceeded")
     output_bytes += size
     active_outputs.append(output)
+    checkpoint()
 
 
 class NotebookPublisher(DisplayPublisher):
@@ -194,8 +276,27 @@ class Stream(io.TextIOBase):
         pass
 
 
+async def watch_interrupt(context, task):
+    """Cancel the cell at its current await when Interrupt is requested."""
+    while not task.done() and not context.get("body_done"):
+        await asyncio.sleep(0.02)
+        if task.done() or context.get("body_done") or task in suspended_tasks:
+            continue
+        if nteract_control.consume():
+            context["interrupted"] = True
+            task.cancel()
+
+
+def show_interrupt(shell, etype, evalue, tb, tb_offset=None):
+    context = output_context.get()
+    if context is not None and context.get("interrupted"):
+        shell._showtraceback(KeyboardInterrupt, KeyboardInterrupt(), [])
+    else:
+        shell._showtraceback(etype, evalue, [])
+
+
 async def evaluate(source, execution_id, cell_id):
-    global active_outputs, active_execution, output_bytes
+    global active_outputs, active_execution, output_bytes, last_yield, writes_since_yield
     if active_execution is not None:
         raise RuntimeError("Python session is already executing")
     execution = {
@@ -207,9 +308,12 @@ async def evaluate(source, execution_id, cell_id):
     outputs = []
     active_outputs = outputs
     active_execution = execution
-    context = {"execution": execution, "closed": False}
+    context = {"execution": execution, "closed": False, "interrupted": False}
     token = output_context.set(context)
     output_bytes = 0
+    # The first output of each cell is a checkpoint.
+    last_yield = float("-inf")
+    writes_since_yield = 0
     result = None
     success = False
     try:
@@ -224,16 +328,27 @@ async def evaluate(source, execution_id, cell_id):
                 except Exception:
                     transformed = source
                     preprocessing_error = sys.exc_info()
-                result = await shell.run_cell_async(
-                    source,
-                    store_history=True,
-                    cell_id=cell_id,
-                    transformed_cell=transformed,
-                    preprocessing_exc_tuple=preprocessing_error,
+                cell = asyncio.ensure_future(
+                    shell.run_cell_async(
+                        source,
+                        store_history=True,
+                        cell_id=cell_id,
+                        transformed_cell=transformed,
+                        preprocessing_exc_tuple=preprocessing_error,
+                    )
                 )
-                success = result.success
+                context["task"] = cell
+                watcher = asyncio.ensure_future(watch_interrupt(context, cell))
+                try:
+                    result = await cell
+                finally:
+                    context["body_done"] = True
+                    watcher.cancel()
+                success = result.success and not context["interrupted"]
             except BaseException:
                 etype, error, _ = sys.exc_info()
+                if context["interrupted"] and isinstance(error, asyncio.CancelledError):
+                    etype, error = KeyboardInterrupt, KeyboardInterrupt()
                 shell._showtraceback(etype, error, [])
             finally:
                 # run_cell_async owns pre_* events; its caller owns post_*.
@@ -245,4 +360,10 @@ async def evaluate(source, execution_id, cell_id):
         output_context.reset(token)
         active_outputs = None
         active_execution = None
+        nteract_control.consume()
     return json.dumps({**execution, "success": success, "outputs": outputs})
+
+
+# An interrupted await surfaces as CancelledError; render it as the user's
+# KeyboardInterrupt.
+shell.set_custom_exc((asyncio.CancelledError,), show_interrupt)
