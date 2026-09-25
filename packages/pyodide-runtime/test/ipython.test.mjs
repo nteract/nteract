@@ -161,5 +161,23 @@ test(
       assert.match(exhausted.outputs[0].data[tracebackMime].evalue, /output limit/);
       assert.equal(value(await run("5 + 5")), "10");
     });
+    await t.test("consecutive writes to one stream coalesce into one output", async () => {
+      const printed = await run("for i in range(2000):\n    print('tick', i)");
+      assert.equal(printed.success, true);
+      assert.equal(printed.outputs.length, 1);
+      assert.equal(
+        streams(printed),
+        Array.from({ length: 2000 }, (_, i) => `tick ${i}\n`).join(""),
+      );
+      const mixed = await run(
+        "import sys\nprint('a')\nprint('b', file=sys.stderr)\nprint('c')\ndisplay('d')\nprint('e')",
+      );
+      assert.deepEqual(
+        mixed.outputs.map((o) =>
+          o.output_type === "stream" ? `${o.name}:${o.text}` : o.output_type,
+        ),
+        ["stdout:a\n", "stderr:b\n", "stdout:c\n", "display_data", "stdout:e\n"],
+      );
+    });
   },
 );

@@ -234,7 +234,9 @@ orphan retention if room cleanup fails; discovery polling does not postpone it.
 IPython `clear_output` and display-handle updates are routed through the runtime
 output model. Display updates preserve output IDs and can update matching
 outputs from earlier executions. A deferred clear waits for the next output in
-that execution. Outputs are still delivered as a batch when execution completes;
+that execution. Consecutive writes to the same stream coalesce into one output
+record, so the per-execution output-count limit applies to distinct outputs
+rather than to each `print` argument and newline. Outputs are still delivered as a batch when execution completes;
 progressive streaming and widget comms are not implemented yet.
 
 The deployment admits at most four interpreters and each authenticated compute
