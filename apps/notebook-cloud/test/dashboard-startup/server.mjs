@@ -78,13 +78,19 @@ createServer(async (req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (url.pathname === "/api/auth/session") {
       await state.session.promise;
+      if (state.result === "session-error") {
+        return res.writeHead(503).end(JSON.stringify({ error: "Fixture session unavailable" }));
+      }
       return res.end(
         JSON.stringify({ ok: true, session: { ...session, display_name: "Alex Example" } }),
       );
     }
     if (url.pathname === "/api/n") {
       await state.list.promise;
-      return res.end(JSON.stringify(body));
+      if (state.result === "error") {
+        return res.writeHead(503).end(JSON.stringify({ error: "Fixture notebooks unavailable" }));
+      }
+      return res.end(JSON.stringify(state.result === "empty" ? { ...body, notebooks: [] } : body));
     }
     return res.writeHead(404).end("{}");
   }
@@ -92,7 +98,7 @@ createServer(async (req, res) => {
 
   const mode = url.searchParams.get("mode") ?? "fresh";
   const theme = url.searchParams.get("theme") === "dark" ? "dark" : "light";
-  const state = { session: gate(), list: gate() };
+  const state = { session: gate(), list: gate(), result: url.searchParams.get("result") };
   cases.set(id, state);
   if (mode !== "fresh") state.session.release();
   const authConfig =

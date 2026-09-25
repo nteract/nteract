@@ -44,6 +44,7 @@ import { clearCloudAppSession } from "./app-session";
 import {
   CloudNotebookDashboard,
   CloudNotebookDashboardLoading,
+  CloudNotebookDashboardState,
   CloudNotebookDashboardSearchInput,
 } from "./cloud-notebook-dashboard-view";
 import {
@@ -144,11 +145,20 @@ export function CloudNotebookListView({
     signedIn,
     waitingForAppSession,
   } = hostedAuth;
-  // A cookie-only login has no browser identity until the session GET settles.
-  // Keep the dashboard shell while that request is pending, just as we do for
-  // the browser-token session exchange, instead of flashing the sign-in panel.
-  const waitingForSession =
-    waitingForAppSession || (!canFetchNotebookList && appSessionStatus.status === "loading");
+  // This is a startup presentation choice, not a second auth state: once the
+  // session is known, sign-out and background checks keep their settled UI.
+  const [showInitialSessionCheck, setShowInitialSessionCheck] = useState(
+    !signedIn && appSessionStatus.status !== "ready",
+  );
+  useEffect(() => {
+    if (signedIn || appSessionStatus.status === "ready") setShowInitialSessionCheck(false);
+  }, [signedIn, appSessionStatus.status]);
+  const checkingInitialCookieSession =
+    showInitialSessionCheck &&
+    !canFetchNotebookList &&
+    authState.mode === "anonymous" &&
+    appSessionStatus.status !== "ready";
+  const waitingForSession = waitingForAppSession || checkingInitialCookieSession;
   const appSessionWaitDeadline =
     appSessionWaitDeadlineMs ?? CLOUD_NOTEBOOK_LIST_APP_SESSION_WAIT_DEADLINE_MS;
   const dashboardModel = useMemo(
@@ -176,9 +186,21 @@ export function CloudNotebookListView({
       identityKey,
       gate: canFetchNotebookList ? "open" : waitingForSession ? "waiting" : "closed",
       seed,
-      waitMs: Math.max(0, appSessionWaitDeadline),
+      waitMs:
+        checkingInitialCookieSession && appSessionStatus.status === "error"
+          ? 0
+          : Math.max(0, appSessionWaitDeadline),
       scheduler: asyncScheduler,
       load: async (signal) => {
+        // The deadline bounds feedback while cookie auth is unresolved. It
+        // must not fetch a list under an identity we cannot yet display.
+        if (checkingInitialCookieSession) {
+          throw new Error(
+            appSessionStatus.status === "error"
+              ? "Couldn't confirm your sign-in. Retry to check again."
+              : "Still checking your sign-in. Retry to check again.",
+          );
+        }
         const response = await fetchCloudNotebookList(
           authState,
           AbortSignal.any([signal, AbortSignal.timeout(CLOUD_NOTEBOOK_LIST_FETCH_TIMEOUT_MS)]),
@@ -208,16 +230,21 @@ export function CloudNotebookListView({
     });
   }, [
     appSessionStatus.session,
+    appSessionStatus.status,
     appSessionWaitDeadline,
     authState,
     canFetchNotebookList,
+    checkingInitialCookieSession,
     hasAppSession,
     identityKey,
     notebookHome,
     waitingForSession,
   ]);
 
-  const refreshList = () => notebookHome.refresh();
+  const refreshList = () => {
+    if (checkingInitialCookieSession) auth.refreshAppSessionStatus();
+    else notebookHome.refresh();
+  };
 
   const openCreateForm = () => {
     if (!signedIn) {
@@ -493,16 +520,20 @@ export function CloudNotebookListView({
         ) : listState.kind === "signed_out" ? (
           <CloudNotebookSignedOutPanel authConfig={authConfig} authState={authState} />
         ) : listState.kind === "error" ? (
-          <div className="cloud-notebook-list-state" data-kind="error" role="alert">
-            <AlertCircle aria-hidden="true" />
-            <span>{listState.message}</span>
-            <Button type="button" variant="outline" size="sm" onClick={refreshList}>
-              <RotateCcw aria-hidden="true" />
-              Retry
-            </Button>
-          </div>
+          <CloudNotebookDashboardState summary="Unable to load notebooks">
+            <div className="cloud-notebook-list-state" data-kind="error" role="alert">
+              <AlertCircle aria-hidden="true" />
+              <span>{listState.message}</span>
+              <Button type="button" variant="outline" size="sm" onClick={refreshList}>
+                <RotateCcw aria-hidden="true" />
+                Retry
+              </Button>
+            </div>
+          </CloudNotebookDashboardState>
         ) : listState.notebooks.length === 0 ? (
-          <CloudNotebookListEmptyState signedIn={signedIn} onNewNotebook={openCreateForm} />
+          <CloudNotebookDashboardState summary="0 notebooks">
+            <CloudNotebookListEmptyState signedIn={signedIn} onNewNotebook={openCreateForm} />
+          </CloudNotebookDashboardState>
         ) : dashboardModel ? (
           <CloudNotebookDashboard
             model={dashboardModel}

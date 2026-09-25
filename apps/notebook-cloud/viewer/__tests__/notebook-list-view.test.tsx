@@ -160,6 +160,131 @@ describe("CloudNotebookListView", () => {
     }
   });
 
+  it("keeps sign-out visible during the follow-up cookie session check", async () => {
+    const fetchMock = vi.fn(
+      async (_url, init?: RequestInit) =>
+        new Response(
+          JSON.stringify(
+            init?.method === "DELETE"
+              ? { ok: true }
+              : {
+                  ok: true,
+                  notebooks: [notebook("before-signout", "Before sign-out")],
+                },
+          ),
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const readSession = vi.fn(() => new Promise<CloudAppSessionStatus>(() => {}));
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      {
+        authConfig,
+        initialSession: {
+          provider: "oidc",
+          expires_at: 9_999_999_999,
+          cache_key: "signout",
+          display_name: "Test Account",
+        },
+      },
+      { readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      fireEvent.keyDown(screen.getByRole("button", { name: "Test Account" }), {
+        key: "Enter",
+        code: "Enter",
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+      });
+      expect(readSession).toHaveBeenCalledTimes(1);
+      expect(store.appSessionSnapshot.status).toBe("loading");
+      expect(screen.getByText("Bring computation to life.")).toBeTruthy();
+      expect(screen.queryByRole("status", { name: "Loading notebooks" })).toBeNull();
+      expect(screen.queryByText("Before sign-out")).toBeNull();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("bounds slow cookie-session feedback without fetching notebooks before confirmation", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const readSession = vi.fn(() => new Promise<CloudAppSessionStatus>(() => {}));
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      { readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} appSessionWaitDeadlineMs={5} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5);
+      });
+      expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByText("Still checking your sign-in. Retry to check again.")).toBeTruthy();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.queryByText("Bring computation to life.")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(readSession).toHaveBeenCalledTimes(2);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("retries a failed cookie session check and keeps the heading for an empty list", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, notebooks: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const readSession = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Session service unavailable"))
+      .mockResolvedValue({
+        ok: true,
+        session: { provider: "oidc", expires_at: 9_999_999_999, cache_key: "recovered" },
+      });
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      { authConfig, initialSession: null },
+      { readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByText("Couldn't confirm your sign-in. Retry to check again.")).toBeTruthy();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.queryByText("Bring computation to life.")).toBeNull();
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      });
+      expect(readSession).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("heading", { name: "Notebooks" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "No notebooks yet" })).toBeTruthy();
+    } finally {
+      dispose();
+    }
+  });
+
   it("turns persistent app-session waits into a retryable list error", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(JSON.stringify({ error: "session unavailable" }), {

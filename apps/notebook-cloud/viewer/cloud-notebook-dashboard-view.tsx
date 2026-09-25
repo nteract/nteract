@@ -66,14 +66,27 @@ function CloudNotebookDashboardHeading({
 
 export function CloudNotebookDashboardLoading() {
   return (
+    <CloudNotebookDashboardState
+      summary={
+        <span role="status" aria-label="Loading notebooks">
+          Loading notebooks…
+        </span>
+      }
+    />
+  );
+}
+
+export function CloudNotebookDashboardState({
+  summary,
+  children,
+}: {
+  summary: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
     <div className="cloud-dashboard">
-      <CloudNotebookDashboardHeading
-        summary={
-          <span role="status" aria-label="Loading notebooks">
-            Loading notebooks…
-          </span>
-        }
-      />
+      <CloudNotebookDashboardHeading summary={summary} />
+      {children}
     </div>
   );
 }
