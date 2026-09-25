@@ -340,6 +340,62 @@ describe("CloudNotebookListView", () => {
     }
   });
 
+  it("retains Retry focus through a late session failure and automatic server recheck", async () => {
+    let rejectSession!: (error: Error) => void;
+    const session = new Promise<CloudAppSessionStatus>((_resolve, reject) => {
+      rejectSession = reject;
+    });
+    const readSession = vi
+      .fn()
+      .mockReturnValueOnce(session)
+      .mockImplementation(() => new Promise<CloudAppSessionStatus>(() => {}));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const serverConfig: CloudViewerAuthConfig = {
+      localDev: null,
+      oidc: {
+        flow: "server",
+        issuer: "https://issuer.test",
+        clientId: "client-id",
+        redirectUri: `${window.location.origin}/oidc`,
+      },
+    };
+    const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+    const dispose = store.activate(
+      { authConfig: serverConfig, initialSession: null },
+      { readAppSessionStatus: readSession },
+    );
+    try {
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={serverConfig} appSessionWaitDeadlineMs={5} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5);
+      });
+      screen.getByRole("button", { name: "Retry" }).focus();
+      await act(async () => {
+        rejectSession(new Error("Late gateway error"));
+      });
+      expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notebook list" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByText("Couldn't confirm your sign-in. Retry to check again.")).toBeTruthy();
+      screen.getByRole("button", { name: "Retry" }).focus();
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(readSession).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("status", { name: "Loading notebooks" })).toBeTruthy();
+      expect(document.activeElement).toBe(screen.getByRole("region", { name: "Notebook list" }));
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
   it("turns persistent app-session waits into a retryable list error", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(JSON.stringify({ error: "session unavailable" }), {

@@ -104,6 +104,7 @@ export function CloudNotebookListView({
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const listContentRef = useRef<HTMLElement>(null);
+  const retryButtonRef = useRef<HTMLButtonElement>(null);
   const auth = useCloudAuthStore();
   const [bootstrap] = useState<CloudNotebookListBootstrap | null>(() =>
     loadCloudNotebookListBootstrap(),
@@ -185,6 +186,11 @@ export function CloudNotebookListView({
       authState,
       hasAppSession,
     );
+    // Automatic session updates can replace Retry too. Move focus before
+    // activate resets the list, while the focused button is still mounted.
+    if (retryButtonRef.current && retryButtonRef.current === document.activeElement) {
+      listContentRef.current?.focus({ preventScroll: true });
+    }
     return notebookHome.activate({
       identityKey,
       gate: canFetchNotebookList ? "open" : waitingForSession ? "waiting" : "closed",
@@ -534,7 +540,13 @@ export function CloudNotebookListView({
             <div className="cloud-notebook-list-state" data-kind="error" role="alert">
               <AlertCircle aria-hidden="true" />
               <span>{listState.message}</span>
-              <Button type="button" variant="outline" size="sm" onClick={refreshList}>
+              <Button
+                ref={retryButtonRef}
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={refreshList}
+              >
                 <RotateCcw aria-hidden="true" />
                 Retry
               </Button>
