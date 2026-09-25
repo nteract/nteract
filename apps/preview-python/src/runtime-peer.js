@@ -5,6 +5,12 @@
  * prepareOutputs() uploads blobs and returns canonical output manifests without
  * mutating the peer. This keeps async output preparation behind session fencing.
  */
+// Live output bounds: stop in-place updates past this much text per execution
+// (large text becomes blobs; the batch still carries everything), and sync live
+// changes to peers at most this often, without a storage checkpoint.
+const LIVE_STREAM_BYTES = 64 * 1024;
+const LIVE_PUBLISH_INTERVAL_MS = 150;
+
 export class PythonRuntimePeer {
   #peer;
   #pool;
@@ -17,14 +23,91 @@ export class PythonRuntimePeer {
   #draining;
   #interruptEpoch = 0;
   #interrupting;
+  #publishLive;
+  #live;
+  #liveTimer;
 
-  constructor({ peer, pool, sessionKey, isCurrent, publish, prepareOutputs }) {
+  constructor({ peer, pool, sessionKey, isCurrent, publish, publishLive, prepareOutputs }) {
     this.#peer = peer;
     this.#pool = pool;
     this.#key = sessionKey;
     this.#current = isCurrent;
     this.#publish = publish;
+    this.#publishLive = publishLive;
     this.#prepare = prepareOutputs;
+  }
+
+  /**
+   * Live stream text while a cell runs (advisory). One record per stream run
+   * is replaced in place; the final batch replaces every live record before
+   * the execution becomes terminal, so room state ends identical to batch mode.
+   */
+  #onLive(executionId, event) {
+    const live = this.#live;
+    if (!live || live.executionId !== executionId || live.closed) return;
+    live.chain = live.chain.then(async () => {
+      if (
+        live.closed ||
+        live.stopped ||
+        this.#closed ||
+        !this.#current(this.#peer.get_runtime_state())
+      )
+        return;
+      if (event.type === "live_stopped") {
+        live.stopped = true;
+        return;
+      }
+      if (event.type === "boundary") {
+        live.record = null;
+        return;
+      }
+      live.bytes += event.text.length;
+      if (live.bytes > LIVE_STREAM_BYTES) {
+        live.stopped = true;
+        return;
+      }
+      const record =
+        live.record?.name === event.name
+          ? live.record
+          : { name: event.name, text: "", outputId: null };
+      record.text += event.text;
+      const [manifest] = await this.#prepare([
+        { output_type: "stream", name: record.name, text: record.text },
+      ]);
+      if (live.closed) return;
+      if (record.outputId) {
+        manifest.output_id = record.outputId;
+        this.#peer.replace_output_json(executionId, record.outputId, JSON.stringify(manifest));
+      } else {
+        record.outputId = this.#peer.append_output_json(executionId, JSON.stringify(manifest));
+      }
+      live.record = record;
+      live.written = true;
+      this.#scheduleLivePublish();
+    });
+    live.chain = live.chain.catch(() => {
+      // Live output is advisory; the final batch is still published.
+      live.stopped = true;
+    });
+  }
+
+  #scheduleLivePublish() {
+    if (this.#liveTimer || !this.#publishLive) return;
+    this.#liveTimer = setTimeout(() => {
+      this.#liveTimer = undefined;
+      if (this.#live && !this.#live.closed) void this.#publishLive().catch(() => undefined);
+    }, LIVE_PUBLISH_INTERVAL_MS);
+  }
+
+  async #closeLive() {
+    const live = this.#live;
+    if (!live) return false;
+    live.closed = true;
+    clearTimeout(this.#liveTimer);
+    this.#liveTimer = undefined;
+    await live.chain;
+    this.#live = undefined;
+    return live.written;
   }
 
   #assertCurrent() {
@@ -125,13 +208,28 @@ export class PythonRuntimePeer {
         continue;
       }
       let result;
+      if (this.#publishLive)
+        this.#live = {
+          executionId,
+          chain: Promise.resolve(),
+          record: null,
+          bytes: 0,
+          written: false,
+          stopped: false,
+          closed: false,
+        };
       try {
-        result = await this.#pool.execute(this.#key, {
-          execution_id: executionId,
-          cell_id: accepted.cell_id,
-          source: accepted.source,
-        });
+        result = await this.#pool.execute(
+          this.#key,
+          {
+            execution_id: executionId,
+            cell_id: accepted.cell_id,
+            source: accepted.source,
+          },
+          this.#publishLive ? { onLive: (event) => this.#onLive(executionId, event) } : undefined,
+        );
       } catch (error) {
+        await this.#closeLive();
         this.#assertCurrent();
         this.#peer.append_output_json(
           executionId,
@@ -149,9 +247,12 @@ export class PythonRuntimePeer {
         await this.#publish();
         throw error;
       }
+      const wroteLive = await this.#closeLive();
       this.#assertCurrent();
       const manifests = await this.#prepare(result.outputs);
       this.#assertCurrent();
+      // The batch is authoritative: drop live records, then write it in order.
+      if (wroteLive) this.#peer.clear_execution_outputs(executionId);
       this.#peer.set_execution_count(executionId, result.execution_count);
       let clearBeforeNextOutput = false;
       for (const manifest of manifests) {

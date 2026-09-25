@@ -603,6 +603,22 @@ impl RuntimeStatePeerHandle {
             .map_err(|e| JsError::new(&format!("append output failed: {e}")))
     }
 
+    /// Replace one output of an execution in place, keeping its position.
+    /// Used for live stream text while the execution is still running; room
+    /// policy rejects in-place edits once the execution is terminal.
+    pub fn replace_output_json(
+        &mut self,
+        execution_id: &str,
+        output_id: &str,
+        manifest_json: &str,
+    ) -> Result<bool, JsError> {
+        let manifest: serde_json::Value = serde_json::from_str(manifest_json)
+            .map_err(|e| JsError::new(&format!("decode output manifest json: {e}")))?;
+        self.state_doc
+            .replace_output(execution_id, output_id, &manifest)
+            .map_err(|e| JsError::new(&format!("replace output failed: {e}")))
+    }
+
     /// Clear one accepted execution while maintaining the display index.
     pub fn clear_execution_outputs(&mut self, execution_id: &str) -> Result<bool, JsError> {
         self.state_doc

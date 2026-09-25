@@ -12,6 +12,8 @@ import { includedPackageInventory } from "./package-inventory.js";
 // concurrent admission rather than mixing Python globals/output attribution.
 let ready;
 let busy = false;
+// Set while a streamed /execute response owns `busy` past the fetch handler.
+let streamOwnsBusy = false;
 // Same-isolate interrupt request (not shared memory, not Pyodide's interrupt
 // buffer). Python observes it only at nteract-owned checkpoints in
 // runtime/session.py, so KeyboardInterrupt lands in the cell's own frames
@@ -121,6 +123,33 @@ export default {
       ) {
         return new Response("Expected accepted source, execution_id and cell_id", { status: 400 });
       }
+      if (payload.stream === true) {
+        // NDJSON: live {"type":"stream"|"boundary"|"live_stopped"} events as the
+        // guest event loop flushes them, then one {"type":"result"} line with
+        // the authoritative batch. The request stays busy until evaluate ends.
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
+        const sink = (line) => {
+          void writer.write(encoder.encode(line + "\n")).catch(() => undefined);
+        };
+        streamOwnsBusy = true;
+        void (async () => {
+          const pending = evaluate(payload.source, payload.execution_id, payload.cell_id, sink);
+          try {
+            const result = await pending;
+            await writer.write(encoder.encode(`{"type":"result","result":${result}}\n`));
+            await writer.close();
+          } catch (error) {
+            await writer.abort(error).catch(() => undefined);
+          } finally {
+            pending.destroy();
+            busy = false;
+            interruptRequested = false;
+          }
+        })();
+        return new Response(readable, { headers: { "content-type": "application/x-ndjson" } });
+      }
       const pending = evaluate(payload.source, payload.execution_id, payload.cell_id);
       try {
         return new Response(await pending, { headers: { "content-type": "application/json" } });
@@ -128,9 +157,12 @@ export default {
         pending.destroy();
       }
     } finally {
-      busy = false;
-      // A request that arrives after completion must not interrupt the next cell.
-      interruptRequested = false;
+      if (streamOwnsBusy) streamOwnsBusy = false;
+      else {
+        busy = false;
+        // A request that arrives after completion must not interrupt the next cell.
+        interruptRequested = false;
+      }
     }
   },
 };

@@ -31,7 +31,8 @@ and automatic inline Matplotlib output work. Structured tracebacks use nteract's
 existing format with cell/execution/source provenance, including earlier cells.
 Shell commands fail explicitly; this does not grant subprocess or network access.
 
-Output remains a bounded batch per execution. Background tasks cannot publish
+Output remains a bounded, validated batch per execution; `/execute` with
+`stream: true` additionally returns advisory NDJSON stream lines before it. Background tasks cannot publish
 into another execution's output capture. This is not full desktop kernel parity:
 stdin, completion/inspection requests, widgets, Arrow buffer transport, and the
 remaining launcher extensions are not wired here. `RuntimeControl.interrupt()`

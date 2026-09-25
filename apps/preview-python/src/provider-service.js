@@ -99,6 +99,28 @@ export function createProviderService(pool, storage, packageResolver) {
             return Response.json(safePackageFailure(error));
           }
         }
+        if (input.stream === true) {
+          // NDJSON: advisory live events, then one {"type":"result"} line or a
+          // terminal {"type":"error"} line (the HTTP status is already sent).
+          const { readable, writable } = new TransformStream();
+          const writer = writable.getWriter();
+          const encoder = new TextEncoder();
+          const line = (event) =>
+            writer.write(encoder.encode(JSON.stringify(event) + "\n")).catch(() => undefined);
+          void (async () => {
+            try {
+              const result = await pool.execute(key, input.execution, {
+                onLive: (event) => void line(event),
+              });
+              await line({ type: "result", result });
+            } catch (error) {
+              await line({ type: "error", error: String(error) });
+            } finally {
+              await writer.close().catch(() => undefined);
+            }
+          })();
+          return new Response(readable, { headers: { "content-type": "application/x-ndjson" } });
+        }
         return Response.json(await pool.execute(key, input.execution));
       } catch (error) {
         return Response.json({ error: String(error) }, { status: 409 });

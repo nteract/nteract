@@ -282,3 +282,82 @@ test("Interrupt between claiming an entry and invoking Python never runs it", as
   assert.equal(peer.get_runtime_state().queue.executing, null);
   await bridge.close();
 });
+
+test("live stream output updates one record in place, then the batch replaces it", async (t) => {
+  const { host, peer, publish } = await fixture(t);
+  // Read the room host's state through a fresh viewer each time. (An
+  // incrementally synced RuntimeStatePeerHandle in this harness does not
+  // reflect in-place output edits; the browser's handle does, as local celld
+  // QA shows.)
+  let observers = 0;
+  const observed = () => {
+    const observer = new RuntimeStatePeerHandle(`user:dev:live-observer-${++observers}/test`);
+    try {
+      sync(host, observer, `live-observer-${observers}`, "viewer", true);
+      return Object.values(observer.get_runtime_state().executions)[0];
+    } finally {
+      observer.free();
+    }
+  };
+  const snapshots = [];
+  let livePublishes = 0;
+  const bridge = new PythonRuntimePeer({
+    peer,
+    sessionKey: "session",
+    isCurrent: () => true,
+    publish,
+    publishLive: async () => {
+      livePublishes++;
+      sync(host, peer, "runtime", "runtime_peer", true);
+    },
+    pool: {
+      execute: async (_key, _execution, options) => {
+        const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
+        options.onLive({ type: "stream", name: "stdout", text: "a\n" });
+        await settle();
+        snapshots.push(observed().outputs.map((o) => [o.output_id, o.text]));
+        options.onLive({ type: "stream", name: "stdout", text: "b\n" });
+        await settle();
+        snapshots.push(observed().outputs.map((o) => [o.output_id, o.text]));
+        options.onLive({ type: "boundary" });
+        options.onLive({ type: "stream", name: "stdout", text: "c\n" });
+        await settle();
+        snapshots.push(observed().outputs.map((o) => o.text));
+        assert.equal(observed().status, "running");
+        return {
+          execution_count: 1,
+          success: true,
+          outputs: [
+            { output_type: "stream", name: "stdout", text: "a\nb\n" },
+            { output_type: "display_data", data: { "text/plain": "x" }, metadata: {} },
+            { output_type: "stream", name: "stdout", text: "c\n" },
+          ],
+        };
+      },
+      release: async () => {},
+    },
+    prepareOutputs: createOutputPreparer({
+      prepareContent: prepare_output_content,
+      putBlob: async () => assert.fail("inline only"),
+    }),
+  });
+  await bridge.drain();
+  assert.ok(livePublishes >= 3, "live changes reach peers without the terminal publish");
+  assert.deepEqual(
+    snapshots[0].map(([, text]) => text),
+    [{ inline: "a\n" }],
+  );
+  // Same record, grown in place.
+  assert.equal(snapshots[1].length, 1);
+  assert.equal(snapshots[1][0][0], snapshots[0][0][0]);
+  assert.deepEqual(snapshots[1][0][1], { inline: "a\nb\n" });
+  assert.deepEqual(snapshots[2], [{ inline: "a\nb\n" }, { inline: "c\n" }]);
+  const final = observed();
+  assert.equal(final.status, "done");
+  assert.deepEqual(
+    final.outputs.map((o) => o.output_type),
+    ["stream", "display_data", "stream"],
+  );
+  assert.deepEqual(final.outputs[0].text, { inline: "a\nb\n" });
+  await bridge.close();
+});
