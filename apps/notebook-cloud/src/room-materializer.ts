@@ -239,9 +239,13 @@ export class RoomMaterializer {
     );
   }
 
-  async receiveFrame(peer: RoomPeer, frame: TypedFrame): Promise<RoomHostFrameResult> {
+  async receiveFrame(
+    peer: RoomPeer,
+    frame: TypedFrame,
+    options: { managedPythonSessionId?: string } = {},
+  ): Promise<RoomHostFrameResult> {
     try {
-      return await this.receiveFrameWithCurrentHost(peer, frame);
+      return await this.receiveFrameWithCurrentHost(peer, frame, options);
     } catch (error) {
       if (!shouldRecoverReceiveFrame(frame, error)) {
         throw error;
@@ -260,10 +264,22 @@ export class RoomMaterializer {
   private async receiveFrameWithCurrentHost(
     peer: RoomPeer,
     frame: TypedFrame,
+    options: { managedPythonSessionId?: string },
   ): Promise<RoomHostFrameResult> {
     const canWriteAllNotebookChanges = peer.identity.scope === "owner";
     const encoded = encodeTypedFrame(frame.type, frame.payload);
     return this.withHost((host) => {
+      if (options.managedPythonSessionId) {
+        const selected = normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json());
+        // Check and admit in the same host operation: a startup failure or
+        // replacement during request authorization must not leave orphaned work.
+        if (
+          selected?.workstation_id !== "celld-preview-python" ||
+          selected.runtime_session_id !== options.managedPythonSessionId ||
+          !["connecting", "ready"].includes(selected.status)
+        )
+          throw new Error(selected?.status_message || "Python session changed before execution");
+      }
       const result = normalizeResult(
         host.receive_peer_frame(
           peer.id,

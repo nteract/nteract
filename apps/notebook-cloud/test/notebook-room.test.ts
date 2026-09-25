@@ -34,7 +34,7 @@ import {
   encodeTypedFrame,
   splitTypedFrame,
 } from "../src/protocol.ts";
-import { decodePresenceFrame, encodePresenceFrame } from "../src/runtimed-wasm.ts";
+import { decodePresenceFrame, encodePresenceFrame, NotebookHandle } from "../src/runtimed-wasm.ts";
 import { RoomMaterializer, type RoomHostFrameResult } from "../src/room-materializer.ts";
 import { roomSummaryKey, type NotebookRoomSummary } from "../src/storage.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
@@ -3791,6 +3791,216 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
+  for (const status of ["connecting", "ready"] as const) {
+    it(`admits managed Python execution before ${status} startup and drains after reconnect`, async (t) => {
+      const fixture = await managedPythonAdmissionFixture(status);
+      t.after(() => fixture.close());
+      const first = await fixture.connect("first");
+      await fixture.seed(first);
+
+      await fixture.execute(first);
+      await fixture.openEntered;
+      assert.equal(first.accepted(), true, "Play is acknowledged while /open is still pending");
+      await first.sync();
+      const queued = first.runtimeState();
+      const [executionId] = Object.keys(queued.executions);
+      assert.ok(executionId);
+      assert.equal(queued.executions[executionId].status, "queued");
+      assert.equal(queued.executions[executionId].source, "print('ready once')");
+      assert.deepEqual(queued.queue.queued, [{ execution_id: executionId }]);
+      assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, 0);
+
+      fixture.room.webSocketClose(first.peer.socket, 1000, "browser disconnected", true);
+      const reconnected = await fixture.connect("reconnected");
+      assert.deepEqual(Object.keys(reconnected.runtimeState().executions), [executionId]);
+      assert.equal(reconnected.runtimeState().executions[executionId].status, "queued");
+      assert.equal(reconnected.accepted(), false, "reconnecting must not resubmit Play");
+
+      fixture.releaseOpen(Response.json({ ok: true }));
+      await fixture.drain();
+      await reconnected.sync();
+      const executions = fixture.requests.filter((request) => request.path === "/execute");
+      assert.equal(executions.length, 1, "readiness dispatches the accepted intent exactly once");
+      assert.equal(executions[0].sessionId, "managed-job");
+      assert.equal(executions[0].ownerPrincipal, "user:dev:alice");
+      assert.equal(executions[0].execution?.source, "print('ready once')");
+      const completed = reconnected.runtimeState();
+      assert.deepEqual(Object.keys(completed.executions), [executionId]);
+      assert.equal(completed.executions[executionId].status, "done");
+      assert.deepEqual(completed.executions[executionId].outputs[0].text, {
+        inline: "ready once\n",
+      });
+      assert.equal(completed.queue.executing, null);
+      assert.deepEqual(completed.queue.queued, []);
+    });
+  }
+
+  for (const immediate of [false, true]) {
+    it(`terminalizes accepted managed Python intent after ${immediate ? "immediate" : "delayed"} startup failure without replay`, async (t) => {
+      const failure = Response.json({ error: "Python capacity unavailable" }, { status: 503 });
+      const fixture = await managedPythonAdmissionFixture("connecting", {
+        immediateOpen: immediate ? failure : undefined,
+      });
+      t.after(() => fixture.close());
+      const first = await fixture.connect("first");
+      await fixture.seed(first);
+      await fixture.execute(first);
+      await fixture.openEntered;
+      assert.equal(first.accepted(), true, "startup failure follows accepted execution intent");
+      if (!immediate) {
+        await first.sync();
+        assert.equal(Object.values(first.runtimeState().executions)[0]?.status, "queued");
+        fixture.releaseOpen(failure);
+      }
+      await fixture.drain();
+      await first.sync();
+      const failed = first.runtimeState();
+      const [executionId] = Object.keys(failed.executions);
+      assert.ok(executionId);
+      assert.equal(failed.executions[executionId].status, "cancelled");
+      assert.deepEqual(failed.queue.queued, []);
+      assert.equal(failed.workstation?.status, "error");
+      assert.match(failed.workstation?.status_message ?? "", /Python capacity unavailable/);
+      assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, 0);
+
+      fixture.room.webSocketClose(first.peer.socket, 1000, "browser disconnected", true);
+      const reconnected = await fixture.connect("reconnected");
+      assert.equal(
+        (await fixture.materializer.transitionManagedPythonSession("managed-job", "ready"))
+          .ignored_stale,
+        true,
+        "late readiness cannot resurrect failed intent",
+      );
+      await fixture.drain();
+      await reconnected.sync();
+      assert.deepEqual(Object.keys(reconnected.runtimeState().executions), [executionId]);
+      assert.equal(reconnected.runtimeState().executions[executionId].status, "cancelled");
+      assert.equal(fixture.requests.filter((request) => request.path === "/open").length, 1);
+      assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, 0);
+    });
+  }
+
+  it("terminalizes managed intent without starting compute for a revoked attach-job owner", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("connecting", { ownerAuthorized: false });
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    await fixture.seed(owner);
+    await fixture.execute(owner);
+    await fixture.drain();
+    await owner.sync();
+    assert.equal(owner.accepted(), true);
+    const failed = owner.runtimeState();
+    assert.equal(Object.values(failed.executions).length, 1);
+    assert.equal(Object.values(failed.executions)[0].status, "cancelled");
+    assert.equal(failed.workstation?.status, "error");
+    assert.match(failed.workstation?.status_message ?? "", /owner.*access/i);
+    assert.deepEqual(fixture.requests, [], "authorization fails before provider /open or /execute");
+  });
+
+  it("starts managed Python for an existing queued execution without changing its identity", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("ready");
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    await fixture.seed(owner);
+    // Model a recovered room whose RuntimeStateDoc already holds accepted work
+    // but whose in-memory managed runtime has not been recreated yet.
+    const queued = await fixture.materializer.receiveFrame(owner.peer, {
+      type: FrameType.REQUEST,
+      payload: new TextEncoder().encode(
+        JSON.stringify({
+          id: "prior-play",
+          action: "execute_cell",
+          cell_id: initialHostedCellIdForTest("demo"),
+        }),
+      ),
+    });
+    for (const frame of queued.outbound)
+      if (frame.peer_id === owner.peer.id)
+        owner.peer.socket.send(encodeTypedFrame(frame.frame_type, new Uint8Array(frame.payload)));
+    await owner.sync();
+    const [executionId] = Object.keys(owner.runtimeState().executions);
+    assert.ok(executionId);
+    assert.equal(owner.runtimeState().executions[executionId].status, "queued");
+
+    await fixture.execute(owner);
+    await fixture.openEntered;
+    assert.equal(owner.accepted(), true);
+    fixture.releaseOpen(Response.json({ ok: true }));
+    await fixture.drain();
+    await owner.sync();
+    assert.deepEqual(Object.keys(owner.runtimeState().executions), [executionId]);
+    assert.equal(owner.runtimeState().executions[executionId].status, "done");
+    assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, 1);
+  });
+
+  it("interrupts accepted managed intent while startup is still resolving its owner", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("connecting", { holdOwnerLookup: true });
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    await fixture.seed(owner);
+    await fixture.execute(owner);
+    await fixture.ownerLookupEntered;
+    assert.equal(owner.accepted(), true);
+    await owner.sync();
+    const [executionId] = Object.keys(owner.runtimeState().executions);
+    assert.ok(executionId);
+    assert.equal(owner.runtimeState().executions[executionId].status, "queued");
+    const interrupted = owner.response("interrupt");
+    await fixture.room.webSocketMessage(
+      owner.peer.socket,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "interrupt", action: "interrupt_execution" }),
+        ),
+      ),
+    );
+    assert.equal((await interrupted).result, "interrupt_sent");
+    await owner.sync();
+    assert.equal(owner.runtimeState().executions[executionId].status, "cancelled");
+    assert.equal(owner.runtimeState().workstation?.status, "error");
+    fixture.releaseOwnerLookup();
+    await fixture.drain();
+    await owner.sync();
+    assert.equal(owner.runtimeState().executions[executionId].status, "cancelled");
+    assert.deepEqual(
+      fixture.requests.map((request) => request.path),
+      ["/close"],
+      "late startup cannot open or execute compute after Interrupt",
+    );
+    assert.equal(fixture.requests[0].sessionId, "managed-job");
+    assert.equal(fixture.requests[0].ownerPrincipal, "user:dev:alice");
+  });
+
+  it("reports unconfirmed termination when restored managed Python cannot be closed", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("ready", {
+      closeResponse: Response.json({ error: "termination unavailable" }, { status: 503 }),
+    });
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    const interrupted = owner.response("interrupt");
+    await fixture.room.webSocketMessage(
+      owner.peer.socket,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "interrupt", action: "interrupt_execution" }),
+        ),
+      ),
+    );
+    const response = await interrupted;
+    assert.equal(response.result, "error");
+    assert.match(String(response.error), /termination was not confirmed/);
+    assert.deepEqual(
+      fixture.requests.map((request) => request.path),
+      ["/close"],
+    );
+    assert.equal(fixture.requests[0].sessionId, "managed-job");
+    assert.equal(fixture.requests[0].ownerPrincipal, "user:dev:alice");
+    await owner.sync();
+    assert.equal(owner.runtimeState().workstation?.status, "error");
+  });
+
   it("preserves startup errors and accepts a retry on the same peer", async () => {
     const room = new NotebookRoom(fakeState(), {} as Env);
     const identity = authenticateDevRequest(
@@ -5474,6 +5684,230 @@ function roomHarness(room: NotebookRoom): RoomHarness {
   return room as unknown as RoomHarness;
 }
 
+type ManagedAdmissionRuntimeState = {
+  executions: Record<
+    string,
+    { status: string; source: string; outputs: Array<{ text?: { inline: string } }> }
+  >;
+  queue: { executing: unknown; queued: Array<{ execution_id: string }> };
+  workstation?: { status?: string; status_message?: string | null };
+};
+
+async function managedPythonAdmissionFixture(
+  status: "connecting" | "ready",
+  options: {
+    immediateOpen?: Response;
+    ownerAuthorized?: boolean;
+    holdOwnerLookup?: boolean;
+    closeResponse?: Response;
+  } = {},
+) {
+  const state = hibernatedState([]);
+  const db = new ResumeNotebookD1();
+  db.notebookAclOwners.add("user:dev:alice");
+  db.attachJobs.push({
+    id: "managed-job",
+    notebook_id: "demo",
+    owner_principal: options.ownerAuthorized === false ? "user:dev:revoked" : "user:dev:alice",
+    workstation_id: "celld-preview-python",
+    status: "accepted",
+    trigger: "user",
+    requested_by_actor_label: "user:dev:alice/browser:first",
+    requested_at: "2026-09-24T00:00:00.000Z",
+    updated_at: "2026-09-24T00:00:00.000Z",
+    accepted_at: "2026-09-24T00:00:00.000Z",
+    finished_at: null,
+    error_message: null,
+  });
+  let releaseOpen!: (response: Response) => void;
+  const opening = new Promise<Response>((resolve) => {
+    releaseOpen = resolve;
+  });
+  let enteredOpen!: () => void;
+  const openEntered = new Promise<void>((resolve) => {
+    enteredOpen = resolve;
+  });
+  let releaseOwnerLookup!: () => void;
+  const ownerLookup = new Promise<void>((resolve) => {
+    releaseOwnerLookup = resolve;
+  });
+  let enteredOwnerLookup!: () => void;
+  const ownerLookupEntered = new Promise<void>((resolve) => {
+    enteredOwnerLookup = resolve;
+  });
+  if (options.holdOwnerLookup)
+    db.beforeSessionOwnerLookup = async () => {
+      db.beforeSessionOwnerLookup = undefined;
+      enteredOwnerLookup();
+      await ownerLookup;
+    };
+  const requests: Array<{
+    path: string;
+    sessionId?: string;
+    ownerPrincipal?: string;
+    execution?: { source: string };
+  }> = [];
+  const env = {
+    DB: db,
+    NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+    PREVIEW_PYTHON_SESSIONS: {
+      idFromName: (name: string) => ({ toString: () => name }),
+      get: () => ({
+        fetch: async (request: Request) => {
+          const path = new URL(request.url).pathname;
+          requests.push({ path, ...(await request.json()) });
+          if (path === "/open") {
+            enteredOpen();
+            return options.immediateOpen ?? opening;
+          }
+          if (path === "/execute")
+            return Response.json({
+              success: true,
+              execution_count: 1,
+              outputs: [{ output_type: "stream", name: "stdout", text: "ready once\n" }],
+            });
+          if (path === "/close" && options.closeResponse) return options.closeResponse;
+          return Response.json({ ok: true });
+        },
+      }),
+    },
+  } as unknown as Env;
+  const room = new NotebookRoom(state.state, env);
+  await state.drain();
+  const harness = roomHarness(room);
+  const materializer = new RoomMaterializer("demo", state.state, env);
+  harness.materializers.set("demo", materializer as never);
+  await materializer.setWorkstationAttachment({
+    workstation_id: "celld-preview-python",
+    display_name: "Python (sandboxed)",
+    provider: "celld-pyodide",
+    default_environment_label: "Python",
+    environment_policy: "curated",
+    status,
+    status_message: null,
+    cpu_count: null,
+    memory_bytes: null,
+    working_directory: null,
+    updated_at: "2026-09-24T00:00:00.000Z",
+    runtime_session_id: "managed-job",
+  });
+  const clients: NotebookHandle[] = [];
+  const connect = async (id: string) => {
+    const responses = new Map<string, (response: Record<string, unknown>) => void>();
+    const socket = new FakeSocket({
+      onSend: (frame) => {
+        if (frame[0] !== FrameType.RESPONSE) return;
+        const response = decodeJsonPayload<Record<string, unknown>>(frame.slice(1));
+        responses.get(String(response.id))?.(response);
+      },
+    });
+    const peer: PeerForTest = {
+      id,
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(`https://cloud.test/n/demo/sync?user=alice&operator=browser:${id}&scope=owner`),
+      ),
+      connectedAt: new Date().toISOString(),
+      consecutiveRejectedFrames: 0,
+    };
+    socket.serializeAttachment({ notebookId: "demo", peerId: id, ...peer, socket: undefined });
+    harness.peers.set(id, peer);
+    const client = NotebookHandle.create_bootstrap(peer.identity.actorLabel);
+    clients.push(client);
+    let received = 0;
+    const sync = async () => {
+      await harness.syncPeerFromRoomHost("demo", peer);
+      while (received < socket.sent.length) {
+        assert.ok(received < 500, "browser sync must converge");
+        const frame = socket.sent[received++];
+        if (frame[0] !== FrameType.AUTOMERGE_SYNC && frame[0] !== FrameType.RUNTIME_STATE_SYNC)
+          continue;
+        const events = client.receive_frame(frame) as Array<{ reply?: number[] }>;
+        for (const event of events)
+          if (event.reply)
+            await room.webSocketMessage(
+              peer.socket,
+              encodeTypedFrame(frame[0], new Uint8Array(event.reply)),
+            );
+        if (frame[0] === FrameType.RUNTIME_STATE_SYNC) {
+          const reply = client.generate_runtime_state_sync_reply();
+          if (reply)
+            await room.webSocketMessage(
+              peer.socket,
+              encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, reply),
+            );
+        }
+      }
+    };
+    await sync();
+    return {
+      peer,
+      client,
+      sync,
+      response: (requestId: string) =>
+        new Promise<Record<string, unknown>>((resolve) => {
+          responses.set(requestId, resolve);
+        }),
+      runtimeState: () => client.get_runtime_state() as ManagedAdmissionRuntimeState,
+      accepted: () =>
+        socket.sent.some((frame) => {
+          if (frame[0] !== FrameType.SESSION_CONTROL) return false;
+          const control = decodeJsonPayload<{ type: string; frame_type: number }>(frame.slice(1));
+          return (
+            control.type === "cloud_frame_accepted" && control.frame_type === FrameType.REQUEST
+          );
+        }),
+    };
+  };
+  return {
+    room,
+    materializer,
+    connect,
+    requests,
+    openEntered,
+    releaseOpen,
+    ownerLookupEntered,
+    releaseOwnerLookup,
+    drain: state.drain,
+    seed: async (connection: Awaited<ReturnType<typeof connect>>) => {
+      connection.client.update_source(initialHostedCellIdForTest("demo"), "print('ready once')");
+      const source = connection.client.flush_local_changes();
+      assert.ok(source);
+      await room.webSocketMessage(
+        connection.peer.socket,
+        encodeTypedFrame(FrameType.AUTOMERGE_SYNC, source),
+      );
+      await connection.sync();
+    },
+    execute: (connection: Awaited<ReturnType<typeof connect>>) =>
+      room.webSocketMessage(
+        connection.peer.socket,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({
+              id: "play",
+              action: "execute_cell",
+              cell_id: initialHostedCellIdForTest("demo"),
+            }),
+          ),
+        ),
+      ),
+    close: async () => {
+      releaseOwnerLookup();
+      releaseOpen(Response.json({ ok: true }));
+      await state.drain();
+      const runtimes = (
+        room as unknown as {
+          managedPython: Map<string, { runtime: { close(): Promise<void> } }>;
+        }
+      ).managedPython;
+      for (const { runtime } of runtimes.values()) await runtime.close();
+      for (const client of clients) client.free();
+    },
+  };
+}
+
 function fakeState(): DurableObjectState {
   const values = new Map<string, unknown>();
   return {
@@ -5683,6 +6117,8 @@ class CountingNotebookOwnerD1 extends NotebookOwnerD1 {
 }
 
 class ResumeNotebookD1 implements D1Database {
+  readonly notebookAclOwners = new Set<string>();
+  beforeSessionOwnerLookup?: () => Promise<void>;
   readonly attachJobs: Array<{
     id: string;
     notebook_id: string;
@@ -5780,6 +6216,7 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
       this.query.includes("FROM workstation_attach_jobs") &&
       this.query.includes("WHERE id = ?")
     ) {
+      if (this.query.includes("SELECT owner_principal")) await this.db.beforeSessionOwnerLookup?.();
       const [jobId] = this.values;
       return (this.db.attachJobs.find((job) => job.id === jobId) ?? null) as T | null;
     }
@@ -5817,6 +6254,21 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
   }
 
   async all<T = unknown>(): Promise<D1Result<T>> {
+    if (this.query.includes("FROM notebook_acl")) {
+      const [notebookId, principal] = this.values;
+      return d1OkResult<T>(
+        this.db.notebookAclOwners.has(String(principal))
+          ? [
+              {
+                notebook_id: notebookId,
+                subject_kind: "principal",
+                subject: principal,
+                scope: "owner",
+              } as T,
+            ]
+          : [],
+      );
+    }
     return d1OkResult<T>([]);
   }
 }
@@ -5986,7 +6438,9 @@ class FakeSocket {
   closeReason: string | undefined;
   private attachment: unknown;
 
-  constructor(private readonly options: { throwOnSend?: boolean } = {}) {}
+  constructor(
+    private readonly options: { throwOnSend?: boolean; onSend?: (frame: Uint8Array) => void } = {},
+  ) {}
 
   accept(): void {}
 
@@ -6004,6 +6458,7 @@ class FakeSocket {
     } else {
       this.sent.push(new Uint8Array(message.buffer, message.byteOffset, message.byteLength));
     }
+    this.options.onSend?.(this.sent[this.sent.length - 1]);
   }
 
   close(code?: number, reason?: string): void {

@@ -1210,8 +1210,17 @@ export class NotebookRoom {
       requestMetadata?.action ?? null,
     );
     if (forwardedRequestAction) {
+      const interruptAttachment =
+        forwardedRequestAction === "interrupt_execution"
+          ? await this.materializerFor(notebookId).getWorkstationAttachment?.()
+          : null;
       const managed = this.managedPython.get(notebookId);
-      if (forwardedRequestAction === "interrupt_execution" && managed) {
+      const startingSessionId =
+        interruptAttachment?.workstation_id === MANAGED_PYTHON_WORKSTATION &&
+        ["connecting", "ready"].includes(interruptAttachment.status)
+          ? interruptAttachment.runtime_session_id
+          : null;
+      if (forwardedRequestAction === "interrupt_execution" && (managed || startingSessionId)) {
         this.sendControl(notebookId, peer, {
           type: "cloud_frame_accepted",
           notebook_id: notebookId,
@@ -1222,12 +1231,41 @@ export class NotebookRoom {
         });
         let response: { result: string; error?: string };
         try {
-          await this.failManagedPython(
-            notebookId,
-            managed.runtime,
-            new Error("Python interrupted; restart compute to continue. Variables were discarded."),
-            true,
+          const error = new Error(
+            "Python interrupted; restart compute to continue. Variables were discarded.",
           );
+          if (managed) await this.failManagedPython(notebookId, managed.runtime, error, true);
+          else if (startingSessionId) {
+            // Startup may still be resolving its owner, before a local runtime
+            // exists. Fence that session now so it cannot run the queued work.
+            const ownerPrincipal = await this.failManagedPythonSession(
+              notebookId,
+              startingSessionId,
+              error,
+            );
+            const started = this.managedPython.get(notebookId);
+            if (started?.runtime.sessionId === startingSessionId)
+              await this.failManagedPython(notebookId, started.runtime, error, true);
+            else {
+              // A restored room may have no local peer while its provider
+              // session is still alive. Confirm disposal there as well.
+              const provider = managedPythonStub(this.env);
+              if (!ownerPrincipal || !provider)
+                throw new Error("Python session owner or provider is unavailable");
+              const closed = await provider.fetch(
+                new Request("https://preview-python.internal/close", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    ownerPrincipal,
+                    notebookId,
+                    sessionId: startingSessionId,
+                  }),
+                }),
+              );
+              if (!closed.ok)
+                throw new Error(`Python provider rejected termination (${closed.status})`);
+            }
+          }
           response = { result: "interrupt_sent" };
         } catch (error) {
           response = {
@@ -1355,6 +1393,7 @@ export class NotebookRoom {
       normalizedFrame.type === FrameType.REQUEST
         ? hostedExecutionRequestAction(requestMetadata?.action ?? null)
         : null;
+    let managedPythonSessionId: string | undefined;
     if (hostedExecutionAction) {
       if (requestMetadata?.requiredHeads !== undefined) {
         try {
@@ -1420,6 +1459,10 @@ export class NotebookRoom {
         return;
       }
       if (this.peers.get(peer.id) !== peer) return;
+      const attachment = await this.materializerFor(notebookId).getWorkstationAttachment?.();
+      if (attachment?.workstation_id === MANAGED_PYTHON_WORKSTATION)
+        managedPythonSessionId = attachment.runtime_session_id ?? undefined;
+      if (this.peers.get(peer.id) !== peer) return;
     }
 
     const unsupportedRuntimeRequestAction =
@@ -1442,7 +1485,9 @@ export class NotebookRoom {
       const materializer = this.materializerFor(notebookId);
       const startedAt = Date.now();
       try {
-        result = await materializer.receiveFrame(peer, normalizedFrame);
+        result = await materializer.receiveFrame(peer, normalizedFrame, {
+          managedPythonSessionId,
+        });
       } catch (error) {
         if (isRoomStorageDegradedError(error)) {
           this.sendRoomDegradedControl(notebookId, peer, errorMessage(error));
@@ -1477,6 +1522,11 @@ export class NotebookRoom {
       if (result.changed) {
         this.scheduleRoomHostCheckpoint(notebookId, materializer, "materialized_frame");
       }
+      // Record intent before starting compute, including an idempotent Play
+      // that finds existing queued work after room recovery. Startup can take
+      // longer than the request timeout or fail immediately.
+      if (managedPythonSessionId)
+        this.state.waitUntil(this.startManagedPython(notebookId, managedPythonSessionId));
       if (result.runtime_state_changed) {
         const managed = this.managedPython.get(notebookId);
         if (managed)
@@ -2063,8 +2113,7 @@ export class NotebookRoom {
       attachment.runtime_session_id &&
       managedPythonStub(this.env)
     ) {
-      await this.startManagedPython(notebookId, attachment.runtime_session_id);
-      return this.managedPython.has(notebookId);
+      return true;
     }
     if (attachment?.status === "connecting") {
       return true;
@@ -2085,23 +2134,7 @@ export class NotebookRoom {
         const materializer = this.materializerFor(notebookId);
         const selected = await materializer.getWorkstationAttachment();
         if (selected?.runtime_session_id === sessionId && selected.status !== "error") {
-          const reason = errorMessage(error).slice(0, 1000);
-          const result = await materializer.transitionManagedPythonSession(
-            sessionId,
-            "error",
-            reason,
-          );
-          this.deliverRoomHostFrames(notebookId, result);
-          await this.checkpointRoomHost(notebookId, materializer, "managed_python_start_failed");
-          const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
-          if (ownerPrincipal)
-            await updateWorkstationAttachJobStatus(this.env, {
-              ownerPrincipal,
-              workstationId: MANAGED_PYTHON_WORKSTATION,
-              jobId: sessionId,
-              status: "failed",
-              errorMessage: reason,
-            });
+          await this.failManagedPythonSession(notebookId, sessionId, error);
         }
         throw error;
       });
@@ -2132,7 +2165,8 @@ export class NotebookRoom {
     const selected = await materializer.getWorkstationAttachment();
     if (
       selected?.workstation_id !== MANAGED_PYTHON_WORKSTATION ||
-      selected.runtime_session_id !== sessionId
+      selected.runtime_session_id !== sessionId ||
+      !["connecting", "ready"].includes(selected.status)
     )
       return;
     const runtime = new ManagedPythonRoom(
@@ -2197,29 +2231,42 @@ export class NotebookRoom {
       });
     });
     try {
-      const materializer = this.materializerFor(notebookId);
-      const reason = errorMessage(error).slice(0, 1000);
-      const failed = await materializer.transitionManagedPythonSession(
+      await this.failManagedPythonSession(
+        notebookId,
         runtime.sessionId,
-        "error",
-        reason,
+        error,
+        runtime.ownerPrincipal,
       );
-      if (failed.ignored_stale) return;
-      this.deliverRoomHostFrames(notebookId, failed);
-      if (this.env.DB)
-        await updateWorkstationAttachJobStatus(this.env, {
-          ownerPrincipal: runtime.ownerPrincipal,
-          workstationId: MANAGED_PYTHON_WORKSTATION,
-          jobId: runtime.sessionId,
-          status: "failed",
-          errorMessage: reason,
-        });
-      await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
-      await this.publishCurrentComputeSessionSummary(notebookId);
     } finally {
       await closing;
       if (reportCleanupFailure && cleanupFailure) throw cleanupFailure;
     }
+  }
+
+  private async failManagedPythonSession(
+    notebookId: string,
+    sessionId: string,
+    error: unknown,
+    ownerPrincipal?: string,
+  ): Promise<string | null> {
+    const materializer = this.materializerFor(notebookId);
+    const reason = errorMessage(error).slice(0, 1000);
+    const failed = await materializer.transitionManagedPythonSession(sessionId, "error", reason);
+    if (failed.ignored_stale) return null;
+    this.deliverRoomHostFrames(notebookId, failed);
+    await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
+    const owner =
+      ownerPrincipal ?? (await managedPythonSessionOwner(this.env, notebookId, sessionId));
+    if (owner)
+      await updateWorkstationAttachJobStatus(this.env, {
+        ownerPrincipal: owner,
+        workstationId: MANAGED_PYTHON_WORKSTATION,
+        jobId: sessionId,
+        status: "failed",
+        errorMessage: reason,
+      });
+    await this.publishCurrentComputeSessionSummary(notebookId);
+    return owner;
   }
 
   private async requestRuntimeResumeForExecution(
@@ -2283,9 +2330,6 @@ export class NotebookRoom {
     const result = await materializer.setWorkstationAttachment(nextAttachment);
     if (!result.ignored_stale) {
       this.cacheSelectedRuntimePeerSession(notebookId, nextAttachment);
-      if (workstationId === MANAGED_PYTHON_WORKSTATION && managedPythonStub(this.env)) {
-        this.state.waitUntil(this.startManagedPython(notebookId, attachJob.job.id));
-      }
     }
     if (result.changed) {
       this.deliverRoomHostFrames(notebookId, result);
