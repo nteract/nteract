@@ -420,7 +420,7 @@ update their comparisons to these native values; runtime serialization is unchan
 ### Native session verification
 
 Build the native binding and daemon, then run the callback and shared-store
-contract against an isolated daemon. CI runs this check without a Python kernel:
+contract against an isolated daemon without a Python kernel:
 
 ```bash
 pnpm --dir packages/runtimed-node build:debug
@@ -435,3 +435,5 @@ Add `RUNTIMED_NODE_EXECUTION_INTEGRATION=1` to exercise Python execution,
 reruns, progress callbacks, and retained snapshots too. This creates a notebook
 environment with `ipykernel` and may download Python packages. The suite starts
 and stops its own daemon and disables background environment pools.
+CI runs this Python execution and recovery coverage in a separate step with both
+flags enabled.

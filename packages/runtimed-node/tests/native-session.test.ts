@@ -17,12 +17,12 @@ const root = fileURLToPath(new URL("../../..", import.meta.url));
 const nativeEnabled = process.env.RUNTIMED_NODE_NATIVE_INTEGRATION === "1";
 const executionEnabled = process.env.RUNTIMED_NODE_EXECUTION_INTEGRATION === "1";
 
-// Hold runtime sync frames until the daemon rejects an execution. This makes
-// the stale Running snapshot / NoKernel race deterministic with a real daemon.
+// Delay runtime sync to exercise response/replica races with a real daemon.
 async function runtimeStateProxy(upstreamPath: string, proxyPath: string) {
   const sockets = new Set<net.Socket>();
   let holdRuntime = false;
   let noKernelResponses = 0;
+  let queuedWhileHeld = 0;
   const proxy = net.createServer((client) => {
     const upstream = net.createConnection(upstreamPath);
     sockets.add(client);
@@ -54,6 +54,17 @@ async function runtimeStateProxy(upstreamPath: string, proxyPath: string) {
           holdRuntime = false;
           for (const delayed of held.splice(0)) client.write(delayed);
         }
+        if (
+          holdRuntime &&
+          frame[4] === 2 &&
+          JSON.parse(frame.subarray(5).toString()).result === "cell_queued"
+        ) {
+          queuedWhileHeld += 1;
+          setTimeout(() => {
+            holdRuntime = false;
+            for (const delayed of held.splice(0)) client.write(delayed);
+          }, 150);
+        }
         client.write(frame);
       }
     });
@@ -65,6 +76,7 @@ async function runtimeStateProxy(upstreamPath: string, proxyPath: string) {
       holdRuntime = true;
     },
     noKernelResponses: () => noKernelResponses,
+    queuedWhileHeld: () => queuedWhileHeld,
     close: async () => {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => proxy.close(() => resolve()));
@@ -225,7 +237,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
     }
   });
 
-  it.each([false, true])(
+  it.skipIf(!executionEnabled).each([false, true])(
     "recovers execution after another session shuts down the kernel (stale=%s)",
     async (staleSnapshot) => {
       const proxyPath = path.join(directory, `recovery-${staleSnapshot}.sock`);
@@ -256,6 +268,9 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
           true,
         );
         expect(proxy.noKernelResponses()).toBe(staleSnapshot ? 1 : 0);
+        await peer.shutdownKernel();
+        await expect.poll(async () => (await owner.getRuntimeStatus()).lifecycle).toBe("Shutdown");
+        proxy.hold();
         await peer.restartKernel();
         expect((await peer.runCell("peer_value = 'after peer restart'")).success).toBe(true);
         const continued = await owner.runCell("print(peer_value)");
@@ -263,6 +278,7 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
         expect(
           continued.outputs.some((output) => output.text?.includes("after peer restart")),
         ).toBe(true);
+        expect(proxy.queuedWhileHeld()).toBe(1);
       } finally {
         await peer.close();
         try {
