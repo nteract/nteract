@@ -2295,8 +2295,10 @@ async fn abort_kernel_for_upgrade(
     );
 
     let context = registry.get(&window_label)?;
-    let guard = context.notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+    let handle = {
+        let guard = context.notebook_sync.lock().await;
+        guard.clone().ok_or("Not connected to daemon")?
+    };
 
     handle
         .send_request(NotebookRequest::ShutdownKernel {})
@@ -2355,8 +2357,8 @@ async fn run_upgrade(
 
     // Shutdown each kernel
     for (label, notebook_sync) in kernel_handles {
-        let guard = notebook_sync.lock().await;
-        if let Some(handle) = guard.as_ref() {
+        let handle = { notebook_sync.lock().await.clone() };
+        if let Some(handle) = handle {
             match handle
                 .send_request(NotebookRequest::ShutdownKernel {})
                 .await
