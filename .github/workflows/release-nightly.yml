@@ -18,7 +18,7 @@ jobs:
       release_title: "Nightly Release"
       version_suffix: "nightly"
       manifest_notes_prefix: "Nightly release"
-      release_intro: "Automated nightly release from `main`."
+      release_intro: "Automated nightly release."
       github_release_prerelease: true
       updater_channel_tag: "nightly-latest"
       updater_channel_title: "Nightly Update Channel"
