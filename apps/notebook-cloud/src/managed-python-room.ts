@@ -26,6 +26,7 @@ export class ManagedPythonRoom {
   private readonly pending: Uint8Array[] = [];
   private active = true;
   private readonly packageWaitAbort = new AbortController();
+  private readonly executionAbort = new AbortController();
   private syncing: Promise<void> = Promise.resolve();
   private pumping: Promise<void> | undefined;
   private wakeRequested = false;
@@ -136,11 +137,14 @@ export class ManagedPythonRoom {
     execution: PythonExecution,
     onLive: (event: PythonLiveEvent) => void,
   ): Promise<PythonExecutionResult> {
+    const signal = this.executionAbort.signal;
+    signal.throwIfAborted();
     const provider = managedPythonStub(this.env);
     if (!provider) throw new Error("Managed Python provider unavailable");
     const response = await provider.fetch(
       new Request("https://preview-python.internal/execute", {
         method: "POST",
+        signal,
         body: JSON.stringify({
           ownerPrincipal: this.ownerPrincipal,
           notebookId: this.notebookId,
@@ -168,6 +172,15 @@ export class ManagedPythonRoom {
     if (!response.headers.get("content-type")?.includes("application/x-ndjson"))
       return (await response.json()) as PythonExecutionResult;
     const reader = response.body.getReader();
+    // A terminated guest may never finish its streamed response. Closing the
+    // room session must release this read so Interrupt can finish and the
+    // socket's next command can run. Provider termination is still confirmed
+    // independently by bridge.close().
+    const cancel = () => {
+      void reader.cancel().catch(() => undefined);
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
     const decoder = new TextDecoder();
     let buffered = "";
     let result: PythonExecutionResult | undefined;
@@ -188,6 +201,7 @@ export class ManagedPythonRoom {
     try {
       for (;;) {
         const { done, value } = await reader.read();
+        signal.throwIfAborted();
         if (done) break;
         buffered += decoder.decode(value, { stream: true });
         let newline;
@@ -201,6 +215,7 @@ export class ManagedPythonRoom {
       await reader.cancel().catch(() => undefined);
       throw error;
     } finally {
+      signal.removeEventListener("abort", cancel);
       reader.releaseLock();
     }
     if (failure !== undefined) throw new Error(failure.replace(/^Error: /, "").slice(0, 1000));
@@ -466,6 +481,7 @@ export class ManagedPythonRoom {
   async close(): Promise<void> {
     this.active = false;
     this.packageWaitAbort.abort();
+    this.executionAbort.abort();
     await this.bridge.close();
     await this.pumping?.catch(() => undefined);
     await this.syncing;

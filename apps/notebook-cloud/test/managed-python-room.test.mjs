@@ -794,3 +794,62 @@ test("managed live execute reads split NDJSON, accepts older providers and rejec
     /without a result/,
   );
 });
+
+test("closing a managed session cancels a live response without a terminal record", async () => {
+  await initializeTestRuntimedWasm();
+  let controller;
+  let cancelled = false;
+  let observed;
+  const firstOutput = new Promise((resolve) => {
+    observed = resolve;
+  });
+  const env = {
+    NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+    PREVIEW_PYTHON_SESSIONS: {
+      idFromName: (name) => name,
+      get: () => ({
+        fetch: async (request) => {
+          if (new URL(request.url).pathname === "/close") return Response.json({ ok: true });
+          return new Response(
+            new ReadableStream({
+              start(value) {
+                controller = value;
+                controller.enqueue(
+                  new TextEncoder().encode('{"type":"stream","name":"stdout","text":"partial"}\n'),
+                );
+              },
+              cancel() {
+                cancelled = true;
+              },
+            }),
+            { headers: { "content-type": "application/x-ndjson" } },
+          );
+        },
+      }),
+    },
+  };
+  const runtime = new ManagedPythonRoom(
+    env,
+    { removePeer: async () => {} },
+    "notebook",
+    "user:dev:owner",
+    "session",
+    () => {},
+  );
+  const executing = runtime.executeLive(
+    { execution_id: "e", cell_id: "c", source: "await pending" },
+    observed,
+  );
+  runtime.pumping = executing;
+  const rejected = assert.rejects(executing, /abort|expired|without a result/i);
+  await firstOutput;
+  const closing = runtime.close();
+  try {
+    await Promise.resolve();
+    assert.equal(cancelled, true, "Interrupt must not wait for a dead guest's terminal response");
+  } finally {
+    if (!cancelled) controller.close();
+    await rejected;
+    await closing;
+  }
+});
