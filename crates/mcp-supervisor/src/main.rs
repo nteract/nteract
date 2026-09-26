@@ -851,6 +851,13 @@ impl Supervisor {
         self.state.read().await.mode
     }
 
+    async fn reset_child_circuit_breaker(&self) {
+        let proxy = { self.state.read().await.proxy.clone() };
+        if let Some(proxy) = proxy {
+            proxy.reset_circuit_breaker().await;
+        }
+    }
+
     async fn reject_in_attach_mode(&self, operation: &str) -> Option<CallToolResult> {
         if self.current_mode().await == DevMode::Attach {
             Some(CallToolResult::success(vec![ContentBlock::text(format!(
@@ -887,10 +894,10 @@ impl Supervisor {
         &self,
         params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        let state = self.state.read().await;
-        let proxy = Self::get_proxy(&state)?;
-        let proxy = proxy.clone();
-        drop(state);
+        let proxy = {
+            let state = self.state.read().await;
+            Self::get_proxy(&state)?.clone()
+        };
         proxy.forward_tool_call(params).await
     }
 
@@ -899,15 +906,24 @@ impl Supervisor {
         &self,
         params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult, McpError> {
-        let state = self.state.read().await;
-        let proxy = Self::get_proxy(&state)?;
-        let proxy = proxy.clone();
-        drop(state);
+        let proxy = {
+            let state = self.state.read().await;
+            Self::get_proxy(&state)?.clone()
+        };
         proxy.forward_read_resource(params).await
     }
 
     /// Build the supervisor_status result.
     async fn status(&self) -> SupervisorStatus {
+        // Proxy state has its own lock. Sample it before locking supervisor
+        // state so a busy child cannot block lifecycle changes here.
+        let proxy = { self.state.read().await.proxy.clone() };
+        let (child_running, restart_count) = if let Some(proxy) = proxy {
+            let ps = proxy.state.read().await;
+            (ps.child_client.is_some(), ps.restart_count)
+        } else {
+            (false, 0)
+        };
         let mut state = self.state.write().await;
 
         // Failsafe: warn if the socket path doesn't look like a dev daemon socket.
@@ -923,13 +939,6 @@ impl Supervisor {
             );
         }
 
-        // Check proxy's child status
-        let (child_running, restart_count) = if let Some(ref proxy) = state.proxy {
-            let ps = proxy.state.read().await;
-            (ps.child_client.is_some(), ps.restart_count)
-        } else {
-            (false, 0)
-        };
         let managed_processes: HashMap<String, ManagedProcessStatus> = state
             .managed
             .iter_mut()
@@ -1306,20 +1315,15 @@ impl Supervisor {
         }
 
         // Clear circuit breaker for file-change-triggered restarts
-        {
-            let state = self.state.read().await;
-            if let Some(ref proxy) = state.proxy {
-                proxy.reset_circuit_breaker().await;
-            }
-        }
+        self.reset_child_circuit_breaker().await;
 
         // Restart child via proxy (auto-rejoin is handled inside restart_child)
         match self.restart_child().await {
             Ok(()) => {
                 info!("Child restarted after file change ({kind:?})");
                 // Signal that the tool list may have changed
-                let state = self.state.read().await;
-                if let Some(ref tx) = state.tool_list_changed_tx {
+                let tx = { self.state.read().await.tool_list_changed_tx.clone() };
+                if let Some(tx) = tx {
                     let _ = tx.send(()).await;
                 }
             }
@@ -1643,24 +1647,16 @@ impl Supervisor {
         //  - runt binary changed (the child IS runt; stale bytes
         //    otherwise — matches the file-watcher's existing rule for
         //    `crates/runt-mcp/src/**` changes).
-        let child_healthy = {
-            let state = self.state.read().await;
-            if let Some(ref proxy) = state.proxy {
-                let ps = proxy.state.read().await;
-                ps.child_client.is_some()
-            } else {
-                false
-            }
+        let proxy = { self.state.read().await.proxy.clone() };
+        let child_healthy = if let Some(proxy) = proxy {
+            proxy.state.read().await.child_client.is_some()
+        } else {
+            false
         };
 
         if !child_healthy || needs_daemon_restart || child_changed_by_rebuild {
             // Clear circuit breaker on manual up
-            {
-                let state = self.state.read().await;
-                if let Some(ref proxy) = state.proxy {
-                    proxy.reset_circuit_breaker().await;
-                }
-            }
+            self.reset_child_circuit_breaker().await;
             match self.restart_child().await {
                 Ok(()) => {
                     let reason = if child_changed_by_rebuild && !needs_daemon_restart {
@@ -2076,8 +2072,8 @@ impl ServerHandler for Supervisor {
                 .list_resources(request, context)
                 .await;
         }
-        let state = self.state.read().await;
-        if let Some(ref proxy) = state.proxy {
+        let proxy = { self.state.read().await.proxy.clone() };
+        if let Some(proxy) = proxy {
             Ok(proxy.child_resources(request).await)
         } else {
             Ok(ListResourcesResult::default())
@@ -2097,8 +2093,8 @@ impl ServerHandler for Supervisor {
                 .list_resource_templates(request, context)
                 .await;
         }
-        let state = self.state.read().await;
-        if let Some(ref proxy) = state.proxy {
+        let proxy = { self.state.read().await.proxy.clone() };
+        if let Some(proxy) = proxy {
             Ok(proxy.child_resource_templates(request).await)
         } else {
             Ok(ListResourceTemplatesResult::default())
@@ -2273,12 +2269,7 @@ impl Supervisor {
                     _ => {
                         // Restart child only
                         // Clear the circuit breaker on manual restart
-                        {
-                            let state = self.state.read().await;
-                            if let Some(ref proxy) = state.proxy {
-                                proxy.reset_circuit_breaker().await;
-                            }
-                        }
+                        self.reset_child_circuit_breaker().await;
                         match self.restart_child().await {
                             Ok(()) => Ok(CallToolResult::success(vec![ContentBlock::text(
                                 "nteract MCP server restarted successfully",
@@ -2465,12 +2456,7 @@ impl Supervisor {
                 };
 
                 // 4. Clear circuit breaker and restart child MCP server
-                {
-                    let state = self.state.read().await;
-                    if let Some(ref proxy) = state.proxy {
-                        proxy.reset_circuit_breaker().await;
-                    }
-                }
+                self.reset_child_circuit_breaker().await;
                 let version_warning = if !version_ok {
                     "\n\n⚠️  Warning: daemon version mismatch — another process may have \
                      claimed the socket (e.g. launchd). Run supervisor_restart target=daemon \
@@ -3477,6 +3463,192 @@ mod tests {
 
     fn root() -> PathBuf {
         PathBuf::from("/repo")
+    }
+
+    #[derive(Clone)]
+    struct StalledCatalog {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl ServerHandler for StalledCatalog {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+                .with_protocol_version(ProtocolVersion::V_2025_11_25)
+                .with_server_info(Implementation::new("stalled-catalog", "1"))
+        }
+
+        async fn list_resources(
+            &self,
+            _: Option<rmcp::model::PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, McpError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(ListResourcesResult::default())
+        }
+
+        async fn list_resource_templates(
+            &self,
+            _: Option<rmcp::model::PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListResourceTemplatesResult, McpError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(ListResourceTemplatesResult::default())
+        }
+    }
+
+    fn catalog_test_client() -> runt_mcp_proxy::child::ChildClientHandler {
+        runt_mcp_proxy::child::ChildClientHandler {
+            upstream_name: "recovery-test".into(),
+            upstream_title: None,
+            notifications: tokio::sync::broadcast::channel(1).0,
+            progress: tokio::sync::broadcast::channel(1).0,
+            lifetime: mcp_transport::ConnectionLifetime::default(),
+        }
+    }
+
+    fn unavailable_test_proxy() -> McpProxy {
+        McpProxy::new(
+            ProxyConfig {
+                resolve_child_command: Box::new(|| Err("test respawn unavailable".into())),
+                child_args: Vec::new(),
+                child_env: HashMap::new(),
+                server_name: "recovery-test".into(),
+                cache_dir: None,
+                monitor_poll_interval_ms: 500,
+                recovery_hint: "test recovery".into(),
+            },
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn waiting_for_proxy_state_does_not_lock_supervisor_state() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(
+            dir.path().to_path_buf(),
+            DevMode::Attach,
+            dir.path().to_path_buf(),
+            None,
+            tx,
+        );
+        let proxy = unavailable_test_proxy();
+        supervisor.state.write().await.proxy = Some(proxy.clone());
+        {
+            let _proxy_guard = proxy.state.write().await;
+            let mut context = Context::from_waker(Waker::noop());
+            let mut status = Box::pin(supervisor.status());
+            assert!(matches!(status.as_mut().poll(&mut context), Poll::Pending));
+            assert!(
+                supervisor.state.try_write().is_ok(),
+                "status must release supervisor state before waiting on proxy state"
+            );
+
+            let mut reset = Box::pin(supervisor.reset_child_circuit_breaker());
+            assert!(matches!(reset.as_mut().poll(&mut context), Poll::Pending));
+            assert!(
+                supervisor.state.try_write().is_ok(),
+                "circuit breaker reset must release supervisor state before waiting"
+            );
+        }
+    }
+
+    async fn assert_stalled_catalog_allows_recovery(templates: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(
+            dir.path().to_path_buf(),
+            DevMode::Attach,
+            dir.path().to_path_buf(),
+            None,
+            tx,
+        );
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let child = StalledCatalog {
+            entered: entered.clone(),
+            release: release.clone(),
+        };
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let (child_server, child_client) = tokio::join!(
+            child.serve(server_io),
+            catalog_test_client().serve(client_io)
+        );
+        let child_server = child_server.unwrap();
+        let proxy = unavailable_test_proxy();
+        {
+            let mut state = proxy.state.write().await;
+            state.child_client = Some(child_client.unwrap());
+            state.child_generation = 1;
+        }
+        supervisor.state.write().await.proxy = Some(proxy.clone());
+
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let (server, client) = tokio::join!(
+            supervisor.clone().serve(server_io),
+            catalog_test_client().serve(client_io)
+        );
+        let server = server.unwrap();
+        let client = client.unwrap();
+        let peer = client.peer().clone();
+        let listing = tokio::spawn(async move {
+            if templates {
+                peer.list_resource_templates(None).await.map(|_| ())
+            } else {
+                peer.list_resources(None).await.map(|_| ())
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("the child must receive the catalog request");
+
+        let status = tokio::time::timeout(Duration::from_secs(1), supervisor.status())
+            .await
+            .expect("status must remain available while child RPC is stalled");
+        assert!(status.child_running);
+        assert!(!listing.is_finished(), "child response is still pending");
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            supervisor.handle_tool_call(CallToolRequestParams::new("supervisor_restart")),
+        )
+        .await
+        .expect("manual restart must not wait for the pending catalog response")
+        .unwrap();
+        assert!(serde_json::to_string(&result)
+            .unwrap()
+            .contains("test respawn unavailable"));
+        assert_eq!(
+            supervisor.state.read().await.last_error.as_deref(),
+            Some("Failed to resolve child binary on restart: test respawn unavailable")
+        );
+        assert!(proxy.state.read().await.child_client.is_none());
+        tokio::time::timeout(Duration::from_secs(1), listing)
+            .await
+            .expect("restarting the child must resolve its pending RPC")
+            .unwrap()
+            .unwrap();
+
+        release.notify_one();
+        client.cancel().await.unwrap();
+        server.cancel().await.unwrap();
+        child_server.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_resources_do_not_block_status_or_restart() {
+        assert_stalled_catalog_allows_recovery(false).await;
+    }
+
+    #[tokio::test]
+    async fn stalled_resource_templates_do_not_block_status_or_restart() {
+        assert_stalled_catalog_allows_recovery(true).await;
     }
 
     #[tokio::test]
