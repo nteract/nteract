@@ -184,3 +184,102 @@ for (const queued of [true, false]) {
     }
   });
 }
+
+for (const catalogFails of [false, true])
+  test(`recovery waits for the interrupted catalog update, failure ${catalogFails}`, async () => {
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    const catalogEntered = deferred();
+    const releaseCatalog = deferred();
+    const published = deferred();
+    const checkpointEntered = deferred();
+    const releaseCheckpoint = deferred();
+    let catalogStatus = "running";
+    let recoveryVisible = false;
+    const db = {
+      prepare(sql) {
+        return {
+          bind() {
+            return this;
+          },
+          async all() {
+            return { results: [] };
+          },
+          async first() {
+            return { id: "session", status: catalogStatus };
+          },
+          async run() {
+            if (sql.includes("UPDATE workstation_attach_jobs") && sql.includes("SET status = ?")) {
+              catalogEntered.resolve();
+              await releaseCatalog.promise;
+              if (catalogFails) throw new Error("catalog unavailable");
+              catalogStatus = "failed";
+            }
+            return { success: true };
+          },
+        };
+      },
+    };
+    const room = new NotebookRoom(
+      {
+        id: { toString: () => "demo" },
+        storage: { get: async () => undefined },
+        waitUntil: () => {},
+      },
+      { DB: db },
+    );
+    room.materializers.set("demo", {
+      transitionManagedPythonSession: async () => ({ changed: true, outbound: [] }),
+      checkpoint: async () => {
+        checkpointEntered.resolve();
+        await releaseCheckpoint.promise;
+      },
+    });
+    room.deliverRoomHostFrames = () => {
+      recoveryVisible = true;
+      published.resolve();
+    };
+    room.publishCurrentComputeSessionSummary = async () => {};
+    const failing = room.failManagedPythonSession(
+      "demo",
+      "session",
+      new Error("interrupted"),
+      "user:dev:owner",
+    );
+    const outcome = failing.then(
+      () => null,
+      (error) => error,
+    );
+    try {
+      const first = await Promise.race([
+        catalogEntered.promise.then(() => "catalog"),
+        published.promise.then(() => "recovery"),
+      ]);
+      assert.equal(
+        first,
+        "catalog",
+        "Retry must not be offered while its catalog job is still active",
+      );
+      assert.equal(recoveryVisible, false);
+      releaseCatalog.resolve();
+      await checkpointEntered.promise;
+      if (!catalogFails)
+        assert.equal(
+          catalogStatus,
+          "failed",
+          "a retry during the held checkpoint must create a fresh job",
+        );
+      assert.equal(recoveryVisible, true);
+    } finally {
+      releaseCatalog.resolve();
+      releaseCheckpoint.resolve();
+      const error = await outcome;
+      if (catalogFails) assert.match(error.message, /catalog unavailable/);
+      else assert.equal(error, null);
+    }
+  });

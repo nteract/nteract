@@ -2437,19 +2437,26 @@ export class NotebookRoom {
     const reason = errorMessage(error).slice(0, 1000);
     const failed = await materializer.transitionManagedPythonSession(sessionId, "error", reason);
     if (failed.ignored_stale) return null;
-    this.deliverRoomHostFrames(notebookId, failed);
-    await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
-    const owner =
-      ownerPrincipal ?? (await managedPythonSessionOwner(this.env, notebookId, sessionId));
-    if (owner)
-      await updateWorkstationAttachJobStatus(this.env, {
-        ownerPrincipal: owner,
-        workstationId: MANAGED_PYTHON_WORKSTATION,
-        jobId: sessionId,
-        status: "failed",
-        errorMessage: reason,
-      });
-    await this.publishCurrentComputeSessionSummary(notebookId);
+    let owner: string | null = null;
+    try {
+      owner = ownerPrincipal ?? (await managedPythonSessionOwner(this.env, notebookId, sessionId));
+      // Retry deduplicates against active catalog jobs. Retire this job before
+      // publishing the error/Start UI, especially before a slow checkpoint, so
+      // an immediate retry allocates a fresh runtime session.
+      if (owner)
+        await updateWorkstationAttachJobStatus(this.env, {
+          ownerPrincipal: owner,
+          workstationId: MANAGED_PYTHON_WORKSTATION,
+          jobId: sessionId,
+          status: "failed",
+          errorMessage: reason,
+        });
+    } finally {
+      // A catalog failure must not leave the fenced runtime looking healthy.
+      this.deliverRoomHostFrames(notebookId, failed);
+      await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
+      await this.publishCurrentComputeSessionSummary(notebookId);
+    }
     return owner;
   }
 
