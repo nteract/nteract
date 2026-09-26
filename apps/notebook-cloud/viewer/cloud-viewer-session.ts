@@ -1,5 +1,5 @@
 import { useNotebookMetadataStore } from "@/components/notebook/state/notebook-metadata";
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   IndexedDbStorageAdapter,
   NotebookMetadataStore,
@@ -278,8 +278,16 @@ export function useCloudViewerSession({
   // straggling clear can never delete a fresh attempt's first record.
   const pendingSeedDiscardRef = useRef<Promise<void>>(Promise.resolve());
   const projectedWidgetCommIdsRef = useRef(new Set<string>());
-  const outputResolutionCacheRef = useRef(createOutputResolutionCache());
-  const incrementalOutputCacheRef = useRef(new Map<string, NotebookStoreJupyterOutput>());
+  // Resolved payloads (including in-flight promises) belong to this notebook
+  // and resolver's access policy. Capture the maps in each effect's closure:
+  // late work can finish in its retired map, never in a replacement session.
+  const { outputResolutionCache, incrementalOutputCache } = useMemo(
+    () => ({
+      outputResolutionCache: createOutputResolutionCache(),
+      incrementalOutputCache: new Map<string, NotebookStoreJupyterOutput>(),
+    }),
+    [blobResolver, config.notebookId, config.headsHash],
+  );
   const presenceStoreRef = useRef<CloudViewerPresenceStore | null>(null);
   if (presenceStoreRef.current === null) {
     presenceStoreRef.current = new CloudViewerPresenceStore();
@@ -581,7 +589,6 @@ export function useCloudViewerSession({
           config.runtimedWasmModulePath,
           config.runtimedWasmPath,
         );
-        const outputResolutionCache = outputResolutionCacheRef.current;
         const materialized = await materializeCloudNotebookView(handle, {
           blobResolver,
           defaultNotebookLanguage: "python",
@@ -659,6 +666,7 @@ export function useCloudViewerSession({
     config.runtimedWasmPath,
     config.snapshotBasePath,
     loadingPolicy.shouldFetchSnapshotRender,
+    outputResolutionCache,
     preloadSiftWasm,
     widgetStore,
   ]);
@@ -1017,7 +1025,6 @@ export function useCloudViewerSession({
     const materializeLiveCells = async (liveRuntime: CloudSyncRuntime) => {
       const sequence = ++materializeSequence;
       const previousNotebookLanguage = notebookLanguageRef.current;
-      const outputResolutionCache = outputResolutionCacheRef.current;
       const rawCellCount = liveRuntime.handle.cell_count();
       if (rawCellCount === 0 && !mayShowEmptyLiveNotebook(liveRuntime)) {
         return;
@@ -1101,7 +1108,7 @@ export function useCloudViewerSession({
       await materializeChangeset(changeset, {
         getHandle: () => liveRuntime.handle,
         materializeCells: async () => materializeLiveCells(liveRuntime),
-        outputCache: incrementalOutputCacheRef.current,
+        outputCache: incrementalOutputCache,
         blobResolver,
       });
       if (disposed || sequence !== materializeSequence) return;
@@ -1192,7 +1199,7 @@ export function useCloudViewerSession({
           materializeCloudNotebookView(renderHandle, {
             blobResolver,
             defaultNotebookLanguage: notebookLanguageRef.current ?? "python",
-            outputResolutionCache: outputResolutionCacheRef.current,
+            outputResolutionCache,
             callbacks: {
               shouldContinue,
               onInitialCells(syncCells) {
@@ -1680,6 +1687,8 @@ export function useCloudViewerSession({
     connectAttempt,
     syncAuthConnectionKey,
     loadingPolicy.shouldConnectLiveRoom,
+    outputResolutionCache,
+    incrementalOutputCache,
     presenceStore,
     applyResolvedCells,
     preloadSiftWasm,

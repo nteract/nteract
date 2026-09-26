@@ -17,12 +17,10 @@ import "@/components/widgets/controls";
 import "@/components/widgets/ipycanvas";
 import "@/components/widgets/matplotlib";
 
-// Preload output components used in main bundle (via MediaRouter).
+// Preload the remaining non-isolated lazy output renderer.
 // Note: markdown-output, html-output, svg-output are isolated-only
 // and bundled separately in src/isolated-renderer/ - no need to preload here.
-// ansi-output is now a static import in media-router (also pulled in by
-// OutputArea), so it's already part of the main bundle.
-import("@/components/outputs/image-output");
+// Text and raster image renderers are static imports in MediaRouter.
 import("@/components/outputs/json-output");
 
 // Loader for isolated renderer bundle (uses existing Vite virtual module)

@@ -8,6 +8,10 @@ import {
 } from "../../lib/markdown-projection";
 import { ProjectedMarkdownView } from "../markdown/ProjectedMarkdownView";
 import { AnsiOutput } from "./ansi-output";
+// Raster images need only a host <img>. Keep their renderer available when
+// resolved output data arrives so a module load cannot flash the Suspense
+// fallback, even when the image itself is already cached.
+import { ImageOutput } from "./image-output";
 import { TracebackOutput } from "./traceback-output";
 import { isSafeForMainDom } from "./safe-mime-types";
 import { useMediaContext } from "./media-provider";
@@ -25,7 +29,6 @@ const MarkdownOutput = lazy(() =>
 );
 const MathOutput = lazy(() => import("./math-output").then((m) => ({ default: m.MathOutput })));
 const HtmlOutput = lazy(() => import("./html-output").then((m) => ({ default: m.HtmlOutput })));
-const ImageOutput = lazy(() => import("./image-output").then((m) => ({ default: m.ImageOutput })));
 const SvgOutput = lazy(() => import("./svg-output").then((m) => ({ default: m.SvgOutput })));
 const JsonOutput = lazy(() => import("./json-output").then((m) => ({ default: m.JsonOutput })));
 
