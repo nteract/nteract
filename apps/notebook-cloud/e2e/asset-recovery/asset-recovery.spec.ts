@@ -11,6 +11,10 @@ test("aborts and retries a stalled successful WASM body in the browser", async (
   const headers = page.waitForResponse((response) => response.url().includes("/__wasm/binary"));
   await page.goto(`/__wasm?case=${id}`);
   expect((await headers).status()).toBe(200);
+  // Wait for fetch fulfillment in the page, not only Playwright's network
+  // event. Its promise microtasks (including clearing the header deadline)
+  // finish before the next page task can advance the virtual clock.
+  await expect(page.locator("body")).toHaveAttribute("data-headers-received", "true");
   await expect(page.getByText("Loading WASM", { exact: true })).toBeVisible();
   await page.clock.runFor(20_000);
   await expect

@@ -11,8 +11,13 @@ const cases = new Map();
 // failure coverage needs neither room authentication nor a running daemon.
 const wasmHarness = await build({
   stdin: {
-    contents: `import { initializeRuntimedWasmClient } from "./viewer/runtimed-wasm-client";
+    contents: `import { initializeRuntimedWasmClient, _setRuntimedWasmFetchForTests } from "./viewer/runtimed-wasm-client";
       const id = new URL(location.href).searchParams.get("case");
+      _setRuntimedWasmFetchForTests(async (...args) => {
+        const response = await fetch(...args);
+        document.body.dataset.headersReceived = "true";
+        return response;
+      });
       initializeRuntimedWasmClient("/__wasm/module.js", "/__wasm/binary?case=" + id)
         .then(() => { document.body.textContent = "WASM ready"; })
         .catch(error => { document.body.textContent = error.message; });`,
@@ -54,8 +59,10 @@ createServer(async (req, res) => {
   if (url.pathname === "/__wasm/module.js") {
     res.setHeader("Content-Type", "text/javascript");
     res.end(`export default async ({module_or_path}) => {
-      const bytes = module_or_path instanceof Response ? await module_or_path.arrayBuffer() : module_or_path;
-      await WebAssembly.instantiate(bytes);
+      if (!(module_or_path instanceof Response) || !module_or_path.url.includes("/__wasm/binary")) {
+        throw new Error("The original WASM response and its URL must survive validation");
+      }
+      await WebAssembly.instantiateStreaming(module_or_path);
     }; export const project_markdown_json = () => null;`);
     return;
   }

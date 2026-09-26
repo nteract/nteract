@@ -245,8 +245,8 @@ describe("runtimed WASM client retry ladder", () => {
       HASHED_WASM,
       STABLE_WASM,
     ]);
-    assert.ok(initCalls[0] instanceof ArrayBuffer);
-    assert.equal(new TextDecoder().decode(initCalls[0] as ArrayBuffer), "wasm-bytes");
+    assert.ok(initCalls[0] instanceof Response);
+    assert.equal(await (initCalls[0] as Response).text(), "wasm-bytes");
   });
 
   it("bails immediately on non-retryable wasm statuses (still trying the stable copy once)", async (t: TestContext) => {
@@ -310,7 +310,7 @@ describe("runtimed WASM client retry ladder", () => {
         HASHED_WASM,
         STABLE_WASM,
       ]);
-      assert.ok(initCalls[0] instanceof ArrayBuffer);
+      assert.ok(initCalls[0] instanceof Response);
     });
   }
 
@@ -398,7 +398,7 @@ describe("runtimed WASM client retry ladder", () => {
     assert.equal(fetchCalls, 2);
 
     await pending;
-    assert.ok(initCalls[0] instanceof ArrayBuffer);
+    assert.ok(initCalls[0] instanceof Response);
   });
 
   it("passes non-URL wasm inputs through to wasm-bindgen untouched", async () => {
@@ -414,7 +414,7 @@ describe("runtimed WASM client retry ladder", () => {
     assert.equal(initCalls[0], bytes);
   });
 
-  it("retries a truncated successful response before passing bytes to wasm-bindgen", async (t: TestContext) => {
+  it("retries a truncated successful response before handing off to wasm-bindgen", async (t: TestContext) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const initCalls: unknown[] = [];
     _setRuntimedWasmModuleImporterForTests(async () => stubModule(initCalls));
@@ -439,7 +439,7 @@ describe("runtimed WASM client retry ladder", () => {
     t.mock.timers.tick(150);
     await pending;
     assert.equal(fetchCalls, 2);
-    assert.equal(new TextDecoder().decode(initCalls[0] as ArrayBuffer), "complete-wasm");
+    assert.equal(await (initCalls[0] as Response).text(), "complete-wasm");
   });
 
   it("gives a body its own idle deadline after slow headers and aborts before retrying", async (t: TestContext) => {
@@ -478,7 +478,7 @@ describe("runtimed WASM client retry ladder", () => {
     t.mock.timers.tick(150);
     await pending;
     assert.equal(fetchCalls, 2);
-    assert.equal(new TextDecoder().decode(initCalls[0] as ArrayBuffer), "complete-wasm");
+    assert.equal(await (initCalls[0] as Response).text(), "complete-wasm");
   });
 
   it("finishes a progressing 45-second body without redownloading or a late abort", async (t: TestContext) => {
@@ -486,18 +486,20 @@ describe("runtimed WASM client retry ladder", () => {
     const initCalls: unknown[] = [];
     _setRuntimedWasmModuleImporterForTests(async () => stubModule(initCalls));
     let body!: ReadableStreamDefaultController<Uint8Array>;
+    let originalResponse!: Response;
     let signal: AbortSignal | null | undefined;
     let fetchCalls = 0;
     _setRuntimedWasmFetchForTests((async (_input, options) => {
       fetchCalls += 1;
       signal = options?.signal;
-      return new Response(
+      originalResponse = new Response(
         new ReadableStream({
           start(controller) {
             body = controller;
           },
         }),
       );
+      return originalResponse;
     }) as typeof fetch);
     const pending = initializeRuntimedWasmClient(STABLE_MODULE, STABLE_WASM);
     await drain();
@@ -508,11 +510,20 @@ describe("runtimed WASM client retry ladder", () => {
     }
     body.close();
     await pending;
-    assert.deepEqual(new Uint8Array(initCalls[0] as ArrayBuffer), new Uint8Array([0, 1, 2]));
+    assert.equal(
+      initCalls[0],
+      originalResponse,
+      "preserve the original response and its provenance",
+    );
+    assert.equal(originalResponse.bodyUsed, false, "validation only consumes the clone");
     t.mock.timers.tick(120_000);
     await drain();
     assert.equal(fetchCalls, 1);
     assert.equal(signal?.aborted, false, "successful requests must release all deadlines");
+    assert.deepEqual(
+      new Uint8Array(await originalResponse.arrayBuffer()),
+      new Uint8Array([0, 1, 2]),
+    );
   });
 
   it("bounds a continuously progressing body to 120 seconds including headers", async (t: TestContext) => {
@@ -532,12 +543,14 @@ describe("runtimed WASM client retry ladder", () => {
             body = controller;
           },
           cancel() {
+            // The source only sees cancellation once BOTH tee branches
+            // cancel. This stream deliberately ignores the AbortSignal.
             cancelled = true;
           },
         }),
       );
     }) as typeof fetch);
-    const pending = initializeRuntimedWasmClient(STABLE_MODULE, STABLE_WASM);
+    const pending = initializeRuntimedWasmClient(HASHED_MODULE, HASHED_WASM);
     await drain();
     t.mock.timers.tick(15_000);
     await drain();
@@ -553,9 +566,12 @@ describe("runtimed WASM client retry ladder", () => {
     await drain();
     assert.equal(cancelled, true);
     assert.equal(initCalls.length, 0);
-    t.mock.timers.tick(150);
     await pending;
-    assert.equal(fetchCalls, 2);
+    assert.equal(
+      fetchCalls,
+      2,
+      "the absolute bound skips repeated downloads and uses the stable pair",
+    );
   });
 
   for (const overLimit of [false, true]) {
@@ -564,25 +580,41 @@ describe("runtimed WASM client retry ladder", () => {
       const initCalls: unknown[] = [];
       _setRuntimedWasmModuleImporterForTests(async () => stubModule(initCalls));
       let fetchCalls = 0;
-      _setRuntimedWasmFetchForTests((async () => {
+      let cancelledBodies = 0;
+      const fetchedHrefs: string[] = [];
+      _setRuntimedWasmFetchForTests((async (input) => {
         fetchCalls += 1;
-        return new Response(new Uint8Array(16 * 1024 * 1024 + Number(overLimit)));
+        fetchedHrefs.push(String(input));
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(16 * 1024 * 1024 + Number(overLimit)));
+              if (!overLimit) controller.close();
+            },
+            cancel() {
+              cancelledBodies += 1;
+            },
+          }),
+        );
       }) as typeof fetch);
-      const { promise } = trackSettled(initializeRuntimedWasmClient(STABLE_MODULE, STABLE_WASM));
+      const { promise } = trackSettled(
+        initializeRuntimedWasmClient(HASHED_MODULE, overLimit ? HASHED_WASM : STABLE_WASM),
+      );
       if (overLimit) {
-        for (const delay of [150, 500, 1500]) {
-          await drain();
-          t.mock.timers.tick(delay);
-        }
         await assert.rejects(
           promise,
           /exceeds the 16 MiB download limit.*check the deployed asset/,
         );
         assert.equal(initCalls.length, 0);
-        assert.equal(fetchCalls, 4);
+        assert.deepEqual(
+          fetchedHrefs,
+          [HASHED_WASM, STABLE_WASM],
+          "size-limit failures do not redownload the same URL",
+        );
+        assert.equal(cancelledBodies, 2, "both tee branches are cancelled for each failed URL");
       } else {
         await promise;
-        assert.equal((initCalls[0] as ArrayBuffer).byteLength, 16 * 1024 * 1024);
+        assert.equal((await (initCalls[0] as Response).arrayBuffer()).byteLength, 16 * 1024 * 1024);
         assert.equal(fetchCalls, 1);
       }
     });

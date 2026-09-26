@@ -406,7 +406,11 @@ async function resolveRuntimedWasmBinary(
   }
 }
 
-async function fetchRuntimedWasmBinaryWithRetries(href: string): Promise<ArrayBuffer> {
+// Repeating this URL cannot improve a breached size/total-download bound.
+// The caller may still try the stable pair, which can belong to another deploy.
+class RuntimedWasmDownloadLimitError extends Error {}
+
+async function fetchRuntimedWasmBinaryWithRetries(href: string): Promise<Response> {
   let lastFailure: unknown = null;
   for (let attempt = 0; attempt <= RUNTIMED_WASM_RETRY_DELAYS_MS.length; attempt += 1) {
     let response: Response | null = null;
@@ -417,29 +421,37 @@ async function fetchRuntimedWasmBinaryWithRetries(href: string): Promise<ArrayBu
       cancelBody();
     };
     try {
-      const result = await withRungTimeout(
+      response = await withRungTimeout(
         (async () => {
           const fetched = await withRungTimeout(
             fetchImpl(href, controller ? { signal: controller.signal } : undefined),
             `runtimed WASM headers (${href})`,
             abortAttempt,
           );
-          if (!fetched.ok) return { response: fetched, bytes: null };
-          const bytes = await readRuntimedWasmBody(fetched, href, (cancel) => {
-            cancelBody = cancel;
-          });
-          return { response: fetched, bytes };
+          if (fetched.ok) {
+            // Drain a tee before handing off the original. Its body is then
+            // fully buffered, while its URL survives for wasm-bindgen's
+            // instantiateStreaming path and the browser's compiled-code cache.
+            await readRuntimedWasmBody(fetched.clone(), href, (cancel) => {
+              cancelBody = () => {
+                cancel();
+                cancelResponseBody(fetched);
+              };
+            });
+          }
+          return fetched;
         })(),
         `runtimed WASM download (${href})`,
         abortAttempt,
         RUNTIMED_WASM_DOWNLOAD_TIMEOUT_MS,
+        RuntimedWasmDownloadLimitError,
       );
-      if (result.bytes !== null) return result.bytes;
-      response = result.response;
+      if (response.ok) return response;
     } catch (error) {
-      // Headers and body failures share the ladder. wasm-bindgen receives
-      // complete bytes, so a body drop cannot escape these retries.
+      // Headers and body failures share the ladder. wasm-bindgen receives a
+      // validated body, so transport errors cannot escape these retries.
       abortAttempt();
+      if (error instanceof RuntimedWasmDownloadLimitError) throw error;
       lastFailure = error;
       response = null;
     }
@@ -463,14 +475,13 @@ async function readRuntimedWasmBody(
   response: Response,
   href: string,
   onReader: (cancel: () => void) => void,
-): Promise<ArrayBuffer> {
-  if (!response.body) return new ArrayBuffer(0);
+): Promise<void> {
+  if (!response.body) return;
   const reader = response.body.getReader();
   const cancel = () => {
     void reader.cancel().catch(() => undefined);
   };
   onReader(cancel);
-  const chunks: Uint8Array[] = [];
   let size = 0;
   try {
     for (;;) {
@@ -482,23 +493,14 @@ async function readRuntimedWasmBody(
       if (done) break;
       size += value.byteLength;
       if (size > RUNTIMED_WASM_MAX_BYTES) {
-        throw new Error(
+        throw new RuntimedWasmDownloadLimitError(
           `runtimed WASM exceeds the 16 MiB download limit: ${href}; check the deployed asset`,
         );
       }
-      chunks.push(value);
     }
-    const bytes = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return bytes.buffer;
   } finally {
     cancel();
     reader.releaseLock();
-    onReader(() => {});
   }
 }
 
@@ -512,6 +514,7 @@ async function withRungTimeout<T>(
   label: string,
   onTimeout?: () => void,
   timeoutMs = RUNTIMED_WASM_RUNG_TIMEOUT_MS,
+  TimeoutError = Error,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -522,7 +525,7 @@ async function withRungTimeout<T>(
           // The abandoned loser may still settle later; observe its
           // rejection so it never surfaces as unhandled.
           void Promise.resolve(work).catch(() => undefined);
-          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+          reject(new TimeoutError(`${label} timed out after ${timeoutMs}ms`));
           onTimeout?.();
         }, timeoutMs);
       }),
