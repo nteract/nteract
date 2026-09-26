@@ -100,6 +100,7 @@ pub async fn await_execution_terminal(
     output_sync_grace: Option<Duration>,
 ) -> Result<ExecutionTerminalState, ExecutionTerminalError> {
     let deadline = Instant::now() + timeout;
+    let mut observed_execution = false;
 
     // ── Phase 1: wait for terminal status ───────────────────────────────
     let mut final_state = loop {
@@ -116,6 +117,7 @@ pub async fn await_execution_terminal(
             // execution's real status/outputs rather than being handed a
             // generic `KernelFailed`.
             if let Some(exec) = state.executions.get(execution_id) {
+                observed_execution = true;
                 if exec.status == "done" || exec.status == "error" || exec.status == "cancelled" {
                     break ExecutionTerminalState {
                         status: exec.status.clone(),
@@ -126,15 +128,15 @@ pub async fn await_execution_terminal(
                 }
             }
 
-            // Fallback: kernel fault aborts only if *this* execution is
-            // still non-terminal. Otherwise the caller would spin until
-            // the outer timeout fires.
-            if matches!(state.kernel.lifecycle, RuntimeLifecycle::Error) {
+            // A queue response can arrive before its runtime sync. Until
+            // this execution appears, Shutdown/Error may describe the kernel
+            // generation that preceded its accepted launch.
+            if observed_execution && matches!(state.kernel.lifecycle, RuntimeLifecycle::Error) {
                 return Err(ExecutionTerminalError::KernelFailed {
                     reason: "kernel error".to_string(),
                 });
             }
-            if matches!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown) {
+            if observed_execution && matches!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown) {
                 return Err(ExecutionTerminalError::KernelFailed {
                     reason: "kernel shutdown".to_string(),
                 });
@@ -262,12 +264,10 @@ pub async fn await_all_executions_terminal(
                 };
             }
             // The kernel is gone, so this execution can never terminalize.
-            // Record the failure and keep sweeping: with the kernel in a
-            // failed lifecycle the remaining awaits return on their first
-            // poll — either an already-terminal state (collected for the
-            // trailing grace pass below) or another immediate KernelFailed —
-            // so the batch stops waiting for new terminal transitions while
-            // executions that did terminalize still get their grace window.
+            // Record the failure and keep sweeping. Entries already in this
+            // replica return a terminal state or KernelFailed immediately;
+            // unseen entries still wait for sync within the shared deadline.
+            // Executions that did terminalize keep their trailing grace pass.
             Err(ExecutionTerminalError::KernelFailed { .. }) => {
                 has_error = true;
             }

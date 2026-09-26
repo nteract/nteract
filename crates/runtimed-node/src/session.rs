@@ -384,7 +384,6 @@ struct SessionState {
     /// Kept alive so the daemon doesn't close the broadcast channel.
     /// Dropped on `close()` to allow clean teardown.
     _broadcast_rx: Option<BroadcastReceiver>,
-    kernel_started: bool,
     runtime: String,
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
@@ -614,8 +613,10 @@ impl Session {
     ///
     /// Callback receives the same JSON shape as `CellResult`, emitted whenever
     /// the RuntimeStateDoc entry for the execution changes. The subscription
-    /// ends after an authoritative terminal snapshot, including kernel
-    /// failure/close.
+    /// ends after a terminal execution snapshot, kernel failure after the
+    /// execution has been observed, or connection close. An execution that
+    /// never appears stays pending until the subscription is disposed or the
+    /// connection closes.
     #[napi]
     pub fn on_execution_progress(
         &self,
@@ -832,7 +833,6 @@ impl Session {
         self.closed_tx.send_replace(true);
         st.handle = None;
         st._broadcast_rx = None;
-        st.kernel_started = false;
         Ok(())
     }
 
@@ -970,7 +970,9 @@ impl Session {
     /// Returns once the install finishes.
     #[napi]
     pub async fn sync_environment(&self) -> Result<()> {
-        ensure_kernel_started(&self.state).await?;
+        // Environment sync cannot queue during launch like code execution can.
+        // Join the daemon's launch request so the kernel is ready first.
+        launch_kernel(&self.state).await?;
         let handle = {
             let st = self.state.lock().await;
             st.handle
@@ -1182,16 +1184,8 @@ impl Session {
             .await
             .map_err(to_napi_err)?;
         match response {
-            NotebookResponse::KernelShuttingDown {} => {
-                let mut st = self.state.lock().await;
-                st.kernel_started = false;
-                Ok(true)
-            }
-            NotebookResponse::NoKernel {} => {
-                let mut st = self.state.lock().await;
-                st.kernel_started = false;
-                Ok(false)
-            }
+            NotebookResponse::KernelShuttingDown {} => Ok(true),
+            NotebookResponse::NoKernel {} => Ok(false),
             NotebookResponse::Error { error } => Err(Error::from_reason(error)),
             other => Err(Error::from_reason(format!(
                 "Unexpected response to shutdownKernel: {other:?}"
@@ -1207,11 +1201,7 @@ impl Session {
         if had_kernel {
             wait_for_kernel_not_running(&handle, Duration::from_secs(30)).await?;
         }
-        {
-            let mut st = self.state.lock().await;
-            st.kernel_started = false;
-        }
-        ensure_kernel_started(&self.state).await?;
+        launch_kernel(&self.state).await?;
         Ok(true)
     }
 
@@ -1231,7 +1221,6 @@ impl Session {
             self.closed_tx.send_replace(true);
             st.handle = None;
             st._broadcast_rx = None;
-            st.kernel_started = false;
         }
         Ok(removed)
     }
@@ -1302,7 +1291,6 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     let state = SessionState {
         handle: Some(result.handle),
         _broadcast_rx: Some(result.broadcast_rx),
-        kernel_started: false,
         runtime,
         blob_base_url,
         blob_store_path,
@@ -1386,12 +1374,11 @@ pub async fn open_notebook_path(
 
     let notebook_id = result.info.notebook_id.clone();
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
-    let (kernel_started, runtime) = kernel_state_from_handle(&result.handle);
+    let runtime = runtime_from_handle(&result.handle);
 
     let state = SessionState {
         handle: Some(result.handle),
         _broadcast_rx: Some(result.broadcast_rx),
-        kernel_started,
         runtime,
         blob_base_url,
         blob_store_path,
@@ -1437,12 +1424,11 @@ pub async fn open_notebook(
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
 
     // Try to hydrate kernel state from the RuntimeStateDoc.
-    let (kernel_started, runtime) = kernel_state_from_handle(&result.handle);
+    let runtime = runtime_from_handle(&result.handle);
 
     let state = SessionState {
         handle: Some(result.handle),
         _broadcast_rx: Some(result.broadcast_rx),
-        kernel_started,
         runtime,
         blob_base_url,
         blob_store_path,
@@ -1551,23 +1537,12 @@ fn peer_label_or_description(peer_label: Option<String>, description: Option<Str
         .unwrap_or_else(|| "runtimed-node".to_string())
 }
 
-fn kernel_state_from_handle(handle: &DocHandle) -> (bool, String) {
+fn runtime_from_handle(handle: &DocHandle) -> String {
     let rs = handle.get_runtime_state().ok();
-    let started = rs
-        .as_ref()
-        .map(|r| {
-            matches!(
-                r.kernel.lifecycle,
-                runtime_doc::RuntimeLifecycle::Running(_)
-            )
-        })
-        .unwrap_or(false);
-    let runtime = rs
-        .as_ref()
+    rs.as_ref()
         .map(|r| r.kernel.name.clone())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "python".to_string());
-    (started, runtime)
+        .unwrap_or_else(|| "python".to_string())
 }
 
 async fn wait_for_kernel_not_running(handle: &DocHandle, timeout: Duration) -> Result<()> {
@@ -1937,23 +1912,28 @@ async fn approve_current_trust(
 }
 
 async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
-    let (started, runtime, notebook_path) = {
-        let st = state.lock().await;
-        (
-            st.kernel_started,
-            st.runtime.clone(),
-            st.working_dir.clone(),
-        )
-    };
-    if started {
+    let handle = session_handle(state).await?;
+    if handle
+        .get_runtime_state()
+        .map_err(to_napi_err)?
+        .kernel
+        .lifecycle
+        .is_starting_or_running()
+    {
         return Ok(());
     }
-    let handle = {
+    launch_kernel(state).await
+}
+
+async fn launch_kernel(state: &Arc<Mutex<SessionState>>) -> Result<()> {
+    let (handle, runtime, notebook_path) = {
         let st = state.lock().await;
-        st.handle
+        let handle = st
+            .handle
             .as_ref()
             .ok_or_else(|| Error::from_reason("Not connected"))?
-            .clone()
+            .clone();
+        (handle, st.runtime.clone(), st.working_dir.clone())
     };
     handle.confirm_sync().await.map_err(to_napi_err)?;
     let response = handle
@@ -1967,8 +1947,6 @@ async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
 
     match response {
         NotebookResponse::KernelLaunched { .. } | NotebookResponse::KernelAlreadyRunning { .. } => {
-            let mut st = state.lock().await;
-            st.kernel_started = true;
             Ok(())
         }
         NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
@@ -1988,16 +1966,24 @@ async fn queue_existing_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
             .clone()
     };
     let required_heads = handle.current_heads_hex().map_err(to_napi_err)?;
-    let response = handle
-        .send_request_after_heads(
-            NotebookRequest::ExecuteCell {
-                cell_id: cell_id.to_string(),
-                execution_id: None,
-            },
-            required_heads,
-        )
+    let request = NotebookRequest::ExecuteCell {
+        cell_id: cell_id.to_string(),
+        execution_id: None,
+    };
+    let mut response = handle
+        .send_request_after_heads(request.clone(), required_heads.clone())
         .await
         .map_err(to_napi_err)?;
+    if matches!(response, NotebookResponse::NoKernel {}) {
+        // The daemon rejected the work before queueing it. A synced Running
+        // snapshot may lag a peer's shutdown, so force one launch and retry
+        // only this rejection, never an accepted or ambiguous execution.
+        launch_kernel(state).await?;
+        response = handle
+            .send_request_after_heads(request, required_heads)
+            .await
+            .map_err(to_napi_err)?;
+    }
     match response {
         NotebookResponse::CellQueued { execution_id, .. } => Ok(execution_id),
         NotebookResponse::Error { error } => Err(Error::from_reason(error)),

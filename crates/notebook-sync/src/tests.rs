@@ -1119,6 +1119,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn await_execution_terminal_waits_for_execution_after_stale_kernel_terminal() {
+        use crate::execution_wait::await_execution_terminal;
+
+        for lifecycle in [
+            runtime_doc::RuntimeLifecycle::Shutdown,
+            runtime_doc::RuntimeLifecycle::Error,
+        ] {
+            let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+            shared
+                .lock()
+                .unwrap()
+                .state_doc
+                .set_lifecycle(&lifecycle)
+                .unwrap();
+            let wait = await_execution_terminal(
+                &handle,
+                "exec-1",
+                std::time::Duration::from_secs(1),
+                Some(std::time::Duration::ZERO),
+            );
+            tokio::pin!(wait);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(20), &mut wait)
+                    .await
+                    .is_err()
+            );
+            set_execution(&shared, "exec-1", "cell-1", "done", &[], Some(1));
+            let result = wait.await.expect("accepted execution should complete");
+            assert!(result.success);
+            assert_eq!(result.execution_count, Some(1));
+        }
+    }
+
+    #[tokio::test]
+    async fn await_execution_terminal_times_out_before_execution_is_observed() {
+        use crate::execution_wait::{await_execution_terminal, ExecutionTerminalError};
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        shared
+            .lock()
+            .unwrap()
+            .state_doc
+            .set_lifecycle(&runtime_doc::RuntimeLifecycle::Shutdown)
+            .unwrap();
+        let result = await_execution_terminal(
+            &handle,
+            "exec-1",
+            std::time::Duration::from_millis(20),
+            None,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), ExecutionTerminalError::Timeout);
+    }
+
+    #[tokio::test]
     async fn await_execution_terminal_surfaces_kernel_error() {
         use crate::execution_wait::{await_execution_terminal, ExecutionTerminalError};
 

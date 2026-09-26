@@ -65,7 +65,6 @@ pub(crate) struct SessionState {
     pub handle: Option<DocHandle>,
     /// Broadcast receiver for kernel/execution events from the daemon.
     pub broadcast_rx: Option<BroadcastReceiver>,
-    pub kernel_started: bool,
     pub kernel_type: Option<String>,
     pub env_source: Option<String>,
     /// Intended runtime type for this session (e.g. "python", "deno").
@@ -89,11 +88,23 @@ pub(crate) struct SessionState {
 }
 
 impl SessionState {
+    /// Read kernel availability from the live daemon-owned runtime document.
+    pub fn kernel_started(&self) -> PyResult<bool> {
+        self.handle
+            .as_ref()
+            .map(|handle| {
+                handle
+                    .get_runtime_state()
+                    .map(|state| state.kernel.lifecycle.is_starting_or_running())
+                    .map_err(to_py_err)
+            })
+            .unwrap_or(Ok(false))
+    }
+
     pub fn new() -> Self {
         Self {
             handle: None,
             broadcast_rx: None,
-            kernel_started: false,
             kernel_type: None,
             env_source: None,
             runtime: "python".to_string(),
@@ -293,7 +304,7 @@ pub(crate) async fn announce_presence_shared(state: &Arc<Mutex<SessionState>>) {
     notebook_sync::presence::announce(&handle, peer_label.as_deref()).await;
 }
 
-/// Populate `kernel_started`, `kernel_type`, and `env_source` from the
+/// Populate `kernel_type` and `env_source` from the
 /// RuntimeStateDoc (the daemon's source of truth for kernel status).
 ///
 /// Best-effort: silently does nothing if the handle is missing or the
@@ -305,19 +316,7 @@ fn hydrate_kernel_state(state: &mut SessionState) {
     let Ok(rs) = handle.get_runtime_state() else {
         return;
     };
-    // A kernel is "usable" once it's running or mid-launch. That covers
-    // every lifecycle variant except `NotStarted`, `AwaitingTrust`,
-    // `AwaitingEnvBuild`, `Error`, and `Shutdown`.
-    let running = matches!(
-        rs.kernel.lifecycle,
-        RuntimeLifecycle::Running(_)
-            | RuntimeLifecycle::Resolving
-            | RuntimeLifecycle::PreparingEnv
-            | RuntimeLifecycle::Launching
-            | RuntimeLifecycle::Connecting
-    );
-    if running {
-        state.kernel_started = true;
+    if rs.kernel.lifecycle.is_starting_or_running() {
         state.kernel_type = Some(rs.kernel.language.clone());
         state.env_source = Some(rs.kernel.env_source.clone());
     }
@@ -461,7 +460,6 @@ pub(crate) async fn connect_open(
     let mut state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
-        kernel_started: false,
         kernel_type: None,
         env_source: None,
         runtime,
@@ -514,7 +512,6 @@ pub(crate) async fn connect_create(
     let mut state = SessionState {
         handle: Some(result.handle),
         broadcast_rx: Some(result.broadcast_rx),
-        kernel_started: false,
         kernel_type: None,
         env_source: None,
         runtime: runtime.clone(),
@@ -583,7 +580,6 @@ pub(crate) async fn start_kernel(
             env_source: actual_env,
             ..
         } => {
-            st.kernel_started = true;
             st.kernel_type = Some(actual_type.clone());
             st.env_source = Some(actual_env.to_string());
             if kernel_type != actual_type {
@@ -599,7 +595,6 @@ pub(crate) async fn start_kernel(
             env_source: actual_env,
             ..
         } => {
-            st.kernel_started = true;
             st.kernel_type = Some(actual_type.clone());
             st.env_source = Some(actual_env.to_string());
             if kernel_type != actual_type {
@@ -633,7 +628,6 @@ pub(crate) async fn shutdown_kernel(state: &Arc<Mutex<SessionState>>) -> PyResul
     match response {
         NotebookResponse::KernelShuttingDown {} | NotebookResponse::NoKernel {} => {
             let mut st = state.lock().await;
-            st.kernel_started = false;
             st.kernel_type = None;
             st.env_source = None;
             Ok(())
@@ -675,7 +669,6 @@ pub(crate) async fn restart_kernel(
         match response {
             NotebookResponse::KernelShuttingDown {} | NotebookResponse::NoKernel {} => {
                 let mut st = state.lock().await;
-                st.kernel_started = false;
                 st.kernel_type = None;
                 st.env_source = None;
             }
@@ -778,7 +771,6 @@ pub(crate) async fn restart_kernel(
                 env_source: actual_env,
                 ..
             } => {
-                st.kernel_started = true;
                 st.kernel_type = Some(actual_type);
                 st.env_source = Some(actual_env.to_string());
             }
@@ -1359,35 +1351,15 @@ pub(crate) async fn queue_cell(
     notebook_id: &str,
     cell_id: &str,
 ) -> PyResult<String> {
-    // Auto-start kernel if not running (matches execute_cell behavior)
-    {
-        let st = state.lock().await;
-        if !st.kernel_started {
-            drop(st);
-            ensure_kernel_started(state, notebook_id).await?;
-        }
-    }
-
-    let handle = {
-        let st = state.lock().await;
-        st.handle
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?
-            .clone()
-    };
-
-    let required_heads = handle.current_heads_hex().map_err(to_py_err)?;
-
-    let response = handle
-        .send_request_after_heads(
-            NotebookRequest::ExecuteCell {
-                cell_id: cell_id.to_string(),
-                execution_id: None,
-            },
-            required_heads,
-        )
-        .await
-        .map_err(to_py_err)?;
+    let response = send_execution_request(
+        state,
+        notebook_id,
+        NotebookRequest::ExecuteCell {
+            cell_id: cell_id.to_string(),
+            execution_id: None,
+        },
+    )
+    .await?;
 
     match response {
         NotebookResponse::CellQueued { execution_id, .. } => {
@@ -1487,34 +1459,14 @@ pub(crate) async fn queue_all_cells(
     state: &Arc<Mutex<SessionState>>,
     notebook_id: &str,
 ) -> PyResult<Vec<PyQueueEntry>> {
-    // Auto-start kernel
-    {
-        let st = state.lock().await;
-        if !st.kernel_started {
-            drop(st);
-            ensure_kernel_started(state, notebook_id).await?;
-        }
-    }
-
-    let handle = {
-        let st = state.lock().await;
-        st.handle
-            .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?
-            .clone()
-    };
-
-    let required_heads = handle.current_heads_hex().map_err(to_py_err)?;
-
-    let response = handle
-        .send_request_after_heads(
-            NotebookRequest::RunAllCells {
-                cell_execution_ids: None,
-            },
-            required_heads,
-        )
-        .await
-        .map_err(to_py_err)?;
+    let response = send_execution_request(
+        state,
+        notebook_id,
+        NotebookRequest::RunAllCells {
+            cell_execution_ids: None,
+        },
+    )
+    .await?;
 
     match response {
         NotebookResponse::AllCellsQueued { queued } => {
@@ -2250,19 +2202,56 @@ async fn ensure_kernel_started(
     notebook_id: &str,
 ) -> PyResult<()> {
     // Connect if needed
-    {
+    let needs_connection = {
         let st = state.lock().await;
-        if st.handle.is_none() {
-            drop(st);
-            connect(state, notebook_id).await?;
-        }
+        st.handle.is_none()
+    };
+    if needs_connection {
+        connect(state, notebook_id).await?;
     }
 
     let runtime = {
         let st = state.lock().await;
+        if st.kernel_started()? {
+            return Ok(());
+        }
         st.runtime.clone()
     };
     start_kernel(state, &runtime, "auto", None).await
+}
+
+/// Queue synced notebook content, recovering once if a peer stopped the kernel
+/// after our runtime snapshot. NoKernel rejects the request before admission;
+/// accepted work and transport errors must never be retried here.
+async fn send_execution_request(
+    state: &Arc<Mutex<SessionState>>,
+    notebook_id: &str,
+    request: NotebookRequest,
+) -> PyResult<NotebookResponse> {
+    ensure_kernel_started(state, notebook_id).await?;
+    let (handle, runtime) = {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone();
+        (handle, st.runtime.clone())
+    };
+    let required_heads = handle.current_heads_hex().map_err(to_py_err)?;
+    let response = handle
+        .send_request_after_heads(request.clone(), required_heads.clone())
+        .await
+        .map_err(to_py_err)?;
+    if matches!(response, NotebookResponse::NoKernel {}) {
+        // Force the launch: the runtime replica can still report Running.
+        start_kernel(state, &runtime, "auto", None).await?;
+        return handle
+            .send_request_after_heads(request, required_heads)
+            .await
+            .map_err(to_py_err);
+    }
+    Ok(response)
 }
 
 /// Resolve blob server URL and store path from daemon info.

@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,82 @@ KERNEL_LAUNCH_LIFECYCLES = {
     "Connecting",
     "Running",
 }
+
+
+@asynccontextmanager
+async def delayed_runtime_proxy(socket_path):
+    """Delay runtime sync to force stale rejection and accepted-execution races."""
+    state = {"hold": False, "rejections": 0, "queued_while_held": 0}
+    connections = set()
+
+    async def forward(reader, writer):
+        while chunk := await reader.read(65536):
+            writer.write(chunk)
+            await writer.drain()
+
+    async def responses(reader, writer):
+        held = []
+
+        def release_runtime():
+            state["hold"] = False
+            for delayed in held:
+                writer.write(delayed)
+            held.clear()
+
+        while True:
+            header = await reader.readexactly(4)
+            frame = await reader.readexactly(int.from_bytes(header, "big"))
+            if state["hold"] and frame[0] == 5:
+                held.append(header + frame)
+                continue
+            response = json.loads(frame[1:]).get("result") if frame[0] == 2 else None
+            if response == "no_kernel":
+                state["rejections"] += 1
+                release_runtime()
+            writer.write(header + frame)
+            await writer.drain()
+            if state["hold"] and response == "cell_queued":
+                state["queued_while_held"] += 1
+                # Let the waiter read the old terminal snapshot after receiving
+                # the accepted response, before any newer runtime state arrives.
+                await asyncio.sleep(0.15)
+                release_runtime()
+                await writer.drain()
+
+    async def connected(reader, writer):
+        connection = asyncio.current_task()
+        assert connection is not None
+        connections.add(connection)
+        upstream = None
+        tasks = []
+        try:
+            upstream_reader, upstream = await asyncio.open_unix_connection(str(socket_path))
+            tasks = [
+                asyncio.create_task(forward(reader, upstream)),
+                asyncio.create_task(responses(upstream_reader, writer)),
+            ]
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for stream in [writer, upstream]:
+                if stream is not None:
+                    stream.close()
+            connections.discard(connection)
+
+    # Keep the socket path within macOS's Unix socket path-length limit.
+    with tempfile.TemporaryDirectory(prefix="runt-proxy-") as directory:
+        proxy_path = Path(directory) / "p.sock"
+        server = await asyncio.start_unix_server(connected, str(proxy_path))
+        try:
+            yield state, proxy_path
+        finally:
+            server.close()
+            for connection in list(connections):
+                connection.cancel()
+            await asyncio.gather(*connections, return_exceptions=True)
+            await server.wait_closed()
 
 
 def wait_for_sync(check_fn, *, timeout=10.0, interval=0.1, description="sync"):
@@ -2170,6 +2247,91 @@ class TestMultiClientSync:
 class TestKernelLifecycle:
     """Test kernel lifecycle management."""
 
+    @pytest.mark.parametrize("run_all", [False, True])
+    @pytest.mark.parametrize("observe_shutdown", [False, True])
+    async def test_binding_recovers_after_peer_shutdown(
+        self, client, daemon_process, run_all, observe_shutdown
+    ):
+        socket_path, _ = daemon_process
+        async with delayed_runtime_proxy(socket_path) as (proxy, proxy_path):
+            proxy_client = runtimed._internals.NativeAsyncClient(socket_path=str(proxy_path))
+            owner = await proxy_client.create_notebook(runtime="python")
+            peer = await client.join_notebook(owner.notebook_id)
+            try:
+                await async_use_auto_kernel_or_start(owner)
+                cell_id = await owner.create_cell("print('recovered kernel')")
+                assert (await owner.execute_cell(cell_id)).success
+
+                proxy["hold"] = not observe_shutdown
+                await peer.shutdown_kernel()
+                if observe_shutdown:
+                    await async_wait_for_sync(
+                        lambda: owner.get_runtime_state_sync().kernel.lifecycle == "Shutdown",
+                        description="peer shutdown in the owner's runtime state",
+                    )
+
+                if run_all:
+                    queued = await owner.queue_all_cells()
+                    entry = next(entry for entry in queued if entry.cell_id == cell_id)
+                    result = await owner.wait_for_execution(cell_id, entry.execution_id)
+                else:
+                    result = await owner.execute_cell(cell_id)
+
+                assert result.success
+                assert "recovered kernel" in result.stdout
+                assert proxy["rejections"] == (0 if observe_shutdown else 1)
+                await peer.shutdown_kernel()
+
+                async def kernel_stopped():
+                    return not await owner.kernel_started()
+
+                await async_wait_for_sync(kernel_stopped, description="live kernel_started status")
+            finally:
+                await async_cleanup_session(peer)
+                await async_cleanup_session(owner)
+
+    async def test_binding_recovers_after_kernel_crash(self, session):
+        await async_use_auto_kernel_or_start(session)
+        crash_id = await session.create_cell("import os; os._exit(1)")
+        await session.queue_cell(crash_id)
+        await async_wait_for_sync(
+            lambda: session.get_runtime_state_sync().kernel.lifecycle == "Error",
+            timeout=30,
+            description="crashed kernel",
+        )
+        cell_id = await session.create_cell("print('after crash')")
+        result = await session.execute_cell(cell_id)
+        assert result.success
+        assert "after crash" in result.stdout
+
+    async def test_binding_uses_kernel_restarted_by_peer(self, client, daemon_process):
+        socket_path, _ = daemon_process
+        async with delayed_runtime_proxy(socket_path) as (proxy, proxy_path):
+            proxy_client = runtimed._internals.NativeAsyncClient(socket_path=str(proxy_path))
+            owner = await proxy_client.create_notebook(runtime="python")
+            peer = await client.join_notebook(owner.notebook_id)
+            try:
+                await async_use_auto_kernel_or_start(owner)
+                cell_id = await owner.create_cell("print('before restart')")
+                assert (await owner.execute_cell(cell_id)).success
+                await peer.shutdown_kernel()
+                await async_wait_for_sync(
+                    lambda: owner.get_runtime_state_sync().kernel.lifecycle == "Shutdown",
+                    description="shutdown before holding runtime sync",
+                )
+                proxy["hold"] = True
+                await peer.restart_kernel(wait_for_ready=False)
+                seed_id = await peer.create_cell("peer_value = 'after peer restart'")
+                assert (await peer.execute_cell(seed_id)).success
+                read_id = await owner.create_cell("print(peer_value)")
+                result = await owner.execute_cell(read_id)
+                assert result.success
+                assert "after peer restart" in result.stdout
+                assert proxy["queued_while_held"] == 1
+            finally:
+                await async_cleanup_session(peer)
+                await async_cleanup_session(owner)
+
     async def test_async_start_kernel(self, session):
         """Can start a kernel."""
         # The daemon may auto-launch the kernel when a runtime is configured
@@ -2314,7 +2476,11 @@ class TestKernelLifecycle:
         assert runtime_kernel_is_running(session)
 
         await session.shutdown_kernel()
-        assert not await session.kernel_started()
+
+        async def kernel_stopped():
+            return not await session.kernel_started()
+
+        await async_wait_for_sync(kernel_stopped, description="shutdown in the runtime replica")
 
 
 class TestWidgetRuntimeState:

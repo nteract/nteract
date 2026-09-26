@@ -350,6 +350,21 @@ pub enum RuntimeLifecycle {
 }
 
 impl RuntimeLifecycle {
+    /// Whether the runtime is launching or running in this synced snapshot.
+    ///
+    /// Clients can queue work during launch. This is not a liveness guarantee:
+    /// a peer may stop the kernel before the daemon receives that work.
+    pub fn is_starting_or_running(&self) -> bool {
+        matches!(
+            self,
+            Self::Resolving
+                | Self::PreparingEnv
+                | Self::Launching
+                | Self::Connecting
+                | Self::Running(_)
+        )
+    }
+
     /// Variant name as a static string (no payload).
     ///
     /// Written to `kernel/lifecycle` in the CRDT and consumed by

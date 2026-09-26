@@ -996,6 +996,12 @@ jobs:
         env:
           RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
 
+      - name: Test runtimed-node Python execution and recovery
+        run: vp test run packages/runtimed-node/tests/native-session.test.ts
+        env:
+          RUNTIMED_NODE_NATIVE_INTEGRATION: "1"
+          RUNTIMED_NODE_EXECUTION_INTEGRATION: "1"
+
       - name: Smoke test runtimed-node package
         run: pnpm --dir packages/runtimed-node smoke
 

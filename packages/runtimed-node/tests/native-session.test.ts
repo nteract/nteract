@@ -17,6 +17,73 @@ const root = fileURLToPath(new URL("../../..", import.meta.url));
 const nativeEnabled = process.env.RUNTIMED_NODE_NATIVE_INTEGRATION === "1";
 const executionEnabled = process.env.RUNTIMED_NODE_EXECUTION_INTEGRATION === "1";
 
+// Delay runtime sync to exercise response/replica races with a real daemon.
+async function runtimeStateProxy(upstreamPath: string, proxyPath: string) {
+  const sockets = new Set<net.Socket>();
+  let holdRuntime = false;
+  let noKernelResponses = 0;
+  let queuedWhileHeld = 0;
+  const proxy = net.createServer((client) => {
+    const upstream = net.createConnection(upstreamPath);
+    sockets.add(client);
+    sockets.add(upstream);
+    client.on("error", () => upstream.destroy());
+    upstream.on("error", () => client.destroy());
+    client.on("close", () => {
+      sockets.delete(client);
+      upstream.destroy();
+    });
+    upstream.on("close", () => {
+      sockets.delete(upstream);
+      client.destroy();
+    });
+    client.pipe(upstream);
+    let pending = Buffer.alloc(0);
+    const held: Buffer[] = [];
+    upstream.on("data", (chunk: Buffer) => {
+      pending = Buffer.concat([pending, chunk]);
+      while (pending.length >= 4 && pending.length >= 4 + pending.readUInt32BE(0)) {
+        const frame = pending.subarray(0, 4 + pending.readUInt32BE(0));
+        pending = pending.subarray(frame.length);
+        if (holdRuntime && frame[4] === 5) {
+          held.push(frame);
+          continue;
+        }
+        if (frame[4] === 2 && JSON.parse(frame.subarray(5).toString()).result === "no_kernel") {
+          noKernelResponses += 1;
+          holdRuntime = false;
+          for (const delayed of held.splice(0)) client.write(delayed);
+        }
+        if (
+          holdRuntime &&
+          frame[4] === 2 &&
+          JSON.parse(frame.subarray(5).toString()).result === "cell_queued"
+        ) {
+          queuedWhileHeld += 1;
+          setTimeout(() => {
+            holdRuntime = false;
+            for (const delayed of held.splice(0)) client.write(delayed);
+          }, 150);
+        }
+        client.write(frame);
+      }
+    });
+  });
+  proxy.listen(proxyPath);
+  await once(proxy, "listening");
+  return {
+    hold: () => {
+      holdRuntime = true;
+    },
+    noKernelResponses: () => noKernelResponses,
+    queuedWhileHeld: () => queuedWhileHeld,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+    },
+  };
+}
+
 describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
   let rt: typeof import("../src/index");
   let binding: typeof import("../src/binding");
@@ -169,6 +236,61 @@ describe.skipIf(!nativeEnabled)("@runtimed/node daemon-backed events", () => {
       }
     }
   });
+
+  it.skipIf(!executionEnabled).each([false, true])(
+    "recovers execution after another session shuts down the kernel (stale=%s)",
+    async (staleSnapshot) => {
+      const proxyPath = path.join(directory, `recovery-${staleSnapshot}.sock`);
+      const proxy = await runtimeStateProxy(socketPath, proxyPath);
+      const owner = await rt.createNotebook({
+        socketPath: proxyPath,
+        dependencies: ["ipykernel"],
+        workingDir: directory,
+        packageManager: "uv",
+        environmentMode: "notebook",
+      });
+      const peer = await rt.openNotebook(owner.notebookId, { socketPath });
+      try {
+        await owner.syncEnvironment();
+        const cell = await owner.createCell("print('recovered kernel')");
+        expect((await owner.executeCell(cell)).success).toBe(true);
+        if (staleSnapshot) proxy.hold();
+        await peer.shutdownKernel();
+        if (!staleSnapshot) {
+          await expect
+            .poll(async () => (await owner.getRuntimeStatus()).lifecycle, { timeout: 10000 })
+            .toBe("Shutdown");
+        }
+        const recovered = await owner.executeCell(cell);
+        expect(recovered.success).toBe(true);
+        expect(recovered.executionCount).toBe(1);
+        expect(recovered.outputs.some((output) => output.text?.includes("recovered kernel"))).toBe(
+          true,
+        );
+        expect(proxy.noKernelResponses()).toBe(staleSnapshot ? 1 : 0);
+        await peer.shutdownKernel();
+        await expect.poll(async () => (await owner.getRuntimeStatus()).lifecycle).toBe("Shutdown");
+        proxy.hold();
+        await peer.restartKernel();
+        expect((await peer.runCell("peer_value = 'after peer restart'")).success).toBe(true);
+        const continued = await owner.runCell("print(peer_value)");
+        expect(continued.success).toBe(true);
+        expect(
+          continued.outputs.some((output) => output.text?.includes("after peer restart")),
+        ).toBe(true);
+        expect(proxy.queuedWhileHeld()).toBe(1);
+      } finally {
+        await peer.close();
+        try {
+          await owner.shutdownNotebook();
+        } finally {
+          await owner.close();
+          await proxy.close();
+        }
+      }
+    },
+    120000,
+  );
 
   it.skipIf(!executionEnabled)(
     "tracks real reruns, progress and retained snapshots",

@@ -168,6 +168,9 @@ impl ExecutionWatcher {
     }
 
     fn kernel_terminal_from_state(&self, state: &RuntimeState) -> Option<ExecutionProgressState> {
+        // CellQueued may arrive before the execution's runtime sync. An old
+        // terminal kernel snapshot cannot fail work we have not observed yet.
+        self.prev.as_ref()?;
         let reason = match state.kernel.lifecycle {
             RuntimeLifecycle::Error => Some(ExecutionTerminalReason::KernelFailed),
             RuntimeLifecycle::Shutdown => Some(ExecutionTerminalReason::Closed),
@@ -486,6 +489,8 @@ mod tests {
     async fn watcher_reports_kernel_failure_terminal_reason() {
         let (handle, tx) = make_handle();
         let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+        set_execution(&tx, "exec-1", "cell-1", "queued", Vec::new());
+        assert!(!watcher.next().await.expect("queued progress").terminal);
 
         let mut runtime = tx.borrow().clone();
         runtime.kernel.lifecycle = RuntimeLifecycle::Error;
@@ -499,9 +504,45 @@ mod tests {
         assert!(progress.terminal);
     }
 
+    #[tokio::test]
+    async fn watcher_waits_for_execution_after_stale_kernel_terminal() {
+        for lifecycle in [RuntimeLifecycle::Shutdown, RuntimeLifecycle::Error] {
+            let (handle, tx) = make_handle();
+            tx.send_modify(|state| state.kernel.lifecycle = lifecycle);
+            let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(20), watcher.next())
+                    .await
+                    .is_err()
+            );
+            set_execution(&tx, "exec-1", "cell-1", "done", Vec::new());
+            let progress = watcher.next().await.expect("completed execution");
+            assert_eq!(
+                progress.terminal_reason,
+                Some(ExecutionTerminalReason::Done)
+            );
+            assert_eq!(progress.success, Some(true));
+        }
+    }
+
+    #[tokio::test]
+    async fn watcher_closes_before_execution_is_observed() {
+        let (handle, tx) = make_handle();
+        tx.send_modify(|state| state.kernel.lifecycle = RuntimeLifecycle::Shutdown);
+        let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
+        drop(tx);
+        let progress = watcher.next().await.expect("closed stream");
+        assert_eq!(
+            progress.terminal_reason,
+            Some(ExecutionTerminalReason::Closed)
+        );
+        assert_eq!(progress.success, None);
+    }
+
     #[test]
     fn timeout_snapshot_is_terminal() {
-        let (handle, _tx) = make_handle();
+        let (handle, tx) = make_handle();
+        tx.send_modify(|state| state.kernel.lifecycle = RuntimeLifecycle::Error);
         let mut watcher = ExecutionWatcher::new(&handle, "cell-1", "exec-1");
         let timeout = watcher.timeout().expect("timeout progress");
         assert_eq!(
