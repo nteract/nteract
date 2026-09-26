@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 4d26ab818dd3891a7a6c7f29749412a426514bcc # Reviewed preview helpers
+          ref: a5bb64761624aa54a1490556d5130ef09dbff20d # Reviewed preview helpers
           persist-credentials: false
           sparse-checkout: .github/preview
       - name: Authorize the current PR revision before building
@@ -55,7 +55,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 4d26ab818dd3891a7a6c7f29749412a426514bcc # Reviewed preview helpers
+          ref: a5bb64761624aa54a1490556d5130ef09dbff20d # Reviewed preview helpers
           path: helpers
           persist-credentials: false
           sparse-checkout: .github/preview
@@ -160,7 +160,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 4d26ab818dd3891a7a6c7f29749412a426514bcc # Reviewed preview helpers
+          ref: a5bb64761624aa54a1490556d5130ef09dbff20d # Reviewed preview helpers
           persist-credentials: false
           sparse-checkout: .github/preview
       - name: Deploy and wait for readiness
@@ -187,7 +187,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 4d26ab818dd3891a7a6c7f29749412a426514bcc # Reviewed preview helpers
+          ref: a5bb64761624aa54a1490556d5130ef09dbff20d # Reviewed preview helpers
           persist-credentials: false
           sparse-checkout: .github/preview
       - name: Stop preview and retain notebook data
@@ -211,7 +211,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: nteract/nteract
-          ref: 4d26ab818dd3891a7a6c7f29749412a426514bcc # Reviewed preview helpers
+          ref: a5bb64761624aa54a1490556d5130ef09dbff20d # Reviewed preview helpers
           persist-credentials: false
           sparse-checkout: .github/preview
       - name: Report the controller-derived preview outcome
