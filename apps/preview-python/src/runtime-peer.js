@@ -123,6 +123,7 @@ export class PythonRuntimePeer {
     this.#peer.clear_execution_outputs(live.executionId);
     live.record = null;
     live.records = 0;
+    live.clearBeforeNext = false;
     live.written = true;
     live.writes++;
   }
@@ -135,6 +136,10 @@ export class PythonRuntimePeer {
     }
     const touched = new Set();
     for (const op of pending) {
+      if (live.writes >= LIVE_MAX_WRITES) {
+        live.stopped = true;
+        break;
+      }
       if (op.type === "boundary") {
         live.record = null;
         continue;

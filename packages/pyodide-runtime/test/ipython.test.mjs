@@ -122,6 +122,23 @@ test(
       assert.match(result.outputs[0].data[tracebackMime].evalue, /unavailable/);
       assert.equal(value(await run("3 + 4")), "7");
     });
+    await t.test("the live byte cap counts UTF-8 while preserving the final batch", async () => {
+      const events = [];
+      const pending = evaluate(
+        "print('😀' * 70000)\nprint('tail')",
+        `attempt-${++sequence}`,
+        "cell",
+        (line) => events.push(JSON.parse(line)),
+      );
+      try {
+        const result = JSON.parse(await pending);
+        assert.equal(result.success, true);
+        assert.deepEqual(events, [{ type: "live_stopped" }]);
+        assert.equal(streams(result), "😀".repeat(70000) + "\ntail\n");
+      } finally {
+        pending.destroy();
+      }
+    });
     await t.test(
       "exception formatting failures preserve the original error and recover",
       async () => {

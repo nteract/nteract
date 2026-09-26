@@ -48,12 +48,13 @@ def flush_live_stream(everything=False):
         return
     chunk, rest = text[:cut], text[cut:]
     live_pending = (name, rest) if rest else None
-    if live_sent_bytes + len(chunk) > MAX_LIVE_STREAM_BYTES:
+    size = len(chunk.encode("utf-8"))
+    if live_sent_bytes + size > MAX_LIVE_STREAM_BYTES:
         # Stop live updates; the final batch still carries every output.
         live_pending = None
         stop_live()
         return
-    live_sent_bytes += len(chunk)
+    live_sent_bytes += size
     send_live({"type": "stream", "name": name, "text": chunk})
 
 

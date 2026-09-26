@@ -219,6 +219,7 @@ export async function createCelldRuntime(
           // bounded; the result line keeps the batch byte limit and validation.
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
+          const encoder = new TextEncoder();
           let buffered = "";
           let liveBytes = 0;
           let live = true;
@@ -226,7 +227,8 @@ export async function createCelldRuntime(
           const handle = (line) => {
             if (!line) return;
             if (result !== undefined) throw new Error("Python output continued after its result");
-            if (line.length > maxOutputBytes + 64) throw new Error("Python output limit exceeded");
+            if (encoder.encode(line).byteLength > maxOutputBytes + 64)
+              throw new Error("Python output limit exceeded");
             const event = JSON.parse(line);
             if (event?.type === "result") {
               result = event.result;
@@ -235,7 +237,8 @@ export async function createCelldRuntime(
             if (!live) return;
             // Every live event costs budget, so empty or structural events
             // cannot create unbounded work downstream.
-            liveBytes += 64 + (typeof event?.text === "string" ? event.text.length : 0);
+            liveBytes +=
+              64 + (typeof event?.text === "string" ? encoder.encode(event.text).byteLength : 0);
             if (liveBytes > MAX_LIVE_BYTES) {
               live = false;
               safely(deliver, { type: "live_stopped" });
@@ -260,7 +263,7 @@ export async function createCelldRuntime(
               const { done, value } = await reader.read();
               if (done) break;
               buffered += decoder.decode(value, { stream: true });
-              if (buffered.length > maxOutputBytes + MAX_LIVE_BYTES) {
+              if (encoder.encode(buffered).byteLength > maxOutputBytes + MAX_LIVE_BYTES) {
                 await reader.cancel();
                 throw new Error("Python output limit exceeded");
               }

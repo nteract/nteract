@@ -84,6 +84,8 @@ establish API behavior, not support in the deployed celld runtime. A narrow,
 host-owned signal capability needs runtime/owner fencing, stale-signal clearing,
 disposal tests, and a termination fallback. Guest polling and sleep monkeypatching
 are not the replacement for that host contract.
+Track the native capability and qualification work in
+[issue #4325](https://github.com/nteract/nteract/issues/4325).
 
 ## Async work to pursue
 

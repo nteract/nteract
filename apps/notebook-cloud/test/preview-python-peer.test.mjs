@@ -459,3 +459,51 @@ test("terminal output waits for a scheduled live write and fences its late prepa
   );
   assert.equal(clock.actions.length, 0, "the execution's live timer is released");
 });
+
+test("clear-output floods share the live document-write budget", async (t) => {
+  const { peer, publish } = await fixture(t);
+  const clock = new VirtualTimeScheduler(undefined, 0);
+  let clears = 0;
+  let clearsWhileRunning;
+  let published;
+  const countedPeer = new Proxy(peer, {
+    get(target, name) {
+      if (name === "clear_execution_outputs")
+        return (...args) => {
+          clears++;
+          return target.clear_execution_outputs(...args);
+        };
+      const value = Reflect.get(target, name);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const bridge = new PythonRuntimePeer({
+    peer: countedPeer,
+    sessionKey: "session",
+    isCurrent: () => true,
+    publish,
+    publishLive: async () => published(),
+    scheduler: clock,
+    pool: {
+      execute: async (_key, _execution, { onLive }) => {
+        for (let round = 0; round < 3; round++) {
+          const publication = new Promise((resolve) => {
+            published = resolve;
+          });
+          for (let index = 0; index < 200; index++) onLive({ type: "clear", wait: false });
+          clock.maxFrames += 150;
+          clock.flush();
+          await publication;
+        }
+        clearsWhileRunning = clears;
+        return { execution_count: 1, success: true, outputs: [] };
+      },
+      release: async () => {},
+    },
+    prepareOutputs: async (outputs) => outputs,
+  });
+  t.after(() => bridge.close());
+  await bridge.drain();
+  assert.equal(clearsWhileRunning, 400, "clear operations cannot bypass the stream-write cap");
+  assert.equal(clock.actions.length, 0);
+});
