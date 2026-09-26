@@ -1,7 +1,51 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { CloudExecutionCommands } from "../viewer/cloud-execution-commands.ts";
+import { TestScheduler } from "rxjs/testing";
+import {
+  CloudExecutionCommands,
+  cloudExecutionCommand$,
+} from "../viewer/cloud-execution-commands.ts";
+
+for (const boundary of ["sync", "attachment"] as const) {
+  test(`virtual-time cancellation unsubscribes a held ${boundary} before execution`, () => {
+    new TestScheduler((actual, expected) => assert.deepEqual(actual, expected)).run(
+      ({ cold, hot, expectObservable, expectSubscriptions }) => {
+        const held = cold("------t|", { t: true });
+        const cancellation = hot("---x");
+        const result = cloudExecutionCommand$(
+          {
+            isCurrent: () => true,
+            flush: () => (boundary === "sync" ? held : cold("(t|)", { t: true })),
+            start: () => held,
+            execute: () => assert.fail("cancelled preparation sent execution"),
+          },
+          cancellation,
+        );
+        expectObservable(result).toBe("---(c|)", { c: "cancelled" });
+        expectSubscriptions(held.subscriptions).toBe("^--!");
+      },
+    );
+  });
+}
+
+test("virtual-time Interrupt after submission leaves the room-owned request intact", () => {
+  new TestScheduler((actual, expected) => assert.deepEqual(actual, expected)).run(
+    ({ cold, hot, expectObservable, expectSubscriptions }) => {
+      const submitted = cold("----(r|)", { r: undefined });
+      const result = cloudExecutionCommand$(
+        {
+          isCurrent: () => true,
+          flush: () => cold("-t|", { t: true }),
+          execute: () => submitted,
+        },
+        hot("---x"),
+      );
+      expectObservable(result).toBe("-----(s|)", { s: "submitted" });
+      expectSubscriptions(submitted.subscriptions).toBe("-^---!");
+    },
+  );
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

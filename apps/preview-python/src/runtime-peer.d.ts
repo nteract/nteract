@@ -1,3 +1,5 @@
+import type { SchedulerLike } from "rxjs";
+
 export interface PythonExecution {
   execution_id: string;
   cell_id: string;
@@ -42,6 +44,8 @@ export class PythonRuntimePeer {
     /** Sync live output to peers without a storage checkpoint; enables live output. */
     publishLive?(): Promise<void>;
     prepareOutputs(outputs: Record<string, unknown>[]): Promise<Record<string, unknown>[]>;
+    /** Clock for live output windows. */
+    scheduler?: SchedulerLike;
   });
   drain(): Promise<void>;
   /** Cancel queued intent; the provider interrupts the running cell. */

@@ -73,9 +73,8 @@ export function useCloudRuntimeCommands({
   const cancelPending = useCallback(() => {
     commands.cancelPending();
     // A later explicit Run issues its own start rather than joining one made
-    // for cancelled intent. Joining would also be safe (the new command has its
-    // own generation); a repeat attach for the same workstation is deduped by
-    // the server.
+    // for cancelled intent. A repeat attach for the same workstation is
+    // deduped by the server.
     startPromiseRef.current = null;
   }, [commands]);
   useEffect(() => cancelPending, [cancelPending, roomKey]);

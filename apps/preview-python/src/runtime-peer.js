@@ -1,3 +1,6 @@
+import { EMPTY, Subject, catchError, concatMap, defer, ignoreElements, lastValueFrom } from "rxjs";
+import { liveOutputBatches } from "./live-output-stream.js";
+
 /**
  * Execute only room-accepted entries from RuntimeStateDoc. The connection owns
  * the WASM handle and sync transport; the pool owns interpreter lifetime.
@@ -13,8 +16,6 @@
 const LIVE_RECORD_BYTES = 960;
 const LIVE_MAX_RECORDS = 48;
 const LIVE_MAX_WRITES = 400;
-const LIVE_MAX_PENDING = 256;
-const LIVE_FLUSH_INTERVAL_MS = 150;
 const utf8 = new TextEncoder();
 
 function utf8Length(text) {
@@ -49,9 +50,18 @@ export class PythonRuntimePeer {
   #interrupting;
   #publishLive;
   #live;
-  #liveTimer;
+  #scheduler;
 
-  constructor({ peer, pool, sessionKey, isCurrent, publish, publishLive, prepareOutputs }) {
+  constructor({
+    peer,
+    pool,
+    sessionKey,
+    isCurrent,
+    publish,
+    publishLive,
+    prepareOutputs,
+    scheduler,
+  }) {
     this.#peer = peer;
     this.#pool = pool;
     this.#key = sessionKey;
@@ -59,6 +69,7 @@ export class PythonRuntimePeer {
     this.#publish = publish;
     this.#publishLive = publishLive;
     this.#prepare = prepareOutputs;
+    this.#scheduler = scheduler;
   }
 
   /**
@@ -72,42 +83,42 @@ export class PythonRuntimePeer {
   #onLive(executionId, event) {
     const live = this.#live;
     if (!live || live.executionId !== executionId || live.closed || live.stopped) return;
-    const last = live.pending.at(-1);
-    if (event.type === "live_stopped") {
-      live.stopped = true;
-      live.pending = [];
-      return;
-    }
-    if (event.type === "stream") {
-      if (last?.type === "stream" && last.name === event.name) last.text += event.text;
-      else live.pending.push({ type: "stream", name: event.name, text: event.text });
-    } else if (event.type === "boundary") {
-      if (last?.type !== "boundary") live.pending.push({ type: "boundary" });
-    } else if (event.type === "clear") {
-      live.pending.push({ type: "clear", wait: event.wait === true });
-    } else return;
-    // Guest output is untrusted: a flood of structural events stops live mode.
-    if (live.pending.length > LIVE_MAX_PENDING) {
-      live.stopped = true;
-      live.pending = [];
-      return;
-    }
-    this.#scheduleLiveFlush();
+    live.events.next(event);
   }
 
-  #scheduleLiveFlush() {
-    if (this.#liveTimer) return;
-    this.#liveTimer = setTimeout(() => {
-      this.#liveTimer = undefined;
-      const live = this.#live;
-      if (!live || live.closed) return;
-      live.chain = live.chain
-        .then(() => this.#flushLive(live))
-        .catch(() => {
-          // Live output is advisory; the final batch is still published.
-          live.stopped = true;
-        });
-    }, LIVE_FLUSH_INTERVAL_MS);
+  #startLive(executionId) {
+    const live = {
+      executionId,
+      events: new Subject(),
+      record: null,
+      records: 0,
+      writes: 0,
+      clearBeforeNext: false,
+      written: false,
+      stopped: false,
+      closed: false,
+    };
+    live.completion = lastValueFrom(
+      liveOutputBatches(live.events.asObservable(), { scheduler: this.#scheduler }).pipe(
+        concatMap((batch) => {
+          if (batch.stopped) {
+            live.stopped = true;
+            return EMPTY;
+          }
+          return defer(() => this.#flushLive(live, batch.events)).pipe(
+            catchError(() => {
+              // Live output is advisory; the final batch is still published.
+              live.stopped = true;
+              live.events.complete();
+              return EMPTY;
+            }),
+          );
+        }),
+        ignoreElements(),
+      ),
+      { defaultValue: undefined },
+    );
+    this.#live = live;
   }
 
   #clearLive(live) {
@@ -118,14 +129,14 @@ export class PythonRuntimePeer {
     live.writes++;
   }
 
-  async #flushLive(live) {
-    if (live.closed || live.stopped || this.#closed || !live.pending.length) return;
+  async #flushLive(live, pending) {
+    if (live.closed || live.stopped || this.#closed || !pending.length) return;
     if (!this.#current(this.#peer.get_runtime_state())) {
       live.stopped = true;
       return;
     }
     const touched = new Set();
-    for (const op of live.pending.splice(0)) {
+    for (const op of pending) {
       if (op.type === "boundary") {
         live.record = null;
         continue;
@@ -175,7 +186,7 @@ export class PythonRuntimePeer {
       const [manifest] = await this.#prepare([
         { output_type: "stream", name: record.name, text: record.text },
       ]);
-      if (live.closed) return;
+      if (live.closed || this.#closed || !this.#current(this.#peer.get_runtime_state())) return;
       if (record.outputId) {
         manifest.output_id = record.outputId;
         this.#peer.replace_output_json(live.executionId, record.outputId, JSON.stringify(manifest));
@@ -192,9 +203,10 @@ export class PythonRuntimePeer {
     const live = this.#live;
     if (!live) return false;
     live.closed = true;
-    clearTimeout(this.#liveTimer);
-    this.#liveTimer = undefined;
-    await live.chain;
+    live.events.complete();
+    // Completing the source releases its scheduler; concatMap still waits for
+    // the active write before the authoritative batch can replace live output.
+    await live.completion;
     this.#live = undefined;
     return live.written;
   }
@@ -296,19 +308,7 @@ export class PythonRuntimePeer {
         continue;
       }
       let result;
-      if (this.#publishLive)
-        this.#live = {
-          executionId,
-          chain: Promise.resolve(),
-          pending: [],
-          record: null,
-          records: 0,
-          writes: 0,
-          clearBeforeNext: false,
-          written: false,
-          stopped: false,
-          closed: false,
-        };
+      if (this.#publishLive) this.#startLive(executionId);
       try {
         result = await this.#pool.execute(
           this.#key,
@@ -388,6 +388,7 @@ export class PythonRuntimePeer {
 
   async close() {
     this.#closed = true;
+    await this.#closeLive();
     await this.#pool.release(this.#key);
   }
 }

@@ -1,3 +1,17 @@
+import {
+  Subject,
+  concatMap,
+  defaultIfEmpty,
+  defer,
+  from,
+  lastValueFrom,
+  map,
+  of,
+  takeUntil,
+  type Observable,
+  type ObservableInput,
+} from "rxjs";
+
 /**
  * Browser-side continuation guard for hosted execution requests.
  *
@@ -16,36 +30,62 @@ export interface CloudExecutionCommand {
   /** False once the live room connection that issued this command is gone. */
   isCurrent: () => boolean;
   /** Deliver local NotebookDoc changes so the room executes the synced cell. */
-  flush: () => Promise<boolean>;
+  flush: () => ObservableInput<boolean>;
   /** Optional compute start/attach; `false` means the attach did not happen. */
-  start?: () => Promise<boolean>;
+  start?: () => ObservableInput<boolean>;
   /** Send execution intent to the room (execute_cell / run_all_cells). */
-  execute: () => Promise<unknown>;
+  execute: () => ObservableInput<unknown>;
 }
 
 export type CloudExecutionOutcome = "submitted" | "cancelled" | "sync_failed" | "start_failed";
 
+/**
+ * Cancel only the preparation phase. Once execute is called, the room owns
+ * the request; cancellation must not pretend that delivered intent was lost.
+ * Observable inputs let tests control each boundary with virtual time.
+ */
+export function cloudExecutionCommand$(
+  command: CloudExecutionCommand,
+  cancelled$: Observable<unknown>,
+): Observable<CloudExecutionOutcome> {
+  type Prepared = "ready" | Exclude<CloudExecutionOutcome, "submitted">;
+  const prepare$ = defer(() => {
+    if (!command.isCurrent()) return of<Prepared>("cancelled");
+    return from(command.flush()).pipe(
+      concatMap((delivered): Observable<Prepared> => {
+        if (!command.isCurrent()) return of("cancelled");
+        if (!delivered) return of("sync_failed");
+        if (!command.start) return of("ready");
+        return defer(command.start).pipe(
+          map((started): Prepared => {
+            if (!command.isCurrent()) return "cancelled";
+            return started ? "ready" : "start_failed";
+          }),
+        );
+      }),
+    );
+  });
+  return prepare$.pipe(
+    takeUntil(cancelled$),
+    defaultIfEmpty<Prepared, Prepared>("cancelled"),
+    concatMap(
+      (prepared): Observable<CloudExecutionOutcome> =>
+        prepared === "ready"
+          ? defer(command.execute).pipe(map(() => "submitted" as const))
+          : of(prepared),
+    ),
+  );
+}
+
 export class CloudExecutionCommands {
-  private generation = 0;
+  private readonly cancelled$ = new Subject<void>();
 
   /** Invalidate every command that has not yet sent execution intent. */
   cancelPending(): void {
-    this.generation += 1;
+    this.cancelled$.next();
   }
 
-  async submit(command: CloudExecutionCommand): Promise<CloudExecutionOutcome> {
-    const generation = this.generation;
-    const current = () => generation === this.generation && command.isCurrent();
-    if (!current()) return "cancelled";
-    const delivered = await command.flush();
-    if (!current()) return "cancelled";
-    if (!delivered) return "sync_failed";
-    if (command.start) {
-      const started = await command.start();
-      if (!current()) return "cancelled";
-      if (!started) return "start_failed";
-    }
-    await command.execute();
-    return "submitted";
+  submit(command: CloudExecutionCommand): Promise<CloudExecutionOutcome> {
+    return lastValueFrom(cloudExecutionCommand$(command, this.cancelled$.asObservable()));
   }
 }
