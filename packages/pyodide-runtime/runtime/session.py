@@ -5,6 +5,8 @@ import contextlib
 import hashlib
 import io
 import json
+import math
+import operator
 import sys
 import time
 import traceback
@@ -146,14 +148,44 @@ def checkpoint():
     honor_interrupt(context)
 
 
+async def sleep_until_interrupt(seconds):
+    """Wake a JSPI sleep when control requests Interrupt, without consuming it."""
+    sleeper = asyncio.ensure_future(asyncio.sleep(seconds))
+    try:
+        while not sleeper.done():
+            await asyncio.wait({sleeper}, timeout=0.02)
+            if nteract_control.pending():
+                return
+        await sleeper
+    finally:
+        sleeper.cancel()
+
+
 def interruptible_sleep(seconds):
     context = output_context.get()
     if context is None or context["closed"]:
         return _blocking_sleep(seconds)
+    # Match time.sleep's accepted numeric inputs and errors before entering
+    # asyncio.sleep, which otherwise treats negative delays as immediate.
+    if not isinstance(seconds, (int, float)):
+        seconds = operator.index(seconds)
+    seconds = float(seconds)
+    if math.isnan(seconds):
+        raise ValueError("Invalid value NaN (not a number)")
+    if math.isinf(seconds):
+        raise OverflowError("timestamp out of range for platform time_t")
+    if seconds < 0:
+        raise ValueError("sleep length must be non-negative")
     honor_interrupt(context)
     flush_live_stream()
     if can_run_sync():
-        suspend(asyncio.sleep(seconds))
+        # Only the cell body may wake for Interrupt. Its synchronous frame
+        # consumes the request after JSPI resumes; cancelling the suspended
+        # Python task instead would leave that frame running.
+        if current_task() is context.get("task") and not context.get("body_done"):
+            suspend(sleep_until_interrupt(seconds))
+        else:
+            suspend(asyncio.sleep(seconds))
     else:
         _blocking_sleep(seconds)
     honor_interrupt(context)

@@ -208,6 +208,40 @@ test(
       assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
       assert.equal(value(await run("kept")), "1");
     });
+    await t.test("time.sleep keeps its input validation in a notebook cell", async () => {
+      for (const [delay, error] of [
+        ["-1", "ValueError"],
+        ["float('nan')", "ValueError"],
+        ["float('inf')", "OverflowError"],
+        ["'0'", "TypeError"],
+        ["None", "TypeError"],
+      ]) {
+        const result = await run(`import time\ntime.sleep(${delay})`);
+        assert.equal(result.success, false, delay);
+        assert.equal(result.outputs.at(-1).data[tracebackMime].ename, error, delay);
+      }
+      assert.equal(
+        value(
+          await run("class Delay:\n    def __index__(self): return 0\ntime.sleep(Delay())\n42"),
+        ),
+        "42",
+      );
+    });
+    await t.test(
+      "Interrupt during a long time.sleep preserves variables before the grace deadline",
+      { skip: typeof WebAssembly.Suspending !== "function" },
+      async () => {
+        const running = run("import time\nkept = 7\ntime.sleep(4)\nkept = 8");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const requestedAt = performance.now();
+        control.requested = true;
+        const interrupted = await running;
+        assert.ok(performance.now() - requestedAt < 2000, "Interrupt must wake the sleeping cell");
+        assert.equal(interrupted.success, false);
+        assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
+        assert.equal(value(await run("kept")), "7");
+      },
+    );
     await t.test("Interrupt at an await cancels the cell as KeyboardInterrupt", async () => {
       const running = run("import asyncio\nkept = 5\nawait asyncio.sleep(30)\nkept = 6");
       await new Promise((resolve) => setTimeout(resolve, 100));
