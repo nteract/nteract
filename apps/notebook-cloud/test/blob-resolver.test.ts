@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   createNotebookCloudBlobResolver,
   notebookCloudBlobBasePath,
+  BLOB_DISPLAY_CACHE_MAX_BYTES,
+  BLOB_DISPLAY_CACHE_MAX_ENTRIES,
 } from "../src/blob-resolver.ts";
 
 describe("notebook cloud blob resolver", () => {
@@ -230,4 +232,110 @@ describe("notebook cloud blob resolver", () => {
       },
     ]);
   });
+
+  it("keeps fallback display URLs frame-safe and uses the declared MIME type", async (t) => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "FileReader");
+    Object.defineProperty(globalThis, "FileReader", { configurable: true, value: undefined });
+    t.after(() => {
+      if (descriptor) Object.defineProperty(globalThis, "FileReader", descriptor);
+      else Reflect.deleteProperty(globalThis, "FileReader");
+    });
+    t.mock.method(URL, "createObjectURL", () => assert.fail("unowned object URL"));
+    const bytes = Uint8Array.from({ length: 70_000 }, (_, i) => i % 256);
+    const resolver = protectedResolver(
+      async () => new Response(bytes, { headers: { "Content-Type": "application/octet-stream" } }),
+    );
+    const display = await resolver.displayUrl!({ blob: "raster" }, "image/png");
+    assert.ok(display.startsWith("data:image/png;base64,"));
+    assert.deepEqual(new Uint8Array(await (await fetch(display)).arrayBuffer()), bytes);
+  });
+
+  it("does not cache or retry authorization failures", async () => {
+    for (const status of [401, 403]) {
+      let calls = 0;
+      const resolver = protectedResolver(async () => {
+        calls++;
+        return calls === 1 ? new Response(null, { status }) : new Response("ok");
+      });
+      await assert.rejects(resolver.displayUrl!({ blob: "private" }), new RegExp(`${status}`));
+      assert.equal(calls, 1);
+      assert.ok((await resolver.displayUrl!({ blob: "private" })).startsWith("data:"));
+      assert.equal(calls, 2);
+    }
+  });
+
+  it("bounds cached entries and keeps recently used and already displayed images usable", async () => {
+    let calls = 0;
+    const resolver = protectedResolver(async () => {
+      calls++;
+      return new Response("image");
+    });
+    const resolve = (blob: string) => resolver.displayUrl!({ blob });
+    const displayed = await resolve("oldest");
+    await resolve("keep");
+    for (let i = 0; i < BLOB_DISPLAY_CACHE_MAX_ENTRIES - 2; i++) await resolve(`image-${i}`);
+    await resolve("keep");
+    await resolve("new");
+    assert.equal(calls, BLOB_DISPLAY_CACHE_MAX_ENTRIES + 1);
+    await resolve("keep");
+    assert.equal(calls, BLOB_DISPLAY_CACHE_MAX_ENTRIES + 1);
+    assert.equal(await (await fetch(displayed)).text(), "image");
+    assert.equal(await resolve("oldest"), displayed);
+    assert.equal(calls, BLOB_DISPLAY_CACHE_MAX_ENTRIES + 2);
+  });
+
+  it("bounds retained data URL bytes even below the entry limit", async () => {
+    let calls = 0;
+    const resolver = protectedResolver(async () => {
+      calls++;
+      return new Response(new Uint8Array(BLOB_DISPLAY_CACHE_MAX_BYTES / 4));
+    });
+    const first = await resolver.displayUrl!({ blob: "first" });
+    await resolver.displayUrl!({ blob: "second" });
+    await resolver.displayUrl!({ blob: "second" });
+    assert.equal(calls, 2);
+    assert.equal(await resolver.displayUrl!({ blob: "first" }), first);
+    assert.equal(calls, 3);
+  });
+
+  it("renders oversized images without retaining them in the reuse cache", async () => {
+    let calls = 0;
+    const resolver = protectedResolver(async () => {
+      calls++;
+      return new Response(new Uint8Array(BLOB_DISPLAY_CACHE_MAX_BYTES / 2));
+    });
+    const first = await resolver.displayUrl!({ blob: "large" });
+    assert.ok(first.length * 2 > BLOB_DISPLAY_CACHE_MAX_BYTES);
+    assert.equal(await resolver.displayUrl!({ blob: "large" }), first);
+    assert.equal(calls, 2);
+  });
+
+  it("keeps a retired resolver's pending result out of a new auth resolver", async () => {
+    let finish!: (response: Response) => void;
+    const old = protectedResolver(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const oldRequest = old.displayUrl!({ blob: "same-hash" });
+    let calls = 0;
+    const current = protectedResolver(async () => {
+      calls++;
+      return new Response(null, { status: 403 });
+    });
+    finish(new Response("old authorized bytes"));
+    await oldRequest;
+    await assert.rejects(current.displayUrl!({ blob: "same-hash" }), /403/);
+    assert.equal(calls, 1);
+  });
 });
+
+function protectedResolver(fetchImpl: typeof fetch) {
+  return createNotebookCloudBlobResolver({
+    baseUrl: "https://viewer.example.test/n/notebook-1",
+    blobBasePath: "/api/n/notebook-1/blobs/",
+    authenticatedBinaryDisplayUrls: true,
+    fetchImpl,
+  });
+}
