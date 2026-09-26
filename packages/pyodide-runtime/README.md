@@ -35,8 +35,8 @@ Output remains a bounded, validated batch per execution; `/execute` with
 `stream: true` additionally returns advisory NDJSON stream lines before it. Background tasks cannot publish
 into another execution's output capture. This is not full desktop kernel parity:
 stdin, completion/inspection requests, widgets, Arrow buffer transport, and the
-remaining launcher extensions are not wired here. `RuntimeControl.interrupt()`
-requests a `KeyboardInterrupt` that the cell honors at output writes,
-`time.sleep` and awaits, keeping its variables; a cell that never yields, or any
-deadline-terminated interpreter, loses variables. Neither prepared nor
-user-session snapshots exist.
+remaining launcher extensions are not wired here. Live lines can reach the host
+while async cells yield; synchronous CPU work and `time.sleep` may defer them
+until completion. Python's sleep and asyncio behavior are not overridden.
+Interrupt and deadline termination destroy the interpreter and lose variables.
+Neither prepared nor user-session snapshots exist.

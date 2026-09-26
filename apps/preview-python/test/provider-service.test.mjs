@@ -71,53 +71,6 @@ test("release fences survive provider reconstruction and reject close-before-ope
   await pool.close();
 });
 
-test("private /interrupt is identity-scoped and never releases the session", async () => {
-  let finish;
-  const pool = new SessionPool({
-    maxSessions: 2,
-    warmCount: 0,
-    create: async () => ({
-      info: { id: 1 },
-      execute: (execution) =>
-        new Promise((resolve) => {
-          finish = () => resolve({ execution_id: execution.execution_id, success: false });
-        }),
-      interrupt: async () => {
-        queueMicrotask(() => finish());
-        return true;
-      },
-      dispose: async () => {},
-    }),
-  });
-  const service = createProviderService(pool);
-  const request = (path, input) =>
-    service.fetch(
-      new Request("https://private.invalid" + path, {
-        method: "POST",
-        body: JSON.stringify(input),
-      }),
-    );
-  const identity = { ownerPrincipal: "alice", notebookId: "n", sessionId: "s" };
-  await request("/open", identity);
-  assert.deepEqual(await (await request("/interrupt", identity)).json(), { status: "not_running" });
-  const running = request("/execute", {
-    ...identity,
-    execution: { cell_id: "c", execution_id: "e" },
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-  // Another owner's identity cannot reach this session.
-  assert.deepEqual(
-    await (await request("/interrupt", { ...identity, ownerPrincipal: "mallory" })).json(),
-    { status: "not_running" },
-  );
-  assert.deepEqual(await (await request("/interrupt", identity)).json(), {
-    status: "interrupted",
-  });
-  assert.equal((await (await running).json()).success, false);
-  assert.equal(pool.inspect(JSON.stringify(["alice", "n", "s"])).phase, "ready");
-  await pool.close();
-});
-
 test("streamed /execute forwards live events and ends with the result or an error", async () => {
   let fail = false;
   const pool = new SessionPool({

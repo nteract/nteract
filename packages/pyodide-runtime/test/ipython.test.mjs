@@ -38,18 +38,6 @@ test(
     python.runPython(
       "import sys, os; sys.path.insert(0, '/packages/site-packages'); os.environ['LD_LIBRARY_PATH'] = '/packages/site-packages'",
     );
-    // Stand-in for the guest worker's control module (runtime/worker.js).
-    const control = {
-      requested: false,
-      pending: () => control.requested,
-      consume: () => {
-        const pending = control.requested;
-        control.requested = false;
-        return pending;
-      },
-      turn: () => new Promise((resolve) => setTimeout(resolve, 0)),
-    };
-    python.registerJsModule("nteract_control", control);
     python.runPython(await readFile(new URL("runtime/session.py", root), "utf8"));
     const evaluate = python.globals.get("evaluate");
     t.after(() => evaluate.destroy());
@@ -191,112 +179,7 @@ test(
         ["stdout:a\n", "stderr:b\n", "stdout:c\n", "display_data", "stdout:e\n"],
       );
     });
-    // Without JSPI (plain Node), checkpoints cannot yield, so these set the
-    // request before the cell starts; the celld probe covers delivery mid-cell.
-    await t.test("Interrupt raises KeyboardInterrupt at an output checkpoint", async () => {
-      await run("kept = 41");
-      control.requested = true;
-      const interrupted = await run("print('before')\nkept = 0");
-      assert.equal(interrupted.success, false);
-      assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
-      // The interrupted assignment never ran; earlier state is preserved.
-      assert.equal(value(await run("kept")), "41");
-    });
-    await t.test("Interrupt at a time.sleep checkpoint keeps the namespace", async () => {
-      control.requested = true;
-      const interrupted = await run("import time\nkept = 1\ntime.sleep(0)\nkept = 2");
-      assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
-      assert.equal(value(await run("kept")), "1");
-    });
-    await t.test("time.sleep keeps its input validation in a notebook cell", async () => {
-      for (const [delay, error] of [
-        ["-1", "ValueError"],
-        ["float('nan')", "ValueError"],
-        ["float('inf')", "OverflowError"],
-        ["'0'", "TypeError"],
-        ["None", "TypeError"],
-      ]) {
-        const result = await run(`import time\ntime.sleep(${delay})`);
-        assert.equal(result.success, false, delay);
-        assert.equal(result.outputs.at(-1).data[tracebackMime].ename, error, delay);
-      }
-      assert.equal(
-        value(
-          await run("class Delay:\n    def __index__(self): return 0\ntime.sleep(Delay())\n42"),
-        ),
-        "42",
-      );
-    });
-    await t.test(
-      "Interrupt during a long time.sleep preserves variables before the grace deadline",
-      { skip: typeof WebAssembly.Suspending !== "function" },
-      async () => {
-        const running = run("import time\nkept = 7\ntime.sleep(4)\nkept = 8");
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        const requestedAt = performance.now();
-        control.requested = true;
-        const interrupted = await running;
-        assert.ok(performance.now() - requestedAt < 2000, "Interrupt must wake the sleeping cell");
-        assert.equal(interrupted.success, false);
-        assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
-        assert.equal(value(await run("kept")), "7");
-      },
-    );
-    await t.test("Interrupt at an await cancels the cell as KeyboardInterrupt", async () => {
-      const running = run("import asyncio\nkept = 5\nawait asyncio.sleep(30)\nkept = 6");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      control.requested = true;
-      const interrupted = await running;
-      assert.equal(interrupted.success, false);
-      assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
-      assert.equal(value(await run("kept")), "5");
-    });
-    await t.test("a printing background task cannot absorb the cell's Interrupt", async () => {
-      // Every write is a checkpoint here, and the background task raises the
-      // request immediately before its own print: only task ownership keeps
-      // it from absorbing the interrupt.
-      python.runPython("CHECKPOINT_EVERY_WRITES = 1");
-      t.after(() => python.runPython("CHECKPOINT_EVERY_WRITES = 128"));
-      const interrupted = await run(
-        [
-          "import asyncio, nteract_control",
-          "async def ticker():",
-          "    await asyncio.sleep(0.05)",
-          "    nteract_control.requested = True",
-          "    print('bg')",
-          "background = asyncio.create_task(ticker())",
-          "await asyncio.sleep(30)",
-        ].join("\n"),
-      );
-      assert.equal(interrupted.success, false);
-      assert.equal(interrupted.outputs.at(-1).data[tracebackMime].ename, "KeyboardInterrupt");
-      await run("background.cancel()");
-    });
-    await t.test("post_execute hooks cannot consume an Interrupt request", async () => {
-      python.runPython("CHECKPOINT_EVERY_WRITES = 1");
-      t.after(() => python.runPython("CHECKPOINT_EVERY_WRITES = 128"));
-      await run(
-        [
-          "import nteract_control",
-          "def late_hook():",
-          "    nteract_control.requested = True",
-          "    print('hook output')",
-          "get_ipython().events.register('post_execute', late_hook)",
-        ].join("\n"),
-      );
-      const hooked = await run("6 * 7");
-      await run("get_ipython().events.unregister('post_execute', late_hook)");
-      assert.equal(hooked.success, true);
-      assert.equal(
-        hooked.outputs.some((o) => o.data?.[tracebackMime]),
-        false,
-        "the hook's print must not raise KeyboardInterrupt",
-      );
-      assert.equal(control.requested, false, "completion clears the request");
-    });
     await t.test("live mode sends complete stream lines and keeps the batch", async () => {
-      python.runPython("CHECKPOINT_EVERY_WRITES = 1");
-      t.after(() => python.runPython("CHECKPOINT_EVERY_WRITES = 128"));
       const events = [];
       const executionId = `attempt-${++sequence}`;
       const source = "print('a')\nprint('b', end='')\ndisplay('x')\nprint('c')";
@@ -324,13 +207,37 @@ test(
       );
     });
     await t.test(
-      "an Interrupt request left after a cell does not reach the next cell",
+      "live output arrives before a naturally yielding async cell completes",
       async () => {
-        await run("pass");
-        control.requested = true;
-        // Completion clears the request (the worker also clears it per request).
-        await run("pass");
-        assert.equal(value(await run("print('fine')\n6 * 7")), "42");
+        const events = [];
+        let firstLine;
+        const observed = new Promise((resolve) => {
+          firstLine = resolve;
+        });
+        const pending = evaluate(
+          "import asyncio\nprint('first')\nawait asyncio.sleep(0.1)\nprint('last', end='')",
+          `attempt-${++sequence}`,
+          "cell",
+          (line) => {
+            const event = JSON.parse(line);
+            events.push(event);
+            firstLine();
+          },
+        );
+        let completed = false;
+        const result = Promise.resolve(pending).then((value) => {
+          completed = true;
+          return JSON.parse(value);
+        });
+        try {
+          await observed;
+          assert.equal(completed, false);
+          assert.deepEqual(events, [{ type: "stream", name: "stdout", text: "first\n" }]);
+          assert.equal((await result).success, true);
+          assert.deepEqual(events.at(-1), { type: "stream", name: "stdout", text: "last" });
+        } finally {
+          pending.destroy();
+        }
       },
     );
   },

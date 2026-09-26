@@ -53,10 +53,6 @@ export class SessionPool {
             runtime: {
               info: runtime.info,
               execute: (execution, options) => runtime.execute(execution, options),
-              interrupt: (options) =>
-                typeof runtime.interrupt === "function"
-                  ? runtime.interrupt(options)
-                  : Promise.resolve(false),
               install: (payload) => runtime.install(payload),
               dispose: () =>
                 (disposal ??= Promise.resolve()
@@ -140,7 +136,6 @@ export class SessionPool {
       ready: null,
       lastUsed: this.#clock(),
       busy: false,
-      running: null,
       executions: new Set(),
       packageOperations: new Set(),
       installed: [],
@@ -192,10 +187,8 @@ export class SessionPool {
       throw new Error("Session execution limit reached; restart");
     session.executions.add(execution.execution_id);
     session.busy = true;
-    const running = session.runtime.execute(execution, options);
-    session.running = running;
     try {
-      const result = await running;
+      const result = await session.runtime.execute(execution, options);
       if (this.#sessions.get(key) !== session || session.cancelled)
         throw new Error("Discarded output from expired session");
       return result;
@@ -204,50 +197,7 @@ export class SessionPool {
       throw error;
     } finally {
       session.busy = false;
-      if (session.running === running) session.running = null;
       session.lastUsed = this.#clock();
-    }
-  }
-
-  /**
-   * Cooperative Interrupt: ask the running cell to raise KeyboardInterrupt and
-   * wait up to `graceMs` for its execution to settle. Never releases the
-   * session; on "timeout" or "busy" the caller decides whether to terminate.
-   *   not_running  no execution was running (nothing to interrupt)
-   *   interrupted  the running execution returned a result within the grace period
-   *   ended        the running execution failed (deadline, host fault); the
-   *                execute path is already releasing this session
-   *   timeout      the interpreter did not yield in time
-   *   busy         a package operation holds the session
-   */
-  async interrupt(key, { graceMs = 3000 } = {}) {
-    const session = this.#sessions.get(key);
-    if (!session || session.cancelled || !session.runtime) return { status: "not_running" };
-    const running = session.running;
-    if (!running) return { status: session.busy ? "busy" : "not_running" };
-    let timer;
-    const expired = new Promise((resolve) => {
-      timer = setTimeout(() => resolve("timeout"), graceMs);
-    });
-    const settled = running.then(
-      () => "interrupted",
-      () => "ended",
-    );
-    try {
-      const delivered = await Promise.race([
-        session.runtime.interrupt({ timeoutMs: graceMs }),
-        settled.then(() => "settled"),
-        expired,
-      ]);
-      if (delivered === "settled") return { status: await settled };
-      if (delivered === "timeout") return { status: "timeout" };
-      if (delivered !== true)
-        // The request was not recorded while this execution ran. It may have
-        // just finished; otherwise the interpreter is not yielding.
-        return { status: session.running === running ? "timeout" : await settled };
-      return { status: await Promise.race([settled, expired]) };
-    } finally {
-      clearTimeout(timer);
     }
   }
 

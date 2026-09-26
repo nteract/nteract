@@ -50,8 +50,9 @@ The evaluator uses IPython's cell lifecycle, input transformations, display hook
 in-memory history, top-level await and inline Matplotlib events. It reuses the
 launcher's structured traceback formatter with cell/execution/source provenance.
 Compatible in-process magics work. Shell escapes, stdin, widgets, completion and
-inspection transport, Arrow buffers and progressive output streaming are not
-currently supported. The trusted adapter bounds response bytes and
+inspection transport and Arrow buffers are not currently supported. Live stdout
+and stderr are available when Python yields naturally, as described below.
+The trusted adapter bounds response bytes and
 validates output records, stripping unknown properties and rejecting guest
 supplied internal blob/widget references. Conversion into canonical runtime
 output manifests uses the shared Rust MIME classifier, with notebook-scoped blob
@@ -60,22 +61,10 @@ storage. Python-side limits alone are not a security boundary.
 Execution has independent CPU and wall deadlines. Expiration destroys the
 interpreter, so variables are lost; it is not a resumable Python interrupt.
 
-The cloud Interrupt action is cooperative first. Queued cells are cancelled, and
-a private control call asks the running cell to raise `KeyboardInterrupt` while
-keeping the interpreter and its variables. The guest honors the request at
-nteract-owned checkpoints: output writes, `time.sleep` (which suspends through
-JSPI) and awaits. The celld guest clock does not advance during synchronous
-execution, so output checkpoints are gated on write count as well as time. A
-cell that never yields, a package operation, a starting session or a cell that
-does not settle within three seconds falls back to destructive session
-termination, which fences its runtime peer immediately. Interrupt with no cell
-running also terminates the session, as before; it is currently how an owner
-frees a session slot. Background tasks started by the cell keep running after a
-cooperative interrupt, and `time.sleep` inside a cell lets such tasks run. Start compute then
-creates a clean replacement. Only notebook owners can interrupt, and unconfirmed
-cleanup returns an error. Python code can reach the guest's own control flag, so
-this is a convenience, not a security boundary; host termination remains the
-backstop.
+The cloud Interrupt action uses destructive session termination and fences its
+runtime peer immediately. Variables are lost. Start compute creates a clean
+replacement. Only notebook owners can interrupt, and unconfirmed cleanup returns
+an error. Python's sleep and asyncio behavior are not overridden.
 The current celld loader does not forward fetch cancellation and registry
 disposal waits for outstanding calls. The adapter therefore invokes a private
 named control method with a tiny CPU budget to trigger celld's isolate
@@ -252,9 +241,11 @@ that execution. Consecutive writes to the same stream coalesce into one output
 record, so the per-execution output-count limit applies to distinct outputs
 rather than to each `print` argument and newline.
 
-stdout and stderr also stream while a cell runs. The guest sends complete lines
-at its checkpoints (output writes, `time.sleep`, awaits); the runtime peer grows
-live records in place and syncs them to connected peers at most every 150 ms,
+stdout and stderr can stream while async code yields, for example at
+`await asyncio.sleep(...)`. Ordinary output writes flush complete lines to the
+transport; there is no guest polling or injected yield. The runtime peer uses
+RxJS windows with an injectable clock to coalesce live events, grows records in
+place, and serializes their publication to connected peers every 150 ms,
 without its own storage checkpoint. Each live record stays below the inline
 content threshold (no blobs), and live records, document writes and buffered
 events are capped per execution; past those caps live updates stop and the
@@ -262,7 +253,8 @@ batch still carries everything. `clear_output` clears live output too. Rich
 outputs arrive when the cell finishes. On success the validated batch replaces
 the live records before the execution becomes terminal; if the session fails
 mid-cell, the partial live output stays with the error. A cell that never
-yields streams nothing until it ends. Widget comms are not implemented yet.
+yields (including synchronous `time.sleep`) may show output only when it ends.
+Widget comms are not implemented yet.
 
 The deployment admits at most four interpreters and each authenticated compute
 owner may hold at most two sessions. The server's attach job identifies that

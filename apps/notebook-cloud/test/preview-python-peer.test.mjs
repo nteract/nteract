@@ -1,5 +1,6 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
+import { VirtualTimeScheduler } from "rxjs";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 import { PythonRuntimePeer } from "../../preview-python/src/runtime-peer.js";
@@ -197,92 +198,6 @@ test("display updates cross executions and clear wait preserves indexed output s
   await bridge.close();
 });
 
-test("Interrupt cancels queued work, keeps the interrupted result, and a new Run executes", async (t) => {
-  const { host, owner, peer, request, publish } = await fixture(t);
-  owner.add_cell(1, "queued", "code");
-  owner.update_source("queued", "42");
-  sync(host, owner, "owner", "owner");
-  sync(host, peer, "runtime", "runtime_peer", true, request("owner", "queued").outbound);
-  const calls = [];
-  let finish;
-  const bridge = new PythonRuntimePeer({
-    peer,
-    sessionKey: "session",
-    isCurrent: () => true,
-    publish,
-    pool: {
-      execute: (_key, execution) => {
-        calls.push(execution.cell_id);
-        if (calls.length > 1)
-          return Promise.resolve({ execution_count: calls.length, success: true, outputs: [] });
-        return new Promise((resolve) => {
-          finish = () =>
-            resolve({
-              execution_count: 1,
-              success: false,
-              outputs: [
-                { output_type: "error", ename: "KeyboardInterrupt", evalue: "", traceback: [] },
-              ],
-            });
-        });
-      },
-      release: async () => {},
-    },
-    prepareOutputs: async () => [],
-  });
-  const draining = bridge.drain();
-  while (!finish) await new Promise((resolve) => setImmediate(resolve));
-  await bridge.interrupt();
-  const queued = Object.values(peer.get_runtime_state().executions).find(
-    (e) => e.cell_id === "queued",
-  );
-  assert.equal(queued.status, "cancelled");
-  finish();
-  await draining;
-  assert.deepEqual(calls, ["code"]);
-  const interrupted = Object.values(peer.get_runtime_state().executions).find(
-    (e) => e.cell_id === "code",
-  );
-  assert.equal(interrupted.status, "error");
-  assert.equal(interrupted.success, false);
-  // Fresh explicit intent after the interrupt runs normally.
-  sync(host, peer, "runtime", "runtime_peer", true, request("owner", "queued").outbound);
-  await bridge.drain();
-  assert.deepEqual(calls, ["code", "queued"]);
-  await bridge.close();
-});
-
-test("Interrupt between claiming an entry and invoking Python never runs it", async (t) => {
-  const { host, peer } = await fixture(t);
-  let bridge;
-  let interrupted = false;
-  bridge = new PythonRuntimePeer({
-    peer,
-    sessionKey: "session",
-    isCurrent: () => true,
-    publish: async () => {
-      sync(host, peer, "runtime", "runtime_peer", true);
-      if (!interrupted && peer.get_runtime_state().queue.executing) {
-        interrupted = true;
-        await bridge.interrupt();
-      }
-    },
-    pool: {
-      execute: async () => assert.fail("claimed entry ran after Interrupt"),
-      release: async () => {},
-    },
-    prepareOutputs: async () => [],
-  });
-  await bridge.drain();
-  assert.equal(interrupted, true);
-  const [execution] = Object.values(peer.get_runtime_state().executions);
-  assert.equal(execution.status, "error");
-  assert.equal(execution.success, false);
-  assert.equal(execution.outputs[0].ename, "KeyboardInterrupt");
-  assert.equal(peer.get_runtime_state().queue.executing, null);
-  await bridge.close();
-});
-
 test("live stream output updates one record in place, then the batch replaces it", async (t) => {
   const { host, peer, publish } = await fixture(t);
   // Read the room host's state through a fresh viewer each time: the harness
@@ -476,4 +391,71 @@ test("a failed execution keeps its partial live output with the error", async (t
   assert.equal(execution.status, "error");
   assert.deepEqual(execution.outputs[0].text, { inline: "partial\n" });
   assert.equal(execution.outputs.at(-1).output_type, "error");
+});
+
+test("terminal output waits for a scheduled live write and fences its late preparation", async (t) => {
+  const { peer, publish } = await fixture(t);
+  const clock = new VirtualTimeScheduler(undefined, 150);
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+  const executing = deferred();
+  const result = deferred();
+  const preparing = deferred();
+  const releasePreparation = deferred();
+  const prepare = createOutputPreparer({
+    prepareContent: prepare_output_content,
+    putBlob: async () => assert.fail("short live text stays inline"),
+  });
+  const bridge = new PythonRuntimePeer({
+    peer,
+    sessionKey: "session",
+    isCurrent: () => true,
+    publish,
+    publishLive: publish,
+    scheduler: clock,
+    pool: {
+      execute: async (_key, _execution, { onLive }) => {
+        onLive({ type: "stream", name: "stdout", text: "partial\n" });
+        executing.resolve();
+        return result.promise;
+      },
+      release: async () => {},
+    },
+    prepareOutputs: async (outputs) => {
+      if (outputs[0]?.text === "partial\n") {
+        preparing.resolve();
+        await releasePreparation.promise;
+      }
+      return prepare(outputs);
+    },
+  });
+  t.after(() => bridge.close());
+  let completed = false;
+  const draining = bridge.drain().then(() => {
+    completed = true;
+  });
+  await executing.promise;
+  clock.flush();
+  await preparing.promise;
+  result.resolve({
+    execution_count: 1,
+    success: true,
+    outputs: [{ output_type: "stream", name: "stdout", text: "canonical\n" }],
+  });
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  assert.equal(completed, false, "terminal completion waits for the active publication");
+  releasePreparation.resolve();
+  await draining;
+  const execution = Object.values(peer.get_runtime_state().executions)[0];
+  assert.equal(execution.status, "done");
+  assert.deepEqual(
+    execution.outputs.map((output) => output.text),
+    [{ inline: "canonical\n" }],
+  );
+  assert.equal(clock.actions.length, 0, "the execution's live timer is released");
 });

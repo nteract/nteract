@@ -1,7 +1,7 @@
 # Managed Python runtime boundaries
 
-Status: implemented package boundary and IPython execution foundation; streaming,
-checkpoint optimization, and snapshots remain follow-up work.
+Status: implemented package boundary, IPython execution, and bounded live stream
+output; native interruption, checkpoint optimization, and snapshots remain follow-up work.
 
 ## Deployment and ownership
 
@@ -57,6 +57,34 @@ work; shell escapes, arbitrary package/environment mutation, stdin, comms/widget
 completion/inspection transport, Arrow buffers, and all desktop launcher
 extensions are not promised by this slice.
 
+## Live output and interruption
+
+Each execution has one ordered NDJSON response: bounded advisory stdout/stderr,
+clear, and display-boundary events followed by an authoritative result batch.
+The trusted peer uses RxJS windows to coalesce events and serializes publication.
+Live records stay inline and have per-execution record/write limits. The final
+validated batch replaces live records before terminal state; pending live writes
+cannot overwrite it. Rich outputs arrive with that batch. Output before completion
+requires naturally yielding Python, such as `await asyncio.sleep(...)`; synchronous
+CPU work and `time.sleep` may defer delivery. Python sleep and scheduling are not
+overridden to manufacture streaming checkpoints.
+
+Interrupt retains destructive host termination, discarding variables. Native
+variable-preserving interruption needs a host capability that can signal the
+buffer registered with Pyodide's `setInterruptBuffer` independently of a busy
+guest. On the qualified celld `6ab0d999` build, SharedArrayBuffer exists and local
+structured cloning retains its shared backing, but both LOADER environment
+transfer and cross-isolate RPC reject it; the browser Worker constructor is also
+absent. Local shared-memory support does not establish cross-isolate delivery.
+
+A separate Node worker-thread control with pinned Pyodide 0.28.3 interrupted a
+CPU loop through its native buffer and preserved the namespace. Unmodified
+`time.sleep(20)` reported the interrupt only after the sleep ended. Those controls
+establish API behavior, not support in the deployed celld runtime. A narrow,
+host-owned signal capability needs runtime/owner fencing, stale-signal clearing,
+disposal tests, and a termination fallback. Guest polling and sleep monkeypatching
+are not the replacement for that host contract.
+
 ## Async work to pursue
 
 Keep the Automerge runtime peer boundary. Measure room acceptance, running claim
@@ -65,18 +93,11 @@ browser paint separately before removing waits. A CPU-heavy interpreter and a
 second notebook should be exercised concurrently to distinguish application
 serialization from celld event-loop starvation.
 
-Interrupt is cooperative first. The guest exposes a control flag that Python
-checks at output writes, `time.sleep` (a JSPI suspension) and awaits, raising
-`KeyboardInterrupt` in the cell's own frames. Pyodide's interrupt buffer is not
-used: its check can fire inside unraisable callbacks, where the exception is
-lost. Cells that never yield still need host termination; see the provider
-README for the fallback conditions.
-
-A future streaming protocol should carry execution identity and monotonic output
-sequence on every event, with bounded buffering and a terminal marker after the
-last accepted output. Display updates, clear-output ordering, cancellation, and
-late background outputs must keep their lineage. The current transport still
-returns a complete batch; this change makes no end-to-end latency claim.
+The current execution-owned response gives live events their identity and order.
+A future resumable stream would need explicit sequence numbers and deduplication
+across reconnects. Display updates, clear-output ordering, cancellation, and late
+background outputs must retain their lineage. Live publication alone makes no
+end-to-end latency claim.
 
 Execution IDs support deduplication and attribution but do not make side effects
 transactional. A narrower durable claim/terminal record may replace full room

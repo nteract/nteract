@@ -12,26 +12,6 @@ import { includedPackageInventory } from "./package-inventory.js";
 // concurrent admission rather than mixing Python globals/output attribution.
 let ready;
 let busy = false;
-// Set while a streamed /execute response owns `busy` past the fetch handler.
-let streamOwnsBusy = false;
-// Same-isolate interrupt request (not shared memory, not Pyodide's interrupt
-// buffer). Python observes it only at nteract-owned checkpoints in
-// runtime/session.py, so KeyboardInterrupt lands in the cell's own frames
-// rather than in an unraisable callback. The control RPC can set it whenever
-// the guest event loop has a turn: while the cell awaits, sleeps, or yields at
-// an output checkpoint. A cell that never yields is not interruptible here; the
-// supervisor then falls back to host termination.
-let interruptRequested = false;
-const control = {
-  pending: () => interruptRequested,
-  consume: () => {
-    const pending = interruptRequested;
-    interruptRequested = false;
-    return pending;
-  },
-  // One macrotask turn, so queued control RPCs can run.
-  turn: () => new Promise((resolve) => setTimeout(resolve, 0)),
-};
 const instanceId = crypto.randomUUID();
 async function initialize(env) {
   const python = await loadPyodide({
@@ -53,7 +33,6 @@ async function initialize(env) {
     "import sys, os; sys.path.insert(0, '/packages/site-packages'); os.environ['LD_LIBRARY_PATH'] = '/packages/site-packages'; os.environ['MPLBACKEND'] = 'Agg'",
   );
   for (const library of libraries) await python._api.loadDynlib(library.path);
-  python.registerJsModule("nteract_control", control);
   python.FS.mkdirTree("/packages/site-packages/nteract_kernel_launcher");
   for (const [name, contents] of Object.entries(bootstrap))
     python.FS.writeFile(`/packages/site-packages/nteract_kernel_launcher/${name}`, contents);
@@ -98,6 +77,7 @@ export default {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
     if (busy) return new Response("Session is executing", { status: 409 });
     busy = true;
+    let streamOwnsBusy = false;
     try {
       const payload = await request.json();
       if (path === "/plan" || path === "/install") {
@@ -146,7 +126,6 @@ export default {
           } finally {
             pending?.destroy();
             busy = false;
-            interruptRequested = false;
           }
         })();
         return new Response(readable, { headers: { "content-type": "application/x-ndjson" } });
@@ -158,12 +137,7 @@ export default {
         pending.destroy();
       }
     } finally {
-      if (streamOwnsBusy) streamOwnsBusy = false;
-      else {
-        busy = false;
-        // A request that arrives after completion must not interrupt the next cell.
-        interruptRequested = false;
-      }
+      if (!streamOwnsBusy) busy = false;
     }
   },
 };
@@ -177,14 +151,6 @@ export class RuntimeControl extends WorkerEntrypoint {
     }
   }
   isAlive() {
-    return true;
-  }
-  // Request KeyboardInterrupt in the running cell. Writes one flag; it does not
-  // dispatch into Python or read guest globals. Returns whether a cell was
-  // running when the request was recorded.
-  interrupt() {
-    if (!busy) return false;
-    interruptRequested = true;
     return true;
   }
 }

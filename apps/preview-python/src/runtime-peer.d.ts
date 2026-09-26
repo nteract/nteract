@@ -48,7 +48,5 @@ export class PythonRuntimePeer {
     scheduler?: SchedulerLike;
   });
   drain(): Promise<void>;
-  /** Cancel queued intent; the provider interrupts the running cell. */
-  interrupt(): Promise<void>;
   close(): Promise<void>;
 }

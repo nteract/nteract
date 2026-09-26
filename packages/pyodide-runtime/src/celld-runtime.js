@@ -72,7 +72,6 @@ export async function createCelldRuntime(
   });
   let disposed = false;
   let active = false;
-  let executing = false;
   let terminating;
   async function terminate() {
     terminating ??= terminateLoadedPython(stub);
@@ -155,34 +154,6 @@ export async function createCelldRuntime(
     return {
       info,
       dispose,
-      /**
-       * Ask the running cell to raise KeyboardInterrupt, keeping the interpreter.
-       * Resolves true only if the guest recorded the request while a cell was
-       * executing. The guest can accept the RPC only when its event loop has a
-       * turn, so a cell that never yields leaves this pending until `timeoutMs`;
-       * callers then fall back to dispose().
-       */
-      async interrupt({ timeoutMs = 3000 } = {}) {
-        if (disposed || !executing) return false;
-        const request = stub
-          .getEntrypoint("RuntimeControl", { limits: { cpuMs: 10, subRequests: 0 } })
-          .interrupt()
-          .then(
-            (running) => running === true,
-            () => false,
-          );
-        let timer;
-        try {
-          return await Promise.race([
-            request,
-            new Promise((resolve) => {
-              timer = setTimeout(() => resolve(false), timeoutMs);
-            }),
-          ]);
-        } finally {
-          clearTimeout(timer);
-        }
-      },
       plan: (payload) => packageOperation("plan", payload),
       install: (payload) => packageOperation("install", payload),
       /**
@@ -205,7 +176,6 @@ export async function createCelldRuntime(
           throw new Error("Invalid accepted execution");
         }
         active = true;
-        executing = true;
         const invoke = async () => {
           const response = await stub
             .getEntrypoint(null, { limits: { cpuMs, subRequests: 0 } })
@@ -330,7 +300,6 @@ export async function createCelldRuntime(
           });
         } finally {
           active = false;
-          executing = false;
         }
       },
     };
