@@ -3,7 +3,7 @@ import {readFileSync} from "node:fs";
 import {test} from "node:test";
 
 const workflow = readFileSync(new URL("../workflows/preview-reusable.yml", import.meta.url), "utf8");
-const helperSha = "4d26ab818dd3891a7a6c7f29749412a426514bcc";
+const helperSha = "a5bb64761624aa54a1490556d5130ef09dbff20d";
 // This workflow intentionally uses plain, one-line job names. Fail on layout
 // drift as well as renamed jobs: these names are a controller API contract.
 const jobs = new Map();
