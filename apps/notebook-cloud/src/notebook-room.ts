@@ -2110,7 +2110,50 @@ export class NotebookRoom {
   private materializerFor(notebookId: string): RoomMaterializer {
     let materializer = this.materializers.get(notebookId);
     if (!materializer) {
-      materializer = new RoomMaterializer(notebookId, this.state, this.env);
+      materializer = new RoomMaterializer(
+        notebookId,
+        this.state,
+        this.env,
+        async (sessionId, reason) => {
+          // Retire the catalog job before exposing recovery: attaching otherwise
+          // deduplicates against the old running job and reuses its session ID.
+          const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
+          if (ownerPrincipal) {
+            await updateWorkstationAttachJobStatus(this.env, {
+              ownerPrincipal,
+              workstationId: MANAGED_PYTHON_WORKSTATION,
+              jobId: sessionId,
+              status: "failed",
+              errorMessage: reason,
+            });
+            const provider = managedPythonStub(this.env);
+            if (provider)
+              this.state.waitUntil(
+                provider
+                  .fetch(
+                    new Request("https://preview-python.internal/close", {
+                      method: "POST",
+                      signal: AbortSignal.timeout(10_000),
+                      body: JSON.stringify({ ownerPrincipal, notebookId, sessionId }),
+                    }),
+                  )
+                  .then((response) => {
+                    if (!response.ok) throw new Error(`Python cleanup failed (${response.status})`);
+                  })
+                  .catch((error) => {
+                    cloudLog("warn", "managed_python.restored_session_close_failed", {
+                      notebook_id: notebookId,
+                      error: errorMessage(error),
+                    });
+                  }),
+              );
+          }
+          // Enqueue these behind hydration; awaiting them here would deadlock
+          // the materializer's operation queue. No interpreter is allocated.
+          this.scheduleRoomHostCheckpoint(notebookId, materializer!, "managed_python_restored");
+          this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
+        },
+      );
       this.materializers.set(notebookId, materializer);
     }
     return materializer;

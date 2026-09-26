@@ -112,6 +112,12 @@ export function NotebookWorkstationsPanel({
     !registeredWorkstations.some((workstation) => workstation.statusMessage === statusMessage)
       ? statusMessage
       : null;
+  const attachmentLabel =
+    selection?.activeTarget?.status === "connecting"
+      ? "Connecting"
+      : selection?.activeTarget?.attachmentIdle
+        ? "Idle"
+        : "Running";
 
   return (
     <div
@@ -127,6 +133,7 @@ export function NotebookWorkstationsPanel({
                 busy={busyWorkstationId === workstation.id}
                 selected={workstation.id === selectedWorkstationId}
                 workstation={workstation}
+                attachmentLabel={attachmentLabel}
                 onAttachWorkstation={onAttachWorkstation}
                 onSelect={() => {
                   setClickedWorkstationId(workstation.id);
@@ -161,7 +168,10 @@ export function NotebookWorkstationsPanel({
                   <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
                     {selectedWorkstation.displayName}
                   </h4>
-                  <WorkstationStatusBadge workstation={selectedWorkstation} />
+                  <WorkstationStatusBadge
+                    workstation={selectedWorkstation}
+                    attachmentLabel={attachmentLabel}
+                  />
                 </div>
                 <div className="truncate font-mono text-[10.5px] tracking-normal text-muted-foreground">
                   {selectedWorkstation.idLabel}
@@ -602,19 +612,21 @@ function RegisteredWorkstationRow({
   busy,
   selected,
   workstation,
+  attachmentLabel,
   onAttachWorkstation,
   onSelect,
 }: {
   busy: boolean;
   selected: boolean;
   workstation: NotebookRegisteredWorkstationProjection;
+  attachmentLabel: string;
   onAttachWorkstation?: (workstationId: string) => void;
   onSelect: () => void;
 }) {
   const status = registeredWorkstationStatusTone(workstation);
   const Icon = status.icon;
   const statusLabel = workstation.isAttached
-    ? "Running"
+    ? attachmentLabel
     : busy
       ? "Starting"
       : workstation.statusLabel;
@@ -654,7 +666,7 @@ function RegisteredWorkstationRow({
           title={registeredWorkstationStartTitle(workstation, busy)}
           onClick={() => onAttachWorkstation(workstation.id)}
         >
-          {workstation.isAttached ? "Running" : busy ? "Starting" : "Start"}
+          {workstation.isAttached ? attachmentLabel : busy ? "Starting" : "Start"}
         </Button>
       ) : null}
     </li>
@@ -836,8 +848,10 @@ function registeredWorkstationFactIcon(kind: WorkstationDetailFact["kind"]): Luc
 
 function WorkstationStatusBadge({
   workstation,
+  attachmentLabel,
 }: {
   workstation: NotebookRegisteredWorkstationProjection;
+  attachmentLabel: string;
 }) {
   const status = registeredWorkstationStatusTone(workstation);
   return (
@@ -849,9 +863,9 @@ function WorkstationStatusBadge({
         status.textClassName,
       )}
       data-testid="workstation-status-badge"
-      data-status={workstation.isAttached ? "running" : workstation.status}
+      data-status={workstation.isAttached ? attachmentLabel.toLowerCase() : workstation.status}
     >
-      {workstation.isAttached ? "Running" : workstation.statusLabel}
+      {workstation.isAttached ? attachmentLabel : workstation.statusLabel}
     </span>
   );
 }

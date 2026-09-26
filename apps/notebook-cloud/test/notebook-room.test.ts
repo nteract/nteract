@@ -34,7 +34,12 @@ import {
   encodeTypedFrame,
   splitTypedFrame,
 } from "../src/protocol.ts";
-import { decodePresenceFrame, encodePresenceFrame, NotebookHandle } from "../src/runtimed-wasm.ts";
+import {
+  decodePresenceFrame,
+  encodePresenceFrame,
+  NotebookHandle,
+  RuntimeStatePeerHandle,
+} from "../src/runtimed-wasm.ts";
 import { ManagedPythonRoom } from "../src/managed-python-room.ts";
 import { RoomMaterializer, type RoomHostFrameResult } from "../src/room-materializer.ts";
 import { roomSummaryKey, type NotebookRoomSummary } from "../src/storage.ts";
@@ -4261,6 +4266,120 @@ describe("NotebookRoom materialized sync routing", () => {
   });
 
   for (const status of ["connecting", "ready"] as const) {
+    it(`recovers a reconstructed managed room from a saved ${status} attachment`, async (t) => {
+      const fixture = await managedPythonAdmissionFixture(status, {
+        packageResponse: async () => Response.json({ status: "ready", installed: ["six==1.0"] }),
+      });
+      t.after(() => fixture.close());
+      const first = await fixture.connect("before-redeploy");
+      await fixture.seed(first);
+      const manifest = { version: 1, pyodide: "0.28.3", requirements: ["six==1.0"], wheels: [] };
+      await fixture.materializer.compareSetCloudPackageManifest(null, manifest);
+      // Save accepted work whose result is still in flight at redeployment.
+      await fixture.materializer.receiveFrame(first.peer, {
+        type: FrameType.REQUEST,
+        payload: new TextEncoder().encode(
+          JSON.stringify({
+            id: "before-redeploy",
+            action: "execute_cell",
+            cell_id: initialHostedCellIdForTest("demo"),
+          }),
+        ),
+      });
+      await fixture.materializer.checkpoint();
+      const saved = await fixture.state.storage.get<ArrayBuffer>("room-host:runtime-state-doc");
+      const oldRuntime = RuntimeStatePeerHandle.load(
+        new Uint8Array(saved!),
+        "user:dev:alice/managed-python:managed-job",
+      );
+      t.after(() => oldRuntime.free());
+      const oldExecutionId = Object.keys(oldRuntime.get_runtime_state().executions)[0];
+      oldRuntime.set_execution_running(oldExecutionId);
+      oldRuntime.append_output_json(
+        oldExecutionId,
+        JSON.stringify({
+          output_type: "stream",
+          name: "stdout",
+          text: { inline: "late old output" },
+          output_id: "old-output",
+        }),
+      );
+      oldRuntime.set_execution_done(oldExecutionId, true);
+      const lateFrame = oldRuntime.flush_runtime_state_sync();
+      assert.ok(lateFrame);
+      await fixture.reconstruct();
+      // Concurrent browsers must observe one reconciliation, never allocate
+      // another interpreter merely by opening the saved notebook.
+      const [reconnected, other] = await Promise.all([
+        fixture.connect("after-redeploy"),
+        fixture.connect("other-browser"),
+      ]);
+      for (const connection of [reconnected, other]) {
+        assert.equal(connection.runtimeState().workstation?.status, "error");
+        assert.match(
+          connection.runtimeState().workstation?.status_message ?? "",
+          /Variables were lost/,
+        );
+        assert.match(connection.client.get_cells_json(), /print\('ready once'\)/);
+      }
+      assert.deepEqual(await fixture.materializer.getCloudPackageManifest(), manifest);
+      assert.equal(
+        fixture.db.attachJobs[0].status,
+        "failed",
+        "retire the job before retry is visible",
+      );
+      assert.equal(fixture.requests.filter((r) => r.path === "/open").length, 0);
+      assert.equal(fixture.requests.filter((r) => r.path === "/close").length, 1);
+      assert.equal(reconnected.runtimeState().executions[oldExecutionId].status, "cancelled");
+      assert.deepEqual(reconnected.runtimeState().queue.queued, []);
+      await fixture.drain();
+      const summary = fixture.computeIndex.requests.at(-1)?.body.summary;
+      assert.equal(summary?.status, "error");
+      assert.equal(summary?.runtime_peer_count, 0);
+
+      fixture.releaseOpen(Response.json({ ok: true }));
+      await fixture.startReplacement();
+      await fixture.execute(reconnected);
+      await fixture.drain();
+      await reconnected.sync();
+      const executed = fixture.requests.filter((r) => r.path === "/execute");
+      assert.equal(executed.length, 1);
+      assert.equal(executed[0].sessionId, "replacement-job");
+      assert.equal(reconnected.runtimeState().workstation?.status, "ready");
+      const replacementExecution = Object.entries(reconnected.runtimeState().executions).find(
+        ([id]) => id !== oldExecutionId,
+      )?.[1];
+      assert.equal(replacementExecution?.status, "done");
+      assert.deepEqual(replacementExecution?.outputs[0].text, { inline: "ready once\n" });
+      assert.deepEqual(await fixture.materializer.getCloudPackageManifest(), manifest);
+      const beforeLateOutput = reconnected.runtimeState();
+      const lateSocket = new FakeSocket();
+      const oldPeer = {
+        id: "old-managed-session",
+        socket: lateSocket.asCloudflareWebSocket(),
+        identity: authenticateDevRequest(
+          new Request(
+            "https://cloud.test/n/demo/sync?user=alice&operator=managed-python:managed-job&scope=runtime_peer",
+          ),
+        ),
+        connectedAt: new Date().toISOString(),
+        workstation: { workstationId: "celld-preview-python", runtimeSessionId: "managed-job" },
+      };
+      roomHarness(fixture.room).peers.set(oldPeer.id, oldPeer);
+      await roomHarness(fixture.room).handleMessage(
+        "demo",
+        oldPeer,
+        encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, lateFrame),
+      );
+      assert.equal(lateSocket.closeReason, "stale runtime session");
+      await reconnected.sync();
+      assert.deepEqual(
+        reconnected.runtimeState(),
+        beforeLateOutput,
+        "late output cannot change old or replacement execution",
+      );
+    });
+
     it(`admits managed Python execution before ${status} startup and drains after reconnect`, async (t) => {
       const fixture = await managedPythonAdmissionFixture(status);
       t.after(() => fixture.close());
@@ -6362,8 +6481,10 @@ async function managedPythonAdmissionFixture(
     ownerPrincipal?: string;
     execution?: { source: string };
   }> = [];
+  const computeIndex = new FakeOwnerComputeIndexNamespace();
   const env = {
     DB: db,
+    OWNER_COMPUTE_INDEX: computeIndex,
     NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
     PREVIEW_PYTHON_SESSIONS: {
       idFromName: (name: string) => ({ toString: () => name }),
@@ -6388,10 +6509,10 @@ async function managedPythonAdmissionFixture(
       }),
     },
   } as unknown as Env;
-  const room = new NotebookRoom(state.state, env);
+  let room = new NotebookRoom(state.state, env);
   await state.drain();
-  const harness = roomHarness(room);
-  const materializer = new RoomMaterializer("demo", state.state, env);
+  let harness = roomHarness(room);
+  let materializer = new RoomMaterializer("demo", state.state, env);
   harness.materializers.set("demo", materializer as never);
   await materializer.setWorkstationAttachment({
     workstation_id: "celld-preview-python",
@@ -6481,8 +6602,24 @@ async function managedPythonAdmissionFixture(
     };
   };
   return {
-    room,
-    materializer,
+    get room() {
+      return room;
+    },
+    get materializer() {
+      return materializer;
+    },
+    db,
+    state: state.state,
+    computeIndex,
+    reconstruct: async () => {
+      await state.drain();
+      await materializer.checkpoint();
+      room = new NotebookRoom(state.state, env);
+      harness = roomHarness(room);
+      materializer = (
+        room as unknown as { materializerFor(n: string): RoomMaterializer }
+      ).materializerFor("demo");
+    },
     connect,
     requests,
     openEntered,
@@ -6860,6 +6997,24 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
   }
 
   async run<T = unknown>(): Promise<D1Result<T>> {
+    if (
+      this.query.includes("UPDATE workstation_attach_jobs") &&
+      this.query.includes("SET status = ?")
+    ) {
+      const [status, updatedAt, , , , finishedAt, errorMessage, id, owner, workstation] =
+        this.values;
+      const job = this.db.attachJobs.find(
+        (job) =>
+          job.id === id && job.owner_principal === owner && job.workstation_id === workstation,
+      );
+      if (job && ["pending", "accepted", "running"].includes(job.status)) {
+        job.status = String(status);
+        job.updated_at = String(updatedAt);
+        job.error_message = errorMessage === null ? null : String(errorMessage);
+        if (["failed", "completed", "cancelled"].includes(job.status))
+          job.finished_at = String(finishedAt);
+      }
+    }
     if (this.query.includes("INSERT INTO workstation_attach_jobs")) {
       const [
         id,
