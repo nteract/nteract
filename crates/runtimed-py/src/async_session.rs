@@ -255,12 +255,12 @@ impl AsyncSession {
         })
     }
 
-    /// Whether a kernel has been started.
+    /// Whether the synced runtime state reports a starting or running kernel.
     fn kernel_started<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
             let st = state.lock().await;
-            Ok(st.kernel_started)
+            st.kernel_started()
         })
     }
 

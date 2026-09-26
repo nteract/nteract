@@ -2170,6 +2170,66 @@ class TestMultiClientSync:
 class TestKernelLifecycle:
     """Test kernel lifecycle management."""
 
+    @pytest.mark.parametrize("run_all", [False, True])
+    @pytest.mark.parametrize("observe_shutdown", [False, True])
+    async def test_binding_recovers_after_peer_shutdown(
+        self, two_sessions, run_all, observe_shutdown
+    ):
+        owner, peer = two_sessions
+        await async_use_auto_kernel_or_start(owner)
+        cell_id = await owner.create_cell("print('recovered kernel')")
+        assert (await owner.execute_cell(cell_id)).success
+
+        await peer.shutdown_kernel()
+        if observe_shutdown:
+            await async_wait_for_sync(
+                lambda: owner.get_runtime_state_sync().kernel.lifecycle == "Shutdown",
+                description="peer shutdown in the owner's runtime state",
+            )
+
+        if run_all:
+            queued = await owner.queue_all_cells()
+            entry = next(entry for entry in queued if entry.cell_id == cell_id)
+            result = await owner.wait_for_execution(cell_id, entry.execution_id)
+        else:
+            result = await owner.execute_cell(cell_id)
+
+        assert result.success
+        assert "recovered kernel" in result.stdout
+        await peer.shutdown_kernel()
+
+        async def kernel_stopped():
+            return not await owner.kernel_started()
+
+        await async_wait_for_sync(kernel_stopped, description="live kernel_started status")
+
+    async def test_binding_recovers_after_kernel_crash(self, session):
+        await async_use_auto_kernel_or_start(session)
+        crash_id = await session.create_cell("import os; os._exit(1)")
+        await session.queue_cell(crash_id)
+        await async_wait_for_sync(
+            lambda: session.get_runtime_state_sync().kernel.lifecycle == "Error",
+            timeout=30,
+            description="crashed kernel",
+        )
+        cell_id = await session.create_cell("print('after crash')")
+        result = await session.execute_cell(cell_id)
+        assert result.success
+        assert "after crash" in result.stdout
+
+    async def test_binding_uses_kernel_restarted_by_peer(self, two_sessions):
+        owner, peer = two_sessions
+        await async_use_auto_kernel_or_start(owner)
+        cell_id = await owner.create_cell("print('before restart')")
+        assert (await owner.execute_cell(cell_id)).success
+        await peer.restart_kernel(wait_for_ready=False)
+        seed_id = await peer.create_cell("peer_value = 'after peer restart'")
+        assert (await peer.execute_cell(seed_id)).success
+        read_id = await owner.create_cell("print(peer_value)")
+        result = await owner.execute_cell(read_id)
+        assert result.success
+        assert "after peer restart" in result.stdout
+
     async def test_async_start_kernel(self, session):
         """Can start a kernel."""
         # The daemon may auto-launch the kernel when a runtime is configured
