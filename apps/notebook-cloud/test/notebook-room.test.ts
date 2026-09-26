@@ -42,7 +42,11 @@ import {
 } from "../src/runtimed-wasm.ts";
 import { ManagedPythonRoom } from "../src/managed-python-room.ts";
 import { RoomMaterializer, type RoomHostFrameResult } from "../src/room-materializer.ts";
-import { roomSummaryKey, type NotebookRoomSummary } from "../src/storage.ts";
+import {
+  createWorkstationAttachJob,
+  roomSummaryKey,
+  type NotebookRoomSummary,
+} from "../src/storage.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 
 before(async () => {
@@ -4265,6 +4269,64 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(accepted.type, "cloud_frame_accepted");
   });
 
+  it("reconnects a reconstructed room to its surviving interpreter without replacement", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("ready", {
+      sessionAlive: true,
+      immediateOpen: Response.json({ ok: true }),
+    });
+    t.after(() => fixture.close());
+    const first = await fixture.connect("before-hibernation");
+    await fixture.seed(first);
+    await fixture.reconstruct();
+    const reconnected = await fixture.connect("after-hibernation");
+    await fixture.drain();
+    await reconnected.sync();
+    assert.equal(reconnected.runtimeState().workstation?.status, "ready");
+    assert.equal(reconnected.runtimeState().workstation?.runtime_session_id, "managed-job");
+    assert.equal(fixture.requests.filter((r) => r.path === "/status").length, 1);
+    assert.equal(fixture.requests.filter((r) => r.path === "/close").length, 0);
+    assert.equal(fixture.requests.find((r) => r.path === "/open")?.resumeOnly, true);
+    await fixture.execute(reconnected);
+    await fixture.drain();
+    assert.equal(fixture.requests.find((r) => r.path === "/execute")?.sessionId, "managed-job");
+  });
+
+  for (const failure of ["lookup", "retirement"] as const) {
+    it(`keeps saved notebook content accessible when recovery catalog ${failure} fails`, async (t) => {
+      const fixture = await managedPythonAdmissionFixture("ready");
+      t.after(() => fixture.close());
+      const first = await fixture.connect("before-redeploy");
+      await fixture.seed(first);
+      if (failure === "lookup")
+        fixture.db.beforeSessionOwnerLookup = async () => {
+          throw new Error("D1 unavailable");
+        };
+      else
+        fixture.db.beforeAttachUpdate = () => {
+          throw new Error("D1 unavailable");
+        };
+      await fixture.reconstruct();
+      const reconnected = await fixture.connect("after-redeploy");
+      assert.match(reconnected.client.get_cells_json(), /print\('ready once'\)/);
+      assert.equal(reconnected.runtimeState().workstation?.status, "error");
+      assert.equal(fixture.requests.filter((r) => r.path === "/open").length, 0);
+      fixture.db.beforeSessionOwnerLookup = undefined;
+      fixture.db.beforeAttachUpdate = undefined;
+      const attachment = await fixture.materializer.getWorkstationAttachment();
+      const delayed = await fixture.room.fetch(
+        new Request("https://room/internal/n/demo/workstation-attachment", {
+          method: "POST",
+          body: JSON.stringify({ attachment: { ...attachment, status: "connecting" } }),
+        }),
+      );
+      assert.equal(
+        delayed.status,
+        409,
+        "a delayed old publish cannot resurrect the retired generation",
+      );
+    });
+  }
+
   for (const status of ["connecting", "ready"] as const) {
     it(`recovers a reconstructed managed room from a saved ${status} attachment`, async (t) => {
       const fixture = await managedPythonAdmissionFixture(status, {
@@ -4338,13 +4400,14 @@ describe("NotebookRoom materialized sync routing", () => {
       assert.equal(summary?.runtime_peer_count, 0);
 
       fixture.releaseOpen(Response.json({ ok: true }));
-      await fixture.startReplacement();
+      const replacementId = await fixture.startReplacement(true);
+      assert.notEqual(replacementId, "managed-job");
       await fixture.execute(reconnected);
       await fixture.drain();
       await reconnected.sync();
       const executed = fixture.requests.filter((r) => r.path === "/execute");
       assert.equal(executed.length, 1);
-      assert.equal(executed[0].sessionId, "replacement-job");
+      assert.equal(executed[0].sessionId, replacementId);
       assert.equal(reconnected.runtimeState().workstation?.status, "ready");
       const replacementExecution = Object.entries(reconnected.runtimeState().executions).find(
         ([id]) => id !== oldExecutionId,
@@ -6423,7 +6486,7 @@ type ManagedAdmissionRuntimeState = {
     { status: string; source: string; outputs: Array<{ text?: { inline: string } }> }
   >;
   queue: { executing: unknown; queued: Array<{ execution_id: string }> };
-  workstation?: { status?: string; status_message?: string | null };
+  workstation?: { status?: string; status_message?: string | null; runtime_session_id?: string };
 };
 
 async function managedPythonAdmissionFixture(
@@ -6434,6 +6497,7 @@ async function managedPythonAdmissionFixture(
     holdOwnerLookup?: boolean;
     closeResponse?: Response;
     packageResponse?: () => Promise<Response>;
+    sessionAlive?: boolean;
   } = {},
 ) {
   const state = hibernatedState([]);
@@ -6480,6 +6544,7 @@ async function managedPythonAdmissionFixture(
     sessionId?: string;
     ownerPrincipal?: string;
     execution?: { source: string };
+    resumeOnly?: boolean;
   }> = [];
   const computeIndex = new FakeOwnerComputeIndexNamespace();
   const env = {
@@ -6492,6 +6557,7 @@ async function managedPythonAdmissionFixture(
         fetch: async (request: Request) => {
           const path = new URL(request.url).pathname;
           requests.push({ path, ...(await request.json()) });
+          if (path === "/status") return Response.json({ alive: options.sessionAlive ?? false });
           if (path === "/open") {
             enteredOpen();
             return (options.immediateOpen ?? (await opening)).clone();
@@ -6627,12 +6693,22 @@ async function managedPythonAdmissionFixture(
     ownerLookupEntered,
     releaseOwnerLookup,
     drain: state.drain,
-    startReplacement: async () => {
-      db.attachJobs.push({ ...db.attachJobs[0], id: "replacement-job", status: "accepted" });
+    startReplacement: async (allocate = false) => {
+      const allocated = allocate
+        ? await createWorkstationAttachJob(env, {
+            notebookId: "demo",
+            ownerPrincipal: "user:dev:alice",
+            workstationId: "celld-preview-python",
+            actorLabel: "user:dev:alice/browser:recovery",
+            trigger: "user_attach",
+          })
+        : null;
+      const sessionId = allocated?.job.id ?? "replacement-job";
+      if (!allocate) db.attachJobs.push({ ...db.attachJobs[0], id: sessionId, status: "accepted" });
       const attachment = await materializer.getWorkstationAttachment();
       const changed = await materializer.setWorkstationAttachment({
         ...attachment!,
-        runtime_session_id: "replacement-job",
+        runtime_session_id: sessionId,
         status: "connecting",
       });
       (
@@ -6640,7 +6716,8 @@ async function managedPythonAdmissionFixture(
       ).deliverRoomHostFrames("demo", changed);
       await (
         room as unknown as { startManagedPython(n: string, s: string): Promise<void> }
-      ).startManagedPython("demo", "replacement-job");
+      ).startManagedPython("demo", sessionId);
+      return sessionId;
     },
     seed: async (connection: Awaited<ReturnType<typeof connect>>) => {
       connection.client.update_source(initialHostedCellIdForTest("demo"), "print('ready once')");
@@ -6892,6 +6969,7 @@ class CountingNotebookOwnerD1 extends NotebookOwnerD1 {
 class ResumeNotebookD1 implements D1Database {
   readonly notebookAclOwners = new Set<string>();
   beforeSessionOwnerLookup?: () => Promise<void>;
+  beforeAttachUpdate?: () => void;
   readonly attachJobs: Array<{
     id: string;
     notebook_id: string;
@@ -6983,7 +7061,16 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
       } as T;
     }
     if (this.query.includes("FROM workstation_attach_jobs") && this.query.includes("LIMIT 1")) {
-      return null;
+      const [notebookId, owner, pendingStaleBefore, staleBefore] = this.values;
+      return (this.db.attachJobs.find(
+        (job) =>
+          job.notebook_id === notebookId &&
+          job.owner_principal === owner &&
+          (job.status === "pending"
+            ? job.requested_at >= String(pendingStaleBefore)
+            : ["accepted", "running"].includes(job.status) &&
+              job.updated_at >= String(staleBefore)),
+      ) ?? null) as T | null;
     }
     if (
       this.query.includes("FROM workstation_attach_jobs") &&
@@ -6991,7 +7078,12 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
     ) {
       if (this.query.includes("SELECT owner_principal")) await this.db.beforeSessionOwnerLookup?.();
       const [jobId] = this.values;
-      return (this.db.attachJobs.find((job) => job.id === jobId) ?? null) as T | null;
+      return (this.db.attachJobs.find(
+        (job) =>
+          job.id === jobId &&
+          (!this.query.includes("AND status IN") ||
+            ["pending", "accepted", "running"].includes(job.status)),
+      ) ?? null) as T | null;
     }
     return null;
   }
@@ -7001,13 +7093,18 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
       this.query.includes("UPDATE workstation_attach_jobs") &&
       this.query.includes("SET status = ?")
     ) {
-      const [status, updatedAt, , , , finishedAt, errorMessage, id, owner, workstation] =
+      this.db.beforeAttachUpdate?.();
+      const [status, updatedAt, , , , finishedAt, errorMessage, id, owner, workstation, maxRank] =
         this.values;
       const job = this.db.attachJobs.find(
         (job) =>
           job.id === id && job.owner_principal === owner && job.workstation_id === workstation,
       );
-      if (job && ["pending", "accepted", "running"].includes(job.status)) {
+      if (
+        job &&
+        ["pending", "accepted", "running"].includes(job.status) &&
+        ["pending", "accepted", "running"].indexOf(job.status) <= Number(maxRank)
+      ) {
         job.status = String(status);
         job.updated_at = String(updatedAt);
         job.error_message = errorMessage === null ? null : String(errorMessage);

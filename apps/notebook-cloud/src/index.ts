@@ -2337,7 +2337,7 @@ async function routeNotebookWorkstationAttachment(
   if (workstationId instanceof Response) {
     return workstationId;
   }
-  const replaceExisting =
+  let replaceExisting =
     payload.replace_existing === true ||
     payload.replaceExisting === true ||
     payload.intent === "restart";
@@ -2376,6 +2376,25 @@ async function routeNotebookWorkstationAttachment(
       },
       409,
     );
+  }
+
+  // Reconstruct the room before catalog deduplication. A saved managed
+  // attachment may refer to an interpreter lost during a service restart.
+  if (workstationId === MANAGED_PYTHON_WORKSTATION) {
+    const room = env.NOTEBOOK_ROOMS.get(env.NOTEBOOK_ROOMS.idFromName(notebookId));
+    const current = await room.fetch(
+      new Request(
+        `https://notebook-room.internal/internal/n/${encodeURIComponent(notebookId)}/workstation-attachment`,
+      ),
+    );
+    if (!current.ok) return json({ error: "Python session status is unavailable; try again" }, 503);
+    const { attachment } = (await current.json()) as {
+      attachment?: { workstation_id: string; status: string } | null;
+    };
+    // Also covers catalog retirement failing during hydration. Explicit Start
+    // must allocate a fresh generation even if the old job still says running.
+    replaceExisting ||=
+      attachment?.workstation_id === workstationId && attachment.status === "error";
   }
 
   await grantNotebookAclRow(env, {

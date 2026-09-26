@@ -3977,6 +3977,63 @@ describe("Worker artifact routes", () => {
     );
   });
 
+  for (const restoredStatus of ["error", "ready"] as const) {
+    it(`checks reconstructed managed compute before allocating from a ${restoredStatus} attachment`, async () => {
+      const methods: string[] = [];
+      const workstationId = "celld-preview-python";
+      const env = fakeEnv({
+        NOTEBOOK_ROOMS: {
+          idFromName: (name: string) => ({ toString: () => name }),
+          get: () => ({
+            fetch: async (request: Request) => {
+              methods.push(request.method);
+              if (request.method === "GET")
+                return Response.json({
+                  attachment: { workstation_id: workstationId, status: restoredStatus },
+                });
+              return Response.json({ ok: true });
+            },
+          }),
+        },
+      });
+      seedNotebook(env, "attach-demo");
+      seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+      seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId });
+      seedWorkstationAttachJob(env, {
+        id: "saved-job",
+        notebookId: "attach-demo",
+        ownerPrincipal: "user:dev:alice",
+        workstationId,
+        requestedAt: new Date().toISOString(),
+      });
+      const attach = await worker.fetch(
+        new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Operator": "browser:tab",
+            "X-Scope": "owner",
+            "X-User": "alice",
+          },
+          body: JSON.stringify({ workstation_id: workstationId }),
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(attach.status, 202);
+      const body = (await attach.json()) as { job: { job_id: string } };
+      assert.deepEqual(methods, ["GET", "POST"]);
+      if (restoredStatus === "error") {
+        assert.notEqual(
+          body.job.job_id,
+          "saved-job",
+          "recovery works even if retirement did not reach the catalog",
+        );
+        assert.equal(env.DB.workstationAttachJobs.get("saved-job")?.status, "cancelled");
+      } else assert.equal(body.job.job_id, "saved-job", "a surviving session is reused");
+    });
+  }
+
   it("creates workstation attach jobs for the requested workstation, not the default", async () => {
     const objectName = workstationEventsObjectName("user:dev:alice", "ws-lab1");
     const events = new FakeWorkstationEventsNamespace();

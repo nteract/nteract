@@ -66,10 +66,7 @@ export class RoomMaterializer {
     private readonly notebookId: string,
     private readonly state: DurableObjectState,
     private readonly env: Env,
-    private readonly onManagedPythonSessionRestored?: (
-      sessionId: string,
-      reason: string,
-    ) => Promise<void>,
+    private readonly onManagedPythonSessionRestored?: (sessionId: string) => Promise<string | null>,
   ) {}
 
   async syncPeer(peer: RoomPeer): Promise<RoomHostFrameResult> {
@@ -419,21 +416,20 @@ export class RoomMaterializer {
           attachment.runtime_session_id &&
           ["connecting", "ready"].includes(attachment.status)
         ) {
-          // A saved attachment is not an interpreter. This runs inside the
-          // initial host operation, before any sync, execution, or replacement
-          // can observe the restored state. Browser reconnects reuse this host.
-          const reason =
-            "The previous Python session is no longer available. Variables were lost. Start compute to restore saved packages and run cells again. Your notebook is unchanged.";
-          await this.onManagedPythonSessionRestored(attachment.runtime_session_id, reason);
-          host.reconcile_runtime_peer_gone(reason);
-          host.set_workstation_attachment_json(
-            JSON.stringify({
-              ...attachment,
-              status: "error",
-              status_message: reason,
-              updated_at: new Date().toISOString(),
-            }),
-          );
+          // A room can hibernate independently of its interpreter. Inspect the
+          // provider before exposing saved runtime state, without allocating.
+          const reason = await this.onManagedPythonSessionRestored(attachment.runtime_session_id);
+          if (reason) {
+            host.reconcile_runtime_peer_gone(reason);
+            host.set_workstation_attachment_json(
+              JSON.stringify({
+                ...attachment,
+                status: "error",
+                status_message: reason,
+                updated_at: new Date().toISOString(),
+              }),
+            );
+          }
         }
         return host;
       })
