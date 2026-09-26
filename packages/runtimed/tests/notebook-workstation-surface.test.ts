@@ -48,6 +48,30 @@ beforeEach(() => {
 });
 
 describe("notebook workstation surface projection", () => {
+  it("offers recovery with the session-loss explanation and no running workstation", () => {
+    const reason = "Variables were lost. Start compute to restore saved packages.";
+    const projection = projectNotebookWorkstationSurface({
+      capabilities: cloudUnavailableCapabilities,
+      activeAttachment: {
+        workstation_id: "ws-lab2",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "error",
+        status_message: reason,
+      },
+      canStartWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [lab2Workstation],
+    });
+    expect(projection.toolbarAction?.label).toBe("Start compute");
+    expect(projection.toolbarAction?.disabled).toBe(false);
+    expect(projection.launchReadiness.canRun).toBe(false);
+    expect(projection.panelStatusMessage).toBe(reason);
+    expect(projection.selection.registeredWorkstations[0].isAttached).toBe(false);
+    expect(projection.selection.registeredWorkstations[0].canAttach).toBe(true);
+  });
   it("projects an online default workstation into a start-compute toolbar intent", () => {
     const projection = projectNotebookWorkstationSurface({
       capabilities: cloudUnavailableCapabilities,

@@ -66,6 +66,7 @@ export class RoomMaterializer {
     private readonly notebookId: string,
     private readonly state: DurableObjectState,
     private readonly env: Env,
+    private readonly onManagedPythonSessionRestored?: (sessionId: string) => Promise<string | null>,
   ) {}
 
   async syncPeer(peer: RoomPeer): Promise<RoomHostFrameResult> {
@@ -404,10 +405,38 @@ export class RoomMaterializer {
   }
 
   private async loadHost(): Promise<RoomHostHandle> {
-    this.hostReady ??= this.loadHostFromStorage().catch((error: unknown) => {
-      this.hostReady = undefined;
-      throw error;
-    });
+    this.hostReady ??= this.loadHostFromStorage()
+      .then(async (host) => {
+        const attachment = normalizeWorkstationAttachmentJson(
+          host.get_workstation_attachment_json(),
+        );
+        if (
+          this.onManagedPythonSessionRestored &&
+          attachment?.workstation_id === "celld-preview-python" &&
+          attachment.runtime_session_id &&
+          ["connecting", "ready"].includes(attachment.status)
+        ) {
+          // A room can hibernate independently of its interpreter. Inspect the
+          // provider before exposing saved runtime state, without allocating.
+          const reason = await this.onManagedPythonSessionRestored(attachment.runtime_session_id);
+          if (reason) {
+            host.reconcile_runtime_peer_gone(reason);
+            host.set_workstation_attachment_json(
+              JSON.stringify({
+                ...attachment,
+                status: "error",
+                status_message: reason,
+                updated_at: new Date().toISOString(),
+              }),
+            );
+          }
+        }
+        return host;
+      })
+      .catch((error: unknown) => {
+        this.hostReady = undefined;
+        throw error;
+      });
     return this.hostReady;
   }
 

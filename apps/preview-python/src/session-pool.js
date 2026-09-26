@@ -101,7 +101,12 @@ export class SessionPool {
     return results.map((result) => result.runtime.info);
   }
 
-  async open(key, owner = key) {
+  has(key) {
+    const session = this.#sessions.get(key);
+    return !this.#closed && !!session && !session.cancelled;
+  }
+
+  async open(key, owner = key, { resumeOnly = false } = {}) {
     if (this.#closed) throw new Error("Provider is closed");
     if (typeof key !== "string" || !key) throw new Error("Missing session identity");
     if (typeof owner !== "string" || !owner) throw new Error("Missing session owner");
@@ -111,6 +116,7 @@ export class SessionPool {
       if (session.cancelled) throw new Error("Session is being released");
       return session.ready;
     }
+    if (resumeOnly) throw new Error("Session expired; allocate a new runtime session");
     const owned = this.#ownerCounts.get(owner) ?? 0;
     if (owned >= this.#maxSessionsPerOwner)
       throw new Error(

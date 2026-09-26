@@ -3,6 +3,40 @@ import assert from "node:assert/strict";
 import { SessionPool } from "../src/session-pool.js";
 import { createProviderService } from "../src/provider-service.js";
 
+test("session inspection and resume never allocate and retain a surviving interpreter", async () => {
+  let created = 0;
+  const pool = new SessionPool({
+    warmCount: 0,
+    create: async () => ({ info: { id: ++created }, dispose: async () => {} }),
+  });
+  const service = createProviderService(pool);
+  const identity = { ownerPrincipal: "alice", notebookId: "n", sessionId: "s" };
+  const post = (path, extra = {}) =>
+    service.fetch(
+      new Request(`https://private.invalid${path}`, {
+        method: "POST",
+        body: JSON.stringify({ ...identity, ...extra }),
+      }),
+    );
+  assert.deepEqual(await (await post("/status")).json(), { alive: false });
+  assert.equal((await post("/open", { resumeOnly: true })).status, 409);
+  assert.equal(created, 0);
+  const opened = await (await post("/open")).json();
+  assert.deepEqual(await (await post("/status")).json(), { alive: true });
+  assert.deepEqual(await (await post("/status", { ownerPrincipal: "bob" })).json(), {
+    alive: false,
+  });
+  assert.deepEqual(await (await post("/open", { resumeOnly: true })).json(), opened);
+  assert.equal(created, 1);
+  // Loss between a successful probe and reattachment must not silently start
+  // an empty interpreter under the old generation.
+  await pool.release(JSON.stringify(Object.values(identity)));
+  assert.deepEqual(await (await post("/status")).json(), { alive: false });
+  assert.equal((await post("/open", { resumeOnly: true })).status, 409);
+  assert.equal(created, 1);
+  await pool.close();
+});
+
 test("private service requires explicit allocation and separates owner/notebook/session authority", async () => {
   let next = 0;
   const pool = new SessionPool({

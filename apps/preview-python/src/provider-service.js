@@ -29,7 +29,9 @@ export function createProviderService(pool, storage, packageResolver) {
       }
       if (
         request.method !== "POST" ||
-        !["/open", "/execute", "/close", "/packages", "/packages/inventory"].includes(path)
+        !["/status", "/open", "/execute", "/close", "/packages", "/packages/inventory"].includes(
+          path,
+        )
       ) {
         return new Response("Not found", { status: 404 });
       }
@@ -54,6 +56,9 @@ export function createProviderService(pool, storage, packageResolver) {
       }
       const key = JSON.stringify(parts);
       try {
+        // Inspect only the in-memory interpreter. Saved release fences and
+        // notebook attachments cannot prove that a Python session survived.
+        if (path === "/status") return Response.json({ alive: pool.has(key) });
         if (path === "/open" || path === "/close") {
           const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
           const fence =
@@ -69,7 +74,11 @@ export function createProviderService(pool, storage, packageResolver) {
             }
             if (storage ? await storage.get(fence) : closed.has(key))
               throw new Error("Session was released; allocate a new runtime session");
-            return { operation: pool.open(key, input.ownerPrincipal) };
+            return {
+              operation: pool.open(key, input.ownerPrincipal, {
+                resumeOnly: input.resumeOnly === true,
+              }),
+            };
           });
           // Attach rejection handling before yielding the admission queue.
           const result = await operation;

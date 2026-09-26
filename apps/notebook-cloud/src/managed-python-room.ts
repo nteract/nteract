@@ -268,8 +268,8 @@ export class ManagedPythonRoom {
     return operation;
   }
 
-  async start(): Promise<void> {
-    await this.call("/open");
+  async start(options: { resumeOnly?: boolean } = {}): Promise<void> {
+    await this.call("/open", options);
     if (!this.active) {
       await this.call("/close");
       return;
