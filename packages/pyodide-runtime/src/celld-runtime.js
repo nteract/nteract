@@ -6,6 +6,17 @@ import interpreter from "../dist/pyodide.asm.wasm";
 import sentinel from "../dist/sentinel.wasm";
 import libraries from "../dist/library-modules.js";
 
+// Live output is advisory and bounded apart from the result batch.
+const MAX_LIVE_BYTES = 1024 * 1024;
+
+function safely(deliver, event) {
+  try {
+    deliver(event);
+  } catch {
+    // A failed live consumer must not change the execution result.
+  }
+}
+
 /** Called only by the trusted supervisor, never directly by a browser. */
 export async function createCelldRuntime(
   env,
@@ -145,7 +156,13 @@ export async function createCelldRuntime(
       dispose,
       plan: (payload) => packageOperation("plan", payload),
       install: (payload) => packageOperation("install", payload),
-      async execute(execution) {
+      /**
+       * `onLive`, when given, receives validated live events while the cell
+       * runs: {type:"stream", name, text}, {type:"clear", wait},
+       * {type:"boundary"} or {type:"live_stopped"}. They are advisory; the resolved result stays the
+       * authoritative, validated batch.
+       */
+      async execute(execution, { onLive } = {}) {
         if (active) throw new Error("Python session is already executing");
         if (disposed) throw new Error("Python session was disposed");
         if (
@@ -164,9 +181,12 @@ export async function createCelldRuntime(
             .getEntrypoint(null, { limits: { cpuMs, subRequests: 0 } })
             .fetch("https://session.invalid/execute", {
               method: "POST",
-              body: JSON.stringify(execution),
+              body: JSON.stringify(
+                typeof onLive === "function" ? { ...execution, stream: true } : execution,
+              ),
             });
           if (!response.ok) throw new Error(`Python execution failed (${response.status})`);
+          if (typeof onLive === "function") return readLive(response, onLive);
           // Python's own bounds improve behavior; the supervisor independently
           // bounds untrusted bytes before accepting its result into room state.
           const reader = response.body.getReader();
@@ -192,7 +212,79 @@ export async function createCelldRuntime(
             bytes.set(chunk, offset);
             offset += chunk.byteLength;
           }
-          const result = JSON.parse(new TextDecoder().decode(bytes));
+          return accept(JSON.parse(new TextDecoder().decode(bytes)));
+        };
+        const readLive = async (response, deliver) => {
+          // NDJSON from the guest. Live events are untrusted and separately
+          // bounded; the result line keeps the batch byte limit and validation.
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          const encoder = new TextEncoder();
+          let buffered = "";
+          let liveBytes = 0;
+          let live = true;
+          let result;
+          const handle = (line) => {
+            if (!line) return;
+            if (result !== undefined) throw new Error("Python output continued after its result");
+            if (encoder.encode(line).byteLength > maxOutputBytes + 64)
+              throw new Error("Python output limit exceeded");
+            const event = JSON.parse(line);
+            if (event?.type === "result") {
+              result = event.result;
+              return;
+            }
+            if (!live) return;
+            // Every live event costs budget, so empty or structural events
+            // cannot create unbounded work downstream.
+            liveBytes +=
+              64 + (typeof event?.text === "string" ? encoder.encode(event.text).byteLength : 0);
+            if (liveBytes > MAX_LIVE_BYTES) {
+              live = false;
+              safely(deliver, { type: "live_stopped" });
+              return;
+            }
+            if (event?.type === "stream") {
+              if (
+                (event.name !== "stdout" && event.name !== "stderr") ||
+                typeof event.text !== "string"
+              )
+                throw new Error("Invalid live Python output");
+              safely(deliver, { type: "stream", name: event.name, text: event.text });
+            } else if (event?.type === "clear") {
+              safely(deliver, { type: "clear", wait: event.wait === true });
+            } else if (event?.type === "boundary" || event?.type === "live_stopped") {
+              if (event.type === "live_stopped") live = false;
+              safely(deliver, { type: event.type });
+            } else throw new Error("Invalid live Python output");
+          };
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffered += decoder.decode(value, { stream: true });
+              if (encoder.encode(buffered).byteLength > maxOutputBytes + MAX_LIVE_BYTES) {
+                await reader.cancel();
+                throw new Error("Python output limit exceeded");
+              }
+              let newline;
+              while ((newline = buffered.indexOf("\n")) !== -1) {
+                const line = buffered.slice(0, newline);
+                buffered = buffered.slice(newline + 1);
+                handle(line);
+              }
+            }
+            handle(buffered + decoder.decode());
+          } catch (error) {
+            await reader.cancel().catch(() => undefined);
+            throw error;
+          } finally {
+            reader.releaseLock();
+          }
+          if (result === undefined) throw new Error("Python execution ended without a result");
+          return accept(result);
+        };
+        const accept = async (result) => {
           const digest = new Uint8Array(
             await crypto.subtle.digest("SHA-256", new TextEncoder().encode(execution.source)),
           );

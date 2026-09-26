@@ -124,3 +124,162 @@ test("managed startup errors before runtime registration are surfaced", async ()
   await assert.rejects(room.startManagedPython("demo", "session"), /constructor failed/);
   assert.equal(failed, true);
 });
+
+for (const queued of [true, false]) {
+  test(`interrupt with no runtime peer attached ${queued ? "cancels accepted work" : "is rejected when nothing is pending"}`, async () => {
+    const room = new NotebookRoom(
+      {
+        id: { toString: () => "demo" },
+        storage: { get: async () => undefined, put: async () => {}, delete: async () => {} },
+        waitUntil: () => {},
+      },
+      {},
+    );
+    const sent = [];
+    const peer = {
+      id: "owner",
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:test&scope=owner"),
+      ),
+      socket: { send: (frame) => sent.push(new Uint8Array(frame)), close: () => {} },
+      connectedAt: new Date().toISOString(),
+      consecutiveRejectedFrames: 0,
+    };
+    room.peers.set(peer.id, peer);
+    let cancelled = 0;
+    let checkpoints = 0;
+    room.materializers.set("demo", {
+      // A bring-your-own workstation replacement is still connecting.
+      getWorkstationAttachment: async () => ({
+        workstation_id: "laptop",
+        runtime_session_id: "replacement",
+        status: "connecting",
+      }),
+      getRuntimeExecutionActivity: async () => ({ executing: false, queueDepth: queued ? 2 : 0 }),
+      cancelUnstartedExecutions: async () => {
+        cancelled++;
+        return { changed: true, outbound: [] };
+      },
+      checkpoint: async () => {
+        checkpoints++;
+      },
+    });
+    await room.handleMessage(
+      "demo",
+      peer,
+      encodeJsonFrame(FrameType.REQUEST, { id: "interrupt", action: "interrupt_execution" }),
+    );
+    const messages = sent.map((frame) => ({
+      type: frame[0],
+      body: JSON.parse(new TextDecoder().decode(frame.slice(1))),
+    }));
+    if (queued) {
+      assert.equal(cancelled, 1);
+      assert.ok(checkpoints >= 1, "the cancellation is persisted");
+      const response = messages.find((m) => m.type === FrameType.RESPONSE);
+      assert.equal(response.body.result, "interrupt_sent");
+    } else {
+      assert.equal(cancelled, 0);
+      assert.ok(messages.some((m) => m.body.type === "cloud_frame_rejected"));
+    }
+  });
+}
+
+for (const catalogFails of [false, true])
+  test(`recovery waits for the interrupted catalog update, failure ${catalogFails}`, async () => {
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    const catalogEntered = deferred();
+    const releaseCatalog = deferred();
+    const published = deferred();
+    const checkpointEntered = deferred();
+    const releaseCheckpoint = deferred();
+    let catalogStatus = "running";
+    let recoveryVisible = false;
+    const db = {
+      prepare(sql) {
+        return {
+          bind() {
+            return this;
+          },
+          async all() {
+            return { results: [] };
+          },
+          async first() {
+            return { id: "session", status: catalogStatus };
+          },
+          async run() {
+            if (sql.includes("UPDATE workstation_attach_jobs") && sql.includes("SET status = ?")) {
+              catalogEntered.resolve();
+              await releaseCatalog.promise;
+              if (catalogFails) throw new Error("catalog unavailable");
+              catalogStatus = "failed";
+            }
+            return { success: true };
+          },
+        };
+      },
+    };
+    const room = new NotebookRoom(
+      {
+        id: { toString: () => "demo" },
+        storage: { get: async () => undefined },
+        waitUntil: () => {},
+      },
+      { DB: db },
+    );
+    room.materializers.set("demo", {
+      transitionManagedPythonSession: async () => ({ changed: true, outbound: [] }),
+      checkpoint: async () => {
+        checkpointEntered.resolve();
+        await releaseCheckpoint.promise;
+      },
+    });
+    room.deliverRoomHostFrames = () => {
+      recoveryVisible = true;
+      published.resolve();
+    };
+    room.publishCurrentComputeSessionSummary = async () => {};
+    const failing = room.failManagedPythonSession(
+      "demo",
+      "session",
+      new Error("interrupted"),
+      "user:dev:owner",
+    );
+    const outcome = failing.then(
+      () => null,
+      (error) => error,
+    );
+    try {
+      const first = await Promise.race([
+        catalogEntered.promise.then(() => "catalog"),
+        published.promise.then(() => "recovery"),
+      ]);
+      assert.equal(
+        first,
+        "catalog",
+        "Retry must not be offered while its catalog job is still active",
+      );
+      assert.equal(recoveryVisible, false);
+      releaseCatalog.resolve();
+      await checkpointEntered.promise;
+      if (!catalogFails)
+        assert.equal(
+          catalogStatus,
+          "failed",
+          "a retry during the held checkpoint must create a fresh job",
+        );
+      assert.equal(recoveryVisible, true);
+    } finally {
+      releaseCatalog.resolve();
+      releaseCheckpoint.resolve();
+      const error = await outcome;
+      if (catalogFails) assert.match(error.message, /catalog unavailable/);
+      else assert.equal(error, null);
+    }
+  });

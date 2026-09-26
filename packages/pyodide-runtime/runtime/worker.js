@@ -77,6 +77,7 @@ export default {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
     if (busy) return new Response("Session is executing", { status: 409 });
     busy = true;
+    let streamOwnsBusy = false;
     try {
       const payload = await request.json();
       if (path === "/plan" || path === "/install") {
@@ -102,6 +103,33 @@ export default {
       ) {
         return new Response("Expected accepted source, execution_id and cell_id", { status: 400 });
       }
+      if (payload.stream === true) {
+        // NDJSON: live {"type":"stream"|"boundary"|"live_stopped"} events as the
+        // guest event loop flushes them, then one {"type":"result"} line with
+        // the authoritative batch. The request stays busy until evaluate ends.
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
+        const sink = (line) => {
+          void writer.write(encoder.encode(line + "\n")).catch(() => undefined);
+        };
+        streamOwnsBusy = true;
+        void (async () => {
+          let pending;
+          try {
+            pending = evaluate(payload.source, payload.execution_id, payload.cell_id, sink);
+            const result = await pending;
+            await writer.write(encoder.encode(`{"type":"result","result":${result}}\n`));
+            await writer.close();
+          } catch (error) {
+            await writer.abort(error).catch(() => undefined);
+          } finally {
+            pending?.destroy();
+            busy = false;
+          }
+        })();
+        return new Response(readable, { headers: { "content-type": "application/x-ndjson" } });
+      }
       const pending = evaluate(payload.source, payload.execution_id, payload.cell_id);
       try {
         return new Response(await pending, { headers: { "content-type": "application/json" } });
@@ -109,7 +137,7 @@ export default {
         pending.destroy();
       }
     } finally {
-      busy = false;
+      if (!streamOwnsBusy) busy = false;
     }
   },
 };

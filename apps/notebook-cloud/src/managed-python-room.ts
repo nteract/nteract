@@ -7,7 +7,9 @@ import { managedPythonStub, MANAGED_PYTHON_WORKSTATION } from "./managed-python.
 import { storeManagedPythonBlob } from "./managed-python-blobs.ts";
 import {
   PythonRuntimePeer,
+  type PythonExecution,
   type PythonExecutionResult,
+  type PythonLiveEvent,
 } from "../../preview-python/src/runtime-peer.js";
 import { createOutputPreparer } from "../../preview-python/src/output-manifests.js";
 import {
@@ -24,6 +26,7 @@ export class ManagedPythonRoom {
   private readonly pending: Uint8Array[] = [];
   private active = true;
   private readonly packageWaitAbort = new AbortController();
+  private readonly executionAbort = new AbortController();
   private syncing: Promise<void> = Promise.resolve();
   private pumping: Promise<void> | undefined;
   private wakeRequested = false;
@@ -76,9 +79,15 @@ export class ManagedPythonRoom {
         await this.synchronize();
         await materializer.checkpoint();
       },
+      // Live stdout/stderr reaches connected peers through sync only. Other
+      // room writes may checkpoint it mid-cell; on success the terminal batch
+      // replaces it and is checkpointed by publish().
+      publishLive: () => this.synchronize(),
       pool: {
-        execute: async (_key, execution) =>
-          this.call("/execute", { execution }) as Promise<PythonExecutionResult>,
+        execute: async (_key, execution, options) =>
+          options?.onLive
+            ? this.executeLive(execution, options.onLive)
+            : (this.call("/execute", { execution }) as Promise<PythonExecutionResult>),
         release: async () => {
           await this.call("/close");
         },
@@ -121,6 +130,97 @@ export class ManagedPythonRoom {
       );
     }
     return response.json();
+  }
+
+  /** Read the provider's NDJSON execute stream; the result line is authoritative. */
+  private async executeLive(
+    execution: PythonExecution,
+    onLive: (event: PythonLiveEvent) => void,
+  ): Promise<PythonExecutionResult> {
+    const signal = this.executionAbort.signal;
+    signal.throwIfAborted();
+    const provider = managedPythonStub(this.env);
+    if (!provider) throw new Error("Managed Python provider unavailable");
+    const response = await provider.fetch(
+      new Request("https://preview-python.internal/execute", {
+        method: "POST",
+        signal,
+        body: JSON.stringify({
+          ownerPrincipal: this.ownerPrincipal,
+          notebookId: this.notebookId,
+          sessionId: this.sessionId,
+          execution,
+          stream: true,
+        }),
+      }),
+    );
+    if (!response.ok || !response.body) {
+      const body = await response.text();
+      let reason = body;
+      try {
+        const parsed = JSON.parse(body) as { error?: unknown };
+        if (typeof parsed.error === "string") reason = parsed.error;
+      } catch {
+        /* A non-JSON provider failure still needs a bounded diagnostic. */
+      }
+      throw new Error(
+        reason.replace(/^Error: /, "").slice(0, 1000) || "Python request failed. Try again.",
+      );
+    }
+    // A provider that predates live output ignores `stream` and answers with
+    // the plain batch; accept it so rooms and providers can deploy separately.
+    if (!response.headers.get("content-type")?.includes("application/x-ndjson"))
+      return (await response.json()) as PythonExecutionResult;
+    const reader = response.body.getReader();
+    // A terminated guest may never finish its streamed response. Closing the
+    // room session must release this read so Interrupt can finish and the
+    // socket's next command can run. Provider termination is still confirmed
+    // independently by bridge.close().
+    const cancel = () => {
+      void reader.cancel().catch(() => undefined);
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    let result: PythonExecutionResult | undefined;
+    let failure: string | undefined;
+    const handle = (line: string) => {
+      if (!line) return;
+      if (result !== undefined || failure !== undefined)
+        throw new Error("Python provider output continued after its result");
+      const event = JSON.parse(line) as {
+        type?: string;
+        result?: PythonExecutionResult;
+        error?: string;
+      };
+      if (event.type === "result") result = event.result;
+      else if (event.type === "error") failure = String(event.error ?? "Python request failed");
+      else if (this.active) onLive(event as PythonLiveEvent);
+    };
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        signal.throwIfAborted();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        let newline;
+        while ((newline = buffered.indexOf("\n")) !== -1) {
+          handle(buffered.slice(0, newline));
+          buffered = buffered.slice(newline + 1);
+        }
+      }
+      handle(buffered + decoder.decode());
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      reader.releaseLock();
+    }
+    if (failure !== undefined) throw new Error(failure.replace(/^Error: /, "").slice(0, 1000));
+    if (!result) throw new Error("Python execution ended without a result");
+    return result;
   }
 
   accept(result: RoomHostFrameResult): void {
@@ -381,6 +481,7 @@ export class ManagedPythonRoom {
   async close(): Promise<void> {
     this.active = false;
     this.packageWaitAbort.abort();
+    this.executionAbort.abort();
     await this.bridge.close();
     await this.pumping?.catch(() => undefined);
     await this.syncing;

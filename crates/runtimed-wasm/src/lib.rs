@@ -603,6 +603,22 @@ impl RuntimeStatePeerHandle {
             .map_err(|e| JsError::new(&format!("append output failed: {e}")))
     }
 
+    /// Replace one output of an execution in place, keeping its position.
+    /// Used for live stream text while the execution is still running; room
+    /// policy rejects in-place edits once the execution is terminal.
+    pub fn replace_output_json(
+        &mut self,
+        execution_id: &str,
+        output_id: &str,
+        manifest_json: &str,
+    ) -> Result<bool, JsError> {
+        let manifest: serde_json::Value = serde_json::from_str(manifest_json)
+            .map_err(|e| JsError::new(&format!("decode output manifest json: {e}")))?;
+        self.state_doc
+            .replace_output(execution_id, output_id, &manifest)
+            .map_err(|e| JsError::new(&format!("replace output failed: {e}")))
+    }
+
     /// Clear one accepted execution while maintaining the display index.
     pub fn clear_execution_outputs(&mut self, execution_id: &str) -> Result<bool, JsError> {
         self.state_doc
@@ -706,6 +722,17 @@ impl RoomHostHandle {
 
     pub fn remove_peer(&mut self, peer_id: &str) {
         self.engine.remove_peer(peer_id);
+    }
+
+    /// Interrupt with no runtime peer attached: cancel accepted work that
+    /// never ran without touching lifecycle or attachment.
+    pub fn cancel_unstarted_executions(&mut self) -> Result<JsValue, JsError> {
+        let result = self
+            .engine
+            .cancel_unstarted_executions()
+            .map_err(room_host_js_error)?;
+        serialize_to_js(&result)
+            .map_err(|error| JsError::new(&format!("serialize room result: {error}")))
     }
 
     pub fn reconcile_runtime_peer_gone(&mut self, reason: &str) -> Result<JsValue, JsError> {

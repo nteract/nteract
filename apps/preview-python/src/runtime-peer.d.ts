@@ -1,3 +1,5 @@
+import type { SchedulerLike } from "rxjs";
+
 export interface PythonExecution {
   execution_id: string;
   cell_id: string;
@@ -8,6 +10,11 @@ export interface PythonExecutionResult {
   success: boolean;
   outputs: Record<string, unknown>[];
 }
+export type PythonLiveEvent =
+  | { type: "stream"; name: "stdout" | "stderr"; text: string }
+  | { type: "clear"; wait: boolean }
+  | { type: "boundary" }
+  | { type: "live_stopped" };
 export class PythonRuntimePeer {
   constructor(options: {
     peer: {
@@ -21,15 +28,24 @@ export class PythonRuntimePeer {
       clear_execution_outputs(id: string): boolean;
       update_display_data_json(displayId: string, data: string, metadata: string): number;
       append_output_json(id: string, manifest: string): unknown;
+      replace_output_json(id: string, outputId: string, manifest: string): boolean;
     };
     pool: {
-      execute(key: string, execution: PythonExecution): Promise<PythonExecutionResult>;
+      execute(
+        key: string,
+        execution: PythonExecution,
+        options?: { onLive?(event: PythonLiveEvent): void },
+      ): Promise<PythonExecutionResult>;
       release(key: string): Promise<void>;
     };
     sessionKey: string;
     isCurrent(state: unknown): boolean;
     publish(): Promise<void>;
+    /** Sync live output to peers without a storage checkpoint; enables live output. */
+    publishLive?(): Promise<void>;
     prepareOutputs(outputs: Record<string, unknown>[]): Promise<Record<string, unknown>[]>;
+    /** Clock for live output windows. */
+    scheduler?: SchedulerLike;
   });
   drain(): Promise<void>;
   close(): Promise<void>;

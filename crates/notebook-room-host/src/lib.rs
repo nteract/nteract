@@ -339,6 +339,35 @@ impl RoomHostEngine {
         self.reconcile_runtime_idle_timeout_inner(reason)
     }
 
+    /// Interrupt while no runtime peer is attached (for example while a
+    /// replacement workstation is still connecting). Accepted work has nothing
+    /// to run on, so terminalize it (queued → cancelled, orphaned running →
+    /// error) and clear the queue. Unlike peer-gone reconciliation this leaves
+    /// the kernel lifecycle and the workstation attachment alone, so a
+    /// connecting replacement still attaches, just without stale intent.
+    pub fn cancel_unstarted_executions(&mut self) -> Result<RoomHostFrameResult, RoomHostError> {
+        let heads_before = self.state_doc.get_heads();
+        self.state_doc
+            .abort_inflight_executions()
+            .map_err(|e| RoomHostError::new(format!("cancel executions: {e}")))?;
+        self.state_doc
+            .set_queue(None, &[])
+            .map_err(|e| RoomHostError::new(format!("cancel queue: {e}")))?;
+        let changed = self.state_doc.get_heads() != heads_before;
+        let mut result = RoomHostFrameResult {
+            changed,
+            ignored_stale: false,
+            notebook_changed: false,
+            runtime_state_changed: changed,
+            execution_response: None,
+            outbound: Vec::new(),
+        };
+        if changed {
+            self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
     pub fn set_workstation_attachment(
         &mut self,
         attachment: Option<&WorkstationAttachmentState>,
@@ -2621,6 +2650,39 @@ mod tests {
         );
         assert!(state.queue.executing.is_some());
         assert_eq!(state.queue.queued.len(), 1);
+    }
+
+    #[test]
+    fn cancel_unstarted_executions_keeps_lifecycle_and_attachment() {
+        let mut host = host_with_inflight_work();
+        let mut connecting = workstation_attachment_fixture();
+        connecting.status = "connecting".to_string();
+        host.set_workstation_attachment_inner(Some(&connecting))
+            .expect("seed attachment");
+        let lifecycle_before = host.state_doc.read_state().kernel.lifecycle;
+
+        let result = host
+            .cancel_unstarted_executions()
+            .expect("cancel executions");
+        assert!(result.changed);
+        assert!(result.runtime_state_changed);
+
+        let state = host.state_doc.read_state();
+        assert_eq!(state.executions["exec-queued"].status, "cancelled");
+        assert_eq!(state.executions["exec-running"].status, "error");
+        assert!(state.queue.executing.is_none());
+        assert!(state.queue.queued.is_empty());
+        assert_eq!(state.kernel.lifecycle, lifecycle_before);
+        assert_eq!(
+            state.workstation.as_ref().map(|ws| ws.status.as_str()),
+            Some("connecting"),
+            "a connecting replacement still attaches"
+        );
+
+        let again = host
+            .cancel_unstarted_executions()
+            .expect("cancel executions again");
+        assert!(!again.changed, "cancelling is idempotent");
     }
 
     #[test]

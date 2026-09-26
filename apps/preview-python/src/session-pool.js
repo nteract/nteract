@@ -52,7 +52,7 @@ export class SessionPool {
           return {
             runtime: {
               info: runtime.info,
-              execute: (execution) => runtime.execute(execution),
+              execute: (execution, options) => runtime.execute(execution, options),
               install: (payload) => runtime.install(payload),
               dispose: () =>
                 (disposal ??= Promise.resolve()
@@ -171,7 +171,7 @@ export class SessionPool {
     return session.ready;
   }
 
-  async execute(key, execution) {
+  async execute(key, execution, options) {
     const session = this.#sessions.get(key);
     if (!session) throw new Error("Session expired; allocate a new runtime session");
     await session.ready;
@@ -188,7 +188,7 @@ export class SessionPool {
     session.executions.add(execution.execution_id);
     session.busy = true;
     try {
-      const result = await session.runtime.execute(execution);
+      const result = await session.runtime.execute(execution, options);
       if (this.#sessions.get(key) !== session || session.cancelled)
         throw new Error("Discarded output from expired session");
       return result;

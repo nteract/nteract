@@ -50,8 +50,9 @@ The evaluator uses IPython's cell lifecycle, input transformations, display hook
 in-memory history, top-level await and inline Matplotlib events. It reuses the
 launcher's structured traceback formatter with cell/execution/source provenance.
 Compatible in-process magics work. Shell escapes, stdin, widgets, completion and
-inspection transport, Arrow buffers and progressive output streaming are not
-currently supported. The trusted adapter bounds response bytes and
+inspection transport and Arrow buffers are not currently supported. Live stdout
+and stderr are available when Python yields naturally, as described below.
+The trusted adapter bounds response bytes and
 validates output records, stripping unknown properties and rejecting guest
 supplied internal blob/widget references. Conversion into canonical runtime
 output manifests uses the shared Rust MIME classifier, with notebook-scoped blob
@@ -59,9 +60,11 @@ storage. Python-side limits alone are not a security boundary.
 
 Execution has independent CPU and wall deadlines. Expiration destroys the
 interpreter, so variables are lost; it is not a resumable Python interrupt.
-The cloud Interrupt action uses the same destructive session termination and
-fences its runtime peer immediately. Start compute creates a clean replacement.
-Only notebook owners can interrupt, and unconfirmed cleanup returns an error.
+
+The cloud Interrupt action uses destructive session termination and fences its
+runtime peer immediately. Variables are lost. Start compute creates a clean
+replacement. Only notebook owners can interrupt, and unconfirmed cleanup returns
+an error. Python's sleep and asyncio behavior are not overridden.
 The current celld loader does not forward fetch cancellation and registry
 disposal waits for outstanding calls. The adapter therefore invokes a private
 named control method with a tiny CPU budget to trigger celld's isolate
@@ -236,8 +239,22 @@ output model. Display updates preserve output IDs and can update matching
 outputs from earlier executions. A deferred clear waits for the next output in
 that execution. Consecutive writes to the same stream coalesce into one output
 record, so the per-execution output-count limit applies to distinct outputs
-rather than to each `print` argument and newline. Outputs are still delivered as a batch when execution completes;
-progressive streaming and widget comms are not implemented yet.
+rather than to each `print` argument and newline.
+
+stdout and stderr can stream while async code yields, for example at
+`await asyncio.sleep(...)`. Ordinary output writes flush complete lines to the
+transport; there is no guest polling or injected yield. The runtime peer uses
+RxJS windows with an injectable clock to coalesce live events, grows records in
+place, and serializes their publication to connected peers every 150 ms,
+without its own storage checkpoint. Each live record stays below the inline
+content threshold (no blobs), and live records, document writes and buffered
+events are capped per execution; past those caps live updates stop and the
+batch still carries everything. `clear_output` clears live output too. Rich
+outputs arrive when the cell finishes. On success the validated batch replaces
+the live records before the execution becomes terminal; if the session fails
+mid-cell, the partial live output stays with the error. A cell that never
+yields (including synchronous `time.sleep`) may show output only when it ends.
+Widget comms are not implemented yet.
 
 The deployment admits at most four interpreters and each authenticated compute
 owner may hold at most two sessions. The server's attach job identifies that

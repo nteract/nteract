@@ -122,6 +122,23 @@ test(
       assert.match(result.outputs[0].data[tracebackMime].evalue, /unavailable/);
       assert.equal(value(await run("3 + 4")), "7");
     });
+    await t.test("the live byte cap counts UTF-8 while preserving the final batch", async () => {
+      const events = [];
+      const pending = evaluate(
+        "print('😀' * 70000)\nprint('tail')",
+        `attempt-${++sequence}`,
+        "cell",
+        (line) => events.push(JSON.parse(line)),
+      );
+      try {
+        const result = JSON.parse(await pending);
+        assert.equal(result.success, true);
+        assert.deepEqual(events, [{ type: "live_stopped" }]);
+        assert.equal(streams(result), "😀".repeat(70000) + "\ntail\n");
+      } finally {
+        pending.destroy();
+      }
+    });
     await t.test(
       "exception formatting failures preserve the original error and recover",
       async () => {
@@ -179,5 +196,66 @@ test(
         ["stdout:a\n", "stderr:b\n", "stdout:c\n", "display_data", "stdout:e\n"],
       );
     });
+    await t.test("live mode sends complete stream lines and keeps the batch", async () => {
+      const events = [];
+      const executionId = `attempt-${++sequence}`;
+      const source = "print('a')\nprint('b', end='')\ndisplay('x')\nprint('c')";
+      const pending = evaluate(source, executionId, "cell", (line) =>
+        events.push(JSON.parse(line)),
+      );
+      let result;
+      try {
+        result = validateExecutionResult(JSON.parse(await pending), executionId, {
+          cellId: "cell",
+          sourceHash: "sha256:" + createHash("sha256").update(source).digest("hex"),
+        });
+      } finally {
+        pending.destroy();
+      }
+      assert.deepEqual(events, [
+        { type: "stream", name: "stdout", text: "a\n" },
+        { type: "stream", name: "stdout", text: "b" },
+        { type: "boundary" },
+        { type: "stream", name: "stdout", text: "c\n" },
+      ]);
+      assert.deepEqual(
+        result.outputs.map((o) => (o.output_type === "stream" ? o.text : o.output_type)),
+        ["a\nb", "display_data", "c\n"],
+      );
+    });
+    await t.test(
+      "live output arrives before a naturally yielding async cell completes",
+      async () => {
+        const events = [];
+        let firstLine;
+        const observed = new Promise((resolve) => {
+          firstLine = resolve;
+        });
+        const pending = evaluate(
+          "import asyncio\nprint('first')\nawait asyncio.sleep(0.1)\nprint('last', end='')",
+          `attempt-${++sequence}`,
+          "cell",
+          (line) => {
+            const event = JSON.parse(line);
+            events.push(event);
+            firstLine();
+          },
+        );
+        let completed = false;
+        const result = Promise.resolve(pending).then((value) => {
+          completed = true;
+          return JSON.parse(value);
+        });
+        try {
+          await observed;
+          assert.equal(completed, false);
+          assert.deepEqual(events, [{ type: "stream", name: "stdout", text: "first\n" }]);
+          assert.equal((await result).success, true);
+          assert.deepEqual(events.at(-1), { type: "stream", name: "stdout", text: "last" });
+        } finally {
+          pending.destroy();
+        }
+      },
+    );
   },
 );

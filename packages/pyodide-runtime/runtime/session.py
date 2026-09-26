@@ -24,6 +24,64 @@ output_context = ContextVar("nteract_execution_output", default=None)
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_OUTPUTS = 1000
 
+# Live deltas are flushed by writes; naturally yielding async cells let the host
+# transport publish them before completion. No guest clock or sleep override.
+MAX_LIVE_STREAM_BYTES = 256 * 1024
+live_sink = None
+live_pending = None
+live_sent_bytes = 0
+
+
+def send_live(event):
+    if live_sink is not None:
+        live_sink(json.dumps(event))
+
+
+def flush_live_stream(everything=False):
+    """Send buffered stream text up to the last newline (or all of it)."""
+    global live_pending, live_sent_bytes
+    if live_sink is None or live_pending is None:
+        return
+    name, text = live_pending
+    cut = len(text) if everything else text.rfind("\n") + 1
+    if cut <= 0:
+        return
+    chunk, rest = text[:cut], text[cut:]
+    live_pending = (name, rest) if rest else None
+    size = len(chunk.encode("utf-8"))
+    if live_sent_bytes + size > MAX_LIVE_STREAM_BYTES:
+        # Stop live updates; the final batch still carries every output.
+        live_pending = None
+        stop_live()
+        return
+    live_sent_bytes += size
+    send_live({"type": "stream", "name": name, "text": chunk})
+
+
+def buffer_live(output):
+    global live_pending
+    if live_sink is None:
+        return
+    if output["output_type"] != "stream":
+        flush_live_stream(everything=True)
+        if output["output_type"] == "clear_output":
+            send_live({"type": "clear", "wait": bool(output.get("wait"))})
+        else:
+            send_live({"type": "boundary"})
+        return
+    if live_pending is not None and live_pending[0] != output["name"]:
+        flush_live_stream(everything=True)
+    name = output["name"]
+    previous = live_pending[1] if live_pending is not None else ""
+    live_pending = (name, previous + output["text"])
+
+
+def stop_live():
+    global live_sink
+    if live_sink is not None:
+        send_live({"type": "live_stopped"})
+    live_sink = None
+
 
 def emit(output):
     global output_bytes
@@ -45,12 +103,16 @@ def emit(output):
             raise RuntimeError("Python output limit exceeded")
         output_bytes += size
         previous["text"] += output["text"]
+        buffer_live(output)
+        flush_live_stream()
         return
     size = len(json.dumps(output).encode("utf-8"))
     if output_bytes + size > MAX_OUTPUT_BYTES or len(active_outputs) >= MAX_OUTPUTS:
         raise RuntimeError("Python output limit exceeded")
     output_bytes += size
     active_outputs.append(output)
+    buffer_live(output)
+    flush_live_stream()
 
 
 class NotebookPublisher(DisplayPublisher):
@@ -194,8 +256,9 @@ class Stream(io.TextIOBase):
         pass
 
 
-async def evaluate(source, execution_id, cell_id):
+async def evaluate(source, execution_id, cell_id, sink=None):
     global active_outputs, active_execution, output_bytes
+    global live_sink, live_pending, live_sent_bytes
     if active_execution is not None:
         raise RuntimeError("Python session is already executing")
     execution = {
@@ -210,6 +273,9 @@ async def evaluate(source, execution_id, cell_id):
     context = {"execution": execution, "closed": False}
     token = output_context.set(context)
     output_bytes = 0
+    live_sink = sink
+    live_pending = None
+    live_sent_bytes = 0
     result = None
     success = False
     try:
@@ -241,8 +307,11 @@ async def evaluate(source, execution_id, cell_id):
                 shell.events.trigger("post_execute")
                 shell.events.trigger("post_run_cell", result)
     finally:
+        flush_live_stream(everything=True)
         context["closed"] = True
         output_context.reset(token)
         active_outputs = None
         active_execution = None
+        live_sink = None
+        live_pending = None
     return json.dumps({**execution, "success": success, "outputs": outputs})

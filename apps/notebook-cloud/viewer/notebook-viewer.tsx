@@ -223,6 +223,7 @@ import {
   useResolvedActorProfile,
 } from "./use-cloud-user-store";
 import { useCloudShellCapabilities } from "./use-cloud-shell-capabilities";
+import { useCloudRuntimeCommands } from "./use-cloud-runtime-commands";
 import { useCloudWorkstationManager } from "./use-cloud-workstations";
 import { cloudSignInMethodForConfig, CloudNotebookSignInButton } from "./cloud-auth-controls";
 import { CloudNotebookEditModeButton } from "./cloud-edit-mode-button";
@@ -543,7 +544,6 @@ export function NotebookViewer({
     });
     return () => subscription.unsubscribe();
   }, [connectionPeerId, liveRuntimeRef]);
-  const cloudExecutionStartPromiseRef = useRef<Promise<boolean> | null>(null);
   const cloudNotebookHost = useMemo(
     () =>
       createCloudNotebookHost({
@@ -1056,133 +1056,28 @@ export function NotebookViewer({
     },
     [liveRuntimeRef],
   );
-  const handleCloudExecuteCell = useCallback(
-    (cellId: string) => {
-      const runtimeClient = createCloudNotebookClient("execute cell");
-      if (!runtimeClient) return;
-
-      void (async () => {
-        const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
-        if (!delivered) {
-          console.warn("[notebook-cloud] execute cell request skipped; notebook sync failed");
-          return;
-        }
-
-        await runtimeClient.client.executeCell(cellId);
-      })().catch((error: unknown) => {
-        console.warn("[notebook-cloud] execute cell request failed", error);
-      });
-    },
-    [createCloudNotebookClient],
-  );
   const canRequestCloudCellExecution =
     canStartSelectedWorkstation && shellCapabilities.canEditCells && canAcceptCellMutations;
-  const startCloudExecutionWorkstation = useCallback(async () => {
-    if (!onStartSelectedWorkstation) {
-      return false;
-    }
-    if (!cloudExecutionStartPromiseRef.current) {
-      cloudExecutionStartPromiseRef.current = onStartSelectedWorkstation({
-        message: "Starting compute. Run is queued for the selected workstation.",
-      }).finally(() => {
-        cloudExecutionStartPromiseRef.current = null;
-      });
-    }
-    return cloudExecutionStartPromiseRef.current;
-  }, [onStartSelectedWorkstation]);
-  const handleCloudRequestExecuteCell = useCallback(
-    (cellId: string) => {
-      if (!canRequestCloudCellExecution || !onStartSelectedWorkstation) {
-        return;
-      }
-      const runtimeClient = createCloudNotebookClient("start compute and execute cell");
-      if (!runtimeClient) return;
-
-      void (async () => {
-        const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
-        if (!delivered) {
-          console.warn(
-            "[notebook-cloud] start compute and execute request skipped; notebook sync failed",
-          );
-          return;
-        }
-
-        const started = await startCloudExecutionWorkstation();
-        if (!started) {
-          return;
-        }
-
-        await runtimeClient.client.executeCell(cellId);
-      })().catch((error: unknown) => {
-        console.warn("[notebook-cloud] start compute and execute request failed", error);
-      });
-    },
-    [
-      canRequestCloudCellExecution,
-      createCloudNotebookClient,
-      onStartSelectedWorkstation,
-      startCloudExecutionWorkstation,
-    ],
-  );
-  const handleCloudRunAllCells = useCallback(() => {
-    const runtimeClient = createCloudNotebookClient("run all cells");
-    if (!runtimeClient) return;
-
-    void (async () => {
-      const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
-      if (!delivered) {
-        console.warn("[notebook-cloud] run all cells request skipped; notebook sync failed");
-        return;
-      }
-
-      await runtimeClient.client.runAllCells();
-    })().catch((error: unknown) => {
-      console.warn("[notebook-cloud] run all cells request failed", error);
-    });
-  }, [createCloudNotebookClient]);
-  const handleCloudStartRuntime = useCallback(() => {
-    void onStartSelectedWorkstation?.().catch((error: unknown) => {
-      console.warn("[notebook-cloud] start kernel request failed", error);
-    });
-  }, [onStartSelectedWorkstation]);
-  const handleCloudInterruptRuntime = useCallback(() => {
-    const runtimeClient = createCloudNotebookClient("interrupt kernel");
-    if (!runtimeClient) return;
-
-    void runtimeClient.client.interruptKernel().catch((error: unknown) => {
-      console.warn("[notebook-cloud] interrupt kernel request failed", error);
-    });
-  }, [createCloudNotebookClient]);
-  const handleCloudRestartRuntime = useCallback(() => {
-    void onStartSelectedWorkstation?.({
-      message: "Restarting compute. Waiting for the workstation to replace the runtime peer.",
-      replaceExisting: true,
-    }).catch((error: unknown) => {
-      console.warn("[notebook-cloud] restart kernel request failed", error);
-    });
-  }, [onStartSelectedWorkstation]);
-  const handleCloudRestartAndRunAll = useCallback(() => {
-    const runtimeClient = createCloudNotebookClient("restart kernel and run all cells");
-    if (!runtimeClient) return;
-
-    void (async () => {
-      const delivered = await runtimeClient.liveRuntime.engine.flushAndWait();
-      if (!delivered) {
-        console.warn(
-          "[notebook-cloud] restart kernel and run all cells request skipped; notebook sync failed",
-        );
-        return;
-      }
-
-      await onStartSelectedWorkstation?.({
-        message: "Restarting compute. Run all is queued for the replacement runtime.",
-        replaceExisting: true,
-      });
-      await runtimeClient.client.runAllCells();
-    })().catch((error: unknown) => {
-      console.warn("[notebook-cloud] restart kernel and run all cells request failed", error);
-    });
-  }, [createCloudNotebookClient, onStartSelectedWorkstation]);
+  // Run / Run all / Restart and run all wait on document sync (and sometimes a
+  // workstation attach) before sending execution intent to the room. The hook
+  // owns those browser-side waits so Interrupt, Restart, a replaced live
+  // runtime, or unmount cancels intent that has not reached the room yet.
+  const getCurrentCloudRuntime = useCallback(() => liveRuntimeRef.current, [liveRuntimeRef]);
+  const {
+    executeCell: handleCloudExecuteCell,
+    requestExecuteCell: handleCloudRequestExecuteCell,
+    runAllCells: handleCloudRunAllCells,
+    startRuntime: handleCloudStartRuntime,
+    interruptRuntime: handleCloudInterruptRuntime,
+    restartRuntime: handleCloudRestartRuntime,
+    restartAndRunAll: handleCloudRestartAndRunAll,
+  } = useCloudRuntimeCommands({
+    createClient: createCloudNotebookClient,
+    getCurrentRuntime: getCurrentCloudRuntime,
+    onStartSelectedWorkstation,
+    canRequestCellExecution: canRequestCloudCellExecution,
+    roomKey: config.notebookId,
+  });
   const handleCloudSetCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       cloudNotebookController.setCellSourceHidden(cellId, hidden);
@@ -2102,7 +1997,9 @@ export function NotebookViewer({
                 onRequestExecuteCell={
                   canRequestCloudCellExecution ? handleCloudRequestExecuteCell : undefined
                 }
-                onInterruptKernel={() => {}}
+                // A running cell's Stop is the same owner-gated Interrupt as the
+                // toolbar (the button is inert when the cell cannot execute).
+                onInterruptKernel={handleCloudInterruptRuntime}
                 onDeleteCell={handleCloudDeleteCell}
                 onAddCell={handleCloudAddCell}
                 onMoveCell={handleCloudMoveCell}
