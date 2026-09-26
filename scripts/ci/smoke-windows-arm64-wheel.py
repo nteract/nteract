@@ -13,7 +13,6 @@ PROBE = """
 import importlib.metadata
 import pathlib
 import struct
-import subprocess
 import sys
 
 import runtimed
@@ -26,17 +25,18 @@ assert package.is_relative_to(root), f"Package outside test venv: {package}"
 assert extension.is_relative_to(root), f"Extension outside test venv: {extension}"
 version = importlib.metadata.version("runtimed")
 assert version == sys.argv[1], f"Installed {version}, expected {sys.argv[1]}"
-binary = package / "_bin" / "runtimed.exe"
-data = binary.read_bytes()
-assert data[:2] == b"MZ", f"Not a PE binary: {binary}"
+data = extension.read_bytes()
+assert data[:2] == b"MZ", f"Not a PE extension: {extension}"
 offset = struct.unpack_from("<I", data, 0x3C)[0]
-assert data[offset:offset + 4] == b"PE\\0\\0", f"Invalid PE header: {binary}"
+assert data[offset:offset + 4] == b"PE\\0\\0", f"Invalid PE header: {extension}"
 machine = struct.unpack_from("<H", data, offset + 4)[0]
-assert machine == 0xAA64, f"Expected ARM64 binary, got {machine:#x}"
+assert machine == 0xAA64, f"Expected ARM64 extension, got {machine:#x}"
+# Exercise the installed Rust binding without requiring a running daemon.
+socket = runtimed.default_socket_path()
+assert isinstance(socket, str) and socket, f"Invalid socket path: {socket!r}"
 print(f"Installed runtimed {version}: {package}", flush=True)
 print(f"Native extension: {extension}", flush=True)
-print(f"Bundled ARM64 daemon: {binary}", flush=True)
-subprocess.run([str(binary), "--help"], check=True)
+print(f"Native binding socket path: {socket}", flush=True)
 """
 
 

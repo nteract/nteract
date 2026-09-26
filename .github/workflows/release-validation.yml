@@ -66,3 +66,8 @@ jobs:
         run: |
           python scripts/ci/smoke-windows-arm64-wheel.py python/runtimed/dist
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke standalone daemon (separate from wheel)
+        shell: pwsh
+        run: |
+          & ./target/aarch64-pc-windows-msvc/release/runtimed.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

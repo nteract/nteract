@@ -50,8 +50,8 @@ permissions:
 
 env:
   RUNT_BUILD_CHANNEL: ${{ inputs.version_suffix }}
-  # workflow_run uses the triggering run's source, while dispatch/schedule/tag
-  # events use their immutable event SHA. Every source checkout uses this ref.
+  # Dispatch/schedule/tag callers use their immutable event SHA. Also preserve
+  # the upstream source if called via workflow_run. All source checkouts use it.
   NTERACT_BUILD_GIT_HASH: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
@@ -1353,6 +1353,15 @@ jobs:
         shell: pwsh
         run: |
           python scripts/ci/smoke-windows-arm64-wheel.py python/runtimed/dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The wheel ships Python bindings; this separately exercises the daemon
+      # built by this job, without counting it as wheel validation.
+      - name: Smoke Windows ARM64 standalone daemon
+        if: matrix.platform.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          & ./target/aarch64-pc-windows-msvc/release/runtimed.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload wheels
