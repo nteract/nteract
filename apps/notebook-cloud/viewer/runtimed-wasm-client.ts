@@ -514,7 +514,7 @@ async function withRungTimeout<T>(
   label: string,
   onTimeout?: () => void,
   timeoutMs = RUNTIMED_WASM_RUNG_TIMEOUT_MS,
-  TimeoutError = Error,
+  TimeoutError: new (message: string) => Error = Error,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
