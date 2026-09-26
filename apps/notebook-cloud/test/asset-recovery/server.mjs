@@ -1,11 +1,33 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
+import { build } from "esbuild";
 
 // Exercise the real production entrypoint and its lazy import graph. Faults
 // live at the HTTP boundary, not in a synthetic vite:preloadError event.
 const dist = resolve("dist");
 const cases = new Map();
+// Bundle the real loader separately from the production viewer so HTTP body
+// failure coverage needs neither room authentication nor a running daemon.
+const wasmHarness = await build({
+  stdin: {
+    contents: `import { initializeRuntimedWasmClient, _setRuntimedWasmFetchForTests } from "./viewer/runtimed-wasm-client";
+      const id = new URL(location.href).searchParams.get("case");
+      _setRuntimedWasmFetchForTests(async (...args) => {
+        const response = await fetch(...args);
+        document.body.dataset.headersReceived = "true";
+        return response;
+      });
+      initializeRuntimedWasmClient("/__wasm/module.js", "/__wasm/binary?case=" + id)
+        .then(() => { document.body.textContent = "WASM ready"; })
+        .catch(error => { document.body.textContent = error.message; });`,
+    resolveDir: resolve("."),
+    loader: "ts",
+  },
+  bundle: true,
+  write: false,
+  format: "esm",
+});
 const config = Object.fromEntries(
   [
     "catalogEndpoint",
@@ -29,6 +51,45 @@ const config = Object.fromEntries(
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   res.setHeader("Cache-Control", "no-store");
+  if (url.pathname === "/__wasm/harness.js") {
+    res.setHeader("Content-Type", "text/javascript");
+    res.end(wasmHarness.outputFiles[0].contents);
+    return;
+  }
+  if (url.pathname === "/__wasm/module.js") {
+    res.setHeader("Content-Type", "text/javascript");
+    res.end(`export default async ({module_or_path}) => {
+      if (!(module_or_path instanceof Response) || !module_or_path.url.includes("/__wasm/binary")) {
+        throw new Error("The original WASM response and its URL must survive validation");
+      }
+      await WebAssembly.instantiateStreaming(module_or_path);
+    }; export const project_markdown_json = () => null;`);
+    return;
+  }
+  if (url.pathname === "/__wasm/binary") {
+    const scenario = cases.get(url.searchParams.get("case"));
+    scenario.requests += 1;
+    res.setHeader("Content-Type", "application/wasm");
+    if (scenario.requests === 1) {
+      // Deliver successful headers and a partial body, then wait for the
+      // client's idle deadline to abort the actual network request.
+      res.write(Buffer.from([0, 97, 115, 109]));
+      res.on("close", () => {
+        scenario.aborted = true;
+      });
+    } else {
+      res.end(Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]));
+    }
+    return;
+  }
+  if (url.pathname === "/__wasm") {
+    cases.set(url.searchParams.get("case"), { requests: 0, aborted: false });
+    res.setHeader("Content-Type", "text/html");
+    res.end(
+      '<!doctype html><body>Loading WASM<script type="module" src="/__wasm/harness.js"></script>',
+    );
+    return;
+  }
   const asset = /^\/__case\/([\w-]+)\/assets\/([\w.-]+)$/.exec(url.pathname);
   if (asset) {
     const [, id, name] = asset;

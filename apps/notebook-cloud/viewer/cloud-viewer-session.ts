@@ -1267,6 +1267,11 @@ export function useCloudViewerSession({
     resetRuntimeState();
     setRequestError(null);
     setConnectionError(null);
+    setStatus((current) =>
+      current.kind === "error" && current.message.startsWith("Unable to load live notebook room:")
+        ? { kind: "loading", message: "Connecting to live notebook room..." }
+        : current,
+    );
     setConnectionActorLabel(null);
     setConnectionPeerId(null);
     setConnectionPeerLabel(null);

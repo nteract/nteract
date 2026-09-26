@@ -43,14 +43,15 @@ let fetchImpl: typeof fetch = (input, init) => fetch(input, init);
 const RUNTIMED_WASM_RETRY_DELAYS_MS = [150, 500, 1500];
 
 /**
- * Per-rung time bound. A stalled (slow-loris) attempt that never settles
- * would otherwise park every caller — including retryLiveConnection, which
- * awaits the same cached singleton promise — in a permanent loading state.
- * fetch rungs also get an AbortSignal so the network request is actually
- * cancelled; import() cannot be aborted, so its rung is abandoned via the
- * same race and left to the module map.
+ * Import/header deadline and body idle deadline. Downloads that keep making
+ * progress can take longer, up to the whole-attempt budget below. Fetches
+ * are aborted on failure; import() cannot be aborted, so its timed-out work
+ * is abandoned and left to the module map.
  */
 const RUNTIMED_WASM_RUNG_TIMEOUT_MS = 20_000;
+// Progress resets the body idle deadline, but never this whole-attempt budget.
+const RUNTIMED_WASM_DOWNLOAD_TIMEOUT_MS = 120_000;
+const RUNTIMED_WASM_MAX_BYTES = 16 * 1024 * 1024;
 
 /**
  * Hashed deploys keep stable-name copies (`runtimed_wasm.js` /
@@ -405,29 +406,63 @@ async function resolveRuntimedWasmBinary(
   }
 }
 
+// Repeating this URL cannot improve a breached size/total-download bound.
+// The caller may still try the stable pair, which can belong to another deploy.
+class RuntimedWasmDownloadLimitError extends Error {}
+
 async function fetchRuntimedWasmBinaryWithRetries(href: string): Promise<Response> {
   let lastFailure: unknown = null;
   for (let attempt = 0; attempt <= RUNTIMED_WASM_RETRY_DELAYS_MS.length; attempt += 1) {
     let response: Response | null = null;
+    const controller = typeof AbortController === "undefined" ? undefined : new AbortController();
+    let cancelBody = () => {};
+    const abortAttempt = () => {
+      controller?.abort();
+      cancelBody();
+    };
     try {
       response = await withRungTimeout(
-        fetchImpl(href, rungAbortInit()),
-        `runtimed WASM fetch (${href})`,
+        (async () => {
+          const fetched = await withRungTimeout(
+            fetchImpl(href, controller ? { signal: controller.signal } : undefined),
+            `runtimed WASM headers (${href})`,
+            abortAttempt,
+          );
+          if (fetched.ok) {
+            // Drain a tee before handing off the original. Its body is then
+            // fully buffered, while its URL survives for wasm-bindgen's
+            // instantiateStreaming path and the browser's compiled-code cache.
+            await readRuntimedWasmBody(fetched.clone(), href, (cancel) => {
+              cancelBody = () => {
+                cancel();
+                cancelResponseBody(fetched);
+              };
+            });
+          }
+          return fetched;
+        })(),
+        `runtimed WASM download (${href})`,
+        abortAttempt,
+        RUNTIMED_WASM_DOWNLOAD_TIMEOUT_MS,
+        RuntimedWasmDownloadLimitError,
       );
+      if (response.ok) return response;
     } catch (error) {
-      // Thrown fetch errors (network drop, DNS, CORS, rung timeout) are
-      // always retryable.
+      // Headers and body failures share the ladder. wasm-bindgen receives a
+      // validated body, so transport errors cannot escape these retries.
+      abortAttempt();
+      if (error instanceof RuntimedWasmDownloadLimitError) throw error;
       lastFailure = error;
+      response = null;
     }
     if (response) {
-      if (response.ok) return response;
       const failure = new Error(`Failed to fetch runtimed WASM (${response.status}): ${href}`);
       if (!shouldRetryRuntimedWasmResponse(response)) {
-        await cancelResponseBody(response);
+        cancelResponseBody(response);
         throw failure;
       }
       lastFailure = failure;
-      await cancelResponseBody(response);
+      cancelResponseBody(response);
     }
     const delay = RUNTIMED_WASM_RETRY_DELAYS_MS[attempt];
     if (delay === undefined) break;
@@ -436,12 +471,51 @@ async function fetchRuntimedWasmBinaryWithRetries(href: string): Promise<Respons
   throw lastFailure instanceof Error ? lastFailure : new Error(String(lastFailure));
 }
 
+async function readRuntimedWasmBody(
+  response: Response,
+  href: string,
+  onReader: (cancel: () => void) => void,
+): Promise<void> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  onReader(cancel);
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await withRungTimeout(
+        reader.read(),
+        `runtimed WASM body stalled (${href})`,
+        cancel,
+      );
+      if (done) break;
+      size += value.byteLength;
+      if (size > RUNTIMED_WASM_MAX_BYTES) {
+        throw new RuntimedWasmDownloadLimitError(
+          `runtimed WASM exceeds the 16 MiB download limit: ${href}; check the deployed asset`,
+        );
+      }
+    }
+  } finally {
+    cancel();
+    reader.releaseLock();
+  }
+}
+
 /**
  * Bound a rung with a settle deadline. The race (not just AbortSignal)
  * carries the bound so a hung attempt advances the ladder even where
  * abort is unsupported (dynamic import) — the loser is abandoned.
  */
-async function withRungTimeout<T>(work: Promise<T>, label: string): Promise<T> {
+async function withRungTimeout<T>(
+  work: Promise<T>,
+  label: string,
+  onTimeout?: () => void,
+  timeoutMs = RUNTIMED_WASM_RUNG_TIMEOUT_MS,
+  TimeoutError: new (message: string) => Error = Error,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -451,23 +525,14 @@ async function withRungTimeout<T>(work: Promise<T>, label: string): Promise<T> {
           // The abandoned loser may still settle later; observe its
           // rejection so it never surfaces as unhandled.
           void Promise.resolve(work).catch(() => undefined);
-          reject(new Error(`${label} timed out after ${RUNTIMED_WASM_RUNG_TIMEOUT_MS}ms`));
-        }, RUNTIMED_WASM_RUNG_TIMEOUT_MS);
+          reject(new TimeoutError(`${label} timed out after ${timeoutMs}ms`));
+          onTimeout?.();
+        }, timeoutMs);
       }),
     ]);
   } finally {
     clearTimeout(timer);
   }
-}
-
-function rungAbortInit(): RequestInit | undefined {
-  // Best-effort network cancellation alongside the race; the race is the
-  // load-bearing bound (AbortSignal.timeout is not mockable in tests and
-  // unsupported in some embedders).
-  if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
-    return undefined;
-  }
-  return { signal: AbortSignal.timeout(RUNTIMED_WASM_RUNG_TIMEOUT_MS) };
 }
 
 function shouldRetryRuntimedWasmResponse(response: Response): boolean {
@@ -480,12 +545,9 @@ function shouldRetryRuntimedWasmResponse(response: Response): boolean {
   );
 }
 
-async function cancelResponseBody(response: Response): Promise<void> {
-  try {
-    await response.body?.cancel();
-  } catch {
-    // Best effort; a failed cancel should not mask the retryable response.
-  }
+function cancelResponseBody(response: Response): void {
+  // Cleanup must not hold up the ladder if a stream's cancel hook hangs.
+  void response.body?.cancel().catch(() => undefined);
 }
 
 function sleep(ms: number): Promise<void> {
