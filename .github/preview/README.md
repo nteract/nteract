@@ -17,9 +17,12 @@ The publication sequence deliberately separates three reviewed revisions:
 The reusable workflow accepts no caller inputs or inherited secrets. It derives
 the PR number and action from the original event and checks live GitHub metadata.
 Only same-repository PRs targeting `main` from the explicitly configured maintainers are eligible
-for deployment: Kyle (`836375`) and Utkarsh (`107147005`). Both the original actor
+for deployment: Kyle (`836375`), Utkarsh (`107147005`), and Quillaid (`261289082`). Both the original actor
 and rerun initiator must also be eligible. The controller independently enforces
 its current policy before a build and again before deployment.
+
+Quillaid's eligibility applies to PR previews and their cleanup/status reporting.
+Main deployment retains its separate Kyle/Utkarsh actor list. Forks remain ineligible.
 
 The source revision must equal both the event run's `head_sha` and the current
 open PR head. GitHub's `run.pull_requests[].head.sha` can change after a later push,

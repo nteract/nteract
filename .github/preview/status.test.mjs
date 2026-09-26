@@ -33,6 +33,16 @@ test("status identity uses the immutable run revision for all supported event ty
   }
 });
 
+test("Quillaid may report deployment and cleanup status", async () => {
+  for (const action of ["synchronize", "closed"]) {
+    const f = fixture(action);
+    f.run.actor.id = 261289082;
+    f.run.triggering_actor.id = 261289082;
+    f.env.GITHUB_ACTOR_ID = "261289082";
+    assert.equal((await resolve(f)).action, action === "closed" ? "stop" : "deploy");
+  }
+});
+
 test("report-only identity does not substitute newer event or mutable linkage heads", async () => {
   const f = fixture();
   f.event.pull_request.head.sha = "b".repeat(40);
