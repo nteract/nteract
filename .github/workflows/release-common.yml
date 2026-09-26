@@ -50,7 +50,9 @@ permissions:
 
 env:
   RUNT_BUILD_CHANNEL: ${{ inputs.version_suffix }}
-  NTERACT_BUILD_GIT_HASH: ${{ github.sha }}
+  # workflow_run uses the triggering run's source, while dispatch/schedule/tag
+  # events use their immutable event SHA. Every source checkout uses this ref.
+  NTERACT_BUILD_GIT_HASH: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
   compute-version:
@@ -60,11 +62,13 @@ jobs:
       version: ${{ steps.version.outputs.VERSION }}
       timestamp: ${{ steps.version.outputs.TIMESTAMP }}
       base_version: ${{ steps.version.outputs.BASE_VERSION }}
+      source_sha: ${{ steps.version.outputs.SOURCE_SHA }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
 
       - name: Compute version
         id: version
@@ -77,7 +81,14 @@ jobs:
             echo "VERSION=${VERSION}"
             echo "TIMESTAMP=${TIMESTAMP}"
             echo "BASE_VERSION=${CURRENT_VERSION}"
+            echo "SOURCE_SHA=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Check release tag before building or publishing
+        env:
+          TAG_NAME: v${{ steps.version.outputs.VERSION }}
+          SOURCE_SHA: ${{ steps.version.outputs.SOURCE_SHA }}
+        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA"
 
   build-wasm:
     name: Build WASM artifacts
@@ -87,6 +98,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -121,6 +133,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
       - name: Install system dependencies
@@ -191,6 +204,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
       - name: Set up Rust
@@ -258,6 +272,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
       - name: Set up Rust
@@ -440,6 +455,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
       - name: Set up Rust
@@ -628,6 +644,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
       - name: Set up Rust
@@ -811,6 +828,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
       - name: Set up Rust
@@ -1022,6 +1040,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
       - name: Install system dependencies
@@ -1166,6 +1185,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
 
       - name: Download Linux AppImage
         uses: actions/download-artifact@v8
@@ -1216,6 +1236,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -1320,15 +1341,19 @@ jobs:
             echo "sccache is not available on PATH"
           fi
 
+      - name: Set up native Python for Windows ARM64 wheel smoke
+        if: matrix.platform.target == 'aarch64-pc-windows-msvc'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          architecture: arm64
+
       - name: Smoke Windows ARM64 wheel
         if: matrix.platform.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: |
-          python -m pip install --find-links python/runtimed/dist runtimed
-          python -c "import runtimed; print('imported', runtimed.__file__)"
-          $bin = Get-ChildItem -Path python/runtimed -Recurse -Filter runtimed.exe | Select-Object -First 1
-          if (-not $bin) { throw "runtimed.exe not found after wheel install" }
-          & $bin.FullName --help
+          python scripts/ci/smoke-windows-arm64-wheel.py python/runtimed/dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload wheels
         uses: actions/upload-artifact@v7
@@ -1363,6 +1388,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 1
 
       - name: Download nteract-mcp binaries
@@ -1424,7 +1450,7 @@ jobs:
           fi
 
           git commit -m "Release v${VERSION} (${CHANNEL})" \
-            -m "Generated from nteract/nteract@${GITHUB_SHA}" \
+            -m "Generated from nteract/nteract@${NTERACT_BUILD_GIT_HASH}" \
             -m "Do not hand-edit — regenerated on every release."
           git tag -f "v${VERSION}"
 
@@ -1472,6 +1498,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
           fetch-depth: 0
 
       - name: Install git-cliff
@@ -1743,13 +1770,19 @@ jobs:
       # for project 'X'". Fix at:
       # https://pypi.org/manage/project/{name}/settings/publishing/.
 
+      - name: Verify release tag matches built source
+        env:
+          TAG_NAME: v${{ needs.compute-version.outputs.version }}
+          SOURCE_SHA: ${{ needs.compute-version.outputs.source_sha }}
+        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA"
+
       - name: Publish runtimed to PyPI
         run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/runtimed/ ./wheels/*.whl
 
       - name: Generate release body
         env:
           VERSION_SUFFIX: ${{ inputs.version_suffix }}
-          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_SHA: ${{ needs.compute-version.outputs.source_sha }}
           RELEASE_INTRO: ${{ inputs.release_intro }}
           RELEASE_REPO: ${{ github.repository }}
           BASE_VERSION: ${{ needs.compute-version.outputs.base_version }}
@@ -1890,6 +1923,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: v${{ needs.compute-version.outputs.version }}
+          target_commitish: ${{ needs.compute-version.outputs.source_sha }}
           name: nteract v${{ needs.compute-version.outputs.version }}
           body_path: release-body.md
           draft: false
