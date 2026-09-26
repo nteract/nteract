@@ -245,8 +245,8 @@ describe("runtimed WASM client retry ladder", () => {
       HASHED_WASM,
       STABLE_WASM,
     ]);
-    assert.ok(initCalls[0] instanceof Response);
-    assert.equal(await (initCalls[0] as Response).text(), "wasm-bytes");
+    assert.ok(initCalls[0] instanceof ArrayBuffer);
+    assert.equal(new TextDecoder().decode(initCalls[0] as ArrayBuffer), "wasm-bytes");
   });
 
   it("bails immediately on non-retryable wasm statuses (still trying the stable copy once)", async (t: TestContext) => {
@@ -263,47 +263,56 @@ describe("runtimed WASM client retry ladder", () => {
     );
     await drain();
     // 403 is not in the retryable set: no ladder sleeps for either name.
-    assert.equal(settled(), true);
     await assert.rejects(promise, /Failed to fetch runtimed WASM \(403\)/);
+    assert.equal(settled(), true);
     assert.deepEqual(fetchedHrefs, [HASHED_WASM, STABLE_WASM]);
   });
 
-  it("couples the pair: a binary stable-fallback forces the hashed module onto its stable copy", async (t: TestContext) => {
-    t.mock.timers.enable({ apis: ["setTimeout"] });
-    const initCalls: unknown[] = [];
-    const importedHrefs: string[] = [];
-    _setRuntimedWasmModuleImporterForTests(async (href) => {
-      importedHrefs.push(href);
-      return stubModule(initCalls);
+  for (const failure of ["status", "body"] as const) {
+    it(`couples the pair: a binary ${failure} failure moves the hashed module onto its stable copy`, async (t: TestContext) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const initCalls: unknown[] = [];
+      const importedHrefs: string[] = [];
+      _setRuntimedWasmModuleImporterForTests(async (href) => {
+        importedHrefs.push(href);
+        return stubModule(initCalls);
+      });
+      const fetchedHrefs: string[] = [];
+      _setRuntimedWasmFetchForTests((async (input: RequestInfo | URL) => {
+        const href = String(input);
+        fetchedHrefs.push(href);
+        if (href !== HASHED_WASM) return new Response("wasm-bytes");
+        return failure === "status"
+          ? new Response("gone", { status: 404 })
+          : new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.error(new TypeError("body terminated"));
+                },
+              }),
+            );
+      }) as typeof fetch);
+
+      const pending = initializeRuntimedWasmClient(HASHED_MODULE, HASHED_WASM);
+      for (const delay of [150, 500, 1500]) {
+        await drain();
+        t.mock.timers.tick(delay);
+      }
+      await pending;
+
+      // Hashed module succeeded, but the binary fell back to stable — the
+      // glue must follow (never hashed glue against a stable binary, #3416).
+      assert.deepEqual(importedHrefs, [HASHED_MODULE, STABLE_MODULE]);
+      assert.deepEqual(fetchedHrefs, [
+        HASHED_WASM,
+        HASHED_WASM,
+        HASHED_WASM,
+        HASHED_WASM,
+        STABLE_WASM,
+      ]);
+      assert.ok(initCalls[0] instanceof ArrayBuffer);
     });
-    const fetchedHrefs: string[] = [];
-    _setRuntimedWasmFetchForTests((async (input: RequestInfo | URL) => {
-      const href = String(input);
-      fetchedHrefs.push(href);
-      return href === HASHED_WASM
-        ? new Response("gone", { status: 404 })
-        : new Response("wasm-bytes");
-    }) as typeof fetch);
-
-    const pending = initializeRuntimedWasmClient(HASHED_MODULE, HASHED_WASM);
-    for (const delay of [150, 500, 1500]) {
-      await drain();
-      t.mock.timers.tick(delay);
-    }
-    await pending;
-
-    // Hashed module succeeded, but the binary fell back to stable — the
-    // glue must follow (never hashed glue against a stable binary, #3416).
-    assert.deepEqual(importedHrefs, [HASHED_MODULE, STABLE_MODULE]);
-    assert.deepEqual(fetchedHrefs, [
-      HASHED_WASM,
-      HASHED_WASM,
-      HASHED_WASM,
-      HASHED_WASM,
-      STABLE_WASM,
-    ]);
-    assert.ok(initCalls[0] instanceof Response);
-  });
+  }
 
   it("couples the pair: a module stable-fallback skips the hashed binary name outright", async (t: TestContext) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -389,7 +398,7 @@ describe("runtimed WASM client retry ladder", () => {
     assert.equal(fetchCalls, 2);
 
     await pending;
-    assert.ok(initCalls[0] instanceof Response);
+    assert.ok(initCalls[0] instanceof ArrayBuffer);
   });
 
   it("passes non-URL wasm inputs through to wasm-bindgen untouched", async () => {
@@ -404,6 +413,180 @@ describe("runtimed WASM client retry ladder", () => {
     assert.deepEqual(wasmFetch.calls, []);
     assert.equal(initCalls[0], bytes);
   });
+
+  it("retries a truncated successful response before passing bytes to wasm-bindgen", async (t: TestContext) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const initCalls: unknown[] = [];
+    _setRuntimedWasmModuleImporterForTests(async () => stubModule(initCalls));
+    let fetchCalls = 0;
+    _setRuntimedWasmFetchForTests((async () => {
+      fetchCalls += 1;
+      return fetchCalls === 1
+        ? new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array([0, 97, 115, 109]));
+                controller.error(new TypeError("WASM response body terminated"));
+              },
+            }),
+          )
+        : new Response("complete-wasm");
+    }) as typeof fetch);
+
+    const pending = initializeRuntimedWasmClient(STABLE_MODULE, STABLE_WASM);
+    await drain();
+    assert.equal(initCalls.length, 0, "headers alone must not finish the fetch rung");
+    t.mock.timers.tick(150);
+    await pending;
+    assert.equal(fetchCalls, 2);
+    assert.equal(new TextDecoder().decode(initCalls[0] as ArrayBuffer), "complete-wasm");
+  });
+
+  it("gives a body its own idle deadline after slow headers and aborts before retrying", async (t: TestContext) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const initCalls: unknown[] = [];
+    _setRuntimedWasmModuleImporterForTests(async () => stubModule(initCalls));
+    let fetchCalls = 0;
+    let firstSignal: AbortSignal | null | undefined;
+    _setRuntimedWasmFetchForTests((async (_input, options) => {
+      fetchCalls += 1;
+      if (fetchCalls > 1) return new Response("complete-wasm");
+      firstSignal = options?.signal;
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array([0, 97, 115, 109]));
+            firstSignal?.addEventListener("abort", () => controller.error(firstSignal?.reason));
+          },
+        }),
+      );
+    }) as typeof fetch);
+
+    const pending = initializeRuntimedWasmClient(STABLE_MODULE, STABLE_WASM);
+    await drain();
+    t.mock.timers.tick(15_000);
+    await drain();
+    assert.equal(initCalls.length, 0, "partial bodies must stay inside the retry rung");
+    t.mock.timers.tick(19_999);
+    await drain();
+    assert.equal(firstSignal?.aborted, false);
+    t.mock.timers.tick(1);
+    await drain();
+    assert.equal(firstSignal?.aborted, true);
+    assert.equal(fetchCalls, 1);
+    t.mock.timers.tick(150);
+    await pending;
+    assert.equal(fetchCalls, 2);
+    assert.equal(new TextDecoder().decode(initCalls[0] as ArrayBuffer), "complete-wasm");
+  });
+
+  it("finishes a progressing 45-second body without redownloading or a late abort", async (t: TestContext) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const initCalls: unknown[] = [];
+    _setRuntimedWasmModuleImporterForTests(async () => stubModule(initCalls));
+    let body!: ReadableStreamDefaultController<Uint8Array>;
+    let signal: AbortSignal | null | undefined;
+    let fetchCalls = 0;
+    _setRuntimedWasmFetchForTests((async (_input, options) => {
+      fetchCalls += 1;
+      signal = options?.signal;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            body = controller;
+          },
+        }),
+      );
+    }) as typeof fetch);
+    const pending = initializeRuntimedWasmClient(STABLE_MODULE, STABLE_WASM);
+    await drain();
+    for (let chunk = 0; chunk < 3; chunk += 1) {
+      t.mock.timers.tick(15_000);
+      body.enqueue(new Uint8Array([chunk]));
+      await drain();
+    }
+    body.close();
+    await pending;
+    assert.deepEqual(new Uint8Array(initCalls[0] as ArrayBuffer), new Uint8Array([0, 1, 2]));
+    t.mock.timers.tick(120_000);
+    await drain();
+    assert.equal(fetchCalls, 1);
+    assert.equal(signal?.aborted, false, "successful requests must release all deadlines");
+  });
+
+  it("bounds a continuously progressing body to 120 seconds including headers", async (t: TestContext) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const initCalls: unknown[] = [];
+    _setRuntimedWasmModuleImporterForTests(async () => stubModule(initCalls));
+    let body!: ReadableStreamDefaultController<Uint8Array>;
+    let cancelled = false;
+    let fetchCalls = 0;
+    _setRuntimedWasmFetchForTests((async () => {
+      fetchCalls += 1;
+      if (fetchCalls > 1) return new Response("complete-wasm");
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            body = controller;
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      );
+    }) as typeof fetch);
+    const pending = initializeRuntimedWasmClient(STABLE_MODULE, STABLE_WASM);
+    await drain();
+    t.mock.timers.tick(15_000);
+    await drain();
+    for (let chunk = 0; chunk < 6; chunk += 1) {
+      t.mock.timers.tick(15_000);
+      body.enqueue(new Uint8Array([chunk]));
+      await drain();
+    }
+    t.mock.timers.tick(14_999);
+    await drain();
+    assert.equal(cancelled, false);
+    t.mock.timers.tick(1);
+    await drain();
+    assert.equal(cancelled, true);
+    assert.equal(initCalls.length, 0);
+    t.mock.timers.tick(150);
+    await pending;
+    assert.equal(fetchCalls, 2);
+  });
+
+  for (const overLimit of [false, true]) {
+    it(`handles the decoded body size ${overLimit ? "above" : "at"} the 16 MiB limit`, async (t: TestContext) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const initCalls: unknown[] = [];
+      _setRuntimedWasmModuleImporterForTests(async () => stubModule(initCalls));
+      let fetchCalls = 0;
+      _setRuntimedWasmFetchForTests((async () => {
+        fetchCalls += 1;
+        return new Response(new Uint8Array(16 * 1024 * 1024 + Number(overLimit)));
+      }) as typeof fetch);
+      const { promise } = trackSettled(initializeRuntimedWasmClient(STABLE_MODULE, STABLE_WASM));
+      if (overLimit) {
+        for (const delay of [150, 500, 1500]) {
+          await drain();
+          t.mock.timers.tick(delay);
+        }
+        await assert.rejects(
+          promise,
+          /exceeds the 16 MiB download limit.*check the deployed asset/,
+        );
+        assert.equal(initCalls.length, 0);
+        assert.equal(fetchCalls, 4);
+      } else {
+        await promise;
+        assert.equal((initCalls[0] as ArrayBuffer).byteLength, 16 * 1024 * 1024);
+        assert.equal(fetchCalls, 1);
+      }
+    });
+  }
 
   it("clears the cached import after a fully failed attempt so a retry can succeed", async (t: TestContext) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
