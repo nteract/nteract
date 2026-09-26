@@ -1078,14 +1078,14 @@ jobs:
       - name: Package notebook UI for embedders
         run: |
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
-          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$NTERACT_BUILD_GIT_HASH")
           python3 scripts/package-notebook-ui.py \
             --dist apps/notebook/dist \
             --license LICENSE \
             --output "notebook-ui-assets/nteract-${CHANNEL}-notebook-ui.tar.gz" \
             --channel "$CHANNEL" \
             --version "${{ needs.compute-version.outputs.version }}" \
-            --commit "$GITHUB_SHA" \
+            --commit "$NTERACT_BUILD_GIT_HASH" \
             --source-date-epoch "$SOURCE_DATE_EPOCH"
           cd notebook-ui-assets
           sha256sum --check "nteract-${CHANNEL}-notebook-ui.tar.gz.sha256"

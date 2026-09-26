@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      notify:
+        description: Send failure notifications for this manual run.
+        required: false
+        type: boolean
+        default: true
   push:
     branches:
       - main
@@ -289,7 +294,7 @@ jobs:
           retention-days: 14
 
       - name: Notify #windows on failure
-        if: failure()
+        if: failure() && (github.event_name != 'workflow_dispatch' || inputs.notify)
         shell: bash
         env:
           DISCORD_WEBHOOK_WINDOWS: ${{ secrets.DISCORD_WEBHOOK_WINDOWS }}
@@ -743,7 +748,7 @@ jobs:
       # Windows build. No-ops cleanly when the webhook secret is unset
       # (e.g. fork PRs).
       - name: Notify #windows on failure
-        if: failure()
+        if: failure() && (github.event_name != 'workflow_dispatch' || inputs.notify)
         shell: bash
         env:
           DISCORD_WEBHOOK_WINDOWS: ${{ secrets.DISCORD_WEBHOOK_WINDOWS }}
