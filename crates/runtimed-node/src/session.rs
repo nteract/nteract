@@ -613,8 +613,10 @@ impl Session {
     ///
     /// Callback receives the same JSON shape as `CellResult`, emitted whenever
     /// the RuntimeStateDoc entry for the execution changes. The subscription
-    /// ends after an authoritative terminal snapshot, including kernel
-    /// failure/close.
+    /// ends after a terminal execution snapshot, kernel failure after the
+    /// execution has been observed, or connection close. An execution that
+    /// never appears stays pending until the subscription is disposed or the
+    /// connection closes.
     #[napi]
     pub fn on_execution_progress(
         &self,

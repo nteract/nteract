@@ -264,12 +264,10 @@ pub async fn await_all_executions_terminal(
                 };
             }
             // The kernel is gone, so this execution can never terminalize.
-            // Record the failure and keep sweeping: with the kernel in a
-            // failed lifecycle the remaining awaits return on their first
-            // poll — either an already-terminal state (collected for the
-            // trailing grace pass below) or another immediate KernelFailed —
-            // so the batch stops waiting for new terminal transitions while
-            // executions that did terminalize still get their grace window.
+            // Record the failure and keep sweeping. Entries already in this
+            // replica return a terminal state or KernelFailed immediately;
+            // unseen entries still wait for sync within the shared deadline.
+            // Executions that did terminalize keep their trailing grace pass.
             Err(ExecutionTerminalError::KernelFailed { .. }) => {
                 has_error = true;
             }
