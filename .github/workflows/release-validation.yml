@@ -1,0 +1,73 @@
+name: Release validation
+
+# Exercise release checks without publishing packages, tags, or signed apps.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/release-common.yml
+      - .github/workflows/release-nightly.yml
+      - .github/workflows/release-stable.yml
+      - .github/workflows/release-validation.yml
+      - scripts/ci/check-release-tag.sh
+      - scripts/ci/smoke-windows-arm64-wheel.py
+      - scripts/tests/test_release_tag.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-tag:
+    name: Release tag safety
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 -m unittest scripts/tests/test_release_tag.py -v
+
+  windows-arm64-wheel:
+    name: Native Windows ARM64 wheel
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 60
+    env:
+      RUNT_BUILD_CHANNEL: nightly
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-aarch64-pc-windows-msvc
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          architecture: arm64
+      - uses: ./.github/actions/build-runtime-artifacts
+      - name: Build bundled daemon and prerelease wheel
+        shell: bash
+        run: |
+          cargo build --release --target aarch64-pc-windows-msvc -p runtimed
+          cp target/aarch64-pc-windows-msvc/release/runtimed.exe python/runtimed/src/runtimed/_bin/
+          # A prerelease catches accidental fallback to a stable PyPI package.
+          sed -i 's/^version = .*/version = "0.0.0a1"/' python/runtimed/pyproject.toml
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: aarch64-pc-windows-msvc
+          args: --release --out dist
+          working-directory: python/runtimed
+          sccache: false
+          maturin-version: "v1.11.5"
+      - name: Smoke produced wheel
+        shell: pwsh
+        run: |
+          python scripts/ci/smoke-windows-arm64-wheel.py python/runtimed/dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke standalone daemon (separate from wheel)
+        shell: pwsh
+        run: |
+          & ./target/aarch64-pc-windows-msvc/release/runtimed.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

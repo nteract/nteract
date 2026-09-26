@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      notify:
+        description: Send failure notifications for this manual run.
+        required: false
+        type: boolean
+        default: true
   push:
     branches:
       - main
@@ -289,7 +294,7 @@ jobs:
           retention-days: 14
 
       - name: Notify #windows on failure
-        if: failure()
+        if: failure() && (github.event_name != 'workflow_dispatch' || inputs.notify)
         shell: bash
         env:
           DISCORD_WEBHOOK_WINDOWS: ${{ secrets.DISCORD_WEBHOOK_WINDOWS }}
@@ -580,12 +585,17 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          # The MCP test client needs cryptography, which has no win_arm64 wheel.
+          # Only the client runs under x64 emulation; the ARM64 runner, installer,
+          # PE-checked sidecars, and installed daemon remain native ARM64.
+          architecture: x64
 
       - name: Install MCP client SDK
         shell: pwsh
         # Capped below 2.0: it renames result fields to snake_case
         # (`isError` -> `is_error`), which scripts/smoke-mcp.py still reads.
-        run: pip install "mcp>=1.0,<2"
+        run: |
+          python -m pip install --only-binary=:all: "mcp>=1.0,<2"
 
       - name: Run daemon and smoke (single step)
         # Variant 1: keep the daemon and the smoke script inside one step,
@@ -738,7 +748,7 @@ jobs:
       # Windows build. No-ops cleanly when the webhook secret is unset
       # (e.g. fork PRs).
       - name: Notify #windows on failure
-        if: failure()
+        if: failure() && (github.event_name != 'workflow_dispatch' || inputs.notify)
         shell: bash
         env:
           DISCORD_WEBHOOK_WINDOWS: ${{ secrets.DISCORD_WEBHOOK_WINDOWS }}
