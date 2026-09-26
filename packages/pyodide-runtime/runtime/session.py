@@ -30,6 +30,22 @@ def emit(output):
     context = output_context.get()
     if context is None or context["closed"]:
         return
+    previous = active_outputs[-1] if active_outputs else None
+    if (
+        output["output_type"] == "stream"
+        and previous is not None
+        and previous["output_type"] == "stream"
+        and previous["name"] == output["name"]
+    ):
+        # Coalesce consecutive writes to one stream, as Jupyter frontends do.
+        # print() alone issues separate writes for each argument, separator and
+        # newline; one record per write would exhaust MAX_OUTPUTS quickly.
+        size = len(json.dumps(output["text"]).encode("utf-8")) - 2
+        if output_bytes + size > MAX_OUTPUT_BYTES:
+            raise RuntimeError("Python output limit exceeded")
+        output_bytes += size
+        previous["text"] += output["text"]
+        return
     size = len(json.dumps(output).encode("utf-8"))
     if output_bytes + size > MAX_OUTPUT_BYTES or len(active_outputs) >= MAX_OUTPUTS:
         raise RuntimeError("Python output limit exceeded")
