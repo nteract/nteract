@@ -115,6 +115,7 @@ export interface CloudWorkstationsState {
   status: CloudWorkstationsRegistryStatus;
   registry: CloudWorkstationsRegistry;
   error: string | null;
+  errorSource: "registry" | "mutation" | null;
   mutation: CloudWorkstationMutationState;
   pairing: CloudWorkstationPairing | null;
 }
@@ -222,6 +223,13 @@ interface RegistryGateInput {
   closedGate: CloudWorkstationsClosedGate;
 }
 
+interface PendingAttachConfirmation {
+  mutation: CloudWorkstationMutationState;
+  issue: WorkstationsMutationIssue;
+  sessionId: string | null;
+  acknowledged: boolean;
+}
+
 const EMPTY_REGISTRY: CloudWorkstationsRegistry = {
   defaultWorkstationId: null,
   workstations: [],
@@ -231,6 +239,7 @@ const EMPTY_STATE: CloudWorkstationsState = {
   status: "idle",
   registry: EMPTY_REGISTRY,
   error: null,
+  errorSource: null,
   mutation: { kind: "idle", message: null, workstationId: null },
   pairing: null,
 };
@@ -384,6 +393,8 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   // moment it subscribes, not only the next push.
   private readonly _inputs$ = new BehaviorSubject<CloudWorkstationsInputs | null>(null);
   private latestInputs: CloudWorkstationsInputs | null = null;
+  private latestAttachment: WorkstationAttachmentState | null = null;
+  private pendingAttach: PendingAttachConfirmation | null = null;
   private resolvedDeps: ResolvedWorkstationsDeps | null = null;
   /**
    * Monotonic activation counter, bumped on every `activate` and its disposer.
@@ -435,6 +446,8 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     deps: CloudWorkstationsStoreDeps,
   ): () => void {
     const epoch = (this.activationEpoch += 1);
+    this.latestAttachment = null;
+    this.pendingAttach = null;
     this.resetState(EMPTY_STATE);
     const resolved = this.resolveDeps(deps);
     this.resolvedDeps = resolved;
@@ -445,6 +458,13 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     // the current gate/identity rather than a stale render's.
     subscription.add(
       inputs$.subscribe((inputs) => {
+        if (
+          this.latestInputs &&
+          (this.latestInputs.auth !== inputs.auth ||
+            this.latestInputs.attachEndpoint !== inputs.attachEndpoint)
+        ) {
+          this.clearError();
+        }
         this.latestInputs = inputs;
         this._inputs$.next(inputs);
       }),
@@ -588,7 +608,12 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     // channel than the HTTP response) clears the attach mutation once the target
     // workstation joins.
     if (deps.workstation$) {
-      subscription.add(deps.workstation$.subscribe((attachment) => this.confirmAttach(attachment)));
+      subscription.add(
+        deps.workstation$.subscribe((attachment) => {
+          this.latestAttachment = attachment;
+          this.confirmAttach(attachment);
+        }),
+      );
     }
 
     return () => {
@@ -683,6 +708,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       message: null,
       workstationId,
     };
+    this.clearError();
     this.setMutation(mutation);
     try {
       const defaultWorkstationId = await deps.setDefaultWorkstation({
@@ -740,6 +766,15 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       message: options.message ?? DEFAULT_ATTACH_MESSAGE,
       workstationId,
     };
+    const previousSessionId = this.latestAttachment?.runtime_session_id;
+    const confirmation: PendingAttachConfirmation = {
+      mutation,
+      issue,
+      sessionId: null,
+      acknowledged: false,
+    };
+    this.pendingAttach = confirmation;
+    this.clearError();
     this.setMutation(mutation);
     try {
       const attached = await deps.attachWorkstation({
@@ -748,19 +783,35 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
         workstationId,
         replaceExisting: options.replaceExisting === true,
       });
-      if (!this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint)) {
+      if (
+        !this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint) ||
+        this.pendingAttach !== confirmation
+      ) {
         this.clearMutationIfOwned(mutation);
         return false;
       }
+      const sessionId = trimToNull(attached.jobId);
+      if (options.replaceExisting && (!sessionId || sessionId === previousSessionId)) {
+        throw new Error("Restart did not select a new runtime session. Try again.");
+      }
       const acknowledgedWorkstationId = trimToNull(attached.workstationId) ?? workstationId;
       if (acknowledgedWorkstationId !== mutation.workstationId) {
-        this.setMutation({ ...mutation, workstationId: acknowledgedWorkstationId });
+        confirmation.mutation = { ...mutation, workstationId: acknowledgedWorkstationId };
+        this.setMutation(confirmation.mutation);
       }
+      confirmation.sessionId = sessionId;
+      confirmation.acknowledged = true;
+      // Runtime sync can arrive before the HTTP acknowledgement. Recheck that
+      // snapshot now instead of waiting for an unrelated later runtime frame.
+      this.confirmAttach(this.latestAttachment);
       this.clearError();
       await this.refreshNow();
       return true;
     } catch (error) {
-      if (!this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint)) {
+      if (
+        !this.mutationStillCurrent(issue, this.latestInputs?.attachEndpoint) ||
+        this.pendingAttach !== confirmation
+      ) {
         this.clearMutationIfOwned(mutation);
         return false;
       }
@@ -880,14 +931,15 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     );
   }
 
-  /** Apply a resolved registry: mark ready and clear the error. */
+  /** A registry refresh can recover discovery, but cannot undo a failed action. */
   private applyRegistrySuccess(registry: CloudWorkstationsRegistry): void {
     const orderedRegistry = registryWithStableWorkstationOrder(registry);
     this.updateState((state) => ({
       ...state,
       status: "ready",
       registry: orderedRegistry,
-      error: null,
+      error: state.errorSource === "mutation" ? state.error : null,
+      errorSource: state.errorSource === "mutation" ? "mutation" : null,
     }));
   }
 
@@ -904,7 +956,12 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
 
   /** Surface a registry load failure without dropping the last-good registry. */
   private applyRegistryError(message: string): void {
-    this.updateState((state) => ({ ...state, status: "error", error: message }));
+    this.updateState((state) => ({
+      ...state,
+      status: "error",
+      error: state.errorSource === "mutation" ? state.error : message,
+      errorSource: state.errorSource === "mutation" ? "mutation" : "registry",
+    }));
   }
 
   /**
@@ -931,6 +988,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       status: gate.status,
       registry: gate.wipeRegistry ? EMPTY_REGISTRY : state.registry,
       error: null,
+      errorSource: null,
       mutation: identityLost
         ? { kind: "idle", message: null, workstationId: null }
         : state.mutation,
@@ -980,10 +1038,20 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   /** Clear the attach mutation once the target workstation joins the runtime. */
   private confirmAttach(attachment: WorkstationAttachmentState | null): void {
     const mutation = this.snapshot.mutation;
-    if (mutation.kind !== "attach" || !attachment?.workstation_id) {
+    const pending = this.pendingAttach;
+    if (
+      mutation.kind !== "attach" ||
+      !attachment?.workstation_id ||
+      !pending?.acknowledged ||
+      pending.mutation !== mutation ||
+      !this.mutationStillCurrent(pending.issue, this.latestInputs?.attachEndpoint)
+    ) {
       return;
     }
-    if (!mutation.workstationId || mutation.workstationId === attachment.workstation_id) {
+    if (
+      mutation.workstationId === attachment.workstation_id &&
+      (!pending.sessionId || pending.sessionId === attachment.runtime_session_id)
+    ) {
       this.setMutation({ kind: "idle", message: null, workstationId: null });
     }
   }
@@ -1016,6 +1084,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   }
 
   private setMutation(mutation: CloudWorkstationMutationState): void {
+    if (mutation.kind !== "attach") this.pendingAttach = null;
     this.updateState((state) => ({ ...state, mutation }));
   }
 
@@ -1033,11 +1102,13 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   }
 
   private setError(message: string): void {
-    this.updateState((state) => ({ ...state, error: message }));
+    this.updateState((state) => ({ ...state, error: message, errorSource: "mutation" }));
   }
 
   private clearError(): void {
-    this.updateState((state) => (state.error === null ? state : { ...state, error: null }));
+    this.updateState((state) =>
+      state.error === null ? state : { ...state, error: null, errorSource: null },
+    );
   }
 
   private resolveDeps(deps: CloudWorkstationsStoreDeps): ResolvedWorkstationsDeps {

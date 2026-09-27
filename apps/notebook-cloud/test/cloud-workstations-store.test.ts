@@ -88,7 +88,7 @@ function workstation(
   };
 }
 
-function attachment(workstationId: string): WorkstationAttachmentState {
+function attachment(workstationId: string, sessionId = "job-1"): WorkstationAttachmentState {
   return {
     workstation_id: workstationId,
     display_name: workstationId,
@@ -96,6 +96,7 @@ function attachment(workstationId: string): WorkstationAttachmentState {
     default_environment_label: "Current Python",
     environment_policy: "current_python",
     status: "online",
+    runtime_session_id: sessionId,
   };
 }
 
@@ -591,6 +592,75 @@ describe("CloudWorkstationsStore mutations", () => {
     dispose();
   });
 
+  for (const syncFirst of [false, true]) {
+    it(`confirms Restart against the acknowledged session when sync arrives ${syncFirst ? "first" : "last"}`, async () => {
+      const store = new CloudWorkstationsStore();
+      const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+      const workstation$ = new BehaviorSubject<WorkstationAttachmentState | null>(
+        attachment("ws-1", "old-session"),
+      );
+      let acknowledge!: (value: ReturnType<typeof attachResult>) => void;
+      const dispose = store.activate(
+        inputs$,
+        baseDeps({
+          workstation$,
+          loadWorkstations: async () => registry({ workstations: [workstation("ws-1", "Lab")] }),
+          attachWorkstation: () =>
+            new Promise((resolve) => {
+              acknowledge = resolve;
+            }),
+        }),
+      );
+      await drainMicrotasks();
+
+      const restarting = store.attach("ws-1", { replaceExisting: true });
+      workstation$.next(attachment("ws-1", "old-session"));
+      assert.equal(store.snapshot.mutation.kind, "attach", "old runtime cannot confirm Restart");
+      if (syncFirst) workstation$.next(attachment("ws-1", "new-session"));
+      assert.equal(store.snapshot.mutation.kind, "attach", "wait for the HTTP acknowledgement");
+      acknowledge({ ...attachResult("ws-1"), jobId: "new-session" });
+      assert.equal(await restarting, true);
+      if (!syncFirst) {
+        workstation$.next(attachment("ws-1", "old-session"));
+        assert.equal(store.snapshot.mutation.kind, "attach");
+        workstation$.next(attachment("ws-1", "unrelated-session"));
+        assert.equal(store.snapshot.mutation.kind, "attach");
+        workstation$.next(attachment("ws-1", "new-session"));
+      }
+      assert.equal(store.snapshot.mutation.kind, "idle");
+      dispose();
+    });
+  }
+
+  it("confirms an idempotent attach against the already selected session", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const workstation$ = new BehaviorSubject<WorkstationAttachmentState | null>(attachment("ws-1"));
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({ workstation$, attachWorkstation: async () => attachResult("ws-1") }),
+    );
+    await drainMicrotasks();
+    assert.equal(await store.attach("ws-1"), true);
+    assert.equal(store.snapshot.mutation.kind, "idle", "no new sync frame is required");
+    dispose();
+  });
+
+  it("rejects a Restart acknowledgement that still names the old session", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const workstation$ = new BehaviorSubject<WorkstationAttachmentState | null>(attachment("ws-1"));
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({ workstation$, attachWorkstation: async () => attachResult("ws-1") }),
+    );
+    await drainMicrotasks();
+    assert.equal(await store.attach("ws-1", { replaceExisting: true }), false);
+    assert.equal(store.snapshot.mutation.kind, "idle");
+    assert.match(store.snapshot.error ?? "", /Restart did not select a new/);
+    dispose();
+  });
+
   it("passes the requested workstation id through the attach mutation", async () => {
     const store = new CloudWorkstationsStore();
     const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
@@ -670,14 +740,21 @@ describe("CloudWorkstationsStore mutations", () => {
     await drainMicrotasks();
     assert.equal(started, false);
     assert.equal(store.snapshot.mutation.kind, "idle");
-    // Attach refetches on failure too; a successful refetch clears the error.
+    // Discovery success is independent of whether the requested action worked.
     assert.ok(loadCalls > loadsBefore);
-    assert.equal(store.snapshot.error, null);
+    assert.equal(store.snapshot.error, "attach rejected");
+
+    await store.refreshNow();
+    assert.equal(store.snapshot.error, "attach rejected", "later refreshes preserve the failure");
+
+    inputs$.next(baseInputs({ auth: ROTATED_AUTH }));
+    await drainMicrotasks();
+    assert.equal(store.snapshot.error, null, "a previous identity's failure must not survive");
 
     dispose();
   });
 
-  it("surfaces the error when the post-attach-failure refetch also fails", async () => {
+  it("preserves the action failure when its registry refetch also fails", async () => {
     const store = new CloudWorkstationsStore();
     const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
     let loadCalls = 0;
@@ -701,8 +778,29 @@ describe("CloudWorkstationsStore mutations", () => {
     await store.attach("ws-1");
     await drainMicrotasks();
     assert.equal(store.snapshot.mutation.kind, "idle");
-    assert.match(store.snapshot.error ?? "", /registry down/);
+    assert.match(store.snapshot.error ?? "", /attach rejected/);
 
+    dispose();
+  });
+
+  it("clears an attach failure when the user retries successfully", async () => {
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    let attempts = 0;
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        attachWorkstation: async () => {
+          if (attempts++ === 0) throw new Error("workstation unavailable");
+          return attachResult("ws-1");
+        },
+      }),
+    );
+    await drainMicrotasks();
+    assert.equal(await store.attach("ws-1"), false);
+    assert.equal(store.snapshot.error, "workstation unavailable");
+    assert.equal(await store.attach("ws-1"), true);
+    assert.equal(store.snapshot.error, null);
     dispose();
   });
 });
