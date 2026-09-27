@@ -23,6 +23,46 @@ const editableToolbarCapabilities = {
 };
 
 describe("NotebookCommandToolbar", () => {
+  it("blocks additional startup requests while workstation attachment is pending", () => {
+    const onStartRuntime = vi.fn();
+    const onRunAllCells = vi.fn();
+    const renderToolbar = (pending: boolean) => (
+      <NotebookCommandToolbar
+        capabilities={editableToolbarCapabilities}
+        runtimeStatus={null}
+        onStartRuntime={onStartRuntime}
+        onRunAllCells={onRunAllCells}
+        workstationAction={
+          pending
+            ? {
+                label: "Starting",
+                title: "Starting compute",
+                pending: true,
+                onClick: onStartRuntime,
+              }
+            : null
+        }
+      />
+    );
+    const { rerender } = render(renderToolbar(true));
+
+    expect(screen.getByTestId("start-kernel-button")).toBeDisabled();
+    expect(screen.getByTestId("run-all-button")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Starting" })).toBeDisabled();
+    fireEvent.click(screen.getByTestId("start-kernel-button"));
+    fireEvent.click(screen.getByTestId("run-all-button"));
+    expect(onStartRuntime).not.toHaveBeenCalled();
+    expect(onRunAllCells).not.toHaveBeenCalled();
+
+    rerender(renderToolbar(false));
+    expect(screen.getByTestId("start-kernel-button")).toBeEnabled();
+    expect(screen.getByTestId("run-all-button")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("start-kernel-button"));
+    fireEvent.click(screen.getByTestId("run-all-button"));
+    expect(onStartRuntime).toHaveBeenCalledOnce();
+    expect(onRunAllCells).toHaveBeenCalledOnce();
+  });
+
   it("lets available compute start or run cells before a runtime status exists", () => {
     const onStartRuntime = vi.fn();
     const onRunAllCells = vi.fn();
