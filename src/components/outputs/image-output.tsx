@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NotebookContextMenu } from "@/components/notebook/NotebookContextMenu";
 import { cn } from "@/lib/utils";
-import { copyRasterImageToClipboard } from "./copy-image";
 import { mediaDataToSource } from "./media-url";
 
 interface ImageOutputProps {
@@ -57,48 +55,14 @@ export function ImageOutput({
   // - If already a data URL or regular URL, use as-is
   // - Otherwise, assume base64 and construct data URL
   const targetSrc = mediaDataToSource(data, mediaType);
-  const canCopyImage = COPYABLE_RASTER_IMAGE_TYPES.has(mediaType);
-  const image = <PreloadedImage src={targetSrc} alt={alt} width={width} height={height} />;
 
   return (
     <div data-slot="image-output" className={cn("not-prose py-2", className)}>
-      {canCopyImage ? (
-        <NotebookContextMenu
-          surface={{ kind: "output", title: "Image output" }}
-          groups={[
-            {
-              id: "clipboard",
-              actions: [
-                {
-                  id: "copy-image",
-                  label: "Copy image",
-                  onSelect: () => {
-                    void copyRasterImageToClipboard(targetSrc, mediaType);
-                  },
-                },
-              ],
-            },
-          ]}
-          contentClassName="w-48"
-        >
-          <span className="inline-block max-w-full" data-slot="image-output-context-target">
-            {image}
-          </span>
-        </NotebookContextMenu>
-      ) : (
-        image
-      )}
+      {/* Browsers and desktop WebViews own image context menus and clipboard access. */}
+      <PreloadedImage src={targetSrc} alt={alt} width={width} height={height} />
     </div>
   );
 }
-
-const COPYABLE_RASTER_IMAGE_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "image/bmp",
-]);
 
 /**
  * Image element that preloads new sources before displaying them.

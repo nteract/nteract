@@ -1,36 +1,31 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { createEvent, fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vite-plus/test";
 import { ImageOutput } from "../image-output";
-import { copyRasterImageToClipboard } from "../copy-image";
-
-vi.mock("../copy-image", () => ({
-  // copyRasterImageToClipboard is synchronous (void); it writes to the clipboard
-  // inside the user gesture and resolves the blob inside the ClipboardItem.
-  copyRasterImageToClipboard: vi.fn(),
-}));
 
 describe("ImageOutput", () => {
-  it("renders Copy image in the raster image context menu", async () => {
-    render(<ImageOutput data="AQID" mediaType="image/png" />);
+  it.each([
+    ["image/png", "AQID", "data:image/png;base64,AQID"],
+    ["image/jpeg", "data:image/jpeg;base64,AQID", "data:image/jpeg;base64,AQID"],
+    ["image/gif", "blob:http://localhost/image", "blob:http://localhost/image"],
+    ["image/webp", "https://example.com/image.webp", "https://example.com/image.webp"],
+    ["image/bmp", "http://127.0.0.1:8080/image.bmp", "http://127.0.0.1:8080/image.bmp"],
+  ])("preserves the host image menu for %s (%s)", (mediaType, data, src) => {
+    render(<ImageOutput data={data} mediaType={mediaType} />);
 
-    fireEvent.contextMenu(screen.getByRole("img", { name: "Output image" }));
+    const image = screen.getByRole("img", { name: "Output image" });
+    expect(image).toHaveAttribute("src", src);
+    const contextMenu = createEvent.contextMenu(image, { bubbles: true, cancelable: true });
+    fireEvent(image, contextMenu);
 
-    const copyImage = await screen.findByRole("menuitem", { name: "Copy image" });
-    expect(copyImage).toBeInTheDocument();
-
-    fireEvent.click(copyImage);
-
-    expect(copyRasterImageToClipboard).toHaveBeenCalledWith(
-      "data:image/png;base64,AQID",
-      "image/png",
-    );
+    expect(contextMenu.defaultPrevented).toBe(false);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("does not add the raster image context menu to SVG image output", () => {
-    render(<ImageOutput data="<svg />" mediaType="image/svg+xml" />);
-
-    fireEvent.contextMenu(screen.getByRole("img", { name: "Output image" }));
-
-    expect(screen.queryByRole("menuitem", { name: "Copy image" })).not.toBeInTheDocument();
+  it("does not handle context menus outside the image", () => {
+    const { container } = render(<ImageOutput data="AQID" />);
+    const contextMenu = createEvent.contextMenu(container, { bubbles: true, cancelable: true });
+    fireEvent(container, contextMenu);
+    expect(contextMenu.defaultPrevented).toBe(false);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 });
