@@ -1383,15 +1383,9 @@ jobs:
     name: Publish agent plugins
     if: inputs.publish_plugin_channel != ''
     runs-on: ubuntu-24.04
-    needs:
-      [
-        compute-version,
-        build-notebook-macos-arm64,
-        build-notebook-macos-x64,
-        build-notebook-windows-x64,
-        build-notebook-windows-arm64,
-        build-notebook-linux-x64,
-      ]
+    # Publish only after every release build, smoke check, and the final
+    # source/tag check have passed and the release has been published.
+    needs: [compute-version, prerelease]
     steps:
       - name: Checkout source repo
         uses: actions/checkout@v6
