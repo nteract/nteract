@@ -3982,6 +3982,13 @@ describe("Worker artifact routes", () => {
       const methods: string[] = [];
       const workstationId = "celld-preview-python";
       const env = fakeEnv({
+        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+        PREVIEW_PYTHON_SESSIONS: {
+          idFromName: (name: string) => ({ toString: () => name }),
+          get: () => ({
+            fetch: async () => Response.json({ provider: "celld-pyodide", version: 1 }),
+          }),
+        },
         NOTEBOOK_ROOMS: {
           idFromName: (name: string) => ({ toString: () => name }),
           get: () => ({
@@ -4038,6 +4045,94 @@ describe("Worker artifact routes", () => {
         );
         assert.equal(env.DB.workstationAttachJobs.get("saved-job")?.status, "cancelled");
       } else assert.equal(body.job.job_id, "saved-job", "a surviving session is reused");
+    });
+  }
+
+  for (const providerHealthy of [true, false]) {
+    it(`rechecks managed provider availability on Restart after the discovery lease expires: ${providerHealthy}`, async () => {
+      const workstationId = "celld-preview-python";
+      const compute = new FakeOwnerComputeIndexNamespace();
+      const controls: Record<string, unknown>[] = [];
+      const env = fakeEnv({
+        OWNER_COMPUTE_INDEX: compute,
+        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+        PREVIEW_PYTHON_SESSIONS: {
+          idFromName: (name: string) => ({ toString: () => name }),
+          get: () => ({
+            fetch: async (request: Request) => {
+              assert.equal(new URL(request.url).pathname, "/health");
+              return providerHealthy
+                ? Response.json({ provider: "celld-pyodide", version: 1 })
+                : new Response("Unavailable", { status: 503 });
+            },
+          }),
+        },
+        NOTEBOOK_ROOMS: {
+          idFromName: (name: string) => ({ toString: () => name }),
+          get: () => ({
+            fetch: async (request: Request) => {
+              if (request.method === "GET")
+                return Response.json({
+                  attachment: {
+                    workstation_id: workstationId,
+                    runtime_session_id: "saved-job",
+                    status: "ready",
+                  },
+                });
+              controls.push(await request.json());
+              return Response.json({ ok: true });
+            },
+          }),
+        },
+      });
+      seedNotebook(env, "attach-demo");
+      seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+      seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId });
+      seedWorkstationLease(compute, {
+        ownerPrincipal: "user:dev:alice",
+        workstationId,
+        lastSeenAt: new Date(Date.now() - 120_000).toISOString(),
+        leaseExpiresAt: Date.now() - 30_000,
+        online: false,
+        offlineReason: "workstation lease expired",
+      });
+      seedWorkstationAttachJob(env, {
+        id: "saved-job",
+        notebookId: "attach-demo",
+        ownerPrincipal: "user:dev:alice",
+        workstationId,
+        requestedAt: new Date().toISOString(),
+      });
+      const response = await worker.fetch(
+        new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Operator": "browser:tab",
+            "X-Scope": "owner",
+            "X-User": "alice",
+          },
+          body: JSON.stringify({
+            workstation_id: workstationId,
+            replace_existing: true,
+            intent: "restart",
+          }),
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(response.status, providerHealthy ? 202 : 503);
+      if (!providerHealthy) {
+        assert.equal(controls.length, 0);
+        assert.equal(env.DB.workstationAttachJobs.size, 1);
+        return;
+      }
+      const body = (await response.json()) as { job: { job_id: string } };
+      assert.notEqual(body.job.job_id, "saved-job");
+      assert.equal(controls.length, 1);
+      assert.equal(controls[0].close_runtime_peers, true);
+      assert.equal(compute.leases.get(workstationId)?.online, true);
+      assert.ok(compute.leases.get(workstationId)!.lease_expires_at > Date.now());
     });
   }
 
@@ -10395,6 +10490,20 @@ class FakeOwnerComputeIndexNamespace implements DurableObjectNamespace {
         if (pathname === "/lease/list") {
           requests.push({ objectName, notebookIds: [], pathname, workstationId: null });
           return Response.json({ ok: true, leases: Array.from(this.leases.values()) });
+        }
+        if (pathname === "/lease/upsert") {
+          const payload = (await request.json()) as {
+            owner_principal: string;
+            workstation_id: string;
+            ttl_ms: number;
+          };
+          seedWorkstationLease(this, {
+            ownerPrincipal: payload.owner_principal,
+            workstationId: payload.workstation_id,
+            lastSeenAt: new Date().toISOString(),
+            leaseExpiresAt: Date.now() + payload.ttl_ms,
+          });
+          return Response.json({ ok: true });
         }
         if (pathname === "/lease/delete") {
           const payload = (await request.json().catch(() => ({}))) as {

@@ -58,7 +58,8 @@ export function createProviderService(pool, storage, packageResolver) {
       try {
         // Inspect only the in-memory interpreter. Saved release fences and
         // notebook attachments cannot prove that a Python session survived.
-        if (path === "/status") return Response.json({ alive: pool.has(key) });
+        if (path === "/status")
+          return Response.json({ alive: pool.has(key), busy: pool.inspect(key).busy === true });
         if (path === "/open" || path === "/close") {
           const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
           const fence =

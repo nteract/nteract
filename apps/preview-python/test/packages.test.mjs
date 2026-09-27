@@ -58,6 +58,7 @@ test("session inventory retains initial included packages when notebook installa
   assert.deepEqual(pool.packageInventory("tenant"), {
     included: ["numpy==2.2.5"],
     installed: ["numpy==2.2.5", "snowballstemmer==3.0.1"],
+    manifest: null,
   });
   await pool.close();
 });

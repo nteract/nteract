@@ -18,6 +18,9 @@ import {
   type PackageResult,
 } from "../../preview-python/src/package-service.js";
 
+/** The provider definitively refused to reopen or use this session generation. */
+export class ManagedPythonSessionLostError extends Error {}
+
 /** Trusted room-local Automerge peer; the private compute service sees no room credentials. */
 export class ManagedPythonRoom {
   private readonly handle: RuntimeStatePeerHandle;
@@ -125,7 +128,11 @@ export class ManagedPythonRoom {
       } catch {
         /* A non-JSON provider failure still needs a bounded diagnostic. */
       }
-      throw new Error(
+      const Failure =
+        ["/open", "/packages/inventory"].includes(path) && response.status === 409
+          ? ManagedPythonSessionLostError
+          : Error;
+      throw new Failure(
         reason.replace(/^Error: /, "").slice(0, 1000) || "Python request failed. Try again.",
       );
     }
@@ -278,6 +285,7 @@ export class ManagedPythonRoom {
     const inventory = (await this.call("/packages/inventory")) as {
       installed?: string[];
       included?: string[];
+      manifest?: unknown;
     };
     this.installedPackages = inventory.installed ?? [];
     this.includedPackages = inventory.included ?? [];
@@ -291,7 +299,13 @@ export class ManagedPythonRoom {
       await this.publishPackageState("error", error);
       throw new Error(error);
     }
-    if (manifest.requirements.length) {
+    // Inventory records the exact manifest successfully installed in this
+    // interpreter. Reconnecting must not download those artifacts again.
+    const alreadyInstalled =
+      options.resumeOnly &&
+      inventory.manifest != null &&
+      JSON.stringify(inventory.manifest) === JSON.stringify(manifest);
+    if (manifest.requirements.length && !alreadyInstalled) {
       const restored = await this.installPackages(manifest, "restore");
       if (restored.status !== "ready") {
         this.packagesBlocked = true;
@@ -478,11 +492,11 @@ export class ManagedPythonRoom {
     }
   }
 
-  async close(): Promise<void> {
+  async close(options: { preserveSession?: boolean } = {}): Promise<void> {
     this.active = false;
     this.packageWaitAbort.abort();
     this.executionAbort.abort();
-    await this.bridge.close();
+    await this.bridge.close(options);
     await this.pumping?.catch(() => undefined);
     await this.syncing;
     await this.materializer.removePeer(this.peer.id);

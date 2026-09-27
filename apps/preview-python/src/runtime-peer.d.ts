@@ -48,5 +48,5 @@ export class PythonRuntimePeer {
     scheduler?: SchedulerLike;
   });
   drain(): Promise<void>;
-  close(): Promise<void>;
+  close(options?: { preserveSession?: boolean }): Promise<void>;
 }

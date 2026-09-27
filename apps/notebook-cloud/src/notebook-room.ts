@@ -17,7 +17,7 @@ import {
 } from "./compute-session-index.ts";
 import { identityDisplayLabel } from "./display-label.ts";
 import { CLOUD_RUNTIME_IDLE_MS } from "../../preview-python/src/lifecycle-policy.js";
-import { ManagedPythonRoom } from "./managed-python-room.ts";
+import { ManagedPythonRoom, ManagedPythonSessionLostError } from "./managed-python-room.ts";
 import {
   packageManifest,
   removeSavedRequirement,
@@ -495,13 +495,21 @@ export class NotebookRoom {
       const materializer = this.materializerFor(notebookId);
       const attachment = await materializer.getWorkstationAttachment();
       if (
-        attachment?.status === "disconnected" &&
+        ["connecting", "disconnected"].includes(attachment?.status ?? "") &&
+        attachment?.workstation_id === MANAGED_PYTHON_WORKSTATION &&
         attachment.runtime_session_id &&
-        this.pendingManagedPythonProbes.has(attachment.runtime_session_id)
+        this.restoredManagedPythonSessions.has(attachment.runtime_session_id)
       ) {
         // Explicit Start checks here before catalog allocation. Reconnect the
         // selected generation first, even if its catalog heartbeat is old.
-        await this.startManagedPython(notebookId, attachment.runtime_session_id);
+        try {
+          await this.startManagedPython(notebookId, attachment.runtime_session_id);
+        } catch (error) {
+          // Startup has published either recoverable disconnection or confirmed
+          // loss. Return that state so the same Start can replace a lost session.
+          const current = await materializer.getWorkstationAttachment();
+          if (!["error", "disconnected"].includes(current?.status ?? "")) throw error;
+        }
       }
       return json({ attachment: await materializer.getWorkstationAttachment() }, 200);
     }
@@ -2186,7 +2194,7 @@ export class NotebookRoom {
         }),
       );
       if (!response.ok) throw new Error(`Python session lookup failed (${response.status})`);
-      const status = (await response.json()) as { alive?: boolean };
+      const status = (await response.json()) as { alive?: boolean; busy?: boolean };
       if (typeof status.alive !== "boolean") throw new Error("Invalid Python session status");
       if (status.alive) {
         // A confirmed survivor still owns its slot. Refresh its catalog job
@@ -2197,6 +2205,14 @@ export class NotebookRoom {
           jobId: sessionId,
           status: "running",
         });
+        if (status.busy) {
+          this.pendingManagedPythonProbes.add(sessionId);
+          return {
+            status: "disconnected",
+            reason:
+              "Python is finishing an earlier operation. Run a cell or start compute again when it finishes. Interrupted cells will not be replayed.",
+          };
+        }
         this.pendingManagedPythonProbes.delete(sessionId);
         cloudLog("info", "managed_python.restored_session_probe", {
           notebook_id: notebookId,
@@ -2482,8 +2498,21 @@ export class NotebookRoom {
         // exists. Never leave the selected attachment connecting forever.
         const materializer = this.materializerFor(notebookId);
         const selected = await materializer.getWorkstationAttachment();
-        if (selected?.runtime_session_id === sessionId && selected.status !== "error") {
-          await this.failManagedPythonSession(notebookId, sessionId, error);
+        if (
+          selected?.runtime_session_id === sessionId &&
+          selected.status !== "error" &&
+          (selected.status !== "disconnected" || error instanceof ManagedPythonSessionLostError)
+        ) {
+          if (
+            this.restoredManagedPythonSessions.has(sessionId) &&
+            !(error instanceof ManagedPythonSessionLostError)
+          ) {
+            await this.disconnectManagedPythonSession(notebookId, sessionId, error);
+          } else {
+            if (this.restoredManagedPythonSessions.has(sessionId))
+              await this.closeRestoredManagedPython(notebookId, sessionId);
+            await this.failManagedPythonSession(notebookId, sessionId, error);
+          }
         }
         throw error;
       });
@@ -2511,15 +2540,20 @@ export class NotebookRoom {
     }
     if (!managedPythonStub(this.env)) return;
     const notebook = await getNotebookRow(this.env, notebookId);
-    if (!notebook) throw new Error("Managed Python notebook no longer exists");
+    if (!notebook)
+      throw new ManagedPythonSessionLostError("Managed Python notebook no longer exists");
     if (this.retiredManagedPythonSessions.has(sessionId)) return;
     const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
     if (!ownerPrincipal)
-      throw new Error("Managed Python attachment has no authorized compute owner");
+      throw new ManagedPythonSessionLostError(
+        "Managed Python attachment has no authorized compute owner",
+      );
     if (!(await managedPythonOwnerCanExecute(this.env, notebookId, ownerPrincipal)))
-      throw new Error("Managed Python compute owner no longer has owner access");
+      throw new ManagedPythonSessionLostError(
+        "Managed Python compute owner no longer has owner access",
+      );
     if (!(await managedPythonSessionOwner(this.env, notebookId, sessionId, true)))
-      throw new Error("Python session was retired; start a new session");
+      throw new ManagedPythonSessionLostError("Python session was retired; start a new session");
     // Recheck after storage I/O: concurrent requests can join the same startup.
     const concurrent = this.managedPython.get(notebookId);
     if (concurrent?.runtime.sessionId === sessionId) return concurrent.ready;
@@ -2551,7 +2585,9 @@ export class NotebookRoom {
       .start({ resumeOnly: this.restoredManagedPythonSessions.has(sessionId) })
       .then(async () => {
         if (!(await managedPythonOwnerCanExecute(this.env, notebookId, ownerPrincipal)))
-          throw new Error("Compute owner's access was revoked; start a new managed Python session");
+          throw new ManagedPythonSessionLostError(
+            "Compute owner's access was revoked; start a new managed Python session",
+          );
         const current = await materializer.getWorkstationAttachment();
         if (
           this.managedPython.get(notebookId) !== entry ||
@@ -2573,10 +2609,66 @@ export class NotebookRoom {
         );
       })
       .catch(async (error) => {
-        await this.failManagedPython(notebookId, runtime, error);
+        if (
+          this.restoredManagedPythonSessions.has(sessionId) &&
+          !(error instanceof ManagedPythonSessionLostError)
+        )
+          await this.disconnectManagedPythonSession(notebookId, sessionId, error, runtime);
+        else await this.failManagedPython(notebookId, runtime, error);
         throw error;
       });
     return entry.ready;
+  }
+
+  private async closeRestoredManagedPython(notebookId: string, sessionId: string): Promise<void> {
+    try {
+      const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
+      const provider = managedPythonStub(this.env);
+      if (!ownerPrincipal || !provider) return;
+      const response = await provider.fetch(
+        new Request("https://preview-python.internal/close", {
+          method: "POST",
+          signal: AbortSignal.timeout(10_000),
+          body: JSON.stringify({ ownerPrincipal, notebookId, sessionId }),
+        }),
+      );
+      if (!response.ok) throw new Error(`Python cleanup failed (${response.status})`);
+    } catch (error) {
+      cloudLog("warn", "managed_python.restored_session_close_failed", {
+        notebook_id: notebookId,
+        session_id: sessionId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
+  private async disconnectManagedPythonSession(
+    notebookId: string,
+    sessionId: string,
+    error: unknown,
+    runtime?: ManagedPythonRoom,
+  ): Promise<void> {
+    if (runtime && this.managedPython.get(notebookId)?.runtime !== runtime) return;
+    this.pendingManagedPythonProbes.add(sessionId);
+    if (runtime) {
+      this.managedPython.delete(notebookId);
+      this.broadcastManagedPythonPresence(notebookId, runtime, false);
+    }
+    // Stop this peer's publications without freeing the surviving interpreter.
+    const closing = runtime?.close({ preserveSession: true });
+    const materializer = this.materializerFor(notebookId);
+    try {
+      const result = await materializer.transitionManagedPythonSession(
+        sessionId,
+        "disconnected",
+        `Python could not reconnect: ${errorMessage(error).slice(0, 600)}. Start compute to retry the same session.`,
+      );
+      this.deliverRoomHostFrames(notebookId, result);
+      await this.checkpointRoomHost(notebookId, materializer, "managed_python_disconnected");
+      await this.publishCurrentComputeSessionSummary(notebookId);
+    } finally {
+      await closing;
+    }
   }
 
   private async failManagedPython(

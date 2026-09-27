@@ -426,17 +426,20 @@ export class RoomMaterializer {
           // A room can hibernate independently of its interpreter. Inspect the
           // provider before exposing saved runtime state, without allocating.
           const failure = await this.onManagedPythonSessionRestored(attachment.runtime_session_id);
-          if (failure) {
-            host.reconcile_runtime_peer_gone(failure.reason);
-            host.set_workstation_attachment_json(
-              JSON.stringify({
-                ...attachment,
-                status: failure.status,
-                status_message: failure.reason,
-                updated_at: new Date().toISOString(),
-              }),
-            );
-          }
+          // The interpreter may survive, but this runtime peer did not. Work
+          // saved as running may have already produced side effects; neither
+          // it nor the abandoned queue can be replayed by the new peer.
+          host.reconcile_runtime_peer_gone(
+            failure?.reason ?? "The notebook connection restarted; run interrupted cells again.",
+          );
+          host.set_workstation_attachment_json(
+            JSON.stringify({
+              ...attachment,
+              status: failure?.status ?? "connecting",
+              status_message: failure?.reason ?? null,
+              updated_at: new Date().toISOString(),
+            }),
+          );
         }
         return host;
       })

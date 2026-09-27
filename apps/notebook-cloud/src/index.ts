@@ -2342,7 +2342,18 @@ async function routeNotebookWorkstationAttachment(
     payload.replaceExisting === true ||
     payload.intent === "restart";
 
-  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  // Managed compute has a discovery lease, not an independently connected
+  // workstation. Recheck the provider when Start/Restart is requested; closing
+  // the rail must not make an otherwise healthy provider permanently offline.
+  let workstation;
+  if (workstationId === MANAGED_PYTHON_WORKSTATION) {
+    try {
+      workstation = await ensureManagedPythonWorkstation(env, ownerPrincipal);
+    } catch {
+      return json({ error: "Python provider is unavailable; try again" }, 503);
+    }
+    if (!workstation) return json({ error: "Python provider is unavailable; try again" }, 503);
+  } else workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (!workstation) {
     return json({ error: "workstation not found" }, 404);
   }

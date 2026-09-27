@@ -260,7 +260,10 @@ export class SessionPool {
       });
       if (session.cancelled || this.#sessions.get(key) !== session)
         throw new Error("Package result belongs to an expired session");
-      if (result.status === "ready") session.installed = result.installed;
+      if (result.status === "ready") {
+        session.installed = result.installed;
+        session.packageManifest = result.manifest;
+      }
       if (result.needs_restart) session.packageDamaged = true;
       return result;
     } finally {
@@ -275,7 +278,11 @@ export class SessionPool {
     if (!session?.runtime || session.cancelled) throw new Error("Python session is unavailable");
     if (session.packageAbort || session.packageDamaged)
       throw new Error("Package state is uncertain; restart Python");
-    return { installed: session.installed, included: session.included };
+    return {
+      installed: session.installed,
+      included: session.included,
+      manifest: session.packageManifest ?? null,
+    };
   }
 
   inspect(key) {
