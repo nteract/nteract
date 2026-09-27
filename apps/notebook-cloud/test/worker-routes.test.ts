@@ -3977,7 +3977,7 @@ describe("Worker artifact routes", () => {
     );
   });
 
-  for (const restoredStatus of ["error", "ready"] as const) {
+  for (const restoredStatus of ["error", "ready", "disconnected"] as const) {
     it(`checks reconstructed managed compute before allocating from a ${restoredStatus} attachment`, async () => {
       const methods: string[] = [];
       const workstationId = "celld-preview-python";
@@ -4020,6 +4020,13 @@ describe("Worker artifact routes", () => {
         env,
         fakeContext(),
       );
+      if (restoredStatus === "disconnected") {
+        assert.equal(attach.status, 503);
+        assert.deepEqual(methods, ["GET"]);
+        assert.equal(env.DB.workstationAttachJobs.size, 1);
+        assert.equal(env.DB.workstationAttachJobs.get("saved-job")?.status, "pending");
+        return;
+      }
       assert.equal(attach.status, 202);
       const body = (await attach.json()) as { job: { job_id: string } };
       assert.deepEqual(methods, ["GET", "POST"]);

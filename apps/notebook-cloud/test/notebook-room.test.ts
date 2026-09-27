@@ -48,6 +48,10 @@ import {
   type NotebookRoomSummary,
 } from "../src/storage.ts";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
+// @ts-expect-error The provider is plain JS; use its real pool for the cross-layer quota regression.
+import { SessionPool } from "../../preview-python/src/session-pool.js";
+// @ts-expect-error The private provider service does not ship TypeScript declarations.
+import { createProviderService } from "../../preview-python/src/provider-service.js";
 
 before(async () => {
   await initializeTestRuntimedWasm();
@@ -4291,41 +4295,158 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(fixture.requests.find((r) => r.path === "/execute")?.sessionId, "managed-job");
   });
 
-  for (const failure of ["lookup", "retirement"] as const) {
-    it(`keeps saved notebook content accessible when recovery catalog ${failure} fails`, async (t) => {
-      const fixture = await managedPythonAdmissionFixture("ready");
+  it("keeps saved notebook content accessible when recovery catalog retirement fails", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("ready");
+    t.after(() => fixture.close());
+    const first = await fixture.connect("before-redeploy");
+    await fixture.seed(first);
+    fixture.db.beforeAttachUpdate = () => {
+      throw new Error("D1 unavailable");
+    };
+    await fixture.reconstruct();
+    const reconnected = await fixture.connect("after-redeploy");
+    assert.match(reconnected.client.get_cells_json(), /print\('ready once'\)/);
+    assert.equal(reconnected.runtimeState().workstation?.status, "error");
+    assert.equal(fixture.requests.filter((r) => r.path === "/open").length, 0);
+    fixture.db.beforeSessionOwnerLookup = undefined;
+    fixture.db.beforeAttachUpdate = undefined;
+    const attachment = await fixture.materializer.getWorkstationAttachment();
+    const delayed = await fixture.room.fetch(
+      new Request("https://room/internal/n/demo/workstation-attachment", {
+        method: "POST",
+        body: JSON.stringify({ attachment: { ...attachment, status: "connecting" } }),
+      }),
+    );
+    assert.equal(
+      delayed.status,
+      409,
+      "a delayed old publish cannot resurrect the retired generation",
+    );
+  });
+
+  for (const failure of ["lookup", "provider", "rejected", "timeout", "http", "invalid"] as const) {
+    it(`preserves a surviving interpreter and owner quota after a ${failure} recovery probe`, async (t) => {
+      let created = 0;
+      let disposed = 0;
+      const pool = new SessionPool({
+        maxSessions: 2,
+        maxSessionsPerOwner: 2,
+        warmCount: 0,
+        create: async () => {
+          const interpreter = ++created;
+          return {
+            info: { interpreter },
+            execute: async () => ({
+              success: true,
+              execution_count: 1,
+              outputs: [
+                { output_type: "stream", name: "stdout", text: `survivor-${interpreter}:41\n` },
+              ],
+            }),
+            dispose: async () => {
+              disposed++;
+            },
+          };
+        },
+      });
+      t.after(() => pool.close());
+      const key = JSON.stringify(["user:dev:alice", "demo", "managed-job"]);
+      await pool.open(key, "user:dev:alice");
+      await pool.open(JSON.stringify(["user:dev:alice", "other", "other-job"]), "user:dev:alice");
+      const service = createProviderService(pool);
+      let unavailable = true;
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        providerAvailable: () => failure !== "provider" || !unavailable,
+        providerFetch: async (request) => {
+          if (unavailable && new URL(request.url).pathname === "/status") {
+            if (failure === "rejected") throw new Error("Provider temporarily unreachable");
+            if (failure === "timeout") throw new DOMException("Status timed out", "TimeoutError");
+            if (failure === "http") return new Response("Unavailable", { status: 503 });
+            if (failure === "invalid") return Response.json({ alive: "unknown" });
+          }
+          return service.fetch(request);
+        },
+      });
       t.after(() => fixture.close());
-      const first = await fixture.connect("before-redeploy");
+      const first = await fixture.connect("before-hibernation");
       await fixture.seed(first);
       if (failure === "lookup")
         fixture.db.beforeSessionOwnerLookup = async () => {
-          throw new Error("D1 unavailable");
-        };
-      else
-        fixture.db.beforeAttachUpdate = () => {
-          throw new Error("D1 unavailable");
+          if (unavailable) throw new Error("D1 temporarily unavailable");
         };
       await fixture.reconstruct();
-      const reconnected = await fixture.connect("after-redeploy");
+      const reconnected = await fixture.connect("after-hibernation");
+      await fixture.drain();
       assert.match(reconnected.client.get_cells_json(), /print\('ready once'\)/);
-      assert.equal(reconnected.runtimeState().workstation?.status, "error");
-      assert.equal(fixture.requests.filter((r) => r.path === "/open").length, 0);
-      fixture.db.beforeSessionOwnerLookup = undefined;
-      fixture.db.beforeAttachUpdate = undefined;
-      const attachment = await fixture.materializer.getWorkstationAttachment();
-      const delayed = await fixture.room.fetch(
-        new Request("https://room/internal/n/demo/workstation-attachment", {
-          method: "POST",
-          body: JSON.stringify({ attachment: { ...attachment, status: "connecting" } }),
-        }),
-      );
+      assert.equal(reconnected.runtimeState().workstation?.status, "disconnected");
+      assert.equal(reconnected.runtimeState().workstation?.runtime_session_id, "managed-job");
+      assert.match(reconnected.runtimeState().workstation?.status_message ?? "", /same session/);
+      assert.equal(fixture.db.attachJobs[0].status, "accepted");
       assert.equal(
-        delayed.status,
-        409,
-        "a delayed old publish cannot resurrect the retired generation",
+        fixture.requests.filter((r) => r.path === "/open" || r.path === "/close").length,
+        0,
+      );
+      assert.equal(pool.has(key), true);
+      assert.equal(created, 2);
+      assert.equal(disposed, 0);
+
+      // A failed explicit retry must remain recoverable, without creating a
+      // replacement or leaving accepted work queued indefinitely.
+      await fixture.execute(reconnected);
+      await fixture.drain();
+      await reconnected.sync();
+      assert.equal(reconnected.runtimeState().workstation?.status, "disconnected");
+      assert.deepEqual(reconnected.runtimeState().queue.queued, []);
+      assert.equal(fixture.db.attachJobs.length, 1);
+      assert.equal(disposed, 0);
+
+      unavailable = false;
+      // Exercise real catalog deduplication for Start as well as Run alone.
+      if (failure !== "timeout") assert.equal(await fixture.startReplacement(true), "managed-job");
+      await fixture.execute(reconnected);
+      await fixture.drain();
+      await reconnected.sync();
+      assert.equal(reconnected.runtimeState().workstation?.status, "ready");
+      assert.equal(fixture.requests.filter((r) => r.path === "/close").length, 0);
+      assert.equal(fixture.requests.find((r) => r.path === "/open")?.resumeOnly, true);
+      assert.equal(created, 2, "reconnect succeeds even when both owner slots are occupied");
+      assert.equal(disposed, 0);
+      assert.ok(
+        Object.values(reconnected.runtimeState().executions).some((execution) =>
+          execution.outputs.some((output) => output.text?.inline === "survivor-1:41\n"),
+        ),
       );
     });
   }
+
+  it("requires a fresh session when a retried probe confirms the old interpreter is gone", async (t) => {
+    let unavailable = true;
+    const fixture = await managedPythonAdmissionFixture("ready", {
+      providerFetch: async () =>
+        unavailable
+          ? new Response("Unavailable", { status: 503 })
+          : Response.json({ alive: false }),
+    });
+    t.after(() => fixture.close());
+    const first = await fixture.connect("before-hibernation");
+    await fixture.seed(first);
+    await fixture.reconstruct();
+    const reconnected = await fixture.connect("after-hibernation");
+    assert.equal(reconnected.runtimeState().workstation?.status, "disconnected");
+    unavailable = false;
+    await fixture.execute(reconnected);
+    await fixture.drain();
+    await reconnected.sync();
+    assert.equal(reconnected.runtimeState().workstation?.status, "error");
+    assert.match(
+      reconnected.runtimeState().workstation?.status_message ?? "",
+      /Variables were lost/,
+    );
+    assert.equal(fixture.db.attachJobs[0].status, "failed");
+    assert.equal(fixture.requests.filter((request) => request.path === "/open").length, 0);
+    assert.equal(fixture.requests.filter((request) => request.path === "/close").length, 1);
+    assert.deepEqual(reconnected.runtimeState().queue.queued, []);
+  });
 
   for (const status of ["connecting", "ready"] as const) {
     it(`recovers a reconstructed managed room from a saved ${status} attachment`, async (t) => {
@@ -6498,6 +6619,8 @@ async function managedPythonAdmissionFixture(
     closeResponse?: Response;
     packageResponse?: () => Promise<Response>;
     sessionAlive?: boolean;
+    providerFetch?: (request: Request) => Promise<Response>;
+    providerAvailable?: () => boolean;
   } = {},
 ) {
   const state = hibernatedState([]);
@@ -6553,26 +6676,32 @@ async function managedPythonAdmissionFixture(
     NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
     PREVIEW_PYTHON_SESSIONS: {
       idFromName: (name: string) => ({ toString: () => name }),
-      get: () => ({
-        fetch: async (request: Request) => {
-          const path = new URL(request.url).pathname;
-          requests.push({ path, ...(await request.json()) });
-          if (path === "/status") return Response.json({ alive: options.sessionAlive ?? false });
-          if (path === "/open") {
-            enteredOpen();
-            return (options.immediateOpen ?? (await opening)).clone();
-          }
-          if (path === "/execute")
-            return Response.json({
-              success: true,
-              execution_count: 1,
-              outputs: [{ output_type: "stream", name: "stdout", text: "ready once\n" }],
-            });
-          if (path === "/close" && options.closeResponse) return options.closeResponse;
-          if (path === "/packages" && options.packageResponse) return options.packageResponse();
-          return Response.json({ ok: true });
-        },
-      }),
+      get: () =>
+        options.providerAvailable?.() === false
+          ? null
+          : {
+              fetch: async (request: Request) => {
+                const path = new URL(request.url).pathname;
+                requests.push({ path, ...(await request.clone().json()) });
+                if (options.providerFetch) return options.providerFetch(request);
+                if (path === "/status")
+                  return Response.json({ alive: options.sessionAlive ?? false });
+                if (path === "/open") {
+                  enteredOpen();
+                  return (options.immediateOpen ?? (await opening)).clone();
+                }
+                if (path === "/execute")
+                  return Response.json({
+                    success: true,
+                    execution_count: 1,
+                    outputs: [{ output_type: "stream", name: "stdout", text: "ready once\n" }],
+                  });
+                if (path === "/close" && options.closeResponse) return options.closeResponse;
+                if (path === "/packages" && options.packageResponse)
+                  return options.packageResponse();
+                return Response.json({ ok: true });
+              },
+            },
     },
   } as unknown as Env;
   let room = new NotebookRoom(state.state, env);
@@ -6694,6 +6823,18 @@ async function managedPythonAdmissionFixture(
     releaseOwnerLookup,
     drain: state.drain,
     startReplacement: async (allocate = false) => {
+      if (allocate) {
+        const current = await room.fetch(
+          new Request("https://room/internal/n/demo/workstation-attachment"),
+        );
+        assert.equal(current.status, 200);
+        const { attachment } = (await current.json()) as { attachment: { status: string } };
+        assert.notEqual(
+          attachment.status,
+          "disconnected",
+          "Start must not allocate while liveness is unknown",
+        );
+      }
       const allocated = allocate
         ? await createWorkstationAttachJob(env, {
             notebookId: "demo",
@@ -6709,7 +6850,7 @@ async function managedPythonAdmissionFixture(
       const changed = await materializer.setWorkstationAttachment({
         ...attachment!,
         runtime_session_id: sessionId,
-        status: "connecting",
+        status: allocated?.job.status === "running" ? "ready" : "connecting",
       });
       (
         room as unknown as { deliverRoomHostFrames(n: string, result: RoomHostFrameResult): void }

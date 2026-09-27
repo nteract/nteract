@@ -33,6 +33,11 @@ export interface RuntimeExecutionActivity {
   queueDepth: number;
 }
 
+export interface ManagedPythonReconnectFailure {
+  status: "error" | "disconnected";
+  reason: string;
+}
+
 interface RoomCheckpointMetadata {
   version: number;
   notebook_heads: string[];
@@ -66,7 +71,9 @@ export class RoomMaterializer {
     private readonly notebookId: string,
     private readonly state: DurableObjectState,
     private readonly env: Env,
-    private readonly onManagedPythonSessionRestored?: (sessionId: string) => Promise<string | null>,
+    private readonly onManagedPythonSessionRestored?: (
+      sessionId: string,
+    ) => Promise<ManagedPythonReconnectFailure | null>,
   ) {}
 
   async syncPeer(peer: RoomPeer): Promise<RoomHostFrameResult> {
@@ -227,7 +234,7 @@ export class RoomMaterializer {
   /** Fence managed lifecycle changes atomically with the room's selected session. */
   async transitionManagedPythonSession(
     sessionId: string,
-    status: "ready" | "error",
+    status: "ready" | "error" | "disconnected",
     reason: string | null = null,
   ): Promise<RoomHostFrameResult> {
     return this.withHost((host) => {
@@ -235,7 +242,7 @@ export class RoomMaterializer {
       if (
         current?.workstation_id !== "celld-preview-python" ||
         current.runtime_session_id !== sessionId ||
-        (status === "ready" && !["connecting", "ready"].includes(current.status))
+        (status === "ready" && !["connecting", "ready", "disconnected"].includes(current.status))
       ) {
         return {
           changed: false,
@@ -246,7 +253,7 @@ export class RoomMaterializer {
         };
       }
       const failed =
-        status === "error"
+        status !== "ready"
           ? normalizeResult(host.reconcile_runtime_peer_gone(reason ?? "Managed Python failed"))
           : null;
       const changed = normalizeResult(
@@ -414,18 +421,18 @@ export class RoomMaterializer {
           this.onManagedPythonSessionRestored &&
           attachment?.workstation_id === "celld-preview-python" &&
           attachment.runtime_session_id &&
-          ["connecting", "ready"].includes(attachment.status)
+          ["connecting", "ready", "disconnected"].includes(attachment.status)
         ) {
           // A room can hibernate independently of its interpreter. Inspect the
           // provider before exposing saved runtime state, without allocating.
-          const reason = await this.onManagedPythonSessionRestored(attachment.runtime_session_id);
-          if (reason) {
-            host.reconcile_runtime_peer_gone(reason);
+          const failure = await this.onManagedPythonSessionRestored(attachment.runtime_session_id);
+          if (failure) {
+            host.reconcile_runtime_peer_gone(failure.reason);
             host.set_workstation_attachment_json(
               JSON.stringify({
                 ...attachment,
-                status: "error",
-                status_message: reason,
+                status: failure.status,
+                status_message: failure.reason,
                 updated_at: new Date().toISOString(),
               }),
             );

@@ -2391,6 +2391,12 @@ async function routeNotebookWorkstationAttachment(
     const { attachment } = (await current.json()) as {
       attachment?: { workstation_id: string; status: string } | null;
     };
+    if (attachment?.workstation_id === workstationId && attachment.status === "disconnected") {
+      return json(
+        { error: "Python could not reconnect; try again when the service is available" },
+        503,
+      );
+    }
     // Also covers catalog retirement failing during hydration. Explicit Start
     // must allocate a fresh generation even if the old job still says running.
     replaceExisting ||=
