@@ -48,6 +48,29 @@ beforeEach(() => {
 });
 
 describe("notebook workstation surface projection", () => {
+  it("keeps the reconnect instruction visible for a disconnected managed session", () => {
+    const reason = "Python could not reconnect. Start compute to try the same session again.";
+    const projection = projectNotebookWorkstationSurface({
+      capabilities: cloudUnavailableCapabilities,
+      activeAttachment: {
+        workstation_id: "ws-lab2",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "disconnected",
+        runtime_session_id: "existing-session",
+        status_message: reason,
+      },
+      canStartWorkstation: true,
+      defaultWorkstationId: "ws-lab2",
+      registeredWorkstations: [lab2Workstation],
+    });
+    expect(projection.selection.activeTarget?.status).toBe("offline");
+    expect(projection.panelStatusMessage).toBe(reason);
+    expect(projection.launchReadiness.canRun).toBe(false);
+  });
+
   it("offers recovery with the session-loss explanation and no running workstation", () => {
     const reason = "Variables were lost. Start compute to restore saved packages.";
     const projection = projectNotebookWorkstationSurface({

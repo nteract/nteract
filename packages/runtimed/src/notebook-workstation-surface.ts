@@ -109,7 +109,9 @@ export function projectNotebookWorkstationSurface({
     normalizedMutation.message ??
     loadingMessage ??
     registryError ??
-    (selection.activeTarget?.status === "attention" ? selection.activeTarget.detail : null) ??
+    (selection.activeTarget?.status === "attention" || selection.activeTarget?.status === "offline"
+      ? selection.activeTarget.detail
+      : null) ??
     (launchReadiness.state === "workstation_unavailable" ? launchReadiness.detail : null);
   const projection = Object.freeze({
     busyWorkstationId: normalizedMutation.workstationId,
