@@ -1,13 +1,13 @@
 import {readFile} from "node:fs/promises";
 import {github} from "./github.mjs";
-import {check, decimal, ELIGIBLE_IDS, OWNER_ID, REPOSITORY, REPOSITORY_ID, repository, sha256, sourceSha} from "./protocol.mjs";
+import {check, decimal, MAIN_ELIGIBLE_IDS, OWNER_ID, REPOSITORY, REPOSITORY_ID, repository, sha256, sourceSha} from "./protocol.mjs";
 
 export const MAIN_CALLER = ".github/workflows/main-preview.yml";
 export const MAIN_BUILD = ".github/workflows/build.yml";
 const MAX_ARTIFACT_BYTES = 180 * 1024 * 1024;
 
 function actors(run) {
-  check(ELIGIBLE_IDS.has(String(run.actor?.id)) && ELIGIBLE_IDS.has(String(run.triggering_actor?.id)),
+  check(MAIN_ELIGIBLE_IDS.has(String(run.actor?.id)) && MAIN_ELIGIBLE_IDS.has(String(run.triggering_actor?.id)),
     "Main workflow actor is not eligible");
 }
 

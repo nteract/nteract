@@ -2,7 +2,8 @@ export const REPOSITORY = "nteract/nteract";
 export const REPOSITORY_ID = "1155631492";
 export const OWNER_ID = "12401040";
 export const CONTROLLER = "https://deploy.runtimed.run";
-export const ELIGIBLE_IDS = new Set(["836375", "107147005"]);
+export const MAIN_ELIGIBLE_IDS = new Set(["836375", "107147005"]);
+export const ELIGIBLE_IDS = new Set([...MAIN_ELIGIBLE_IDS, "261289082"]);
 export const SERVICES = ["main", "outputs", "renderer-assets"];
 
 export function check(condition, message) {

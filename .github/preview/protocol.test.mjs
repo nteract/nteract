@@ -28,12 +28,17 @@ test("opened, reopened and synchronize deploy the exact current head", () => {
   }
 });
 
-test("both explicitly configured maintainers may author and trigger previews", () => {
-  const f = fixture();
-  f.pr.user.id = 107147005;
-  f.run.actor.id = 107147005;
-  f.env.GITHUB_ACTOR_ID = "107147005";
-  assert.equal(request(f).action, "deploy");
+test("configured maintainers and Quillaid may author, trigger and rerun previews", () => {
+  for (const id of [836375, 107147005, 261289082]) {
+    const f = fixture();
+    f.pr.user.id = id;
+    f.run.actor.id = id;
+    f.run.triggering_actor.id = id;
+    f.env.GITHUB_ACTOR_ID = String(id);
+    assert.equal(request(f).action, "deploy");
+    f.pr.head.repo = {...f.pr.head.repo, id: 999};
+    assert.throws(() => request(f), /repository/i);
+  }
 });
 
 test("rejects unapproved author, actor, and rerun initiator independently", () => {
