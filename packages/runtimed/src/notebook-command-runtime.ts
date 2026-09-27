@@ -214,9 +214,10 @@ export function projectNotebookCommandRuntimeActions({
     runtimeState === "idle" || runtimeState === "busy" || runtimeState === "starting";
   const canUseRuntimeAction = hasRuntimeStatus && capabilities.canExecute;
   const canRecoverRuntime = hasRuntimeStatus && Boolean(capabilities.canRecoverRuntime);
+  // A host can accept execution and start compute before a runtime publishes status.
   const showRuntimeStart =
-    canUseRuntimeAction && !isRuntimeRunning && actionAvailability.startRuntime;
-  const showRunAll = canUseRuntimeAction && actionAvailability.runAllCells;
+    capabilities.canExecute && !isRuntimeRunning && actionAvailability.startRuntime;
+  const showRunAll = capabilities.canExecute && actionAvailability.runAllCells;
   const showRestart =
     (canUseRuntimeAction || canRecoverRuntime) && actionAvailability.restartRuntime;
   const showRestartAndRunAll = canUseRuntimeAction && actionAvailability.restartAndRunAll;

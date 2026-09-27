@@ -23,6 +23,32 @@ const editableToolbarCapabilities = {
 };
 
 describe("NotebookCommandToolbar", () => {
+  it("lets available compute start or run cells before a runtime status exists", () => {
+    const onStartRuntime = vi.fn();
+    const onRunAllCells = vi.fn();
+    render(
+      <NotebookCommandToolbar
+        capabilities={editableToolbarCapabilities}
+        runtimeStatus={null}
+        onStartRuntime={onStartRuntime}
+        onRunAllCells={onRunAllCells}
+        onRestartRuntime={() => {}}
+        onRestartAndRunAll={() => {}}
+        onInterruptRuntime={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("start-kernel-button"));
+    fireEvent.click(screen.getByTestId("run-all-button"));
+
+    expect(onStartRuntime).toHaveBeenCalledOnce();
+    expect(onRunAllCells).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("kernel-status")).toBeNull();
+    expect(screen.queryByTestId("restart-kernel-button")).toBeNull();
+    expect(screen.queryByTestId("restart-run-all-button")).toBeNull();
+    expect(screen.queryByTestId("interrupt-kernel-button")).toBeNull();
+  });
+
   it("keeps existing recovery controls reachable while execution is unavailable", () => {
     const onRestartRuntime = vi.fn();
     const onInterruptRuntime = vi.fn();
