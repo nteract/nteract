@@ -324,7 +324,8 @@ export class NotebookRoom {
   private readonly dirtyComputeSessionSummaries = new Set<string>();
   private readonly restoredManagedPythonSessions = new Set<string>();
   private readonly pendingManagedPythonProbes = new Set<string>();
-  private readonly retiredManagedPythonSessions = new Set<string>();
+  // A reset supersedes late probe results; a probe's own loss still needs reporting.
+  private readonly retiredManagedPythonSessions = new Map<string, "lost" | "reset">();
   private readonly restoredPeersReady: Promise<void>;
   private readonly pendingRuntimePeerResponses = new Map<string, PendingRuntimePeerResponse>();
   // In-memory only by design: persisting on the frame hot path would cost more
@@ -2161,6 +2162,7 @@ export class NotebookRoom {
       materializer = new RoomMaterializer(notebookId, this.state, this.env, async (sessionId) => {
         this.restoredManagedPythonSessions.add(sessionId);
         const failure = await this.inspectRestoredManagedPython(notebookId, sessionId);
+        if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
         if (!failure) {
           // Reattach after hydration releases the host queue. The provider
           // must still refuse allocation if it restarts after this probe.
@@ -2187,6 +2189,7 @@ export class NotebookRoom {
     try {
       const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
       const provider = managedPythonStub(this.env);
+      if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
       if (!ownerPrincipal || !provider) throw new Error("Python session lookup unavailable");
       const response = await provider.fetch(
         new Request("https://preview-python.internal/status", {
@@ -2197,6 +2200,7 @@ export class NotebookRoom {
       );
       if (!response.ok) throw new Error(`Python session lookup failed (${response.status})`);
       const status = (await response.json()) as { alive?: boolean; busy?: boolean };
+      if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
       if (typeof status.alive !== "boolean") throw new Error("Invalid Python session status");
       if (status.alive && typeof status.busy !== "boolean")
         throw new Error("Python provider cannot confirm whether the session is busy");
@@ -2209,6 +2213,7 @@ export class NotebookRoom {
           jobId: sessionId,
           status: "running",
         });
+        if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
         if (status.busy) {
           this.pendingManagedPythonProbes.add(sessionId);
           cloudLog("info", "managed_python.restored_session_probe", {
@@ -2231,7 +2236,7 @@ export class NotebookRoom {
         return null;
       }
       this.pendingManagedPythonProbes.delete(sessionId);
-      this.retiredManagedPythonSessions.add(sessionId);
+      this.retiredManagedPythonSessions.set(sessionId, "lost");
       cloudLog("info", "managed_python.restored_session_probe", {
         notebook_id: notebookId,
         session_id: sessionId,
@@ -2277,6 +2282,7 @@ export class NotebookRoom {
     } catch (error) {
       // A timeout, catalog outage, or malformed response says nothing about
       // interpreter liveness. Keep its identity and quota reservation intact.
+      if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
       this.pendingManagedPythonProbes.add(sessionId);
       cloudLog("warn", "managed_python.restored_session_probe", {
         notebook_id: notebookId,
@@ -2290,7 +2296,9 @@ export class NotebookRoom {
           "Python could not reconnect. Run a cell or start compute to try reconnecting to the same session. Your notebook and saved packages are unchanged.",
       };
     }
-    return { status: "error", reason };
+    return this.retiredManagedPythonSessions.get(sessionId) === "reset"
+      ? null
+      : { status: "error", reason };
   }
 
   private deliverRoomHostFrames(notebookId: string, result: RoomHostFrameResult): void {
@@ -2535,6 +2543,9 @@ export class NotebookRoom {
     if (existing?.runtime.sessionId === sessionId) return existing.ready;
     if (this.pendingManagedPythonProbes.has(sessionId)) {
       const failure = await this.inspectRestoredManagedPython(notebookId, sessionId);
+      // The probe may itself retire a lost session. Only an explicit reset
+      // supersedes its result; genuine loss must still reach every viewer.
+      if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return;
       if (failure) {
         const materializer = this.materializerFor(notebookId);
         const result = await materializer.transitionManagedPythonSession(
@@ -2661,7 +2672,7 @@ export class NotebookRoom {
     intent: "restart" | "interrupt" = "restart",
   ): Promise<void> {
     const alreadyRetired = this.retiredManagedPythonSessions.has(sessionId);
-    this.retiredManagedPythonSessions.add(sessionId);
+    this.retiredManagedPythonSessions.set(sessionId, "reset");
     const entry = this.managedPython.get(notebookId);
     const runtime = entry?.runtime.sessionId === sessionId ? entry.runtime : undefined;
     if (runtime) {
