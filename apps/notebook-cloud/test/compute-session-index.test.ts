@@ -13,6 +13,7 @@ import {
   OwnerComputeIndex,
   ownerComputeIndexObjectName,
   WORKSTATION_LEASE_GC_MS,
+  type WorkstationLeaseRecord,
 } from "../src/compute-session-index.ts";
 import type { WorkstationAttachJobRow, WorkstationAttachJobStatus } from "../src/storage.ts";
 import type { NotebookComputeSessionSummary } from "runtimed";
@@ -239,6 +240,35 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
       rooms.repairs.every((repair) => repair.body.reason === expectedError),
       true,
     );
+  });
+
+  it("does not retire managed Python sessions when browser-driven discovery expires", async () => {
+    const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
+    const events = fakeWorkstationEvents();
+    const rooms = fakeNotebookRooms();
+    const workstationId = "celld-preview-python";
+    const jobs = new Map<string, WorkstationAttachJobRow>([
+      ["running-job", attachJob("running-job", "running", { workstation_id: workstationId })],
+    ]);
+    const object = new OwnerComputeIndex(state, {
+      ...events.env,
+      DB: fakeAttachJobsDb(jobs),
+      NOTEBOOK_ROOMS: rooms.namespace,
+    } as Env);
+    await object.fetch(leaseUpsert(workstationId, "user:dev:alice", 90_000));
+    const stored = values.get(`lease:${workstationId}`) as Record<string, unknown>;
+    values.set(`lease:${workstationId}`, { ...stored, lease_expires_at: Date.now() - 1 });
+    deliverAlarm();
+    await object.alarm();
+    await settle();
+    assert.equal(jobs.get("running-job")?.status, "running");
+    assert.equal(jobs.get("running-job")?.finished_at, null);
+    assert.deepEqual(rooms.repairs, []);
+    assert.equal(
+      events.notifications.filter((event) => event.body.event === "attach_jobs").length,
+      0,
+    );
+    assert.equal((values.get(`lease:${workstationId}`) as WorkstationLeaseRecord).online, false);
   });
 
   it("does not block the lease alarm on attach-job failure side effects", async () => {

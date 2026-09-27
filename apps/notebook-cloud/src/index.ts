@@ -2395,14 +2395,33 @@ async function routeNotebookWorkstationAttachment(
     const room = env.NOTEBOOK_ROOMS.get(env.NOTEBOOK_ROOMS.idFromName(notebookId));
     const current = await room.fetch(
       new Request(
-        `https://notebook-room.internal/internal/n/${encodeURIComponent(notebookId)}/workstation-attachment`,
+        `https://notebook-room.internal/internal/n/${encodeURIComponent(notebookId)}/workstation-attachment${replaceExisting ? "?resume=false" : ""}`,
       ),
     );
     if (!current.ok) return json({ error: "Python session status is unavailable; try again" }, 503);
     const { attachment } = (await current.json()) as {
-      attachment?: { workstation_id: string; status: string } | null;
+      attachment?: { workstation_id: string; status: string; runtime_session_id?: string } | null;
     };
-    if (attachment?.workstation_id === workstationId && attachment.status === "disconnected") {
+    if (
+      replaceExisting &&
+      attachment?.workstation_id === workstationId &&
+      attachment.runtime_session_id
+    ) {
+      const closed = await room.fetch(
+        new Request(
+          `https://notebook-room.internal/internal/n/${encodeURIComponent(notebookId)}/workstation-attachment`,
+          {
+            method: "DELETE",
+            body: JSON.stringify({ runtime_session_id: attachment.runtime_session_id }),
+          },
+        ),
+      );
+      if (!closed.ok)
+        return json({ error: "Python termination was not confirmed. Try restarting again." }, 503);
+    } else if (
+      attachment?.workstation_id === workstationId &&
+      attachment.status === "disconnected"
+    ) {
       return json(
         { error: "Python could not reconnect; try again when the service is available" },
         503,

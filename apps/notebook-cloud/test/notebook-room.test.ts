@@ -4415,7 +4415,7 @@ describe("NotebookRoom materialized sync routing", () => {
         if (path === "/status")
           return unavailable
             ? new Response("Unavailable", { status: 503 })
-            : Response.json({ alive: true });
+            : Response.json({ alive: true, busy: false });
         if (path === "/open")
           return Response.json(
             { error: "Session expired; allocate a new runtime session" },
@@ -4440,6 +4440,98 @@ describe("NotebookRoom materialized sync routing", () => {
     );
     assert.equal(fixture.db.attachJobs[0].status, "failed");
   });
+
+  for (const action of ["restart", "interrupt"] as const) {
+    it(`allows explicit ${action} of a busy survivor only after disposal is confirmed`, async (t) => {
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      let created = 0;
+      let disposed = 0;
+      const pool = new SessionPool({
+        warmCount: 0,
+        maxSessions: 2,
+        maxSessionsPerOwner: 2,
+        create: async () => {
+          created++;
+          return {
+            info: {},
+            execute: async () => {
+              await pending;
+              return { success: true, execution_count: 1, outputs: [] };
+            },
+            dispose: async () => {
+              disposed++;
+              finish();
+            },
+          };
+        },
+      });
+      t.after(async () => {
+        finish();
+        await pool.close();
+      });
+      const key = JSON.stringify(["user:dev:alice", "demo", "managed-job"]);
+      await pool.open(key, "user:dev:alice");
+      await pool.open("other", "user:dev:alice");
+      const executing = pool
+        .execute(key, { execution_id: "orphan", cell_id: "cell", source: "while True: pass" })
+        .catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      let rejectClose = true;
+      const service = createProviderService(pool);
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        providerFetch: async (request) => {
+          if (rejectClose && new URL(request.url).pathname === "/close")
+            return new Response("Unavailable", { status: 503 });
+          return service.fetch(request);
+        },
+      });
+      t.after(() => fixture.close());
+      const first = await fixture.connect("before-hibernation");
+      await fixture.seed(first);
+      await fixture.reconstruct();
+      const reconnected = await fixture.connect("after-hibernation");
+      await fixture.drain();
+      const reset = async () => {
+        if (action === "restart") {
+          const response = await fixture.room.fetch(
+            new Request("https://room/internal/n/demo/workstation-attachment", {
+              method: "DELETE",
+              body: JSON.stringify({ runtime_session_id: "managed-job" }),
+            }),
+          );
+          return response.status === 200;
+        }
+        const id = crypto.randomUUID();
+        const response = reconnected.response(id);
+        await fixture.room.webSocketMessage(
+          reconnected.peer.socket,
+          encodeTypedFrame(
+            FrameType.REQUEST,
+            new TextEncoder().encode(JSON.stringify({ id, action: "interrupt_execution" })),
+          ),
+        );
+        return (await response).result === "interrupt_sent";
+      };
+      assert.equal(await reset(), false);
+      await fixture.drain();
+      await reconnected.sync();
+      assert.equal(reconnected.runtimeState().workstation?.status, "disconnected");
+      assert.equal(fixture.db.attachJobs[0].status, "running");
+      assert.equal(pool.has(key), true);
+      assert.equal(disposed, 0);
+      rejectClose = false;
+      assert.equal(await reset(), true);
+      await executing;
+      assert.equal(pool.has(key), false);
+      assert.equal(disposed, 1);
+      const replacement = await fixture.startReplacement(true);
+      assert.notEqual(replacement, "managed-job");
+      assert.equal(created, 3, "the owner's full pool admits replacement after confirmed close");
+    });
+  }
 
   for (const scenario of ["already-installed", "inventory-failure", "restore-failure"] as const) {
     it(`keeps a resumed interpreter through ${scenario}`, async (t) => {
@@ -4528,7 +4620,15 @@ describe("NotebookRoom materialized sync routing", () => {
     });
   }
 
-  for (const failure of ["lookup", "provider", "rejected", "timeout", "http", "invalid"] as const) {
+  for (const failure of [
+    "lookup",
+    "provider",
+    "rejected",
+    "timeout",
+    "http",
+    "invalid",
+    "legacy-status",
+  ] as const) {
     it(`preserves a surviving interpreter and owner quota after a ${failure} recovery probe`, async (t) => {
       let created = 0;
       let disposed = 0;
@@ -4567,6 +4667,7 @@ describe("NotebookRoom materialized sync routing", () => {
             if (failure === "timeout") throw new DOMException("Status timed out", "TimeoutError");
             if (failure === "http") return new Response("Unavailable", { status: 503 });
             if (failure === "invalid") return Response.json({ alive: "unknown" });
+            if (failure === "legacy-status") return Response.json({ alive: true });
           }
           return service.fetch(request);
         },
@@ -5098,7 +5199,12 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(fixture.requests[0].sessionId, "managed-job");
     assert.equal(fixture.requests[0].ownerPrincipal, "user:dev:alice");
     await owner.sync();
-    assert.equal(owner.runtimeState().workstation?.status, "error");
+    assert.equal(owner.runtimeState().workstation?.status, "disconnected");
+    assert.equal(
+      fixture.db.attachJobs[0].status,
+      "accepted",
+      "unconfirmed disposal cannot free catalog admission",
+    );
   });
 
   it("preserves startup errors and accepts a retry on the same peer", async () => {
@@ -6889,7 +6995,7 @@ async function managedPythonAdmissionFixture(
                 requests.push({ path, ...(await request.clone().json()) });
                 if (options.providerFetch) return options.providerFetch(request);
                 if (path === "/status")
-                  return Response.json({ alive: options.sessionAlive ?? false });
+                  return Response.json({ alive: options.sessionAlive ?? false, busy: false });
                 if (path === "/open") {
                   enteredOpen();
                   return (options.immediateOpen ?? (await opening)).clone();

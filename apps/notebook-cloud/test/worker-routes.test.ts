@@ -4079,6 +4079,7 @@ describe("Worker artifact routes", () => {
                     status: "ready",
                   },
                 });
+              if (request.method === "DELETE") return Response.json({ ok: true });
               controls.push(await request.json());
               return Response.json({ ok: true });
             },
@@ -4133,6 +4134,77 @@ describe("Worker artifact routes", () => {
       assert.equal(controls[0].close_runtime_peers, true);
       assert.equal(compute.leases.get(workstationId)?.online, true);
       assert.ok(compute.leases.get(workstationId)!.lease_expires_at > Date.now());
+    });
+  }
+
+  for (const confirmed of [true, false]) {
+    it(`requires confirmed disposal before replacing disconnected managed compute: ${confirmed}`, async () => {
+      const methods: string[] = [];
+      const workstationId = "celld-preview-python";
+      const env = fakeEnv({
+        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+        PREVIEW_PYTHON_SESSIONS: {
+          idFromName: (name: string) => ({ toString: () => name }),
+          get: () => ({
+            fetch: async () => Response.json({ provider: "celld-pyodide", version: 1 }),
+          }),
+        },
+        NOTEBOOK_ROOMS: {
+          idFromName: (name: string) => ({ toString: () => name }),
+          get: () => ({
+            fetch: async (request: Request) => {
+              methods.push(request.method);
+              if (request.method === "GET") {
+                assert.equal(new URL(request.url).searchParams.get("resume"), "false");
+                return Response.json({
+                  attachment: {
+                    workstation_id: workstationId,
+                    runtime_session_id: "saved-job",
+                    status: "disconnected",
+                  },
+                });
+              }
+              if (request.method === "DELETE") {
+                assert.deepEqual(await request.json(), { runtime_session_id: "saved-job" });
+                return Response.json({ ok: confirmed }, { status: confirmed ? 200 : 503 });
+              }
+              return Response.json({ ok: true });
+            },
+          }),
+        },
+      });
+      seedNotebook(env, "attach-demo");
+      seedAcl(env, { notebookId: "attach-demo", subject: "user:dev:alice", scope: "owner" });
+      seedWorkstation(env, { ownerPrincipal: "user:dev:alice", workstationId });
+      seedWorkstationAttachJob(env, {
+        id: "saved-job",
+        notebookId: "attach-demo",
+        ownerPrincipal: "user:dev:alice",
+        workstationId,
+        requestedAt: new Date().toISOString(),
+      });
+      const response = await worker.fetch(
+        new Request("http://localhost/api/n/attach-demo/workstation-attachments", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Operator": "browser:tab",
+            "X-Scope": "owner",
+            "X-User": "alice",
+          },
+          body: JSON.stringify({ workstation_id: workstationId, replace_existing: true }),
+        }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(response.status, confirmed ? 202 : 503);
+      assert.deepEqual(methods, confirmed ? ["GET", "DELETE", "POST"] : ["GET", "DELETE"]);
+      assert.equal(env.DB.workstationAttachJobs.size, confirmed ? 2 : 1);
+      if (confirmed)
+        assert.notEqual(
+          ((await response.json()) as { job: { job_id: string } }).job.job_id,
+          "saved-job",
+        );
     });
   }
 
