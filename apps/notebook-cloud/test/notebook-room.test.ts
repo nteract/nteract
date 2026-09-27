@@ -4514,6 +4514,87 @@ describe("NotebookRoom materialized sync routing", () => {
     });
   }
 
+  for (const settleProbeFirst of [true, false]) {
+    it(`preserves confirmed loss when concurrent Restart fails (${settleProbeFirst ? "probe" : "reset"} settles first)`, async (t) => {
+      let lost = false;
+      let closeUnavailable = true;
+      let enteredWrite!: () => void;
+      let releaseWrite!: () => void;
+      let enteredClose!: () => void;
+      let releaseClose!: () => void;
+      const writing = new Promise<void>((resolve) => {
+        enteredWrite = resolve;
+      });
+      const heldWrite = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const closing = new Promise<void>((resolve) => {
+        enteredClose = resolve;
+      });
+      const heldClose = new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        providerFetch: async (request) => {
+          const path = new URL(request.url).pathname;
+          if (path === "/status") return Response.json({ alive: !lost, busy: !lost });
+          if (path === "/close" && closeUnavailable) {
+            enteredClose();
+            await heldClose;
+            return new Response("Close unavailable", { status: 503 });
+          }
+          return Response.json({ ok: true });
+        },
+      });
+      t.after(async () => {
+        closeUnavailable = false;
+        releaseWrite();
+        releaseClose();
+        await fixture.close();
+      });
+      const first = await fixture.connect("before-hibernation");
+      await fixture.seed(first);
+      await fixture.reconstruct();
+      const owner = await fixture.connect("owner");
+      await fixture.drain();
+      assert.equal(owner.runtimeState().workstation?.status, "disconnected");
+      fixture.db.beforeAttachUpdate = async () => {
+        fixture.db.beforeAttachUpdate = undefined;
+        enteredWrite();
+        await heldWrite;
+      };
+      lost = true;
+      const executing = fixture.execute(owner);
+      await writing;
+      const resetting = fixture.room.fetch(
+        new Request("https://room/internal/n/demo/workstation-attachment", {
+          method: "DELETE",
+          body: JSON.stringify({ runtime_session_id: "managed-job" }),
+        }),
+      );
+      await closing;
+      if (settleProbeFirst) {
+        releaseWrite();
+        await executing;
+        releaseClose();
+        assert.equal((await resetting).status, 503);
+      } else {
+        releaseClose();
+        assert.equal((await resetting).status, 503);
+        releaseWrite();
+        await executing;
+      }
+      await fixture.drain();
+      await owner.sync();
+      assert.equal(owner.runtimeState().workstation?.status, "error");
+      assert.equal(fixture.db.attachJobs[0].status, "failed");
+      const replacement = await fixture.startReplacement(true);
+      assert.notEqual(replacement, "managed-job", "Start can allocate after confirmed loss");
+      await owner.sync();
+      assert.equal(owner.runtimeState().workstation?.status, "ready");
+    });
+  }
+
   it("publishes intentional restart to every viewer without a transient compute error", async (t) => {
     const fixture = await managedPythonAdmissionFixture("connecting", {
       immediateOpen: Response.json({ ok: true }),
@@ -7765,7 +7846,7 @@ class CountingNotebookOwnerD1 extends NotebookOwnerD1 {
 class ResumeNotebookD1 implements D1Database {
   readonly notebookAclOwners = new Set<string>();
   beforeSessionOwnerLookup?: () => Promise<void>;
-  beforeAttachUpdate?: () => void;
+  beforeAttachUpdate?: () => void | Promise<void>;
   readonly attachJobs: Array<{
     id: string;
     notebook_id: string;
@@ -7889,7 +7970,7 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
       this.query.includes("UPDATE workstation_attach_jobs") &&
       this.query.includes("SET status = ?")
     ) {
-      this.db.beforeAttachUpdate?.();
+      await this.db.beforeAttachUpdate?.();
       const [status, updatedAt, , , , finishedAt, errorMessage, id, owner, workstation, maxRank] =
         this.values;
       const job = this.db.attachJobs.find(
