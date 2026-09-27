@@ -229,13 +229,14 @@ describe("notebook command runtime projection", () => {
     });
   });
 
-  it("hides runtime actions until RuntimeStateDoc supplies a command status", () => {
+  it("offers start and run-all before compute publishes status when execution is available", () => {
     const projection = projectNotebookCommandRuntimeActions({
       capabilities: { canExecute: true },
       runtimeStatus: null,
       actions: {
         interruptRuntime: true,
         restartRuntime: true,
+        restartAndRunAll: true,
         runAllCells: true,
         startRuntime: true,
       },
@@ -244,12 +245,37 @@ describe("notebook command runtime projection", () => {
     expect(projection).toEqual({
       hasRuntimeStatus: false,
       isRuntimeRunning: false,
-      showAnyRuntimeAction: false,
+      showAnyRuntimeAction: true,
       showInterrupt: false,
       showRestart: false,
       showRestartAndRunAll: false,
-      showRunAll: false,
-      showRuntimeStart: false,
+      showRunAll: true,
+      showRuntimeStart: true,
     });
+  });
+
+  it("does not offer startup without execution authority, even if recovery is available", () => {
+    const projection = projectNotebookCommandRuntimeActions({
+      capabilities: { canExecute: false, canRecoverRuntime: true },
+      runtimeStatus: null,
+      actions: {
+        startRuntime: true,
+        runAllCells: true,
+        restartRuntime: true,
+        restartAndRunAll: true,
+        interruptRuntime: true,
+      },
+    });
+
+    expect(projection.showAnyRuntimeAction).toBe(false);
+  });
+
+  it("does not offer startup without a host action", () => {
+    const projection = projectNotebookCommandRuntimeActions({
+      capabilities: { canExecute: true },
+      runtimeStatus: null,
+    });
+
+    expect(projection.showAnyRuntimeAction).toBe(false);
   });
 });

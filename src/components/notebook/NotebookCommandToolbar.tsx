@@ -194,7 +194,7 @@ export function NotebookCommandToolbar({
         <button
           type="button"
           onClick={onStartRuntime}
-          disabled={startDisabled}
+          disabled={startDisabled || workstationAction?.pending}
           className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
           title="Start kernel"
           aria-label="Start kernel"
@@ -209,7 +209,8 @@ export function NotebookCommandToolbar({
         <button
           type="button"
           onClick={onRunAllCells}
-          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+          disabled={workstationAction?.pending}
+          className="flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           title="Run all cells"
           aria-label="Run all cells"
           data-testid="run-all-button"
