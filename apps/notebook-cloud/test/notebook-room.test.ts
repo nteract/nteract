@@ -4418,7 +4418,7 @@ describe("NotebookRoom materialized sync routing", () => {
             : Response.json({ alive: true, busy: false });
         if (path === "/open")
           return Response.json(
-            { error: "Session expired; allocate a new runtime session" },
+            { code: "session_lost", error: "Session expired; allocate a new runtime session" },
             { status: 409 },
           );
         return Response.json({ ok: true });
@@ -4533,7 +4533,79 @@ describe("NotebookRoom materialized sync routing", () => {
     });
   }
 
-  for (const scenario of ["already-installed", "inventory-failure", "restore-failure"] as const) {
+  for (const failure of ["already-retired", "catalog-failure"] as const) {
+    it(`keeps a session terminal after ${failure} during explicit cleanup`, async (t) => {
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        providerFetch: async (request) =>
+          new URL(request.url).pathname === "/status"
+            ? Response.json({ alive: failure === "catalog-failure", busy: true })
+            : failure === "already-retired"
+              ? new Response("Cleanup unconfirmed", { status: 409 })
+              : Response.json({ ok: true }),
+      });
+      t.after(() => fixture.close());
+      const first = await fixture.connect("before-loss");
+      await fixture.seed(first);
+      await fixture.reconstruct();
+      const reconnected = await fixture.connect("after-loss");
+      await fixture.drain();
+      await reconnected.sync();
+      assert.equal(
+        reconnected.runtimeState().workstation?.status,
+        failure === "already-retired" ? "error" : "disconnected",
+      );
+      if (failure === "catalog-failure")
+        fixture.db.beforeAttachUpdate = () => {
+          throw new Error("Catalog unavailable after close");
+        };
+      const response = await fixture.room.fetch(
+        new Request("https://room/internal/n/demo/workstation-attachment", {
+          method: "DELETE",
+          body: JSON.stringify({ runtime_session_id: "managed-job" }),
+        }),
+      );
+      assert.equal(response.status, 503);
+      assert.match(
+        ((await response.json()) as { error: string }).error,
+        failure === "catalog-failure"
+          ? /Python stopped, but recovery could not be saved/
+          : /termination was not confirmed/,
+      );
+      await fixture.drain();
+      await reconnected.sync();
+      assert.equal(reconnected.runtimeState().workstation?.status, "error");
+      assert.equal(
+        fixture.db.attachJobs[0].status,
+        failure === "already-retired" ? "failed" : "running",
+      );
+      fixture.db.beforeAttachUpdate = undefined;
+      const attachment = await fixture.materializer.getWorkstationAttachment();
+      const delayed = await fixture.room.fetch(
+        new Request("https://room/internal/n/demo/workstation-attachment", {
+          method: "POST",
+          body: JSON.stringify({ attachment: { ...attachment, status: "connecting" } }),
+        }),
+      );
+      assert.equal(delayed.status, 409, "failed cleanup cannot lift the retired generation fence");
+      if (failure === "catalog-failure") {
+        const replacement = await fixture.startReplacement(true);
+        assert.notEqual(replacement, "managed-job");
+        await fixture.drain();
+        await reconnected.sync();
+        assert.equal(reconnected.runtimeState().workstation?.runtime_session_id, replacement);
+        assert.equal(reconnected.runtimeState().workstation?.status, "ready");
+      }
+    });
+  }
+
+  for (const scenario of [
+    "already-installed",
+    "inventory-failure",
+    "restore-failure",
+    "open-storage-failure",
+    "legacy-open-conflict",
+    "legacy-inventory-conflict",
+  ] as const) {
     it(`keeps a resumed interpreter through ${scenario}`, async (t) => {
       const manifest = { version: 1, pyodide: "0.28.3", requirements: ["six"], wheels: [] };
       let disposed = 0;
@@ -4557,11 +4629,24 @@ describe("NotebookRoom materialized sync routing", () => {
           installed: ["six==1.0"],
           manifest,
         }));
-      const service = createProviderService(pool);
       let failing = true;
+      const service = createProviderService(pool, {
+        get: async () => {
+          if (failing && scenario === "open-storage-failure")
+            throw new Error("Temporary storage read failure");
+          return undefined;
+        },
+        put: async () => {},
+      });
       const fixture = await managedPythonAdmissionFixture("ready", {
         providerFetch: async (request) => {
           const path = new URL(request.url).pathname;
+          if (
+            failing &&
+            ((scenario === "legacy-open-conflict" && path === "/open") ||
+              (scenario === "legacy-inventory-conflict" && path === "/packages/inventory"))
+          )
+            return Response.json({ error: "Unclassified provider conflict" }, { status: 409 });
           if (failing && scenario === "inventory-failure" && path === "/packages/inventory")
             return new Response("Inventory temporarily unavailable", { status: 503 });
           if (failing && scenario === "restore-failure" && path === "/packages")
@@ -7135,12 +7220,16 @@ async function managedPythonAdmissionFixture(
     releaseOwnerLookup,
     drain: state.drain,
     startReplacement: async (allocate = false) => {
+      let replaceActive = false;
       if (allocate) {
         const current = await room.fetch(
           new Request("https://room/internal/n/demo/workstation-attachment"),
         );
         assert.equal(current.status, 200);
         const { attachment } = (await current.json()) as { attachment: { status: string } };
+        // Match the Worker's preflight: a confirmed terminal attachment replaces
+        // an active catalog row even if its earlier retirement write failed.
+        replaceActive = attachment.status === "error";
         assert.notEqual(
           attachment.status,
           "disconnected",
@@ -7154,6 +7243,7 @@ async function managedPythonAdmissionFixture(
             workstationId: "celld-preview-python",
             actorLabel: "user:dev:alice/browser:recovery",
             trigger: "user_attach",
+            replaceActive,
           })
         : null;
       const sessionId = allocated?.job.id ?? "replacement-job";

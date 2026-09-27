@@ -122,14 +122,16 @@ export class ManagedPythonRoom {
     if (!response.ok) {
       const body = await response.text();
       let reason = body;
+      let sessionLost = false;
       try {
-        const parsed = JSON.parse(body) as { error?: unknown };
+        const parsed = JSON.parse(body) as { error?: unknown; code?: unknown };
         if (typeof parsed.error === "string") reason = parsed.error;
+        sessionLost = parsed.code === "session_lost";
       } catch {
         /* A non-JSON provider failure still needs a bounded diagnostic. */
       }
       const Failure =
-        ["/open", "/packages/inventory"].includes(path) && response.status === 409
+        ["/open", "/packages/inventory"].includes(path) && response.status === 409 && sessionLost
           ? ManagedPythonSessionLostError
           : Error;
       throw new Failure(

@@ -3,6 +3,46 @@ import assert from "node:assert/strict";
 import { SessionPool } from "../src/session-pool.js";
 import { createProviderService } from "../src/provider-service.js";
 
+test("only confirmed missing or released generations carry a session_lost code", async (t) => {
+  let storageFails = false;
+  const values = new Map();
+  const pool = new SessionPool({
+    warmCount: 0,
+    create: async () => ({ info: {}, dispose: async () => {} }),
+  });
+  t.after(() => pool.close());
+  const service = createProviderService(pool, {
+    get: async (key) => {
+      if (storageFails) throw new Error("Temporary storage read failure");
+      return values.get(key);
+    },
+    put: async (key, value) => values.set(key, value),
+  });
+  const identity = { ownerPrincipal: "alice", notebookId: "n", sessionId: "s" };
+  const post = (path, extra = {}) =>
+    service.fetch(
+      new Request(`https://provider${path}`, {
+        method: "POST",
+        body: JSON.stringify({ ...identity, ...extra }),
+      }),
+    );
+  for (const path of ["/open", "/packages/inventory"]) {
+    const response = await post(path, { resumeOnly: true });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, "session_lost");
+  }
+  assert.equal((await post("/open")).status, 200);
+  storageFails = true;
+  const transient = await post("/open", { resumeOnly: true });
+  assert.equal(transient.status, 409);
+  assert.equal((await transient.json()).code, undefined);
+  assert.deepEqual(await (await post("/status")).json(), { alive: true, busy: false });
+  storageFails = false;
+  assert.equal((await post("/open", { resumeOnly: true })).status, 200);
+  assert.equal((await post("/close")).status, 200);
+  assert.equal((await (await post("/open", { resumeOnly: true })).json()).code, "session_lost");
+});
+
 test("session inspection and resume never allocate and retain a surviving interpreter", async () => {
   let created = 0;
   const pool = new SessionPool({

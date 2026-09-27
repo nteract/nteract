@@ -3996,7 +3996,11 @@ describe("Worker artifact routes", () => {
               methods.push(request.method);
               if (request.method === "GET")
                 return Response.json({
-                  attachment: { workstation_id: workstationId, status: restoredStatus },
+                  attachment: {
+                    workstation_id: workstationId,
+                    status: restoredStatus,
+                    status_message: "Python is finishing an earlier operation.",
+                  },
                 });
               return Response.json({ ok: true });
             },
@@ -4029,6 +4033,10 @@ describe("Worker artifact routes", () => {
       );
       if (restoredStatus === "disconnected") {
         assert.equal(attach.status, 503);
+        assert.equal(
+          ((await attach.json()) as { error: string }).error,
+          "Python is finishing an earlier operation.",
+        );
         assert.deepEqual(methods, ["GET"]);
         assert.equal(env.DB.workstationAttachJobs.size, 1);
         assert.equal(env.DB.workstationAttachJobs.get("saved-job")?.status, "pending");
@@ -4166,7 +4174,15 @@ describe("Worker artifact routes", () => {
               }
               if (request.method === "DELETE") {
                 assert.deepEqual(await request.json(), { runtime_session_id: "saved-job" });
-                return Response.json({ ok: confirmed }, { status: confirmed ? 200 : 503 });
+                return Response.json(
+                  confirmed
+                    ? { ok: true }
+                    : {
+                        error:
+                          "Python stopped, but recovery could not be saved. Try Start compute again.",
+                      },
+                  { status: confirmed ? 200 : 503 },
+                );
               }
               return Response.json({ ok: true });
             },
@@ -4204,6 +4220,11 @@ describe("Worker artifact routes", () => {
         assert.notEqual(
           ((await response.json()) as { job: { job_id: string } }).job.job_id,
           "saved-job",
+        );
+      else
+        assert.match(
+          ((await response.json()) as { error: string }).error,
+          /Python stopped, but recovery could not be saved/,
         );
     });
   }

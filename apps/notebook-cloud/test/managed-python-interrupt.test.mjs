@@ -6,8 +6,34 @@ import { FrameType, encodeJsonFrame } from "../src/protocol.ts";
 
 for (const scope of ["owner", "editor", "viewer"])
   for (const cleanupFails of [false, true]) {
-    test(`managed interrupt ${scope}, cleanup failure ${cleanupFails}`, async () => {
+    test(`managed interrupt ${scope}, provider termination failure ${cleanupFails}`, async () => {
       const values = new Map();
+      let providerCloses = 0;
+      let catalogStatus = "running";
+      const db = {
+        prepare(sql) {
+          return {
+            bind() {
+              return this;
+            },
+            async all() {
+              return { results: [] };
+            },
+            async first() {
+              return { id: "session", owner_principal: "user:dev:alice", status: catalogStatus };
+            },
+            async run() {
+              if (
+                sql.includes("UPDATE workstation_attach_jobs") &&
+                sql.includes("SET status = ?")
+              ) {
+                catalogStatus = "failed";
+              }
+              return { success: true };
+            },
+          };
+        },
+      };
       const room = new NotebookRoom(
         {
           id: { toString: () => "demo" },
@@ -19,7 +45,25 @@ for (const scope of ["owner", "editor", "viewer"])
           },
           waitUntil: () => {},
         },
-        {},
+        {
+          DB: db,
+          NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+          PREVIEW_PYTHON_SESSIONS: {
+            idFromName: (name) => name,
+            get: () => ({
+              async fetch(request) {
+                assert.equal(new URL(request.url).pathname, "/close");
+                assert.deepEqual(await request.json(), {
+                  ownerPrincipal: "user:dev:alice",
+                  notebookId: "demo",
+                  sessionId: "session",
+                });
+                providerCloses++;
+                return new Response(null, { status: cleanupFails ? 503 : 204 });
+              },
+            }),
+          },
+        },
       );
       const sent = [];
       const peer = {
@@ -43,18 +87,19 @@ for (const scope of ["owner", "editor", "viewer"])
           connection_scope: "runtime_peer",
           participant_key: "managed",
         },
-        close: async () => {
+        close: async (options) => {
+          assert.deepEqual(options, { preserveSession: true });
           closed++;
-          if (cleanupFails) throw Error("termination failed");
         },
       };
       room.managedPython.set("demo", { runtime, ready: Promise.resolve() });
       let failed = 0;
       room.materializers.set("demo", {
+        getWorkstationAttachment: async () => ({ runtime_session_id: "session", status: "ready" }),
         transitionManagedPythonSession: async (id, status, reason) => {
           assert.equal(id, "session");
-          assert.equal(status, "error");
-          assert.match(reason, /interrupted/);
+          assert.equal(status, cleanupFails ? "disconnected" : "error");
+          assert.match(reason, cleanupFails ? /termination was not confirmed/ : /interrupted/);
           failed++;
           return { changed: true, outbound: [] };
         },
@@ -67,6 +112,7 @@ for (const scope of ["owner", "editor", "viewer"])
       );
       if (scope !== "owner") {
         assert.equal(closed, 0);
+        assert.equal(providerCloses, 0);
         assert.equal(failed, 0);
         assert.equal(room.managedPython.size, 1);
         assert.ok(
@@ -81,6 +127,10 @@ for (const scope of ["owner", "editor", "viewer"])
           "cloud_frame_accepted",
         );
         assert.equal(closed, 1);
+        assert.equal(providerCloses, 1);
+        assert.equal(catalogStatus, cleanupFails ? "running" : "failed");
+        assert.equal(room.retiredManagedPythonSessions.has("session"), !cleanupFails);
+        assert.equal(room.pendingManagedPythonProbes.has("session"), cleanupFails);
         assert.equal(failed, 1);
         assert.equal(room.managedPython.size, 0);
         const response = sent.find((frame) => frame[0] === FrameType.RESPONSE);

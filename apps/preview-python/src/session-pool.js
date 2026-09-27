@@ -1,3 +1,6 @@
+/** Only these failures prove this session generation cannot be resumed. */
+export class SessionLostError extends Error {}
+
 /** Clean runtimes are assigned once; released tenant state is always destroyed. */
 export class SessionPool {
   #create;
@@ -113,10 +116,10 @@ export class SessionPool {
     let session = this.#sessions.get(key);
     if (session) {
       if (session.owner !== owner) throw new Error("Session owner mismatch");
-      if (session.cancelled) throw new Error("Session is being released");
+      if (session.cancelled) throw new SessionLostError("Session is being released");
       return session.ready;
     }
-    if (resumeOnly) throw new Error("Session expired; allocate a new runtime session");
+    if (resumeOnly) throw new SessionLostError("Session expired; allocate a new runtime session");
     const owned = this.#ownerCounts.get(owner) ?? 0;
     if (owned >= this.#maxSessionsPerOwner)
       throw new Error(
@@ -275,7 +278,8 @@ export class SessionPool {
 
   packageInventory(key) {
     const session = this.#sessions.get(key);
-    if (!session?.runtime || session.cancelled) throw new Error("Python session is unavailable");
+    if (!session || session.cancelled) throw new SessionLostError("Python session is unavailable");
+    if (!session.runtime) throw new Error("Python session is still starting");
     if (session.packageAbort || session.packageDamaged)
       throw new Error("Package state is uncertain; restart Python");
     return {

@@ -2400,7 +2400,12 @@ async function routeNotebookWorkstationAttachment(
     );
     if (!current.ok) return json({ error: "Python session status is unavailable; try again" }, 503);
     const { attachment } = (await current.json()) as {
-      attachment?: { workstation_id: string; status: string; runtime_session_id?: string } | null;
+      attachment?: {
+        workstation_id: string;
+        status: string;
+        runtime_session_id?: string;
+        status_message?: string;
+      } | null;
     };
     if (
       replaceExisting &&
@@ -2416,14 +2421,28 @@ async function routeNotebookWorkstationAttachment(
           },
         ),
       );
-      if (!closed.ok)
-        return json({ error: "Python termination was not confirmed. Try restarting again." }, 503);
+      if (!closed.ok) {
+        const failure: unknown = await closed.json().catch(() => null);
+        return json(
+          {
+            error:
+              isRecord(failure) && typeof failure.error === "string"
+                ? failure.error
+                : "Python termination was not confirmed. Try restarting again.",
+          },
+          503,
+        );
+      }
     } else if (
       attachment?.workstation_id === workstationId &&
       attachment.status === "disconnected"
     ) {
       return json(
-        { error: "Python could not reconnect; try again when the service is available" },
+        {
+          error:
+            attachment.status_message ??
+            "Python could not reconnect; try again when the service is available",
+        },
         503,
       );
     }

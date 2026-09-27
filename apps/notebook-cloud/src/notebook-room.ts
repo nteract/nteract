@@ -95,6 +95,8 @@ interface Peer {
   consecutiveRejectedFrames: number;
 }
 
+class ManagedPythonResetPersistenceError extends Error {}
+
 interface PeerAttachment {
   notebookId: string;
   peerId: string;
@@ -527,8 +529,16 @@ export class NotebookRoom {
       try {
         await this.resetManagedPythonSession(notebookId, payload.runtime_session_id);
         return json({ ok: true }, 200);
-      } catch {
-        return json({ error: "Python termination was not confirmed. Try restarting again." }, 503);
+      } catch (error) {
+        return json(
+          {
+            error:
+              error instanceof ManagedPythonResetPersistenceError
+                ? error.message
+                : "Python termination was not confirmed. Try restarting again.",
+          },
+          503,
+        );
       }
     }
     if (request.method !== "POST") {
@@ -1441,7 +1451,10 @@ export class NotebookRoom {
         } catch (error) {
           response = {
             result: "error",
-            error: `Python termination was not confirmed: ${String(error)}`,
+            error:
+              error instanceof ManagedPythonResetPersistenceError
+                ? error.message
+                : `Python termination was not confirmed: ${String(error)}`,
           };
         }
         this.sendFrameToPeer(
@@ -2197,6 +2210,11 @@ export class NotebookRoom {
         });
         if (status.busy) {
           this.pendingManagedPythonProbes.add(sessionId);
+          cloudLog("info", "managed_python.restored_session_probe", {
+            notebook_id: notebookId,
+            session_id: sessionId,
+            outcome: "busy",
+          });
           return {
             status: "disconnected",
             reason:
@@ -2639,6 +2657,7 @@ export class NotebookRoom {
     sessionId: string,
     reason = "Python was stopped for restart. Variables were discarded.",
   ): Promise<void> {
+    const alreadyRetired = this.retiredManagedPythonSessions.has(sessionId);
     this.retiredManagedPythonSessions.add(sessionId);
     const entry = this.managedPython.get(notebookId);
     const runtime = entry?.runtime.sessionId === sessionId ? entry.runtime : undefined;
@@ -2647,6 +2666,7 @@ export class NotebookRoom {
       this.broadcastManagedPythonPresence(notebookId, runtime, false);
     }
     const closing = runtime?.close({ preserveSession: true });
+    let terminationConfirmed = false;
     try {
       const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
       const provider = managedPythonStub(this.env);
@@ -2661,11 +2681,35 @@ export class NotebookRoom {
       );
       if (!response.ok)
         throw new Error(`Python termination was not confirmed (${response.status})`);
+      terminationConfirmed = true;
       this.pendingManagedPythonProbes.delete(sessionId);
       await this.failManagedPythonSession(notebookId, sessionId, new Error(reason), ownerPrincipal);
+      cloudLog("info", "managed_python.explicit_reset", {
+        notebook_id: notebookId,
+        session_id: sessionId,
+        outcome: "closed",
+      });
     } catch (error) {
-      this.retiredManagedPythonSessions.delete(sessionId);
-      await this.disconnectManagedPythonSession(notebookId, sessionId, error);
+      const selected = await this.materializerFor(notebookId).getWorkstationAttachment();
+      if (
+        !terminationConfirmed &&
+        !alreadyRetired &&
+        selected?.runtime_session_id === sessionId &&
+        selected.status !== "error"
+      ) {
+        this.retiredManagedPythonSessions.delete(sessionId);
+        await this.disconnectManagedPythonSession(notebookId, sessionId, error);
+      }
+      cloudLog("warn", "managed_python.explicit_reset_failed", {
+        notebook_id: notebookId,
+        session_id: sessionId,
+        outcome: terminationConfirmed ? "closed_before_persistence_failure" : "unconfirmed",
+        error: errorMessage(error).slice(0, 600),
+      });
+      if (terminationConfirmed)
+        throw new ManagedPythonResetPersistenceError(
+          "Python stopped, but recovery could not be saved. Try Start compute again.",
+        );
       throw error;
     } finally {
       await closing;
@@ -2681,6 +2725,11 @@ export class NotebookRoom {
     if (runtime && this.managedPython.get(notebookId)?.runtime !== runtime) return;
     this.restoredManagedPythonSessions.add(sessionId);
     this.pendingManagedPythonProbes.add(sessionId);
+    cloudLog("warn", "managed_python.disconnected", {
+      notebook_id: notebookId,
+      session_id: sessionId,
+      error: errorMessage(error).slice(0, 600),
+    });
     if (runtime) {
       this.managedPython.delete(notebookId);
       this.broadcastManagedPythonPresence(notebookId, runtime, false);

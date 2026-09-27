@@ -1,5 +1,6 @@
 import { installPackageManifest } from "./package-service.js";
 import { safePackageFailure } from "./package-resolver.js";
+import { SessionLostError } from "./session-pool.js";
 import { PackageAdmission } from "./package-admission.js";
 
 /** Internal service-binding protocol. Never mount this on a public route. */
@@ -74,7 +75,7 @@ export function createProviderService(pool, storage, packageResolver) {
               return { operation: pool.release(key) };
             }
             if (storage ? await storage.get(fence) : closed.has(key))
-              throw new Error("Session was released; allocate a new runtime session");
+              throw new SessionLostError("Session was released; allocate a new runtime session");
             return {
               operation: pool.open(key, input.ownerPrincipal, {
                 resumeOnly: input.resumeOnly === true,
@@ -128,7 +129,13 @@ export function createProviderService(pool, storage, packageResolver) {
         }
         return Response.json(await pool.execute(key, input.execution));
       } catch (error) {
-        return Response.json({ error: String(error) }, { status: 409 });
+        return Response.json(
+          {
+            error: String(error),
+            ...(error instanceof SessionLostError ? { code: "session_lost" } : {}),
+          },
+          { status: 409 },
+        );
       }
     },
   };
