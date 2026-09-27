@@ -70,6 +70,9 @@ import {
 const DEFAULT_ATTACH_MESSAGE =
   "Starting compute. Waiting for the workstation to join this notebook.";
 
+/** Bound the cross-channel wait after the attach request has been accepted. */
+const ATTACH_CONFIRMATION_TIMEOUT_MS = 30_000;
+
 /** Rejection sentinel for a fetch that should no-op (missing endpoint/gate). */
 const POLL_SKIP = Symbol("cloud-workstations-poll-skip");
 
@@ -395,6 +398,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   private latestInputs: CloudWorkstationsInputs | null = null;
   private latestAttachment: WorkstationAttachmentState | null = null;
   private pendingAttach: PendingAttachConfirmation | null = null;
+  private readonly attachConfirmationDeadlines$ = new Subject<PendingAttachConfirmation | null>();
   private resolvedDeps: ResolvedWorkstationsDeps | null = null;
   /**
    * Monotonic activation counter, bumped on every `activate` and its disposer.
@@ -463,6 +467,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
           (this.latestInputs.auth !== inputs.auth ||
             this.latestInputs.attachEndpoint !== inputs.attachEndpoint)
         ) {
+          if (this.pendingAttach) this.clearMutationIfOwned(this.pendingAttach.mutation);
           this.clearError();
         }
         this.latestInputs = inputs;
@@ -602,6 +607,34 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
           }),
         )
         .subscribe((pairingId) => this.expirePairing(pairingId)),
+    );
+
+    // An accepted request can fail to reach runtime sync, or another client can
+    // replace its session before this client sees it. Never wait indefinitely
+    // or treat an unrelated session as confirmation. A new action, identity,
+    // confirmation, or activation teardown cancels the previous deadline.
+    subscription.add(
+      this.attachConfirmationDeadlines$
+        .pipe(
+          switchMap((pending) =>
+            pending
+              ? timer(ATTACH_CONFIRMATION_TIMEOUT_MS, deps.scheduler).pipe(map(() => pending))
+              : EMPTY,
+          ),
+        )
+        .subscribe((pending) => {
+          if (
+            this.pendingAttach !== pending ||
+            this.snapshot.mutation !== pending.mutation ||
+            !this.mutationStillCurrent(pending.issue, this.latestInputs?.attachEndpoint)
+          ) {
+            return;
+          }
+          this.setError(
+            "The notebook hasn't confirmed the requested compute session. Reload the notebook to check its status before trying again.",
+          );
+          this.clearMutationIfOwned(pending.mutation);
+        }),
     );
 
     // Attach cross-channel confirm: the live runtime attachment (a different
@@ -748,8 +781,8 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   /**
    * Request a workstation attach. Sets the attach mutation, POSTs, then runs an
    * ordered refetch (on success and failure). On success the mutation stays
-   * "attach" until the cross-channel confirm clears it; on failure it clears
-   * immediately.
+   * "attach" until the cross-channel confirm or its deadline clears it; on
+   * request failure it clears immediately.
    */
   async attach(
     workstationId: string,
@@ -801,6 +834,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
       }
       confirmation.sessionId = sessionId;
       confirmation.acknowledged = true;
+      this.attachConfirmationDeadlines$.next(confirmation);
       // Runtime sync can arrive before the HTTP acknowledgement. Recheck that
       // snapshot now instead of waiting for an unrelated later runtime frame.
       this.confirmAttach(this.latestAttachment);
@@ -982,6 +1016,8 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
     const identityLost = gate.status === "signed_out";
     if (identityLost) {
       this.activationEpoch += 1;
+      this.pendingAttach = null;
+      this.attachConfirmationDeadlines$.next(null);
     }
     this.updateState((state) => ({
       ...state,
@@ -1084,6 +1120,7 @@ export class CloudWorkstationsStore extends ObservableStore<CloudWorkstationsSta
   }
 
   private setMutation(mutation: CloudWorkstationMutationState): void {
+    this.attachConfirmationDeadlines$.next(null);
     if (mutation.kind !== "attach") this.pendingAttach = null;
     this.updateState((state) => ({ ...state, mutation }));
   }

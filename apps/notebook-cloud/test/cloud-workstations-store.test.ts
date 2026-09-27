@@ -18,7 +18,8 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BehaviorSubject, VirtualAction, VirtualTimeScheduler } from "rxjs";
+import { BehaviorSubject, VirtualAction, VirtualTimeScheduler, map } from "rxjs";
+import { TestScheduler } from "rxjs/testing";
 import type { NotebookRegisteredWorkstation, WorkstationAttachmentState } from "runtimed";
 import {
   CloudWorkstationsStore,
@@ -644,6 +645,162 @@ describe("CloudWorkstationsStore mutations", () => {
     assert.equal(await store.attach("ws-1"), true);
     assert.equal(store.snapshot.mutation.kind, "idle", "no new sync frame is required");
     dispose();
+  });
+
+  for (const observedSession of [null, "old-session", "another-tabs-session"]) {
+    it(`ends an accepted Restart wait when the room shows ${observedSession ?? "no session"}`, async () => {
+      const scheduler = new TestScheduler((actual, expected) => assert.deepEqual(actual, expected));
+      const store = new CloudWorkstationsStore();
+      const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+      const workstation$ = new BehaviorSubject<WorkstationAttachmentState | null>(
+        attachment("ws-1", "old-session"),
+      );
+      const dispose = store.activate(
+        inputs$,
+        baseDeps({
+          scheduler,
+          workstation$,
+          attachWorkstation: async () => ({ ...attachResult("ws-1"), jobId: "requested-session" }),
+        }),
+      );
+      await drainMicrotasks();
+      assert.equal(await store.attach("ws-1", { replaceExisting: true }), true);
+
+      scheduler.run(({ hot, expectObservable }) => {
+        hot("10s a", {
+          a: observedSession ? attachment("ws-1", observedSession) : null,
+        }).subscribe(workstation$);
+        expectObservable(store.mutation$.pipe(map((mutation) => mutation.kind)), "30001ms !").toBe(
+          "a 29999ms b",
+          { a: "attach", b: "idle" },
+        );
+        scheduler.schedule(dispose, 30_001);
+      });
+      assert.match(store.snapshot.error ?? "", /hasn't confirmed.*Reload the notebook/);
+      assert.equal(store.snapshot.errorSource, "mutation");
+    });
+  }
+
+  it("cancels the confirmation deadline when the acknowledged session arrives", async () => {
+    const scheduler = new TestScheduler((actual, expected) => assert.deepEqual(actual, expected));
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const workstation$ = new BehaviorSubject<WorkstationAttachmentState | null>(null);
+    const dispose = store.activate(inputs$, baseDeps({ scheduler, workstation$ }));
+    await drainMicrotasks();
+    await store.attach("ws-1");
+
+    scheduler.run(({ hot, expectObservable }) => {
+      hot("1s a", { a: attachment("ws-1") }).subscribe(workstation$);
+      expectObservable(store.mutation$.pipe(map((mutation) => mutation.kind)), "30001ms !").toBe(
+        "a 999ms b",
+        { a: "attach", b: "idle" },
+      );
+      scheduler.schedule(dispose, 30_001);
+    });
+    assert.equal(store.snapshot.error, null);
+  });
+
+  for (const nextInputs of [
+    baseInputs({ auth: ROTATED_AUTH }),
+    baseInputs({ attachEndpoint: "/api/n/another-notebook/workstation-attachments" }),
+    baseInputs({ canFetch: false, closedGate: { status: "signed_out", wipeRegistry: true } }),
+  ]) {
+    it(`cancels the confirmation wait when ${nextInputs.auth === ROTATED_AUTH ? "auth changes" : !nextInputs.canFetch ? "signed out" : "the notebook changes"}`, async () => {
+      const scheduler = new TestScheduler((actual, expected) => assert.deepEqual(actual, expected));
+      const store = new CloudWorkstationsStore();
+      const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+      const dispose = store.activate(inputs$, baseDeps({ scheduler }));
+      await drainMicrotasks();
+      await store.attach("ws-1");
+
+      scheduler.run(({ hot, expectObservable }) => {
+        hot("1s a", { a: nextInputs }).subscribe(inputs$);
+        expectObservable(store.mutation$.pipe(map((mutation) => mutation.kind)), "30001ms !").toBe(
+          "a 999ms b",
+          { a: "attach", b: "idle" },
+        );
+        scheduler.schedule(dispose, 30_001);
+      });
+      assert.equal(store.snapshot.error, null);
+    });
+  }
+
+  it("gives a newer attach its own deadline and preserves its failure through refresh", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const dispose = store.activate(inputs$, baseDeps({ scheduler }));
+    await drainMicrotasks();
+    await store.attach("ws-1");
+    advanceBy(scheduler, 10_000);
+    await drainMicrotasks();
+    await store.attach("ws-2");
+    advanceBy(scheduler, 20_000);
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.workstationId, "ws-2");
+    assert.equal(store.snapshot.error, null, "the old deadline cannot fail the newer request");
+    advanceBy(scheduler, 10_000);
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.kind, "idle");
+    const error = store.snapshot.error;
+    assert.match(error ?? "", /hasn't confirmed/);
+    await store.refreshNow();
+    assert.equal(store.snapshot.error, error);
+    dispose();
+  });
+
+  it("starts the confirmation deadline after acknowledgement, not before", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    let acknowledge!: (value: ReturnType<typeof attachResult>) => void;
+    const dispose = store.activate(
+      inputs$,
+      baseDeps({
+        scheduler,
+        attachWorkstation: () =>
+          new Promise((resolve) => {
+            acknowledge = resolve;
+          }),
+      }),
+    );
+    await drainMicrotasks();
+    const attaching = store.attach("ws-1");
+    advanceBy(scheduler, 60_000);
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.kind, "attach");
+    assert.equal(store.snapshot.error, null);
+    acknowledge(attachResult("ws-1"));
+    await attaching;
+    advanceBy(scheduler, 29_999);
+    assert.equal(store.snapshot.mutation.kind, "attach");
+    advanceBy(scheduler, 1);
+    assert.equal(store.snapshot.mutation.kind, "idle");
+    assert.match(store.snapshot.error ?? "", /hasn't confirmed/);
+    dispose();
+  });
+
+  it("cancels a disposed activation's deadline before another activation attaches", async () => {
+    const scheduler = newScheduler();
+    const store = new CloudWorkstationsStore();
+    const inputs$ = new BehaviorSubject<CloudWorkstationsInputs>(baseInputs());
+    const dispose = store.activate(inputs$, baseDeps({ scheduler }));
+    await drainMicrotasks();
+    await store.attach("ws-1");
+    advanceBy(scheduler, 10_000);
+    dispose();
+    const disposeNext = store.activate(inputs$, baseDeps({ scheduler }));
+    await drainMicrotasks();
+    await store.attach("ws-2");
+    advanceBy(scheduler, 20_000);
+    await drainMicrotasks();
+    assert.equal(store.snapshot.mutation.workstationId, "ws-2");
+    assert.equal(store.snapshot.error, null);
+    disposeNext();
+    advanceBy(scheduler, 30_000);
+    assert.equal(store.snapshot.error, null, "disposed timers cannot write an error");
+    assert.equal(scheduler.actions.length, 0, "disposal removes the scheduled work");
   });
 
   it("rejects a Restart acknowledgement that still names the old session", async () => {
