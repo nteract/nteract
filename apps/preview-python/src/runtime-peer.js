@@ -334,9 +334,9 @@ export class PythonRuntimePeer {
     }
   }
 
-  async close() {
+  async close({ preserveSession = false } = {}) {
     this.#closed = true;
     await this.#closeLive();
-    await this.#pool.release(this.#key);
+    if (!preserveSession) await this.#pool.release(this.#key);
   }
 }

@@ -51,6 +51,7 @@ export interface NotebookCommandToolbarProps {
     NotebookShellCapabilities,
     | "canEditStructure"
     | "canExecute"
+    | "canRecoverRuntime"
     | "canViewPackages"
     | "canManageSharing"
     | "canRequestEdit"
@@ -122,7 +123,7 @@ export function NotebookCommandToolbar({
     capabilities;
   const showAddCellControls = Boolean(onAddCell) && (canEditStructure || addCellControlsDisabled);
   const runtimeActions = projectNotebookCommandRuntimeActions({
-    capabilities: { canExecute },
+    capabilities: { canExecute, canRecoverRuntime: capabilities.canRecoverRuntime },
     runtimeStatus,
     actions: {
       interruptRuntime: Boolean(onInterruptRuntime),

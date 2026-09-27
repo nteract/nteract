@@ -207,6 +207,28 @@ describe("notebook command runtime projection", () => {
     });
   });
 
+  it("offers only Interrupt and Restart for a recoverable session with unknown execution state", () => {
+    const projection = projectNotebookCommandRuntimeActions({
+      capabilities: { canExecute: false, canRecoverRuntime: true },
+      runtimeStatus: { state: "error" },
+      actions: {
+        interruptRuntime: true,
+        restartRuntime: true,
+        restartAndRunAll: true,
+        runAllCells: true,
+        startRuntime: true,
+      },
+    });
+    expect(projection).toMatchObject({
+      isRuntimeRunning: false,
+      showInterrupt: true,
+      showRestart: true,
+      showRunAll: false,
+      showRestartAndRunAll: false,
+      showRuntimeStart: false,
+    });
+  });
+
   it("hides runtime actions until RuntimeStateDoc supplies a command status", () => {
     const projection = projectNotebookCommandRuntimeActions({
       capabilities: { canExecute: true },

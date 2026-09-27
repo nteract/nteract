@@ -1,5 +1,6 @@
 import { installPackageManifest } from "./package-service.js";
 import { safePackageFailure } from "./package-resolver.js";
+import { SessionLostError } from "./session-pool.js";
 import { PackageAdmission } from "./package-admission.js";
 
 /** Internal service-binding protocol. Never mount this on a public route. */
@@ -29,7 +30,9 @@ export function createProviderService(pool, storage, packageResolver) {
       }
       if (
         request.method !== "POST" ||
-        !["/open", "/execute", "/close", "/packages", "/packages/inventory"].includes(path)
+        !["/status", "/open", "/execute", "/close", "/packages", "/packages/inventory"].includes(
+          path,
+        )
       ) {
         return new Response("Not found", { status: 404 });
       }
@@ -54,6 +57,10 @@ export function createProviderService(pool, storage, packageResolver) {
       }
       const key = JSON.stringify(parts);
       try {
+        // Inspect only the in-memory interpreter. Saved release fences and
+        // notebook attachments cannot prove that a Python session survived.
+        if (path === "/status")
+          return Response.json({ alive: pool.has(key), busy: pool.inspect(key).busy === true });
         if (path === "/open" || path === "/close") {
           const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
           const fence =
@@ -68,8 +75,12 @@ export function createProviderService(pool, storage, packageResolver) {
               return { operation: pool.release(key) };
             }
             if (storage ? await storage.get(fence) : closed.has(key))
-              throw new Error("Session was released; allocate a new runtime session");
-            return { operation: pool.open(key, input.ownerPrincipal) };
+              throw new SessionLostError("Session was released; allocate a new runtime session");
+            return {
+              operation: pool.open(key, input.ownerPrincipal, {
+                resumeOnly: input.resumeOnly === true,
+              }),
+            };
           });
           // Attach rejection handling before yielding the admission queue.
           const result = await operation;
@@ -118,7 +129,13 @@ export function createProviderService(pool, storage, packageResolver) {
         }
         return Response.json(await pool.execute(key, input.execution));
       } catch (error) {
-        return Response.json({ error: String(error) }, { status: 409 });
+        return Response.json(
+          {
+            error: String(error),
+            ...(error instanceof SessionLostError ? { code: "session_lost" } : {}),
+          },
+          { status: 409 },
+        );
       }
     },
   };

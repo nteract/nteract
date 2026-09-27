@@ -147,13 +147,10 @@ export function useCloudWorkstationManager({
         onClick: () => handleAttachWorkstation(workstationId),
       };
     }
-    // Set up / Review compute mint a pairing session; the host-owned dialog
-    // opens from that state without revealing the workstations rail.
+    // Only adding a machine starts pairing. Review compute must expose the
+    // selected session's status and recovery actions in the rail.
     const openPairingOrRail = () => {
-      if (
-        canChooseHostedWorkstation &&
-        (action.kind === "setup_workstation" || action.kind === "open_workstations")
-      ) {
+      if (canChooseHostedWorkstation && action.kind === "setup_workstation") {
         void handleStartPairing();
         return;
       }

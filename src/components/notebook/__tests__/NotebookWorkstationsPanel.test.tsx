@@ -16,6 +16,41 @@ function expandWorkstationDetails() {
   fireEvent.click(screen.getByRole("button", { name: "Workstation details" }));
 }
 
+it("labels a starting selected session Connecting in both the list and details", () => {
+  const selection = projectNotebookWorkstationSelection({
+    activeAttachment: {
+      workstation_id: "managed",
+      display_name: "Python",
+      provider: "celld-pyodide",
+      default_environment_label: "Python",
+      environment_policy: "curated",
+      status: "connecting",
+    },
+    registeredWorkstations: [
+      {
+        id: "managed",
+        displayName: "Python",
+        provider: "celld-pyodide",
+        status: "online",
+        workingDirectory: "/home/pyodide",
+        defaultEnvironmentLabel: "Python",
+      },
+    ],
+  });
+  render(
+    <NotebookWorkstationsPanel
+      capabilities={readOnlyNotebookShellCapabilities}
+      selection={selection}
+      onAttachWorkstation={() => {}}
+    />,
+  );
+  const row = within(screen.getByTestId("registered-workstation"));
+  expect(row.getByRole("button", { name: "Connecting" })).toBeDisabled();
+  expect(screen.queryByText("Running")).not.toBeInTheDocument();
+  fireEvent.click(row.getByRole("button", { name: "Python Connecting" }));
+  expect(screen.getByTestId("workstation-status-badge")).toHaveTextContent("Connecting");
+});
+
 const localReadyCapabilities: NotebookShellCapabilities = {
   ...readOnlyNotebookShellCapabilities,
   canExecute: true,

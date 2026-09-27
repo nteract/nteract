@@ -106,6 +106,7 @@ describe("projectNotebookShellCapabilities", () => {
       runtime: runtime({ source: "local", connected: true, executionAvailable: true }),
       execution: {
         available: true,
+        recoveryAvailable: true,
         requiresDocumentEditPermission: true,
         requiresDocumentMutationSupport: true,
       },
@@ -119,7 +120,20 @@ describe("projectNotebookShellCapabilities", () => {
     expect(capabilities.access.level).toBe("owner");
     expect(capabilities.interaction?.state).toBe("requested");
     expect(capabilities.canExecute).toBe(false);
+    expect(capabilities.canRecoverRuntime).toBe(false);
     expect(capabilities.canManagePackages).toBe(false);
+  });
+
+  it("keeps recovery permission separate in the capability projection cache", () => {
+    const ordinary = stabilizeNotebookShellCapabilities(readOnlyNotebookShellCapabilities);
+    const recoverable = stabilizeNotebookShellCapabilities({
+      ...readOnlyNotebookShellCapabilities,
+      canRecoverRuntime: true,
+    });
+    expect(recoverable).not.toBe(ordinary);
+    expect(recoverable.canExecute).toBe(false);
+    expect(recoverable.canRecoverRuntime).toBe(true);
+    expect(ordinary.canRecoverRuntime).toBe(false);
   });
 
   it("allows attached cloud runtimes to execute from document edit permission without active edit mode", () => {

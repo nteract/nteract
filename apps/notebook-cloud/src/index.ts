@@ -2337,12 +2337,23 @@ async function routeNotebookWorkstationAttachment(
   if (workstationId instanceof Response) {
     return workstationId;
   }
-  const replaceExisting =
+  let replaceExisting =
     payload.replace_existing === true ||
     payload.replaceExisting === true ||
     payload.intent === "restart";
 
-  const workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
+  // Managed compute has a discovery lease, not an independently connected
+  // workstation. Recheck the provider when Start/Restart is requested; closing
+  // the rail must not make an otherwise healthy provider permanently offline.
+  let workstation;
+  if (workstationId === MANAGED_PYTHON_WORKSTATION) {
+    try {
+      workstation = await ensureManagedPythonWorkstation(env, ownerPrincipal);
+    } catch {
+      return json({ error: "Python provider is unavailable; try again" }, 503);
+    }
+    if (!workstation) return json({ error: "Python provider is unavailable; try again" }, 503);
+  } else workstation = await getWorkstationRow(env, ownerPrincipal, workstationId);
   if (!workstation) {
     return json({ error: "workstation not found" }, 404);
   }
@@ -2376,6 +2387,69 @@ async function routeNotebookWorkstationAttachment(
       },
       409,
     );
+  }
+
+  // Reconstruct the room before catalog deduplication. A saved managed
+  // attachment may refer to an interpreter lost during a service restart.
+  if (workstationId === MANAGED_PYTHON_WORKSTATION) {
+    const room = env.NOTEBOOK_ROOMS.get(env.NOTEBOOK_ROOMS.idFromName(notebookId));
+    const current = await room.fetch(
+      new Request(
+        `https://notebook-room.internal/internal/n/${encodeURIComponent(notebookId)}/workstation-attachment${replaceExisting ? "?resume=false" : ""}`,
+      ),
+    );
+    if (!current.ok) return json({ error: "Python session status is unavailable; try again" }, 503);
+    const { attachment } = (await current.json()) as {
+      attachment?: {
+        workstation_id: string;
+        status: string;
+        runtime_session_id?: string;
+        status_message?: string;
+      } | null;
+    };
+    if (
+      replaceExisting &&
+      attachment?.workstation_id === workstationId &&
+      attachment.runtime_session_id
+    ) {
+      const closed = await room.fetch(
+        new Request(
+          `https://notebook-room.internal/internal/n/${encodeURIComponent(notebookId)}/workstation-attachment`,
+          {
+            method: "DELETE",
+            body: JSON.stringify({ runtime_session_id: attachment.runtime_session_id }),
+          },
+        ),
+      );
+      if (!closed.ok) {
+        const failure: unknown = await closed.json().catch(() => null);
+        return json(
+          {
+            error:
+              isRecord(failure) && typeof failure.error === "string"
+                ? failure.error
+                : "Python termination was not confirmed. Try restarting again.",
+          },
+          503,
+        );
+      }
+    } else if (
+      attachment?.workstation_id === workstationId &&
+      attachment.status === "disconnected"
+    ) {
+      return json(
+        {
+          error:
+            attachment.status_message ??
+            "Python could not reconnect; try again when the service is available",
+        },
+        503,
+      );
+    }
+    // Also covers catalog retirement failing during hydration. Explicit Start
+    // must allocate a fresh generation even if the old job still says running.
+    replaceExisting ||=
+      attachment?.workstation_id === workstationId && attachment.status === "error";
   }
 
   await grantNotebookAclRow(env, {

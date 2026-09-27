@@ -250,6 +250,10 @@ export class OwnerComputeIndex {
   private async failActiveAttachJobsForExpiredLease(
     lease: WorkstationLeaseRecord,
   ): Promise<WorkstationAttachJobRow[]> {
+    // Managed Python renews discovery when the browser asks for the registry;
+    // it has no workstation agent heartbeat. A closed rail says nothing about
+    // notebook interpreter liveness. The room/provider owns those sessions.
+    if (lease.workstation_id === "celld-preview-python") return [];
     if (!this.env.DB) {
       return [];
     }

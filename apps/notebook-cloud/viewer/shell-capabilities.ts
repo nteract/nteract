@@ -195,6 +195,12 @@ export function cloudNotebookShellCapabilities({
     },
     execution: {
       available: effectiveRuntimeAvailable,
+      recoveryAvailable:
+        canChooseHostedWorkstation &&
+        workstationAttachment?.workstation_id === "celld-preview-python" &&
+        workstationAttachment.provider === "celld-pyodide" &&
+        workstationAttachment.status === "disconnected" &&
+        Boolean(workstationAttachment.runtime_session_id),
       canSubmit: connectionScope === "owner",
       requiresDocumentEditPermission: true,
       requiresDocumentMutationSupport: true,

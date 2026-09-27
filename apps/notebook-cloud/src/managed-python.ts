@@ -15,12 +15,18 @@ export async function managedPythonOwnerCanExecute(env: Env, notebookId: string,
 }
 
 /** The authenticated attach job owns compute, which may differ from the notebook creator. */
-export async function managedPythonSessionOwner(env: Env, notebookId: string, sessionId: string) {
+export async function managedPythonSessionOwner(
+  env: Env,
+  notebookId: string,
+  sessionId: string,
+  activeOnly = false,
+) {
   if (!env.DB) return null;
   await ensureCatalogSchema(env);
   const job = await env.DB.prepare(
     `SELECT owner_principal FROM workstation_attach_jobs
-     WHERE id = ? AND notebook_id = ? AND workstation_id = ?`,
+     WHERE id = ? AND notebook_id = ? AND workstation_id = ?
+     ${activeOnly ? "AND status IN ('pending', 'accepted', 'running')" : ""}`,
   )
     .bind(sessionId, notebookId, MANAGED_PYTHON_WORKSTATION)
     .first<{ owner_principal: string }>();

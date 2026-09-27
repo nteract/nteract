@@ -33,6 +33,11 @@ export interface RuntimeExecutionActivity {
   queueDepth: number;
 }
 
+export interface ManagedPythonReconnectFailure {
+  status: "error" | "disconnected";
+  reason: string;
+}
+
 interface RoomCheckpointMetadata {
   version: number;
   notebook_heads: string[];
@@ -66,6 +71,9 @@ export class RoomMaterializer {
     private readonly notebookId: string,
     private readonly state: DurableObjectState,
     private readonly env: Env,
+    private readonly onManagedPythonSessionRestored?: (
+      sessionId: string,
+    ) => Promise<ManagedPythonReconnectFailure | null>,
   ) {}
 
   async syncPeer(peer: RoomPeer): Promise<RoomHostFrameResult> {
@@ -226,7 +234,7 @@ export class RoomMaterializer {
   /** Fence managed lifecycle changes atomically with the room's selected session. */
   async transitionManagedPythonSession(
     sessionId: string,
-    status: "ready" | "error",
+    status: "ready" | "error" | "disconnected",
     reason: string | null = null,
   ): Promise<RoomHostFrameResult> {
     return this.withHost((host) => {
@@ -234,7 +242,7 @@ export class RoomMaterializer {
       if (
         current?.workstation_id !== "celld-preview-python" ||
         current.runtime_session_id !== sessionId ||
-        (status === "ready" && !["connecting", "ready"].includes(current.status))
+        (status === "ready" && !["connecting", "ready", "disconnected"].includes(current.status))
       ) {
         return {
           changed: false,
@@ -245,7 +253,7 @@ export class RoomMaterializer {
         };
       }
       const failed =
-        status === "error"
+        status !== "ready"
           ? normalizeResult(host.reconcile_runtime_peer_gone(reason ?? "Managed Python failed"))
           : null;
       const changed = normalizeResult(
@@ -404,10 +412,41 @@ export class RoomMaterializer {
   }
 
   private async loadHost(): Promise<RoomHostHandle> {
-    this.hostReady ??= this.loadHostFromStorage().catch((error: unknown) => {
-      this.hostReady = undefined;
-      throw error;
-    });
+    this.hostReady ??= this.loadHostFromStorage()
+      .then(async (host) => {
+        const attachment = normalizeWorkstationAttachmentJson(
+          host.get_workstation_attachment_json(),
+        );
+        if (
+          this.onManagedPythonSessionRestored &&
+          attachment?.workstation_id === "celld-preview-python" &&
+          attachment.runtime_session_id &&
+          ["connecting", "ready", "disconnected"].includes(attachment.status)
+        ) {
+          // A room can hibernate independently of its interpreter. Inspect the
+          // provider before exposing saved runtime state, without allocating.
+          const failure = await this.onManagedPythonSessionRestored(attachment.runtime_session_id);
+          // The interpreter may survive, but this runtime peer did not. Work
+          // saved as running may have already produced side effects; neither
+          // it nor the abandoned queue can be replayed by the new peer.
+          host.reconcile_runtime_peer_gone(
+            failure?.reason ?? "The notebook connection restarted; run interrupted cells again.",
+          );
+          host.set_workstation_attachment_json(
+            JSON.stringify({
+              ...attachment,
+              status: failure?.status ?? "connecting",
+              status_message: failure?.reason ?? null,
+              updated_at: new Date().toISOString(),
+            }),
+          );
+        }
+        return host;
+      })
+      .catch((error: unknown) => {
+        this.hostReady = undefined;
+        throw error;
+      });
     return this.hostReady;
   }
 

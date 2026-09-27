@@ -135,8 +135,8 @@ export interface NotebookShellRuntimeCapabilities {
   connected: boolean;
   /**
    * Whether an execution runtime (kernel provider) is available to run cells.
-   * This is the host-neutral signal behind `canExecute`: run/restart/interrupt
-   * stay hidden when no runtime can execute, regardless of edit permission. A
+   * This is the host-neutral signal behind `canExecute`: execution stays
+   * hidden when no runtime can execute, regardless of edit permission. A
    * host with no kernel provider (the hosted prototype today) reports false; a
    * local daemon with a ready session, or a future attached cloud runtime,
    * reports true. Optional so fixtures need not set it.
@@ -180,6 +180,8 @@ export interface NotebookShellCapabilities {
   canEditStructure: boolean;
   canRequestEdit: boolean;
   canExecute: boolean;
+  /** Host-authorized Interrupt/Restart of a retained session whose state is uncertain. */
+  canRecoverRuntime?: boolean;
   canToggleCode: boolean;
   canViewPackages: boolean;
   canManagePackages: boolean;
@@ -457,6 +459,8 @@ export interface NotebookShellControlPolicy {
 
 export interface NotebookShellExecutionPolicy {
   available: boolean;
+  /** Recovery can be available without granting permission to execute cells. */
+  recoveryAvailable?: boolean;
   canSubmit?: boolean;
   requiresDocumentEditPermission?: boolean;
   requiresDocumentMutationSupport?: boolean;
@@ -558,6 +562,7 @@ const NOTEBOOK_SHELL_CAPABILITIES_CACHE_FIELDS = {
   canEditStructure: (capabilities) => capabilities.canEditStructure,
   canRequestEdit: (capabilities) => capabilities.canRequestEdit,
   canExecute: (capabilities) => capabilities.canExecute,
+  canRecoverRuntime: (capabilities) => capabilities.canRecoverRuntime ?? false,
   canToggleCode: (capabilities) => capabilities.canToggleCode,
   canViewPackages: (capabilities) => capabilities.canViewPackages,
   canManagePackages: (capabilities) => capabilities.canManagePackages,
@@ -683,6 +688,7 @@ export const readOnlyNotebookShellCapabilities: NotebookShellCapabilities = Obje
   canEditStructure: false,
   canRequestEdit: false,
   canExecute: false,
+  canRecoverRuntime: false,
   canToggleCode: false,
   canViewPackages: true,
   canManagePackages: false,
@@ -731,11 +737,12 @@ export function projectNotebookShellCapabilities({
     target: runtime?.target ?? null,
   });
   const canRead = accessCapabilities.level !== "none";
-  const canExecute =
-    executionAvailable &&
+  const canSubmitRuntimeCommand =
     (execution?.canSubmit ?? true) &&
     (!execution?.requiresDocumentEditPermission || hasDocumentEditPermission) &&
     (!execution?.requiresDocumentMutationSupport || canMutateFullDocument);
+  const canExecute = executionAvailable && canSubmitRuntimeCommand;
+  const canRecoverRuntime = (execution?.recoveryAvailable ?? false) && canSubmitRuntimeCommand;
   const canToggleCode = controls?.canToggleCode ?? true;
   const canViewPackages = packages?.canView ?? true;
   const canManagePackages =
@@ -753,6 +760,7 @@ export function projectNotebookShellCapabilities({
     canEditStructure: interaction.canEditStructure,
     canRequestEdit: interaction.canRequestEdit,
     canExecute,
+    canRecoverRuntime,
     canToggleCode,
     canViewPackages,
     canManagePackages,
@@ -775,6 +783,7 @@ export function stabilizeNotebookShellCapabilities(
     canEditStructure: capabilities.canEditStructure,
     canRequestEdit: capabilities.canRequestEdit,
     canExecute: capabilities.canExecute,
+    canRecoverRuntime: capabilities.canRecoverRuntime ?? false,
     canToggleCode: capabilities.canToggleCode,
     canViewPackages: capabilities.canViewPackages,
     canManagePackages: capabilities.canManagePackages,

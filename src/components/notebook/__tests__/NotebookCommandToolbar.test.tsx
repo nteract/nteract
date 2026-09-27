@@ -23,6 +23,39 @@ const editableToolbarCapabilities = {
 };
 
 describe("NotebookCommandToolbar", () => {
+  it("keeps existing recovery controls reachable while execution is unavailable", () => {
+    const onRestartRuntime = vi.fn();
+    const onInterruptRuntime = vi.fn();
+    const onReconnect = vi.fn();
+    render(
+      <NotebookCommandToolbar
+        capabilities={{
+          ...editableToolbarCapabilities,
+          canExecute: false,
+          canRecoverRuntime: true,
+        }}
+        runtimeStatus={{ state: "error", label: "disconnected", ariaLabel: "Kernel: disconnected" }}
+        onRestartRuntime={onRestartRuntime}
+        onInterruptRuntime={onInterruptRuntime}
+        onRunAllCells={() => {}}
+        onRestartAndRunAll={() => {}}
+        workstationAction={{
+          label: "Start compute",
+          title: "Reconnect to Python",
+          onClick: onReconnect,
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("restart-kernel-button"));
+    fireEvent.click(screen.getByTestId("interrupt-kernel-button"));
+    fireEvent.click(screen.getByRole("button", { name: "Start compute" }));
+    expect(onRestartRuntime).toHaveBeenCalledOnce();
+    expect(onInterruptRuntime).toHaveBeenCalledOnce();
+    expect(onReconnect).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("run-all-button")).toBeNull();
+    expect(screen.queryByTestId("restart-run-all-button")).toBeNull();
+  });
+
   it("renders shared desktop command controls when host capabilities allow them", () => {
     const onAddCell = vi.fn();
     const onRunAllCells = vi.fn();

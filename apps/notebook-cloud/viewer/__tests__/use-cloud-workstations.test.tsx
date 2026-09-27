@@ -1,6 +1,10 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { readOnlyNotebookShellCapabilities, type NotebookShellCapabilities } from "runtimed";
+import {
+  readOnlyNotebookShellCapabilities,
+  type NotebookShellCapabilities,
+  type WorkstationAttachmentState,
+} from "runtimed";
 
 import type { CloudPrototypeAuthState } from "../collaborator-auth";
 
@@ -69,6 +73,8 @@ function renderManager(
     canLoadCloudWorkstations?: boolean;
     capabilities?: NotebookShellCapabilities;
     panelIsOpen?: boolean;
+    workstationAttachment?: WorkstationAttachmentState;
+    onOpenWorkstationsRail?: () => void;
   } = {},
 ) {
   return renderHook(() =>
@@ -77,9 +83,9 @@ function renderManager(
       authState: devAuth,
       capabilities: options.capabilities ?? ownerCloudCapabilities,
       canLoadCloudWorkstations: options.canLoadCloudWorkstations ?? true,
-      workstationAttachment: null,
+      workstationAttachment: options.workstationAttachment ?? null,
       panelIsOpen: options.panelIsOpen ?? false,
-      onOpenWorkstationsRail: vi.fn(),
+      onOpenWorkstationsRail: options.onOpenWorkstationsRail ?? vi.fn(),
     }),
   );
 }
@@ -119,6 +125,31 @@ describe("useCloudWorkstationManager pairing", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("Review compute opens the rail without creating a machine pairing", async () => {
+    const onOpenWorkstationsRail = vi.fn();
+    const { result } = renderManager({
+      onOpenWorkstationsRail,
+      workstationAttachment: {
+        workstation_id: "celld-preview-python",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "saved-session",
+      },
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.workstationAction?.label).toBe("Review compute");
+    await act(async () => {
+      result.current.workstationAction?.onClick();
+    });
+    expect(onOpenWorkstationsRail).toHaveBeenCalledOnce();
+    expect(clientMocks.mintCloudWorkstationPairingCode).not.toHaveBeenCalled();
   });
 
   it("does not load the workstation registry for authenticated viewers", async () => {
