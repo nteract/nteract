@@ -53,7 +53,7 @@ export interface ProjectNotebookCommandRuntimeStatusOptions {
 
 export interface ProjectNotebookCommandRuntimeActionsOptions {
   actions?: NotebookCommandRuntimeActionAvailability;
-  capabilities: Pick<NotebookShellCapabilities, "canExecute">;
+  capabilities: Pick<NotebookShellCapabilities, "canExecute" | "canRecoverRuntime">;
   runtimeStatus?: Pick<NotebookCommandRuntimeStatusProjection, "state"> | null;
 }
 
@@ -198,6 +198,7 @@ export function projectNotebookCommandRuntimeActions({
   };
   const cacheKey = stableCacheKey([
     capabilities.canExecute,
+    capabilities.canRecoverRuntime ?? false,
     runtimeState,
     actionAvailability.interruptRuntime,
     actionAvailability.restartAndRunAll,
@@ -212,13 +213,16 @@ export function projectNotebookCommandRuntimeActions({
   const isRuntimeRunning =
     runtimeState === "idle" || runtimeState === "busy" || runtimeState === "starting";
   const canUseRuntimeAction = hasRuntimeStatus && capabilities.canExecute;
+  const canRecoverRuntime = hasRuntimeStatus && Boolean(capabilities.canRecoverRuntime);
   const showRuntimeStart =
     canUseRuntimeAction && !isRuntimeRunning && actionAvailability.startRuntime;
   const showRunAll = canUseRuntimeAction && actionAvailability.runAllCells;
-  const showRestart = canUseRuntimeAction && actionAvailability.restartRuntime;
+  const showRestart =
+    (canUseRuntimeAction || canRecoverRuntime) && actionAvailability.restartRuntime;
   const showRestartAndRunAll = canUseRuntimeAction && actionAvailability.restartAndRunAll;
   const showInterrupt =
-    canUseRuntimeAction && isRuntimeRunning && actionAvailability.interruptRuntime;
+    ((canUseRuntimeAction && isRuntimeRunning) || canRecoverRuntime) &&
+    actionAvailability.interruptRuntime;
   const projection = Object.freeze({
     hasRuntimeStatus,
     isRuntimeRunning,

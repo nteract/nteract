@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cloudNotebookShellCapabilities } from "../viewer/shell-capabilities";
+import {
+  cloudNotebookShellCapabilities,
+  type CloudNotebookShellCapabilityInput,
+} from "../viewer/shell-capabilities";
 import type { CloudPrototypeAuthState } from "../viewer/collaborator-auth";
 
 function authState(
@@ -17,6 +20,65 @@ function authState(
     problem: mode === "invalid" || mode === "oidc_expired" ? "auth problem" : null,
   };
 }
+
+test("a managed disconnected session offers recovery without claiming execution is available", () => {
+  const retainedAttachment = {
+    workstation_id: "celld-preview-python",
+    display_name: "Python",
+    provider: "celld-pyodide",
+    default_environment_label: "Python",
+    environment_policy: "curated",
+    status: "disconnected",
+    runtime_session_id: "retained-session",
+  };
+  const input: CloudNotebookShellCapabilityInput = {
+    authState: authState("oidc", "owner"),
+    connectionScope: "owner",
+    hasCodeCells: true,
+    selectedMode: "edit",
+    runtimePeerCount: 0,
+    workstationAttachment: retainedAttachment,
+  };
+  const capabilities = cloudNotebookShellCapabilities(input);
+  assert.equal(capabilities.canRecoverRuntime, true);
+  assert.equal(capabilities.canExecute, false);
+  assert.equal(capabilities.runtime.executionAvailable, false);
+  assert.equal(capabilities.runtime.connected, false);
+  assert.equal(capabilities.runtime.target?.status, "offline");
+
+  for (const overrides of [
+    { connectionScope: "editor" },
+    { connectionScope: "viewer" },
+    { connectionScope: "runtime_peer" },
+    { connectionScope: null, accessConnectionScope: "owner" },
+    { authState: authState("oidc_expired", "owner") },
+    { selectedMode: "view" },
+    { canAcceptCellMutations: false },
+    { workstationAttachment: null },
+  ] satisfies Partial<CloudNotebookShellCapabilityInput>[]) {
+    assert.equal(
+      cloudNotebookShellCapabilities({ ...input, ...overrides }).canRecoverRuntime,
+      false,
+    );
+  }
+
+  for (const overrides of [
+    { workstation_id: "physical-workstation" },
+    { provider: "local_daemon" },
+    { runtime_session_id: null },
+    { status: "error" },
+    { status: "idle" },
+    { status: "ready" },
+  ]) {
+    assert.equal(
+      cloudNotebookShellCapabilities({
+        ...input,
+        workstationAttachment: { ...retainedAttachment, ...overrides },
+      }).canRecoverRuntime,
+      false,
+    );
+  }
+});
 
 test("cloud shell capabilities keep viewer scope read-only", () => {
   const capabilities = cloudNotebookShellCapabilities({
