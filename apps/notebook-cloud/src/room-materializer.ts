@@ -231,6 +231,13 @@ export class RoomMaterializer {
     });
   }
 
+  /** A confirmed intentional stop is idle compute, not a failed attachment. */
+  async stopManagedPythonSession(sessionId: string, reason: string): Promise<RoomHostFrameResult> {
+    return this.withHost((host) =>
+      normalizeResult(host.reconcile_runtime_stopped(sessionId, reason)),
+    );
+  }
+
   /** Fence managed lifecycle changes atomically with the room's selected session. */
   async transitionManagedPythonSession(
     sessionId: string,

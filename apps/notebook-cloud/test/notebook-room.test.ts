@@ -4441,6 +4441,61 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(fixture.db.attachJobs[0].status, "failed");
   });
 
+  it("publishes intentional restart to every viewer without a transient compute error", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("connecting", {
+      immediateOpen: Response.json({ ok: true }),
+    });
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    await fixture.seed(owner);
+    await fixture.execute(owner);
+    await fixture.drain();
+    await owner.sync();
+    const observer = await fixture.connect("observer");
+    assert.equal(owner.runtimeState().workstation?.status, "ready");
+    const completed = owner.runtimeState().executions;
+    assert.equal(Object.values(completed)[0].status, "done");
+    const content = owner.client.get_cells_json();
+    const offsets = [owner.runtimeHistory.length, observer.runtimeHistory.length];
+
+    const response = await fixture.room.fetch(
+      new Request("https://room/internal/n/demo/workstation-attachment", {
+        method: "DELETE",
+        body: JSON.stringify({ runtime_session_id: "managed-job" }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    await fixture.drain();
+    for (const [index, connection] of [owner, observer].entries()) {
+      await connection.sync();
+      const transitions = connection.runtimeHistory.slice(offsets[index]);
+      assert.ok(transitions.length > 0, "viewer received the stop transition");
+      for (const state of transitions) {
+        assert.notEqual(state.workstation?.status, "error");
+        assert.notEqual(state.workstation?.status, "disconnected");
+        assert.notEqual(state.kernel.lifecycle.lifecycle, "Error");
+      }
+      const stopped = connection.runtimeState();
+      assert.equal(stopped.kernel.lifecycle.lifecycle, "Shutdown");
+      assert.equal(stopped.workstation?.status, "idle");
+      assert.deepEqual(stopped.executions, completed, "completed results are retained");
+      assert.equal(connection.client.get_cells_json(), content, "notebook content is retained");
+    }
+    assert.equal(fixture.db.attachJobs[0].status, "completed");
+    assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, 1);
+
+    const replacement = await fixture.startReplacement(true);
+    assert.notEqual(replacement, "managed-job");
+    await fixture.drain();
+    await owner.sync();
+    assert.equal(owner.runtimeState().workstation?.status, "ready");
+    assert.equal(
+      fixture.requests.filter((request) => request.path === "/execute").length,
+      1,
+      "Restart alone does not replay completed execution",
+    );
+  });
+
   for (const action of ["restart", "interrupt"] as const) {
     it(`allows explicit ${action} of a busy survivor only after disposal is confirmed`, async (t) => {
       let finish!: () => void;
@@ -4527,6 +4582,17 @@ describe("NotebookRoom materialized sync routing", () => {
       await executing;
       assert.equal(pool.has(key), false);
       assert.equal(disposed, 1);
+      await fixture.drain();
+      await reconnected.sync();
+      assert.equal(
+        reconnected.runtimeState().workstation?.status,
+        action === "restart" ? "idle" : "error",
+      );
+      assert.equal(fixture.db.attachJobs[0].status, action === "restart" ? "completed" : "failed");
+      if (action === "restart") {
+        assert.equal(reconnected.runtimeState().kernel.lifecycle.lifecycle, "Shutdown");
+        assert.equal(reconnected.runtimeState().kernel.error_details, "");
+      }
       const replacement = await fixture.startReplacement(true);
       assert.notEqual(replacement, "managed-job");
       assert.equal(created, 3, "the owner's full pool admits replacement after confirmed close");
@@ -6997,6 +7063,7 @@ function roomHarness(room: NotebookRoom): RoomHarness {
 }
 
 type ManagedAdmissionRuntimeState = {
+  kernel: { lifecycle: { lifecycle: string }; error_details?: string | null };
   executions: Record<
     string,
     { status: string; source: string; outputs: Array<{ text?: { inline: string } }> }
@@ -7142,6 +7209,7 @@ async function managedPythonAdmissionFixture(
     const client = NotebookHandle.create_bootstrap(peer.identity.actorLabel);
     clients.push(client);
     let received = 0;
+    const runtimeHistory: ManagedAdmissionRuntimeState[] = [];
     const sync = async () => {
       await harness.syncPeerFromRoomHost("demo", peer);
       while (received < socket.sent.length) {
@@ -7157,6 +7225,7 @@ async function managedPythonAdmissionFixture(
               encodeTypedFrame(frame[0], new Uint8Array(event.reply)),
             );
         if (frame[0] === FrameType.RUNTIME_STATE_SYNC) {
+          runtimeHistory.push(client.get_runtime_state() as ManagedAdmissionRuntimeState);
           const reply = client.generate_runtime_state_sync_reply();
           if (reply)
             await room.webSocketMessage(
@@ -7171,6 +7240,7 @@ async function managedPythonAdmissionFixture(
       peer,
       client,
       sync,
+      runtimeHistory,
       response: (requestId: string) =>
         new Promise<Record<string, unknown>>((resolve) => {
           responses.set(requestId, resolve);

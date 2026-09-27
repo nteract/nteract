@@ -1446,6 +1446,7 @@ export class NotebookRoom {
             notebookId,
             managed?.runtime.sessionId ?? startingSessionId!,
             "Python interrupted; restart compute to continue. Variables were discarded.",
+            "interrupt",
           );
           response = { result: "interrupt_sent" };
         } catch (error) {
@@ -2656,6 +2657,7 @@ export class NotebookRoom {
     notebookId: string,
     sessionId: string,
     reason = "Python was stopped for restart. Variables were discarded.",
+    intent: "restart" | "interrupt" = "restart",
   ): Promise<void> {
     const alreadyRetired = this.retiredManagedPythonSessions.has(sessionId);
     this.retiredManagedPythonSessions.add(sessionId);
@@ -2683,13 +2685,44 @@ export class NotebookRoom {
         throw new Error(`Python termination was not confirmed (${response.status})`);
       terminationConfirmed = true;
       this.pendingManagedPythonProbes.delete(sessionId);
-      await this.failManagedPythonSession(notebookId, sessionId, new Error(reason), ownerPrincipal);
+      if (intent === "restart") {
+        // Retire the old catalog generation before exposing idle compute, so
+        // concurrent explicit Run/Start requests cannot reuse a closed session.
+        await updateWorkstationAttachJobStatus(this.env, {
+          ownerPrincipal,
+          workstationId: MANAGED_PYTHON_WORKSTATION,
+          jobId: sessionId,
+          status: "completed",
+        });
+        const materializer = this.materializerFor(notebookId);
+        const stopped = await materializer.stopManagedPythonSession(sessionId, reason);
+        this.deliverRoomHostFrames(notebookId, stopped);
+        await this.checkpointRoomHost(notebookId, materializer, "managed_python_stopped");
+        await this.publishCurrentComputeSessionSummary(notebookId);
+      } else {
+        await this.failManagedPythonSession(
+          notebookId,
+          sessionId,
+          new Error(reason),
+          ownerPrincipal,
+        );
+      }
       cloudLog("info", "managed_python.explicit_reset", {
         notebook_id: notebookId,
         session_id: sessionId,
         outcome: "closed",
       });
     } catch (error) {
+      if (terminationConfirmed && intent === "restart") {
+        // A real persistence failure still needs an error/retry state, even if
+        // the normal stop was already published. Do not leave a false success.
+        try {
+          await this.failManagedPythonSession(notebookId, sessionId, error);
+        } catch {
+          // failManagedPythonSession publishes the terminal state even when
+          // the catalog or checkpoint is still unavailable.
+        }
+      }
       const selected = await this.materializerFor(notebookId).getWorkstationAttachment();
       if (
         !terminationConfirmed &&
