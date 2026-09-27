@@ -2508,6 +2508,7 @@ export class NotebookRoom {
         const materializer = this.materializerFor(notebookId);
         const selected = await materializer.getWorkstationAttachment();
         if (
+          !this.retiredManagedPythonSessions.has(sessionId) &&
           selected?.runtime_session_id === sessionId &&
           selected.status !== "error" &&
           (selected.status !== "disconnected" || error instanceof ManagedPythonSessionLostError)
@@ -2685,6 +2686,7 @@ export class NotebookRoom {
         throw new Error(`Python termination was not confirmed (${response.status})`);
       terminationConfirmed = true;
       this.pendingManagedPythonProbes.delete(sessionId);
+      let ignoredStale = false;
       if (intent === "restart") {
         // Retire the old catalog generation before exposing idle compute, so
         // concurrent explicit Run/Start requests cannot reuse a closed session.
@@ -2696,8 +2698,10 @@ export class NotebookRoom {
         });
         const materializer = this.materializerFor(notebookId);
         const stopped = await materializer.stopManagedPythonSession(sessionId, reason);
+        ignoredStale = stopped.ignored_stale ?? false;
         this.deliverRoomHostFrames(notebookId, stopped);
-        await this.checkpointRoomHost(notebookId, materializer, "managed_python_stopped");
+        if (!(await this.checkpointRoomHost(notebookId, materializer, "managed_python_stopped")))
+          throw new Error("Python stop checkpoint failed");
         await this.publishCurrentComputeSessionSummary(notebookId);
       } else {
         await this.failManagedPythonSession(
@@ -2710,14 +2714,19 @@ export class NotebookRoom {
       cloudLog("info", "managed_python.explicit_reset", {
         notebook_id: notebookId,
         session_id: sessionId,
+        intent,
+        ignored_stale: ignoredStale,
         outcome: "closed",
       });
     } catch (error) {
+      const persistenceFailure = new ManagedPythonResetPersistenceError(
+        "Python stopped, but recovery could not be saved. Try Start compute again.",
+      );
       if (terminationConfirmed && intent === "restart") {
         // A real persistence failure still needs an error/retry state, even if
         // the normal stop was already published. Do not leave a false success.
         try {
-          await this.failManagedPythonSession(notebookId, sessionId, error);
+          await this.failManagedPythonSession(notebookId, sessionId, persistenceFailure);
         } catch {
           // failManagedPythonSession publishes the terminal state even when
           // the catalog or checkpoint is still unavailable.
@@ -2736,13 +2745,11 @@ export class NotebookRoom {
       cloudLog("warn", "managed_python.explicit_reset_failed", {
         notebook_id: notebookId,
         session_id: sessionId,
+        intent,
         outcome: terminationConfirmed ? "closed_before_persistence_failure" : "unconfirmed",
         error: errorMessage(error).slice(0, 600),
       });
-      if (terminationConfirmed)
-        throw new ManagedPythonResetPersistenceError(
-          "Python stopped, but recovery could not be saved. Try Start compute again.",
-        );
+      if (terminationConfirmed) throw persistenceFailure;
       throw error;
     } finally {
       await closing;

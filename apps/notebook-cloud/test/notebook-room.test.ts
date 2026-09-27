@@ -4489,6 +4489,10 @@ describe("NotebookRoom materialized sync routing", () => {
     await fixture.drain();
     await owner.sync();
     assert.equal(owner.runtimeState().workstation?.status, "ready");
+    for (const [index, connection] of [owner, observer].entries()) {
+      await connection.sync();
+      assertNoComputeFailure(connection.runtimeHistory.slice(offsets[index]));
+    }
     assert.equal(
       fixture.requests.filter((request) => request.path === "/execute").length,
       1,
@@ -4578,6 +4582,7 @@ describe("NotebookRoom materialized sync routing", () => {
       assert.equal(pool.has(key), true);
       assert.equal(disposed, 0);
       rejectClose = false;
+      const restartOffset = reconnected.runtimeHistory.length;
       assert.equal(await reset(), true);
       await executing;
       assert.equal(pool.has(key), false);
@@ -4596,6 +4601,11 @@ describe("NotebookRoom materialized sync routing", () => {
       const replacement = await fixture.startReplacement(true);
       assert.notEqual(replacement, "managed-job");
       assert.equal(created, 3, "the owner's full pool admits replacement after confirmed close");
+      if (action === "restart") {
+        await fixture.drain();
+        await reconnected.sync();
+        assertNoComputeFailure(reconnected.runtimeHistory.slice(restartOffset));
+      }
     });
   }
 
@@ -5283,6 +5293,97 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.deepEqual(Object.keys(owner.runtimeState().executions), [executionId]);
     assert.equal(owner.runtimeState().executions[executionId].status, "done");
     assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, 1);
+  });
+
+  for (const pendingStage of ["owner lookup", "package restore"] as const) {
+    it(`restarts during ${pendingStage} without letting late startup publish a failure`, async (t) => {
+      let enteredPackages!: () => void;
+      let releasePackages!: () => void;
+      const installing = new Promise<void>((resolve) => {
+        enteredPackages = resolve;
+      });
+      const heldPackages = new Promise<void>((resolve) => {
+        releasePackages = resolve;
+      });
+      const fixture = await managedPythonAdmissionFixture("connecting", {
+        holdOwnerLookup: pendingStage === "owner lookup",
+        immediateOpen: Response.json({ ok: true }),
+        packageResponse: async () => {
+          enteredPackages();
+          await heldPackages;
+          return Response.json({ status: "ready", installed: ["six==1.0"] });
+        },
+      });
+      t.after(async () => {
+        releasePackages();
+        fixture.releaseOwnerLookup();
+        await fixture.close();
+      });
+      if (pendingStage === "package restore") {
+        await fixture.materializer.compareSetCloudPackageManifest(null, {
+          version: 1,
+          pyodide: "0.28.3",
+          requirements: ["six==1.0"],
+          wheels: [],
+        });
+      }
+      const owner = await fixture.connect("owner");
+      await fixture.seed(owner);
+      const observer = await fixture.connect("observer");
+      await fixture.execute(owner);
+      await (pendingStage === "owner lookup" ? fixture.ownerLookupEntered : installing);
+      await owner.sync();
+      await observer.sync();
+      const [executionId] = Object.keys(owner.runtimeState().executions);
+      assert.equal(owner.runtimeState().executions[executionId].status, "queued");
+      const offsets = [owner.runtimeHistory.length, observer.runtimeHistory.length];
+
+      const response = await fixture.room.fetch(
+        new Request("https://room/internal/n/demo/workstation-attachment", {
+          method: "DELETE",
+          body: JSON.stringify({ runtime_session_id: "managed-job" }),
+        }),
+      );
+      assert.equal(response.status, 200);
+      fixture.releaseOwnerLookup();
+      releasePackages();
+      await fixture.drain();
+      for (const [index, connection] of [owner, observer].entries()) {
+        await connection.sync();
+        assert.equal(connection.runtimeState().executions[executionId].status, "cancelled");
+        assert.equal(connection.runtimeState().workstation?.status, "idle");
+        assertNoComputeFailure(connection.runtimeHistory.slice(offsets[index]));
+      }
+      assert.equal(fixture.db.attachJobs[0].status, "completed");
+      assert.equal(fixture.requests.filter((r) => r.path === "/execute").length, 0);
+    });
+  }
+
+  it("reports a confirmed stop whose checkpoint failed as a recoverable failure", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("connecting", {
+      immediateOpen: Response.json({ ok: true }),
+    });
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    await fixture.seed(owner);
+    await fixture.execute(owner);
+    await fixture.drain();
+    t.mock.method(fixture.materializer, "checkpoint", async () => {
+      throw new Error("internal storage detail");
+    });
+    const response = await fixture.room.fetch(
+      new Request("https://room/internal/n/demo/workstation-attachment", {
+        method: "DELETE",
+        body: JSON.stringify({ runtime_session_id: "managed-job" }),
+      }),
+    );
+    assert.equal(response.status, 503);
+    const { error } = (await response.json()) as { error: string };
+    assert.match(error, /Python stopped, but recovery could not be saved/);
+    await owner.sync();
+    assert.equal(owner.runtimeState().workstation?.status, "error");
+    assert.equal(owner.runtimeState().workstation?.status_message, error);
+    assert.equal(fixture.db.attachJobs[0].status, "completed", "disposal was confirmed");
   });
 
   it("interrupts accepted managed intent while startup is still resolving its owner", async (t) => {
@@ -7071,6 +7172,15 @@ type ManagedAdmissionRuntimeState = {
   queue: { executing: unknown; queued: Array<{ execution_id: string }> };
   workstation?: { status?: string; status_message?: string | null; runtime_session_id?: string };
 };
+
+function assertNoComputeFailure(states: ManagedAdmissionRuntimeState[]) {
+  assert.ok(states.length > 0, "viewer received runtime transitions");
+  for (const state of states) {
+    assert.notEqual(state.workstation?.status, "error");
+    assert.notEqual(state.workstation?.status, "disconnected");
+    assert.notEqual(state.kernel.lifecycle.lifecycle, "Error");
+  }
+}
 
 async function managedPythonAdmissionFixture(
   status: "connecting" | "ready",
