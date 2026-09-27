@@ -114,11 +114,17 @@ export function CompactExecutionButton({
             : "Run cell"
     : readoutTitle;
   const classNameValue = cn(
-    "group/exec inline-flex size-5 items-center justify-center rounded-full",
+    "group/exec inline-flex size-5 shrink-0 items-center justify-center rounded-full max-sm:size-6 [@media(hover:none)]:size-6",
     "transition-colors duration-150",
     canExecute && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
     state === "idle" &&
       "text-muted-foreground/35 opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100",
+    // A first Run also starts hosted compute. Keep touch controls discoverable
+    // without focus or hover, including when the caller hides cell content.
+    canExecute && "max-sm:opacity-100 [@media(hover:none)]:opacity-100",
+    canExecute &&
+      state === "idle" &&
+      "max-sm:text-muted-foreground [@media(hover:none)]:text-muted-foreground",
     state === "idle" && isCellFocused && "opacity-70",
     state === "ran" && "text-muted-foreground/45 hover:bg-primary/5 hover:text-primary",
     state === "queued" && "text-sky-600 dark:text-sky-400",
