@@ -68,6 +68,11 @@ test("shipped package versions match the initial interpreter inventory before no
     wheels.length < Object.keys(locked.packages).length,
     "the full Pyodide catalog is not preinstalled",
   );
+  assert.equal(
+    locked.packages.tensorflow,
+    undefined,
+    "tensorflow is absent from the pinned catalog",
+  );
   installed.push("notebook-addition==1.0");
   assert.ok(
     !included.includes("notebook-addition==1.0"),
@@ -235,8 +240,10 @@ test(
         ),
         0,
       );
-      await assert.rejects(resolver.resolve(["tensorflow"]), /compatible/);
-      assert.equal(disposed, 4);
+      const included = await resolver.resolve(["pyarrow==22.0.0"]);
+      assert.deepEqual(included.wheels, [], "included PyArrow does not need a PyPI wheel");
+      await assert.rejects(resolver.resolve(["tensorflow"]), { code: "unsupported_distribution" });
+      assert.equal(disposed, 5);
     } finally {
       plan.destroy();
       install.destroy();

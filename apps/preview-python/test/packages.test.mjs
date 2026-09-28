@@ -282,12 +282,137 @@ test("safe package errors distinguish expected failures without exposing arbitra
     "planner_unavailable",
     "incompatible",
     "unavailable",
+    "unsupported_distribution",
+    "package_not_found",
+    "metadata_failed",
+    "acquisition_limit",
   ]) {
     assert.equal(safePackageFailure(new PackageOperationError(code)).code, code);
   }
   const failure = safePackageFailure(new Error("untrusted wheel metadata SECRET"));
   assert.equal(failure.code, "acquisition_failed");
   assert.ok(!failure.error.includes("SECRET"));
+});
+
+const metadataEntry = (value) => ({
+  filename: value.filename,
+  url: value.url,
+  size: value.size,
+  digests: { sha256: value.sha256 },
+});
+
+test("native-only metadata is an unsupported distribution, not a metadata fetch failure", async () => {
+  let installs = 0;
+  let disposals = 0;
+  const previous = { ...empty, requirements: ["requests"], wheels: [wheel("requests")] };
+  const resolver = new PackageResolver({
+    create: async () => ({
+      plan: async () => ({ status: "fetch", url: "https://pypi.org/pypi/tensorflow/json" }),
+      dispose: async () => {
+        disposals++;
+      },
+    }),
+    fetchImpl: async () =>
+      Response.json({
+        releases: {
+          "2.20.0": [
+            {
+              ...metadataEntry(wheel("tensorflow")),
+              filename: "tensorflow-2.20.0-cp313-cp313-manylinux_2_17_x86_64.whl",
+            },
+          ],
+        },
+      }),
+  });
+  const result = await installPackageManifest(
+    {
+      runtime: {
+        install: async () => {
+          installs++;
+        },
+      },
+      installed: ["requests==1.0"],
+      signal: signal(),
+    },
+    { operation: "add", requirement: "tensorflow", manifest: previous },
+    resolver,
+  ).catch(safePackageFailure);
+  assert.equal(result.code, "unsupported_distribution");
+  assert.match(result.error, /Included with Python/);
+  assert.equal(result.needs_restart, false);
+  assert.equal(result.manifest, undefined);
+  assert.equal(installs, 0);
+  assert.equal(disposals, 1);
+  assert.deepEqual(previous.requirements, ["requests"]);
+});
+
+test("metadata errors distinguish missing names from service, network and malformed responses", async () => {
+  const cases = [
+    [() => new Response("SECRET", { status: 404 }), "package_not_found"],
+    [() => new Response("SECRET", { status: 503 }), "metadata_failed"],
+    [
+      () => {
+        throw new Error("SECRET");
+      },
+      "metadata_failed",
+    ],
+    [() => new Response("SECRET"), "metadata_failed"],
+    [() => Response.json({ releases: null }), "metadata_failed"],
+  ];
+  for (const [fetchImpl, code] of cases) {
+    const acquisition = new PackageAcquisition({ fetchImpl });
+    await assert.rejects(acquisition.acquire("https://pypi.org/pypi/example/json"), (error) => {
+      const failure = safePackageFailure(error);
+      assert.equal(failure.code, code);
+      assert.equal(failure.needs_restart, false);
+      assert.ok(!failure.error.includes("SECRET"));
+      return true;
+    });
+  }
+});
+
+test("filtered metadata retains pure wheels and leaves version solving to micropip", async () => {
+  const pure = metadataEntry(wheel("example"));
+  const native = { ...pure, filename: "example-2.0-cp313-cp313-linux_x86_64.whl" };
+  const acquisition = new PackageAcquisition({
+    fetchImpl: async () =>
+      Response.json({
+        releases: { "1.0": [pure], "2.0": [native], "3.0": [] },
+      }),
+  });
+  const artifact = await acquisition.acquire("https://pypi.org/pypi/example/json");
+  assert.deepEqual(JSON.parse(artifact.body).releases, { "1.0": [pure] });
+  await assert.rejects(acquisition.acquire("https://files.pythonhosted.org/unapproved.whl"));
+});
+
+test("a metadata cancellation preserves the abort reason", async () => {
+  const controller = new AbortController();
+  const reason = new Error("cancelled");
+  const acquisition = new PackageAcquisition({
+    signal: controller.signal,
+    fetchImpl: async () => {
+      controller.abort(reason);
+      throw reason;
+    },
+  });
+  await assert.rejects(
+    acquisition.acquire("https://pypi.org/pypi/example/json"),
+    (error) => error === reason,
+  );
+});
+
+test("oversized metadata reports a limit instead of suggesting another download attempt", async () => {
+  for (const streamed of [false, true]) {
+    const acquisition = new PackageAcquisition({
+      fetchImpl: async () =>
+        streamed
+          ? new Response(new Uint8Array(8 * 1024 * 1024 + 1))
+          : new Response("", { headers: { "content-length": String(8 * 1024 * 1024 + 1) } }),
+    });
+    await assert.rejects(acquisition.acquire("https://pypi.org/pypi/example/json"), {
+      code: "acquisition_limit",
+    });
+  }
 });
 
 test("an acquisition deadline does not negate a confirmed install", async (t) => {
