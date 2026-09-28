@@ -198,6 +198,7 @@ export function ManagedPythonPackages({
         <p className="pt-2 leading-5 text-muted-foreground">
           Compatible pure Python wheels from PyPI and the included scientific packages. Packages
           requiring other native extensions, source builds, or external wheel URLs are unsupported.
+          Use this panel to install packages; code cells cannot download them with pip or micropip.
         </p>
       </details>
       {readOnly && (

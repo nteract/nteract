@@ -51,3 +51,25 @@ references remain rejected. Chunked Arrow manifests are not yet emitted here.
 Rich output has a 128 MiB serialized budget per execution, with a separate 2 MiB
 text-stream budget and a reserved diagnostic. The adapter independently bounds
 the result to 129 MiB, including provenance and diagnostics.
+
+## Package availability
+
+The runtime is pinned to Pyodide 0.29.4. Its build bundles the `ipython`, `numpy`,
+`pandas`, `matplotlib`, `micropip`, and `pyarrow` dependency closure from the
+hash-verified Pyodide lockfile. The
+Packages panel's **Included with Python** inventory describes that deployed
+subset, not the full upstream Pyodide catalog. Compiled libraries are packaged
+as static Wasm modules and loaded during interpreter initialization; the loader
+rejects modules that were not bundled.
+
+Additional packages resolve through a disposable offline micropip planner.
+The trusted provider downloads bounded, hash-checked pure Python wheels from
+PyPI, and the tenant installs local `emfs:` wheel paths with `deps=False`.
+Calling `micropip.install("name")` in a cell cannot use that acquisition service:
+guest network access remains disabled. Use the Packages panel so successful
+requirements and their pinned wheels are saved and restored on restart.
+
+Compiled libraries outside the included subset need compatible Wasm artifacts,
+their dependency closure, and qualification of the static loader on celld.
+Ordinary native PyPI wheels cannot run in this interpreter. A newer upstream
+catalog or a successful Node import does not establish hosted support.

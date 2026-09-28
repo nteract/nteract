@@ -17,7 +17,13 @@ const PACKAGE_ERRORS = Object.freeze({
   incompatible:
     "A requested version conflicts with an included package. The included scientific package versions are fixed.",
   unavailable:
-    "No compatible package set was found. Check the names and versions; only pure Python wheels and included scientific packages are supported.",
+    "No compatible package set was found. Check the requested versions and dependency constraints; additional packages need supported pure Python wheels.",
+  unsupported_distribution:
+    "A package or dependency has no distribution supported by hosted Python. Additional packages need pure Python wheels within the download limits. Compiled packages must be listed under Included with Python; others require an updated hosted runtime or a local Python environment.",
+  package_not_found: "A package or dependency was not found on PyPI. Check the package name.",
+  metadata_failed: "Package information could not be retrieved from PyPI. Try again shortly.",
+  acquisition_limit:
+    "Package information or downloads exceed the hosted size limits. Try fewer requirements or use a local Python environment.",
   resolution_limit: "Package resolution limit exceeded. Try fewer requirements at a time.",
 });
 
@@ -119,10 +125,9 @@ export function validateLockedWheel(value) {
   return { name, version, filename, url, sha256, size, dependencies };
 }
 
-async function readBounded(response, limit) {
+async function readBounded(response, limit, oversized) {
   if (!response.ok || response.redirected) throw new Error("Package download failed");
-  if (Number(response.headers.get("content-length")) > limit)
-    throw new Error("Package size limit exceeded");
+  if (Number(response.headers.get("content-length")) > limit) throw oversized;
   const reader = response.body.getReader();
   const chunks = [];
   let size = 0;
@@ -133,7 +138,7 @@ async function readBounded(response, limit) {
       size += value.byteLength;
       if (size > limit) {
         await reader.cancel();
-        throw new Error("Package size limit exceeded");
+        throw oversized;
       }
       chunks.push(value);
     }
@@ -168,7 +173,7 @@ export class PackageAcquisition {
     this.#signal = signal;
   }
 
-  async #read(url, limit) {
+  async #read(url, limit, { metadata = false } = {}) {
     this.#signal?.throwIfAborted();
     const response = await this.#fetch(url, {
       method: "GET",
@@ -176,7 +181,14 @@ export class PackageAcquisition {
       credentials: "omit",
       signal: this.#signal,
     });
-    const bytes = await readBounded(response, Math.min(limit, MAX_TOTAL_BYTES - this.#used));
+    if (metadata && response.status === 404 && !response.redirected)
+      throw new PackageOperationError("package_not_found");
+    const remaining = MAX_TOTAL_BYTES - this.#used;
+    const oversized =
+      metadata || remaining < limit
+        ? new PackageOperationError("acquisition_limit")
+        : new Error("Package integrity check failed");
+    const bytes = await readBounded(response, Math.min(limit, remaining), oversized);
     this.#used += bytes.length;
     this.#signal?.throwIfAborted();
     return bytes;
@@ -186,13 +198,28 @@ export class PackageAcquisition {
     const metadata = /^https:\/\/pypi\.org\/pypi\/([a-z0-9][a-z0-9-]{0,127})\/json$/.exec(url);
     if (metadata) {
       cleanUrl(url, "pypi.org");
-      const source = JSON.parse(
-        new TextDecoder().decode(await this.#read(url, MAX_METADATA_BYTES)),
-      );
+      let source;
+      try {
+        source = JSON.parse(
+          new TextDecoder().decode(await this.#read(url, MAX_METADATA_BYTES, { metadata: true })),
+        );
+        if (
+          !source?.releases ||
+          typeof source.releases !== "object" ||
+          Array.isArray(source.releases)
+        )
+          throw new Error("Invalid package metadata");
+      } catch (error) {
+        this.#signal?.throwIfAborted();
+        if (error instanceof PackageOperationError) throw error;
+        throw new PackageOperationError("metadata_failed");
+      }
       const name = metadata[1];
       const releases = {};
+      let distributions = 0;
       for (const [version, entries] of Object.entries(source.releases ?? {})) {
         if (!Array.isArray(entries)) continue;
+        distributions += entries.length;
         const accepted = [];
         for (const entry of entries) {
           try {
@@ -219,6 +246,11 @@ export class PackageAcquisition {
         }
         if (accepted.length) releases[version] = accepted;
       }
+      // The trusted catalog was fetched successfully but every artifact was
+      // filtered out. Do not turn missing compiled support into a solver or
+      // network error in the offline planner.
+      if (distributions > 0 && Object.keys(releases).length === 0)
+        throw new PackageOperationError("unsupported_distribution");
       return { url, body: JSON.stringify({ info: { name }, releases }) };
     }
     const wheel = this.#approved.get(url);

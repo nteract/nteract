@@ -50,7 +50,7 @@ test(
       manifest: result.manifest,
     });
     assert.equal(failed.status, "error");
-    assert.equal(failed.code, "unavailable", JSON.stringify(failed));
+    assert.equal(failed.code, "unsupported_distribution", JSON.stringify(failed));
     assert.equal(failed.needs_restart, false);
     const afterFailure = await post("/execute", {
       execution: { cell_id: "package-cell", execution_id: "e2", source: "kept" },
