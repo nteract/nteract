@@ -90,9 +90,9 @@ jobs:
 
       - name: Smoke native binding
         if: matrix.target == 'win32-arm64-msvc' || matrix.target == 'linux-arm64-gnu'
-        run: |
-          pnpm --dir packages/runtimed-node smoke
-          pnpm --dir packages/runtimed-node smoke:api
+        # Loading the binding checks the runner's native ABI without a daemon.
+        # Release validation exercises the API against its own source-built daemon.
+        run: pnpm --dir packages/runtimed-node smoke
 
       - name: Verify platform package
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run

@@ -127,8 +127,27 @@ jobs:
           pnpm --dir packages/runtimed-node build
           pnpm --dir packages/runtimed-node assemble:platform -- --expected-target linux-arm64-gnu
           pnpm --dir packages/runtimed-node smoke
-          pnpm --dir packages/runtimed-node smoke:api
           pnpm --dir packages/runtimed-node/npm/linux-arm64-gnu pack --pack-destination "$RUNNER_TEMP/npm-package"
+      - name: Smoke npm API against the built daemon
+        timeout-minutes: 5
+        run: |
+          export RUNTIMED_SOCKET_PATH="$RUNNER_TEMP/node-smoke.sock"
+          export XDG_CACHE_HOME="$RUNNER_TEMP/node-smoke-cache"
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/node-smoke-config"
+          export XDG_DATA_HOME="$RUNNER_TEMP/node-smoke-data"
+          DAEMON_LOG="$RUNNER_TEMP/node-smoke.log"
+          target/aarch64-unknown-linux-gnu/release/runtimed run \
+            --socket "$RUNTIMED_SOCKET_PATH" \
+            --uv-pool-size 0 --conda-pool-size 0 --pixi-pool-size 0 >"$DAEMON_LOG" 2>&1 &
+          DAEMON_PID=$!
+          trap 'kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; cat "$DAEMON_LOG"' EXIT
+          for _ in {1..60}; do
+            if test -S "$RUNTIMED_SOCKET_PATH"; then break; fi
+            kill -0 "$DAEMON_PID"
+            sleep 1
+          done
+          test -S "$RUNTIMED_SOCKET_PATH"
+          pnpm --dir packages/runtimed-node smoke:api
       - uses: actions/upload-artifact@v7
         with:
           name: npm-package-linux-arm64-gnu
