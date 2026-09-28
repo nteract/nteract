@@ -1537,6 +1537,22 @@ mod integration_tests {
         path.exists()
     }
 
+    /// Create a fresh ephemeral untitled room. NotebookSync only attaches to
+    /// rooms the daemon already knows, so each test creates its own and
+    /// additional peers attach by the returned UUID.
+    async fn create_test_notebook() -> crate::connect::CreateResult {
+        crate::connect::connect_create(
+            daemon_socket_path(),
+            crate::connect::CreateNotebookSpec {
+                actor_label: "test".into(),
+                ephemeral: true,
+                ..crate::connect::CreateNotebookSpec::new("python")
+            },
+        )
+        .await
+        .expect("create notebook")
+    }
+
     #[tokio::test]
     #[ignore] // Run with: cargo test -p notebook-sync -- --ignored
     async fn test_connect_to_daemon() {
@@ -1545,13 +1561,20 @@ mod integration_tests {
             return;
         }
 
+        let created = create_test_notebook().await;
+        let notebook_id = created.info.notebook_id.clone();
+        assert!(
+            uuid::Uuid::parse_str(&notebook_id).is_ok(),
+            "created notebook id should be a UUID: {notebook_id:?}"
+        );
+
         let result =
-            crate::connect::connect(daemon_socket_path(), "test-connect".into(), "test").await;
+            crate::connect::connect(daemon_socket_path(), notebook_id.clone(), "test").await;
 
         assert!(result.is_ok(), "Failed to connect: {:?}", result.err());
 
         let conn = result.unwrap();
-        assert_eq!(conn.handle.notebook_id(), "test-connect");
+        assert_eq!(conn.handle.notebook_id(), notebook_id);
     }
 
     #[tokio::test]
@@ -1562,13 +1585,7 @@ mod integration_tests {
             return;
         }
 
-        let conn = crate::connect::connect(
-            daemon_socket_path(),
-            format!("test-cell-{}", uuid::Uuid::new_v4()),
-            "test",
-        )
-        .await
-        .expect("connect");
+        let conn = create_test_notebook().await;
 
         let handle = conn.handle;
 
@@ -1595,10 +1612,7 @@ mod integration_tests {
             return;
         }
 
-        let notebook_id = format!("test-exec-{}", uuid::Uuid::new_v4());
-        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
-            .await
-            .expect("connect");
+        let conn = create_test_notebook().await;
 
         let handle = conn.handle;
         let _broadcast_rx = conn.broadcast_rx;
@@ -1680,11 +1694,8 @@ mod integration_tests {
             .await
             .expect("confirm_sync after exec");
 
-        // Read outputs via the explicit lookup — outputs now live in
-        // RuntimeStateDoc keyed by execution_id, not on CellSnapshot.
-        let snap = handle.snapshot();
-        let cell = snap.get_cell("cell-exec").expect("cell should exist");
-
+        // Outputs and live execution counts live in RuntimeStateDoc keyed by
+        // execution_id; CellSnapshot.execution_count is the nbformat fallback.
         let outputs = handle
             .get_cell_outputs("cell-exec")
             .expect("Cell should have outputs after execution");
@@ -1694,10 +1705,15 @@ mod integration_tests {
         );
 
         // Verify execution_count was set (proves the cell actually ran)
-        assert_ne!(
-            cell.execution_count, "null",
-            "execution_count should be set after execution, got: {}",
-            cell.execution_count
+        handle.confirm_state_sync().await.expect("state sync");
+        let rs = handle.get_runtime_state().expect("runtime state");
+        let execution = rs
+            .executions
+            .get(&execution_id)
+            .expect("execution should be recorded in RuntimeStateDoc");
+        assert!(
+            execution.execution_count.is_some(),
+            "execution_count should be set after execution, got: {execution:?}"
         );
 
         // Shutdown kernel
@@ -1714,12 +1730,9 @@ mod integration_tests {
             return;
         }
 
-        let notebook_id = format!("test-share-{}", uuid::Uuid::new_v4());
-
-        // First handle connects and creates a cell
-        let conn1 = crate::connect::connect(daemon_socket_path(), notebook_id.clone(), "test")
-            .await
-            .expect("connect 1");
+        // First handle creates the notebook and a cell
+        let conn1 = create_test_notebook().await;
+        let notebook_id = conn1.info.notebook_id.clone();
 
         conn1
             .handle
@@ -1728,10 +1741,16 @@ mod integration_tests {
 
         conn1.handle.confirm_sync().await.expect("confirm_sync 1");
 
-        // Second handle connects to the same notebook
+        // Second handle connects to the same notebook. `connect` returns
+        // before the initial sync lands, so wait for it before reading.
         let conn2 = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
             .await
             .expect("connect 2");
+        conn2
+            .handle
+            .await_session_ready()
+            .await
+            .expect("session ready 2");
 
         // Second handle should see the cell created by the first
         let snap = conn2.handle.snapshot();
@@ -1751,10 +1770,7 @@ mod integration_tests {
             return;
         }
 
-        let notebook_id = format!("test-meta-{}", uuid::Uuid::new_v4());
-        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
-            .await
-            .expect("connect");
+        let conn = create_test_notebook().await;
 
         let handle = conn.handle;
 
@@ -1792,10 +1808,7 @@ mod integration_tests {
             return;
         }
 
-        let notebook_id = format!("test-actor-{}", uuid::Uuid::new_v4());
-        let conn = crate::connect::connect(daemon_socket_path(), notebook_id, "test")
-            .await
-            .expect("connect");
+        let conn = create_test_notebook().await;
 
         let handle = conn.handle;
 
@@ -1827,12 +1840,9 @@ mod integration_tests {
             return;
         }
 
-        let notebook_id = format!("test-contrib-{}", uuid::Uuid::new_v4());
-
         // Peer 1: "agent:alice"
-        let conn1 = crate::connect::connect(daemon_socket_path(), notebook_id.clone(), "test")
-            .await
-            .expect("connect 1");
+        let conn1 = create_test_notebook().await;
+        let notebook_id = conn1.info.notebook_id.clone();
         conn1
             .handle
             .set_actor("agent:alice:aaa")

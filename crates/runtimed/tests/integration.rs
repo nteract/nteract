@@ -4172,6 +4172,45 @@ async fn test_notebook_sync_refuses_gone_uuid_without_phantom() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+/// A NotebookSync notebook_id that is neither a UUID nor an absolute path
+/// (a placeholder like "?", a bare filename) is refused. Binding it would
+/// resolve against the daemon's cwd and leave a persistent room whose
+/// autosave and kernel launches can never succeed.
+#[tokio::test]
+async fn test_notebook_sync_refuses_relative_notebook_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new_for_test(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    for notebook_id in ["?", "analysis.ipynb", ""] {
+        match connect::connect(socket_path.clone(), notebook_id.to_string(), "test").await {
+            Err(notebook_sync::SyncError::NotebookUnavailable(ref m))
+                if m.contains("not a notebook UUID or an absolute notebook path") => {}
+            Err(other) => {
+                panic!("relative id {notebook_id:?} refused with an unexpected error: {other:?}")
+            }
+            Ok(_) => panic!("relative id {notebook_id:?} should be refused, but it attached"),
+        }
+    }
+
+    let rooms = pool_client.list_rooms().await.unwrap();
+    assert!(
+        rooms.is_empty(),
+        "refused relative NotebookSync ids must not create rooms: {rooms:?}"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 /// A notebook created untitled keeps its UUID when saved. After the daemon is
 /// replaced, a client that retained only that UUID must follow the persistent
 /// registry binding to the saved path and recover the file-backed room.
