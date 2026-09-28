@@ -20,7 +20,14 @@ function safely(deliver, event) {
 /** Called only by the trusted supervisor, never directly by a browser. */
 export async function createCelldRuntime(
   env,
-  { cpuMs = 3000, wallMs = 30_000, startupWallMs = 60_000, maxOutputBytes = 3 * 1024 * 1024 } = {},
+  // Python admits 128 MiB of rich output; leave room for provenance and a
+  // reserved diagnostic. The host still enforces this independently of Python.
+  {
+    cpuMs = 3000,
+    wallMs = 30_000,
+    startupWallMs = 60_000,
+    maxOutputBytes = 129 * 1024 * 1024,
+  } = {},
 ) {
   if (!Number.isFinite(wallMs) || wallMs <= 0) throw new Error("Invalid execution deadline");
   if (!Number.isFinite(startupWallMs) || startupWallMs <= 0)
@@ -220,7 +227,8 @@ export async function createCelldRuntime(
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
           const encoder = new TextEncoder();
-          let buffered = "";
+          let fragments = [];
+          let bufferedBytes = 0;
           let liveBytes = 0;
           let live = true;
           let result;
@@ -262,19 +270,25 @@ export async function createCelldRuntime(
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
-              buffered += decoder.decode(value, { stream: true });
-              if (encoder.encode(buffered).byteLength > maxOutputBytes + MAX_LIVE_BYTES) {
-                await reader.cancel();
-                throw new Error("Python output limit exceeded");
-              }
-              let newline;
-              while ((newline = buffered.indexOf("\n")) !== -1) {
-                const line = buffered.slice(0, newline);
-                buffered = buffered.slice(newline + 1);
-                handle(line);
+              // A table can span thousands of transport chunks. Buffer each
+              // fragment once rather than rescanning/re-encoding the growing
+              // result line after every read (quadratic in its size).
+              const lines = decoder.decode(value, { stream: true }).split("\n");
+              for (let index = 0; index < lines.length; index++) {
+                const part = lines[index];
+                bufferedBytes += encoder.encode(part).byteLength;
+                if (bufferedBytes > maxOutputBytes + MAX_LIVE_BYTES)
+                  throw new Error("Python output limit exceeded");
+                fragments.push(part);
+                if (index < lines.length - 1) {
+                  handle(fragments.join(""));
+                  fragments = [];
+                  bufferedBytes = 0;
+                }
               }
             }
-            handle(buffered + decoder.decode());
+            fragments.push(decoder.decode());
+            handle(fragments.join(""));
           } catch (error) {
             await reader.cancel().catch(() => undefined);
             throw error;

@@ -42,6 +42,42 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+test("previous Python 3.13 locks retain exact artifacts during runtime migration", async () => {
+  const previous = {
+    ...empty,
+    pyodide: "0.28.3",
+    requirements: ["example"],
+    wheels: [wheel("example")],
+  };
+  const migrated = packageManifest(previous);
+  assert.equal(migrated.pyodide, PACKAGE_RUNTIME_VERSION);
+  assert.deepEqual(migrated.wheels, previous.wheels);
+  assert.equal(previous.pyodide, "0.28.3");
+  assert.throws(() => packageManifest({ ...previous, pyodide: "0.27.0" }), /incompatible/);
+  assert.throws(() =>
+    packageManifest({ ...previous, wheels: [{ ...wheel("example"), sha256: "bad" }] }),
+  );
+  // A stale pin to a bundled dependency must still be proved in the interpreter.
+  const result = await installPackageManifest(
+    {
+      runtime: {
+        install: async ({ requirements }) => {
+          assert.deepEqual(requirements, ["pandas==2.3.1"]);
+          return { status: "error" };
+        },
+      },
+      installed: ["pandas==2.3.3"],
+      signal: signal(),
+    },
+    {
+      operation: "restore",
+      manifest: { ...previous, requirements: ["pandas==2.3.1"], wheels: [] },
+    },
+  );
+  assert.equal(result.status, "error");
+  assert.equal(result.manifest, undefined);
+});
+
 test("session inventory retains initial included packages when notebook installation adds dependencies", async () => {
   const pool = new SessionPool({
     warmCount: 0,

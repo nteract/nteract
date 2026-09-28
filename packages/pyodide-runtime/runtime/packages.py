@@ -14,7 +14,6 @@ import zipfile
 from pathlib import Path
 
 import micropip
-from micropip import wheelinfo
 from micropip._compat import compatibility_layer
 from micropip._vendored.packaging.src.packaging.markers import default_environment
 from micropip._vendored.packaging.src.packaging.requirements import Requirement
@@ -58,6 +57,10 @@ class OfflineCompatibility(compatibility_layer):
     # Included packages are already installed in the clean planner. Everything
     # else must resolve through the trusted, filtered PyPI metadata supplied here.
     lockfile_packages = {}
+
+    # Micropip 0.11 obtains wheel bytes through its compatibility layer.
+    # Only verified artifacts supplied by the provider can satisfy this read.
+    fetch_bytes = staticmethod(_fetch_bytes)
 
     @staticmethod
     async def fetch_string_and_headers(url, _kwargs):
@@ -121,7 +124,6 @@ async def plan_packages(payload_json):
     if payload.get("artifact"):
         artifact = payload["artifact"]
         _artifacts[artifact["url"]] = artifact
-    wheelinfo.fetch_bytes = _fetch_bytes
     transaction = OfflineTransaction(
         _compat_layer=OfflineCompatibility,
         ctx=default_environment(),

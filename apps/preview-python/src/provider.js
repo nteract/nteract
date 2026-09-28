@@ -28,7 +28,7 @@ export class PreviewPythonSessions {
     this.state = state;
     this.pool = new SessionPool({
       create: () => {
-        const pending = createCelldRuntime(env, { wallMs: PACKAGE_INSTALL_MS });
+        const pending = createCelldRuntime(env, { cpuMs: 30_000, wallMs: PACKAGE_INSTALL_MS });
         // A clean replacement starts in the background after allocation.
         // Keep its I/O alive after the request that triggered warming ends.
         state.waitUntil(pending.catch(() => undefined));

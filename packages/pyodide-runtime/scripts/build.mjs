@@ -26,13 +26,13 @@ await mkdir(resolve(root, "dist"), { recursive: true });
 await copyFile(resolve(runtime, "pyodide.asm.wasm"), resolve(root, "dist/pyodide.asm.wasm"));
 await writeFile(resolve(root, "dist/sentinel.wasm"), sentinel);
 const { wheels, libraries } = await preparePackages(root, runtime);
-// Reuse the launcher's transport-independent traceback formatter, not a fork.
+// Reuse the launcher's transport-independent traceback and Arrow helpers.
 const launcher = new URL(
   "../../../python/nteract-kernel-launcher/nteract_kernel_launcher/",
   import.meta.url,
 );
 const bootstrap = { "__init__.py": "" };
-for (const name of ["_traceback.py", "_redact.py"])
+for (const name of ["_traceback.py", "_redact.py", "_format.py"])
   bootstrap[name] = await readFile(new URL(name, launcher), "utf8");
 await writeFile(resolve(root, "dist/bootstrap.json"), JSON.stringify(bootstrap));
 await build({
@@ -51,7 +51,13 @@ await build({
     "./library-*.wasm",
   ],
   loader: { ".zip": "binary", ".py": "text" },
-  define: { process: "undefined", location: '"https://python-runtime.invalid/"' },
+  define: {
+    process: "undefined",
+    location: '"https://python-runtime.invalid/"',
+    "globalThis.WorkerGlobalScope": "WorkerGlobalScope",
+    "globalThis.self": "self",
+    "globalThis.importScripts": "importScripts",
+  },
   inject: ["runtime/assets.js"],
   plugins: [
     {

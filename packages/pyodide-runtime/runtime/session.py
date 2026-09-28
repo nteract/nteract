@@ -1,5 +1,6 @@
 """IPython notebook semantics inside one jailed, session-owned interpreter."""
 
+import base64
 import contextlib
 import hashlib
 import io
@@ -12,16 +13,21 @@ import matplotlib
 from IPython.core.compilerop import CachingCompiler
 from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
+from IPython.core.formatters import BaseFormatter
 from IPython.core.interactiveshell import InteractiveShell
 from matplotlib_inline.backend_inline import configure_inline_support
-from nteract_kernel_launcher import _traceback
+from nteract_kernel_launcher import _format, _traceback
+from traitlets import Unicode
 from traitlets.config import Config
 
 active_outputs = None
 active_execution = None
 output_bytes = 0
+stream_bytes = 0
 output_context = ContextVar("nteract_execution_output", default=None)
-MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+MAX_OUTPUT_BYTES = 128 * 1024 * 1024
+MAX_STREAM_BYTES = 2 * 1024 * 1024
+MAX_ARROW_BYTES = 64 * 1024 * 1024
 MAX_OUTPUTS = 1000
 
 # Live deltas are flushed by writes; naturally yielding async cells let the host
@@ -84,10 +90,15 @@ def stop_live():
 
 
 def emit(output):
-    global output_bytes
+    global output_bytes, stream_bytes
     context = output_context.get()
     if context is None or context["closed"]:
         return
+    if output["output_type"] == "stream":
+        size = len(json.dumps(output["text"]).encode("utf-8")) - 2
+        if stream_bytes + size > MAX_STREAM_BYTES:
+            raise RuntimeError("Python stream output limit exceeded")
+        stream_bytes += size
     previous = active_outputs[-1] if active_outputs else None
     if (
         output["output_type"] == "stream"
@@ -238,6 +249,40 @@ shell = NotebookShell.instance(
     display_pub_class=NotebookPublisher,
     compiler_class=NotebookCompiler,
 )
+
+
+class ArrowBuffer(io.BytesIO):
+    """Bound serialized IPC bytes, including schema and dictionary messages."""
+
+    def write(self, data):
+        if self.tell() + len(data) > MAX_ARROW_BYTES:
+            raise ValueError("Arrow output exceeds 64 MiB; display a smaller table")
+        return super().write(data)
+
+
+class ArrowFormatter(BaseFormatter):
+    """Emit ordinary IPC bytes; the trusted room owns their blob references."""
+
+    format_type = Unicode(_format.ARROW_STREAM_MIME)
+
+    def __call__(self, obj):
+        if not self.enabled or not _format.has_arrow_stream_protocol(obj):
+            return None
+        import pyarrow as pa
+
+        # Share the desktop stream import, then enforce the cloud's single-blob
+        # limit at the writer. Summed batch estimates can count shared
+        # dictionaries repeatedly; lookahead also serializes rejected data.
+        with _format._record_batch_reader_from_stream(obj) as reader, ArrowBuffer() as sink:
+            with pa.ipc.new_stream(sink, reader.schema) as writer:
+                for batch in reader:
+                    writer.write_batch(batch)
+            return base64.b64encode(sink.getvalue()).decode("ascii")
+
+
+shell.display_formatter.formatters[_format.ARROW_STREAM_MIME] = ArrowFormatter(
+    parent=shell.display_formatter
+)
 matplotlib.use("module://matplotlib_inline.backend_inline")
 matplotlib.interactive(True)
 configure_inline_support(shell, "inline")
@@ -257,7 +302,7 @@ class Stream(io.TextIOBase):
 
 
 async def evaluate(source, execution_id, cell_id, sink=None):
-    global active_outputs, active_execution, output_bytes
+    global active_outputs, active_execution, output_bytes, stream_bytes
     global live_sink, live_pending, live_sent_bytes
     if active_execution is not None:
         raise RuntimeError("Python session is already executing")
@@ -273,6 +318,7 @@ async def evaluate(source, execution_id, cell_id, sink=None):
     context = {"execution": execution, "closed": False}
     token = output_context.set(context)
     output_bytes = 0
+    stream_bytes = 0
     live_sink = sink
     live_pending = None
     live_sent_bytes = 0

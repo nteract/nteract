@@ -51,7 +51,10 @@ test("shipped package versions match the initial interpreter inventory before no
   const wheels = JSON.parse(await readFile(new URL("dist/packages.json", root), "utf8"));
   const installed = JSON.parse(python.runPython("json.dumps(inventory())"));
   const included = includedPackageInventory(wheels, installed);
-  assert.ok(included.includes("pandas==2.3.1"));
+  assert.ok(included.includes("pandas==2.3.3"));
+  assert.ok(included.includes("pyarrow==22.0.0"));
+  assert.ok(included.includes("numpy==2.2.5"));
+  assert.ok(included.includes("matplotlib==3.8.4"));
   assert.ok(wheels.length > 10);
   assert.ok(included.length >= wheels.length);
   assert.throws(
