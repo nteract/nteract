@@ -332,6 +332,55 @@ impl RoomHostEngine {
         self.reconcile_runtime_peer_gone_inner(reason)
     }
 
+    /// Publish a confirmed, intentional stop without reporting a runtime failure.
+    /// The host must fence and dispose the selected session before calling this.
+    pub fn reconcile_runtime_stopped(
+        &mut self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<RoomHostFrameResult, RoomHostError> {
+        let Some(mut attachment) = self.state_doc.workstation_attachment() else {
+            return Ok(RoomHostFrameResult {
+                ignored_stale: true,
+                ..RoomHostFrameResult::empty()
+            });
+        };
+        if attachment.runtime_session_id.as_deref() != Some(session_id) {
+            return Ok(RoomHostFrameResult {
+                ignored_stale: true,
+                ..RoomHostFrameResult::empty()
+            });
+        }
+        let heads_before = self.state_doc.get_heads();
+        self.state_doc
+            .abort_inflight_executions()
+            .map_err(|e| RoomHostError::new(format!("stop runtime executions: {e}")))?;
+        self.state_doc
+            .set_queue(None, &[])
+            .map_err(|e| RoomHostError::new(format!("stop runtime queue: {e}")))?;
+        self.state_doc
+            .set_lifecycle_with_error_details(&RuntimeLifecycle::Shutdown, None, None)
+            .map_err(|e| RoomHostError::new(format!("stop runtime lifecycle: {e}")))?;
+        self.state_doc
+            .set_runtime_agent_id("")
+            .map_err(|e| RoomHostError::new(format!("stop runtime identity: {e}")))?;
+        attachment.status = "idle".to_string();
+        attachment.status_message = Some(reason.to_string());
+        self.state_doc
+            .set_workstation_attachment(Some(&attachment))
+            .map_err(|e| RoomHostError::new(format!("stop runtime attachment: {e}")))?;
+        let changed = self.state_doc.get_heads() != heads_before;
+        let mut result = RoomHostFrameResult {
+            changed,
+            runtime_state_changed: changed,
+            ..RoomHostFrameResult::empty()
+        };
+        if changed {
+            self.queue_runtime_state_sync_for_other_peers("", &mut result.outbound)?;
+        }
+        Ok(result)
+    }
+
     pub fn reconcile_runtime_idle_timeout(
         &mut self,
         reason: &str,
@@ -2545,6 +2594,81 @@ mod tests {
                 .and_then(|ws| ws.updated_at.as_deref()),
             Some("2026-06-07T00:00:00.000Z"),
             "peer-gone reconciliation preserves the publish timestamp"
+        );
+    }
+
+    #[test]
+    fn confirmed_runtime_stop_cancels_old_work_without_reporting_kernel_failure() {
+        let mut host = host_with_inflight_work();
+        let attachment = workstation_attachment_fixture();
+        host.set_workstation_attachment_inner(Some(&attachment))
+            .unwrap();
+        host.state_doc
+            .create_execution_with_source("completed", "print(42)", 2)
+            .unwrap();
+        host.state_doc
+            .set_execution_done("completed", true)
+            .unwrap();
+        let notebook_heads = host.doc.get_heads();
+        let completed = host.state_doc.read_state().executions["completed"].clone();
+
+        let result = host
+            .reconcile_runtime_stopped("job-runtime", "Stopped for restart")
+            .unwrap();
+
+        assert!(result.runtime_state_changed);
+        assert!(!result.notebook_changed);
+        assert_eq!(host.doc.get_heads(), notebook_heads);
+        let state = host.state_doc.read_state();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown);
+        assert_eq!(state.executions["exec-running"].status, "error");
+        assert_eq!(state.executions["exec-queued"].status, "cancelled");
+        assert_eq!(state.executions["completed"], completed);
+        assert!(state.queue.executing.is_none());
+        assert!(state.queue.queued.is_empty());
+        let stopped = state.workstation.unwrap();
+        assert_eq!(stopped.status, "idle");
+        assert_eq!(stopped.runtime_session_id, attachment.runtime_session_id);
+        assert_eq!(stopped.updated_at, attachment.updated_at);
+    }
+
+    #[test]
+    fn confirmed_runtime_stop_clears_previous_failure_details() {
+        let mut host = host_with_inflight_work();
+        host.set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .unwrap();
+        host.reconcile_runtime_peer_gone("connection lost").unwrap();
+        host.state_doc.set_runtime_agent_id("old-agent").unwrap();
+
+        host.reconcile_runtime_stopped("job-runtime", "Stopped for restart")
+            .unwrap();
+
+        let state = host.state_doc.read_state();
+        assert_eq!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown);
+        assert_eq!(state.kernel.error_details.as_deref(), Some(""));
+        assert_eq!(state.kernel.error_reason.as_deref(), Some(""));
+        assert_eq!(state.kernel.runtime_agent_id, "");
+        assert_eq!(state.workstation.unwrap().status, "idle");
+    }
+
+    #[test]
+    fn late_runtime_stop_cannot_cancel_a_replacement_session() {
+        let mut host = host_with_inflight_work();
+        host.set_workstation_attachment_inner(Some(&workstation_attachment_fixture()))
+            .unwrap();
+        let heads = host.state_doc.get_heads();
+
+        let result = host
+            .reconcile_runtime_stopped("old-session", "Stopped for restart")
+            .unwrap();
+
+        assert!(result.ignored_stale);
+        assert!(!result.changed);
+        assert!(result.outbound.is_empty());
+        assert_eq!(host.state_doc.get_heads(), heads);
+        assert_eq!(
+            host.state_doc.read_state().executions["exec-running"].status,
+            "running"
         );
     }
 

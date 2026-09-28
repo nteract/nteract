@@ -97,6 +97,9 @@ interface Peer {
 
 class ManagedPythonResetPersistenceError extends Error {}
 
+const MANAGED_PYTHON_SESSION_LOST_REASON =
+  "The previous Python session is no longer available. Variables were lost. Start compute to restore saved packages and run cells again. Your notebook is unchanged.";
+
 interface PeerAttachment {
   notebookId: string;
   peerId: string;
@@ -324,7 +327,8 @@ export class NotebookRoom {
   private readonly dirtyComputeSessionSummaries = new Set<string>();
   private readonly restoredManagedPythonSessions = new Set<string>();
   private readonly pendingManagedPythonProbes = new Set<string>();
-  private readonly retiredManagedPythonSessions = new Set<string>();
+  // A reset supersedes late probe results; a probe's own loss still needs reporting.
+  private readonly retiredManagedPythonSessions = new Map<string, "lost" | "reset">();
   private readonly restoredPeersReady: Promise<void>;
   private readonly pendingRuntimePeerResponses = new Map<string, PendingRuntimePeerResponse>();
   // In-memory only by design: persisting on the frame hot path would cost more
@@ -1446,6 +1450,7 @@ export class NotebookRoom {
             notebookId,
             managed?.runtime.sessionId ?? startingSessionId!,
             "Python interrupted; restart compute to continue. Variables were discarded.",
+            "interrupt",
           );
           response = { result: "interrupt_sent" };
         } catch (error) {
@@ -2160,6 +2165,7 @@ export class NotebookRoom {
       materializer = new RoomMaterializer(notebookId, this.state, this.env, async (sessionId) => {
         this.restoredManagedPythonSessions.add(sessionId);
         const failure = await this.inspectRestoredManagedPython(notebookId, sessionId);
+        if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
         if (!failure) {
           // Reattach after hydration releases the host queue. The provider
           // must still refuse allocation if it restarts after this probe.
@@ -2181,11 +2187,11 @@ export class NotebookRoom {
     notebookId: string,
     sessionId: string,
   ): Promise<ManagedPythonReconnectFailure | null> {
-    const reason =
-      "The previous Python session is no longer available. Variables were lost. Start compute to restore saved packages and run cells again. Your notebook is unchanged.";
+    const reason = MANAGED_PYTHON_SESSION_LOST_REASON;
     try {
       const ownerPrincipal = await managedPythonSessionOwner(this.env, notebookId, sessionId);
       const provider = managedPythonStub(this.env);
+      if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
       if (!ownerPrincipal || !provider) throw new Error("Python session lookup unavailable");
       const response = await provider.fetch(
         new Request("https://preview-python.internal/status", {
@@ -2196,6 +2202,7 @@ export class NotebookRoom {
       );
       if (!response.ok) throw new Error(`Python session lookup failed (${response.status})`);
       const status = (await response.json()) as { alive?: boolean; busy?: boolean };
+      if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
       if (typeof status.alive !== "boolean") throw new Error("Invalid Python session status");
       if (status.alive && typeof status.busy !== "boolean")
         throw new Error("Python provider cannot confirm whether the session is busy");
@@ -2208,6 +2215,7 @@ export class NotebookRoom {
           jobId: sessionId,
           status: "running",
         });
+        if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
         if (status.busy) {
           this.pendingManagedPythonProbes.add(sessionId);
           cloudLog("info", "managed_python.restored_session_probe", {
@@ -2230,7 +2238,7 @@ export class NotebookRoom {
         return null;
       }
       this.pendingManagedPythonProbes.delete(sessionId);
-      this.retiredManagedPythonSessions.add(sessionId);
+      this.retiredManagedPythonSessions.set(sessionId, "lost");
       cloudLog("info", "managed_python.restored_session_probe", {
         notebook_id: notebookId,
         session_id: sessionId,
@@ -2276,6 +2284,7 @@ export class NotebookRoom {
     } catch (error) {
       // A timeout, catalog outage, or malformed response says nothing about
       // interpreter liveness. Keep its identity and quota reservation intact.
+      if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return null;
       this.pendingManagedPythonProbes.add(sessionId);
       cloudLog("warn", "managed_python.restored_session_probe", {
         notebook_id: notebookId,
@@ -2289,7 +2298,9 @@ export class NotebookRoom {
           "Python could not reconnect. Run a cell or start compute to try reconnecting to the same session. Your notebook and saved packages are unchanged.",
       };
     }
-    return { status: "error", reason };
+    return this.retiredManagedPythonSessions.get(sessionId) === "reset"
+      ? null
+      : { status: "error", reason };
   }
 
   private deliverRoomHostFrames(notebookId: string, result: RoomHostFrameResult): void {
@@ -2507,6 +2518,7 @@ export class NotebookRoom {
         const materializer = this.materializerFor(notebookId);
         const selected = await materializer.getWorkstationAttachment();
         if (
+          !this.retiredManagedPythonSessions.has(sessionId) &&
           selected?.runtime_session_id === sessionId &&
           selected.status !== "error" &&
           (selected.status !== "disconnected" || error instanceof ManagedPythonSessionLostError)
@@ -2533,6 +2545,9 @@ export class NotebookRoom {
     if (existing?.runtime.sessionId === sessionId) return existing.ready;
     if (this.pendingManagedPythonProbes.has(sessionId)) {
       const failure = await this.inspectRestoredManagedPython(notebookId, sessionId);
+      // The probe may itself retire a lost session. Only an explicit reset
+      // supersedes its result; genuine loss must still reach every viewer.
+      if (this.retiredManagedPythonSessions.get(sessionId) === "reset") return;
       if (failure) {
         const materializer = this.materializerFor(notebookId);
         const result = await materializer.transitionManagedPythonSession(
@@ -2656,9 +2671,10 @@ export class NotebookRoom {
     notebookId: string,
     sessionId: string,
     reason = "Python was stopped for restart. Variables were discarded.",
+    intent: "restart" | "interrupt" = "restart",
   ): Promise<void> {
-    const alreadyRetired = this.retiredManagedPythonSessions.has(sessionId);
-    this.retiredManagedPythonSessions.add(sessionId);
+    const previousRetirement = this.retiredManagedPythonSessions.get(sessionId);
+    this.retiredManagedPythonSessions.set(sessionId, "reset");
     const entry = this.managedPython.get(notebookId);
     const runtime = entry?.runtime.sessionId === sessionId ? entry.runtime : undefined;
     if (runtime) {
@@ -2683,33 +2699,87 @@ export class NotebookRoom {
         throw new Error(`Python termination was not confirmed (${response.status})`);
       terminationConfirmed = true;
       this.pendingManagedPythonProbes.delete(sessionId);
-      await this.failManagedPythonSession(notebookId, sessionId, new Error(reason), ownerPrincipal);
+      let ignoredStale = false;
+      if (intent === "restart") {
+        // Retire the old catalog generation before exposing idle compute, so
+        // concurrent explicit Run/Start requests cannot reuse a closed session.
+        await updateWorkstationAttachJobStatus(this.env, {
+          ownerPrincipal,
+          workstationId: MANAGED_PYTHON_WORKSTATION,
+          jobId: sessionId,
+          status: "completed",
+        });
+        const materializer = this.materializerFor(notebookId);
+        const stopped = await materializer.stopManagedPythonSession(sessionId, reason);
+        ignoredStale = stopped.ignored_stale ?? false;
+        this.deliverRoomHostFrames(notebookId, stopped);
+        if (!(await this.checkpointRoomHost(notebookId, materializer, "managed_python_stopped")))
+          throw new Error("Python stop checkpoint failed");
+        await this.publishCurrentComputeSessionSummary(notebookId);
+      } else {
+        await this.failManagedPythonSession(
+          notebookId,
+          sessionId,
+          new Error(reason),
+          ownerPrincipal,
+        );
+      }
       cloudLog("info", "managed_python.explicit_reset", {
         notebook_id: notebookId,
         session_id: sessionId,
+        intent,
+        ignored_stale: ignoredStale,
         outcome: "closed",
       });
     } catch (error) {
+      const persistenceFailure = new ManagedPythonResetPersistenceError(
+        "Python stopped, but recovery could not be saved. Try Start compute again.",
+      );
+      if (terminationConfirmed && intent === "restart") {
+        // A real persistence failure still needs an error/retry state, even if
+        // the normal stop was already published. Do not leave a false success.
+        try {
+          await this.failManagedPythonSession(notebookId, sessionId, persistenceFailure);
+        } catch {
+          // failManagedPythonSession publishes the terminal state even when
+          // the catalog or checkpoint is still unavailable.
+        }
+      }
       const selected = await this.materializerFor(notebookId).getWorkstationAttachment();
       if (
         !terminationConfirmed &&
-        !alreadyRetired &&
         selected?.runtime_session_id === sessionId &&
-        selected.status !== "error"
+        selected.status !== "idle"
       ) {
-        this.retiredManagedPythonSessions.delete(sessionId);
-        await this.disconnectManagedPythonSession(notebookId, sessionId, error);
+        if (previousRetirement === "lost") {
+          // The probe may already have suppressed its loss publication while
+          // this reset was pending. Restore that known loss here too, so a
+          // failed close does not strand Start behind an unconfirmed reset.
+          this.retiredManagedPythonSessions.set(sessionId, "lost");
+          if (selected.status !== "error") {
+            try {
+              await this.failManagedPythonSession(
+                notebookId,
+                sessionId,
+                new Error(MANAGED_PYTHON_SESSION_LOST_REASON),
+              );
+            } catch {
+              // The failure helper still broadcasts if persistence fails.
+            }
+          }
+        } else if (previousRetirement === undefined && selected.status !== "error") {
+          this.retiredManagedPythonSessions.delete(sessionId);
+          await this.disconnectManagedPythonSession(notebookId, sessionId, error);
+        }
       }
       cloudLog("warn", "managed_python.explicit_reset_failed", {
         notebook_id: notebookId,
         session_id: sessionId,
+        intent,
         outcome: terminationConfirmed ? "closed_before_persistence_failure" : "unconfirmed",
         error: errorMessage(error).slice(0, 600),
       });
-      if (terminationConfirmed)
-        throw new ManagedPythonResetPersistenceError(
-          "Python stopped, but recovery could not be saved. Try Start compute again.",
-        );
+      if (terminationConfirmed) throw persistenceFailure;
       throw error;
     } finally {
       await closing;

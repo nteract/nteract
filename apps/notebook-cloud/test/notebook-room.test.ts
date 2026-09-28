@@ -4441,6 +4441,219 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(fixture.db.attachJobs[0].status, "failed");
   });
 
+  for (const probeResult of ["lost", "busy", "idle", "unavailable"] as const) {
+    it(`ignores a late ${probeResult} survivor probe after confirmed Restart`, async (t) => {
+      let holding = false;
+      let entered!: () => void;
+      let release!: () => void;
+      const probing = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        providerFetch: async (request) => {
+          if (new URL(request.url).pathname !== "/status") return Response.json({ ok: true });
+          if (!holding) return Response.json({ alive: true, busy: true });
+          entered();
+          await held;
+          if (probeResult === "unavailable") throw new Error("status unavailable");
+          return Response.json({ alive: probeResult !== "lost", busy: probeResult === "busy" });
+        },
+      });
+      t.after(async () => {
+        release();
+        await fixture.close();
+      });
+      const first = await fixture.connect("before-hibernation");
+      await fixture.seed(first);
+      await fixture.reconstruct();
+      const owner = await fixture.connect("owner");
+      const observer = await fixture.connect("observer");
+      await fixture.drain();
+      assert.equal(owner.runtimeState().workstation?.status, "disconnected");
+      holding = true;
+      const executing = fixture.execute(owner);
+      await probing;
+      const response = await fixture.room.fetch(
+        new Request("https://room/internal/n/demo/workstation-attachment", {
+          method: "DELETE",
+          body: JSON.stringify({ runtime_session_id: "managed-job" }),
+        }),
+      );
+      assert.equal(response.status, 200);
+      const offsets: number[] = [];
+      for (const connection of [owner, observer]) {
+        await connection.sync();
+        assert.equal(connection.runtimeState().workstation?.status, "idle");
+        offsets.push(connection.runtimeHistory.length);
+      }
+      release();
+      await executing;
+      await fixture.drain();
+      for (const [index, connection] of [owner, observer].entries()) {
+        await connection.sync();
+        assert.equal(connection.runtimeState().workstation?.status, "idle");
+        for (const state of connection.runtimeHistory.slice(offsets[index])) {
+          assert.notEqual(state.workstation?.status, "error");
+          assert.notEqual(state.workstation?.status, "disconnected");
+        }
+      }
+      assert.equal(fixture.db.attachJobs[0].status, "completed");
+      assert.equal(
+        fixture.requests.filter((r) => ["/open", "/execute"].includes(r.path)).length,
+        0,
+      );
+      assert.equal(
+        (
+          fixture.room as unknown as { pendingManagedPythonProbes: Set<string> }
+        ).pendingManagedPythonProbes.has("managed-job"),
+        false,
+      );
+    });
+  }
+
+  for (const settleProbeFirst of [true, false]) {
+    it(`preserves confirmed loss when concurrent Restart fails (${settleProbeFirst ? "probe" : "reset"} settles first)`, async (t) => {
+      let lost = false;
+      let closeUnavailable = true;
+      let enteredWrite!: () => void;
+      let releaseWrite!: () => void;
+      let enteredClose!: () => void;
+      let releaseClose!: () => void;
+      const writing = new Promise<void>((resolve) => {
+        enteredWrite = resolve;
+      });
+      const heldWrite = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const closing = new Promise<void>((resolve) => {
+        enteredClose = resolve;
+      });
+      const heldClose = new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        providerFetch: async (request) => {
+          const path = new URL(request.url).pathname;
+          if (path === "/status") return Response.json({ alive: !lost, busy: !lost });
+          if (path === "/close" && closeUnavailable) {
+            enteredClose();
+            await heldClose;
+            return new Response("Close unavailable", { status: 503 });
+          }
+          return Response.json({ ok: true });
+        },
+      });
+      t.after(async () => {
+        closeUnavailable = false;
+        releaseWrite();
+        releaseClose();
+        await fixture.close();
+      });
+      const first = await fixture.connect("before-hibernation");
+      await fixture.seed(first);
+      await fixture.reconstruct();
+      const owner = await fixture.connect("owner");
+      await fixture.drain();
+      assert.equal(owner.runtimeState().workstation?.status, "disconnected");
+      fixture.db.beforeAttachUpdate = async () => {
+        fixture.db.beforeAttachUpdate = undefined;
+        enteredWrite();
+        await heldWrite;
+      };
+      lost = true;
+      const executing = fixture.execute(owner);
+      await writing;
+      const resetting = fixture.room.fetch(
+        new Request("https://room/internal/n/demo/workstation-attachment", {
+          method: "DELETE",
+          body: JSON.stringify({ runtime_session_id: "managed-job" }),
+        }),
+      );
+      await closing;
+      if (settleProbeFirst) {
+        releaseWrite();
+        await executing;
+        releaseClose();
+        assert.equal((await resetting).status, 503);
+      } else {
+        releaseClose();
+        assert.equal((await resetting).status, 503);
+        releaseWrite();
+        await executing;
+      }
+      await fixture.drain();
+      await owner.sync();
+      assert.equal(owner.runtimeState().workstation?.status, "error");
+      assert.equal(fixture.db.attachJobs[0].status, "failed");
+      const replacement = await fixture.startReplacement(true);
+      assert.notEqual(replacement, "managed-job", "Start can allocate after confirmed loss");
+      await owner.sync();
+      assert.equal(owner.runtimeState().workstation?.status, "ready");
+    });
+  }
+
+  it("publishes intentional restart to every viewer without a transient compute error", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("connecting", {
+      immediateOpen: Response.json({ ok: true }),
+    });
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    await fixture.seed(owner);
+    await fixture.execute(owner);
+    await fixture.drain();
+    await owner.sync();
+    const observer = await fixture.connect("observer");
+    assert.equal(owner.runtimeState().workstation?.status, "ready");
+    const completed = owner.runtimeState().executions;
+    assert.equal(Object.values(completed)[0].status, "done");
+    const content = owner.client.get_cells_json();
+    const offsets = [owner.runtimeHistory.length, observer.runtimeHistory.length];
+
+    const response = await fixture.room.fetch(
+      new Request("https://room/internal/n/demo/workstation-attachment", {
+        method: "DELETE",
+        body: JSON.stringify({ runtime_session_id: "managed-job" }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    await fixture.drain();
+    for (const [index, connection] of [owner, observer].entries()) {
+      await connection.sync();
+      const transitions = connection.runtimeHistory.slice(offsets[index]);
+      assert.ok(transitions.length > 0, "viewer received the stop transition");
+      for (const state of transitions) {
+        assert.notEqual(state.workstation?.status, "error");
+        assert.notEqual(state.workstation?.status, "disconnected");
+        assert.notEqual(state.kernel.lifecycle.lifecycle, "Error");
+      }
+      const stopped = connection.runtimeState();
+      assert.equal(stopped.kernel.lifecycle.lifecycle, "Shutdown");
+      assert.equal(stopped.workstation?.status, "idle");
+      assert.deepEqual(stopped.executions, completed, "completed results are retained");
+      assert.equal(connection.client.get_cells_json(), content, "notebook content is retained");
+    }
+    assert.equal(fixture.db.attachJobs[0].status, "completed");
+    assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, 1);
+
+    const replacement = await fixture.startReplacement(true);
+    assert.notEqual(replacement, "managed-job");
+    await fixture.drain();
+    await owner.sync();
+    assert.equal(owner.runtimeState().workstation?.status, "ready");
+    for (const [index, connection] of [owner, observer].entries()) {
+      await connection.sync();
+      assertNoComputeFailure(connection.runtimeHistory.slice(offsets[index]));
+    }
+    assert.equal(
+      fixture.requests.filter((request) => request.path === "/execute").length,
+      1,
+      "Restart alone does not replay completed execution",
+    );
+  });
+
   for (const action of ["restart", "interrupt"] as const) {
     it(`allows explicit ${action} of a busy survivor only after disposal is confirmed`, async (t) => {
       let finish!: () => void;
@@ -4523,13 +4736,30 @@ describe("NotebookRoom materialized sync routing", () => {
       assert.equal(pool.has(key), true);
       assert.equal(disposed, 0);
       rejectClose = false;
+      const restartOffset = reconnected.runtimeHistory.length;
       assert.equal(await reset(), true);
       await executing;
       assert.equal(pool.has(key), false);
       assert.equal(disposed, 1);
+      await fixture.drain();
+      await reconnected.sync();
+      assert.equal(
+        reconnected.runtimeState().workstation?.status,
+        action === "restart" ? "idle" : "error",
+      );
+      assert.equal(fixture.db.attachJobs[0].status, action === "restart" ? "completed" : "failed");
+      if (action === "restart") {
+        assert.equal(reconnected.runtimeState().kernel.lifecycle.lifecycle, "Shutdown");
+        assert.equal(reconnected.runtimeState().kernel.error_details, "");
+      }
       const replacement = await fixture.startReplacement(true);
       assert.notEqual(replacement, "managed-job");
       assert.equal(created, 3, "the owner's full pool admits replacement after confirmed close");
+      if (action === "restart") {
+        await fixture.drain();
+        await reconnected.sync();
+        assertNoComputeFailure(reconnected.runtimeHistory.slice(restartOffset));
+      }
     });
   }
 
@@ -5217,6 +5447,97 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.deepEqual(Object.keys(owner.runtimeState().executions), [executionId]);
     assert.equal(owner.runtimeState().executions[executionId].status, "done");
     assert.equal(fixture.requests.filter((request) => request.path === "/execute").length, 1);
+  });
+
+  for (const pendingStage of ["owner lookup", "package restore"] as const) {
+    it(`restarts during ${pendingStage} without letting late startup publish a failure`, async (t) => {
+      let enteredPackages!: () => void;
+      let releasePackages!: () => void;
+      const installing = new Promise<void>((resolve) => {
+        enteredPackages = resolve;
+      });
+      const heldPackages = new Promise<void>((resolve) => {
+        releasePackages = resolve;
+      });
+      const fixture = await managedPythonAdmissionFixture("connecting", {
+        holdOwnerLookup: pendingStage === "owner lookup",
+        immediateOpen: Response.json({ ok: true }),
+        packageResponse: async () => {
+          enteredPackages();
+          await heldPackages;
+          return Response.json({ status: "ready", installed: ["six==1.0"] });
+        },
+      });
+      t.after(async () => {
+        releasePackages();
+        fixture.releaseOwnerLookup();
+        await fixture.close();
+      });
+      if (pendingStage === "package restore") {
+        await fixture.materializer.compareSetCloudPackageManifest(null, {
+          version: 1,
+          pyodide: "0.28.3",
+          requirements: ["six==1.0"],
+          wheels: [],
+        });
+      }
+      const owner = await fixture.connect("owner");
+      await fixture.seed(owner);
+      const observer = await fixture.connect("observer");
+      await fixture.execute(owner);
+      await (pendingStage === "owner lookup" ? fixture.ownerLookupEntered : installing);
+      await owner.sync();
+      await observer.sync();
+      const [executionId] = Object.keys(owner.runtimeState().executions);
+      assert.equal(owner.runtimeState().executions[executionId].status, "queued");
+      const offsets = [owner.runtimeHistory.length, observer.runtimeHistory.length];
+
+      const response = await fixture.room.fetch(
+        new Request("https://room/internal/n/demo/workstation-attachment", {
+          method: "DELETE",
+          body: JSON.stringify({ runtime_session_id: "managed-job" }),
+        }),
+      );
+      assert.equal(response.status, 200);
+      fixture.releaseOwnerLookup();
+      releasePackages();
+      await fixture.drain();
+      for (const [index, connection] of [owner, observer].entries()) {
+        await connection.sync();
+        assert.equal(connection.runtimeState().executions[executionId].status, "cancelled");
+        assert.equal(connection.runtimeState().workstation?.status, "idle");
+        assertNoComputeFailure(connection.runtimeHistory.slice(offsets[index]));
+      }
+      assert.equal(fixture.db.attachJobs[0].status, "completed");
+      assert.equal(fixture.requests.filter((r) => r.path === "/execute").length, 0);
+    });
+  }
+
+  it("reports a confirmed stop whose checkpoint failed as a recoverable failure", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("connecting", {
+      immediateOpen: Response.json({ ok: true }),
+    });
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    await fixture.seed(owner);
+    await fixture.execute(owner);
+    await fixture.drain();
+    t.mock.method(fixture.materializer, "checkpoint", async () => {
+      throw new Error("internal storage detail");
+    });
+    const response = await fixture.room.fetch(
+      new Request("https://room/internal/n/demo/workstation-attachment", {
+        method: "DELETE",
+        body: JSON.stringify({ runtime_session_id: "managed-job" }),
+      }),
+    );
+    assert.equal(response.status, 503);
+    const { error } = (await response.json()) as { error: string };
+    assert.match(error, /Python stopped, but recovery could not be saved/);
+    await owner.sync();
+    assert.equal(owner.runtimeState().workstation?.status, "error");
+    assert.equal(owner.runtimeState().workstation?.status_message, error);
+    assert.equal(fixture.db.attachJobs[0].status, "completed", "disposal was confirmed");
   });
 
   it("interrupts accepted managed intent while startup is still resolving its owner", async (t) => {
@@ -6997,6 +7318,7 @@ function roomHarness(room: NotebookRoom): RoomHarness {
 }
 
 type ManagedAdmissionRuntimeState = {
+  kernel: { lifecycle: { lifecycle: string }; error_details?: string | null };
   executions: Record<
     string,
     { status: string; source: string; outputs: Array<{ text?: { inline: string } }> }
@@ -7004,6 +7326,15 @@ type ManagedAdmissionRuntimeState = {
   queue: { executing: unknown; queued: Array<{ execution_id: string }> };
   workstation?: { status?: string; status_message?: string | null; runtime_session_id?: string };
 };
+
+function assertNoComputeFailure(states: ManagedAdmissionRuntimeState[]) {
+  assert.ok(states.length > 0, "viewer received runtime transitions");
+  for (const state of states) {
+    assert.notEqual(state.workstation?.status, "error");
+    assert.notEqual(state.workstation?.status, "disconnected");
+    assert.notEqual(state.kernel.lifecycle.lifecycle, "Error");
+  }
+}
 
 async function managedPythonAdmissionFixture(
   status: "connecting" | "ready",
@@ -7142,6 +7473,7 @@ async function managedPythonAdmissionFixture(
     const client = NotebookHandle.create_bootstrap(peer.identity.actorLabel);
     clients.push(client);
     let received = 0;
+    const runtimeHistory: ManagedAdmissionRuntimeState[] = [];
     const sync = async () => {
       await harness.syncPeerFromRoomHost("demo", peer);
       while (received < socket.sent.length) {
@@ -7157,6 +7489,7 @@ async function managedPythonAdmissionFixture(
               encodeTypedFrame(frame[0], new Uint8Array(event.reply)),
             );
         if (frame[0] === FrameType.RUNTIME_STATE_SYNC) {
+          runtimeHistory.push(client.get_runtime_state() as ManagedAdmissionRuntimeState);
           const reply = client.generate_runtime_state_sync_reply();
           if (reply)
             await room.webSocketMessage(
@@ -7171,6 +7504,7 @@ async function managedPythonAdmissionFixture(
       peer,
       client,
       sync,
+      runtimeHistory,
       response: (requestId: string) =>
         new Promise<Record<string, unknown>>((resolve) => {
           responses.set(requestId, resolve);
@@ -7512,7 +7846,7 @@ class CountingNotebookOwnerD1 extends NotebookOwnerD1 {
 class ResumeNotebookD1 implements D1Database {
   readonly notebookAclOwners = new Set<string>();
   beforeSessionOwnerLookup?: () => Promise<void>;
-  beforeAttachUpdate?: () => void;
+  beforeAttachUpdate?: () => void | Promise<void>;
   readonly attachJobs: Array<{
     id: string;
     notebook_id: string;
@@ -7636,7 +7970,7 @@ class ResumeNotebookD1Statement implements D1PreparedStatement {
       this.query.includes("UPDATE workstation_attach_jobs") &&
       this.query.includes("SET status = ?")
     ) {
-      this.db.beforeAttachUpdate?.();
+      await this.db.beforeAttachUpdate?.();
       const [status, updatedAt, , , , finishedAt, errorMessage, id, owner, workstation, maxRank] =
         this.values;
       const job = this.db.attachJobs.find(

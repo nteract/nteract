@@ -744,6 +744,19 @@ impl RoomHostHandle {
             .map_err(|error| JsError::new(&format!("serialize reconcile result: {error}")))
     }
 
+    pub fn reconcile_runtime_stopped(
+        &mut self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<JsValue, JsError> {
+        let result = self
+            .engine
+            .reconcile_runtime_stopped(session_id, reason)
+            .map_err(room_host_js_error)?;
+        serialize_to_js(&result)
+            .map_err(|error| JsError::new(&format!("serialize stop result: {error}")))
+    }
+
     pub fn set_workstation_attachment_json(
         &mut self,
         attachment_json: &str,
