@@ -1,53 +1,98 @@
 name: Publish npm packages
 
-# npm publishing for the runtimed Node bindings and Pi package.
-#
-# Publishes stable releases to the `latest` dist-tag via GitHub OIDC trusted
-# publishing (no npm token required). Stable releases on the default branch
-# invoke this workflow after the Stable Release workflow succeeds;
-# workflow_dispatch remains available for republishing or filling in a missing
-# package.
-#
-# Before using this workflow, configure npm trusted publishing for:
-# - @runtimed/node
-# - @runtimed/node-darwin-arm64
-# - @runtimed/node-linux-x64-gnu
-# - @runtimed/node-linux-arm64-gnu
-# - @runtimed/node-win32-x64-msvc
-# - @runtimed/node-win32-arm64-msvc
-# - @nteract/pi
-# Linux ARM64 packages are built on every run, but their first publication
-# needs npm login. Enable NPM_LINUX_ARM64_ENABLED only after bootstrap and
-# trusted-publisher setup (see RELEASING.md).
-
+# Keep this standalone workflow identity for npm OIDC trusted publishing.
+# Builders have no publishing permission; publishers consume only packed artifacts.
+# Stable uses the checked-in Node version/latest. Nightly uses that version plus
+# the successful upstream run ID/nightly. @nteract/pi remains stable-only.
+# Linux/Windows ARM64 require their NPM_*_ARM64_ENABLED bootstrap gates.
 on:
   workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: Successful Stable Release or Nightly Release workflow run ID
+        required: true
+        type: string
+      release_run_attempt:
+        description: Successful attempt of that upstream release run
+        required: true
+        default: "1"
+        type: string
   workflow_run:
-    workflows: ["Stable Release"]
+    workflows: ["Stable Release", "Nightly Release"]
     types: [completed]
 
 permissions:
   contents: read
 
+# Serialize both channels, including manual retries. The registry preflight also
+# rejects stale candidates because GitHub does not guarantee queue ordering.
 concurrency:
-  group: npm-publish-stable
+  group: npm-publish
   cancel-in-progress: false
 
 env:
-  # Bake the stable channel into the published binding. runt-workspace reads
-  # this at compile time via option_env!("RUNT_BUILD_CHANNEL") and falls back
-  # to Nightly when unset, so without this defaultSocketPath() in the
-  # published @runtimed/node would resolve under ~/.cache/runt-nightly. Source
-  # builds (no env) intentionally stay on the Nightly default.
-  RUNT_BUILD_CHANNEL: stable
   NPM_TRUSTED_PUBLISHING_MIN_VERSION: 11.5.1
 
 jobs:
+  resolve-release:
+    name: Resolve successful upstream release
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      source_sha: ${{ steps.identity.outputs.source_sha }}
+      channel: ${{ steps.identity.outputs.channel }}
+      run_id: ${{ steps.identity.outputs.run_id }}
+      run_attempt: ${{ steps.identity.outputs.run_attempt }}
+      version: ${{ steps.plan.outputs.version }}
+      dist_tag: ${{ steps.plan.outputs.dist_tag }}
+      linux_arm64_enabled: ${{ steps.plan.outputs.linux_arm64_enabled }}
+      windows_arm64_enabled: ${{ steps.plan.outputs.windows_arm64_enabled }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Validate upstream workflow, attempt, repository, and source
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+        run: node scripts/ci/npm-release-cli.mjs resolve "$RUNNER_TEMP/release-identity.json"
+      - name: Read version from the exact upstream source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.identity.outputs.source_sha }}
+          path: release-source
+          persist-credentials: false
+      - name: Prepare immutable npm release plan and publisher helpers
+        id: plan
+        env:
+          NPM_LINUX_ARM64_ENABLED: ${{ vars.NPM_LINUX_ARM64_ENABLED }}
+          NPM_WINDOWS_ARM64_ENABLED: ${{ vars.NPM_WINDOWS_ARM64_ENABLED }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-release-tools"
+          cp scripts/ci/npm-release*.mjs "$RUNNER_TEMP/npm-release-tools/"
+          node scripts/ci/npm-release-cli.mjs plan "$RUNNER_TEMP/release-identity.json" release-source/packages/runtimed-node/package.json "$RUNNER_TEMP/npm-release-tools/plan.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools/
+          if-no-files-found: error
+          retention-days: 7
+
   pack-native:
     name: Pack native package (${{ matrix.target }})
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    # npm trusted publishing / provenance requires GitHub-hosted runners.
+    needs: [resolve-release]
     runs-on: ${{ matrix.runner }}
+    env:
+      RUNT_BUILD_CHANNEL: ${{ needs.resolve-release.outputs.channel }}
+      NTERACT_BUILD_GIT_HASH: ${{ needs.resolve-release.outputs.source_sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -66,43 +111,45 @@ jobs:
       - uses: actions/checkout@v6
         with:
           lfs: true
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
+          ref: ${{ needs.resolve-release.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
       - uses: dsherret/rust-toolchain-file@v1
-
       - uses: pnpm/action-setup@v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
-
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: pnpm
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
+      - name: Stamp exact Node package versions
+        shell: bash
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp "$RUNNER_TEMP/npm-release-tools/plan.json" packages/runtimed-node
       - name: Build native binding
         run: pnpm --dir packages/runtimed-node build
-
       - name: Assemble platform package
         run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
-
       - name: Smoke native binding
         if: matrix.target == 'win32-arm64-msvc' || matrix.target == 'linux-arm64-gnu'
-        # Loading the binding checks the runner's native ABI without a daemon.
-        # Release validation exercises the API against its own source-built daemon.
         run: pnpm --dir packages/runtimed-node smoke
-
       - name: Verify platform package
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
-
       - name: Pack platform package
         shell: bash
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack --pack-destination "$RUNNER_TEMP"
-
-      - name: Upload platform package artifact
-        uses: actions/upload-artifact@v7
+      - name: Smoke installed native tarball and compiled channel
+        shell: bash
+        run: |
+          TARBALLS=("$RUNNER_TEMP"/*.tgz)
+          test "${#TARBALLS[@]}" -eq 1
+          npm install --prefix "$RUNNER_TEMP/npm-native-smoke" --ignore-scripts --no-audit --no-fund "${TARBALLS[0]}"
+          node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" smoke "$RUNNER_TEMP/npm-release-tools/plan.json" "${{ matrix.target }}" "$RUNNER_TEMP/npm-native-smoke"
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-package-${{ matrix.target }}
           path: ${{ runner.temp }}/*.tgz
@@ -111,8 +158,7 @@ jobs:
 
   publish-native:
     name: Publish native package (${{ matrix.target }})
-    needs: [pack-native]
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    needs: [resolve-release, pack-native]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,141 +172,65 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Capture npm version
-        id: npm-version
-        run: echo "version=$(npm --version)" >> "$GITHUB_OUTPUT"
-
-      - name: Verify npm trusted publishing support
-        shell: bash
-        run: |
-          node <<'NODE'
-          const current = process.env.NPM_VERSION.split(".").map(Number);
-          const minimum = process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION.split(".").map(Number);
-          for (let i = 0; i < 3; i++) {
-            if ((current[i] ?? 0) > (minimum[i] ?? 0)) process.exit(0);
-            if ((current[i] ?? 0) < (minimum[i] ?? 0)) {
-              throw new Error(`npm ${process.env.NPM_VERSION} is older than ${process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION}`);
-            }
-          }
-          NODE
-        env:
-          NPM_VERSION: ${{ steps.npm-version.outputs.version }}
-
-      - name: Download platform package artifact
-        uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
+      - uses: actions/download-artifact@v8
         with:
           name: npm-package-${{ matrix.target }}
           path: ${{ runner.temp }}/npm-package
-
       - name: Publish platform package
-        if: matrix.target != 'linux-arm64-gnu' || vars.NPM_LINUX_ARM64_ENABLED == 'true'
-        shell: bash
+        if: (matrix.target != 'linux-arm64-gnu' || needs.resolve-release.outputs.linux_arm64_enabled == 'true') && (matrix.target != 'win32-arm64-msvc' || needs.resolve-release.outputs.windows_arm64_enabled == 'true')
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" publish "$RUNNER_TEMP/npm-release-tools/plan.json" "${{ matrix.target }}" "$RUNNER_TEMP/npm-package"
+      - name: Report ARM64 bootstrap prerequisite
+        if: (matrix.target == 'linux-arm64-gnu' && needs.resolve-release.outputs.linux_arm64_enabled != 'true') || (matrix.target == 'win32-arm64-msvc' && needs.resolve-release.outputs.windows_arm64_enabled != 'true')
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          TARBALL="$(find "$RUNNER_TEMP/npm-package" -maxdepth 1 -name '*.tgz' -print -quit)"
-          if [ -z "$TARBALL" ]; then
-            echo "::error::No npm package tarball found"
-            exit 1
-          fi
-
-          tar -xOf "$TARBALL" package/package.json > "$RUNNER_TEMP/package.json"
-          PACKAGE="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').name")"
-          VERSION="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').version")"
-
-          if npm view "${PACKAGE}@${VERSION}" version >/dev/null 2>&1; then
-            echo "${PACKAGE}@${VERSION} is already published; skipping."
-            exit 0
-          fi
-
-          npm publish "$TARBALL" --tag latest --access public --provenance
-
-      - name: Report Linux ARM64 bootstrap prerequisite
-        if: matrix.target == 'linux-arm64-gnu' && vars.NPM_LINUX_ARM64_ENABLED != 'true'
-        run: |
-          echo "Linux ARM64 npm publication is disabled until bootstrap and trusted publishing are configured." >> "$GITHUB_STEP_SUMMARY"
-          echo "Download npm-package-linux-arm64-gnu and follow RELEASING.md. Other npm platforms remain enabled." >> "$GITHUB_STEP_SUMMARY"
+          echo "$TARGET npm publication is disabled until bootstrap and trusted publishing are configured." >> "$GITHUB_STEP_SUMMARY"
+          echo "Download npm-package-$TARGET and follow RELEASING.md. Other npm platforms remain enabled." >> "$GITHUB_STEP_SUMMARY"
 
   pack-wrapper:
     name: Pack wrapper package
-    needs: [publish-native]
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    # npm trusted publishing / provenance requires GitHub-hosted runners.
+    needs: [resolve-release, publish-native]
     runs-on: ubuntu-latest
+    env:
+      RUNT_BUILD_CHANNEL: ${{ needs.resolve-release.outputs.channel }}
+      NTERACT_BUILD_GIT_HASH: ${{ needs.resolve-release.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
+          ref: ${{ needs.resolve-release.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
       - uses: dsherret/rust-toolchain-file@v1
-
       - uses: pnpm/action-setup@v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
-
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: pnpm
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
+      - name: Stamp exact Node package versions
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp "$RUNNER_TEMP/npm-release-tools/plan.json" packages/runtimed-node
       - name: Build native binding metadata
         run: pnpm --dir packages/runtimed-node build
-
-      - name: Select enabled wrapper platforms
-        env:
-          NPM_LINUX_ARM64_ENABLED: ${{ vars.NPM_LINUX_ARM64_ENABLED }}
-        run: |
-          node <<'NODE'
-          const fs = require("node:fs");
-          const path = "packages/runtimed-node/package.json";
-          const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
-          if (process.env.NPM_LINUX_ARM64_ENABLED !== "true") {
-            delete manifest.optionalDependencies["@runtimed/node-linux-arm64-gnu"];
-            fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
-          }
-          NODE
-
       - name: Verify wrapper package
         run: pnpm --dir packages/runtimed-node pack:dry-run
-
       - name: Pack wrapper package
-        shell: bash
         run: pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP"
-
       - name: Verify wrapper package manifest
         run: |
           tar -xOf "$RUNNER_TEMP"/runtimed-node-*.tgz package/package.json > "$RUNNER_TEMP/wrapper-package.json"
-          node <<'NODE'
-          const fs = require("node:fs");
-          const manifest = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/wrapper-package.json`, "utf8"));
-          const deps = manifest.dependencies ?? {};
-          const optionalDeps = manifest.optionalDependencies ?? {};
-
-          const arm64Enabled = process.env.NPM_LINUX_ARM64_ENABLED === "true";
-          if (Boolean(optionalDeps["@runtimed/node-linux-arm64-gnu"]) !== arm64Enabled) {
-            throw new Error("Packed Linux ARM64 dependency does not match the publication gate");
-          }
-
-          if (deps.runtimed) {
-            throw new Error(`@runtimed/node tarball must not depend on private package runtimed; found ${deps.runtimed}`);
-          }
-
-          for (const [section, entries] of Object.entries({ dependencies: deps, optionalDependencies: optionalDeps })) {
-            for (const [name, version] of Object.entries(entries)) {
-              if (String(version).startsWith("workspace:")) {
-                throw new Error(`${section}.${name} still uses workspace protocol in packed manifest`);
-              }
-            }
-          }
-          NODE
-        env:
-          NPM_LINUX_ARM64_ENABLED: ${{ vars.NPM_LINUX_ARM64_ENABLED }}
-
-      - name: Upload wrapper package artifact
-        uses: actions/upload-artifact@v7
+          node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" verify "$RUNNER_TEMP/npm-release-tools/plan.json" wrapper "$RUNNER_TEMP/wrapper-package.json"
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-package-wrapper
           path: ${{ runner.temp }}/runtimed-node-*.tgz
@@ -270,7 +240,6 @@ jobs:
   publish-wrapper:
     name: Publish wrapper package
     needs: [pack-wrapper]
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -280,106 +249,57 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Capture npm version
-        id: npm-version
-        run: echo "version=$(npm --version)" >> "$GITHUB_OUTPUT"
-
-      - name: Verify npm trusted publishing support
-        shell: bash
-        run: |
-          node <<'NODE'
-          const current = process.env.NPM_VERSION.split(".").map(Number);
-          const minimum = process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION.split(".").map(Number);
-          for (let i = 0; i < 3; i++) {
-            if ((current[i] ?? 0) > (minimum[i] ?? 0)) process.exit(0);
-            if ((current[i] ?? 0) < (minimum[i] ?? 0)) {
-              throw new Error(`npm ${process.env.NPM_VERSION} is older than ${process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION}`);
-            }
-          }
-          NODE
-        env:
-          NPM_VERSION: ${{ steps.npm-version.outputs.version }}
-
-      - name: Download wrapper package artifact
-        uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
+      - uses: actions/download-artifact@v8
         with:
           name: npm-package-wrapper
           path: ${{ runner.temp }}/npm-package
-
       - name: Publish wrapper package
-        shell: bash
-        run: |
-          TARBALL="$(find "$RUNNER_TEMP/npm-package" -maxdepth 1 -name '*.tgz' -print -quit)"
-          if [ -z "$TARBALL" ]; then
-            echo "::error::No npm package tarball found"
-            exit 1
-          fi
-
-          tar -xOf "$TARBALL" package/package.json > "$RUNNER_TEMP/package.json"
-          PACKAGE="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').name")"
-          VERSION="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').version")"
-
-          if npm view "${PACKAGE}@${VERSION}" version >/dev/null 2>&1; then
-            echo "${PACKAGE}@${VERSION} is already published; skipping."
-            exit 0
-          fi
-
-          npm publish "$TARBALL" --tag latest --access public --provenance
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" publish "$RUNNER_TEMP/npm-release-tools/plan.json" wrapper "$RUNNER_TEMP/npm-package"
+      - name: Record available immutable Node release
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-release-result
+          path: ${{ runner.temp }}/npm-result/wrapper.json
+          if-no-files-found: error
+          retention-days: 30
 
   pack-pi:
     name: Pack Pi package
-    needs: [publish-wrapper]
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    # npm trusted publishing / provenance requires GitHub-hosted runners.
+    needs: [resolve-release, publish-wrapper]
+    if: needs.resolve-release.outputs.channel == 'stable'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           lfs: true
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
+          ref: ${{ needs.resolve-release.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
       - uses: pnpm/action-setup@v6
         with:
           dest: ${{ runner.temp }}/setup-pnpm
-
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: pnpm
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Verify Pi package
         run: pnpm --dir plugins/nteract/pi pack:dry-run
-
       - name: Pack Pi package
-        shell: bash
         run: pnpm --dir plugins/nteract/pi pack --pack-destination "$RUNNER_TEMP"
-
       - name: Verify Pi package manifest
         run: |
           tar -xOf "$RUNNER_TEMP"/nteract-pi-*.tgz package/package.json > "$RUNNER_TEMP/pi-package.json"
-          node <<'NODE'
-          const fs = require("node:fs");
-          const pi = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/pi-package.json`, "utf8"));
-          const wrapper = JSON.parse(fs.readFileSync("packages/runtimed-node/package.json", "utf8"));
-          const deps = pi.dependencies ?? {};
-
-          if (deps["@runtimed/node"] !== wrapper.version) {
-            throw new Error(`@nteract/pi must depend on @runtimed/node ${wrapper.version}; found ${deps["@runtimed/node"]}`);
-          }
-
-          for (const [name, version] of Object.entries(deps)) {
-            if (String(version).startsWith("workspace:")) {
-              throw new Error(`dependencies.${name} still uses workspace protocol in packed manifest`);
-            }
-          }
-          NODE
-
-      - name: Upload Pi package artifact
-        uses: actions/upload-artifact@v7
+          node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" verify "$RUNNER_TEMP/npm-release-tools/plan.json" pi "$RUNNER_TEMP/pi-package.json"
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-package-pi
           path: ${{ runner.temp }}/nteract-pi-*.tgz
@@ -389,7 +309,6 @@ jobs:
   publish-pi:
     name: Publish Pi package
     needs: [pack-pi]
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -399,49 +318,13 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Capture npm version
-        id: npm-version
-        run: echo "version=$(npm --version)" >> "$GITHUB_OUTPUT"
-
-      - name: Verify npm trusted publishing support
-        shell: bash
-        run: |
-          node <<'NODE'
-          const current = process.env.NPM_VERSION.split(".").map(Number);
-          const minimum = process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION.split(".").map(Number);
-          for (let i = 0; i < 3; i++) {
-            if ((current[i] ?? 0) > (minimum[i] ?? 0)) process.exit(0);
-            if ((current[i] ?? 0) < (minimum[i] ?? 0)) {
-              throw new Error(`npm ${process.env.NPM_VERSION} is older than ${process.env.NPM_TRUSTED_PUBLISHING_MIN_VERSION}`);
-            }
-          }
-          NODE
-        env:
-          NPM_VERSION: ${{ steps.npm-version.outputs.version }}
-
-      - name: Download Pi package artifact
-        uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release-tools
+          path: ${{ runner.temp }}/npm-release-tools
+      - uses: actions/download-artifact@v8
         with:
           name: npm-package-pi
           path: ${{ runner.temp }}/npm-package
-
       - name: Publish Pi package
-        shell: bash
-        run: |
-          TARBALL="$(find "$RUNNER_TEMP/npm-package" -maxdepth 1 -name '*.tgz' -print -quit)"
-          if [ -z "$TARBALL" ]; then
-            echo "::error::No npm package tarball found"
-            exit 1
-          fi
-
-          tar -xOf "$TARBALL" package/package.json > "$RUNNER_TEMP/package.json"
-          PACKAGE="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').name")"
-          VERSION="$(node -p "require(process.env.RUNNER_TEMP + '/package.json').version")"
-
-          if npm view "${PACKAGE}@${VERSION}" version >/dev/null 2>&1; then
-            echo "${PACKAGE}@${VERSION} is already published; skipping."
-            exit 0
-          fi
-
-          npm publish "$TARBALL" --tag latest --access public --provenance
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" publish "$RUNNER_TEMP/npm-release-tools/plan.json" pi "$RUNNER_TEMP/npm-package"

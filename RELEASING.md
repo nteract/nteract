@@ -7,7 +7,7 @@
 | **Stable** | `v{version}-stable.{timestamp}` | Tag push (`v*`) or manual | GitHub Releases |
 | **Nightly** | `v{version}-nightly.{timestamp}` | Cron (daily, 24h cadence) or manual | GitHub Pre-releases |
 | **runtimed Python package** | same as stable/nightly | Stable/nightly release workflow | PyPI + GitHub Releases |
-| **npm packages** | same commit as stable | Successful stable release or manual | npm |
+| **npm packages** | Stable Node version or `<Node version>-nightly.<run ID>` | Successful stable/nightly release or manual recovery | npm (`latest` / `nightly`) |
 
 Timestamps are UTC in `YYYYMMDDHHMM` format, e.g. `v2.0.0-stable.202507010900`.
 
@@ -73,16 +73,23 @@ The `runtimed` Python package is released by the stable and nightly release work
 
 Nightly builds publish the next patch alpha version, for example `2.4.7a202605082121`, and stable builds publish the checked-in Rust release version, for example `2.4.6`.
 
-The `publish-npm.yml` workflow publishes `@runtimed/node`, its native platform packages, and `@nteract/pi` to npm after a successful stable release. It can also be run manually to fill in missing packages.
+The `publish-npm.yml` workflow publishes `@runtimed/node` and its native platform packages from the exact source of a successful stable or nightly release. Stable uses the checked-in Node package version and npm's `latest` tag; nightly uses `<Node version>-nightly.<upstream run ID>` and the `nightly` tag. `@nteract/pi` remains stable-only. Manual recovery requires a successful upstream release run ID and attempt. See the [npm publishing runbook](docs/runbooks/npm-publishing.md) for retry behavior, account prerequisites, consumer qualification, and the distinction between package pins and daemon compatibility.
 
-Linux ARM64 npm publication requires a one-time bootstrap. Until the repository variable `NPM_LINUX_ARM64_ENABLED` is `true`, CI builds and tests the ARM64 binding and uploads its tarball, but skips publishing it and omits that optional dependency from the published wrapper. Existing npm platforms continue publishing. Desktop, CLI, Python, and agent-plugin ARM64 releases do not use this gate.
+Linux and Windows ARM64 npm publication each require a one-time bootstrap. Until a platform's repository variable is `true`, CI builds and tests its binding and uploads its tarball, but skips publishing it and omits that optional dependency from the published wrapper. Existing npm platforms continue publishing. Desktop, CLI, Python, and agent-plugin ARM64 releases do not use these gates.
 
-To enable Linux ARM64 npm releases:
+| Platform | Package | Repository variable |
+|---|---|---|
+| Linux ARM64 | `@runtimed/node-linux-arm64-gnu` | `NPM_LINUX_ARM64_ENABLED` |
+| Windows ARM64 | `@runtimed/node-win32-arm64-msvc` | `NPM_WINDOWS_ARM64_ENABLED` |
 
-1. Download `npm-package-linux-arm64-gnu` from a successful **Release validation** or **Publish npm packages** run for the intended source commit. Inspect the tarball's package name and version before publishing.
-2. With an authenticated npm maintainer account, publish that tarball using `npm publish <tarball> --access public`.
+To enable either ARM64 npm platform:
+
+1. Download `npm-package-linux-arm64-gnu` or `npm-package-win32-arm64-msvc` from a successful **Publish npm packages** run for the intended source commit. Inspect the tarball's package name, version, and channel before publishing. **Release validation** also supplies a Linux ARM64 tarball.
+2. With an authenticated npm maintainer account, publish that tarball using `npm publish <tarball> --tag <latest-or-nightly> --access public`, selecting `nightly` for a nightly version and `latest` for a stable version. Inspect existing tags first so bootstrap does not move a channel backwards.
 3. Configure the package's npm trusted publisher for organization `nteract`, repository `nteract`, workflow `publish-npm.yml`, allowing `npm publish`.
-4. Set `NPM_LINUX_ARM64_ENABLED=true` in the repository's Actions variables. The next npm release publishes ARM64 alongside the other platforms and includes it in the wrapper. If that wrapper version was already published without ARM64, bump the package versions before releasing; npm versions are immutable.
+4. Verify the package is readable from the registry and its trusted-publisher settings are correct, then set that platform's variable to `true` in the repository's Actions variables. The next npm release publishes it alongside the other enabled platforms and includes it in the wrapper. If that wrapper version was already published without the platform, use a new successful nightly run or bump the stable package version before releasing; npm versions are immutable.
+
+These bootstrap publications, npm permissions, and trusted-publisher settings require separate maintainer qualification. They are not established by the source change or a local test run.
 
 ## Development
 
