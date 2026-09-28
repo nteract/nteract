@@ -116,12 +116,14 @@ test("main checks both original and rerun actors for source and deployment runs"
   assert.equal(request(f).previewId, "main");
 });
 
-test("Quillaid preview eligibility does not authorize main deployment", () => {
-  for (const target of ["deployment", "build", "event"]) {
-    for (const actor of ["actor", "triggering_actor"]) {
-      const f = fixture();
-      (target === "event" ? f.event.workflow_run : f[target])[actor] = {id: 261289082};
-      assert.throws(() => request(f), /eligible/);
+test("PR-only eligibility does not authorize main deployment", () => {
+  for (const id of [261289082, 3131401, 25752941]) {
+    for (const target of ["deployment", "build", "event"]) {
+      for (const actor of ["actor", "triggering_actor"]) {
+        const f = fixture();
+        (target === "event" ? f.event.workflow_run : f[target])[actor] = {id};
+        assert.throws(() => request(f), /eligible/);
+      }
     }
   }
 });

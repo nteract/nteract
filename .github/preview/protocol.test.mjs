@@ -28,8 +28,8 @@ test("opened, reopened and synchronize deploy the exact current head", () => {
   }
 });
 
-test("configured maintainers and Quillaid may author, trigger and rerun previews", () => {
-  for (const id of [836375, 107147005, 261289082]) {
+test("configured teammates may author, trigger and rerun previews", () => {
+  for (const id of [836375, 107147005, 261289082, 3131401, 25752941]) {
     const f = fixture();
     f.pr.user.id = id;
     f.run.actor.id = id;
