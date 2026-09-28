@@ -68,7 +68,19 @@ install_from_release() {
   rm -rf "$tmp"
 }
 
-if ! install_from_release; then
+installed_version() {
+  cargo tauri --version 2>/dev/null | awk '{print $2}'
+}
+
+if [[ -x "$cargo_bin/cargo-tauri" && "$(installed_version)" == "$version" ]]; then
+  echo "Tauri CLI v$version is already installed at $cargo_bin/cargo-tauri"
+elif [[ -z "$target" ]]; then
+  # Upstream publishes no prebuilt CLI for this host (for example Linux
+  # aarch64), so build it. rust-cache keeps ~/.cargo/bin between runs, and the
+  # version check above skips the rebuild when the cached binary matches.
+  echo "No prebuilt Tauri CLI for $(uname -s)-$(uname -m); running cargo install tauri-cli --version $version"
+  cargo install tauri-cli --version "$version" --locked --force
+elif ! install_from_release; then
   echo "::warning::Direct Tauri CLI download failed; falling back to cargo install tauri-cli --version $version"
   cargo install tauri-cli --version "$version" --locked --force
 fi

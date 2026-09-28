@@ -20,7 +20,7 @@ service.
 sudo apt update && sudo apt install -y curl tmux
 ```
 
-On a Linux x64 or macOS (Apple silicon / Intel) machine:
+On a Linux (x64 or ARM64) or macOS (Apple silicon / Intel) machine:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli

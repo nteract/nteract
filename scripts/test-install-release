@@ -52,12 +52,13 @@ EOF
 make_linux_fixtures() {
   local dir="$1"
   local log="$2"
+  local arch="${3:-x64}"
   mkdir -p "$dir"
-  make_fake_tool "$dir/runt-linux-x64" "$log"
-  make_fake_tool "$dir/nteract-cli-linux-x64" "$log"
-  make_fake_tool "$dir/runtimed-linux-x64" "$log"
-  make_fake_tool "$dir/nteract-mcp-linux-x64" "$log"
-  echo "fake appimage" > "$dir/nteract-stable-linux-x64.AppImage"
+  make_fake_tool "$dir/runt-linux-$arch" "$log"
+  make_fake_tool "$dir/nteract-cli-linux-$arch" "$log"
+  make_fake_tool "$dir/runtimed-linux-$arch" "$log"
+  make_fake_tool "$dir/nteract-mcp-linux-$arch" "$log"
+  echo "fake $arch appimage" > "$dir/nteract-stable-linux-$arch.AppImage"
 }
 
 make_nightly_linux_fixtures() {
@@ -167,6 +168,24 @@ assert_link "$LINUX_HOME/.local/bin/nteract-mcp" "$PREFIX/bin/nteract-mcp"
 assert_link "$LINUX_HOME/.local/bin/nteract" "$PREFIX/bin/nteract-cli"
 assert_link "$LINUX_HOME/.local/bin/nteract-desktop" "$PREFIX/nteract.AppImage"
 grep -q "runt daemon doctor --fix --no-start" "$LINUX_LOG" || fail "linux: daemon doctor --fix --no-start not invoked"
+
+note "linux arm64 desktop install selects arm64 assets"
+for machine in aarch64 arm64; do
+  ARM_HOME="$WORK/linux-arm64-$machine-home"
+  ARM_LOG="$WORK/linux-arm64-$machine-calls.log"
+  make_linux_fixtures "$WORK/linux-arm64-assets-$machine" "$ARM_LOG" arm64
+  make_uname_shim "$WORK/shim-linux-arm64-$machine" "Linux" "$machine"
+  PATH="$WORK/shim-linux-arm64-$machine:$PATH" run_installer "$ARM_HOME" \
+    --from-dir "$WORK/linux-arm64-assets-$machine" --no-start > "$WORK/linux-arm64-$machine-out.log"
+  ARM_PREFIX="$ARM_HOME/.local/share/nteract/stable"
+  grep -qx "fake arm64 appimage" "$ARM_PREFIX/nteract.AppImage" || fail "linux $machine: arm64 AppImage not installed"
+  assert_link "$ARM_HOME/.local/bin/runt" "$ARM_PREFIX/bin/runt"
+  assert_link "$ARM_HOME/.local/bin/runtimed" "$ARM_PREFIX/bin/runtimed"
+  assert_link "$ARM_HOME/.local/bin/nteract-mcp" "$ARM_PREFIX/bin/nteract-mcp"
+  assert_link "$ARM_HOME/.local/bin/nteract" "$ARM_PREFIX/bin/nteract-cli"
+  grep -q "linux-arm64-assets-$machine/runt-linux-arm64" "$WORK/linux-arm64-$machine-out.log" || fail "linux $machine: runt-linux-arm64 not used"
+  grep -q "runt daemon doctor --fix --no-start" "$ARM_LOG" || fail "linux $machine: daemon doctor --fix --no-start not invoked"
+done
 
 note "linux download install falls back to wget without curl"
 WGET_HOME="$WORK/wget-home"

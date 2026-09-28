@@ -108,7 +108,8 @@ export APPDIR="$WORKDIR/squashfs-root"
 export APPIMAGE="$APPIMAGE_COPY"
 export ARGV0="$APPIMAGE_COPY"
 export OWD="$WORKDIR"
-export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/x86_64-linux-gnu"
+MULTIARCH="$(uname -m)-linux-gnu"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/usr/lib/$MULTIARCH"
 
 set +e
 "$RUNT" daemon doctor --fix --no-start --json > doctor.json 2> doctor.stderr

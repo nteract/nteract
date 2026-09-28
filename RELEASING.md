@@ -30,16 +30,20 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | Windows x64 | `nteract-{channel}-windows-x64.exe` + `.sig` |
 | Windows ARM64 | `nteract-{channel}-windows-arm64.exe` + `.sig` |
 | Linux x64 AppImage | `nteract-{channel}-linux-x64.AppImage` + `.sig` |
-| Installer script (Linux x64, macOS) | `install-linux-release` |
+| Linux ARM64 AppImage | `nteract-{channel}-linux-arm64.AppImage` + `.sig` |
+| Installer script (Linux x64/ARM64, macOS) | `install-linux-release` |
 | CLI (macOS ARM64) | `runt-darwin-arm64` |
 | CLI (macOS x64) | `runt-darwin-x64` |
-| CLI (Linux x64) | `runt-linux-x64` |
+| CLI (Linux x64) | `runt-linux-x64`, `nteract-cli-linux-x64` |
+| CLI (Linux ARM64) | `runt-linux-arm64`, `nteract-cli-linux-arm64` |
 | Standalone daemon (Linux x64) | `runtimed-linux-x64` |
+| Standalone daemon (Linux ARM64) | `runtimed-linux-arm64` |
 | Standalone daemon (macOS ARM64) | `runtimed-darwin-arm64` |
 | Standalone daemon (macOS x64) | `runtimed-darwin-x64` |
 | Standalone daemon (Windows x64) | `runtimed-windows-x64.exe` |
 | Standalone daemon (Windows ARM64) | `runtimed-windows-arm64.exe` |
 | Standalone MCP server (Linux x64) | `nteract-mcp-linux-x64` |
+| Standalone MCP server (Linux ARM64) | `nteract-mcp-linux-arm64` |
 | Updater manifest | `latest.json` |
 
 macOS builds are signed and notarized. Windows builds use Azure Trusted Signing

@@ -12,6 +12,7 @@ name: Publish npm packages
 # - @runtimed/node
 # - @runtimed/node-darwin-arm64
 # - @runtimed/node-linux-x64-gnu
+# - @runtimed/node-linux-arm64-gnu
 # - @runtimed/node-win32-x64-msvc
 # - @runtimed/node-win32-arm64-msvc
 # - @nteract/pi
@@ -52,6 +53,8 @@ jobs:
             runner: macos-latest
           - target: linux-x64-gnu
             runner: ubuntu-latest
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
           - target: win32-x64-msvc
             runner: windows-latest
           - target: win32-arm64-msvc
@@ -83,7 +86,7 @@ jobs:
         run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
 
       - name: Smoke native binding
-        if: matrix.target == 'win32-arm64-msvc'
+        if: matrix.target == 'win32-arm64-msvc' || matrix.target == 'linux-arm64-gnu'
         run: |
           pnpm --dir packages/runtimed-node smoke
           pnpm --dir packages/runtimed-node smoke:api
@@ -114,7 +117,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [darwin-arm64, linux-x64-gnu, win32-x64-msvc, win32-arm64-msvc]
+        target: [darwin-arm64, linux-x64-gnu, linux-arm64-gnu, win32-x64-msvc, win32-arm64-msvc]
     steps:
       - uses: actions/setup-node@v6
         with:

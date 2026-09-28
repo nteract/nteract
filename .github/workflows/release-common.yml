@@ -122,9 +122,21 @@ jobs:
             target/xtask/*.fingerprint
 
   build-linux:
-    name: Build Linux Executables
-    runs-on: ubuntu-22.04
+    name: Build Linux ${{ matrix.platform.arch }} Executables
+    # Build natively on each architecture. Both runners use Ubuntu 22.04 so
+    # the binaries share the same glibc 2.35 floor.
+    runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arch: x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
@@ -147,7 +159,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "linux-release"
+          shared-key: ${{ matrix.platform.arch == 'x64' && 'linux-release' || format('linux-release-{0}', matrix.platform.arch) }}
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -172,28 +184,37 @@ jobs:
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
 
-      - name: Build for Linux x64
-        run: cargo build --release --target x86_64-unknown-linux-gnu -p runt -p runtimed -p nteract-mcp
+      - name: Build for Linux ${{ matrix.platform.arch }}
+        env:
+          TARGET: ${{ matrix.platform.target }}
+        run: |
+          HOST=$(rustc --print host-tuple)
+          if [ "$HOST" != "$TARGET" ]; then
+            echo "::error::Expected native $TARGET host, got $HOST"
+            exit 1
+          fi
+          cargo build --release --target "$TARGET" -p runt -p runtimed -p nteract-mcp
 
       - name: Rename binaries
+        env:
+          TARGET: ${{ matrix.platform.target }}
+          ARCH: ${{ matrix.platform.arch }}
         run: |
-          cp target/x86_64-unknown-linux-gnu/release/runt runt-linux-x64
-          cp target/x86_64-unknown-linux-gnu/release/nteract-cli nteract-cli-linux-x64
-          cp target/x86_64-unknown-linux-gnu/release/runtimed runtimed-linux-x64
-          cp target/x86_64-unknown-linux-gnu/release/nteract-mcp nteract-mcp-linux-x64
-          chmod +x runt-linux-x64 nteract-cli-linux-x64
-          chmod +x runtimed-linux-x64
-          chmod +x nteract-mcp-linux-x64
+          for bin in runt nteract-cli runtimed nteract-mcp; do
+            cp "target/$TARGET/release/$bin" "$bin-linux-$ARCH"
+            chmod +x "$bin-linux-$ARCH"
+          done
 
       - name: Upload Linux executables
         uses: actions/upload-artifact@v7
         with:
-          name: runt-linux-executables
+          name: runt-linux-executables-${{ matrix.platform.arch }}
           path: |
-            runt-linux-x64
-            nteract-cli-linux-x64
-            runtimed-linux-x64
-            nteract-mcp-linux-x64
+            runt-linux-${{ matrix.platform.arch }}
+            nteract-cli-linux-${{ matrix.platform.arch }}
+            runtimed-linux-${{ matrix.platform.arch }}
+            nteract-mcp-linux-${{ matrix.platform.arch }}
+          if-no-files-found: error
 
   build-macos:
     name: Build macOS Executables
@@ -1026,10 +1047,23 @@ jobs:
           path: daemon/runtimed-windows-arm64.exe
           if-no-files-found: error
 
-  build-notebook-linux-x64:
-    name: Build Linux x64 Notebook
-    runs-on: ubuntu-22.04
+  build-notebook-linux:
+    name: Build Linux ${{ matrix.platform.arch }} Notebook
+    runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arch: x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            # Only one leg publishes the platform-neutral notebook UI bundle.
+            package_notebook_ui: true
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            package_notebook_ui: false
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
@@ -1054,7 +1088,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "linux-notebook-x64"
+          shared-key: linux-notebook-${{ matrix.platform.arch }}
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -1076,6 +1110,7 @@ jobs:
         run: pnpm build
 
       - name: Package notebook UI for embedders
+        if: matrix.platform.package_notebook_ui
         run: |
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$NTERACT_BUILD_GIT_HASH")
@@ -1091,6 +1126,7 @@ jobs:
           sha256sum --check "nteract-${CHANNEL}-notebook-ui.tar.gz.sha256"
 
       - name: Upload notebook UI release bundle
+        if: matrix.platform.package_notebook_ui
         uses: actions/upload-artifact@v7
         with:
           name: nteract-notebook-ui
@@ -1130,9 +1166,15 @@ jobs:
           cargo xtask icons "$ICON_SOURCE"
 
       - name: Build external binaries
+        env:
+          EXPECTED_TARGET: ${{ matrix.platform.target }}
         run: |
           cargo build --release -p runtimed -p runt -p nteract-mcp
           TARGET=$(rustc --print host-tuple)
+          if [ "$TARGET" != "$EXPECTED_TARGET" ]; then
+            echo "::error::Expected native $EXPECTED_TARGET host, got $TARGET"
+            exit 1
+          fi
           mkdir -p crates/notebook/binaries
           cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
           cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
@@ -1154,32 +1196,48 @@ jobs:
           includeUpdaterJson: false
 
       - name: Collect artifacts
+        env:
+          ARCH: ${{ matrix.platform.arch }}
         run: |
           mkdir -p artifacts
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
           APPIMAGE_PATH=$(find target/release/bundle/appimage -name "*.AppImage" | head -1)
-          cp "$APPIMAGE_PATH" "artifacts/nteract-${CHANNEL}-linux-x64.AppImage"
+          if [ -z "$APPIMAGE_PATH" ]; then
+            echo "::error::No AppImage found in target/release/bundle/appimage"
+            exit 1
+          fi
+          cp "$APPIMAGE_PATH" "artifacts/nteract-${CHANNEL}-linux-${ARCH}.AppImage"
           for f in target/release/bundle/appimage/*.AppImage.sig; do
-            [ -f "$f" ] && cp "$f" "artifacts/nteract-${CHANNEL}-linux-x64.AppImage.sig"
+            [ -f "$f" ] && cp "$f" "artifacts/nteract-${CHANNEL}-linux-${ARCH}.AppImage.sig"
           done
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: nteract-linux-x64
+          name: nteract-linux-${{ matrix.platform.arch }}
           path: artifacts/
 
       - name: Upload raw nteract-mcp binary for plugin distribution
         uses: actions/upload-artifact@v7
         with:
-          name: plugin-nteract-mcp-x86_64-unknown-linux-gnu
-          path: crates/notebook/binaries/nteract-mcp-x86_64-unknown-linux-gnu
+          name: plugin-nteract-mcp-${{ matrix.platform.target }}
+          path: crates/notebook/binaries/nteract-mcp-${{ matrix.platform.target }}
           if-no-files-found: error
 
   smoke-fedora-appimage:
-    name: Smoke Fedora AppImage
-    runs-on: ubuntu-22.04
-    needs: [build-notebook-linux-x64]
+    name: Smoke Fedora AppImage (${{ matrix.platform.arch }})
+    # The Fedora container matches the runner architecture, so each AppImage
+    # runs natively.
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [build-notebook-linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -1190,13 +1248,15 @@ jobs:
       - name: Download Linux AppImage
         uses: actions/download-artifact@v8
         with:
-          name: nteract-linux-x64
+          name: nteract-linux-${{ matrix.platform.arch }}
           path: artifacts
 
       - name: Smoke AppImage in Fedora
+        env:
+          ARCH: ${{ matrix.platform.arch }}
         run: |
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
-          APPIMAGE="artifacts/nteract-${CHANNEL}-linux-x64.AppImage"
+          APPIMAGE="artifacts/nteract-${CHANNEL}-linux-${ARCH}.AppImage"
           docker run --rm \
             -v "${PWD}:/workspace" \
             -w /workspace \
@@ -1225,6 +1285,9 @@ jobs:
             sccache: false
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            sccache: true
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
             sccache: true
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
@@ -1354,6 +1417,16 @@ jobs:
         run: |
           python scripts/ci/smoke-windows-arm64-wheel.py python/runtimed/dist
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Set up native Python for Linux ARM64 wheel smoke
+        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Smoke Linux ARM64 wheel
+        if: matrix.platform.target == 'aarch64-unknown-linux-gnu'
+        run: python scripts/ci/smoke-linux-arm64-wheel.py python/runtimed/dist
 
       # The wheel ships Python bindings; this separately exercises the daemon
       # built by this job, without counting it as wheel validation.
@@ -1492,7 +1565,7 @@ jobs:
         build-notebook-macos-x64,
         build-notebook-windows-x64,
         build-notebook-windows-arm64,
-        build-notebook-linux-x64,
+        build-notebook-linux,
         smoke-fedora-appimage,
         build-python-wheels,
       ]
@@ -1535,8 +1608,9 @@ jobs:
       - name: Download Linux executables
         uses: actions/download-artifact@v8
         with:
-          name: runt-linux-executables
+          pattern: runt-linux-executables-*
           path: ./executables
+          merge-multiple: true
 
       - name: Download macOS executables
         uses: actions/download-artifact@v8
@@ -1586,6 +1660,12 @@ jobs:
           name: nteract-linux-x64
           path: ./notebook-linux-x64
 
+      - name: Download Linux ARM64 notebook
+        uses: actions/download-artifact@v8
+        with:
+          name: nteract-linux-arm64
+          path: ./notebook-linux-arm64
+
       - name: Download notebook UI release bundle
         uses: actions/download-artifact@v8
         with:
@@ -1602,6 +1682,7 @@ jobs:
             notebook-windows-x64 \
             notebook-windows-arm64 \
             notebook-linux-x64 \
+            notebook-linux-arm64 \
             notebook-ui
           echo ""
           echo "Downloaded artifact files:"
@@ -1612,6 +1693,7 @@ jobs:
             notebook-windows-x64 \
             notebook-windows-arm64 \
             notebook-linux-x64 \
+            notebook-linux-arm64 \
             notebook-ui \
             -type f -printf "%12s  %p\n" | sort -nr
 
@@ -1632,10 +1714,12 @@ jobs:
             CANONICAL_CLI_NAME="nteract-cli-nightly"
           fi
           # CLI binaries
-          cp executables/nteract-cli-linux-x64 "release-assets/${CANONICAL_CLI_NAME}-linux-x64"
-          cp executables/runt-linux-x64 "release-assets/${CLI_NAME}-linux-x64"
-          cp executables/runtimed-linux-x64 "release-assets/${DAEMON_NAME}-linux-x64"
-          cp executables/nteract-mcp-linux-x64 "release-assets/${MCP_NAME}-linux-x64"
+          for LINUX_ARCH in x64 arm64; do
+            cp "executables/nteract-cli-linux-${LINUX_ARCH}" "release-assets/${CANONICAL_CLI_NAME}-linux-${LINUX_ARCH}"
+            cp "executables/runt-linux-${LINUX_ARCH}" "release-assets/${CLI_NAME}-linux-${LINUX_ARCH}"
+            cp "executables/runtimed-linux-${LINUX_ARCH}" "release-assets/${DAEMON_NAME}-linux-${LINUX_ARCH}"
+            cp "executables/nteract-mcp-linux-${LINUX_ARCH}" "release-assets/${MCP_NAME}-linux-${LINUX_ARCH}"
+          done
           cp executables/runt-darwin-arm64 "release-assets/${CLI_NAME}-darwin-arm64"
           cp executables/runt-darwin-x64 "release-assets/${CLI_NAME}-darwin-x64"
           # Standalone daemons for embedding hosts. The macOS binaries are built
@@ -1657,6 +1741,7 @@ jobs:
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe" release-assets/
           cp "notebook-windows-arm64/nteract-${CHANNEL}-windows-arm64.exe" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage" release-assets/
+          cp "notebook-linux-arm64/nteract-${CHANNEL}-linux-arm64.AppImage" release-assets/
           # Platform-neutral production notebook frontend for embedding hosts.
           cp "notebook-ui/nteract-${CHANNEL}-notebook-ui.tar.gz" release-assets/
           cp "notebook-ui/nteract-${CHANNEL}-notebook-ui.tar.gz.sha256" release-assets/
@@ -1668,6 +1753,7 @@ jobs:
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe.sig" release-assets/
           cp "notebook-windows-arm64/nteract-${CHANNEL}-windows-arm64.exe.sig" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage.sig" release-assets/ 2>/dev/null || true
+          cp "notebook-linux-arm64/nteract-${CHANNEL}-linux-arm64.AppImage.sig" release-assets/ 2>/dev/null || true
 
       - name: Generate updater manifest (latest.json)
         env:
@@ -1698,18 +1784,21 @@ jobs:
           require_file "release-assets/nteract-${CHANNEL}-darwin-arm64.app.tar.gz"
           require_file "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz"
           require_file "release-assets/nteract-${CHANNEL}-linux-x64.AppImage"
+          require_file "release-assets/nteract-${CHANNEL}-linux-arm64.AppImage"
           require_file "release-assets/nteract-${CHANNEL}-windows-x64.exe"
           require_file "release-assets/nteract-${CHANNEL}-windows-arm64.exe"
           require_file "release-assets/install-linux-release"
           require_sig "release-assets/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig"
           require_sig "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig"
           require_sig "release-assets/nteract-${CHANNEL}-linux-x64.AppImage.sig"
+          require_sig "release-assets/nteract-${CHANNEL}-linux-arm64.AppImage.sig"
           require_sig "release-assets/nteract-${CHANNEL}-windows-x64.exe.sig"
           require_sig "release-assets/nteract-${CHANNEL}-windows-arm64.exe.sig"
 
           SIG_DARWIN_ARM64=$(read_sig "release-assets/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig")
           SIG_DARWIN_X64=$(read_sig "release-assets/nteract-${CHANNEL}-darwin-x64.app.tar.gz.sig")
           SIG_LINUX_X64=$(read_sig "release-assets/nteract-${CHANNEL}-linux-x64.AppImage.sig")
+          SIG_LINUX_ARM64=$(read_sig "release-assets/nteract-${CHANNEL}-linux-arm64.AppImage.sig")
           SIG_WINDOWS_X64=$(read_sig "release-assets/nteract-${CHANNEL}-windows-x64.exe.sig")
           SIG_WINDOWS_ARM64=$(read_sig "release-assets/nteract-${CHANNEL}-windows-arm64.exe.sig")
 
@@ -1723,6 +1812,8 @@ jobs:
             --arg url_darwin_x64 "$RELEASE_BASE/nteract-${CHANNEL}-darwin-x64.app.tar.gz" \
             --arg sig_linux_x64 "$SIG_LINUX_X64" \
             --arg url_linux_x64 "$RELEASE_BASE/nteract-${CHANNEL}-linux-x64.AppImage" \
+            --arg sig_linux_arm64 "$SIG_LINUX_ARM64" \
+            --arg url_linux_arm64 "$RELEASE_BASE/nteract-${CHANNEL}-linux-arm64.AppImage" \
             --arg sig_windows_x64 "$SIG_WINDOWS_X64" \
             --arg url_windows_x64 "$RELEASE_BASE/nteract-${CHANNEL}-windows-x64.exe" \
             --arg sig_windows_arm64 "$SIG_WINDOWS_ARM64" \
@@ -1735,6 +1826,7 @@ jobs:
                 "darwin-aarch64": { signature: $sig_darwin_arm64, url: $url_darwin_arm64 },
                 "darwin-x86_64": { signature: $sig_darwin_x64, url: $url_darwin_x64 },
                 "linux-x86_64": { signature: $sig_linux_x64, url: $url_linux_x64 },
+                "linux-aarch64": { signature: $sig_linux_arm64, url: $url_linux_arm64 },
                 "windows-x86_64": { signature: $sig_windows_x64, url: $url_windows_x64 },
                 "windows-aarch64": { signature: $sig_windows_arm64, url: $url_windows_arm64 }
               }
@@ -1841,6 +1933,7 @@ jobs:
             echo "| Windows | x64 | \`nteract-${VERSION_SUFFIX}-windows-x64.exe\` |"
             echo "| Windows | ARM64 | \`nteract-${VERSION_SUFFIX}-windows-arm64.exe\` |"
             echo "| Linux | x64 | \`nteract-${VERSION_SUFFIX}-linux-x64.AppImage\` |"
+            echo "| Linux | ARM64 | \`nteract-${VERSION_SUFFIX}-linux-arm64.AppImage\` |"
             echo ''
             echo "macOS and Windows builds are signed. macOS builds are also notarized. Linux AppImage: \`chmod +x\` and run. DEB/RPM packages are not currently supported because runtimed is a per-user daemon managed by the app and CLI, not by system package-manager scripts."
             echo ''
@@ -1895,6 +1988,10 @@ jobs:
             echo "| Linux | x64 | \`${CLI_NAME}-linux-x64\` |"
             echo "| Linux | x64 | \`${DAEMON_NAME}-linux-x64\` |"
             echo "| Linux | x64 | \`${MCP_NAME}-linux-x64\` |"
+            echo "| Linux | ARM64 | \`${CANONICAL_CLI_NAME}-linux-arm64\` |"
+            echo "| Linux | ARM64 | \`${CLI_NAME}-linux-arm64\` |"
+            echo "| Linux | ARM64 | \`${DAEMON_NAME}-linux-arm64\` |"
+            echo "| Linux | ARM64 | \`${MCP_NAME}-linux-arm64\` |"
             echo "| macOS | ARM64 | \`${CLI_NAME}-darwin-arm64\` |"
             echo "| macOS | ARM64 | \`${DAEMON_NAME}-darwin-arm64\` |"
             echo "| macOS | x64 (Intel) | \`${CLI_NAME}-darwin-x64\` |"
@@ -1935,6 +2032,9 @@ jobs:
             ./release-assets/runt*-linux-x64
             ./release-assets/nteract-cli*-linux-x64
             ./release-assets/nteract-mcp*-linux-x64
+            ./release-assets/runt*-linux-arm64
+            ./release-assets/nteract-cli*-linux-arm64
+            ./release-assets/nteract-mcp*-linux-arm64
             ./release-assets/runt*-darwin-arm64
             ./release-assets/runt*-darwin-x64
             ./release-assets/runtimed*-windows-x64.exe
@@ -1942,6 +2042,8 @@ jobs:
             ./release-assets/install-linux-release
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage.sig
+            ./release-assets/nteract-${{ inputs.version_suffix }}-linux-arm64.AppImage
+            ./release-assets/nteract-${{ inputs.version_suffix }}-linux-arm64.AppImage.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.dmg
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.app.tar.gz
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.app.tar.gz.sig
