@@ -1,9 +1,45 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import rendererAssetsWorker from "../src/renderer-assets-worker.ts";
+import rendererAssetsWorker, { createRendererAssetsWorker } from "../src/renderer-assets-worker.ts";
 import type { Env, ExecutionContext } from "../src/cloudflare-types.ts";
 
 describe("renderer assets Worker", () => {
+  it("returns celld asset misses and binding failures without fetching its own origin", async (t) => {
+    const originFetch = t.mock.method(globalThis, "fetch", async () =>
+      assert.fail("celld must not fall through to itself"),
+    );
+    const worker = createRendererAssetsWorker({ fallbackToOrigin: false });
+    for (const [env, status] of [
+      [fakeEnv(), 503],
+      [
+        fakeEnv({
+          ASSETS: {
+            fetch: async () => {
+              throw new Error("offline");
+            },
+          },
+        }),
+        503,
+      ],
+      [fakeEnv({ ASSETS: { fetch: async () => new Response("missing", { status: 404 }) } }), 404],
+    ] as const) {
+      for (const prefix of ["/renderer-assets/", "/plugins/"]) {
+        for (const name of ["missing.wasm", "sift_wasm.1234567890abcdef.wasm"]) {
+          for (const method of ["GET", "HEAD"]) {
+            const response = await worker.fetch(
+              new Request(`https://assets.test${prefix}${name}`, { method }),
+              env,
+              fakeContext(),
+            );
+            assert.equal(response.status, status);
+            assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+          }
+        }
+      }
+    }
+    assert.equal(originFetch.mock.callCount(), 0);
+  });
+
   it("serves renderer sidecars from the plugins asset directory", async () => {
     const seenPaths: string[] = [];
     const response = await rendererAssetsWorker.fetch(

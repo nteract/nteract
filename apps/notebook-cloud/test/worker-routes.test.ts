@@ -2016,9 +2016,10 @@ describe("Worker artifact routes", () => {
     }
   });
 
-  it("keeps local sidecars for Cloudflare and invalid or same-origin renderer config", async () => {
+  it("keeps Cloudflare sidecars local and reports invalid celld renderer config", async () => {
     for (const [deployment, base] of [
       ["production", "https://assets.test/renderer-assets/"],
+      ["production", "https://cloud.test/renderer-assets/"],
       ["celld-preview", "https://cloud.test/renderer-assets/"],
       ["celld-preview", "http://127.0.0.1/renderer-assets/"],
       ["celld-preview", "/renderer-assets/"],
@@ -2034,12 +2035,25 @@ describe("Worker artifact routes", () => {
           DEPLOYMENT_ENV: deployment,
           NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://cloud.test",
           RENDERER_ASSETS_BASE_URL: base,
-          ASSETS: { fetch: async () => new Response("local sidecar") },
+          ASSETS: {
+            fetch: async () => {
+              assert.equal(deployment, "production", "celld has no local sidecars");
+              return new Response("local sidecar");
+            },
+          },
         }),
         fakeContext(),
       );
-      assert.equal(response.status, 200, base);
-      assert.equal(await response.text(), "local sidecar", base);
+      if (deployment === "production") {
+        assert.equal(response.status, 200, base);
+        assert.equal(await response.text(), "local sidecar", base);
+      } else {
+        assert.equal(response.status, 503, base);
+        assert.deepEqual(await response.json(), {
+          error: "renderer asset origin is not configured correctly",
+        });
+        assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+      }
     }
   });
 

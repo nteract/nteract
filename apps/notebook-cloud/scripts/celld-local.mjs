@@ -435,7 +435,15 @@ function entryShim(worker, projectDir) {
       `void initializeRuntimedWasm(runtimedWasmModule);`,
     );
   }
-  shimLines.push(`export { default } from "${relativeEntry}";`, ...exportsList, "");
+  if (worker.name === "renderer-assets") {
+    shimLines.push(
+      `import { createRendererAssetsWorker } from "${relativeEntry}";`,
+      `export default createRendererAssetsWorker({ fallbackToOrigin: false });`,
+    );
+  } else {
+    shimLines.push(`export { default } from "${relativeEntry}";`);
+  }
+  shimLines.push(...exportsList, "");
   return shimLines.join("\n");
 }
 

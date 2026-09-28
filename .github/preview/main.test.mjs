@@ -209,16 +209,17 @@ test("main uses the existing controller transport without PR comments or artifac
   assert.deepEqual(calls, [`${CONTROLLER}/authorize`, `${CONTROLLER}/deploy`, `${CONTROLLER}/deployments/${id}`]);
 });
 
-test("main artifact packaging stays in the read-only Build job and only runs on main pushes", () => {
+test("cloud packaging validates PRs while main artifacts remain restricted to main pushes", () => {
   const workflow = readFileSync(new URL("../workflows/build.yml", import.meta.url), "utf8");
   const job = workflow.split("\n  build-ui:\n")[1].split("\n  js-tests:\n")[0];
   assert.match(job, /permissions:\n      contents: read/);
   assert.doesNotMatch(job, /id-token:|secrets\.|send-main-deployment|deploy\.runtimed\.run/);
   assert.match(job, /\(github.event_name == 'push' && github.ref == 'refs\/heads\/main'\) \|\|/);
-  for (const name of ["Build and package main cloud deployment", "Upload main cloud deployment bundle"]) {
-    const step = job.split(`      - name: ${name}\n`)[1].split("\n      - ")[0];
-    assert.match(step, /^        if: github.event_name == 'push' && github.ref == 'refs\/heads\/main'$/m);
-  }
+  const build = job.split("      - name: Build and validate cloud deployment bundle\n")[1].split("\n      - ")[0];
+  assert.match(build, /^        if: github.event_name == 'pull_request' \|\| \(github.event_name == 'push' && github.ref == 'refs\/heads\/main'\)$/m);
+  assert.doesNotMatch(build, /base_ref|pull_request\.base|id-token:|upload-artifact|send-deployment/);
+  const upload = job.split("      - name: Upload main cloud deployment bundle\n")[1].split("\n      - ")[0];
+  assert.match(upload, /^        if: github.event_name == 'push' && github.ref == 'refs\/heads\/main'$/m);
   assert.match(job, /pnpm --filter @nteract\/preview-python build\n          pnpm --dir apps\/notebook-cloud build:viewer\n          NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps\/notebook-cloud\/scripts\/celld-local\.mjs export/);
   assert.match(job, /node \.github\/preview\/pack.mjs "\$RUNNER_TEMP\/main-preview-export" "\$GITHUB_SHA" "\$RUNNER_TEMP\/preview.bundle.gz"/);
   assert.match(job, /name: preview-bundle\n          path: \$\{\{ runner.temp \}\}\/preview.bundle.gz/);
