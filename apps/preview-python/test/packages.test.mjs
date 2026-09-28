@@ -415,6 +415,22 @@ test("oversized metadata reports a limit instead of suggesting another download 
   }
 });
 
+test("a wheel exceeding its declared size remains an integrity failure", async () => {
+  for (const streamed of [false, true]) {
+    const acquisition = new PackageAcquisition({
+      fetchImpl: async () =>
+        new Response("oversized", {
+          headers: streamed ? {} : { "content-length": "9" },
+        }),
+    });
+    await assert.rejects(acquisition.download(wheel("example")), (error) => {
+      assert.match(error.message, /integrity/);
+      assert.equal(safePackageFailure(error).code, "acquisition_failed");
+      return true;
+    });
+  }
+});
+
 test("an acquisition deadline does not negate a confirmed install", async (t) => {
   const deadline = new AbortController();
   t.mock.method(AbortSignal, "timeout", () => deadline.signal);
@@ -467,7 +483,7 @@ test("transitive and restore artifacts cannot bypass source or byte bounds", asy
     /source/,
   );
   assert.equal(fetched, 0);
-  await assert.rejects(acquisition.download(wheel("six")), /size limit/);
+  await assert.rejects(acquisition.download(wheel("six")), /integrity/);
   await assert.rejects(
     installPackageManifest(
       { runtime: {}, installed: [], signal: signal() },

@@ -125,10 +125,9 @@ export function validateLockedWheel(value) {
   return { name, version, filename, url, sha256, size, dependencies };
 }
 
-async function readBounded(response, limit) {
+async function readBounded(response, limit, oversized) {
   if (!response.ok || response.redirected) throw new Error("Package download failed");
-  if (Number(response.headers.get("content-length")) > limit)
-    throw new PackageOperationError("acquisition_limit");
+  if (Number(response.headers.get("content-length")) > limit) throw oversized;
   const reader = response.body.getReader();
   const chunks = [];
   let size = 0;
@@ -139,7 +138,7 @@ async function readBounded(response, limit) {
       size += value.byteLength;
       if (size > limit) {
         await reader.cancel();
-        throw new PackageOperationError("acquisition_limit");
+        throw oversized;
       }
       chunks.push(value);
     }
@@ -184,7 +183,12 @@ export class PackageAcquisition {
     });
     if (metadata && response.status === 404 && !response.redirected)
       throw new PackageOperationError("package_not_found");
-    const bytes = await readBounded(response, Math.min(limit, MAX_TOTAL_BYTES - this.#used));
+    const remaining = MAX_TOTAL_BYTES - this.#used;
+    const oversized =
+      metadata || remaining < limit
+        ? new PackageOperationError("acquisition_limit")
+        : new Error("Package integrity check failed");
+    const bytes = await readBounded(response, Math.min(limit, remaining), oversized);
     this.#used += bytes.length;
     this.#signal?.throwIfAborted();
     return bytes;
