@@ -191,7 +191,7 @@ export class ManagedPythonRoom {
     signal.addEventListener("abort", cancel, { once: true });
     if (signal.aborted) cancel();
     const decoder = new TextDecoder();
-    let buffered = "";
+    let fragments: string[] = [];
     let result: PythonExecutionResult | undefined;
     let failure: string | undefined;
     const handle = (line: string) => {
@@ -212,14 +212,19 @@ export class ManagedPythonRoom {
         const { done, value } = await reader.read();
         signal.throwIfAborted();
         if (done) break;
-        buffered += decoder.decode(value, { stream: true });
-        let newline;
-        while ((newline = buffered.indexOf("\n")) !== -1) {
-          handle(buffered.slice(0, newline));
-          buffered = buffered.slice(newline + 1);
+        // Join each result line once: Arrow IPC can make this line tens of
+        // megabytes, so repeatedly scanning the entire prefix is expensive.
+        const lines = decoder.decode(value, { stream: true }).split("\n");
+        for (let index = 0; index < lines.length; index++) {
+          fragments.push(lines[index]);
+          if (index < lines.length - 1) {
+            handle(fragments.join(""));
+            fragments = [];
+          }
         }
       }
-      handle(buffered + decoder.decode());
+      fragments.push(decoder.decode());
+      handle(fragments.join(""));
     } catch (error) {
       await reader.cancel().catch(() => undefined);
       throw error;

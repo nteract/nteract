@@ -5,7 +5,7 @@ import {
 } from "./package-resolver.js";
 import { PACKAGE_ACQUISITION_MS } from "./package-limits.js";
 
-export const PACKAGE_RUNTIME_VERSION = "0.28.3";
+export const PACKAGE_RUNTIME_VERSION = "0.29.4";
 export const packageName = (requirement) =>
   requirement
     .match(/^[A-Za-z0-9][A-Za-z0-9._-]*/)?.[0]
@@ -17,7 +17,10 @@ export function packageManifest(value) {
     return { version: 1, pyodide: PACKAGE_RUNTIME_VERSION, requirements: [], wheels: [] };
   if (
     value.version !== 1 ||
-    value.pyodide !== PACKAGE_RUNTIME_VERSION ||
+    // Both releases use Python 3.13. Only verified py3-none-any wheels can be
+    // restored, and install() must still prove all requirements against the new
+    // bundled inventory before a migrated manifest can be published.
+    !["0.28.3", PACKAGE_RUNTIME_VERSION].includes(value.pyodide) ||
     !Array.isArray(value.wheels) ||
     value.wheels.length > 32
   )

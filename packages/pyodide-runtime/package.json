@@ -11,6 +11,10 @@
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.mjs"
   },
-  "dependencies": { "pyodide": "0.28.3" },
-  "devDependencies": { "esbuild": "^0.28.0" }
+  "dependencies": {
+    "pyodide": "0.29.4"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
 }

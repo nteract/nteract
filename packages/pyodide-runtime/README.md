@@ -18,7 +18,7 @@ into its existing deployment layout. Real celld tests remain in the service app.
 The `./deployment` entrypoint assembles the immutable deployment assets; `./assets/*`
 exposes generated machine modules to the celld test harness.
 
-The build imports the launcher's `_traceback.py` and `_redact.py` directly from
+The build imports the launcher's `_traceback.py`, `_redact.py` and `_format.py` directly from
 `python/nteract-kernel-launcher`. Those are shared source, not copied forks. A
 future standalone distribution must package that dependency explicitly.
 
@@ -34,9 +34,20 @@ Shell commands fail explicitly; this does not grant subprocess or network access
 Output remains a bounded, validated batch per execution; `/execute` with
 `stream: true` additionally returns advisory NDJSON stream lines before it. Background tasks cannot publish
 into another execution's output capture. This is not full desktop kernel parity:
-stdin, completion/inspection requests, widgets, Arrow buffer transport, and the
+stdin, completion/inspection requests, widgets, and the
 remaining launcher extensions are not wired here. Live lines can reach the host
 while async cells yield; synchronous CPU work and `time.sleep` may defer them
 until completion. Python's sleep and asyncio behavior are not overridden.
 Interrupt and deadline termination destroy the interpreter and lose variables.
 Neither prepared nor user-session snapshots exist.
+
+Pyodide 0.29.4 includes PyArrow 22.0.0. Arrow stream producers (including pandas
+DataFrames and PyArrow tables) display through sift using ordinary Arrow IPC MIME
+bytes. The formatter reuses the launcher's Arrow stream import and writes at most
+64 MiB of complete IPC bytes; larger tables fail explicitly rather than silently
+sampling. The trusted room hashes and
+stores the bytes before publishing a blob reference. Guest-authored internal
+references remain rejected. Chunked Arrow manifests are not yet emitted here.
+Rich output has a 128 MiB serialized budget per execution, with a separate 2 MiB
+text-stream budget and a reserved diagnostic. The adapter independently bounds
+the result to 129 MiB, including provenance and diagnostics.

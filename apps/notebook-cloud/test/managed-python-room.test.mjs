@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ManagedPythonRoom } from "../src/managed-python-room.ts";
 import { SessionPool } from "../../preview-python/src/session-pool.js";
 import { createProviderService } from "../../preview-python/src/provider-service.js";
+import { PACKAGE_RUNTIME_VERSION } from "../../preview-python/src/package-service.js";
 import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 import { fixture, sync } from "./preview-python-helpers.mjs";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
@@ -475,7 +476,7 @@ for (const outcome of [
       else {
         const restore = requests.find((request) => request.path === "/packages");
         assert.equal(restore.operation, "restore");
-        assert.deepEqual(restore.manifest, manifest);
+        assert.deepEqual(restore.manifest, { ...manifest, pyodide: PACKAGE_RUNTIME_VERSION });
         assert.equal(states.at(-1).operation_id, restore.operation_id);
       }
       await runtime.close();

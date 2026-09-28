@@ -27,7 +27,7 @@ qualified celld deployment.
 ## Build
 
 Run `pnpm --filter @nteract/preview-python build`. Runtime assets are pinned to
-Pyodide 0.28.3 and verified against the machine package's `runtime-lock.json`. Build output contains
+Pyodide 0.29.4 and verified against the machine package's `runtime-lock.json`. Build output contains
 local interpreter/stdlib assets; runtime startup does not fetch from a CDN.
 
 ## Provenance
@@ -40,17 +40,24 @@ No notebook readiness or tenant-isolation claim follows from the build alone.
 
 ## Scientific environment and isolation
 
-The pinned package graph includes IPython, pandas, NumPy and Matplotlib. Native
+The pinned package graph includes IPython, pandas, NumPy, Matplotlib and PyArrow. Native
 Wasm libraries are compiled at build time. Immutable wheel assets are provided
 by a restricted internal service binding and verified again on initialization;
-loaded session code stays below celld's module limit. Guest ambient networking
+the host must admit the resulting asset and dynamic-worker module sizes. The
+PyArrow bundle exceeds celld's original 25 MiB asset / 64 MiB worker defaults;
+qualification uses `CELLD_MAX_ASSET_FILE_BYTES=268435456` and
+`CELLD_MAX_DYNAMIC_WORKER_CODE_BYTES=536870912` on a host supporting those
+settings. These admission limits do not increase service memory or CPU quotas.
+Guest ambient networking
 remains disabled. Package assets contain no user data or credentials.
 
 The evaluator uses IPython's cell lifecycle, input transformations, display hooks,
 in-memory history, top-level await and inline Matplotlib events. It reuses the
 launcher's structured traceback formatter with cell/execution/source provenance.
 Compatible in-process magics work. Shell escapes, stdin, widgets, completion and
-inspection transport and Arrow buffers are not currently supported. Live stdout
+inspection transport are not currently supported. Arrow stream producers display
+through sift using complete IPC bytes (up to 64 MiB), with blob publication owned
+by the trusted room. Live stdout
 and stderr are available when Python yields naturally, as described below.
 The trusted adapter bounds response bytes and
 validates output records, stripping unknown properties and rejecting guest
@@ -58,7 +65,7 @@ supplied internal blob/widget references. Conversion into canonical runtime
 output manifests uses the shared Rust MIME classifier, with notebook-scoped blob
 storage. Python-side limits alone are not a security boundary.
 
-Execution has independent CPU and wall deadlines. Expiration destroys the
+Execution has a thirty-second CPU budget and independent wall deadline. Expiration destroys the
 interpreter, so variables are lost; it is not a resumable Python interrupt.
 
 The cloud Interrupt action uses destructive session termination and fences its
@@ -112,6 +119,9 @@ environment, source builds, direct URLs and custom indexes are unsupported.
 
 Successful requests are saved in NotebookDoc with a resolved wheel manifest.
 Fresh compute restores those wheels before executing queued notebook cells.
+Pure-Python locks saved by the prior 0.28.3 runtime can migrate after the new
+interpreter verifies their exact artifacts and requirements. Pins incompatible
+with the new bundled versions fail restoration and preserve saved intent.
 The rail distinguishes saved requirements, installed additions (including their
 dependencies), and included defaults. Removing a saved requirement changes the
 next fresh session; it does not unload a package from the running interpreter.

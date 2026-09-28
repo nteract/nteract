@@ -15,7 +15,10 @@ export async function preparePackages(root, runtime) {
     selected.set(name, entry);
     entry.depends.forEach(visit);
   }
-  ["ipython", "pandas", "micropip"].forEach(visit);
+  ["ipython", "numpy", "pandas", "matplotlib", "micropip", "pyarrow"].forEach(visit);
+  const runtimeVersion = JSON.parse(
+    await readFile(resolve(root, "runtime-lock.json"), "utf8"),
+  ).pyodide;
   const cache = resolve(root, ".scratch/packages");
   await mkdir(cache, { recursive: true });
   const wheels = [];
@@ -27,7 +30,7 @@ export async function preparePackages(root, runtime) {
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       const response = await fetch(
-        `https://cdn.jsdelivr.net/pyodide/v0.28.3/full/${entry.file_name}`,
+        `https://cdn.jsdelivr.net/pyodide/v${runtimeVersion}/full/${entry.file_name}`,
         { signal: AbortSignal.timeout(60000) },
       );
       if (!response.ok) throw new Error(`Package download failed: ${name} (${response.status})`);
