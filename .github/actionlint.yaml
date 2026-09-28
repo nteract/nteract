@@ -2,3 +2,11 @@
 self-hosted-runner:
   labels:
     - windows-11-vs2026-arm
+
+# GitHub supports queue: max; actionlint 1.7.12 does not yet recognize it.
+# https://github.com/rhysd/actionlint/issues/680
+# npm-publish.test.mjs verifies the exact queue/cancellation settings.
+paths:
+  .github/workflows/publish-npm.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\.'

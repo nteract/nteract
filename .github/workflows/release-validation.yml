@@ -11,6 +11,7 @@ on:
       - .github/workflows/pr-binary-generation.yml
       - .github/workflows/publish-npm.yml
       - scripts/ci/check-release-tag.sh
+      - scripts/ci/npm-release*
       - scripts/ci/smoke-windows-arm64-wheel.py
       - scripts/ci/smoke-linux-arm64-wheel.py
       - scripts/ci/stage-notebook-sidecars.sh
@@ -20,7 +21,7 @@ on:
       - scripts/tests/test_release_tag.py
       - scripts/tests/release-workflow.test.mjs
       - scripts/tests/stage-notebook-sidecars.test.mjs
-      - scripts/tests/npm-publish.test.mjs
+      - scripts/tests/npm-*.mjs
       - packages/runtimed-node/**
       - python/runtimed/pyproject.toml
   workflow_dispatch:
@@ -41,7 +42,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      - run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-publish.test.mjs
+      - run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
 
   windows-arm64-wheel:
