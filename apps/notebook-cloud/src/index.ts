@@ -724,6 +724,10 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
   if (request.method !== "GET" && request.method !== "HEAD") {
     return json({ error: "method not allowed" }, 405);
   }
+  const rendererResponse = celldRendererAssetResponse(request, env, assetPathname);
+  if (rendererResponse) {
+    return rendererResponse;
+  }
   if (!env.ASSETS) {
     return json({ error: "viewer assets are not configured" }, 503);
   }
@@ -740,6 +744,49 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
     counter_delta: 1,
   });
   return withCors(new Response(response.body, response));
+}
+
+function celldRendererAssetResponse(
+  request: Request,
+  env: Env,
+  assetPathname: string,
+): Response | null {
+  // Both the local exporter and preview-infra's trusted config set these
+  // deployment names. Exported celld projects carry sidecars only in the
+  // renderer service; Cloudflare keeps its main-Worker fallback assets.
+  if (
+    !["celld", "celld-local", "celld-preview"].includes(env.DEPLOYMENT_ENV ?? "") ||
+    !assetPathname.startsWith("/plugins/")
+  ) {
+    return null;
+  }
+  try {
+    const base = new URL(rendererAssetsBasePath(env));
+    if (
+      !["http:", "https:"].includes(base.protocol) ||
+      base.username ||
+      base.password ||
+      base.search ||
+      base.hash ||
+      base.origin === new URL(request.url).origin ||
+      base.origin === new URL(publicOrigin(request, env)).origin
+    ) {
+      throw new Error("renderer asset origin must be a separate HTTP(S) origin");
+    }
+    // pluginAssetPathname already validated one decoded filename. Encode it
+    // again so characters such as ? and # cannot change the destination URL.
+    const destination = new URL(encodeURIComponent(assetPathname.slice("/plugins/".length)), base);
+    destination.search = new URL(request.url).search;
+    return withCors(
+      new Response(null, {
+        status: 307,
+        headers: { Location: destination.href, "Cache-Control": "no-store" },
+      }),
+    );
+  } catch {
+    cloudLog("warn", "renderer_assets.config.invalid", { deployment_env: env.DEPLOYMENT_ENV });
+    return json({ error: "renderer asset origin is not configured correctly" }, 503);
+  }
 }
 
 function assetPathnameForRequest(pathname: string): string | null {

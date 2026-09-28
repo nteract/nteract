@@ -2,51 +2,57 @@ import type { Env, ExportedHandler } from "./cloudflare-types.ts";
 
 type RendererAssetsEnv = Pick<Env, "ASSETS">;
 
-const rendererAssetsWorker: ExportedHandler<RendererAssetsEnv> = {
-  async fetch(request: Request, env: RendererAssetsEnv): Promise<Response> {
-    if (request.method === "OPTIONS") {
-      return withRendererAssetCors(new Response(null, { status: 204 }));
-    }
+export function createRendererAssetsWorker({
+  fallbackToOrigin = true,
+}: { fallbackToOrigin?: boolean } = {}): ExportedHandler<RendererAssetsEnv> {
+  // Cloudflare path Routes can fall through to the main Custom Domain Worker.
+  // A standalone celld service has no downstream origin; fetching itself would
+  // recurse on a miss, so its generated entrypoint disables this fallback.
+  const fallback = (request: Request, response: Response) =>
+    fallbackToOrigin ? fallThroughToOrigin(request, response) : response;
+  return {
+    async fetch(request: Request, env: RendererAssetsEnv): Promise<Response> {
+      if (request.method === "OPTIONS") {
+        return withRendererAssetCors(new Response(null, { status: 204 }));
+      }
 
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return json({ error: "method not allowed" }, 405);
-    }
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return json({ error: "method not allowed" }, 405);
+      }
 
-    const url = new URL(request.url);
-    if (url.pathname === "/api/health") {
-      return json({ status: "ok", service: "nteract-notebook-cloud-renderer-assets" });
-    }
+      const url = new URL(request.url);
+      if (url.pathname === "/api/health") {
+        return json({ status: "ok", service: "nteract-notebook-cloud-renderer-assets" });
+      }
 
-    const assetPathname = assetPathnameForRequest(url.pathname);
-    if (!assetPathname) {
-      return json({ error: "not found" }, 404);
-    }
-    if (!env.ASSETS) {
-      return fallThroughToOrigin(
-        request,
-        json({ error: "renderer assets are not configured" }, 503),
-      );
-    }
+      const assetPathname = assetPathnameForRequest(url.pathname);
+      if (!assetPathname) {
+        return json({ error: "not found" }, 404);
+      }
+      if (!env.ASSETS) {
+        return fallback(request, json({ error: "renderer assets are not configured" }, 503));
+      }
 
-    const assetUrl = new URL(request.url);
-    assetUrl.pathname = assetPathname;
-    let response: Response;
-    try {
-      response = await env.ASSETS.fetch(new Request(assetUrl, request));
-    } catch {
-      return fallThroughToOrigin(request, json({ error: "renderer assets are unavailable" }, 503));
-    }
-    const assetResponse = withRendererAssetCors(new Response(response.body, response), {
-      assetPathname,
-    });
-    if (response.status >= 400) {
-      return fallThroughToOrigin(request, assetResponse);
-    }
-    return assetResponse;
-  },
-};
+      const assetUrl = new URL(request.url);
+      assetUrl.pathname = assetPathname;
+      let response: Response;
+      try {
+        response = await env.ASSETS.fetch(new Request(assetUrl, request));
+      } catch {
+        return fallback(request, json({ error: "renderer assets are unavailable" }, 503));
+      }
+      const assetResponse = withRendererAssetCors(new Response(response.body, response), {
+        assetPathname,
+      });
+      if (response.status >= 400) {
+        return fallback(request, assetResponse);
+      }
+      return assetResponse;
+    },
+  };
+}
 
-export default rendererAssetsWorker;
+export default createRendererAssetsWorker();
 
 function assetPathnameForRequest(pathname: string): string | null {
   if (pathname.startsWith("/renderer-assets/")) {
@@ -80,8 +86,8 @@ async function fallThroughToOrigin(request: Request, fallback: Response): Promis
     // renderer assets available while the two Workers roll out independently.
     return await fetch(request);
   } catch {
-    // Standalone workers.dev and local deployments have no downstream Custom
-    // Domain Worker. Preserve the renderer Worker's original error there.
+    // Preserve the renderer Worker's original error if the downstream request
+    // cannot be completed.
     return fallback;
   }
 }

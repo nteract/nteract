@@ -1988,6 +1988,107 @@ describe("Worker artifact routes", () => {
     assert.equal(await headResponse.text(), "");
   });
 
+  it("redirects celld sidecar aliases to the separate renderer service", async () => {
+    for (const deployment of ["celld", "celld-local", "celld-preview"]) {
+      for (const prefix of ["/plugins/", "/renderer-assets/", "/api/plugins/"]) {
+        for (const method of ["GET", "HEAD"]) {
+          for (const name of ["sift_wasm.wasm", "sift_wasm.1234567890abcdef.wasm"]) {
+            const response = await worker.fetch(
+              new Request(`https://cloud.test${prefix}${name}?v=test`, { method }),
+              fakeEnv({
+                DEPLOYMENT_ENV: deployment,
+                RENDERER_ASSETS_BASE_URL: "https://assets.test/renderer-assets/",
+                ASSETS: { fetch: async () => assert.fail("main has no renderer sidecars") },
+              }),
+              fakeContext(),
+            );
+            assert.equal(response.status, 307);
+            assert.equal(
+              response.headers.get("Location"),
+              `https://assets.test/renderer-assets/${name}?v=test`,
+            );
+            assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+            assert.equal(response.headers.get("Cache-Control"), "no-store");
+            assert.equal(await response.text(), "");
+          }
+        }
+      }
+    }
+  });
+
+  it("keeps Cloudflare sidecars local and reports invalid celld renderer config", async () => {
+    for (const [deployment, base] of [
+      ["production", "https://assets.test/renderer-assets/"],
+      ["production", "https://cloud.test/renderer-assets/"],
+      ["celld-preview", "https://cloud.test/renderer-assets/"],
+      ["celld-preview", "http://127.0.0.1/renderer-assets/"],
+      ["celld-preview", "/renderer-assets/"],
+      ["celld-preview", ""],
+      ["celld-preview", "file:///renderer-assets/"],
+      ["celld-preview", "https://user:secret@assets.test/renderer-assets/"],
+      ["celld-preview", "https://assets.test/renderer-assets/?redirect=1"],
+      ["celld-preview", "https://assets.test/renderer-assets/#fragment"],
+    ]) {
+      const response = await worker.fetch(
+        new Request("http://127.0.0.1/plugins/sift_wasm.wasm"),
+        fakeEnv({
+          DEPLOYMENT_ENV: deployment,
+          NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://cloud.test",
+          RENDERER_ASSETS_BASE_URL: base,
+          ASSETS: {
+            fetch: async () => {
+              assert.equal(deployment, "production", "celld has no local sidecars");
+              return new Response("local sidecar");
+            },
+          },
+        }),
+        fakeContext(),
+      );
+      if (deployment === "production") {
+        assert.equal(response.status, 200, base);
+        assert.equal(await response.text(), "local sidecar", base);
+      } else {
+        assert.equal(response.status, 503, base);
+        assert.deepEqual(await response.json(), {
+          error: "renderer asset origin is not configured correctly",
+        });
+        assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+      }
+    }
+  });
+
+  it("validates celld sidecar aliases before redirecting and keeps preflight CORS", async () => {
+    const env = fakeEnv({
+      DEPLOYMENT_ENV: "celld-preview",
+      RENDERER_ASSETS_BASE_URL: "https://assets.test/renderer-assets/",
+      ASSETS: { fetch: async () => assert.fail("unexpected asset lookup") },
+    });
+    for (const [pathname, method, status] of [
+      ["/plugins/sift_wasm.wasm", "OPTIONS", 204],
+      ["/api/plugins/sift_wasm.wasm", "POST", 405],
+      ["/plugins/%2e%2e%2fprivate", "GET", 404],
+      ["/renderer-assets/nested/sift_wasm.wasm", "GET", 404],
+    ] as const) {
+      const response = await worker.fetch(
+        new Request(`https://cloud.test${pathname}`, { method }),
+        env,
+        fakeContext(),
+      );
+      assert.equal(response.status, status);
+      assert.equal(response.headers.get("Location"), null);
+      assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+    }
+    const response = await worker.fetch(
+      new Request("https://cloud.test/plugins/name%3Fquery%23hash.wasm?v=1"),
+      env,
+      fakeContext(),
+    );
+    assert.equal(
+      response.headers.get("Location"),
+      "https://assets.test/renderer-assets/name%3Fquery%23hash.wasm?v=1",
+    );
+  });
+
   it("adds CORS when plugin assets are routed through the Worker", async () => {
     const seenPaths: string[] = [];
     const env = fakeEnv({

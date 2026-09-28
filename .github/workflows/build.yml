@@ -582,8 +582,10 @@ jobs:
           pnpm --dir apps/notebook build
           pnpm --dir apps/elements build
 
-      - name: Build and package main cloud deployment
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Validate the complete cloud package on PRs too, including stacked PRs
+      # that do not target main and therefore have no PR preview deployment.
+      - name: Build and validate cloud deployment bundle
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
           pnpm --filter @nteract/preview-python build
           pnpm --dir apps/notebook-cloud build:viewer
