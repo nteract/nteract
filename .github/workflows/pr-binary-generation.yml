@@ -148,38 +148,12 @@ jobs:
       - name: Generate icons
         run: cargo xtask icons
 
-      - name: Build external binaries (Unix)
-        if: runner.os != 'Windows'
+      - name: Build and stage external binaries
         shell: bash
         run: |
           cargo build --release -p runtimed -p runt -p nteract-mcp
           TARGET=$(rustc --print host-tuple)
-
-          mkdir -p crates/notebook/binaries target/release/binaries
-
-          cp target/release/runtimed "crates/notebook/binaries/runtimed-$TARGET"
-          cp target/release/runt "crates/notebook/binaries/runt-$TARGET"
-          cp target/release/nteract-mcp "crates/notebook/binaries/nteract-mcp-$TARGET"
-          cp target/release/runtimed "target/release/binaries/runtimed-$TARGET"
-          cp target/release/runt "target/release/binaries/runt-$TARGET"
-          cp target/release/nteract-mcp "target/release/binaries/nteract-mcp-$TARGET"
-
-      - name: Build external binaries (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cargo build --release -p runtimed -p runt -p nteract-mcp
-          $target = (rustc --print host-tuple).Trim()
-
-          New-Item -ItemType Directory -Force crates/notebook/binaries | Out-Null
-          New-Item -ItemType Directory -Force target/release/binaries | Out-Null
-
-          Copy-Item target/release/runtimed.exe "crates/notebook/binaries/runtimed-$target.exe"
-          Copy-Item target/release/runt.exe "crates/notebook/binaries/runt-$target.exe"
-          Copy-Item target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$target.exe"
-          Copy-Item target/release/runtimed.exe "target/release/binaries/runtimed-$target.exe"
-          Copy-Item target/release/runt.exe "target/release/binaries/runt-$target.exe"
-          Copy-Item target/release/nteract-mcp.exe "target/release/binaries/nteract-mcp-$target.exe"
+          bash scripts/ci/stage-notebook-sidecars.sh "$TARGET"
 
       - name: Build notebook app (no bundle)
         working-directory: crates/notebook
