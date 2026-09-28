@@ -33,13 +33,15 @@ test("status identity uses the immutable run revision for all supported event ty
   }
 });
 
-test("Quillaid may report deployment and cleanup status", async () => {
-  for (const action of ["synchronize", "closed"]) {
-    const f = fixture(action);
-    f.run.actor.id = 261289082;
-    f.run.triggering_actor.id = 261289082;
-    f.env.GITHUB_ACTOR_ID = "261289082";
-    assert.equal((await resolve(f)).action, action === "closed" ? "stop" : "deploy");
+test("PR-only teammates may report deployment and cleanup status", async () => {
+  for (const id of [261289082, 3131401, 25752941]) {
+    for (const action of ["synchronize", "closed"]) {
+      const f = fixture(action);
+      f.run.actor.id = id;
+      f.run.triggering_actor.id = id;
+      f.env.GITHUB_ACTOR_ID = String(id);
+      assert.equal((await resolve(f)).action, action === "closed" ? "stop" : "deploy");
+    }
   }
 });
 
