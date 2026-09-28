@@ -100,6 +100,38 @@ describe("Sift renderer plugin", () => {
     );
   });
 
+  it("uses host sidecars while passing authenticated Arrow data URLs to Sift", () => {
+    let Renderer: ComponentType<RendererProps> | undefined;
+    const tableUrl = "data:application/vnd.apache.arrow.stream;base64,/////w==";
+    siftMocks.setWasmUrl.mockClear();
+
+    install({
+      register: (_mimeTypes, component) => {
+        Renderer = component;
+      },
+      registerPattern: vi.fn(),
+      getHostContext: () => ({
+        nteract: {
+          rendererAssetsBaseUrl: "https://authenticated-outputs.example/renderer-assets/",
+          siftWasmAssetName: "sift_wasm.0123456789abcdef.wasm",
+        },
+      }),
+      subscribeHostContext: () => () => {},
+    });
+
+    expect(Renderer).toBeDefined();
+    render(<Renderer data={tableUrl} mimeType="application/vnd.apache.arrow.stream" />);
+
+    expect(siftMocks.setWasmUrl).toHaveBeenLastCalledWith(
+      "https://authenticated-outputs.example/renderer-assets/sift_wasm.0123456789abcdef.wasm",
+      "https://authenticated-outputs.example/renderer-assets/sift_wasm.wasm?v=dev",
+    );
+    expect(JSON.parse(screen.getByTestId("sift-table").dataset.source ?? "null")).toEqual({
+      kind: "url",
+      url: tableUrl,
+    });
+  });
+
   it("fits the table inside the iframe max height from host context", () => {
     let Renderer: ComponentType<RendererProps> | undefined;
 
