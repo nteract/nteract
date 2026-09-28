@@ -431,6 +431,18 @@ test("a wheel exceeding its declared size remains an integrity failure", async (
   }
 });
 
+test("a wheel exceeding the remaining shared budget reports the hosted limit", async () => {
+  const metadata = JSON.stringify({ releases: {} }).padEnd(8 * 1024 * 1024, " ");
+  const acquisition = new PackageAcquisition({
+    fetchImpl: async (url) => new Response(url.endsWith("/json") ? metadata : "test"),
+  });
+  for (const name of ["first", "second", "third"])
+    await acquisition.acquire(`https://pypi.org/pypi/${name}/json`);
+  await assert.rejects(acquisition.download(wheel("example")), {
+    code: "acquisition_limit",
+  });
+});
+
 test("an acquisition deadline does not negate a confirmed install", async (t) => {
   const deadline = new AbortController();
   t.mock.method(AbortSignal, "timeout", () => deadline.signal);
