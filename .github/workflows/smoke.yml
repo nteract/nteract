@@ -771,9 +771,17 @@ jobs:
           }" "$DISCORD_WEBHOOK_WINDOWS"
 
   linux-smoke:
-    name: Linux (build + smoke)
-    runs-on: ubuntu-latest
+    name: Linux ${{ matrix.arch }} (build + smoke)
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     if: github.event_name != 'release' && (github.event_name != 'workflow_dispatch' || (inputs.release_tag == '' && !inputs.windows_only))
     # Keep this native smoke off per-commit PR CI. It still runs after merge
     # and can be queued manually when a PR needs the extra signal.
@@ -787,7 +795,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-smoke
+          shared-key: ${{ matrix.arch == 'x64' && 'linux-smoke' || format('linux-smoke-{0}', matrix.arch) }}
 
       - name: Build runtime artifacts (wasm + renderer plugins + MCP widget)
         uses: ./.github/actions/build-runtime-artifacts
@@ -886,7 +894,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: linux-smoke-diagnostics
+          name: ${{ matrix.arch == 'x64' && 'linux-smoke-diagnostics' || format('linux-smoke-{0}-diagnostics', matrix.arch) }}
           path: |
             ${{ runner.temp }}/diag/*.tar.gz
             ${{ runner.temp }}/runtimed.stdout.log

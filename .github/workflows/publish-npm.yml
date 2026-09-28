@@ -12,9 +12,13 @@ name: Publish npm packages
 # - @runtimed/node
 # - @runtimed/node-darwin-arm64
 # - @runtimed/node-linux-x64-gnu
+# - @runtimed/node-linux-arm64-gnu
 # - @runtimed/node-win32-x64-msvc
 # - @runtimed/node-win32-arm64-msvc
 # - @nteract/pi
+# Linux ARM64 packages are built on every run, but their first publication
+# needs npm login. Enable NPM_LINUX_ARM64_ENABLED only after bootstrap and
+# trusted-publisher setup (see RELEASING.md).
 
 on:
   workflow_dispatch:
@@ -52,6 +56,8 @@ jobs:
             runner: macos-latest
           - target: linux-x64-gnu
             runner: ubuntu-latest
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
           - target: win32-x64-msvc
             runner: windows-latest
           - target: win32-arm64-msvc
@@ -83,10 +89,10 @@ jobs:
         run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
 
       - name: Smoke native binding
-        if: matrix.target == 'win32-arm64-msvc'
-        run: |
-          pnpm --dir packages/runtimed-node smoke
-          pnpm --dir packages/runtimed-node smoke:api
+        if: matrix.target == 'win32-arm64-msvc' || matrix.target == 'linux-arm64-gnu'
+        # Loading the binding checks the runner's native ABI without a daemon.
+        # Release validation exercises the API against its own source-built daemon.
+        run: pnpm --dir packages/runtimed-node smoke
 
       - name: Verify platform package
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
@@ -114,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [darwin-arm64, linux-x64-gnu, win32-x64-msvc, win32-arm64-msvc]
+        target: [darwin-arm64, linux-x64-gnu, linux-arm64-gnu, win32-x64-msvc, win32-arm64-msvc]
     steps:
       - uses: actions/setup-node@v6
         with:
@@ -148,6 +154,7 @@ jobs:
           path: ${{ runner.temp }}/npm-package
 
       - name: Publish platform package
+        if: matrix.target != 'linux-arm64-gnu' || vars.NPM_LINUX_ARM64_ENABLED == 'true'
         shell: bash
         run: |
           TARBALL="$(find "$RUNNER_TEMP/npm-package" -maxdepth 1 -name '*.tgz' -print -quit)"
@@ -166,6 +173,12 @@ jobs:
           fi
 
           npm publish "$TARBALL" --tag latest --access public --provenance
+
+      - name: Report Linux ARM64 bootstrap prerequisite
+        if: matrix.target == 'linux-arm64-gnu' && vars.NPM_LINUX_ARM64_ENABLED != 'true'
+        run: |
+          echo "Linux ARM64 npm publication is disabled until bootstrap and trusted publishing are configured." >> "$GITHUB_STEP_SUMMARY"
+          echo "Download npm-package-linux-arm64-gnu and follow RELEASING.md. Other npm platforms remain enabled." >> "$GITHUB_STEP_SUMMARY"
 
   pack-wrapper:
     name: Pack wrapper package
@@ -196,6 +209,20 @@ jobs:
       - name: Build native binding metadata
         run: pnpm --dir packages/runtimed-node build
 
+      - name: Select enabled wrapper platforms
+        env:
+          NPM_LINUX_ARM64_ENABLED: ${{ vars.NPM_LINUX_ARM64_ENABLED }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = "packages/runtimed-node/package.json";
+          const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+          if (process.env.NPM_LINUX_ARM64_ENABLED !== "true") {
+            delete manifest.optionalDependencies["@runtimed/node-linux-arm64-gnu"];
+            fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+          }
+          NODE
+
       - name: Verify wrapper package
         run: pnpm --dir packages/runtimed-node pack:dry-run
 
@@ -212,6 +239,11 @@ jobs:
           const deps = manifest.dependencies ?? {};
           const optionalDeps = manifest.optionalDependencies ?? {};
 
+          const arm64Enabled = process.env.NPM_LINUX_ARM64_ENABLED === "true";
+          if (Boolean(optionalDeps["@runtimed/node-linux-arm64-gnu"]) !== arm64Enabled) {
+            throw new Error("Packed Linux ARM64 dependency does not match the publication gate");
+          }
+
           if (deps.runtimed) {
             throw new Error(`@runtimed/node tarball must not depend on private package runtimed; found ${deps.runtimed}`);
           }
@@ -224,6 +256,8 @@ jobs:
             }
           }
           NODE
+        env:
+          NPM_LINUX_ARM64_ENABLED: ${{ vars.NPM_LINUX_ARM64_ENABLED }}
 
       - name: Upload wrapper package artifact
         uses: actions/upload-artifact@v7

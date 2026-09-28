@@ -21,10 +21,10 @@ Options:
   --channel <name>     stable or nightly (default: nightly).
   -h, --help           Show this help.
 
-Expected artifact names for nightly:
-  runt-nightly-linux-x64
-  runtimed-nightly-linux-x64
-  nteract-mcp-nightly-linux-x64
+Expected artifact names for nightly (<arch> is x64 or arm64):
+  runt-nightly-linux-<arch>
+  runtimed-nightly-linux-<arch>
+  nteract-mcp-nightly-linux-<arch>
 USAGE
 }
 
@@ -32,6 +32,15 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   echo "install-nightly-release is Linux-only." >&2
   exit 1
 fi
+
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="x64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *)
+    echo "Unsupported architecture: $(uname -m). Release assets exist for Linux x64 and ARM64." >&2
+    exit 1
+    ;;
+esac
 
 REPO="nteract/nteract"
 CHANNEL="nightly"
@@ -140,7 +149,7 @@ atomic_install() {
 }
 
 asset_for() {
-  printf '%s-linux-x64' "$1"
+  printf '%s-linux-%s' "$1" "$ARCH"
 }
 
 mkdir -p "$INSTALL_DIR" "$LINK_DIR" "$SERVICE_DIR"

@@ -1,0 +1,47 @@
+{
+  "name": "@runtimed/node-linux-arm64-gnu",
+  "version": "0.5.6",
+  "description": "Linux ARM64 GNU native N-API binding for @runtimed/node.",
+  "type": "commonjs",
+  "main": "./runtimed-node.linux-arm64-gnu.node",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/nteract.git",
+    "directory": "packages/runtimed-node/npm/linux-arm64-gnu"
+  },
+  "homepage": "https://github.com/nteract/nteract/tree/main/packages/runtimed-node#readme",
+  "bugs": {
+    "url": "https://github.com/nteract/nteract/issues"
+  },
+  "keywords": [
+    "nteract",
+    "runtimed",
+    "notebook",
+    "native",
+    "napi-rs",
+    "linux",
+    "arm64",
+    "glibc"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "README.md",
+    "runtimed-node.linux-arm64-gnu.node"
+  ],
+  "scripts": {
+    "prepack": "node -e \"const fs = require('node:fs'); if (!fs.existsSync('runtimed-node.linux-arm64-gnu.node')) { console.error('Run pnpm --dir packages/runtimed-node assemble:platform before packing @runtimed/node-linux-arm64-gnu.'); process.exit(1); }\"",
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

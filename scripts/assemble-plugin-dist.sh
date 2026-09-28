@@ -82,6 +82,7 @@ declare -a TARGETS=(
   "aarch64-apple-darwin"
   "x86_64-apple-darwin"
   "x86_64-unknown-linux-gnu"
+  "aarch64-unknown-linux-gnu"
   "x86_64-pc-windows-msvc"
 )
 
@@ -146,6 +147,7 @@ expected_files=(
   "$plugin_dir/bin/nteract-mcp-aarch64-apple-darwin"
   "$plugin_dir/bin/nteract-mcp-x86_64-apple-darwin"
   "$plugin_dir/bin/nteract-mcp-x86_64-unknown-linux-gnu"
+  "$plugin_dir/bin/nteract-mcp-aarch64-unknown-linux-gnu"
   "$plugin_dir/bin/nteract-mcp-x86_64-pc-windows-msvc.exe"
   "$plugin_dir/bin/nteract-mcp.cmd"
 )

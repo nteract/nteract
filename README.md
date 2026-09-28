@@ -8,7 +8,7 @@ Built on [jupyter-zmq-client](https://crates.io/crates/jupyter-zmq-client) and [
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/nteract/releases).
 
-On Linux x64 and macOS (Apple silicon or Intel), this command installs the
+On Linux (x64 or ARM64) and macOS (Apple silicon or Intel), this command installs the
 AppImage or signed .app bundle, CLI/daemon, and per-user service
 (systemd or launchd):
 
@@ -83,7 +83,7 @@ Pin a specific version:
 /plugin install nteract@nteract --ref v2.3.0
 ```
 
-The plugin ships the `nteract-mcp` binary for your platform (macOS arm64/x64, Linux x64, Windows x64), so no separate install is needed. `main` of `nteract/agent-plugins` always points at the latest stable release.
+The plugin ships the `nteract-mcp` binary for your platform (macOS arm64/x64, Linux x64/arm64, Windows x64), so no separate install is needed. `main` of `nteract/agent-plugins` always points at the latest stable release.
 
 For pre-release builds (updated daily):
 

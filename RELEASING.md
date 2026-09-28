@@ -30,16 +30,20 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | Windows x64 | `nteract-{channel}-windows-x64.exe` + `.sig` |
 | Windows ARM64 | `nteract-{channel}-windows-arm64.exe` + `.sig` |
 | Linux x64 AppImage | `nteract-{channel}-linux-x64.AppImage` + `.sig` |
-| Installer script (Linux x64, macOS) | `install-linux-release` |
+| Linux ARM64 AppImage | `nteract-{channel}-linux-arm64.AppImage` + `.sig` |
+| Installer script (Linux x64/ARM64, macOS) | `install-linux-release` |
 | CLI (macOS ARM64) | `runt-darwin-arm64` |
 | CLI (macOS x64) | `runt-darwin-x64` |
-| CLI (Linux x64) | `runt-linux-x64` |
+| CLI (Linux x64) | `runt-linux-x64`, `nteract-cli-linux-x64` |
+| CLI (Linux ARM64) | `runt-linux-arm64`, `nteract-cli-linux-arm64` |
 | Standalone daemon (Linux x64) | `runtimed-linux-x64` |
+| Standalone daemon (Linux ARM64) | `runtimed-linux-arm64` |
 | Standalone daemon (macOS ARM64) | `runtimed-darwin-arm64` |
 | Standalone daemon (macOS x64) | `runtimed-darwin-x64` |
 | Standalone daemon (Windows x64) | `runtimed-windows-x64.exe` |
 | Standalone daemon (Windows ARM64) | `runtimed-windows-arm64.exe` |
 | Standalone MCP server (Linux x64) | `nteract-mcp-linux-x64` |
+| Standalone MCP server (Linux ARM64) | `nteract-mcp-linux-arm64` |
 | Updater manifest | `latest.json` |
 
 macOS builds are signed and notarized. Windows builds use Azure Trusted Signing
@@ -70,6 +74,15 @@ The `runtimed` Python package is released by the stable and nightly release work
 Nightly builds publish the next patch alpha version, for example `2.4.7a202605082121`, and stable builds publish the checked-in Rust release version, for example `2.4.6`.
 
 The `publish-npm.yml` workflow publishes `@runtimed/node`, its native platform packages, and `@nteract/pi` to npm after a successful stable release. It can also be run manually to fill in missing packages.
+
+Linux ARM64 npm publication requires a one-time bootstrap. Until the repository variable `NPM_LINUX_ARM64_ENABLED` is `true`, CI builds and tests the ARM64 binding and uploads its tarball, but skips publishing it and omits that optional dependency from the published wrapper. Existing npm platforms continue publishing. Desktop, CLI, Python, and agent-plugin ARM64 releases do not use this gate.
+
+To enable Linux ARM64 npm releases:
+
+1. Download `npm-package-linux-arm64-gnu` from a successful **Release validation** or **Publish npm packages** run for the intended source commit. Inspect the tarball's package name and version before publishing.
+2. With an authenticated npm maintainer account, publish that tarball using `npm publish <tarball> --access public`.
+3. Configure the package's npm trusted publisher for organization `nteract`, repository `nteract`, workflow `publish-npm.yml`, allowing `npm publish`.
+4. Set `NPM_LINUX_ARM64_ENABLED=true` in the repository's Actions variables. The next npm release publishes ARM64 alongside the other platforms and includes it in the wrapper. If that wrapper version was already published without ARM64, bump the package versions before releasing; npm versions are immutable.
 
 ## Development
 

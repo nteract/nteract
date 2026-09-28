@@ -143,7 +143,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
         <div
           data-slot="cell-state-lane"
           className={cn(
-            "absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-[1.125rem] select-none sm:pt-3.5",
+            "absolute left-1 top-0 z-10 flex w-[var(--cell-content-column-inset,3.25rem)] flex-col items-center justify-start gap-0.5 pt-4 select-none sm:pt-3.5",
             stateLaneClassName,
           )}
           onMouseDown={onFocus}

@@ -351,6 +351,9 @@ installed through `@runtimed/node`:
 
 - `@runtimed/node-darwin-arm64`
 - `@runtimed/node-linux-x64-gnu`
+- `@runtimed/node-linux-arm64-gnu` (publication requires the bootstrap described in `RELEASING.md`)
+- `@runtimed/node-win32-x64-msvc`
+- `@runtimed/node-win32-arm64-msvc`
 
 They contain only the compiled native `.node` binary for their target platform.
 

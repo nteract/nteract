@@ -835,6 +835,9 @@ importers:
       '@runtimed/node-darwin-arm64':
         specifier: workspace:*
         version: link:npm/darwin-arm64
+      '@runtimed/node-linux-arm64-gnu':
+        specifier: workspace:*
+        version: link:npm/linux-arm64-gnu
       '@runtimed/node-linux-x64-gnu':
         specifier: workspace:*
         version: link:npm/linux-x64-gnu
@@ -846,6 +849,8 @@ importers:
         version: link:npm/win32-x64-msvc
 
   packages/runtimed-node/npm/darwin-arm64: {}
+
+  packages/runtimed-node/npm/linux-arm64-gnu: {}
 
   packages/runtimed-node/npm/linux-x64-gnu: {}
 

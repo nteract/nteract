@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install a published nteract release for the current user (Linux x64,
-# macOS Apple silicon / Intel). The file keeps its historical
+# Install a published nteract release for the current user (Linux x64 /
+# ARM64, macOS Apple silicon / Intel). The file keeps its historical
 # `install-linux-release` name because released installers and
 # https://sh.nteract.io fetch it by that asset name.
 #
@@ -49,12 +49,12 @@ Options:
                        Existing unrelated commands are always preserved.
   -h, --help           Show this help.
 
-Installs, for stable on Linux x64:
-  nteract-stable-linux-x64.AppImage -> <prefix>/nteract.AppImage   (unless --headless)
-  runt-linux-x64                    -> <prefix>/bin/runt
-  nteract-cli-linux-x64             -> <prefix>/bin/nteract-cli
-  runtimed-linux-x64                -> <prefix>/bin/runtimed
-  nteract-mcp-linux-x64             -> <prefix>/bin/nteract-mcp
+Installs, for stable on Linux (<arch> is x64 or arm64):
+  nteract-stable-linux-<arch>.AppImage -> <prefix>/nteract.AppImage   (unless --headless)
+  runt-linux-<arch>                    -> <prefix>/bin/runt
+  nteract-cli-linux-<arch>             -> <prefix>/bin/nteract-cli
+  runtimed-linux-<arch>                -> <prefix>/bin/runtimed
+  nteract-mcp-linux-<arch>             -> <prefix>/bin/nteract-mcp
 
 For stable on macOS (arm64/x64), one bundle carries app and sidecars:
   nteract-stable-darwin-<arch>.app.tar.gz -> ~/Applications/nteract.app
@@ -91,6 +91,10 @@ case "$(uname -s):$(uname -m)" in
     OS="linux"
     ARCH="x64"
     ;;
+  Linux:aarch64|Linux:arm64)
+    OS="linux"
+    ARCH="arm64"
+    ;;
   Darwin:arm64)
     OS="darwin"
     ARCH="arm64"
@@ -101,7 +105,7 @@ case "$(uname -s):$(uname -m)" in
     ;;
   *)
     echo "Unsupported platform: $(uname -s) $(uname -m)." >&2
-    echo "Release assets exist for Linux x64 and macOS (Apple silicon, Intel)." >&2
+    echo "Release assets exist for Linux (x64, ARM64) and macOS (Apple silicon, Intel)." >&2
     echo "Windows users: download the installer from https://github.com/nteract/nteract/releases" >&2
     exit 1
     ;;

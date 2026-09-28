@@ -19,9 +19,11 @@ case "${os}-${arch}" in
   Darwin-arm64)      target="nteract-mcp-aarch64-apple-darwin" ;;
   Darwin-x86_64)     target="nteract-mcp-x86_64-apple-darwin" ;;
   Linux-x86_64)      target="nteract-mcp-x86_64-unknown-linux-gnu" ;;
+  Linux-aarch64 | Linux-arm64)
+                     target="nteract-mcp-aarch64-unknown-linux-gnu" ;;
   *)
     printf 'nteract-mcp: no bundled binary for %s-%s\n' "$os" "$arch" >&2
-    printf 'supported: Darwin-arm64, Darwin-x86_64, Linux-x86_64 (Unix wrapper). Windows uses nteract-mcp.cmd.\n' >&2
+    printf 'supported: Darwin-arm64, Darwin-x86_64, Linux-x86_64, Linux-aarch64 (Unix wrapper). Windows uses nteract-mcp.cmd.\n' >&2
     exit 1
     ;;
 esac

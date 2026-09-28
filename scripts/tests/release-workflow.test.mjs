@@ -41,7 +41,7 @@ test("release qualification requires all binaries, wheel tests, and the AppImage
   assert.deepEqual(needs("prerelease").sort(), [
     "build-linux",
     "build-macos",
-    "build-notebook-linux-x64",
+    "build-notebook-linux",
     "build-notebook-macos-arm64",
     "build-notebook-macos-x64",
     "build-notebook-windows-arm64",
@@ -77,5 +77,30 @@ test("stable and nightly keep publishing their own plugin slice", () => {
     const caller = workflow(`release-${channel}`);
     assert.match(caller, /uses: \.\/\.github\/workflows\/release-common\.yml/);
     assert.match(caller, new RegExp(`^      publish_plugin_channel: "${channel}"$`, "m"));
+  }
+});
+
+test("Linux releases build, smoke, and publish both x64 and ARM64", () => {
+  for (const id of ["build-linux", "build-notebook-linux", "smoke-fedora-appimage"]) {
+    const body = jobs.get(id);
+    assert.match(body, /^            runner: ubuntu-22\.04$/m, `${id} must build x64 natively`);
+    assert.match(body, /^            runner: ubuntu-22\.04-arm$/m, `${id} must build ARM64 natively`);
+    assert.match(body, /^      fail-fast: false$/m, `${id} must report both architectures`);
+  }
+  const wheels = jobs.get("build-python-wheels");
+  assert.match(wheels, /runner: ubuntu-24\.04-arm\n\s+target: aarch64-unknown-linux-gnu/);
+  assert.match(wheels, /run: python scripts\/ci\/smoke-linux-arm64-wheel\.py python\/runtimed\/dist/);
+
+  const body = jobs.get("prerelease");
+  assert.match(body, /"linux-aarch64": \{ signature: \$sig_linux_arm64, url: \$url_linux_arm64 \}/);
+  for (const arch of ["x64", "arm64"]) {
+    assert.match(body, new RegExp(`require_sig "release-assets/nteract-\\$\\{CHANNEL\\}-linux-${arch}\\.AppImage\\.sig"`));
+    for (const asset of ["runt*", "nteract-cli*", "nteract-mcp*"]) {
+      assert.ok(body.includes(`./release-assets/${asset}-linux-${arch}\n`), `missing ${asset}-linux-${arch} upload`);
+    }
+    assert.ok(
+      body.includes(`./release-assets/nteract-\${{ inputs.version_suffix }}-linux-${arch}.AppImage\n`),
+      `missing linux-${arch} AppImage upload`,
+    );
   }
 });
