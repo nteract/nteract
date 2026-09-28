@@ -23,6 +23,11 @@ manifest-path = "../../crates/runtimed-py/Cargo.toml"
 module-name = "runtimed._internals"
 python-source = "src"
 bindings = "pyo3"
+# Staged binaries are gitignored. Wheel include paths are relative to python-source.
+include = [
+    { path = "runtimed/_bin/runtimed", format = "wheel" },
+    { path = "runtimed/_bin/runtimed.exe", format = "wheel" },
+]
 
 [dependency-groups]
 dev = [

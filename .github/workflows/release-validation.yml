@@ -22,6 +22,7 @@ on:
       - scripts/tests/stage-notebook-sidecars.test.mjs
       - scripts/tests/npm-publish.test.mjs
       - packages/runtimed-node/**
+      - python/runtimed/pyproject.toml
   workflow_dispatch:
 
 permissions:
