@@ -31,16 +31,25 @@ export function resolveSiftWasmUrl({
   rendererAssetsBaseUrl,
   siftWasmAssetName,
 }: ResolveSiftWasmUrlOptions): string {
-  const parsedTableUrl = new URL(tableUrl);
   const assetsBase = rendererAssetsBaseUrl?.trim();
   const requestedName = siftWasmAssetName?.trim();
   const assetName =
     requestedName && SIFT_WASM_ASSET_NAME_RE.test(requestedName)
       ? requestedName
       : SIFT_WASM_STABLE_NAME;
-  const wasmUrl = assetsBase
-    ? new URL(assetName, withTrailingSlash(new URL(assetsBase, parsedTableUrl.origin).href))
-    : new URL(`/plugins/${assetName}`, parsedTableUrl.origin);
+  let baseUrl: URL;
+  if (assetsBase) {
+    try {
+      // Hosted authenticated blobs become frame-safe data URLs, whose origin
+      // is "null". An absolute sidecar base does not depend on that origin.
+      baseUrl = new URL(assetsBase);
+    } catch {
+      baseUrl = new URL(assetsBase, new URL(tableUrl).origin);
+    }
+  } else {
+    baseUrl = new URL("/plugins/", new URL(tableUrl).origin);
+  }
+  const wasmUrl = new URL(assetName, withTrailingSlash(baseUrl.href));
 
   if (!CONTENT_HASHED_SIFT_WASM_RE.test(assetName)) {
     wasmUrl.searchParams.set("v", SIFT_WASM_CACHE_KEY);
