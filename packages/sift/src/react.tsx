@@ -36,6 +36,7 @@ import {
   type TableEngineState,
 } from "./table";
 import { createWasmTableData } from "./wasm-table-data";
+import { tableResponse } from "./table-response";
 
 // --- Props ---
 
@@ -541,7 +542,7 @@ export function SiftTable({
       if (!chunk.url) {
         throw new Error(`Arrow stream manifest chunk ${index} is missing a URL`);
       }
-      const response = await fetch(chunk.url);
+      const response = await tableResponse(chunk.url);
       if (!response.ok) {
         throw new Error(
           `Failed to fetch Arrow stream chunk ${index}: ${response.status} ${response.statusText}`,
@@ -993,7 +994,7 @@ export function SiftTable({
       setError(null);
       emitLoadMilestone(startedAt, { source: "url", phase: "load-start" });
 
-      const response = await fetch(sourceUrl);
+      const response = await tableResponse(sourceUrl);
       if (!response.ok) {
         throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
       }

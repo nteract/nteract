@@ -1,6 +1,7 @@
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SiftFocusStatus, SiftScrollHandoffCue } from "./handoff";
+import { loadIpc } from "./predicate";
 import { SiftTable } from "./react";
 import type { SiftSource } from "./react";
 import type { Column, TableData } from "./table";
@@ -226,6 +227,32 @@ describe("SiftTable", () => {
 
     vi.unstubAllGlobals();
     vi.useFakeTimers();
+  });
+
+  it.each(["url", "manifest"])("loads embedded Arrow %s bytes without fetching", async (kind) => {
+    vi.useRealTimers();
+    const fetchMock = vi.fn(() => Promise.reject(new Error("CSP blocked fetch")));
+    vi.stubGlobal("fetch", fetchMock);
+    const url = "data:application/vnd.apache.arrow.stream;base64,AQIDBA==";
+    const source: SiftSource =
+      kind === "url"
+        ? { kind: "url", url }
+        : { kind: "arrow-stream-manifest", manifest: { chunks: [{ url }], complete: true } };
+
+    const { container } = render(<SiftTable source={source} />);
+    await waitFor(() => {
+      expect(container.querySelector(".sift-table-container")).not.toBeNull();
+      expect(container.querySelector(".sift-status-indicator")?.className).toContain(
+        "sift-status-ready",
+      );
+    });
+
+    const loadedBytes =
+      kind === "url"
+        ? vi.mocked(loadIpc).mock.calls[0][0]
+        : predicateModule.append_arrow_stream_chunk.mock.calls[0][1];
+    expect([...loadedBytes]).toEqual([1, 2, 3, 4]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("loads Arrow stream manifest chunks through the appendable WASM store", async () => {
