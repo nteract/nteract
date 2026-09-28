@@ -18,9 +18,23 @@ use tracing::{info, warn};
 
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 
+/// Kernel working directory for a notebook: its parent directory when bound
+/// to an absolute path, otherwise a fallback that exists.
+///
+/// A relative binding has no base the daemon can trust. A bare filename's
+/// parent is the empty path, and `Command::current_dir("")` fails the spawn
+/// with ENOENT, which reads as a missing tool rather than a bad binding.
 pub(crate) fn notebook_working_dir(notebook_path: Option<&Path>) -> PathBuf {
     if let Some(path) = notebook_path {
-        if path.is_dir() {
+        if path.is_relative() {
+            let fallback = std::env::temp_dir();
+            warn!(
+                "[kernel-cwd] Notebook path {:?} is relative and has no base to resolve against; \
+                 using {:?} as the kernel working directory",
+                path, fallback
+            );
+            fallback
+        } else if path.is_dir() {
             path.to_path_buf()
         } else {
             path.parent()
@@ -248,6 +262,25 @@ mod tests {
         args.into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn working_dir_is_parent_of_absolute_notebook_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let notebook = dir.path().join("analysis.ipynb");
+        assert_eq!(notebook_working_dir(Some(&notebook)), dir.path());
+    }
+
+    #[test]
+    fn working_dir_for_relative_notebook_path_is_never_empty() {
+        for relative in ["?", "analysis.ipynb", "nested/analysis.ipynb", ""] {
+            let cwd = notebook_working_dir(Some(Path::new(relative)));
+            assert!(
+                cwd.is_absolute(),
+                "relative notebook path {relative:?} produced cwd {cwd:?}"
+            );
+            assert_eq!(cwd, std::env::temp_dir());
+        }
     }
 
     #[test]

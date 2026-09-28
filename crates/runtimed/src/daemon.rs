@@ -3034,7 +3034,8 @@ impl Daemon {
                 let docs_dir = self.config.notebook_docs_dir.clone();
                 // For the NotebookSync handshake:
                 // - UUID notebook_id → untitled room (path=None)
-                // - Path notebook_id → file-backed room (path=Some)
+                // - Absolute path notebook_id → file-backed room (path=Some)
+                // - Anything else (relative path, placeholder) → refused
                 //
                 // When notebook_id is a path, canonicalize and consult the
                 // registry's path map before minting a new UUID. Without this,
@@ -3160,6 +3161,30 @@ impl Daemon {
                     }
                 } else {
                     let raw = PathBuf::from(&notebook_id);
+                    // The handshake carries no client cwd (`working_dir` is
+                    // project context for untitled rooms, not a path base), so a
+                    // relative id can only resolve against the daemon's own cwd.
+                    // Binding one creates a persistent room, registry row, and
+                    // recovery journal for a file nobody named, and kernels
+                    // launched for it get an unusable working directory.
+                    if !raw.is_absolute() {
+                        warn!(
+                            "[runtimed] NotebookSync refused notebook_id {:?}: not a UUID and not an \
+                             absolute path (operator: {:?}, working_dir: {:?}). The caller likely \
+                             passed a placeholder or malformed notebook id.",
+                            notebook_id, operator, working_dir
+                        );
+                        let (_reader, mut writer) = tokio::io::split(stream);
+                        send_error_response(
+                            &mut writer,
+                            format!(
+                                "Notebook id {notebook_id:?} is not a notebook UUID or an absolute notebook path"
+                            ),
+                            typed_bootstrap.unwrap_or(false),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
                     let canonical = match tokio::fs::canonicalize(&raw).await {
                         Ok(c) => c,
                         Err(e) => {
