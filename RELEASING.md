@@ -75,6 +75,15 @@ Nightly builds publish the next patch alpha version, for example `2.4.7a20260508
 
 The `publish-npm.yml` workflow publishes `@runtimed/node`, its native platform packages, and `@nteract/pi` to npm after a successful stable release. It can also be run manually to fill in missing packages.
 
+Linux ARM64 npm publication requires a one-time bootstrap. Until the repository variable `NPM_LINUX_ARM64_ENABLED` is `true`, CI builds and tests the ARM64 binding and uploads its tarball, but skips publishing it and omits that optional dependency from the published wrapper. Existing npm platforms continue publishing. Desktop, CLI, Python, and agent-plugin ARM64 releases do not use this gate.
+
+To enable Linux ARM64 npm releases:
+
+1. Download `npm-package-linux-arm64-gnu` from a successful **Release validation** or **Publish npm packages** run for the intended source commit. Inspect the tarball's package name and version before publishing.
+2. With an authenticated npm maintainer account, publish that tarball using `npm publish <tarball> --access public`.
+3. Configure the package's npm trusted publisher for organization `nteract`, repository `nteract`, workflow `publish-npm.yml`, allowing `npm publish`.
+4. Set `NPM_LINUX_ARM64_ENABLED=true` in the repository's Actions variables. The next npm release publishes ARM64 alongside the other platforms and includes it in the wrapper. If that wrapper version was already published without ARM64, bump the package versions before releasing; npm versions are immutable.
+
 ## Development
 
 ### Building from source
