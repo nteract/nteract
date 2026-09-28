@@ -103,6 +103,10 @@ if (command === "resolve") {
     },
   });
   console.log(`${manifest.name}@${manifest.version}: ${result.status}; existing versions leave dist-tags unchanged.`);
+  const registrySource = result.registryRelease?.sourceSha;
+  const sourceLabel = typeof registrySource === "string" && /^[a-f0-9]{40}$/.test(registrySource)
+    ? registrySource : "unrecorded";
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- \`${manifest.name}@${manifest.version}\`: **${result.status}**; registry source: \`${sourceLabel}\`.\n`);
   mkdirSync(join(process.env.RUNNER_TEMP, "npm-result"), { recursive: true });
   writeJson(join(process.env.RUNNER_TEMP, "npm-result", `${target}.json`), result);
 } else {

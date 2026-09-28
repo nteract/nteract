@@ -24,10 +24,11 @@ on:
 permissions:
   contents: read
 
-# Serialize both channels, including manual retries. The registry preflight also
-# rejects stale candidates because GitHub does not guarantee queue ordering.
+# Serialize both channels, including manual retries, without replacing a waiting
+# stable release with another nightly. Preflight still rejects stale candidates.
 concurrency:
   group: npm-publish
+  queue: max
   cancel-in-progress: false
 
 env:

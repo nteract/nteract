@@ -17,6 +17,12 @@ The publisher rejects failed releases, foreign repositories, and runs of other
 workflows. A manual run requires the upstream release run ID and attempt; it does
 not publish an arbitrary source ref.
 
+The publisher follows the upstream release's source policy: a successful release
+dispatched from a feature branch is eligible too, including promotion of npm's
+`nightly` tag. Dispatch upstream releases only from refs intended for that channel.
+The manual npm workflow itself must run from the repository's default branch;
+its validated upstream run supplies the build source.
+
 Only `@runtimed/node` and its native platform packages get nightly versions.
 `@nteract/pi` continues to publish through the stable path.
 
@@ -43,10 +49,21 @@ UI and daemon assets. Qualify those combinations against the contracts they
 actually use. A manifest of tested components would describe a known working
 combination, not an exclusive list of builds permitted to connect.
 
+For example, use `npm install --save-exact @runtimed/node@0.5.6-nightly.123456789`
+with the actual published version. A prerelease sorts below its matching stable
+version, and a range such as `^0.5.6-nightly.123456789` can select stable `0.5.6`
+on a later resolution. Use exact versions and keep the lockfile; even a range
+based on the next patch would allow a future stable release to replace it.
+
 ## Publication and recovery
 
-The publisher serializes its runs and checks the public registry before each
-publication. An existing immutable version is not overwritten. Existing nightly
+The publisher serializes its runs with GitHub's `queue: max` and checks the public
+registry before each publication. This preserves pending runs instead of
+replacing a waiting stable publish with a newer nightly. GitHub's
+[queue limit](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+is 100 pending runs; if a run is canceled by that limit or by a maintainer,
+recover with its upstream run ID and successful attempt. An existing immutable
+version is not overwritten. Existing nightly
 versions must identify the expected source SHA and upstream run. Registry errors
 are failures, not evidence that a version is absent.
 
@@ -60,6 +77,11 @@ version prevents publication of a missing old package, the run fails explicitly.
 Use a newer successful release to produce a complete package set. Repeating a
 completed old run does not move the tag back to it. Do not treat a partly
 published native matrix as a completed SDK release.
+
+Each publisher job records whether its package was newly published or already
+existed in its job summary, along with registry source metadata when available.
+The wrapper result artifact separates the requested release from registry
+provenance; a legacy stable package can have no recorded source.
 
 An existing wrapper must also have the requested native dependency set. If a
 stable version was published before a platform was added, publish a new stable

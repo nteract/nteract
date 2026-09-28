@@ -82,7 +82,7 @@ test("source inventory drift, private dependencies and workspace leaks fail clos
 test("standalone OIDC publishers only consume artifacts, with no source build or tokens", () => {
   assert.match(workflow, /^name: Publish npm packages$/m);
   assert.match(workflow, /workflows: \["Stable Release", "Nightly Release"\]/);
-  assert.match(workflow, /^  group: npm-publish$/m);
+  assert.match(workflow, /^concurrency:\n  group: npm-publish\n  queue: max\n  cancel-in-progress: false$/m);
   assert.doesNotMatch(workflow, /workflow_call:|NODE_AUTH_TOKEN|NPM_TOKEN|continue-on-error:|if: always\(\)/);
   for (const target of ["native", "wrapper", "pi"]) {
     const publisher = jobs.get(`publish-${target}`);
