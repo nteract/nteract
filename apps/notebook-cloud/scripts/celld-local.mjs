@@ -71,6 +71,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rm, writeFile, open } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { copyCelldProjectAssets } from "./celld-project-assets.mjs";
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootDir = path.join(appDir, ".celld-local");
@@ -445,7 +446,7 @@ function entryShim(worker, projectDir) {
 async function copyProjectFiles(worker, projectDir) {
   const assetsDir = path.join(projectDir, "assets");
   await rm(assetsDir, { recursive: true, force: true });
-  await cp(path.join(appDir, worker.assets), assetsDir, { recursive: true, dereference: true });
+  await copyCelldProjectAssets(worker, appDir, assetsDir);
   if (worker.name === "main" && process.env.NOTEBOOK_CLOUD_CELLD_PYTHON === "1") {
     const runtimeLock = JSON.parse(
       await readFile(path.join(appDir, "../preview-python/dist/runtime-lock.json"), "utf8"),

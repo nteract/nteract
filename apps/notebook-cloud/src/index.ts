@@ -724,6 +724,15 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
   if (request.method !== "GET" && request.method !== "HEAD") {
     return json({ error: "method not allowed" }, 405);
   }
+  const rendererRedirect = celldRendererAssetUrl(request, env, assetPathname);
+  if (rendererRedirect) {
+    return withCors(
+      new Response(null, {
+        status: 307,
+        headers: { Location: rendererRedirect.href, "Cache-Control": "no-store" },
+      }),
+    );
+  }
   if (!env.ASSETS) {
     return json({ error: "viewer assets are not configured" }, 503);
   }
@@ -740,6 +749,40 @@ async function routeAsset(request: Request, env: Env): Promise<Response | null> 
     counter_delta: 1,
   });
   return withCors(new Response(response.body, response));
+}
+
+function celldRendererAssetUrl(request: Request, env: Env, assetPathname: string): URL | null {
+  // Both the local exporter and preview-infra's trusted config set these
+  // deployment names. Exported celld projects carry sidecars only in the
+  // renderer service; Cloudflare keeps its main-Worker fallback assets.
+  if (
+    !["celld", "celld-local", "celld-preview"].includes(env.DEPLOYMENT_ENV ?? "") ||
+    !assetPathname.startsWith("/plugins/") ||
+    !env.RENDERER_ASSETS_BASE_URL?.trim()
+  ) {
+    return null;
+  }
+  try {
+    const base = new URL(rendererAssetsBasePath(env));
+    if (
+      !["http:", "https:"].includes(base.protocol) ||
+      base.username ||
+      base.password ||
+      base.search ||
+      base.hash ||
+      base.origin === new URL(request.url).origin ||
+      base.origin === new URL(publicOrigin(request, env)).origin
+    ) {
+      return null;
+    }
+    // pluginAssetPathname already validated one decoded filename. Encode it
+    // again so characters such as ? and # cannot change the destination URL.
+    const destination = new URL(encodeURIComponent(assetPathname.slice("/plugins/".length)), base);
+    destination.search = new URL(request.url).search;
+    return destination;
+  } catch {
+    return null;
+  }
 }
 
 function assetPathnameForRequest(pathname: string): string | null {
