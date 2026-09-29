@@ -15,7 +15,7 @@ import {
   verifyManifest,
 } from "../ci/npm-release.mjs";
 
-const workflow = readFileSync(new URL("../../.github/workflows/publish-npm.yml", import.meta.url), "utf8");
+const workflow = readFileSync(new URL("../../.github/workflows/publish-npm.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const sourceManifest = JSON.parse(readFileSync(new URL("../../packages/runtimed-node/package.json", import.meta.url), "utf8"));
 const identity = {channel: "nightly", sourceSha: "a".repeat(40), runId: "100", runAttempt: "1"};
 const jobs = new Map();
