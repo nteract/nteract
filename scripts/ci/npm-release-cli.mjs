@@ -2,7 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createRequire } from "node:module";
 import {
   nativeTargets,
@@ -76,11 +76,13 @@ if (command === "resolve") {
   try {
     // Preserve pnpm's payload, license inclusion and lifecycle-script removal.
     // Only the packed manifest changes; the installed workspace stays intact.
-    execFileSync("tar", ["-xzf", tarball, "-C", temporary]);
+    // Relative archive paths also work with Git Bash's GNU tar: a Windows
+    // drive prefix would otherwise be interpreted as a remote archive host.
+    execFileSync("tar", ["-xzf", tarballs[0], "-C", basename(temporary)], {cwd: directory});
     const manifestPath = join(temporary, "package", "package.json");
     writeJson(manifestPath, finalizePackedManifest(readJson(manifestPath), plan, target));
     const finalized = join(temporary, "finalized.tgz");
-    execFileSync("tar", ["-czf", finalized, "-C", temporary, "package"]);
+    execFileSync("tar", ["-czf", "finalized.tgz", "package"], {cwd: temporary});
     renameSync(finalized, tarball);
   } finally {
     rmSync(temporary, {recursive: true, force: true});
