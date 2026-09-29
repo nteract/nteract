@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vp dev"
+    "dev": "vp dev",
+    "test:smoke": "cargo xtask artifacts ensure sift,renderer && vp build && node build-html.js && playwright test"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.3.0",
@@ -12,9 +13,11 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@playwright/test": "1.59.1",
     "@tailwindcss/vite": "^4.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.1.0",
+    "apache-arrow": "21.1.0",
     "typescript": "^5.0.0",
     "vite": "catalog:",
     "vite-plus": "catalog:"
