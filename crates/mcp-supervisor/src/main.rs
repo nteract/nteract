@@ -342,7 +342,10 @@ fn start_daemon(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env("RUNTIMED_DEV", "1")
-        .env("RUNTIMED_WORKSPACE_PATH", workspace_path);
+        .env("RUNTIMED_WORKSPACE_PATH", workspace_path)
+        // Isolated sessions use a disposable state namespace, but renderer
+        // assets still belong to the source worktree.
+        .env("RUNTIMED_DEV_ASSET_ROOT", project_root);
 
     match cmd.spawn() {
         Ok(child) => {
@@ -557,9 +560,13 @@ fn fingerprint_changed(before: &BinaryFingerprint, after: &BinaryFingerprint) ->
 ///
 /// Returns `true` on success, `false` on failure.
 fn run_cargo_build_daemon(project_root: &Path) -> bool {
+    if !ensure_mcp_assets(project_root) {
+        return false;
+    }
     info!("Building daemon + CLI (cargo build -p runtimed -p runt)...");
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("build")
+        .stdin(Stdio::null())
         .arg("-p")
         .arg("runtimed")
         .arg("-p")
@@ -599,6 +606,7 @@ fn run_xtask_wasm_ensure(project_root: &Path) -> bool {
     info!("Ensuring runtimed-wasm is current (cargo xtask wasm-ensure-runtime)...");
     let status = std::process::Command::new("cargo")
         .args(["run", "--package", "xtask", "--", "wasm-ensure-runtime"])
+        .stdin(Stdio::null())
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -620,15 +628,41 @@ fn run_xtask_wasm_ensure(project_root: &Path) -> bool {
     }
 }
 
-/// Build the runt CLI binary (which includes runt-mcp).
-/// Respects release mode so the built binary matches what cargo_binary() resolves.
+/// Prepare embedded assets before any child/daemon compilation.
+fn ensure_mcp_assets(project_root: &Path) -> bool {
+    info!("Ensuring renderer and widget inputs before compiling the MCP child...");
+    std::process::Command::new("cargo")
+        // Package managers must not read or change flags on the MCP input pipe.
+        .stdin(Stdio::null())
+        .args([
+            "run",
+            "--package",
+            "xtask",
+            "--",
+            "artifacts",
+            "ensure",
+            "all",
+        ])
+        .current_dir(project_root)
+        // MCP stdout is exclusively JSON-RPC, including during preparation.
+        .stdout(Stdio::from(std::io::stderr()))
+        .stderr(Stdio::inherit())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Build the runt CLI binary (which includes runt-mcp) in the selected profile.
 fn build_runt_cli(project_root: &Path) -> bool {
+    if !ensure_mcp_assets(project_root) {
+        return false;
+    }
     let mut args = vec!["build", "-p", "runt"];
     if use_release_binaries() {
         args.push("--release");
     }
     let status = std::process::Command::new("cargo")
         .args(&args)
+        .stdin(Stdio::null())
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -728,6 +762,11 @@ enum ChangeKind {
     RustChanged,
     /// Rust MCP server files changed (runt-mcp, runtimed-client) — needs cargo build + restart.
     RustMcpChanged,
+    /// Renderer/widget inputs changed — ensure artifacts, then rebuild the child only.
+    AssetsChanged,
+    /// Python and compiled inputs changed in one pending batch. Preserve the
+    /// Python restart even if the compiled output turns out to be identical.
+    Mixed,
 }
 
 /// A managed long-running child process (vite, notebook app, etc.).
@@ -1284,15 +1323,16 @@ impl Supervisor {
 
         let skip_maturin = std::env::var("SKIP_MATURIN").unwrap_or_default() == "1";
 
+        let child_before = binary_fingerprint(&project_root, "runt");
         match kind {
-            ChangeKind::RustMcpChanged => {
-                info!("Rust MCP files changed, building runt...");
+            ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged => {
+                info!("MCP source/assets changed, checking assets and building runt...");
                 if !build_runt_cli(&project_root) {
                     error!("cargo build -p runt failed, keeping current child");
                     return;
                 }
             }
-            ChangeKind::RustChanged => {
+            ChangeKind::RustChanged | ChangeKind::Mixed => {
                 info!(
                     "Rust binding files changed, building runt{}...",
                     if skip_maturin {
@@ -1312,6 +1352,13 @@ impl Supervisor {
             ChangeKind::PythonOnly => {
                 info!("Python files changed; restarting child without rebuilding native bindings");
             }
+        }
+
+        if matches!(kind, ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged)
+            && !fingerprint_changed(&child_before, &binary_fingerprint(&project_root, "runt"))
+        {
+            info!("Build was a no-op; keeping the current MCP child and catalog");
+            return;
         }
 
         // Clear circuit breaker for file-change-triggered restarts
@@ -2845,10 +2892,56 @@ fn daemon_log_path(
 // File watcher (phase 2)
 // ---------------------------------------------------------------------------
 
+fn merge_change(previous: Option<ChangeKind>, next: ChangeKind) -> ChangeKind {
+    match (previous, next) {
+        (Some(ChangeKind::Mixed), _) | (_, ChangeKind::Mixed) => ChangeKind::Mixed,
+        (Some(ChangeKind::PythonOnly), kind) if kind != ChangeKind::PythonOnly => ChangeKind::Mixed,
+        (Some(kind), ChangeKind::PythonOnly) if kind != ChangeKind::PythonOnly => ChangeKind::Mixed,
+        (_, ChangeKind::RustChanged) | (Some(ChangeKind::RustChanged), _) => {
+            ChangeKind::RustChanged
+        }
+        (_, ChangeKind::RustMcpChanged) | (Some(ChangeKind::RustMcpChanged), _) => {
+            ChangeKind::RustMcpChanged
+        }
+        (_, ChangeKind::AssetsChanged) | (Some(ChangeKind::AssetsChanged), _) => {
+            ChangeKind::AssetsChanged
+        }
+        _ => ChangeKind::PythonOnly,
+    }
+}
+
 /// Classify a changed file path into a change kind.
 fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
     let rel = path.strip_prefix(project_root).ok()?;
-    let rel_str = rel.to_string_lossy();
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+
+    if rel_str.starts_with("src/")
+        || rel_str.starts_with("packages/sift/src/")
+        || rel_str.starts_with("packages/runtimed/src/")
+        || rel_str.starts_with("packages/odometer/src/")
+        || rel_str.starts_with("apps/mcp-app/src/")
+        || matches!(
+            rel_str.as_ref(),
+            "apps/mcp-app/vite.config.ts"
+                | "apps/mcp-app/build-html.js"
+                | "apps/mcp-app/package.json"
+                | "apps/notebook/vite-plugin-isolated-renderer.ts"
+                | "scripts/build-renderer-plugins.ts"
+                | "package.json"
+                | "pnpm-lock.yaml"
+                | "pnpm-workspace.yaml"
+                | "tsconfig.json"
+                | "apps/mcp-app/tsconfig.json"
+                | "packages/sift/package.json"
+                | "packages/sift/tsconfig.json"
+                | "packages/runtimed/package.json"
+                | "packages/runtimed/tsconfig.json"
+                | "packages/odometer/package.json"
+                | "packages/odometer/tsconfig.json"
+        )
+    {
+        return Some(ChangeKind::AssetsChanged);
+    }
 
     // Rust source files that affect Python bindings (needs maturin develop + cargo build)
     // runtimed-client is shared between runtimed-py and runt-mcp, so changes there
@@ -2880,12 +2973,33 @@ fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
 /// significant change kind when files are modified.
 fn start_file_watcher(
     project_root: &Path,
-) -> Result<mpsc::Receiver<ChangeKind>, Box<dyn std::error::Error>> {
-    let (tx, rx) = mpsc::channel::<ChangeKind>(8);
+) -> Result<mpsc::UnboundedReceiver<ChangeKind>, Box<dyn std::error::Error>> {
+    let (tx, rx) = mpsc::unbounded_channel::<ChangeKind>();
     let project_root_owned = project_root.to_path_buf();
 
     // Paths to watch
     let watch_paths: Vec<PathBuf> = [
+        "src",
+        "packages/sift/src",
+        "packages/runtimed/src",
+        "packages/odometer/src",
+        "apps/mcp-app/src",
+        "apps/mcp-app/vite.config.ts",
+        "apps/mcp-app/build-html.js",
+        "apps/mcp-app/package.json",
+        "apps/notebook/vite-plugin-isolated-renderer.ts",
+        "scripts/build-renderer-plugins.ts",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "tsconfig.json",
+        "apps/mcp-app/tsconfig.json",
+        "packages/sift/package.json",
+        "packages/sift/tsconfig.json",
+        "packages/runtimed/package.json",
+        "packages/runtimed/tsconfig.json",
+        "packages/odometer/package.json",
+        "packages/odometer/tsconfig.json",
         "python/nteract/src",
         "python/runtimed/src",
         "crates/runtimed-py/src",
@@ -2922,19 +3036,13 @@ fn start_file_watcher(
                     continue;
                 }
                 if let Some(kind) = classify_change(&event.path, &project_root_owned) {
-                    most_significant = Some(match (&most_significant, &kind) {
-                        // Rust trumps Python
-                        (_, ChangeKind::RustChanged) => ChangeKind::RustChanged,
-                        (Some(ChangeKind::RustChanged), _) => ChangeKind::RustChanged,
-                        _ => kind,
-                    });
+                    most_significant = Some(merge_change(most_significant, kind));
                 }
             }
 
             if let Some(kind) = most_significant {
-                // Non-blocking send — if the channel is full, the watcher
-                // will coalesce into the next debounce window
-                let _ = tx.try_send(kind);
+                // Keep the final edit even when a build spans many debounce windows.
+                let _ = tx.send(kind);
             }
         },
     )?;
@@ -3146,8 +3254,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 2a: Ensure daemon is running
         let mut daemon_child = None;
-        if !cargo_binary(&project_root, "runt").exists() {
-            info!("runt binary not found, building...");
+        {
+            info!("Checking MCP assets and child freshness...");
             let pr = project_root.clone();
             let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
                 .await
@@ -3278,28 +3386,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        // 2b: Fast-path check — only build if binary doesn't exist.
-        // If it exists, skip to child spawn immediately (file watcher will
-        // rebuild on source changes). This matches nteract-mcp's pattern.
-        let runt_binary = cargo_binary(&project_root, "runt");
-        if !runt_binary.exists() {
-            info!("runt binary not found, building...");
-            let pr = project_root.clone();
-            let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
-                .await
-                .unwrap_or(false);
-            if !build_ok {
-                error!("Failed to build runt — MCP server will not work");
-                child_ready.notify_waiters();
-                return;
-            }
-        } else {
-            info!(
-                "runt binary exists at {}, skipping build (file watcher will rebuild on changes)",
-                runt_binary.display()
-            );
-        }
-
         // Python bindings are rebuilt on demand via `up rebuild=true`.
         // Startup used to probe `import runtimed` and trigger `maturin
         // develop` in the background; that fired on every session rejoin
@@ -3398,7 +3484,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var("NTERACT_DEV_WATCH").unwrap_or_default() == "1" {
             let mut file_change_rx = start_file_watcher(&project_root).unwrap_or_else(|e| {
                 warn!("File watcher failed to start: {e}");
-                mpsc::channel(1).1
+                mpsc::unbounded_channel().1
             });
 
             let watcher_supervisor = Supervisor {
@@ -3912,6 +3998,60 @@ mod tests {
             Some(UNIX_EPOCH + Duration::from_secs(9)),
         ];
         assert_eq!(freshness_reason(Some(stamp), watched), None);
+    }
+
+    #[test]
+    fn asset_watch_covers_widget_renderer_css_and_build_inputs() {
+        for rel in [
+            "src/isolated-renderer/bokeh-renderer.tsx",
+            "src/styles/ansi.css",
+            "src/components/outputs/ansi-output.tsx",
+            "packages/sift/src/style.css",
+            "packages/runtimed/src/blob-resolver.ts",
+            "apps/mcp-app/src/mcp-app.tsx",
+            "apps/mcp-app/build-html.js",
+            "apps/mcp-app/vite.config.ts",
+            "scripts/build-renderer-plugins.ts",
+            "pnpm-lock.yaml",
+        ] {
+            assert_eq!(
+                classify_change(&root().join(rel), &root()),
+                Some(ChangeKind::AssetsChanged),
+                "{rel}"
+            );
+        }
+        for rel in [
+            "apps/notebook/src/renderer-plugins/bokeh.js",
+            "apps/mcp-app/dist/output.html",
+            "crates/runt-mcp/assets/_output.html",
+            "target/xtask/mcp-widget.inputs.json",
+        ] {
+            assert_eq!(
+                classify_change(&root().join(rel), &root()),
+                None,
+                "generated {rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_changes_preserve_the_strongest_build_in_any_order() {
+        assert_eq!(
+            merge_change(Some(ChangeKind::AssetsChanged), ChangeKind::PythonOnly),
+            ChangeKind::Mixed
+        );
+        assert_eq!(
+            merge_change(Some(ChangeKind::PythonOnly), ChangeKind::AssetsChanged),
+            ChangeKind::Mixed
+        );
+        assert_eq!(
+            merge_change(Some(ChangeKind::RustChanged), ChangeKind::AssetsChanged),
+            ChangeKind::RustChanged
+        );
+        assert_eq!(
+            merge_change(Some(ChangeKind::AssetsChanged), ChangeKind::RustChanged),
+            ChangeKind::RustChanged
+        );
     }
 
     #[test]

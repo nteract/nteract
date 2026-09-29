@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { artifactInputs, writeIfChanged } from "../../src/build/artifact-inputs.ts";
 import { isolatedRendererPlugin } from "../notebook/vite-plugin-isolated-renderer";
 
 const appDir = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,23 @@ function daemonPluginAssetHashes(): Record<string, string> {
 }
 
 export default defineConfig(({ command }) => {
+  const inputs = artifactInputs(repoRoot, [
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "src/components/isolated",
+    "apps/mcp-app/package.json",
+    "apps/mcp-app/vite.config.ts",
+    "apps/mcp-app/build-html.js",
+    "apps/mcp-app/src/style.css",
+    "apps/notebook/vite-plugin-isolated-renderer.ts",
+    "src/build/artifact-inputs.ts",
+    "src/components/isolated/frame.html",
+    "apps/notebook/src/renderer-plugins/isolated-renderer.js",
+    "apps/notebook/src/renderer-plugins/isolated-renderer.css",
+    ...daemonPluginAssets.map((asset) => `apps/notebook/src/renderer-plugins/${asset}`),
+    "crates/sift-wasm/pkg/sift_wasm_bg.wasm",
+  ]);
   const define = {
     __DAEMON_PLUGIN_ASSET_HASHES__: JSON.stringify(daemonPluginAssetHashes()),
     "process.env.NODE_ENV": JSON.stringify("production"),
@@ -63,7 +81,17 @@ export default defineConfig(({ command }) => {
   }
 
   return {
-    plugins: [tailwindcss(), isolatedRendererPlugin({ prebuiltPluginNames: [] })],
+    plugins: [
+      tailwindcss(),
+      isolatedRendererPlugin({ prebuiltPluginNames: [] }),
+      inputs.plugin,
+      {
+        name: "widget-input-receipt",
+        closeBundle() {
+          writeIfChanged(path.join(appDir, "dist/inputs.json"), JSON.stringify(inputs.snapshot()));
+        },
+      },
+    ],
     resolve: {
       alias: {
         "@": path.join(repoRoot, "src"),

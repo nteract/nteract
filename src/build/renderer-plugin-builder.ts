@@ -16,6 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import { build } from "vite-plus";
+import { artifactInputs } from "./artifact-inputs.ts";
 
 /**
  * Definition of a renderer plugin to build
@@ -32,6 +33,7 @@ export interface RendererPluginOutput {
   name: string;
   code: string;
   css: string;
+  inputs: Record<string, string>;
 }
 
 /**
@@ -161,10 +163,26 @@ export async function buildRendererPlugin(
 ): Promise<RendererPluginOutput> {
   const srcDir = getSrcDir();
 
+  const inputs = artifactInputs(path.resolve(srcDir, ".."), [
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "scripts/build-renderer-plugins.ts",
+    "src/build/renderer-plugin-builder.ts",
+    "src/build/artifact-inputs.ts",
+    ...(pluginName === "sift"
+      ? [
+          "crates/sift-wasm/pkg/sift_wasm_bg.wasm",
+          "packages/sift/src",
+          "packages/odometer/src",
+          "src",
+        ]
+      : []),
+  ]);
   const result = await build({
     configFile: false,
     mode: "production",
-    plugins: [tailwindcss(), excludeWasmInline()],
+    plugins: [tailwindcss(), excludeWasmInline(), inputs.plugin],
     esbuild: {
       jsx: "automatic",
       jsxImportSource: "react",
@@ -215,7 +233,7 @@ export async function buildRendererPlugin(
 
   const { code, css } = extractBuildOutput(result, `${pluginName} renderer plugin`);
 
-  return { name: pluginName, code, css };
+  return { name: pluginName, code, css, inputs: inputs.snapshot() };
 }
 
 /**

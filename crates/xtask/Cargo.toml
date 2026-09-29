@@ -13,3 +13,4 @@ workspace = true
 dirs = { workspace = true }
 runt-workspace = { path = "../runt-workspace" }
 serde_json.workspace = true
+sha2.workspace = true

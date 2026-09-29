@@ -22,6 +22,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import { build } from "vite-plus";
+import { artifactInputs, writeArtifactReceipt, writeIfChanged } from "../src/build/artifact-inputs.ts";
 import {
   buildAllRendererPlugins,
   RENDERER_ROLLDOWN_CHECKS,
@@ -107,15 +108,23 @@ function parseSelection(args: string[]): RendererPluginSelection {
   };
 }
 
-async function buildCoreIIFE(): Promise<{ code: string; css: string }> {
+async function buildCoreIIFE(): Promise<{ code: string; css: string; inputs: Record<string, string> }> {
   const srcDir = path.join(repoRoot, "src");
   const nodeModules = path.join(repoRoot, "node_modules");
 
+  const inputs = artifactInputs(repoRoot, [
+    "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml",
+    // Tailwind @source globs include additions, not just resolved modules.
+    "src/isolated-renderer", "src/components/outputs", "src/components/markdown",
+    "src/components/widgets", "src/components/ui", "src/styles",
+    "scripts/build-renderer-plugins.ts", "src/build/renderer-plugin-builder.ts", "src/build/artifact-inputs.ts",
+  ]);
   const result = await build({
     configFile: false,
     mode: "production",
     plugins: [
       tailwindcss(),
+      inputs.plugin,
       {
         name: "vega-raw-resolve",
         resolveId(source: string) {
@@ -186,7 +195,7 @@ async function buildCoreIIFE(): Promise<{ code: string; css: string }> {
   }
 
   if (!code) throw new Error("Failed to build isolated renderer IIFE");
-  return { code, css };
+  return { code, css, inputs: inputs.snapshot() };
 }
 
 async function main() {
@@ -204,16 +213,24 @@ async function main() {
   ]);
 
   if (iife) {
-    fs.writeFileSync(path.join(notebookPluginDir, "isolated-renderer.js"), iife.code);
-    fs.writeFileSync(path.join(notebookPluginDir, "isolated-renderer.css"), iife.css);
+    writeIfChanged(path.join(notebookPluginDir, "isolated-renderer.js"), iife.code);
+    writeIfChanged(path.join(notebookPluginDir, "isolated-renderer.css"), iife.css);
+    writeArtifactReceipt(repoRoot, "renderer-isolated-renderer", iife.inputs, [
+      "apps/notebook/src/renderer-plugins/isolated-renderer.js",
+      "apps/notebook/src/renderer-plugins/isolated-renderer.css",
+    ]);
     console.log(
       `  isolated-renderer: ${(iife.code.length / 1024).toFixed(0)} kB JS, ${(iife.css.length / 1024).toFixed(0)} kB CSS`,
     );
   }
 
-  for (const { name, code, css } of plugins) {
-    fs.writeFileSync(path.join(notebookPluginDir, `${name}.js`), code);
-    if (css) fs.writeFileSync(path.join(notebookPluginDir, `${name}.css`), css);
+  for (const { name, code, css, inputs } of plugins) {
+    writeIfChanged(path.join(notebookPluginDir, `${name}.js`), code);
+    if (css) writeIfChanged(path.join(notebookPluginDir, `${name}.css`), css);
+
+    const outputs = [`apps/notebook/src/renderer-plugins/${name}.js`];
+    if (css) outputs.push(`apps/notebook/src/renderer-plugins/${name}.css`);
+    writeArtifactReceipt(repoRoot, `renderer-${name}`, inputs, outputs);
 
     const sizeParts = [`${(code.length / 1024).toFixed(0)} kB JS`];
     if (css) sizeParts.push(`${(css.length / 1024).toFixed(0)} kB CSS`);
