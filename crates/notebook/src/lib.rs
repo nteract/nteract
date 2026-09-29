@@ -3,6 +3,7 @@
 
 pub mod cli_install;
 pub mod diagnostics_upload;
+mod host_telemetry;
 pub mod mcpb_install;
 pub mod menu;
 
@@ -1591,6 +1592,8 @@ mod tests {
                             DAEMON_API_VERSION
                         },
                         daemon_version: "different-build".into(),
+                        host_telemetry: false,
+                        host_telemetry_enabled: false,
                         pid: 123,
                         started_at: chrono::Utc::now(),
                         blob_port: None,
@@ -3424,6 +3427,9 @@ fn create_notebook_window_for_daemon(
             }
         };
 
+    app.state::<host_telemetry::AppHostTelemetry>()
+        .notebook_opened(&label);
+
     // Spawn async daemon connection — window shows loading state until daemon:ready
     let notebook_sync = context.notebook_sync;
     let sync_generation = context.sync_generation;
@@ -5244,6 +5250,7 @@ pub fn run(
             iframe_shell::frame_response(&request)
         })
         .manage(window_registry.clone())
+        .manage(host_telemetry::AppHostTelemetry::default())
         .manage(reconnect_in_progress)
         .manage(restart_in_progress)
         .manage(daemon_status_state)
@@ -5313,6 +5320,7 @@ pub fn run(
         .setup(move |app| {
             let setup_start = std::time::Instant::now();
             log::info!("[startup] App setup starting");
+            app.state::<host_telemetry::AppHostTelemetry>().spawn();
 
             match write_dev_app_state(app) {
                 Ok(Some(path)) => log::info!(
@@ -5372,6 +5380,8 @@ pub fn run(
                     .build()
                     {
                         Ok(window) => {
+                            app.state::<host_telemetry::AppHostTelemetry>()
+                                .notebook_opened(&sw.label);
                             log::info!("[startup] Created notebook window: {}", sw.label);
                             correct_window_scale(&window, sw.saved_scale_factor);
                         }
@@ -5466,15 +5476,9 @@ pub fn run(
                 // This handles app reinstalls, bundle path changes, and channel switches.
                 cli_install::ensure_cli_current(&app_for_daemon);
 
-                if daemon_available {
-                    tokio::spawn(async {
-                        nteract_telemetry::telemetry_once(
-                            "app",
-                            "telemetry_last_app_ping_at",
-                        )
-                        .await;
-                    });
-                }
+                app_for_daemon
+                    .state::<host_telemetry::AppHostTelemetry>()
+                    .startup_finished(daemon_available);
 
                 // Start settings sync subscription (reconnects automatically)
                 // Spawn as separate task since it runs forever
@@ -6071,6 +6075,9 @@ pub fn run(
             ..
         } = &event
         {
+            app_handle
+                .state::<host_telemetry::AppHostTelemetry>()
+                .window_destroyed(label);
             if let Ok(mut contexts) = registry_for_window_close.contexts.lock() {
                 let closed_handle = contexts.remove(label).map(|context| {
                     log::info!(

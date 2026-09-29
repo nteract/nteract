@@ -52,6 +52,58 @@ through the same local daemon used by nteract desktop.
 
 ## Embedding a notebook frontend
 
+### Host telemetry permission
+
+Host-attributed telemetry is staged behind the daemon's default-off
+`NTERACT_HOST_TELEMETRY_ENABLE=1` rollout gate. Deploy the receiver's `host_id`
+schema and confirm privacy disclosure before enabling that gate. Debug/dev/CI
+suppression, `NTERACT_TELEMETRY_DISABLE`, and a global nteract telemetry opt-out
+still prevent sending.
+
+`openTelemetryRegistration` owns a separate daemon control connection. It does
+not modify onboarding, consent settings, or notebook documents. Aggregate active
+notebook windows in the host's main process and keep one registration per
+product/source while the integration is in use. Starting a daemon alone is not
+notebook activity.
+
+```js
+const runtime = require("@runtimed/node");
+
+// Older package versions and older daemons remain usable without attribution.
+const telemetry = await runtime.openTelemetryRegistration?.({
+  socketPath: selectedDaemonSocket,
+  hostId: "example-desktop", // Product slug, never a machine or account identity.
+  source: "app", // "app" or "mcp".
+  allowed: false,
+});
+
+// Recheck current permission and activity after the asynchronous open finishes.
+await telemetry?.updatePermission(currentPermission && notebookIsActive);
+// Await withdrawal when the privacy choice changes.
+await telemetry?.updatePermission(false);
+// Close when the last notebook closes or the host shuts down.
+await telemetry?.close();
+```
+
+An unsupported daemon or unavailable capability probe returns `null`. An initial
+connection failure or conflicting owner rejects; telemetry failure must not
+prevent notebook operation. Permission is
+denied when omitted. Native lease renewal keeps the connection's permission
+alive, but does not reconnect or regrant it after failure. A new registration
+must use the current privacy choice, not a saved grant.
+
+A successful withdrawal or close acknowledges server-side revocation. Already
+transmitted HTTP requests cannot be recalled. Connection failure can prevent an
+acknowledgement; the daemon then removes ownership on disconnect or bounded
+lease expiry. Do not treat a failed close as confirmed immediate revocation.
+
+The host owns disclosure and permission, including live opt-out propagation.
+Use a stable product slug, not an install ID, email, hostname, or notebook ID.
+The daemon supplies its existing opaque install ID and nteract component
+version. Same-channel installations can share that ID; no cross-channel or
+account identity join is performed. Unattributed legacy daemon heartbeats do
+not prove first-party use.
+
 ### Explicit project manifest creation
 
 The local Node host can create a missing `environment.yml` after the user or

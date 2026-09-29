@@ -76,6 +76,8 @@ pub struct PongInfo {
 /// Rich daemon metadata queried from the daemon via `PoolClient::daemon_info()`.
 #[derive(Debug, Clone)]
 pub struct DaemonInfo {
+    pub host_telemetry: bool,
+    pub host_telemetry_enabled: bool,
     /// Numeric protocol version.
     pub protocol_version: u32,
     /// Semantic daemon API version. Zero identifies a daemon that predates
@@ -222,6 +224,8 @@ impl PoolClient {
         let response = self.send_request(Request::GetDaemonInfo).await?;
         match response {
             Response::DaemonInfo {
+                host_telemetry,
+                host_telemetry_enabled,
                 protocol_version,
                 daemon_api_version,
                 daemon_version,
@@ -232,6 +236,8 @@ impl PoolClient {
                 worktree_path,
                 workspace_description,
             } => Ok(DaemonInfo {
+                host_telemetry,
+                host_telemetry_enabled,
                 protocol_version,
                 daemon_api_version,
                 daemon_version,

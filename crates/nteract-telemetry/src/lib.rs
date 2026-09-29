@@ -15,6 +15,8 @@ fn endpoint() -> String {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TelemetryPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
     pub install_id: String,
     pub source: String,
     pub version: String,
@@ -279,6 +281,7 @@ async fn try_send(client: &reqwest::Client, source: &str, timestamp_key: &str) {
     };
 
     let payload = TelemetryPayload {
+        host_id: None,
         install_id,
         source: source.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -351,6 +354,7 @@ mod tests {
     #[test]
     fn test_payload_shape() {
         let payload = TelemetryPayload {
+            host_id: None,
             install_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             source: "daemon".to_string(),
             version: "1.2.3".to_string(),
@@ -367,6 +371,15 @@ mod tests {
         assert!(obj.contains_key("channel"));
         assert!(obj.contains_key("platform"));
         assert!(obj.contains_key("arch"));
+        assert!(!obj.contains_key("host_id"));
+
+        let attributed = serde_json::to_value(TelemetryPayload {
+            host_id: Some("example-desktop".into()),
+            ..payload
+        })
+        .unwrap();
+        assert_eq!(attributed.as_object().unwrap().len(), 7);
+        assert_eq!(attributed["host_id"], "example-desktop");
     }
 
     #[test]

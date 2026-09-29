@@ -32,6 +32,10 @@ export interface QueryDaemonOptions {
 
 export interface DaemonInfo {
   version: string;
+  /** Protocol support only. Missing on older native bindings; treat missing as false. */
+  hostTelemetry?: boolean;
+  /** Daemon rollout/process emission gate, not user consent or host permission. */
+  hostTelemetryEnabled?: boolean;
   protocolVersion: number;
   /** Zero means the daemon predates semantic API version reporting. */
   daemonApiVersion: number;

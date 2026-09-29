@@ -34,6 +34,7 @@ pub mod daemon_telemetry;
 pub(crate) mod display_update_committer;
 pub mod dx_blob_comm;
 pub mod embedded_plugins;
+pub(crate) mod host_telemetry;
 pub mod inline_env;
 pub(crate) mod ipykernel_error;
 pub mod jupyter_kernel;

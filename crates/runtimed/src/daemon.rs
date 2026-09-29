@@ -1278,6 +1278,7 @@ pub struct Daemon {
     _lock: DaemonLock,
     /// Shared in-memory Automerge settings document for live sync.
     pub(crate) settings: Arc<RwLock<SettingsDoc>>,
+    host_telemetry: tokio::sync::OnceCell<crate::host_telemetry::HostTelemetry>,
     /// Broadcast channel to notify sync connections of settings changes.
     settings_changed: tokio::sync::broadcast::Sender<()>,
     /// Global Automerge pool state document (daemon-authoritative, ephemeral).
@@ -1608,40 +1609,10 @@ impl Daemon {
         // migration when JSON is missing.
         let automerge_path = legacy_settings_doc_path(&config);
         let json_path = config.resolved_settings_json_path();
-        let mut settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        let settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
 
         // Pool sizes now come from settings.json (imported via apply_json_changes)
         // or from SettingsDoc defaults if not set in JSON.
-
-        // Backfill telemetry consent for existing users. Pre-refactor, every
-        // finished-onboarding installation implicitly consented to telemetry
-        // (the toggle was pre-checked). Users who've been running the app
-        // before this change shouldn't suddenly look like they never opted
-        // in — that would silently stop their heartbeats. No-op for fresh
-        // installs (onboarding_completed = false) and idempotent across
-        // restarts.
-        //
-        // Write the JSON settings file immediately when
-        // the flag flips. Otherwise the change only persists if a settings
-        // client happens to connect and trigger `persist_settings` in
-        // `sync_server.rs` — a daemon that boots, runs briefly with no
-        // settings-window interaction, and exits would drop the backfill.
-        let mut startup_settings = settings.get_all();
-        if crate::settings_doc::backfill_telemetry_consent(&mut startup_settings) {
-            tracing::info!(
-                "[settings] Backfilled telemetry_consent_recorded for an existing onboarded install"
-            );
-            if let Err(e) =
-                crate::settings_doc::write_synced_settings_json(&json_path, &startup_settings)
-            {
-                tracing::warn!(
-                    "[settings] Failed to persist backfilled settings.json: {}",
-                    e
-                );
-            } else {
-                settings = SettingsDoc::from_synced_settings(&startup_settings);
-            }
-        }
 
         // Write the settings JSON Schema for editor autocomplete
         if let Err(e) = crate::settings_doc::write_settings_schema() {
@@ -1700,6 +1671,7 @@ impl Daemon {
             pool_ready_pixi: Notify::new(),
             _lock: lock,
             settings: Arc::new(RwLock::new(settings)),
+            host_telemetry: tokio::sync::OnceCell::new(),
             settings_changed,
             pool_doc,
             pool_doc_changed,
@@ -2003,6 +1975,8 @@ impl Daemon {
             (None, None)
         };
         Response::DaemonInfo {
+            host_telemetry: true,
+            host_telemetry_enabled: crate::host_telemetry::emission_enabled(),
             protocol_version: notebook_protocol::connection::PROTOCOL_VERSION.into(),
             daemon_api_version: runtimed_client::protocol::DAEMON_API_VERSION,
             daemon_version: crate::daemon_version().to_string(),
@@ -4698,13 +4672,29 @@ impl Daemon {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        let coordinator = self
+            .host_telemetry
+            .get_or_init(|| async {
+                crate::host_telemetry::HostTelemetry::start(
+                    Arc::downgrade(&self),
+                    self.config.resolved_settings_json_path(),
+                )
+            })
+            .await;
+        let mut host = coordinator.connection();
         loop {
             let request: Request = match connection::recv_json_frame(&mut stream).await? {
                 Some(req) => req,
                 None => break, // Connection closed
             };
 
-            let response = self.clone().handle_request(request).await;
+            let response = match request {
+                Request::RegisterHostTelemetry { .. }
+                | Request::UpdateHostTelemetryPermission { .. }
+                | Request::RenewHostTelemetry
+                | Request::CloseHostTelemetry => host.request(request).await,
+                request => self.clone().handle_request(request).await,
+            };
             connection::send_json_frame(&mut stream, &response).await?;
         }
 
@@ -5013,6 +5003,12 @@ impl Daemon {
             },
 
             Request::GetDaemonInfo => self.build_daemon_info().await,
+            Request::RegisterHostTelemetry { .. }
+            | Request::UpdateHostTelemetryPermission { .. }
+            | Request::RenewHostTelemetry
+            | Request::CloseHostTelemetry => Response::Error {
+                message: "host telemetry requires a persistent Pool connection".into(),
+            },
 
             Request::GetExecutionResult { execution_id } => {
                 self.build_execution_result(execution_id).await
@@ -9014,6 +9010,57 @@ mod tests {
             legacy_settings_doc_path(&config),
             settings_json.with_file_name("settings.automerge")
         );
+    }
+
+    #[tokio::test]
+    async fn host_telemetry_pool_eof_malformed_and_transient_release_owners() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new_for_test(lease_test_config(&temp_dir)).unwrap();
+        let request = Request::RegisterHostTelemetry {
+            host_id: "test-editor".into(),
+            source: runtimed_client::telemetry::HostTelemetrySource::App,
+            allowed: false,
+        };
+        for malformed in [false, true, false] {
+            let (mut client, server) = tokio::io::duplex(4096);
+            let task = tokio::spawn(daemon.clone().handle_pool_connection(server));
+            connection::send_json_frame(&mut client, &Request::GetDaemonInfo)
+                .await
+                .unwrap();
+            assert!(matches!(
+                connection::recv_json_frame::<_, Response>(&mut client)
+                    .await
+                    .unwrap(),
+                Some(Response::DaemonInfo {
+                    host_telemetry: true,
+                    ..
+                })
+            ));
+            connection::send_json_frame(&mut client, &request)
+                .await
+                .unwrap();
+            assert!(matches!(
+                connection::recv_json_frame::<_, Response>(&mut client)
+                    .await
+                    .unwrap(),
+                Some(Response::HostTelemetryAck)
+            ));
+            if malformed {
+                connection::send_json_frame(
+                    &mut client,
+                    &serde_json::json!({"type":"invalid-test-request"}),
+                )
+                .await
+                .unwrap();
+            }
+            drop(client);
+            let result = task.await.unwrap();
+            assert_eq!(result.is_err(), malformed);
+        }
+        assert!(matches!(
+            daemon.clone().handle_request(request).await,
+            Response::Error { .. }
+        ));
     }
 
     #[tokio::test]

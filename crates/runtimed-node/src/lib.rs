@@ -28,6 +28,7 @@ mod parquet;
 mod project_files;
 mod relay;
 mod session;
+mod telemetry;
 
 pub use arrow_ipc::{
     read_arrow_chunks, read_arrow_file, summarize_arrow_chunks, summarize_arrow_file,
@@ -49,6 +50,10 @@ pub use session::{
     PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions, RuntimeStatus,
     Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions,
     SnapshotPair, UvDependencyStatus, WaitExecutionOptions,
+};
+
+pub use telemetry::{
+    open_telemetry_registration, OpenTelemetryRegistrationOptions, TelemetryRegistration,
 };
 
 /// Return the default daemon socket path.

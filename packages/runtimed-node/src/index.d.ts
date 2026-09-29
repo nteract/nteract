@@ -49,6 +49,39 @@ export type RuntimeState = Record<string, unknown>;
 
 export type RuntimeKind = "python" | "deno" | (string & {});
 
+export interface OpenTelemetryRegistrationOptions {
+  /** Explicit daemon endpoint. This API never starts a daemon. */
+  socketPath: string;
+  /** Stable product slug, not a user, window, session, or installation identifier. */
+  hostId: string;
+  source: "app" | "mcp";
+  /** Host permission only; daemon consent and emission gates still apply. Defaults to false. */
+  allowed?: boolean;
+}
+
+/** One host-lifetime owner. Aggregate active windows before granting permission. */
+export class TelemetryRegistration {
+  private constructor();
+  /** Await the daemon acknowledgment. Disconnected handles reject, never reconnect. */
+  updatePermission(allowed: boolean): Promise<void>;
+  /**
+   * Await revocation acknowledgment. Idempotent after success; disconnection rejects.
+   * Without acknowledgment, remote revocation can take up to the 120-second lease expiry.
+   */
+  close(): Promise<void>;
+}
+
+/**
+ * Return null if host telemetry is unsupported or the capability probe is unavailable.
+ * Permission defaults to denied.
+ * Keep the handle alive while active and await close() when finished. Garbage collection
+ * terminates its socket without awaiting revocation. The handle never reconnects.
+ * Older native binaries omit this export; feature-detect it when supporting those binaries.
+ */
+export function openTelemetryRegistration(
+  options: OpenTelemetryRegistrationOptions,
+): Promise<TelemetryRegistration | null>;
+
 export const PackageManager: {
   readonly Uv: "uv";
   readonly Conda: "conda";

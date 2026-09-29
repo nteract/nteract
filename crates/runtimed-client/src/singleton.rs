@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 /// Information about a running daemon instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonInfo {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host_telemetry: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host_telemetry_enabled: bool,
     /// Socket endpoint the daemon is listening on.
     pub endpoint: String,
     /// Numeric wire protocol version.
@@ -90,6 +94,8 @@ pub async fn query_daemon_info(socket_path: std::path::PathBuf) -> Option<Daemon
     let client = crate::client::PoolClient::new(socket_path.clone());
     if let Ok(info) = client.daemon_info().await {
         return Some(DaemonInfo {
+            host_telemetry: info.host_telemetry,
+            host_telemetry_enabled: info.host_telemetry_enabled,
             endpoint: socket_path.to_string_lossy().into_owned(),
             protocol_version: info.protocol_version,
             daemon_api_version: info.daemon_api_version,

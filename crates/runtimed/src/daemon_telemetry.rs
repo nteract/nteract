@@ -56,12 +56,7 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
         .unwrap_or_default()
         .as_secs();
 
-    if !nteract_telemetry::should_send(
-        settings.telemetry_enabled,
-        settings.onboarding_completed,
-        settings.telemetry_last_daemon_ping_at,
-        now,
-    ) {
+    if !daemon_heartbeat_eligible(&settings, now) {
         return;
     }
 
@@ -73,6 +68,7 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
     };
 
     let payload = nteract_telemetry::TelemetryPayload {
+        host_id: None,
         install_id,
         source: "daemon".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -94,5 +90,69 @@ async fn try_send_daemon_heartbeat(daemon: &Arc<Daemon>, client: &reqwest::Clien
         .await
     {
         tracing::warn!("[telemetry] failed to persist daemon heartbeat timestamp: {e}");
+    }
+}
+
+fn daemon_heartbeat_eligible(
+    settings: &runtimed_client::settings_doc::SyncedSettings,
+    now: u64,
+) -> bool {
+    nteract_telemetry::should_send_full(
+        settings.telemetry_enabled,
+        settings.onboarding_completed,
+        settings.telemetry_consent_recorded,
+        settings.telemetry_last_daemon_ping_at,
+        now,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::daemon_heartbeat_eligible;
+    use runtimed_client::settings_doc::SyncedSettings;
+
+    #[test]
+    fn heartbeat_requires_enabled_onboarded_and_recorded_consent() {
+        for enabled in [false, true] {
+            for onboarded in [false, true] {
+                for consent_recorded in [false, true] {
+                    let settings = SyncedSettings {
+                        telemetry_enabled: enabled,
+                        onboarding_completed: onboarded,
+                        telemetry_consent_recorded: consent_recorded,
+                        ..Default::default()
+                    };
+                    assert_eq!(
+                        daemon_heartbeat_eligible(&settings, 1_700_000_000),
+                        enabled && onboarded && consent_recorded,
+                        "enabled={enabled}, onboarded={onboarded}, consent={consent_recorded}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn heartbeat_uses_daemon_throttle_timestamp() {
+        let now = 1_700_000_000;
+        let mut settings = SyncedSettings {
+            telemetry_enabled: true,
+            onboarding_completed: true,
+            telemetry_consent_recorded: true,
+            telemetry_last_app_ping_at: Some(now),
+            telemetry_last_mcp_ping_at: Some(now),
+            ..Default::default()
+        };
+
+        assert!(daemon_heartbeat_eligible(&settings, now));
+        for (last, eligible) in [
+            (now + 1, false),
+            (now, false),
+            (now - 20 * 60 * 60 + 1, false),
+            (now - 20 * 60 * 60, true),
+        ] {
+            settings.telemetry_last_daemon_ping_at = Some(last);
+            assert_eq!(daemon_heartbeat_eligible(&settings, now), eligible);
+        }
     }
 }

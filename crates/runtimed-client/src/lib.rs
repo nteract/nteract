@@ -29,6 +29,7 @@ pub mod runtime;
 pub mod settings_doc;
 pub mod singleton;
 pub mod startup;
+pub mod telemetry;
 
 use runt_workspace::daemon_base_dir;
 #[cfg(unix)]
