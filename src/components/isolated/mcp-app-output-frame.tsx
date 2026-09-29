@@ -1,4 +1,5 @@
 import type { OutputBlobResolver } from "./output-manifest";
+import { isIframeMessage } from "./frame-bridge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createInlineOnlyBlobResolver,
@@ -34,6 +35,7 @@ export interface McpAppOutputFrameProps {
   className?: string;
   onDiagnostic?: NteractOutputEmbedDiagnosticHandler;
   onError?: (error: { message: string; stack?: string }) => void;
+  onLinkClick?: (url: string) => void;
 }
 
 function cellsForProps(
@@ -59,6 +61,7 @@ export function McpAppOutputFrame({
   className,
   onDiagnostic,
   onError,
+  onLinkClick,
 }: McpAppOutputFrameProps) {
   const targetRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<NteractOutputEmbedHandle | null>(null);
@@ -90,11 +93,13 @@ export function McpAppOutputFrame({
   const hostContextPatchRef = useRef(hostContextPatch);
   const onDiagnosticRef = useRef(onDiagnostic);
   const onErrorRef = useRef(onError);
+  const onLinkClickRef = useRef(onLinkClick);
 
   useEffect(() => {
     onDiagnosticRef.current = onDiagnostic;
     onErrorRef.current = onError;
-  }, [onDiagnostic, onError]);
+    onLinkClickRef.current = onLinkClick;
+  }, [onDiagnostic, onError, onLinkClick]);
 
   useEffect(() => {
     setFailed(false);
@@ -114,6 +119,11 @@ export function McpAppOutputFrame({
       ...(maxHeight === undefined ? {} : { maxHeight }),
       onDiagnostic(...args) {
         onDiagnosticRef.current?.(...args);
+      },
+      onMessage(message) {
+        if (isIframeMessage(message) && message.type === "link_click") {
+          onLinkClickRef.current?.(message.payload.url);
+        }
       },
       onError(error) {
         handleRef.current?.dispose();

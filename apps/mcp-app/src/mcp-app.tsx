@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./style.css";
 import {
   App,
@@ -64,14 +64,21 @@ function layoutDetails(): Record<string, unknown> {
 }
 
 function McpApp() {
+  const appRef = useRef<App | null>(null);
   const [content, setContent] = useState<NteractContent | null>(null);
   const [connected, setConnected] = useState(false);
   const [resourceReader, setResourceReader] = useState<OutputResourceReader | null>(null);
   const [hostContext, setHostContext] = useState<McpUiHostContext | null>(null);
   const [hostCapabilities, setHostCapabilities] = useState<McpUiHostCapabilities | null>(null);
+  const openLink = useCallback((url: string) => {
+    void appRef.current?.openLink({ url }).catch((error) => {
+      hostLog("warning", "open-link-failed", { error: errorDetails(error) });
+    });
+  }, []);
 
   useEffect(() => {
     const app = new App(NTERACT_MCP_APP_INFO, NTERACT_MCP_APP_CAPABILITIES);
+    appRef.current = app;
 
     app.ontoolresult = (result: CallToolResult) => {
       const structured = result.structuredContent as NteractContent | undefined;
@@ -133,6 +140,7 @@ function McpApp() {
       });
 
     return () => {
+      appRef.current = null;
       hostLog("debug", "app-dispose");
       setHostLogSink(null);
       setContent(null);
@@ -170,6 +178,7 @@ function McpApp() {
           hostContext={hostContext}
           hostCapabilities={hostCapabilities}
           resourceReader={resourceReader}
+          onLinkClick={openLink}
         />
       ))}
     </>

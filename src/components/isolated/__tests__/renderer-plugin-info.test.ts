@@ -13,6 +13,10 @@ import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs
 
 describe("renderer plugin metadata", () => {
   it("maps exact MIME types to the shared renderer plugin names", () => {
+    expect(rendererPluginInfoForMime("application/vnd.nteract.markdown+json")).toEqual({
+      name: "markdown",
+      hasCss: true,
+    });
     expect(rendererPluginInfoForMime("text/markdown")).toEqual({
       name: "markdown",
       hasCss: true,

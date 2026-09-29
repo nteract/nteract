@@ -42,6 +42,29 @@ describe("McpAppOutputFrame", () => {
     vi.clearAllMocks();
   });
 
+  it("forwards output links to the latest host callback without rebuilding the frame", async () => {
+    const rendererBundle = { rendererCode: "renderer", rendererCss: "css" };
+    const cell = cellWithHtmlOutput();
+    const first = vi.fn();
+    const latest = vi.fn();
+    const { rerender } = render(
+      <McpAppOutputFrame cell={cell} rendererBundle={rendererBundle} onLinkClick={first} />,
+    );
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
+    options.onMessage?.({ type: "link_click", payload: { url: "https://nteract.io" } });
+    expect(first).toHaveBeenCalledWith("https://nteract.io");
+
+    rerender(
+      <McpAppOutputFrame cell={cell} rendererBundle={rendererBundle} onLinkClick={latest} />,
+    );
+    options.onMessage?.({ type: "link_click", payload: { url: "https://nteract.io/docs" } });
+    options.onMessage?.({ type: "mousedown" });
+    expect(latest).toHaveBeenCalledExactlyOnceWith("https://nteract.io/docs");
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(createNteractOutputEmbed).toHaveBeenCalledTimes(1);
+  });
+
   it("adapts MCP App cell outputs into the shared isolated output embed", async () => {
     const rendererBundle = { rendererCode: "renderer", rendererCss: "css" };
     const rendererPluginLoader = vi.fn(async () => undefined);

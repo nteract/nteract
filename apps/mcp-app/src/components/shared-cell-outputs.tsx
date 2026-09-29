@@ -24,6 +24,7 @@ export interface SharedCellOutputsProps {
   hostContext?: McpUiHostContext | null;
   hostCapabilities?: McpUiHostCapabilities | null;
   resourceReader?: OutputResourceReader | null;
+  onLinkClick?: (url: string) => void;
 }
 
 export function SharedCellOutputs({
@@ -32,6 +33,7 @@ export function SharedCellOutputs({
   hostContext,
   hostCapabilities,
   resourceReader,
+  onLinkClick,
 }: SharedCellOutputsProps) {
   const transport = useMemo(
     () =>
@@ -131,6 +133,7 @@ export function SharedCellOutputs({
       className="shared-output-frame"
       onDiagnostic={handleDiagnostic}
       onError={handleError}
+      onLinkClick={onLinkClick}
     />
   );
 }
