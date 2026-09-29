@@ -119,6 +119,7 @@ jobs:
               - "tsconfig.json"
               - "vitest.config.ts"
             browser_e2e:
+              - "apps/mcp-app/**"
               - ".github/workflows/build.yml"
               - "apps/notebook/**"
               - "apps/notebook-cloud/**"
@@ -735,6 +736,9 @@ jobs:
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
 
+      - name: Test production MCP widget
+        run: pnpm --dir apps/mcp-app test:smoke
+
       - name: Run browser E2E
         id: browser_e2e
         run: pnpm --filter notebook-ui test:e2e:browser -- --project=chromium --workers=1
@@ -748,8 +752,8 @@ jobs:
           pnpm --dir apps/notebook-cloud test:asset-recovery
 
       - name: Upload Playwright report
-        # A successful retry must not discard the first attempt's failure trace.
-        if: ${{ !cancelled() && (steps.browser_e2e.outcome == 'success' || steps.browser_e2e.outcome == 'failure') }}
+        # Preserve failures from either browser suite.
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: browser-e2e-playwright-report
@@ -757,6 +761,8 @@ jobs:
             apps/notebook/playwright-report/
             apps/notebook/test-results/
             apps/notebook-cloud/test-results/
+            apps/mcp-app/test-results/
+            apps/mcp-app/playwright-report/
           retention-days: 7
 
   build-linux:
