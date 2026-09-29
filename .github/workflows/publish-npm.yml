@@ -128,9 +128,6 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Stamp exact Node package versions
-        shell: bash
-        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp "$RUNNER_TEMP/npm-release-tools/plan.json" packages/runtimed-node
       - name: Build native binding
         run: pnpm --dir packages/runtimed-node build
       - name: Assemble platform package
@@ -140,9 +137,15 @@ jobs:
         run: pnpm --dir packages/runtimed-node smoke
       - name: Verify platform package
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
+      # Finish pnpm builds and prepack checks before changing workspace dependency
+      # specifiers. Otherwise pnpm tries to reinstall against the frozen lockfile.
+      - name: Stamp exact Node package versions
+        shell: bash
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp "$RUNNER_TEMP/npm-release-tools/plan.json" packages/runtimed-node
       - name: Pack platform package
         shell: bash
-        run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack --pack-destination "$RUNNER_TEMP"
+        working-directory: packages/runtimed-node/npm/${{ matrix.target }}
+        run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
       - name: Smoke installed native tarball and compiled channel
         shell: bash
         run: |
@@ -219,14 +222,16 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Stamp exact Node package versions
-        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp "$RUNNER_TEMP/npm-release-tools/plan.json" packages/runtimed-node
       - name: Build native binding metadata
         run: pnpm --dir packages/runtimed-node build
       - name: Verify wrapper package
         run: pnpm --dir packages/runtimed-node pack:dry-run
+      # The dry run above already ran prepack; don't re-enter pnpm after stamping.
+      - name: Stamp exact Node package versions
+        run: node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" stamp "$RUNNER_TEMP/npm-release-tools/plan.json" packages/runtimed-node
       - name: Pack wrapper package
-        run: pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP"
+        working-directory: packages/runtimed-node
+        run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
       - name: Verify wrapper package manifest
         run: |
           tar -xOf "$RUNNER_TEMP"/runtimed-node-*.tgz package/package.json > "$RUNNER_TEMP/wrapper-package.json"

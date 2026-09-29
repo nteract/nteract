@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
+import {execFileSync} from "node:child_process";
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
 import {test} from "node:test";
 import {
   nativeTargets,
@@ -104,7 +107,41 @@ test("native failures block wrapper, Pi is stable-only, and source/channel are e
     const job = jobs.get(id);
     assert.match(job, /RUNT_BUILD_CHANNEL: \$\{\{ needs\.resolve-release\.outputs\.channel \}\}/);
     assert.ok(job.indexOf("pnpm install --frozen-lockfile") < job.indexOf("Stamp exact Node package versions"));
-    assert.ok(job.indexOf("Stamp exact Node package versions") < job.indexOf("run: pnpm --dir packages/runtimed-node build"));
+    const stamp = job.indexOf("Stamp exact Node package versions");
+    assert.ok(job.indexOf("run: pnpm --dir packages/runtimed-node build") < stamp);
+    assert.ok(job.indexOf("pack:dry-run") < stamp, "prepack checks must run before stamping");
+    assert.doesNotMatch(job.slice(stamp), /run:.*pnpm|--no-frozen-lockfile/);
+    assert.match(job.slice(stamp), /run: npm pack --ignore-scripts --pack-destination/);
   }
   assert.match(jobs.get("pack-native"), /Smoke installed native tarball and compiled channel/);
+});
+
+test("npm packs stamped wrapper and native manifests without rerunning workspace prepack", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nteract-npm-pack-"));
+  try {
+    const plan = releasePlan(sourceManifest.version, identity);
+    for (const target of ["wrapper", "linux-x64-gnu"]) {
+      const root = join(directory, target);
+      mkdirSync(root);
+      const source = target === "wrapper" ? sourceManifest : {
+        name: packageName(target), version: sourceManifest.version,
+      };
+      const stamped = stampManifest(source, plan, target);
+      // Prepack already ran against the installed workspace. A rerun here must
+      // fail rather than silently reinstalling from the stamped manifest.
+      stamped.scripts = {prepack: "node -e \"process.exit(99)\""};
+      stamped.files = ["payload.txt"];
+      writeFileSync(join(root, "package.json"), JSON.stringify(stamped));
+      writeFileSync(join(root, "payload.txt"), "built before stamping\n");
+      const packed = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", directory], {
+        cwd: root, encoding: "utf8", timeout: 30_000,
+      }));
+      const tarball = join(directory, packed[0].filename);
+      const manifest = JSON.parse(execFileSync("tar", ["-xOf", tarball, "package/package.json"], {encoding: "utf8"}));
+      verifyManifest(manifest, plan, target);
+      assert.equal(execFileSync("tar", ["-xOf", tarball, "package/payload.txt"], {encoding: "utf8"}), "built before stamping\n");
+    }
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
 });
