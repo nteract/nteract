@@ -1,5 +1,4 @@
 import type { OutputBlobResolver } from "./output-manifest";
-import { isIframeMessage } from "./frame-bridge";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isSafeExternalUrl } from "../../lib/open-url";
 import {
@@ -43,6 +42,16 @@ function cellsForProps(
   props: Pick<McpAppOutputFrameProps, "cell" | "cells">,
 ): readonly McpAppCellData[] {
   return props.cells ?? (props.cell ? [props.cell] : []);
+}
+
+function outputDocumentOrigin(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
 }
 
 export function McpAppOutputFrame({
@@ -121,14 +130,12 @@ export function McpAppOutputFrame({
       onDiagnostic(...args) {
         onDiagnosticRef.current?.(...args);
       },
-      onMessage(message) {
-        if (
-          isIframeMessage(message) &&
-          message.type === "link_click" &&
-          isSafeExternalUrl(message.payload?.url)
-        ) {
-          onLinkClickRef.current?.(message.payload.url.trim());
-        }
+      onLinkClick(url) {
+        if (!isSafeExternalUrl(url)) return;
+        // Fragment and relative links resolve against the daemon's frame URL.
+        // They are not external destinations for the host's browser.
+        if (new URL(url).origin === outputDocumentOrigin(outputDocumentUrl)) return;
+        onLinkClickRef.current?.(url.trim());
       },
       onError(error) {
         handleRef.current?.dispose();

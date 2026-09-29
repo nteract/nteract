@@ -52,20 +52,19 @@ describe("McpAppOutputFrame", () => {
     );
     await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
     const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
-    options.onMessage?.({ type: "link_click", payload: { url: "https://nteract.io" } });
+    options.onLinkClick?.("https://nteract.io", false);
     expect(first).toHaveBeenCalledWith("https://nteract.io");
 
     rerender(
       <McpAppOutputFrame cell={cell} rendererBundle={rendererBundle} onLinkClick={latest} />,
     );
-    options.onMessage?.({ type: "link_click", payload: { url: "https://nteract.io/docs" } });
-    options.onMessage?.({ type: "mousedown" });
+    options.onLinkClick?.("https://nteract.io/docs", false);
     expect(latest).toHaveBeenCalledExactlyOnceWith("https://nteract.io/docs");
     expect(first).toHaveBeenCalledTimes(1);
     expect(createNteractOutputEmbed).toHaveBeenCalledTimes(1);
   });
 
-  it("drops unsafe schemes and malformed link messages before reaching the host", async () => {
+  it("drops unsafe schemes and malformed URLs before reaching the host", async () => {
     const onLinkClick = vi.fn();
     render(
       <McpAppOutputFrame
@@ -85,12 +84,30 @@ describe("McpAppOutputFrame", () => {
       null,
       123,
     ]) {
-      options.onMessage?.({ type: "link_click", payload: { url } });
+      Reflect.apply(options.onLinkClick!, undefined, [url, false]);
     }
-    options.onMessage?.({ type: "link_click" });
     expect(onLinkClick).not.toHaveBeenCalled();
 
-    options.onMessage?.({ type: "link_click", payload: { url: " https://nteract.io/ " } });
+    options.onLinkClick?.(" https://nteract.io/ ", false);
+    expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
+  });
+
+  it("keeps daemon-relative and fragment links out of the external browser", async () => {
+    const onLinkClick = vi.fn();
+    render(
+      <McpAppOutputFrame
+        cell={cellWithHtmlOutput()}
+        rendererBundle={{ rendererCode: "renderer", rendererCss: "css" }}
+        outputDocumentUrl="http://localhost:47830/output-frame"
+        onLinkClick={onLinkClick}
+      />,
+    );
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
+    options.onLinkClick?.("http://localhost:47830/output-frame#heading", false);
+    options.onLinkClick?.("http://localhost:47830/relative", false);
+    expect(onLinkClick).not.toHaveBeenCalled();
+    options.onLinkClick?.("https://nteract.io/", false);
     expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
   });
 

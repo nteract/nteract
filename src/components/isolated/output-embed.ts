@@ -67,6 +67,7 @@ export interface NteractOutputEmbedOptions {
   onSizeChanged?: (size: NteractEmbedContainerDimensions) => void;
   onDiagnostic?: NteractOutputEmbedDiagnosticHandler;
   onMessage?: (message: unknown) => void;
+  onLinkClick?: (url: string, newTab: boolean) => void;
   onError?: (error: { message: string; stack?: string }) => void;
 }
 
@@ -140,8 +141,10 @@ export function createNteractOutputEmbed(
     onResize: (height: number) => applyHeight(height),
     onSizeChanged: (size: NteractEmbedContainerDimensions) => applySizeChanged(size),
     onRenderComplete: (height: number) => applyHeight(height),
-    onLinkClick: (url: string, newTab: boolean) =>
-      options.onMessage?.({ type: "link_click", payload: { url, newTab } }),
+    onLinkClick: (url: string, newTab: boolean) => {
+      options.onLinkClick?.(url, newTab);
+      options.onMessage?.({ type: "link_click", payload: { url, newTab } });
+    },
     onMouseDown: () => options.onMessage?.({ type: "mousedown" }),
     onMouseUp: (params: { hasSelection?: boolean }) =>
       options.onMessage?.({ type: "mouseup", payload: params }),
