@@ -65,6 +65,35 @@ describe("McpAppOutputFrame", () => {
     expect(createNteractOutputEmbed).toHaveBeenCalledTimes(1);
   });
 
+  it("drops unsafe schemes and malformed link messages before reaching the host", async () => {
+    const onLinkClick = vi.fn();
+    render(
+      <McpAppOutputFrame
+        cell={cellWithHtmlOutput()}
+        rendererBundle={{ rendererCode: "renderer", rendererCss: "css" }}
+        onLinkClick={onLinkClick}
+      />,
+    );
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
+    for (const url of [
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "about:srcdoc#heading",
+      "#heading",
+      "invalid",
+      null,
+      123,
+    ]) {
+      options.onMessage?.({ type: "link_click", payload: { url } });
+    }
+    options.onMessage?.({ type: "link_click" });
+    expect(onLinkClick).not.toHaveBeenCalled();
+
+    options.onMessage?.({ type: "link_click", payload: { url: " https://nteract.io/ " } });
+    expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
+  });
+
   it("adapts MCP App cell outputs into the shared isolated output embed", async () => {
     const rendererBundle = { rendererCode: "renderer", rendererCss: "css" };
     const rendererPluginLoader = vi.fn(async () => undefined);

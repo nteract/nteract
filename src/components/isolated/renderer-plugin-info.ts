@@ -5,7 +5,7 @@ import {
   NTERACT_BOKEH_SESSION_MIME_TYPE,
 } from "@/components/outputs/bokeh-mime";
 import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
-import { MARKDOWN_PROJECTION_MIME_TYPE } from "@/lib/markdown-projection";
+import { MARKDOWN_PROJECTION_MIME_TYPE } from "../../lib/markdown-projection";
 
 export type RendererPluginName =
   | "markdown"

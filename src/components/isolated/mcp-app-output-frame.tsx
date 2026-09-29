@@ -1,6 +1,7 @@
 import type { OutputBlobResolver } from "./output-manifest";
 import { isIframeMessage } from "./frame-bridge";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isSafeExternalUrl } from "../../lib/open-url";
 import {
   createInlineOnlyBlobResolver,
   createMcpAppBlobResolver,
@@ -121,8 +122,12 @@ export function McpAppOutputFrame({
         onDiagnosticRef.current?.(...args);
       },
       onMessage(message) {
-        if (isIframeMessage(message) && message.type === "link_click") {
-          onLinkClickRef.current?.(message.payload.url);
+        if (
+          isIframeMessage(message) &&
+          message.type === "link_click" &&
+          isSafeExternalUrl(message.payload?.url)
+        ) {
+          onLinkClickRef.current?.(message.payload.url.trim());
         }
       },
       onError(error) {
