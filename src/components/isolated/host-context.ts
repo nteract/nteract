@@ -52,6 +52,8 @@ export interface NteractEmbedHostContext {
      * `sift_wasm.wasm` + `?v=` remains the fallback.
      */
     siftWasmAssetName?: string;
+    /** Host-resolved sidecar URLs, including inline resources. */
+    rendererAssetUrls?: Record<string, string>;
     /**
      * Absolute or host-relative URL for the isolated output document shell.
      * Hosted deployments can use this to load the sandboxed frame from a

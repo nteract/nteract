@@ -9,16 +9,15 @@ import {
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { NteractContent } from "./types";
 import { Cell } from "./components/cell";
-import { SummaryHeader } from "./components/summary-header";
-import { hasRichOutput } from "./lib/rich-output";
+import { createOutputResourceReader, type OutputResourceReader } from "./lib/output-resources";
+import { mcpAppCellHasOutput } from "@/components/isolated/mcp-app-structured-content";
 import { errorDetails, hostLog, setHostLogSink } from "./lib/host-log";
 import { NTERACT_MCP_APP_CAPABILITIES, NTERACT_MCP_APP_INFO } from "./app-config";
 import { applyMcpAppHostDocumentContext } from "./lib/host-document-context";
 
 /**
  * Collapse the widget to 0px when there's nothing to render.
- * Only collapse when there is truly no structured content — not when
- * cells exist but have empty outputs (those still show cell headers).
+ * Execution status alone is not an output.
  */
 function useCollapseWhenEmpty(hasCells: boolean) {
   useEffect(() => {
@@ -66,7 +65,8 @@ function layoutDetails(): Record<string, unknown> {
 
 function McpApp() {
   const [content, setContent] = useState<NteractContent | null>(null);
-  const [allExpanded, setAllExpanded] = useState<boolean | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [resourceReader, setResourceReader] = useState<OutputResourceReader | null>(null);
   const [hostContext, setHostContext] = useState<McpUiHostContext | null>(null);
   const [hostCapabilities, setHostCapabilities] = useState<McpUiHostCapabilities | null>(null);
 
@@ -76,6 +76,7 @@ function McpApp() {
     app.ontoolresult = (result: CallToolResult) => {
       const structured = result.structuredContent as NteractContent | undefined;
       if (!structured) {
+        setContent(null);
         hostLog("info", "tool-result-without-structured-content", {
           contentItems: result.content?.length ?? 0,
           isError: result.isError ?? false,
@@ -85,7 +86,6 @@ function McpApp() {
       }
       hostLog("info", "tool-result-received", contentDetails(structured));
       setContent(structured);
-      setAllExpanded(null); // Reset expand-all state for new content
     };
 
     app.onhostcontextchanged = (ctx: McpUiHostContext) => {
@@ -110,6 +110,12 @@ function McpApp() {
         const ctx = app.getHostContext();
         const capabilities = app.getHostCapabilities();
         setHostCapabilities(capabilities ?? null);
+        if (capabilities?.serverResources !== undefined) {
+          setResourceReader(() =>
+            createOutputResourceReader((uri) => app.readServerResource({ uri })),
+          );
+        }
+        setConnected(true);
         hostLog("info", "app-connected", {
           host: app.getHostVersion(),
           loggingAdvertised: capabilities?.logging !== undefined,
@@ -130,11 +136,13 @@ function McpApp() {
       hostLog("debug", "app-dispose");
       setHostLogSink(null);
       setContent(null);
+      void app.close();
     };
   }, []);
 
-  const cells = content?.cells || (content?.cell ? [content.cell] : []);
-  const isMultiCell = cells.length > 1;
+  const cells = (content?.cells || (content?.cell ? [content.cell] : [])).filter(
+    mcpAppCellHasOutput,
+  );
 
   useCollapseWhenEmpty(cells.length > 0);
 
@@ -150,17 +158,10 @@ function McpApp() {
 
   const blobBaseUrl = content?.blob_base_url;
 
-  if (cells.length === 0) return null;
+  if (!connected || cells.length === 0) return null;
 
   return (
     <>
-      {isMultiCell && (
-        <SummaryHeader
-          cells={cells}
-          allExpanded={allExpanded ?? false}
-          onToggleAll={() => setAllExpanded((prev) => !(prev ?? false))}
-        />
-      )}
       {cells.map((cell) => (
         <Cell
           key={cell.cell_id}
@@ -168,9 +169,7 @@ function McpApp() {
           blobBaseUrl={blobBaseUrl}
           hostContext={hostContext}
           hostCapabilities={hostCapabilities}
-          defaultExpanded={!isMultiCell || hasRichOutput(cell)}
-          forceExpanded={isMultiCell ? allExpanded : null}
-          hideSource={!isMultiCell}
+          resourceReader={resourceReader}
         />
       ))}
     </>

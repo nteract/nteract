@@ -1,3 +1,4 @@
+import type { OutputBlobResolver } from "./output-manifest";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createInlineOnlyBlobResolver,
@@ -24,6 +25,8 @@ export interface McpAppOutputFrameProps {
   rendererBundle: NteractOutputRendererBundleProvider;
   rendererPluginLoader?: NteractOutputRendererPluginLoader;
   rendererAssetsBaseUrl?: string;
+  rendererAssetUrls?: Record<string, string>;
+  blobResolver?: OutputBlobResolver;
   outputDocumentUrl?: string | null;
   inlineRasterBlobImages?: boolean;
   autoHeight?: boolean;
@@ -47,6 +50,8 @@ export function McpAppOutputFrame({
   rendererBundle,
   rendererPluginLoader,
   rendererAssetsBaseUrl,
+  rendererAssetUrls,
+  blobResolver: providedBlobResolver,
   outputDocumentUrl,
   inlineRasterBlobImages,
   autoHeight,
@@ -65,20 +70,22 @@ export function McpAppOutputFrame({
   );
   const blobResolver = useMemo(
     () =>
-      blobBaseUrl
+      providedBlobResolver ??
+      (blobBaseUrl
         ? createMcpAppBlobResolver(blobBaseUrl, {
             inlineRasterImageBlobs: inlineRasterBlobImages,
           })
-        : createInlineOnlyBlobResolver(),
-    [blobBaseUrl, inlineRasterBlobImages],
+        : createInlineOnlyBlobResolver()),
+    [blobBaseUrl, inlineRasterBlobImages, providedBlobResolver],
   );
   const hostContextPatch = useMemo(
     () =>
       mcpAppHostContextToNteractEmbedPatch(hostContext, {
         rendererAssetsBaseUrl,
+        nteract: { rendererAssetUrls },
         outputDocumentUrl: outputDocumentUrl ?? undefined,
       }),
-    [hostContext, outputDocumentUrl, rendererAssetsBaseUrl],
+    [hostContext, outputDocumentUrl, rendererAssetsBaseUrl, rendererAssetUrls],
   );
   const hostContextPatchRef = useRef(hostContextPatch);
   const onDiagnosticRef = useRef(onDiagnostic);
@@ -134,7 +141,9 @@ export function McpAppOutputFrame({
 
   useEffect(() => {
     if (failed || outputs.length === 0) return;
+    let active = true;
     handleRef.current?.renderBatch(outputs).catch((error) => {
+      if (!active) return;
       const details =
         error instanceof Error
           ? { message: error.message, stack: error.stack }
@@ -144,6 +153,9 @@ export function McpAppOutputFrame({
       setFailed(true);
       onErrorRef.current?.(details);
     });
+    return () => {
+      active = false;
+    };
   }, [blobResolver, failed, outputDocumentUrl, outputs]);
 
   useEffect(() => {

@@ -1,6 +1,6 @@
 import type { NteractEmbeddableOutput, ResolveEmbeddableOutputsOptions } from "./embeddable-output";
 import type { ContentRef, OutputBlobResolver, OutputManifest } from "./output-manifest";
-import { selectMimeType } from "@/components/outputs/mime-priority";
+import { isPreviewOnlyMimeType, selectMimeType } from "@/components/outputs/mime-priority";
 import { parseWidgetViewModelId, WIDGET_VIEW_MIME } from "@/components/widgets/widget-state";
 
 export interface McpAppCellOutput {
@@ -23,6 +23,7 @@ export interface McpAppCellData {
   outputs: McpAppCellOutput[];
   execution_count: number | null;
   status: string;
+  output_resource_base?: string;
 }
 
 export interface McpAppStructuredContent {
@@ -153,6 +154,21 @@ export function mcpAppCellsToSharedOutputs(
       return manifest ? [manifest] : [];
     }),
   );
+}
+
+/** Keep execution-only and model-only responses from producing empty cards. */
+export function mcpAppCellHasOutput(cell: McpAppCellData): boolean {
+  return (cell.outputs ?? []).some((output) => {
+    if (output.output_type === "error") return true;
+    if (output.output_type === "stream")
+      return typeof output.text === "string" && output.text.trim().length > 0;
+    return Object.entries(output.data ?? {}).some(
+      ([mime, value]) =>
+        !isPreviewOnlyMimeType(mime) &&
+        value != null &&
+        (typeof value !== "string" || value.trim().length > 0),
+    );
+  });
 }
 
 export function mcpAppCellHasRichOutput(cell: McpAppCellData): boolean {

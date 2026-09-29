@@ -335,6 +335,12 @@ pub async fn run_all_cells(
                             )),
                         );
                         if let Some(eid) = eid {
+                            if let Some(base) = metadata.output_resource_base(eid) {
+                                obj.insert(
+                                    "output_resource_base".into(),
+                                    serde_json::Value::String(base),
+                                );
+                            }
                             obj.insert(
                                 "execution_id".to_string(),
                                 serde_json::Value::String(eid.to_string()),
@@ -386,7 +392,19 @@ pub async fn get_results(
             (Some(access.handle), None, metadata)
         }
         Ok(None) => (None, None, server.local_runtime_metadata().await),
-        Err(error) => (None, Some(error), server.local_runtime_metadata().await),
+        Err(error) => {
+            // Durable output reads do not require a ready runtime replica.
+            // Keep the resource bridge for a readable notebook while its
+            // runtime is still connecting.
+            let metadata = match server
+                .session_access(crate::session::SessionRequirement::DocumentRead)
+                .await
+            {
+                Ok(Some(access)) => server.local_metadata_for_access(&access),
+                _ => server.local_runtime_metadata().await,
+            };
+            (None, Some(error), metadata)
+        }
     };
 
     if let Some(handle) = handle.as_ref() {
@@ -578,6 +596,12 @@ pub(super) async fn render_execution_result(
         );
         wrapped.get("cell").cloned().map(|mut cell_data| {
             if let Some(obj) = cell_data.as_object_mut() {
+                if let Some(base) = metadata.output_resource_base(execution_id) {
+                    obj.insert(
+                        "output_resource_base".into(),
+                        serde_json::Value::String(base),
+                    );
+                }
                 obj.insert(
                     "execution_id".to_string(),
                     serde_json::Value::String(execution_id.to_string()),

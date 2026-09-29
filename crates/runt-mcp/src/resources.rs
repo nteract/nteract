@@ -6,10 +6,14 @@ use rmcp::model::{
     Role,
 };
 use rmcp::ErrorData as McpError;
+use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
 
 use crate::icons::{self, IconKind};
 use crate::observation::{ChangeOutcome, ChangeRead, ObservationReader, ObservedNotebook};
 use crate::NteractMcp;
+
+mod output_resources;
 
 const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
 const OUTPUT_MIME_TYPE: &str = "text/html;profile=mcp-app";
@@ -24,6 +28,19 @@ const NOTEBOOK_CONTEXT_PRIORITY: f32 = 0.8;
 /// Build with: `cargo xtask artifacts ensure mcp-widget`
 /// The build script copies the file to `crates/runt-mcp/assets/_output.html`.
 const OUTPUT_HTML: &str = include_str!("../assets/_output.html");
+
+fn versioned_output_uri(html: &str) -> String {
+    // This is a cache identity, not a security digest. Hosts can keep a running
+    // widget for a resource URI even after the MCP process has restarted.
+    let mut hash = std::hash::DefaultHasher::new();
+    html.hash(&mut hash);
+    format!("ui://nteract/output-{:016x}.html", hash.finish())
+}
+
+pub(crate) fn output_resource_uri() -> &'static str {
+    static URI: OnceLock<String> = OnceLock::new();
+    URI.get_or_init(|| versioned_output_uri(OUTPUT_HTML))
+}
 
 /// Build `_meta` for the output widget resource.
 ///
@@ -80,7 +97,7 @@ pub(crate) async fn list_resources_for_mode(
 ) -> Result<ListResourcesResult, McpError> {
     let mut resources = Vec::new();
     resources.push(resource(
-        OUTPUT_RESOURCE_URI,
+        output_resource_uri(),
         "nteract output",
         "Interactive output renderer for notebook cells",
         OUTPUT_MIME_TYPE,
@@ -158,6 +175,26 @@ pub fn list_resource_templates() -> ListResourceTemplatesResult {
         })
         .collect();
     templates.extend(attachment_templates);
+    templates.push(
+        resource_template(
+            "nteract://renderer-assets/{name}",
+            "nteract renderer asset",
+            "Shared renderer bundles and sidecars for the output app",
+            "application/octet-stream",
+            IconKind::GetResults,
+        )
+        .with_annotations(Annotations::default().with_audience(vec![Role::User])),
+    );
+    templates.push(
+        resource_template(
+            "nteract://sessions/{notebook_handle}/executions/{execution_id}/blobs/{hash}",
+            "nteract output blob",
+            "A blob referenced by an execution in a readable notebook attachment",
+            "application/octet-stream",
+            IconKind::GetResults,
+        )
+        .with_annotations(Annotations::default().with_audience(vec![Role::User])),
+    );
     ListResourceTemplatesResult::with_all_items(templates)
 }
 
@@ -168,10 +205,14 @@ pub async fn read_resource(
 ) -> Result<ReadResourceResult, McpError> {
     let uri = request.uri.as_str();
 
-    if uri == OUTPUT_RESOURCE_URI {
+    if let Some(result) = output_resources::read(server, uri).await {
+        return result;
+    }
+
+    if uri == OUTPUT_RESOURCE_URI || uri == output_resource_uri() {
         return Ok(ReadResourceResult::new(vec![
             ResourceContents::TextResourceContents {
-                uri: OUTPUT_RESOURCE_URI.into(),
+                uri: uri.into(),
                 mime_type: Some(OUTPUT_MIME_TYPE.into()),
                 text: OUTPUT_HTML.to_string(),
                 meta: Some(resource_ui_meta(
@@ -821,7 +862,7 @@ mod tests {
         let meta = resource.meta.as_ref().expect("resource metadata");
         let ui = ui_meta(meta);
 
-        assert_eq!(resource.uri, OUTPUT_RESOURCE_URI);
+        assert_eq!(resource.uri, output_resource_uri());
         assert!(resource.annotations.is_none());
         assert_light_dark_icons(resource.icons.as_deref().expect("resource icons"));
         assert_eq!(ui.get("prefersBorder"), Some(&serde_json::json!(false)));
@@ -852,6 +893,40 @@ mod tests {
         let decoded: ListResourcesResult =
             serde_json::from_value(wire).expect("deserialize resource list");
         assert_eq!(decoded, result);
+    }
+
+    #[tokio::test]
+    async fn widget_resource_identity_tracks_the_embedded_build() {
+        assert_eq!(
+            versioned_output_uri("bundle one"),
+            versioned_output_uri("bundle one")
+        );
+        assert_ne!(
+            versioned_output_uri("bundle one"),
+            versioned_output_uri("bundle two")
+        );
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None);
+        let result = read_resource(
+            &server,
+            &ReadResourceRequestParams::new(output_resource_uri()),
+        )
+        .await
+        .unwrap();
+        let wire = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            wire.pointer("/contents/0/uri"),
+            Some(&serde_json::json!(output_resource_uri()))
+        );
+        assert_eq!(
+            wire.pointer("/contents/0/text"),
+            Some(&serde_json::json!(OUTPUT_HTML))
+        );
+        assert!(read_resource(
+            &server,
+            &ReadResourceRequestParams::new("ui://nteract/output-missing.html")
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
@@ -934,6 +1009,18 @@ mod tests {
         assert!(templates.contains(&"nteract://notebooks/{notebook_id}/cells/{cell_id}"));
 
         for template in &result.resource_templates {
+            if template.uri_template.contains("renderer-assets")
+                || template.uri_template.contains("/blobs/")
+            {
+                assert_eq!(
+                    template
+                        .annotations
+                        .as_ref()
+                        .and_then(|annotations| annotations.audience.as_ref()),
+                    Some(&vec![Role::User])
+                );
+                continue;
+            }
             assert_assistant_context_annotations(
                 template
                     .annotations

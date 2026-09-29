@@ -171,6 +171,16 @@ pub(crate) struct LocalRuntimeMetadata {
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
     execution_store_path: Option<PathBuf>,
+    /// Set only on metadata captured for an admitted notebook attachment.
+    output_resource_session: Option<String>,
+}
+
+impl LocalRuntimeMetadata {
+    pub(crate) fn output_resource_base(&self, execution_id: &str) -> Option<String> {
+        self.output_resource_session
+            .as_ref()
+            .map(|session| format!("nteract://sessions/{session}/executions/{execution_id}/blobs/"))
+    }
 }
 
 struct LocalRuntimeAdmission {
@@ -244,6 +254,7 @@ impl NteractMcp {
                 blob_base_url,
                 blob_store_path,
                 execution_store_path: Some(runtimed_client::default_execution_store_dir()),
+                output_resource_session: None,
             }),
             local_runtime_admission: None,
             session: Arc::new(RwLock::new(None)),
@@ -335,6 +346,7 @@ impl NteractMcp {
                 .map(|path| path.join("blobs"))
                 .filter(|path| path.exists()),
             execution_store_path: info.execution_store_dir.map(PathBuf::from),
+            output_resource_session: None,
         };
         *self
             .local_metadata
@@ -355,7 +367,11 @@ impl NteractMcp {
 
     /// Keep output resolution tied to the session admitted for this operation.
     pub(crate) fn local_metadata_for_access(&self, access: &SessionAccess) -> LocalRuntimeMetadata {
-        self.local_metadata_snapshot(!access.is_hosted)
+        let mut metadata = self.local_metadata_snapshot(!access.is_hosted);
+        if !access.is_hosted && metadata.blob_base_url.is_some() {
+            metadata.output_resource_session = Some(access.notebook_handle.clone());
+        }
+        metadata
     }
 
     /// Operations without an admitted session still need a single consistent
@@ -785,12 +801,25 @@ impl ServerHandler for NteractMcp {
             }
         }
         let start = std::time::Instant::now();
-        let result = progress::run(
+        let mut result = progress::run(
             &context,
             &request.name,
             targets::dispatch(self, &request, mcp_transport::is_native(&context)),
         )
         .await;
+        // Also identify the current UI on the result, for hosts whose tool
+        // catalog was loaded before a renderer rebuild.
+        if let Ok(result) = &mut result {
+            if result.structured_content.as_ref().is_some_and(|content| {
+                content.get("cell").is_some() || content.get("cells").is_some()
+            }) {
+                result
+                    .meta
+                    .get_or_insert_default()
+                    .0
+                    .extend(tools::app_tool_meta().0);
+            }
+        }
         let elapsed = start.elapsed();
         if elapsed >= SLOW_MCP_TOOL_CALL {
             tracing::warn!(
@@ -849,7 +878,7 @@ impl ServerHandler for NteractMcp {
         if mcp_transport::is_native(&context) {
             result
                 .resource_templates
-                .retain(|template| template.uri_template.starts_with("nteract://sessions/"));
+                .retain(|template| !template.uri_template.starts_with("nteract://notebooks/"));
         }
         result.result_type = Some(rmcp::model::ResultType::COMPLETE);
         Ok(result
