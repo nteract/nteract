@@ -98,6 +98,24 @@ export function stampManifest(manifest, plan, target) {
   return stamped;
 }
 
+export function stampBuildManifest(manifest, plan, target) {
+  const stamped = stampManifest(manifest, plan, target);
+  // napi-rs embeds this version in its loader. Keep workspace links intact
+  // until pnpm has finished building, validating and packing the package.
+  if (target === "wrapper") stamped.optionalDependencies = {...manifest.optionalDependencies};
+  return stamped;
+}
+
+export function finalizePackedManifest(manifest, plan, target) {
+  if (manifest.version !== plan.version) throw new Error("Packed build version does not match the release");
+  for (const [key, value] of Object.entries(metadata(plan))) {
+    if (manifest.nteractRelease?.[key] !== value) throw new Error(`Packed build identity mismatch: ${key}`);
+  }
+  const finalized = stampManifest({...manifest, version: plan.baseVersion}, plan, target);
+  verifyManifest(finalized, plan, target);
+  return finalized;
+}
+
 export function verifyManifest(manifest, plan, target) {
   if (manifest.name !== packageName(target)) throw new Error(`Unexpected package ${manifest.name}`);
   if (target === "pi") {

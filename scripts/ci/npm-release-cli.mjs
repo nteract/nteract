@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import {
   nativeTargets,
+  finalizePackedManifest,
   packageName,
   publishPackage,
   releaseIdentity,
   releasePlan,
   stampManifest,
+  stampBuildManifest,
   verifyManifest,
 } from "./npm-release.mjs";
 
@@ -56,12 +58,32 @@ if (command === "resolve") {
   output("linux_arm64_enabled", String(plan.nativeTargets.includes("linux-arm64-gnu")));
   output("windows_arm64_enabled", String(plan.nativeTargets.includes("win32-arm64-msvc")));
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Node release: **${plan.version}** → **${plan.distTag}**, source \`${plan.sourceSha}\`, upstream run ${plan.runId} (attempt ${plan.runAttempt}).\n`);
-} else if (command === "stamp") {
+} else if (command === "stamp" || command === "stamp-build") {
   const plan = readJson(args[0]);
   const root = args[1];
   for (const target of ["wrapper", ...nativeTargets]) {
     const path = target === "wrapper" ? join(root, "package.json") : join(root, "npm", target, "package.json");
-    writeJson(path, stampManifest(readJson(path), plan, target));
+    const stamp = command === "stamp-build" ? stampBuildManifest : stampManifest;
+    writeJson(path, stamp(readJson(path), plan, target));
+  }
+} else if (command === "stamp-tarball") {
+  const [planPath, target, directory] = args;
+  const plan = readJson(planPath);
+  const tarballs = readdirSync(directory).filter(path => path.endsWith(".tgz"));
+  if (tarballs.length !== 1) throw new Error(`Expected exactly one package tarball, found ${tarballs.length}`);
+  const tarball = join(directory, tarballs[0]);
+  const temporary = mkdtempSync(join(directory, ".npm-release-"));
+  try {
+    // Preserve pnpm's payload, license inclusion and lifecycle-script removal.
+    // Only the packed manifest changes; the installed workspace stays intact.
+    execFileSync("tar", ["-xzf", tarball, "-C", temporary]);
+    const manifestPath = join(temporary, "package", "package.json");
+    writeJson(manifestPath, finalizePackedManifest(readJson(manifestPath), plan, target));
+    const finalized = join(temporary, "finalized.tgz");
+    execFileSync("tar", ["-czf", finalized, "-C", temporary, "package"]);
+    renameSync(finalized, tarball);
+  } finally {
+    rmSync(temporary, {recursive: true, force: true});
   }
 } else if (command === "verify") {
   verifyManifest(readJson(args[2]), readJson(args[0]), args[1]);

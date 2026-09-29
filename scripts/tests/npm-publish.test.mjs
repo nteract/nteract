@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
-import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {test} from "node:test";
 import {
   nativeTargets,
+  finalizePackedManifest,
   packageName,
   releasePlan,
   stampManifest,
+  stampBuildManifest,
   verifyManifest,
 } from "../ci/npm-release.mjs";
 
@@ -106,40 +109,80 @@ test("native failures block wrapper, Pi is stable-only, and source/channel are e
   for (const id of ["pack-native", "pack-wrapper"]) {
     const job = jobs.get(id);
     assert.match(job, /RUNT_BUILD_CHANNEL: \$\{\{ needs\.resolve-release\.outputs\.channel \}\}/);
-    assert.ok(job.indexOf("pnpm install --frozen-lockfile") < job.indexOf("Stamp exact Node package versions"));
-    const stamp = job.indexOf("Stamp exact Node package versions");
-    assert.ok(job.indexOf("run: pnpm --dir packages/runtimed-node build") < stamp);
-    assert.ok(job.indexOf("pack:dry-run") < stamp, "prepack checks must run before stamping");
-    assert.doesNotMatch(job.slice(stamp), /run:.*pnpm|--no-frozen-lockfile/);
-    assert.match(job.slice(stamp), /run: npm pack --ignore-scripts --pack-destination/);
+    const stamp = job.indexOf("Stamp Node build versions");
+    const build = job.indexOf("run: pnpm --dir packages/runtimed-node build");
+    const pack = job.indexOf('pack --pack-destination "$RUNNER_TEMP"');
+    const finalize = job.indexOf("Finalize packed");
+    assert.ok(stamp > job.indexOf("pnpm install --frozen-lockfile"));
+    assert.ok(build > stamp, "napi-rs must generate its loader with the release version");
+    assert.ok(pack > job.indexOf("pack:dry-run"));
+    assert.ok(finalize > pack, "finalize only after pnpm has packed the workspace");
+    assert.doesNotMatch(job.slice(finalize), /\bpnpm\b|--no-frozen-lockfile/);
+    assert.match(job.slice(finalize), /npm-release-cli\.mjs" stamp-tarball/);
   }
   assert.match(jobs.get("pack-native"), /Smoke installed native tarball and compiled channel/);
 });
 
-test("npm packs stamped wrapper and native manifests without rerunning workspace prepack", () => {
+test("build versions preserve workspace links and finalization applies the publication gates", () => {
+  for (const channel of ["stable", "nightly"]) {
+    const plan = releasePlan(sourceManifest.version, {...identity, channel});
+    const build = stampBuildManifest(sourceManifest, plan, "wrapper");
+    assert.equal(build.version, plan.version);
+    assert.deepEqual(build.optionalDependencies, sourceManifest.optionalDependencies);
+    const packed = {...build, optionalDependencies: Object.fromEntries(nativeTargets.map(target => [packageName(target), plan.version]))};
+    assert.deepEqual(finalizePackedManifest(packed, plan, "wrapper"), stampManifest(sourceManifest, plan, "wrapper"));
+    assert.throws(() => finalizePackedManifest({...packed, version: "0.0.0"}, plan, "wrapper"), /build version/);
+    assert.throws(() => finalizePackedManifest({...packed, nteractRelease: {...packed.nteractRelease, sourceSha: "b".repeat(40)}}, plan, "wrapper"), /build identity/);
+  }
+});
+
+test("tarball finalization preserves pnpm payload and modes, changing only its manifest", () => {
   const directory = mkdtempSync(join(tmpdir(), "nteract-npm-pack-"));
   try {
     const plan = releasePlan(sourceManifest.version, identity);
+    const planPath = join(directory, "plan.json");
+    writeFileSync(planPath, JSON.stringify(plan));
+    const cli = fileURLToPath(new URL("../ci/npm-release-cli.mjs", import.meta.url));
     for (const target of ["wrapper", "linux-x64-gnu"]) {
       const root = join(directory, target);
-      mkdirSync(root);
+      const payload = join(root, "package");
+      mkdirSync(join(payload, "src"), {recursive: true});
       const source = target === "wrapper" ? sourceManifest : {
         name: packageName(target), version: sourceManifest.version,
       };
-      const stamped = stampManifest(source, plan, target);
-      // Prepack already ran against the installed workspace. A rerun here must
-      // fail rather than silently reinstalling from the stamped manifest.
-      stamped.scripts = {prepack: "node -e \"process.exit(99)\""};
-      stamped.files = ["payload.txt"];
-      writeFileSync(join(root, "package.json"), JSON.stringify(stamped));
-      writeFileSync(join(root, "payload.txt"), "built before stamping\n");
-      const packed = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", directory], {
-        cwd: root, encoding: "utf8", timeout: 30_000,
-      }));
-      const tarball = join(directory, packed[0].filename);
+      const stamped = stampBuildManifest(source, plan, target);
+      if (target === "wrapper") stamped.optionalDependencies = Object.fromEntries(nativeTargets.map(native => [packageName(native), plan.version]));
+      // pnpm has already selected the files, included the workspace LICENSE
+      // and removed prepack scripts. Finalization must retain that payload.
+      delete stamped.scripts;
+      writeFileSync(join(payload, "package.json"), JSON.stringify(stamped));
+      const files = {
+        LICENSE: "workspace license\n",
+        "src/binding.cjs": `module.exports = '${plan.version}';\n`,
+        "runtimed-node.linux-x64-gnu.node": Buffer.from([0, 1, 255, 0, 42]),
+        "cli.cjs": "#!/usr/bin/env node\n",
+      };
+      for (const [name, data] of Object.entries(files)) writeFileSync(join(payload, name), data);
+      chmodSync(join(payload, "cli.cjs"), 0o755);
+      const tarball = join(root, "package.tgz");
+      execFileSync("tar", ["-czf", tarball, "-C", root, "package"]);
+      const listing = execFileSync("tar", ["-tzf", tarball], {encoding: "utf8"}).split("\n").sort();
+      execFileSync(process.execPath, [cli, "stamp-tarball", planPath, target, root]);
       const manifest = JSON.parse(execFileSync("tar", ["-xOf", tarball, "package/package.json"], {encoding: "utf8"}));
       verifyManifest(manifest, plan, target);
-      assert.equal(execFileSync("tar", ["-xOf", tarball, "package/payload.txt"], {encoding: "utf8"}), "built before stamping\n");
+      assert.deepEqual(manifest, finalizePackedManifest(stamped, plan, target));
+      assert.deepEqual(execFileSync("tar", ["-tzf", tarball], {encoding: "utf8"}).split("\n").sort(), listing);
+      const extracted = join(root, "extracted");
+      mkdirSync(extracted);
+      execFileSync("tar", ["-xzf", tarball, "-C", extracted]);
+      for (const [name, data] of Object.entries(files)) assert.deepEqual(readFileSync(join(extracted, "package", name)), Buffer.from(data));
+      assert.equal(statSync(join(extracted, "package", "cli.cjs")).mode & 0o777, 0o755);
+      const originalTarball = readFileSync(tarball);
+      const badPlan = {...plan, sourceSha: "b".repeat(40)};
+      writeFileSync(planPath, JSON.stringify(badPlan));
+      assert.throws(() => execFileSync(process.execPath, [cli, "stamp-tarball", planPath, target, root], {stdio: "pipe"}), /build identity/);
+      assert.deepEqual(readFileSync(tarball), originalTarball, "failed finalization leaves the original tarball intact");
+      writeFileSync(planPath, JSON.stringify(plan));
     }
   } finally {
     rmSync(directory, {recursive: true, force: true});
