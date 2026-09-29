@@ -982,7 +982,7 @@ async fn version_skew_old_rmcp_client_to_new_production_child() {
         assert!(resources
             .resources
             .iter()
-            .any(|resource| resource.uri == "ui://nteract/output.html"));
+            .any(|resource| resource.uri.starts_with("ui://nteract/output-")));
         let templates = timeout(DEADLINE, client.list_resource_templates(None))
             .await
             .expect("templates timeout")
