@@ -132,10 +132,12 @@ export function McpAppOutputFrame({
       },
       onLinkClick(url) {
         if (!isSafeExternalUrl(url)) return;
-        // Fragment and relative links resolve against the daemon's frame URL.
-        // They are not external destinations for the host's browser.
-        if (new URL(url).origin === outputDocumentOrigin(outputDocumentUrl)) return;
-        onLinkClickRef.current?.(url.trim());
+        const normalizedUrl = url.trim();
+        // srcdoc inherits this document's base URL; src uses the daemon URL.
+        // Neither origin is an external destination for the host's browser.
+        const frameOrigin = outputDocumentOrigin(outputDocumentUrl ?? document.baseURI);
+        if (new URL(normalizedUrl).origin === frameOrigin) return;
+        onLinkClickRef.current?.(normalizedUrl);
       },
       onError(error) {
         handleRef.current?.dispose();

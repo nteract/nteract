@@ -88,7 +88,7 @@ describe("McpAppOutputFrame", () => {
     }
     expect(onLinkClick).not.toHaveBeenCalled();
 
-    options.onLinkClick?.(" https://nteract.io/ ", false);
+    options.onLinkClick?.("\u00a0 https://nteract.io/ \ufeff", false);
     expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
   });
 
@@ -106,6 +106,25 @@ describe("McpAppOutputFrame", () => {
     const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
     options.onLinkClick?.("http://localhost:47830/output-frame#heading", false);
     options.onLinkClick?.("http://localhost:47830/relative", false);
+    expect(onLinkClick).not.toHaveBeenCalled();
+    options.onLinkClick?.("https://nteract.io/", false);
+    expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
+  });
+
+  it("keeps srcdoc links resolved against the widget base out of the external browser", async () => {
+    const onLinkClick = vi.fn();
+    render(
+      <McpAppOutputFrame
+        cell={cellWithHtmlOutput()}
+        rendererBundle={{ rendererCode: "renderer", rendererCss: "css" }}
+        outputDocumentUrl={null}
+        onLinkClick={onLinkClick}
+      />,
+    );
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
+    options.onLinkClick?.(new URL("#heading", document.baseURI).href, false);
+    options.onLinkClick?.(new URL("./relative", document.baseURI).href, false);
     expect(onLinkClick).not.toHaveBeenCalled();
     options.onLinkClick?.("https://nteract.io/", false);
     expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
