@@ -36,16 +36,12 @@ macro_rules! require_handle {
     }};
 }
 
-/// The MCP Apps resource URI for the output widget.
-const OUTPUT_RESOURCE_URI: &str = "ui://nteract/output.html";
-
 /// Build `_meta` for tools that produce structured content for the MCP Apps widget.
-/// Wire format: `{ "ui": { "resourceUri": "ui://nteract/output.html" } }`
-fn app_tool_meta() -> MetaObject {
+pub(crate) fn app_tool_meta() -> MetaObject {
     let mut meta = serde_json::Map::new();
     meta.insert(
         "ui".to_string(),
-        serde_json::json!({ "resourceUri": OUTPUT_RESOURCE_URI }),
+        serde_json::json!({ "resourceUri": crate::resources::output_resource_uri() }),
     );
     MetaObject(meta)
 }
@@ -757,6 +753,12 @@ pub(crate) async fn build_execution_result(
     let mut call_result = CallToolResult::success(items);
     if let Some(ref mut sc) = structured_content {
         if let Some(cell_obj) = sc.get_mut("cell").and_then(|c| c.as_object_mut()) {
+            if let Some(base) = metadata.output_resource_base(&result.execution_id) {
+                cell_obj.insert(
+                    "output_resource_base".into(),
+                    serde_json::Value::String(base),
+                );
+            }
             cell_obj.insert(
                 "uri".to_string(),
                 serde_json::Value::String(cell_resource_uri(handle.notebook_id(), &result.cell_id)),
@@ -823,7 +825,7 @@ mod tests {
         for (name, expected_meta) in [
             (
                 "execute_cell",
-                serde_json::json!({ "ui": { "resourceUri": OUTPUT_RESOURCE_URI } }),
+                serde_json::json!({ "ui": { "resourceUri": crate::resources::output_resource_uri() } }),
             ),
             (
                 "connect_notebook",

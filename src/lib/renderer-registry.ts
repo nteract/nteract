@@ -29,6 +29,8 @@ export interface RendererHostContext {
   nteract?: {
     rendererAssetsBaseUrl?: string;
     siftWasmAssetName?: string;
+    /** Host-resolved sidecar URLs, including inline resources. */
+    rendererAssetUrls?: Record<string, string>;
   };
 }
 

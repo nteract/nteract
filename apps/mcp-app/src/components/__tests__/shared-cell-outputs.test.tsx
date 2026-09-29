@@ -8,7 +8,7 @@ vi.mock("virtual:isolated-renderer", () => ({
   rendererCss: "css",
 }));
 
-const mcpAppOutputFrameSpy = vi.fn(() => null);
+const mcpAppOutputFrameSpy = vi.fn((_props: unknown) => null);
 
 vi.mock("@/components/isolated/mcp-app-output-frame", () => ({
   McpAppOutputFrame: (props: unknown) => {
@@ -21,6 +21,36 @@ describe("SharedCellOutputs", () => {
   afterEach(() => {
     vi.clearAllMocks();
     setHostLogSink(null);
+  });
+
+  it("uses MCP resources when localhost is forbidden and reports resource failures", async () => {
+    const resourceReader = vi.fn().mockRejectedValue(new Error("Attachment was released"));
+    const { findByRole } = render(
+      <SharedCellOutputs
+        cell={{
+          cell_id: "table",
+          cell_type: "code",
+          source: "df",
+          status: "done",
+          execution_count: 1,
+          output_resource_base: "nteract://sessions/attachment/executions/run/blobs/",
+          outputs: [
+            {
+              output_type: "display_data",
+              data: { "application/vnd.apache.arrow.stream": "bytes" },
+            },
+          ],
+        }}
+        blobBaseUrl="http://localhost:47830/"
+        hostCapabilities={{
+          serverResources: {},
+          sandbox: { csp: { connectDomains: [], frameDomains: [] } },
+        }}
+        resourceReader={resourceReader}
+      />,
+    );
+    expect(await findByRole("alert")).toHaveTextContent("Attachment was released");
+    expect(mcpAppOutputFrameSpy).not.toHaveBeenCalled();
   });
 
   it("uses the daemon output document only when host frameDomains allow it", () => {

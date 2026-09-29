@@ -20,6 +20,7 @@ export interface ResolveSiftWasmUrlOptions {
    * its cache buster.
    */
   siftWasmAssetName?: string;
+  rendererAssetUrls?: Record<string, string>;
 }
 
 function withTrailingSlash(value: string): string {
@@ -70,6 +71,8 @@ export interface ResolvedSiftWasmUrls {
 }
 
 export function resolveSiftWasmUrls(options: ResolveSiftWasmUrlOptions): ResolvedSiftWasmUrls {
+  const inlineUrl = options.rendererAssetUrls?.[SIFT_WASM_STABLE_NAME];
+  if (inlineUrl) return { url: inlineUrl, fallbackUrl: null };
   const url = resolveSiftWasmUrl(options);
   const requestedName = options.siftWasmAssetName?.trim();
   const usesHashedName = Boolean(requestedName && CONTENT_HASHED_SIFT_WASM_RE.test(requestedName));

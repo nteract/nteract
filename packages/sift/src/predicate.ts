@@ -1,3 +1,4 @@
+import { tableResponse } from "./table-response";
 /**
  * Lazy-loading wrapper for the sift-wasm module.
  *
@@ -109,7 +110,7 @@ let configuredWasmUrl: string | undefined;
 let configuredWasmFallbackUrl: string | undefined;
 
 type SiftWasmModuleLoader = () => Promise<{
-  default: (options: { module_or_path?: string }) => Promise<unknown>;
+  default: (options: { module_or_path?: string | ArrayBuffer }) => Promise<unknown>;
 }>;
 
 const defaultWasmModuleLoader: SiftWasmModuleLoader = () =>
@@ -137,7 +138,10 @@ export async function ensureModule(): Promise<PredicateModule> {
   if (mod) return mod;
   const wasm = await wasmModuleLoader();
   try {
-    await wasm.default({ module_or_path: configuredWasmUrl });
+    const input = configuredWasmUrl?.startsWith("data:")
+      ? await (await tableResponse(configuredWasmUrl)).arrayBuffer()
+      : configuredWasmUrl;
+    await wasm.default({ module_or_path: input });
   } catch (error) {
     if (!configuredWasmFallbackUrl || configuredWasmFallbackUrl === configuredWasmUrl) {
       throw error;

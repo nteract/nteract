@@ -1,5 +1,5 @@
 import type { NteractOutputRendererPluginLoader } from "./output-embed";
-import { rendererPluginInfoForMime } from "./renderer-plugin-info";
+import { createRendererPluginLoader } from "./renderer-plugin-loader";
 
 declare const __DAEMON_PLUGIN_ASSET_HASHES__: Record<string, string> | undefined;
 
@@ -33,29 +33,7 @@ export function createDaemonRendererPluginLoader(
 ): NteractOutputRendererPluginLoader | undefined {
   if (!blobBaseUrl) return undefined;
 
-  const cache = new Map<string, Promise<{ id: string; code: string; css?: string } | undefined>>();
-
-  return (mime) => {
-    const info = rendererPluginInfoForMime(mime);
-    if (!info) return Promise.resolve(undefined);
-
-    const cached = cache.get(info.name);
-    if (cached) return cached;
-
-    const codeUrl = rendererPluginAssetUrl(blobBaseUrl, `${info.name}.js`);
-    const cssUrl = info.hasCss
-      ? rendererPluginAssetUrl(blobBaseUrl, `${info.name}.css`)
-      : undefined;
-    const promise = Promise.all([fetchText(codeUrl), cssUrl ? fetchText(cssUrl) : undefined])
-      .then(([code, css]) => ({ id: info.name, code, css }))
-      .catch((error) => {
-        cache.delete(info.name);
-        throw error;
-      });
-
-    cache.set(info.name, promise);
-    return promise;
-  };
+  return createRendererPluginLoader((name) => fetchText(rendererPluginAssetUrl(blobBaseUrl, name)));
 }
 
 interface ParsedCspSource {

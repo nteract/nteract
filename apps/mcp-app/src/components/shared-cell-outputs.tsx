@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { McpUiHostCapabilities, McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import { rendererCode, rendererCss } from "virtual:isolated-renderer";
 import {
@@ -10,20 +10,20 @@ import {
 } from "@/components/isolated/daemon-renderer-assets";
 import { McpAppOutputFrame } from "@/components/isolated/mcp-app-output-frame";
 import { MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES } from "@/components/isolated/mcp-app-structured-content";
-import type { NteractOutputRendererBundleProvider } from "@/components/isolated/output-embed";
+import { rendererPluginNameForMime } from "@/components/isolated/renderer-plugin-info";
+import { selectMimeType } from "@/components/outputs/mime-priority";
+import { createMcpOutputTransport, type OutputResourceReader } from "../lib/output-resources";
 import type { CellData } from "../types";
 import { errorDetails, hostLog } from "../lib/host-log";
 
-const SHARED_RENDERER_BUNDLE: NteractOutputRendererBundleProvider = {
-  rendererCode,
-  rendererCss,
-};
+const SHARED_RENDERER_BUNDLE = { rendererCode, rendererCss };
 
-interface SharedCellOutputsProps {
+export interface SharedCellOutputsProps {
   cell: CellData;
   blobBaseUrl?: string;
   hostContext?: McpUiHostContext | null;
   hostCapabilities?: McpUiHostCapabilities | null;
+  resourceReader?: OutputResourceReader | null;
 }
 
 export function SharedCellOutputs({
@@ -31,25 +31,53 @@ export function SharedCellOutputs({
   blobBaseUrl,
   hostContext,
   hostCapabilities,
+  resourceReader,
 }: SharedCellOutputsProps) {
+  const transport = useMemo(
+    () =>
+      resourceReader && cell.output_resource_base
+        ? createMcpOutputTransport(resourceReader, cell.output_resource_base)
+        : null,
+    [resourceReader, cell.output_resource_base],
+  );
   const rendererPluginLoader = useMemo(
-    () => createDaemonRendererPluginLoader(blobBaseUrl),
-    [blobBaseUrl],
+    () => transport?.rendererPluginLoader ?? createDaemonRendererPluginLoader(blobBaseUrl),
+    [blobBaseUrl, transport],
   );
-  const rendererAssetsBaseUrl = useMemo(
-    () => daemonRendererAssetsBaseUrl(blobBaseUrl),
-    [blobBaseUrl],
-  );
+  const rendererAssetsBaseUrl = daemonRendererAssetsBaseUrl(blobBaseUrl);
   const hostCsp = hostCapabilities?.sandbox?.csp;
-  const outputDocumentUrl = useMemo(
-    () => daemonOutputFrameUrl(blobBaseUrl, hostCsp),
-    [blobBaseUrl, hostCsp],
+  const outputDocumentUrl = transport ? null : daemonOutputFrameUrl(blobBaseUrl, hostCsp);
+  const daemonOutputFrameBlocked = daemonOutputFrameBlockedByHostCsp(blobBaseUrl, hostCsp);
+  const needsSift = cell.outputs.some(
+    (output) => rendererPluginNameForMime(selectMimeType(output.data ?? {}) ?? "") === "sift",
   );
-  const daemonOutputFrameBlocked = useMemo(
-    () => daemonOutputFrameBlockedByHostCsp(blobBaseUrl, hostCsp),
-    [blobBaseUrl, hostCsp],
-  );
-  const inlineRasterBlobImages = daemonOutputFrameBlocked;
+  const [assets, setAssets] = useState<{
+    transport: typeof transport;
+    urls?: Record<string, string>;
+    error?: string;
+  } | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setRenderError(null);
+  }, [cell]);
+  useEffect(() => {
+    if (!transport || !needsSift) return;
+    let active = true;
+    transport.rendererAssetUrls().then(
+      (urls) => {
+        if (active) setAssets({ transport, urls });
+      },
+      (error) => {
+        if (active)
+          setAssets({ transport, error: error instanceof Error ? error.message : String(error) });
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [transport, needsSift]);
+
   const handleDiagnostic = useCallback(
     (
       phase: string,
@@ -67,21 +95,26 @@ export function SharedCellOutputs({
     [],
   );
   const handleError = useCallback((error: { message: string; stack?: string }) => {
-    hostLog("error", "shared-output-renderer-failed", {
-      error: errorDetails(error),
-    });
+    setRenderError(error.message);
+    hostLog("error", "shared-output-renderer-failed", { error: errorDetails(error) });
   }, []);
 
   useEffect(() => {
-    if (!blobBaseUrl || outputDocumentUrl !== null || !daemonOutputFrameBlocked) return;
-
+    if (transport || !blobBaseUrl || outputDocumentUrl !== null || !daemonOutputFrameBlocked)
+      return;
     hostLog("warning", "shared-output-daemon-frame-blocked", {
       outputFrameOrigin: daemonOutputFrameOrigin(blobBaseUrl),
       frameDomains: hostCsp?.frameDomains ?? [],
       fallback: "srcdoc-raster-image-data-uri",
       maxInlineImageBytes: MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES,
     });
-  }, [blobBaseUrl, daemonOutputFrameBlocked, hostCsp, outputDocumentUrl]);
+  }, [transport, blobBaseUrl, daemonOutputFrameBlocked, hostCsp, outputDocumentUrl]);
+
+  const assetError = assets?.transport === transport ? assets?.error : undefined;
+  if (renderError || assetError)
+    return <div role="alert">Unable to render output: {renderError ?? assetError}</div>;
+  if (transport && needsSift && (assets?.transport !== transport || !assets.urls))
+    return <div role="status">Loading table…</div>;
 
   return (
     <McpAppOutputFrame
@@ -91,8 +124,10 @@ export function SharedCellOutputs({
       rendererBundle={SHARED_RENDERER_BUNDLE}
       rendererPluginLoader={rendererPluginLoader}
       rendererAssetsBaseUrl={rendererAssetsBaseUrl}
+      rendererAssetUrls={assets?.transport === transport ? assets?.urls : undefined}
+      blobResolver={transport?.blobResolver}
       outputDocumentUrl={outputDocumentUrl}
-      inlineRasterBlobImages={inlineRasterBlobImages}
+      inlineRasterBlobImages={daemonOutputFrameBlocked}
       className="shared-output-frame"
       onDiagnostic={handleDiagnostic}
       onError={handleError}

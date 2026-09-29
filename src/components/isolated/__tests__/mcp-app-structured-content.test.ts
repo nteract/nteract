@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { resolveEmbeddableOutputs } from "../embeddable-output";
 import {
   createMcpAppBlobResolver,
+  mcpAppCellHasOutput,
   MCP_APP_INLINE_RASTER_IMAGE_MAX_BYTES,
   mcpAppCellHasRichOutput,
   mcpAppCellPreviewText,
@@ -498,5 +499,31 @@ describe("MCP App structured content adapter", () => {
         ]),
       ),
     ).toBe("RecursionError: too deep");
+  });
+});
+
+describe("MCP output-only visibility", () => {
+  it("hides empty and model-only results but keeps real output and errors", () => {
+    expect(mcpAppCellHasOutput(cellWithOutputs([]))).toBe(false);
+    expect(mcpAppCellHasOutput(cellWithOutputs([{ output_type: "stream", text: " \n" }]))).toBe(
+      false,
+    );
+    expect(
+      mcpAppCellHasOutput(
+        cellWithOutputs([
+          { output_type: "display_data", data: { "text/llm+plain": "Only for the model" } },
+        ]),
+      ),
+    ).toBe(false);
+    for (const output of [
+      { output_type: "stream" as const, text: "hello" },
+      { output_type: "error" as const, ename: "ValueError", evalue: "bad" },
+      { output_type: "display_data" as const, data: { "application/json": 0 } },
+      {
+        output_type: "display_data" as const,
+        data: { "text/html": "<table><tr><td>7</td></tr></table>" },
+      },
+    ])
+      expect(mcpAppCellHasOutput(cellWithOutputs([output]))).toBe(true);
   });
 });

@@ -250,24 +250,54 @@ function parseMimeContent(mimeType: string, content: string, blobResolver: BlobR
 async function parseMimeContentAsync(
   mimeType: string,
   content: string,
-  blobResolver: BlobResolverInput,
-) {
+  blobResolverInput: BlobResolverInput,
+): Promise<unknown> {
   if (!mimeType.includes("json")) return content;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(content);
-    if (mimeType !== ARROW_STREAM_MANIFEST_MIME) return parsed;
-    if (isArrowManifestPointer(parsed)) {
-      const manifestContent = await resolveContentRef(parsed, blobResolver);
-      return parseMimeContent(mimeType, manifestContent, blobResolver);
-    }
-    return attachArrowManifestChunkUrls(parsed, blobResolver);
+    parsed = JSON.parse(content);
   } catch {
     return content;
   }
+  if (mimeType !== ARROW_STREAM_MANIFEST_MIME) return parsed;
+  if (isArrowManifestPointer(parsed)) {
+    const manifestContent = await resolveContentRef(parsed, blobResolverInput);
+    // A manifest pointer resolves once, not an arbitrary recursive resource graph.
+    try {
+      parsed = JSON.parse(manifestContent);
+    } catch {
+      return manifestContent;
+    }
+  }
+  const resolver = normalizeBlobResolver(blobResolverInput);
+  if (!resolver.displayUrl || typeof parsed !== "object" || parsed === null) {
+    return attachArrowManifestChunkUrls(parsed, resolver);
+  }
+  const manifest = parsed as Record<string, unknown>;
+  if (!Array.isArray(manifest.chunks)) return parsed;
+  const chunks = await Promise.all(
+    manifest.chunks.map(async (chunk: unknown) => {
+      if (typeof chunk !== "object" || chunk === null) return chunk;
+      const record = chunk as Record<string, unknown>;
+      if (typeof record.url === "string") return chunk;
+      const hash = manifestBlobHash(record);
+      if (!hash) return chunk;
+      return {
+        ...record,
+        url: await resolver.displayUrl!({ blob: hash }, "application/vnd.apache.arrow.stream"),
+      };
+    }),
+  );
+  return { ...manifest, chunks };
 }
 
-function needsAsyncMimeResolution(mimeType: string, content: string): boolean {
+function needsAsyncMimeResolution(
+  mimeType: string,
+  content: string,
+  resolver: BlobResolverInput,
+): boolean {
   if (mimeType !== ARROW_STREAM_MANIFEST_MIME) return false;
+  if (normalizeBlobResolver(resolver).resolvesBinaryUrlsSynchronously === false) return true;
   try {
     return isArrowManifestPointer(JSON.parse(content));
   } catch {
@@ -307,7 +337,7 @@ function resolveDataBundleSync(
   for (const [mimeType, ref] of Object.entries(data)) {
     const content = resolveContentRefSync(ref, blobResolver, mimeType);
     if (content === null) return null;
-    if (needsAsyncMimeResolution(mimeType, content)) return null;
+    if (needsAsyncMimeResolution(mimeType, content, blobResolver)) return null;
     resolved[mimeType] = parseMimeContent(mimeType, content, blobResolver);
   }
   return resolved;

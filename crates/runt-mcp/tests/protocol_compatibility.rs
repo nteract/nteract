@@ -64,9 +64,9 @@ async fn legacy_wire(version: &str) {
     let resources = legacy_result(&response)["resources"]
         .as_array()
         .expect("resource list");
-    assert!(resources
-        .iter()
-        .any(|resource| resource["uri"] == "ui://nteract/output.html"));
+    assert!(resources.iter().any(|resource| resource["uri"]
+        .as_str()
+        .is_some_and(|uri| uri.starts_with("ui://nteract/output-") && uri.ends_with(".html"))));
     let response = wire.request(4, "resources/templates/list", None).await;
     assert!(legacy_result(&response)["resourceTemplates"]
         .as_array()

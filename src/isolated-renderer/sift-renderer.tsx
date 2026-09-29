@@ -71,6 +71,7 @@ function configureWasm(blobUrl: string): void {
       tableUrl: blobUrl,
       rendererAssetsBaseUrl: hostNteract?.rendererAssetsBaseUrl,
       siftWasmAssetName: hostNteract?.siftWasmAssetName,
+      rendererAssetUrls: hostNteract?.rendererAssetUrls,
     });
     if (wasmConfigured && configuredWasmUrl === next.url) return;
     // The stable-name fallback rides into the sandboxed loader — sift's
@@ -325,7 +326,11 @@ export function install(ctx: RendererInstallContext) {
   subscribeHostContext = ctx.subscribeHostContext;
   unsubscribeHostContext?.();
   unsubscribeHostContext = ctx.subscribeHostContext((context) => {
-    if (!lastTableUrl || !context.nteract?.rendererAssetsBaseUrl) return;
+    if (
+      !lastTableUrl ||
+      (!context.nteract?.rendererAssetsBaseUrl && !context.nteract?.rendererAssetUrls)
+    )
+      return;
     configureWasm(lastTableUrl);
   });
   ctx.register(
