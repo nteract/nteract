@@ -256,6 +256,9 @@ test("empty and unstructured results clear stale output and collapse; later outp
   for (const empty of [result([]), { content: [{ type: "text", text: "No structured result" }] }]) {
     await send(page, result([{ output_type: "stream", name: "stdout", text: "temporary output" }]));
     await expect(output(page).locator("body")).toContainText("temporary output");
+    await expect
+      .poll(async () => (await page.locator("iframe").boundingBox())?.height ?? 0)
+      .toBeGreaterThan(0);
     await send(page, empty);
     await expect(widget(page).locator("#root")).toBeEmpty();
     await expect(page.locator("iframe")).toHaveCSS("height", "0px");

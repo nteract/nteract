@@ -111,7 +111,7 @@ export async function startHarness() {
             : "text/javascript",
       });
     }
-    const widget = await readFile(path.join(root, "apps/mcp-app/dist/output.html"), "utf8");
+    const widget = await readFile(path.join(root, "crates/runt-mcp/assets/_output.html"), "utf8");
     const host = await readFile(path.join(directory, "host.js"));
     resources.set("ui://smoke/output.html", {
       text: widget,

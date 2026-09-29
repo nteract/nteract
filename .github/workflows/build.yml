@@ -730,6 +730,7 @@ jobs:
       - name: Install Playwright Chromium
         run: |
           pnpm --filter notebook-ui exec playwright install chromium
+          pnpm --dir apps/mcp-app exec playwright install chromium
           if [ "$RUNNER_ENVIRONMENT" = "github-hosted" ]; then
             pnpm --filter notebook-ui exec playwright install-deps chromium
           fi
@@ -737,9 +738,11 @@ jobs:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
 
       - name: Test production MCP widget
+        id: mcp_smoke
         run: pnpm --dir apps/mcp-app test:smoke
 
       - name: Run browser E2E
+        if: ${{ !cancelled() && (steps.mcp_smoke.outcome == 'success' || steps.mcp_smoke.outcome == 'failure') }}
         id: browser_e2e
         run: pnpm --filter notebook-ui test:e2e:browser -- --project=chromium --workers=1
         env:
