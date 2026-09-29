@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
+import {execFileSync} from "node:child_process";
+import {chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {test} from "node:test";
 import {
   nativeTargets,
+  finalizePackedManifest,
   packageName,
   releasePlan,
   stampManifest,
+  stampBuildManifest,
   verifyManifest,
 } from "../ci/npm-release.mjs";
 
-const workflow = readFileSync(new URL("../../.github/workflows/publish-npm.yml", import.meta.url), "utf8");
+const workflow = readFileSync(new URL("../../.github/workflows/publish-npm.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const sourceManifest = JSON.parse(readFileSync(new URL("../../packages/runtimed-node/package.json", import.meta.url), "utf8"));
 const identity = {channel: "nightly", sourceSha: "a".repeat(40), runId: "100", runAttempt: "1"};
 const jobs = new Map();
@@ -103,8 +109,83 @@ test("native failures block wrapper, Pi is stable-only, and source/channel are e
   for (const id of ["pack-native", "pack-wrapper"]) {
     const job = jobs.get(id);
     assert.match(job, /RUNT_BUILD_CHANNEL: \$\{\{ needs\.resolve-release\.outputs\.channel \}\}/);
-    assert.ok(job.indexOf("pnpm install --frozen-lockfile") < job.indexOf("Stamp exact Node package versions"));
-    assert.ok(job.indexOf("Stamp exact Node package versions") < job.indexOf("run: pnpm --dir packages/runtimed-node build"));
+    const stamp = job.indexOf("Stamp Node build versions");
+    const build = job.indexOf("run: pnpm --dir packages/runtimed-node build");
+    const pack = job.indexOf('pack --pack-destination "$RUNNER_TEMP"');
+    const finalize = job.indexOf("Finalize packed");
+    assert.ok(stamp > job.indexOf("pnpm install --frozen-lockfile"));
+    assert.ok(build > stamp, "napi-rs must generate its loader with the release version");
+    assert.ok(pack > job.indexOf("pack:dry-run"));
+    assert.ok(finalize > pack, "finalize only after pnpm has packed the workspace");
+    assert.doesNotMatch(job.slice(finalize), /\bpnpm\b|--no-frozen-lockfile/);
+    assert.match(job.slice(finalize), /npm-release-cli\.mjs" stamp-tarball/);
   }
   assert.match(jobs.get("pack-native"), /Smoke installed native tarball and compiled channel/);
+});
+
+test("build versions preserve workspace links and finalization applies the publication gates", () => {
+  for (const channel of ["stable", "nightly"]) {
+    const plan = releasePlan(sourceManifest.version, {...identity, channel});
+    const build = stampBuildManifest(sourceManifest, plan, "wrapper");
+    assert.equal(build.version, plan.version);
+    assert.deepEqual(build.optionalDependencies, sourceManifest.optionalDependencies);
+    const packed = {...build, optionalDependencies: Object.fromEntries(nativeTargets.map(target => [packageName(target), plan.version]))};
+    assert.deepEqual(finalizePackedManifest(packed, plan, "wrapper"), stampManifest(sourceManifest, plan, "wrapper"));
+    assert.throws(() => finalizePackedManifest({...packed, version: "0.0.0"}, plan, "wrapper"), /build version/);
+    assert.throws(() => finalizePackedManifest({...packed, nteractRelease: {...packed.nteractRelease, sourceSha: "b".repeat(40)}}, plan, "wrapper"), /build identity/);
+  }
+});
+
+test("tarball finalization preserves pnpm payload and modes, changing only its manifest", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nteract-npm-pack-"));
+  try {
+    const plan = releasePlan(sourceManifest.version, identity);
+    const planPath = join(directory, "plan.json");
+    writeFileSync(planPath, JSON.stringify(plan));
+    const cli = fileURLToPath(new URL("../ci/npm-release-cli.mjs", import.meta.url));
+    for (const target of ["wrapper", "linux-x64-gnu"]) {
+      const root = join(directory, target);
+      const payload = join(root, "package");
+      mkdirSync(join(payload, "src"), {recursive: true});
+      const source = target === "wrapper" ? sourceManifest : {
+        name: packageName(target), version: sourceManifest.version,
+      };
+      const stamped = stampBuildManifest(source, plan, target);
+      if (target === "wrapper") stamped.optionalDependencies = Object.fromEntries(nativeTargets.map(native => [packageName(native), plan.version]));
+      // pnpm has already selected the files, included the workspace LICENSE
+      // and removed prepack scripts. Finalization must retain that payload.
+      delete stamped.scripts;
+      writeFileSync(join(payload, "package.json"), JSON.stringify(stamped));
+      const files = {
+        LICENSE: "workspace license\n",
+        "src/binding.cjs": `module.exports = '${plan.version}';\n`,
+        "runtimed-node.linux-x64-gnu.node": Buffer.from([0, 1, 255, 0, 42]),
+        "cli.cjs": "#!/usr/bin/env node\n",
+      };
+      for (const [name, data] of Object.entries(files)) writeFileSync(join(payload, name), data);
+      chmodSync(join(payload, "cli.cjs"), 0o755);
+      const tarball = join(root, "package.tgz");
+      const tar = args => execFileSync("tar", args, {cwd: root, encoding: "utf8"});
+      tar(["-czf", "package.tgz", "package"]);
+      const listing = tar(["-tzf", "package.tgz"]).split("\n").sort();
+      execFileSync(process.execPath, [cli, "stamp-tarball", planPath, target, root]);
+      const manifest = JSON.parse(tar(["-xOf", "package.tgz", "package/package.json"]));
+      verifyManifest(manifest, plan, target);
+      assert.deepEqual(manifest, finalizePackedManifest(stamped, plan, target));
+      assert.deepEqual(tar(["-tzf", "package.tgz"]).split("\n").sort(), listing);
+      const extracted = join(root, "extracted");
+      mkdirSync(extracted);
+      tar(["-xzf", "package.tgz", "-C", "extracted"]);
+      for (const [name, data] of Object.entries(files)) assert.deepEqual(readFileSync(join(extracted, "package", name)), Buffer.from(data));
+      if (process.platform !== "win32") assert.equal(statSync(join(extracted, "package", "cli.cjs")).mode & 0o777, 0o755);
+      const originalTarball = readFileSync(tarball);
+      const badPlan = {...plan, sourceSha: "b".repeat(40)};
+      writeFileSync(planPath, JSON.stringify(badPlan));
+      assert.throws(() => execFileSync(process.execPath, [cli, "stamp-tarball", planPath, target, root], {stdio: "pipe"}), /build identity/);
+      assert.deepEqual(readFileSync(tarball), originalTarball, "failed finalization leaves the original tarball intact");
+      writeFileSync(planPath, JSON.stringify(plan));
+    }
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
+  }
 });

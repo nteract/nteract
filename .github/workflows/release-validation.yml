@@ -45,6 +45,19 @@ jobs:
       - run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
 
+  windows-npm-packaging:
+    name: Windows npm packaging
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      # Match the publisher's Git Bash PATH and Windows archive paths.
+      - shell: bash
+        run: node --test scripts/tests/npm-publish.test.mjs
+
   windows-arm64-wheel:
     name: Native Windows ARM64 wheel
     runs-on: windows-11-vs2026-arm
