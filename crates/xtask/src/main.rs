@@ -5665,7 +5665,7 @@ fn cmd_sync_tool_cache(check: bool) {
     // richer metadata such as inline icon data; the checked-in fallback cache
     // intentionally stays compact because it is only used until the child is
     // ready and emits tools/list_changed.
-    let cache_tools = strip_tool_icons_for_builtin_cache(tools_arr);
+    let cache_tools = normalize_builtin_tool_cache(tools_arr);
     let formatted =
         serde_json::to_string_pretty(&cache_tools).expect("Failed to format tool cache");
 
@@ -5737,13 +5737,28 @@ fn cmd_sync_tool_cache(check: bool) {
     }
 }
 
-fn strip_tool_icons_for_builtin_cache(tools: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn normalize_builtin_tool_cache(tools: &[serde_json::Value]) -> Vec<serde_json::Value> {
     tools
         .iter()
         .map(|tool| {
             let mut tool = tool.clone();
             if let Some(object) = tool.as_object_mut() {
                 object.remove("icons");
+            }
+            // The live catalog uses a build-specific widget URI. Keep the
+            // checked-in startup fallback independent of generated bundles;
+            // tools/list_changed and result metadata supply the current URI.
+            if let Some(uri) = tool.pointer_mut("/_meta/ui/resourceUri") {
+                let versioned = uri
+                    .as_str()
+                    .and_then(|uri| uri.strip_prefix("ui://nteract/output-"))
+                    .and_then(|tail| tail.strip_suffix(".html"))
+                    .is_some_and(|hash| {
+                        hash.len() == 16 && hash.bytes().all(|c| c.is_ascii_hexdigit())
+                    });
+                if versioned {
+                    *uri = serde_json::json!("ui://nteract/output.html");
+                }
             }
             tool
         })
@@ -6529,11 +6544,36 @@ checksum = "old"
             ]
         })];
 
-        let stripped = strip_tool_icons_for_builtin_cache(&tools);
+        let stripped = normalize_builtin_tool_cache(&tools);
 
         assert_eq!(stripped.len(), 1);
         assert_eq!(stripped[0]["name"], "create_cell");
         assert!(stripped[0].get("icons").is_none());
+    }
+
+    #[test]
+    fn built_in_tool_cache_uses_stable_widget_identity_across_builds() {
+        let tools = |hash: &str| {
+            vec![serde_json::json!({
+                "name": "execute_cell",
+                "_meta": {"ui": {"resourceUri": format!("ui://nteract/output-{hash}.html")}}
+            })]
+        };
+        let first = tools("0123456789abcdef");
+        let second = tools("fedcba9876543210");
+        let cached = normalize_builtin_tool_cache(&first);
+        assert_eq!(cached, normalize_builtin_tool_cache(&second));
+        assert_eq!(
+            cached[0]["_meta"]["ui"]["resourceUri"],
+            "ui://nteract/output.html"
+        );
+        assert_ne!(
+            first, cached,
+            "live catalog must retain the content-derived URI"
+        );
+        let other =
+            vec![serde_json::json!({"_meta":{"ui":{"resourceUri":"ui://another/app.html"}}})];
+        assert_eq!(normalize_builtin_tool_cache(&other), other);
     }
 
     /// Build a minimal wasm module with an import section. Used to exercise

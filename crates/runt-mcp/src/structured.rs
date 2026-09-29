@@ -419,15 +419,7 @@ fn matplotlib_checkpoint_from_data_map(
     comms: &HashMap<String, CommDocEntry>,
     blob_base_url: &Option<String>,
 ) -> Option<MatplotlibCheckpoint> {
-    let model_id = widget_model_id_from_content_ref(data_map.get(WIDGET_VIEW_MIME)?)?;
-    let entry = comms.get(&model_id)?;
-    if entry.model_module != JUPYTER_MATPLOTLIB_MODULE || entry.model_name != MPL_CANVAS_MODEL {
-        return None;
-    }
-
-    let checkpoint = entry.state.get(MPL_CANVAS_CHECKPOINT_KEY)?;
-    let frame = checkpoint.get("frame")?;
-    let hash = frame.get("blob").and_then(|v| v.as_str())?;
+    let (checkpoint, hash) = matplotlib_checkpoint_blob(data_map, comms)?;
     let image_url = blob_base_url
         .as_ref()
         .map(|base| format!("{}/blob/{}", base, hash));
@@ -445,6 +437,24 @@ fn matplotlib_checkpoint_from_data_map(
         image_url,
         summary: format!("[matplotlib widget checkpoint: image/png{size}]"),
     })
+}
+
+/// The static image synthesized for this output's Matplotlib model. Resource
+/// authorization must follow the same projection, not arbitrary comm state.
+pub(crate) fn matplotlib_checkpoint_blob<'a>(
+    data_map: &serde_json::Map<String, Value>,
+    comms: &'a HashMap<String, CommDocEntry>,
+) -> Option<(&'a Value, &'a str)> {
+    let model_id = widget_model_id_from_content_ref(data_map.get(WIDGET_VIEW_MIME)?)?;
+    let entry = comms.get(&model_id)?;
+    if entry.model_module != JUPYTER_MATPLOTLIB_MODULE || entry.model_name != MPL_CANVAS_MODEL {
+        return None;
+    }
+
+    let checkpoint = entry.state.get(MPL_CANVAS_CHECKPOINT_KEY)?;
+    let frame = checkpoint.get("frame")?;
+    let hash = frame.get("blob").and_then(|v| v.as_str())?;
+    Some((checkpoint, hash))
 }
 
 /// Resolve a text ContentRef to a JSON value (inline text or blob URL).

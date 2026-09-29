@@ -35,6 +35,19 @@ const OPERATOR_SESSION_ENV_VAR: &str = "NTERACT_MCP_OPERATOR_SESSION";
 const SLOW_CHILD_CALL: Duration = Duration::from_secs(30);
 const EX_TEMPFAIL: i32 = 75;
 
+fn native_resource_uri_visible(uri: &str) -> bool {
+    uri == "nteract://notebooks"
+        || uri == "ui://nteract/output.html"
+        || uri
+            .strip_prefix("ui://nteract/output-")
+            .and_then(|tail| tail.strip_suffix(".html"))
+            .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn native_resource_template_visible(uri: &str) -> bool {
+    uri.starts_with("nteract://sessions/") || uri == "nteract://renderer-assets/{name}"
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChildRestartReason {
     /// The child deliberately asked the proxy to pick up a new daemon binary.
@@ -1620,9 +1633,9 @@ impl ServerHandler for McpProxy {
         self.native_ready(&context).await?;
         let mut result = self.child_resources(request).await;
         if mcp_transport::is_native(&context) {
-            result.resources.retain(|resource| {
-                resource.uri == "ui://nteract/output.html" || resource.uri == "nteract://notebooks"
-            });
+            result
+                .resources
+                .retain(|resource| native_resource_uri_visible(&resource.uri));
             if result.resources.is_empty() {
                 return Err(McpError::internal_error(
                     "Notebook resource catalog is unavailable",
@@ -1647,7 +1660,7 @@ impl ServerHandler for McpProxy {
         if mcp_transport::is_native(&context) {
             result
                 .resource_templates
-                .retain(|template| template.uri_template.starts_with("nteract://sessions/"));
+                .retain(|template| native_resource_template_visible(&template.uri_template));
         }
         result.result_type = Some(rmcp::model::ResultType::COMPLETE);
         Ok(result
@@ -1875,6 +1888,33 @@ impl McpProxy {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn native_catalog_keeps_versioned_widgets_and_renderer_resources() {
+        for uri in [
+            "nteract://notebooks",
+            "ui://nteract/output.html",
+            "ui://nteract/output-0123456789abcdef.html",
+        ] {
+            assert!(native_resource_uri_visible(uri));
+        }
+        for uri in [
+            "nteract://notebooks/legacy/cells",
+            "ui://nteract/output-missing.html",
+            "ui://nteract/output-../private.html",
+        ] {
+            assert!(!native_resource_uri_visible(uri));
+        }
+        assert!(native_resource_template_visible(
+            "nteract://renderer-assets/{name}"
+        ));
+        assert!(native_resource_template_visible(
+            "nteract://sessions/{notebook_handle}/executions/{execution_id}/blobs/{hash}"
+        ));
+        assert!(!native_resource_template_visible(
+            "nteract://notebooks/{notebook_id}"
+        ));
+    }
 
     fn test_config() -> ProxyConfig {
         ProxyConfig {

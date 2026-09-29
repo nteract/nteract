@@ -6,6 +6,7 @@ use base64::Engine;
 use rmcp::model::{ReadResourceResult, ResourceContents};
 use rmcp::ErrorData as McpError;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::NteractMcp;
 
@@ -129,8 +130,27 @@ fn manifest_references(manifest: &Value, hash: &str) -> bool {
         })
 }
 
-async fn authorized(outputs: &[Value], hash: &str, base: &str) -> Result<bool, McpError> {
+async fn authorized(
+    outputs: &[Value],
+    hash: &str,
+    base: &str,
+    comms: &HashMap<String, runtime_doc::CommDocEntry>,
+) -> Result<bool, McpError> {
     if directly_references(outputs, hash) {
+        return Ok(true);
+    }
+    if outputs
+        .iter()
+        .filter(|output| {
+            matches!(
+                output.get("output_type").and_then(Value::as_str),
+                Some("display_data" | "execute_result")
+            )
+        })
+        .filter_map(|output| output.get("data").and_then(Value::as_object))
+        .filter_map(|data| crate::structured::matplotlib_checkpoint_blob(data, comms))
+        .any(|(_, frame_hash)| frame_hash == hash)
+    {
         return Ok(true);
     }
     // Arrow manifests can be inline, blob-backed, or an inline pointer to a
@@ -177,7 +197,9 @@ pub(super) async fn read(
                 if !valid_asset(name) {
                     return Err(unavailable("Invalid renderer asset"));
                 }
-                let metadata = server.local_runtime_metadata().await;
+                // Assets are daemon-global, including when the active notebook
+                // is hosted and a local notebook attachment is parked.
+                let metadata = server.local_metadata_snapshot(true);
                 let base = metadata
                     .blob_base_url
                     .ok_or_else(|| unavailable("Local renderer assets unavailable"))?;
@@ -235,7 +257,7 @@ pub(super) async fn read(
                 } else {
                     return Err(unavailable("Execution is unavailable"));
                 };
-            if !authorized(&outputs, hash, base).await? {
+            if !authorized(&outputs, hash, base, &snapshot.snapshot.runtime.comms).await? {
                 return Err(unavailable("Blob is not referenced by this execution"));
             }
             let (bytes, mime) = fetch(base, &format!("/blob/{hash}")).await?;
@@ -359,16 +381,63 @@ mod tests {
         let outputs = vec![
             json!({"output_type":"display_data", "data":{ARROW_MANIFEST:{"inline":json!({"chunks":[{"hash":hash}]}).to_string()}}}),
         ];
-        assert!(authorized(&outputs, &hash, "http://localhost:1")
-            .await
-            .unwrap());
-        assert!(!authorized(&outputs, &"b".repeat(64), "http://localhost:1")
-            .await
-            .unwrap());
+        assert!(
+            authorized(&outputs, &hash, "http://localhost:1", &HashMap::new())
+                .await
+                .unwrap()
+        );
+        assert!(!authorized(
+            &outputs,
+            &"b".repeat(64),
+            "http://localhost:1",
+            &HashMap::new()
+        )
+        .await
+        .unwrap());
         let pointer = vec![
             json!({"output_type":"display_data", "data":{ARROW_MANIFEST:{"inline":json!({"blob":hash}).to_string()}}}),
         ];
-        assert!(authorized(&pointer, &hash, "http://localhost:1")
+        assert!(
+            authorized(&pointer, &hash, "http://localhost:1", &HashMap::new())
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn matplotlib_checkpoint_requires_a_referenced_canvas_model() {
+        let hash = "a".repeat(64);
+        let unrelated = "b".repeat(64);
+        let output = json!({"output_type":"display_data", "data":{
+            "application/vnd.jupyter.widget-view+json":{"inline":"{\"model_id\":\"canvas\"}"}
+        }});
+        let entry = |hash: &str| runtime_doc::CommDocEntry {
+            target_name: "jupyter.widget".into(),
+            model_module: "jupyter-matplotlib".into(),
+            model_name: "MPLCanvasModel".into(),
+            state: json!({"_nteract_mpl_canvas":{"frame":{"blob":hash}, "size":[320,240]}}),
+            outputs: Vec::new(),
+            seq: 0,
+            capture_msg_id: String::new(),
+        };
+        let mut comms = HashMap::from([
+            ("canvas".into(), entry(&hash)),
+            ("unreferenced".into(), entry(&unrelated)),
+        ]);
+        let outputs = vec![output];
+        assert!(authorized(&outputs, &hash, "http://localhost:1", &comms)
+            .await
+            .unwrap());
+        assert!(
+            !authorized(&outputs, &unrelated, "http://localhost:1", &comms)
+                .await
+                .unwrap()
+        );
+        assert!(!authorized(&[], &hash, "http://localhost:1", &comms)
+            .await
+            .unwrap());
+        comms.get_mut("canvas").unwrap().model_name = "PasswordModel".into();
+        assert!(!authorized(&outputs, &hash, "http://localhost:1", &comms)
             .await
             .unwrap());
     }
