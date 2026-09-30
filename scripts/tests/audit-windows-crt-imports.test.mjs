@@ -125,7 +125,7 @@ function runCli(args) {
 }
 
 test("classifies VC++ redistributable DLLs as forbidden and UCRT as allowed", () => {
-  for (const dll of ["VCRUNTIME140.dll", "vcruntime140_1.dll", "VCRUNTIME140D.dll", "MSVCP140.dll", "msvcp140_atomic_wait.dll", "CONCRT140.dll", "vcomp140.dll", "vcamp140.dll", "mfc140u.dll", "mfcm140u.dll", "MSVCR120.dll", "ucrtbased.dll"]) {
+  for (const dll of ["VCRUNTIME140.dll", "vcruntime140_1.dll", "VCRUNTIME140D.dll", "vcruntime140_threads.dll", "VCRUNTIME140_THREADSD.dll", "MSVCP140.dll", "msvcp140_atomic_wait.dll", "CONCRT140.dll", "vcomp140.dll", "vcamp140.dll", "mfc140u.dll", "mfcm140u.dll", "MSVCR120.dll", "ucrtbased.dll"]) {
     assert.equal(classifyDll(dll), "forbidden", dll);
   }
   for (const dll of ["api-ms-win-crt-runtime-l1-1-0.dll", "API-MS-WIN-CRT-HEAP-L1-1-0.DLL", "ucrtbase.dll"]) {

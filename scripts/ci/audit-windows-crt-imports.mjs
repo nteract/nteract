@@ -32,10 +32,12 @@ export const MACHINES = {
 const PE_EXTENSIONS = new Set([".exe", ".dll", ".pyd", ".node"]);
 
 // Redistributable VC++ runtime DLLs from Microsoft's "Determine which DLLs to
-// redistribute" table, plus debug variants. Matching is case-insensitive
-// because import names keep whatever case the import library used.
+// redistribute" table, plus debug variants and the vcruntime satellites
+// (vcruntime140_1 for x64 C++ exception handling, vcruntime140_threads for
+// C11 <threads.h>). Matching is case-insensitive because import names keep
+// whatever case the import library used.
 const FORBIDDEN_DLL =
-  /^(vcruntime\d+(_\d+)?d?|msvcp\d+(_[a-z0-9_]+)?d?|concrt\d+d?|vccorlib\d+d?|vcomp\d+d?|vcamp\d+d?|mfcm?\d+[a-z]{0,3}|msvcr\d+d?|ucrtbased)\.dll$/i;
+  /^(vcruntime\d+(_\d+|_threads)?d?|msvcp\d+(_[a-z0-9_]+)?d?|concrt\d+d?|vccorlib\d+d?|vcomp\d+d?|vcamp\d+d?|mfcm?\d+[a-z]{0,3}|msvcr\d+d?|ucrtbased)\.dll$/i;
 const UCRT_DLL = /^(api-ms-win-crt-[a-z0-9-]+|ucrtbase)\.dll$/i;
 
 export function classifyDll(name) {
