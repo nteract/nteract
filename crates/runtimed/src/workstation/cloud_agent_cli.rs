@@ -106,9 +106,9 @@ pub fn build_cloud_config(
 /// Returns `Ok(None)` for every other auth kind (`workstation`,
 /// `anaconda-key`, and `dev` credentials don't expire the way an OIDC bearer
 /// does; see `docs/adr/hosted-credential-transport.md`, Decision 9), and for
-/// `oidc` with no cache, no [`CLOUD_REFRESH_TOKEN_ENV`] seed, and no
-/// `--oidc-*` flags. In both cases the agent keeps the static token from
-/// `config.auth`.
+/// `oidc` with no [`CLOUD_REFRESH_TOKEN_ENV`] seed and no `--oidc-*` flags,
+/// whether or not a cache file exists. In both cases the agent keeps the
+/// static token from `config.auth`.
 ///
 /// Errors when refresh was requested but cannot be set up safely: `--oidc-*`
 /// flags with a non-oidc kind, a cache bound to another cloud/issuer/client

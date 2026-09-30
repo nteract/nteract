@@ -124,9 +124,13 @@ impl CloudBlobPublisher {
         refresh()
             .await
             .map(|token| self.auth.with_token(token))
-            .map_err(|error| BlobPublishError::Credential {
-                hash: hash.to_string(),
-                message: error.to_string(),
+            .map_err(|error| {
+                // Details (cache path, issuer) stay in the local log; the
+                // error below can end up in a synced notebook output.
+                warn!("[output-blob-publisher] credential refresh failed for blob {hash}: {error}");
+                BlobPublishError::Credential {
+                    hash: hash.to_string(),
+                }
             })
     }
 
@@ -238,8 +242,8 @@ pub(crate) enum BlobPublishError {
     InvalidManifest { message: String },
     #[error("failed to upload blob {hash}: {message}")]
     RemoteRequest { hash: String, message: String },
-    #[error("no credential for blob {hash} upload: {message}")]
-    Credential { hash: String, message: String },
+    #[error("cloud credential refresh failed before uploading blob {hash}")]
+    Credential { hash: String },
     #[error("blob {hash} upload failed with {status}: {body}")]
     RemoteStatus {
         hash: String,
@@ -392,7 +396,6 @@ mod tests {
         .is_retryable());
         assert!(!BlobPublishError::Credential {
             hash: "a".to_string(),
-            message: "issuer timed out".to_string(),
         }
         .is_retryable());
     }
@@ -554,6 +557,11 @@ mod tests {
 
         let err = publish(&publisher, &store, &hashes[0]).await.unwrap_err();
         assert!(matches!(err, BlobPublishError::Credential { .. }), "{err}");
+        // The display text can land in a synced output; it must not carry
+        // local refresher details.
+        assert!(!err
+            .to_string()
+            .contains("oidc token refresh request failed"));
         assert!(server.authorizations.lock().unwrap().is_empty());
     }
 

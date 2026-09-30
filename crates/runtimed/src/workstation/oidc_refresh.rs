@@ -19,11 +19,17 @@
 //! - Discovery must echo the configured issuer exactly, and the token endpoint
 //!   must share the issuer's origin. Redirects are never followed, so the
 //!   refresh token is only ever posted to that endpoint.
-//! - Discovery and token requests have connect and total timeouts.
-//! - Refresh is single-flight within a process and, on unix, serialized across
-//!   processes by an advisory lock beside the cache, so a rotating issuer never
-//!   sees one refresh token spent twice. Other platforms get the in-process
-//!   bound only.
+//! - The agent uses a cache only when an `--oidc-*` flag or a seed asks for
+//!   refresh. Without either it keeps its static `RUNT_CLOUD_TOKEN`, even if a
+//!   cache exists at the default path.
+//! - Discovery and token requests have connect and total timeouts. A failed
+//!   refresh is shared with callers for [`FAILURE_BACKOFF`], and a cached token
+//!   that has not actually expired is still returned when refresh fails.
+//! - Exchanges run one at a time within a process and, on unix, are serialized
+//!   across processes by an advisory lock beside the cache, so a rotating
+//!   issuer never sees one refresh token spent twice. Other platforms get the
+//!   in-process bound only. The exchange and persist run in their own task, so
+//!   a cancelled caller cannot drop a rotated refresh token before it is saved.
 //! - Unverified JWT claims are read only for local consistency checks (same
 //!   issuer, same account) and expiry scheduling. The notebook cloud verifies
 //!   token signatures; nothing here treats a decoded claim as authorization.
@@ -57,8 +63,18 @@ const REFRESH_SKEW: Duration = Duration::from_secs(60);
 const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const OIDC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long a refresh waits for another process holding the cache lock.
-const CACHE_LOCK_WAIT: Duration = Duration::from_secs(20);
+/// How long a refresh waits for another process holding the cache lock. Longer
+/// than one holder's worst case (discovery plus token request).
+const CACHE_LOCK_WAIT: Duration = Duration::from_secs(40);
+
+/// After a failed refresh, callers within this window get the same error
+/// without new issuer requests, so an outage costs one timeout, not one per
+/// queued connect or blob upload.
+const FAILURE_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Access-token lifetime assumed when a grant has neither `expires_in` nor a
+/// JWT `exp`.
+const DEFAULT_EXPIRES_IN_SECONDS: i64 = 300;
 #[cfg(unix)]
 const CACHE_LOCK_POLL: Duration = Duration::from_millis(25);
 
@@ -177,10 +193,11 @@ impl RefreshTokenCache {
         })
     }
 
-    /// Persist the cache atomically (write to a temp file in the same
-    /// directory, then rename) with mode `0600`. A crash between exchange
-    /// and persist can't strand a half-updated cache (old access token
-    /// paired with an already-rotated refresh token).
+    /// Persist the cache atomically (write and sync a temp file in the same
+    /// directory, then rename) with mode `0600`. Readers see either the old
+    /// cache or the new one, never a half-written file. A crash after the
+    /// issuer rotates but before this completes still loses the new refresh
+    /// token; the old one stays on disk.
     ///
     /// The temp file is created at mode `0600` from the moment it exists —
     /// never at a wider, umask-dependent mode that a later `chmod` would
@@ -188,22 +205,40 @@ impl RefreshTokenCache {
     /// on any failure so a partially written credential file is never left
     /// behind at any permission.
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        let tmp_path = self.write_tmp(path)?;
+        if let Err(e) = std::fs::rename(&tmp_path, path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Like [`save`](Self::save), but never replaces an existing cache.
+    /// Returns `Ok(false)` when another process created `path` first; the
+    /// caller should load that cache instead.
+    pub fn save_new(&self, path: &Path) -> io::Result<bool> {
+        let tmp_path = self.write_tmp(path)?;
+        let linked = std::fs::hard_link(&tmp_path, path);
+        let _ = std::fs::remove_file(&tmp_path);
+        match linked {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn write_tmp(&self, path: &Path) -> io::Result<PathBuf> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let tmp_path = tmp_sibling_path(path);
-        let write_result = write_owner_only(&tmp_path, json.as_bytes());
-        if let Err(e) = write_result {
+        if let Err(e) = write_owner_only(&tmp_path, json.as_bytes()) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e);
         }
-        if let Err(e) = std::fs::rename(&tmp_path, path) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e);
-        }
-        Ok(())
+        Ok(tmp_path)
     }
 
     /// Error unless this cache belongs to `expected`.
@@ -258,6 +293,7 @@ fn write_owner_only(path: &Path, contents: &[u8]) -> io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     file.write_all(contents)?;
     file.write_all(b"\n")?;
+    file.sync_all()?;
     Ok(())
 }
 
@@ -465,8 +501,10 @@ fn trimmed(value: Option<&str>) -> Option<String> {
 
 /// Resolve the refresh cache for one agent start and build its client.
 ///
-/// - No cache, no seed, no flags: `Ok(None)`; the agent keeps its static
-///   `RUNT_CLOUD_TOKEN`.
+/// - No seed and no `--oidc-*` flags: `Ok(None)` without touching any cache
+///   file; the agent keeps its static `RUNT_CLOUD_TOKEN`. Refresh is opt-in
+///   per start, so a connector that launches oidc agents with fresh job
+///   credentials is never overridden by a cache a person seeded earlier.
 /// - No cache but a seed refresh token: `--oidc-issuer` and
 ///   `--oidc-client-id` are required. The new cache records the cloud origin,
 ///   issuer, client, and the account from `initial_access_token` when it is a
@@ -484,6 +522,9 @@ pub fn prepare_refresh_client(
     initial_access_token: &str,
     seed_refresh_token: Option<&str>,
 ) -> io::Result<Option<OidcRefreshClient>> {
+    if !options.is_configured() && trimmed(seed_refresh_token).is_none() {
+        return Ok(None);
+    }
     let origin = cloud_origin(cloud_url)?;
     let path = options
         .cache_path
@@ -558,9 +599,23 @@ fn prepare_refresh_client_at(
                 refresh_token,
                 expires_at,
             };
-            seeded.save(&path)?;
-            tracing::info!(path = %path.display(), "seeded oidc refresh cache");
-            seeded
+            // No-clobber: another agent seeding the same origin may have
+            // created (and already rotated) the cache since `load` above.
+            if seeded.save_new(&path)? {
+                tracing::info!(path = %path.display(), "seeded oidc refresh cache");
+                seeded
+            } else {
+                tracing::info!(
+                    path = %path.display(),
+                    "another agent created the oidc refresh cache first; using it"
+                );
+                RefreshTokenCache::load(&path)?.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "oidc refresh cache disappeared while seeding",
+                    )
+                })?
+            }
         }
     };
 
@@ -688,7 +743,9 @@ pub struct RefreshGrantResponse {
     pub access_token: String,
     #[serde(default)]
     pub refresh_token: Option<String>,
-    pub expires_in: i64,
+    /// Optional per RFC 6749; see [`grant_expiry`] for the fallback.
+    #[serde(default)]
+    pub expires_in: Option<i64>,
 }
 
 impl std::fmt::Debug for RefreshGrantResponse {
@@ -789,6 +846,27 @@ fn absolute_expiry(expires_in_seconds: i64) -> String {
         .to_rfc3339()
 }
 
+/// Absolute expiry for a grant: `expires_in` when present, else the access
+/// token's JWT `exp`, else [`DEFAULT_EXPIRES_IN_SECONDS`].
+fn grant_expiry(grant: &RefreshGrantResponse) -> String {
+    if let Some(seconds) = grant.expires_in {
+        return absolute_expiry(seconds);
+    }
+    unverified_claims(&grant.access_token)
+        .and_then(|claims| claims.exp)
+        .and_then(|exp| chrono::DateTime::from_timestamp(exp as i64, 0))
+        .map(|at| at.to_rfc3339())
+        .unwrap_or_else(|| absolute_expiry(DEFAULT_EXPIRES_IN_SECONDS))
+}
+
+/// True once `expires_at` has actually passed (no skew). Unparseable counts
+/// as expired.
+fn is_expired(expires_at: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(expires_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+        .unwrap_or(true)
+}
+
 /// Cross-process advisory lock on `<cache>.lock`. Held for one
 /// check-exchange-persist cycle; closing the file releases it.
 struct CacheFileLock {
@@ -849,6 +927,13 @@ impl CacheFileLock {
 /// (a permit may be held across `.await`; a Tokio `Mutex`/`RwLock` guard may
 /// not, per `cargo test -p runtimed --test tokio_mutex_lint`) and serialized
 /// across processes sharing the cache by [`CacheFileLock`].
+/// A refresh failure remembered for [`FAILURE_BACKOFF`].
+struct RecentFailure {
+    at: std::time::Instant,
+    kind: io::ErrorKind,
+    message: String,
+}
+
 #[derive(Clone)]
 pub struct OidcRefreshClient {
     cache_path: PathBuf,
@@ -857,6 +942,9 @@ pub struct OidcRefreshClient {
     http: reqwest::Client,
     single_flight: Arc<tokio::sync::Semaphore>,
     lock_wait: Duration,
+    /// Most recent refresh failure, for [`FAILURE_BACKOFF`]. A std mutex:
+    /// only touched in synchronous sections, never held across `.await`.
+    last_failure: Arc<std::sync::Mutex<Option<RecentFailure>>>,
 }
 
 impl OidcRefreshClient {
@@ -896,6 +984,7 @@ impl OidcRefreshClient {
             http,
             single_flight: Arc::new(tokio::sync::Semaphore::new(1)),
             lock_wait,
+            last_failure: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -907,22 +996,82 @@ impl OidcRefreshClient {
         Ok(cache)
     }
 
-    /// One check-refresh-persist cycle. Returns the bearer token to present
-    /// next: the cached token unchanged if still outside the skew window
-    /// (no HTTP, no locking), or a freshly exchanged one.
+    /// Returns the bearer token to present next: the cached token unchanged
+    /// if still outside the skew window (no HTTP, no locking), or a freshly
+    /// exchanged one.
     ///
-    /// The expiry check repeats after acquiring the in-process permit and
-    /// the cross-process lock, because another task or process may have just
-    /// finished refreshing.
+    /// The exchange runs in a spawned task, so dropping this future (an
+    /// aborted IOPub task, a cancelled connect) cannot lose a rotated refresh
+    /// token between the issuer's response and the cache write. If refresh
+    /// fails while the cached token has not actually expired, that token is
+    /// still returned.
     async fn refresh_or_reuse(&self) -> io::Result<String> {
         let cache = self.load_bound()?;
         if !needs_refresh(&cache.expires_at) {
             return Ok(cache.access_token);
         }
 
+        let this = self.clone();
+        let result = tokio::spawn(async move { this.refresh_locked().await })
+            .await
+            .map_err(|e| io::Error::other(format!("oidc refresh task failed: {e}")))?;
+        match result {
+            Err(error) if !is_expired(&cache.expires_at) => {
+                tracing::warn!(
+                    "oidc token refresh failed; using the unexpired cached token: {error}"
+                );
+                Ok(cache.access_token)
+            }
+            other => other,
+        }
+    }
+
+    fn recent_failure(&self) -> Option<io::Error> {
+        let guard = self
+            .last_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let failure = guard.as_ref()?;
+        (failure.at.elapsed() < FAILURE_BACKOFF).then(|| {
+            io::Error::new(
+                failure.kind,
+                format!("{} (recent failure; not retried yet)", failure.message),
+            )
+        })
+    }
+
+    fn record_outcome(&self, result: &io::Result<String>) {
+        let mut guard = self
+            .last_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = result.as_ref().err().map(|error| RecentFailure {
+            at: std::time::Instant::now(),
+            kind: error.kind(),
+            message: error.to_string(),
+        });
+    }
+
+    /// Serialized check-exchange-persist: in-process permit, then the
+    /// cross-process lock, then a fresh expiry check, because another task or
+    /// process may have just finished refreshing.
+    async fn refresh_locked(&self) -> io::Result<String> {
+        if let Some(error) = self.recent_failure() {
+            return Err(error);
+        }
         let _permit = self.single_flight.acquire().await.map_err(|e| {
             io::Error::other(format!("oidc refresh single-flight semaphore closed: {e}"))
         })?;
+        // The previous permit holder may have just failed.
+        if let Some(error) = self.recent_failure() {
+            return Err(error);
+        }
+        let result = self.exchange_under_lock().await;
+        self.record_outcome(&result);
+        result
+    }
+
+    async fn exchange_under_lock(&self) -> io::Result<String> {
         let _lock =
             CacheFileLock::acquire(&lock_sibling_path(&self.cache_path), self.lock_wait).await?;
 
@@ -951,6 +1100,7 @@ impl OidcRefreshClient {
         let subject = cache
             .subject
             .or_else(|| unverified_claims(&grant.access_token).and_then(|claims| claims.sub));
+        let expires_at = grant_expiry(&grant);
         let updated = RefreshTokenCache {
             cloud_origin: cache.cloud_origin,
             issuer: cache.issuer,
@@ -959,7 +1109,7 @@ impl OidcRefreshClient {
             subject,
             access_token: grant.access_token,
             refresh_token: grant.refresh_token.unwrap_or(cache.refresh_token),
-            expires_at: absolute_expiry(grant.expires_in),
+            expires_at,
         };
         updated.save(&self.cache_path)?;
         tracing::debug!("oidc access token refreshed"); // no token value logged
@@ -1012,6 +1162,8 @@ pub(crate) mod test_support {
         pub subject: String,
         /// Delay before answering `/token`.
         pub token_delay: Option<Duration>,
+        /// Leave `expires_in` out of successful grants.
+        pub omit_expires_in: bool,
     }
 
     impl Default for FakeIssuerConfig {
@@ -1022,6 +1174,7 @@ pub(crate) mod test_support {
                 rotate: false,
                 subject: "user-1".to_string(),
                 token_delay: None,
+                omit_expires_in: false,
             }
         }
     }
@@ -1090,8 +1243,10 @@ pub(crate) mod test_support {
                                                 let n = state.next;
                                                 let mut grant = serde_json::json!({
                                                     "access_token": fake_jwt(&server_url, &config.subject, chrono::Utc::now().timestamp() + 3600, &format!("at-{n}")),
-                                                    "expires_in": 3600,
                                                 });
+                                                if !config.omit_expires_in {
+                                                    grant["expires_in"] = 3600.into();
+                                                }
                                                 if config.rotate {
                                                     state.valid_refresh_tokens.remove(&presented);
                                                     let rotated = format!("rotated-refresh-{n}");
@@ -1355,19 +1510,25 @@ mod tests {
     fn no_cache_no_seed_no_flags_keeps_static_token_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.json");
-        // No flags at all, so resolve the path directly instead of reading
-        // the real default config location.
-        assert!(prepare_refresh_client_at(
-            path.clone(),
-            &OidcRefreshOptions::default(),
-            "https://cloud.example".to_string(),
-            "tok",
-            None,
-        )
-        .unwrap()
-        .is_none());
+        // Without flags or a seed no cache path is resolved at all, so even a
+        // cache at the default location is ignored and the URL is not parsed
+        // (the transport accepts `wss://` cloud URLs).
+        for cloud_url in ["https://cloud.example", "wss://cloud.example"] {
+            assert!(
+                prepare_refresh_client(&OidcRefreshOptions::default(), cloud_url, "tok", None)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(prepare_refresh_client(
+                &OidcRefreshOptions::default(),
+                cloud_url,
+                "tok",
+                Some("  ")
+            )
+            .unwrap()
+            .is_none());
+        }
         assert!(!path.exists());
-        assert!(!lock_sibling_path(&path).exists());
     }
 
     #[test]
@@ -1824,6 +1985,137 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("invalid_grant"), "{message}");
         assert!(!message.contains("unknown-refresh-token-value"));
+    }
+
+    #[test]
+    fn save_new_never_replaces_an_existing_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        let first = sample_cache(&absolute_expiry(3600));
+        let mut second = first.clone();
+        second.refresh_token = "spent-seed".to_string();
+        assert!(first.save_new(&path).unwrap());
+        assert!(!second.save_new(&path).unwrap());
+        assert_eq!(RefreshTokenCache::load(&path).unwrap().unwrap(), first);
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files must be cleaned up");
+    }
+
+    #[tokio::test]
+    async fn concurrent_callers_share_one_failed_attempt_against_a_hung_issuer() {
+        let issuer = start_fake_issuer(FakeIssuerConfig {
+            token_delay: Some(Duration::from_secs(30)),
+            ..Default::default()
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_expired_cache(&path, &issuer.url, None);
+        let client = OidcRefreshClient::with_limits(
+            path,
+            binding_for(&issuer.url),
+            IssuerTransport::AllowLoopbackHttp,
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+            CACHE_LOCK_WAIT,
+        )
+        .unwrap();
+        let (second, third) = (client.clone(), client.clone());
+        let (a, b, c) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                client.refresh_or_reuse(),
+                second.refresh_or_reuse(),
+                third.refresh_or_reuse()
+            )
+        })
+        .await
+        .expect("queued callers must not each wait out their own timeout");
+        assert!(a.is_err() && b.is_err() && c.is_err());
+        assert!(client.refresh_or_reuse().await.is_err());
+        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_failure_falls_back_to_an_unexpired_cached_token() {
+        let issuer = start_fake_issuer(FakeIssuerConfig {
+            discovery_issuer: Some("https://attacker.example".to_string()),
+            ..Default::default()
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_expired_cache(&path, &issuer.url, None);
+        let mut cache = RefreshTokenCache::load(&path).unwrap().unwrap();
+        cache.expires_at = absolute_expiry(30); // inside the skew, not expired
+        cache.save(&path).unwrap();
+
+        let token = loopback_client(&path, &issuer.url)
+            .refresh_or_reuse()
+            .await
+            .unwrap();
+        assert_eq!(token, "stale-access-token");
+    }
+
+    #[tokio::test]
+    async fn cancelled_refresh_still_persists_the_rotated_token() {
+        let issuer = start_fake_issuer(FakeIssuerConfig {
+            rotate: true,
+            token_delay: Some(Duration::from_millis(300)),
+            ..Default::default()
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_expired_cache(&path, &issuer.url, None);
+        let client = loopback_client(&path, &issuer.url);
+
+        // Drop the caller while the issuer is still answering.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), client.refresh_or_reuse())
+                .await
+                .is_err()
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let cache = RefreshTokenCache::load(&path).unwrap().unwrap();
+            if cache.refresh_token == "rotated-refresh-1" {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "rotated refresh token was never persisted"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // The rotated token works; the spent seed would be rejected.
+        client.refresh_or_reuse().await.unwrap();
+        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn grant_without_expires_in_uses_the_access_token_exp() {
+        let issuer = start_fake_issuer(FakeIssuerConfig {
+            omit_expires_in: true,
+            ..Default::default()
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_expired_cache(&path, &issuer.url, None);
+        loopback_client(&path, &issuer.url)
+            .refresh_or_reuse()
+            .await
+            .unwrap();
+        let cache = RefreshTokenCache::load(&path).unwrap().unwrap();
+        let expires = chrono::DateTime::parse_from_rfc3339(&cache.expires_at)
+            .unwrap()
+            .timestamp();
+        let expected = chrono::Utc::now().timestamp() + 3600;
+        assert!((expires - expected).abs() <= 5, "{expires} vs {expected}");
     }
 
     #[tokio::test]

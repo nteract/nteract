@@ -243,6 +243,9 @@ RUNT_CLOUD_TOKEN=<access-token> RUNT_CLOUD_REFRESH_TOKEN=<refresh-token> \
   --oidc-client-id <public-client-id>
 ```
 
+- Refresh is opt-in on every start. Later runs pass the same `--oidc-issuer`
+  and `--oidc-client-id` (or `--oidc-refresh-cache`) to reuse the cache.
+  Without an `--oidc-*` flag or a seed, the agent ignores any cache.
 - The cache is a `0600` file per cloud origin in the runtimed config
   directory; `--oidc-refresh-cache` picks another path.
 - It is bound to the cloud origin, issuer, client id, and (for JWTs) the
@@ -254,12 +257,15 @@ RUNT_CLOUD_TOKEN=<access-token> RUNT_CLOUD_REFRESH_TOKEN=<refresh-token> \
 - Discovery must name the issuer exactly, and the token endpoint must be on
   the issuer's origin. Redirects are not followed.
 - Agents sharing a cache refresh one at a time, so rotating refresh tokens
-  are not spent twice (unix).
+  are not spent twice (unix). Seeding never overwrites a cache another agent
+  created first.
+- A failed refresh is not retried for 5 seconds. While the cached token has
+  not actually expired, the agent keeps using it.
 
 The cache is readable by anything running as the same OS user, including the
 kernel. `RUNT_CLOUD_REFRESH_TOKEN` is removed from the kernel environment, but
-that is hygiene, not isolation. With no cache, no seed, and no `--oidc-*`
-flags, the agent keeps the static `RUNT_CLOUD_TOKEN`.
+that is hygiene, not isolation. Without a seed or an `--oidc-*` flag, the
+agent keeps the static `RUNT_CLOUD_TOKEN`.
 
 ## JupyterHub
 
