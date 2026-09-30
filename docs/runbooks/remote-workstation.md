@@ -225,9 +225,14 @@ against the same attach-job surface with `NTERACT_API_KEY` or
 `NOTEBOOK_CLOUD_URL`. The `apps/notebook-cloud` README covers the matching
 runtime smoke commands.
 
-For browser-coupled OIDC peers whose token expires, mint fresh tokens via a
-refresher (the transport supports per-connect refresh; see
-`notebook-cloud-transport`'s `TokenRefresher`).
+For browser-coupled OIDC peers whose token expires, `cloud-runtime-agent`
+refreshes it automatically before it lapses: when started with
+`--auth-kind oidc` and a refresh-token cache is present (see
+`crates/runtimed/src/workstation/oidc_refresh.rs`), it checks the cached
+access token's expiry before each connect/reconnect and exchanges the
+refresh token for a new one when needed, so a long-lived peer survives
+token expiry without a restart. With no cache present, behavior is
+unchanged (static token, no refresh attempted).
 
 ## JupyterHub
 

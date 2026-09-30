@@ -587,6 +587,7 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("[cloud-runtime-agent] Config error: {}", e);
                         e
                     })?;
+            let token_refresher = runtimed::workstation::resolve_token_refresher(auth_kind, None);
             let blob_root = blob_root.unwrap_or_else(runtimed::default_blob_store_dir);
             let resolved_working_dir = working_dir.or_else(|| std::env::current_dir().ok());
             if python_path.is_none()
@@ -643,6 +644,7 @@ async fn main() -> anyhow::Result<()> {
                             env_vars: std::collections::HashMap::new(),
                             blob_root,
                             launch_trigger,
+                            token_refresher,
                         },
                     )
                     .await
@@ -655,7 +657,11 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
                     runtimed::runtime_agent::run_cloud_runtime_agent(
-                        config, operator, blob_root, None,
+                        config,
+                        operator,
+                        blob_root,
+                        None,
+                        token_refresher,
                     )
                     .await
                 }

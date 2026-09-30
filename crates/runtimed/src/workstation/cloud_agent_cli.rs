@@ -16,6 +16,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use notebook_cloud_transport::{CloudAuth, CloudWsConfig};
+use std::path::PathBuf;
 
 /// Environment variable carrying the cloud credential (never passed on argv).
 pub const CLOUD_TOKEN_ENV: &str = "RUNT_CLOUD_TOKEN";
@@ -96,6 +97,30 @@ pub fn build_cloud_config(
         auth,
         workstation: None,
     })
+}
+
+/// Construct a [`notebook_cloud_transport::TokenRefresher`] for a long-lived
+/// `--auth-kind oidc` agent, when a valid on-disk refresh-token cache is
+/// available at `cache_path` (the default location when `None`).
+///
+/// Returns `None` — never an error — for every other auth kind (`workstation`,
+/// `anaconda-key`, `dev` credentials don't expire the way an OIDC bearer
+/// token does; see `docs/adr/hosted-credential-transport.md:368`), and for
+/// `oidc` with no valid cache. In both `None` cases the caller must keep
+/// using `CloudWsFrameTransport::new` unchanged — this preserves today's
+/// static-token behavior exactly.
+pub fn resolve_token_refresher(
+    auth_kind: CloudAuthKind,
+    cache_path: Option<PathBuf>,
+) -> Option<notebook_cloud_transport::TokenRefresher> {
+    if auth_kind != CloudAuthKind::Oidc {
+        return None;
+    }
+    let path = cache_path.unwrap_or_else(super::oidc_refresh::default_cache_path);
+    // Probe availability without committing to using a stale reference —
+    // OidcRefreshClient reloads the cache itself on each refresh cycle.
+    super::oidc_refresh::RefreshTokenCache::load(&path)?;
+    Some(super::oidc_refresh::OidcRefreshClient::new(path).into_token_refresher())
 }
 
 #[cfg(test)]
@@ -211,5 +236,60 @@ mod tests {
             cfg.auth,
             CloudAuth::OidcBearer { token } if token == "tok-trim"
         ));
+    }
+
+    #[test]
+    fn resolve_token_refresher_is_none_for_workstation_kind_even_with_a_cache_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.json");
+        super::super::oidc_refresh::RefreshTokenCache {
+            issuer: "https://issuer.example".to_string(),
+            client_id: "client".to_string(),
+            scope: None,
+            access_token: "at".to_string(),
+            refresh_token: "rt".to_string(),
+            expires_at: chrono::Utc::now()
+                .checked_add_signed(chrono::Duration::hours(1))
+                .unwrap()
+                .to_rfc3339(),
+        }
+        .save(&cache_path)
+        .unwrap();
+
+        assert!(
+            resolve_token_refresher(CloudAuthKind::Workstation, Some(cache_path.clone())).is_none()
+        );
+        assert!(
+            resolve_token_refresher(CloudAuthKind::AnacondaKey, Some(cache_path.clone())).is_none()
+        );
+        assert!(resolve_token_refresher(CloudAuthKind::Dev, Some(cache_path)).is_none());
+    }
+
+    #[test]
+    fn resolve_token_refresher_is_none_for_oidc_with_no_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("does-not-exist.json");
+        assert!(resolve_token_refresher(CloudAuthKind::Oidc, Some(cache_path)).is_none());
+    }
+
+    #[test]
+    fn resolve_token_refresher_is_some_for_oidc_with_a_valid_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.json");
+        super::super::oidc_refresh::RefreshTokenCache {
+            issuer: "https://issuer.example".to_string(),
+            client_id: "client".to_string(),
+            scope: None,
+            access_token: "at".to_string(),
+            refresh_token: "rt".to_string(),
+            expires_at: chrono::Utc::now()
+                .checked_add_signed(chrono::Duration::hours(1))
+                .unwrap()
+                .to_rfc3339(),
+        }
+        .save(&cache_path)
+        .unwrap();
+
+        assert!(resolve_token_refresher(CloudAuthKind::Oidc, Some(cache_path)).is_some());
     }
 }
