@@ -13506,6 +13506,240 @@ async fn save_continuation_race_superseded_sequence_fails_manifest_triple_check_
     .await;
 }
 
+fn is_successful_save(response: &crate::protocol::NotebookResponse) -> bool {
+    matches!(
+        response,
+        crate::protocol::NotebookResponse::NotebookSaved { .. }
+            | crate::protocol::NotebookResponse::NotebookAlreadyCurrent { .. }
+    )
+}
+
+/// Save immediately followed by Close (BUG-001).
+///
+/// Closing the window disconnects the peer, and the peer loop drops its
+/// `PeerRequestWorker`, which aborts the in-flight `SaveNotebook` request.
+/// The save's blocking section (atomic file replacement plus journal commit)
+/// is not cancelled with it. Before the fix, the async continuation that
+/// publishes the watcher baseline was lost: disk held the room's committed
+/// bytes, the manifest named them, and the staleness baseline still named the
+/// previous save. Every later save on the resident room was refused as an
+/// external change, and the watcher skipped the file because it matched the
+/// manifest, so nothing could reconcile it.
+///
+/// The interleaving is forced with a pause on the save's blocking thread
+/// after the checkpoint commits, so the abort always lands between the
+/// durable commit and the async continuation. The timeouts only bound a
+/// failure; they do not order anything.
+#[tokio::test]
+async fn save_request_aborted_by_peer_disconnect_after_commit_keeps_room_saveable() {
+    use notebook_protocol::protocol::NotebookRequestEnvelope;
+    use sha2::Digest as _;
+
+    const FAILURE_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "save-close-reopen.ipynb");
+    let room = Arc::new(room);
+    let daemon = crate::daemon::Daemon::new_for_test(test_daemon_config(&tmp)).unwrap();
+
+    // An ordinary saved notebook with two cells.
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "print(\"first\")").unwrap();
+        doc.add_cell(1, "cell-2", "code").unwrap();
+        doc.update_source("cell-2", "print(\"second\")").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let initial = crate::requests::save_notebook::handle(&room, &daemon, false, None).await;
+    assert!(is_successful_save(&initial), "{initial:?}");
+
+    // Edit, then Cmd+S from a peer whose window closes immediately.
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("cell-2", "print(\"SAVE-CLOSE-RACE\", 43)")
+            .unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let (committed_rx, release_tx) =
+        super::persist::pause_after_file_checkpoint_completion_for_test(room.id);
+
+    let (_client, server) = tokio::io::duplex(64 * 1024);
+    let (writer, writer_task) =
+        super::peer_writer::spawn_peer_writer(server, room.id.to_string(), "closing-peer".into());
+    let mut worker = super::peer_writer::spawn_peer_request_worker(
+        room.clone(),
+        daemon.clone(),
+        writer.clone(),
+        super::blob_upload::MultipartUploadState::new(&room.blob_store),
+        room.id.to_string(),
+        "closing-peer".into(),
+        "closing-peer".into(),
+    );
+    let envelope = NotebookRequestEnvelope {
+        id: Some("save-then-close".into()),
+        required_heads: Vec::new(),
+        request: crate::protocol::NotebookRequest::SaveNotebook {
+            format_cells: false,
+            path: None,
+        },
+    };
+    super::peer_writer::enqueue_notebook_request(
+        &worker,
+        &writer,
+        &serde_json::to_vec(&envelope).unwrap(),
+        &room.id.to_string(),
+        "closing-peer",
+        nteract_identity::ConnectionScope::Owner,
+    )
+    .unwrap();
+
+    tokio::time::timeout(FAILURE_BOUND, committed_rx)
+        .await
+        .expect("save should reach its file checkpoint commit")
+        .expect("pause should report the commit");
+    let committed_sequence = room
+        .durability
+        .manifest()
+        .file_save_sequence
+        .expect("the blocking section committed a file checkpoint");
+    let committed_bytes = tokio::fs::read(&notebook_path).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&committed_bytes).contains("SAVE-CLOSE-RACE"),
+        "the paused save already replaced the file"
+    );
+
+    // The window closes: the peer loop exits and drops its request worker,
+    // which aborts the in-flight request exactly as `PeerRequestWorker::drop`
+    // does.
+    let mut state_changed = room.state.subscribe();
+    worker.handle.abort();
+    let aborted = (&mut worker.handle).await;
+    assert!(
+        aborted.as_ref().is_err_and(|error| error.is_cancelled()),
+        "request worker should be cancelled by the disconnect: {aborted:?}"
+    );
+    drop(worker);
+    drop(writer);
+    drop(writer_task);
+    release_tx.send(()).unwrap();
+
+    // The accepted save must still publish its checkpoint and baseline.
+    let checkpoint_published = tokio::time::timeout(FAILURE_BOUND, async {
+        loop {
+            let published = room
+                .state
+                .read(|state| state.file_checkpoint().save_sequence)
+                .unwrap();
+            if published >= Some(committed_sequence) {
+                return;
+            }
+            if let Err(tokio::sync::broadcast::error::RecvError::Closed) =
+                state_changed.recv().await
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .is_ok();
+
+    // The watcher is the only other path that refreshes the staleness
+    // baseline. It must treat these committed bytes as already known.
+    let manifest = room.durability.manifest();
+    let watcher_decision = classify_watcher_observation(&WatcherObservation {
+        observed: super::recovery::source_fingerprint(&committed_bytes),
+        known_disk_hash: room.persistence.known_disk_hash(),
+        manifest_fingerprint: manifest.source_fingerprint,
+        pending_checkpoint_fingerprint: manifest
+            .pending_file_checkpoint
+            .map(|pending| pending.file_fingerprint),
+    });
+
+    // Reopen through the resident room and press Cmd+S. No external writer
+    // exists, so this save must succeed.
+    let reopened_save = crate::requests::save_notebook::handle(&room, &daemon, false, None).await;
+    assert!(
+        is_successful_save(&reopened_save),
+        "save after reopening must not report an external change \
+         (watcher decision for the committed bytes: {watcher_decision:?}): {reopened_save:?}"
+    );
+    assert_eq!(
+        watcher_decision,
+        WatcherIngestDecision::Skip(WatcherSkipReason::KnownDiskContent),
+        "the committed bytes must be the recorded disk baseline"
+    );
+    assert!(
+        checkpoint_published,
+        "aborted save never published its file checkpoint"
+    );
+    let committed_hash: [u8; 32] = sha2::Sha256::digest(&committed_bytes).into();
+    assert_eq!(
+        room.persistence.known_disk_hash(),
+        Some(committed_hash),
+        "staleness baseline must name the bytes the aborted save committed"
+    );
+    assert!(
+        room.state
+            .read(|state| state.read_state().last_saved)
+            .unwrap()
+            .is_some(),
+        "the aborted save should still stamp last_saved"
+    );
+
+    // Later edits persist after reopening, through Save and autosave.
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("cell-2", "print(\"AFTER-REOPEN\", 44)")
+            .unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let edited_save = crate::requests::save_notebook::handle(&room, &daemon, false, None).await;
+    assert!(
+        matches!(
+            edited_save,
+            crate::protocol::NotebookResponse::NotebookSaved { .. }
+        ),
+        "{edited_save:?}"
+    );
+    let on_disk = tokio::fs::read_to_string(&notebook_path).await.unwrap();
+    assert!(on_disk.contains("AFTER-REOPEN"), "{on_disk}");
+    assert!(!on_disk.contains("SAVE-CLOSE-RACE"), "{on_disk}");
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("cell-1", "print(\"AUTOSAVED\")").unwrap();
+    }
+    save_notebook_to_disk(&room, None)
+        .await
+        .expect("autosave after reopening should write");
+    assert!(tokio::fs::read_to_string(&notebook_path)
+        .await
+        .unwrap()
+        .contains("AUTOSAVED"));
+
+    // A genuine external edit is still protected.
+    let external = r#"{"cells":[{"cell_type":"code","id":"external","source":"external = 1","metadata":{},"outputs":[],"execution_count":null}],"metadata":{},"nbformat":4,"nbformat_minor":5}"#;
+    tokio::fs::write(&notebook_path, external).await.unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.update_source("cell-1", "print(\"LOCAL\")").unwrap();
+    }
+    commit_test_room_doc(&room).await;
+    let refused = crate::requests::save_notebook::handle(&room, &daemon, false, None).await;
+    match refused {
+        crate::protocol::NotebookResponse::NotebookSaveBlocked {
+            reason: notebook_protocol::protocol::SaveBlockedReason::Io { message },
+            ..
+        } => assert!(message.contains("changed externally"), "{message}"),
+        other => panic!("external edit must block the save, got {other:?}"),
+    }
+    assert_eq!(
+        tokio::fs::read_to_string(&notebook_path).await.unwrap(),
+        external,
+        "refused save must leave the external bytes untouched"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Auto-launch single-flight gate (issue #4065: reconnect-loop spawn storm)
 // ---------------------------------------------------------------------------

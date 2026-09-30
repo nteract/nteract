@@ -645,6 +645,8 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
     let runtime_state = room.state.clone();
     let prepare_runtime_state = runtime_state.clone();
     let abort_runtime_state = runtime_state.clone();
+    #[cfg(test)]
+    let pause_room_id = room.id;
     let (checkpoint_outcome, content_bytes) = tokio::task::spawn_blocking(move || {
         let outcome = checkpoint_coordinator.complete_reserved_with_durable_intent(
             save_claim,
@@ -677,6 +679,8 @@ pub(crate) async fn save_notebook_to_disk_with_claim_and_intent(
                 )
             },
         );
+        #[cfg(test)]
+        wait_at_file_checkpoint_completion_pause_for_test(pause_room_id);
         (outcome, content_bytes)
     })
     .await
@@ -1096,6 +1100,54 @@ pub(crate) fn override_autosave_owner_liveness_for_test(
         AUTOSAVE_OWNER_LIVENESS_OVERRIDES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     overrides.lock().unwrap().insert(pid, live);
     AutosaveOwnerLivenessOverrideGuard { pid }
+}
+
+#[cfg(test)]
+struct FileCheckpointCompletionPause {
+    completed_tx: oneshot::Sender<()>,
+    release_rx: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+static FILE_CHECKPOINT_COMPLETION_PAUSES: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<uuid::Uuid, FileCheckpointCompletionPause>>,
+> = std::sync::OnceLock::new();
+
+/// Pause the next in-place save for `room_id` on its blocking thread after
+/// the checkpoint coordinator returns. At that point the file replacement
+/// and journal commit are done, but the async save has not yet published the
+/// watcher baseline or RuntimeStateDoc checkpoint. The returned receiver
+/// fires when the save reaches the pause; sending on (or dropping) the
+/// returned sender releases it. The pause is consumed on first use.
+#[cfg(test)]
+pub(crate) fn pause_after_file_checkpoint_completion_for_test(
+    room_id: uuid::Uuid,
+) -> (oneshot::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (completed_tx, completed_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    FILE_CHECKPOINT_COMPLETION_PAUSES
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(
+            room_id,
+            FileCheckpointCompletionPause {
+                completed_tx,
+                release_rx,
+            },
+        );
+    (completed_rx, release_tx)
+}
+
+#[cfg(test)]
+fn wait_at_file_checkpoint_completion_pause_for_test(room_id: uuid::Uuid) {
+    let pause = FILE_CHECKPOINT_COMPLETION_PAUSES
+        .get()
+        .and_then(|pauses| pauses.lock().ok()?.remove(&room_id));
+    if let Some(pause) = pause {
+        let _ = pause.completed_tx.send(());
+        let _ = pause.release_rx.recv();
+    }
 }
 
 fn autosave_owner_process_is_live(pid: u32) -> bool {
