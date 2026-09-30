@@ -26,13 +26,48 @@ fn record_file_claim(daemon: &Arc<Daemon>, room: &Arc<NotebookRoom>, path: &std:
     }
 }
 
+/// Handle an ordinary `SaveNotebook` request and finish it even if the caller
+/// stops waiting.
+///
+/// A peer's request worker is aborted when that peer disconnects, so Save
+/// followed immediately by Close drops the request future mid-save. The file
+/// replacement and journal commit run on a blocking thread and finish anyway,
+/// but the async continuation that records the new disk baseline, publishes
+/// the checkpoint to RuntimeStateDoc, and finishes path bookkeeping would be
+/// lost. The room would then refuse every later save as an external change.
+/// Running the save on its own task keeps the durable commit and its
+/// bookkeeping together; the caller only decides whether it waits for the
+/// response.
+///
+/// Only ordinary saves are detached. [`handle_reconciled`] stays on the
+/// caller's task because explicit reconciliation holds the room's exclusive
+/// reconciliation claim and finishes the lifecycle transition after the save
+/// returns; that claim must not be released while its save is still running.
 pub(crate) async fn handle(
     room: &Arc<NotebookRoom>,
     daemon: &Arc<Daemon>,
     format_cells: bool,
     path: Option<String>,
 ) -> NotebookResponse {
-    handle_with_intent(room, daemon, format_cells, path, FileSaveIntent::Ordinary).await
+    let response_path = path.clone();
+    let save = tokio::spawn({
+        let room = Arc::clone(room);
+        let daemon = Arc::clone(daemon);
+        async move {
+            handle_with_intent(&room, &daemon, format_cells, path, FileSaveIntent::Ordinary).await
+        }
+    });
+    match save.await {
+        Ok(response) => response,
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => NotebookResponse::NotebookSaveBlocked {
+            path: response_path,
+            save_sequence: None,
+            reason: notebook_protocol::protocol::SaveBlockedReason::Io {
+                message: format!("save task stopped before completion: {error}"),
+            },
+        },
+    }
 }
 
 pub(crate) async fn handle_reconciled(
@@ -56,44 +91,7 @@ pub(crate) async fn handle_reconciled(
     .await
 }
 
-/// Run an accepted save to completion even if the caller stops waiting.
-///
-/// A peer's request worker is aborted when that peer disconnects, so Save
-/// followed immediately by Close drops the request future mid-save. The file
-/// replacement and journal commit run on a blocking thread and finish anyway,
-/// but the async continuation that records the new disk baseline, publishes
-/// the checkpoint to RuntimeStateDoc, and finishes path bookkeeping would be
-/// lost. The room would then refuse every later save as an external change.
-/// Running the save on its own task keeps the durable commit and its
-/// bookkeeping together; the caller only decides whether it waits for the
-/// response.
 async fn handle_with_intent(
-    room: &Arc<NotebookRoom>,
-    daemon: &Arc<Daemon>,
-    format_cells: bool,
-    path: Option<String>,
-    intent: FileSaveIntent,
-) -> NotebookResponse {
-    let response_path = path.clone();
-    let save = tokio::spawn({
-        let room = Arc::clone(room);
-        let daemon = Arc::clone(daemon);
-        async move { run_save(&room, &daemon, format_cells, path, intent).await }
-    });
-    match save.await {
-        Ok(response) => response,
-        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-        Err(error) => NotebookResponse::NotebookSaveBlocked {
-            path: response_path,
-            save_sequence: None,
-            reason: notebook_protocol::protocol::SaveBlockedReason::Io {
-                message: format!("save task stopped before completion: {error}"),
-            },
-        },
-    }
-}
-
-async fn run_save(
     room: &Arc<NotebookRoom>,
     daemon: &Arc<Daemon>,
     format_cells: bool,
