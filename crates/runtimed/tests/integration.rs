@@ -20,6 +20,9 @@ use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig, TestRecoveryManifestFacts, TestRoomRecoveryFacts};
 use runtimed::protocol::{DependencyGuard, NotebookRequest, NotebookResponse};
 use runtimed::EnvType;
+use runtimed_client::telemetry::{
+    HostTelemetryOptions, HostTelemetrySource, TelemetryRegistration,
+};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3645,6 +3648,214 @@ async fn test_uuid_joiner_receives_frontend_authored_relay_cells() {
     drop(relay_handle);
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+struct HostTelemetryTestDaemon {
+    temp_dir: TempDir,
+    socket_path: PathBuf,
+    client: PoolClient,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl HostTelemetryTestDaemon {
+    async fn start() -> Self {
+        // Real transport tests must never enable production telemetry emission.
+        assert!(nteract_telemetry::is_telemetry_suppressed());
+        let temp_dir = TempDir::new().unwrap();
+        let config = test_config(&temp_dir);
+        let socket_path = config.socket_path.clone();
+        let daemon = Daemon::new_for_test(config).unwrap();
+        let test = Self {
+            temp_dir,
+            client: PoolClient::new(socket_path.clone()),
+            socket_path,
+            task: tokio::spawn(async move { daemon.run().await.unwrap() }),
+        };
+        assert!(wait_for_daemon(&test.client).await);
+        test
+    }
+
+    async fn shutdown(&mut self) {
+        stop_daemon_for_replacement(&self.client, &mut self.task).await;
+    }
+}
+
+impl Drop for HostTelemetryTestDaemon {
+    fn drop(&mut self) {
+        // Also stop the daemon when an assertion fails before explicit shutdown.
+        self.task.abort();
+    }
+}
+
+async fn reclaim_host_telemetry(
+    socket_path: &Path,
+    options: HostTelemetryOptions,
+) -> TelemetryRegistration {
+    // This deadline is shorter than the lease: success must come from Pool
+    // connection cleanup, not eventual lease expiration.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match TelemetryRegistration::open(socket_path, options.clone()).await {
+                Ok(Some(owner)) => return owner,
+                Err(runtimed::client::ClientError::DaemonError(message))
+                    if message == "host/source already has an active owner" =>
+                {
+                    tokio::task::yield_now().await;
+                }
+                Ok(None) => panic!("real daemon must support host telemetry"),
+                Err(error) => panic!("unexpected registration failure: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("Pool disconnect cleanup must release the owner before lease expiration")
+}
+
+#[tokio::test]
+async fn test_host_telemetry_capability_conflict_and_close_ack() {
+    let mut test = HostTelemetryTestDaemon::start().await;
+    let info = test.client.daemon_info().await.unwrap();
+    assert!(info.host_telemetry);
+    assert!(!info.host_telemetry_enabled);
+
+    for source in [HostTelemetrySource::App, HostTelemetrySource::Mcp] {
+        let options = HostTelemetryOptions::new("integration-editor", source);
+        let owner = TelemetryRegistration::open(&test.socket_path, options.clone())
+            .await
+            .unwrap()
+            .expect("real daemon advertises registration support");
+        assert!(!owner.emission_enabled());
+
+        for allowed in [false, true, false] {
+            owner.update_permission(allowed).await.unwrap();
+            let conflict = TelemetryRegistration::open(&test.socket_path, options.clone()).await;
+            assert!(matches!(
+                conflict,
+                Err(runtimed::client::ClientError::DaemonError(ref message))
+                    if message == "host/source already has an active owner"
+            ));
+        }
+
+        owner.close().await.unwrap();
+        owner.close().await.unwrap();
+        // No retries or Drop: the close ACK itself must release ownership.
+        let replacement = TelemetryRegistration::open(&test.socket_path, options)
+            .await
+            .unwrap()
+            .expect("close ACK must allow immediate replacement");
+        assert!(owner.update_permission(true).await.is_err());
+        replacement.update_permission(false).await.unwrap();
+        replacement.close().await.unwrap();
+    }
+
+    assert!(!test.temp_dir.path().join("host-telemetry.json").exists());
+    test.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_host_telemetry_drop_releases_pool_owner() {
+    let mut test = HostTelemetryTestDaemon::start().await;
+    let options = HostTelemetryOptions {
+        allowed: true,
+        ..HostTelemetryOptions::new("integration-editor", HostTelemetrySource::App)
+    };
+    let owner = TelemetryRegistration::open(&test.socket_path, options.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!owner.emission_enabled());
+    assert!(matches!(
+        TelemetryRegistration::open(&test.socket_path, options.clone()).await,
+        Err(runtimed::client::ClientError::DaemonError(ref message))
+            if message == "host/source already has an active owner"
+    ));
+
+    drop(owner);
+    let replacement = reclaim_host_telemetry(&test.socket_path, options).await;
+    replacement.update_permission(false).await.unwrap();
+    replacement.close().await.unwrap();
+    test.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_host_telemetry_raw_validation_and_parse_error_cleanup() {
+    use notebook_protocol::connection::{self, Handshake};
+    use runtimed::protocol::{Request, Response};
+
+    let mut test = HostTelemetryTestDaemon::start().await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for host_id in ["unknown", "Bad Host"] {
+            let mut stream = connect_raw_stream(&test.socket_path).await.unwrap();
+            connection::send_preamble(&mut stream).await.unwrap();
+            connection::send_json_frame(&mut stream, &Handshake::Pool)
+                .await
+                .unwrap();
+            connection::send_json_frame(
+                &mut stream,
+                &Request::RegisterHostTelemetry {
+                    host_id: host_id.into(),
+                    source: HostTelemetrySource::App,
+                    allowed: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                connection::recv_json_frame::<_, Response>(&mut stream)
+                    .await
+                    .unwrap(),
+                Some(Response::Error { message }) if message == "invalid host_id"
+            ));
+        }
+
+        let mut stream = connect_raw_stream(&test.socket_path).await.unwrap();
+        connection::send_preamble(&mut stream).await.unwrap();
+        connection::send_json_frame(&mut stream, &Handshake::Pool)
+            .await
+            .unwrap();
+        let options = HostTelemetryOptions::new("integration-editor", HostTelemetrySource::App);
+        connection::send_json_frame(
+            &mut stream,
+            &Request::RegisterHostTelemetry {
+                host_id: options.host_id.clone(),
+                source: options.source,
+                allowed: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            connection::recv_json_frame::<_, Response>(&mut stream)
+                .await
+                .unwrap(),
+            Some(Response::HostTelemetryAck)
+        ));
+
+        // An invalid source fails deserialization, exercising the Pool handler's
+        // error exit while this socket still owns a registration.
+        connection::send_json_frame(
+            &mut stream,
+            &serde_json::json!({
+                "type": "register_host_telemetry",
+                "host_id": "integration-editor",
+                "source": "daemon",
+                "allowed": true,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(connection::recv_json_frame::<_, Response>(&mut stream)
+            .await
+            .unwrap()
+            .is_none());
+
+        let replacement = reclaim_host_telemetry(&test.socket_path, options).await;
+        replacement.close().await.unwrap();
+        test.client.ping().await.unwrap();
+    })
+    .await
+    .expect("invalid Pool requests must terminate promptly without leaking ownership");
+    test.shutdown().await;
 }
 
 /// An older stable app sends a pool ping during upgrade to check whether a

@@ -72,6 +72,10 @@ pub struct QueryDaemonOptions {
 #[napi(object)]
 pub struct DaemonInfo {
     pub version: String,
+    /// Protocol support only; does not imply permission or enabled emission.
+    pub host_telemetry: Option<bool>,
+    /// Daemon rollout/process emission gate, not user consent or host permission.
+    pub host_telemetry_enabled: Option<bool>,
     pub protocol_version: u32,
     /// Zero means the daemon predates semantic API version reporting.
     pub daemon_api_version: u32,
@@ -307,6 +311,8 @@ pub async fn query_daemon_info(options: Option<QueryDaemonOptions>) -> Result<Op
                 let compatibility_error = runtimed_client::singleton::compatibility_error(&info);
                 DaemonInfo {
                     version: info.version,
+                    host_telemetry: Some(info.host_telemetry),
+                    host_telemetry_enabled: Some(info.host_telemetry_enabled),
                     protocol_version: info.protocol_version,
                     daemon_api_version: info.daemon_api_version,
                     compatibility_error,

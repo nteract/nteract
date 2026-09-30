@@ -1190,6 +1190,8 @@ mod tests {
         let server = NteractMcp::new(dir.path().join("runtime.sock"), Some("old".into()), None);
         let executions = dir.path().join("selected-executions");
         server.refresh_local_metadata(runtimed_client::singleton::DaemonInfo {
+            host_telemetry: false,
+            host_telemetry_enabled: false,
             endpoint: dir
                 .path()
                 .join("runtime.sock")

@@ -47,6 +47,7 @@ module.exports = {
         notebookPath: string,
         options?: { socketPath?: string; peerLabel?: string },
       ): Promise<{ notebookId: string }>;
+      openTelemetryRegistration?: unknown;
     };
     const options = { socketPath: "/tmp/runtimed.sock", peerLabel: "host" };
     const session = await api.openNotebookPath("/tmp/analysis.ipynb", options);
@@ -55,5 +56,29 @@ module.exports = {
     expect(session).not.toBeInstanceOf(api.NativeSession);
     expect(session.notebookId).toBe("notebook-from-path");
     expect(api.calls).toEqual([{ notebookPath: "/tmp/analysis.ipynb", options }]);
+    expect(api.openTelemetryRegistration).toBeUndefined();
+  });
+
+  it("forwards the optional telemetry export without wrapping its handle", async () => {
+    const fixture = fs.mkdtempSync(path.join(packageRoot, ".index-test-"));
+    temporaryDirectories.push(fixture);
+    for (const file of fs
+      .readdirSync(path.join(packageRoot, "src"))
+      .filter((name) => name.endsWith(".cjs") && name !== "binding.cjs")) {
+      fs.copyFileSync(path.join(packageRoot, "src", file), path.join(fixture, file));
+    }
+    fs.writeFileSync(
+      path.join(fixture, "binding.cjs"),
+      `
+const handle = { updatePermission: async () => {}, close: async () => {} };
+module.exports = { openTelemetryRegistration: async () => handle };
+`,
+    );
+    const api = require(path.join(fixture, "index.cjs"));
+    const binding = require(path.join(fixture, "binding.cjs"));
+    expect(api.openTelemetryRegistration).toBe(binding.openTelemetryRegistration);
+    expect(await api.openTelemetryRegistration({})).toBe(
+      await binding.openTelemetryRegistration({}),
+    );
   });
 });

@@ -455,21 +455,6 @@ fn default_install_default_data_packages() -> bool {
     true
 }
 
-/// Backfill `telemetry_consent_recorded` for installations that completed
-/// onboarding before the consent flag existed. Without this, all existing
-/// users would look like they had never consented, and their heartbeats
-/// would stop at the next app launch.
-///
-/// Called once on daemon startup. Idempotent. Returns `true` when the
-/// settings snapshot changed.
-pub fn backfill_telemetry_consent(settings: &mut SyncedSettings) -> bool {
-    if !settings.telemetry_consent_recorded && settings.onboarding_completed {
-        settings.telemetry_consent_recorded = true;
-        return true;
-    }
-    false
-}
-
 /// Ensure an install ID exists in a materialized settings snapshot.
 ///
 /// Returns the install ID and whether it had to be generated.
@@ -494,27 +479,6 @@ pub fn ensure_install_id(settings: &mut SettingsDoc) -> String {
     let id = uuid::Uuid::new_v4().to_string();
     settings.put("install_id", &id);
     id
-}
-
-/// Doc-level variant of [`backfill_telemetry_consent`] for callers that hold
-/// a `SettingsDoc` (e.g. the daemon at startup) rather than a fully
-/// materialized `SyncedSettings`. Returns `true` if the flag was flipped so
-/// the caller can choose to persist immediately.
-///
-/// Idempotent: safe to call on every startup.
-pub fn backfill_telemetry_consent_in_doc(settings: &mut SettingsDoc) -> bool {
-    let already_recorded = settings
-        .get_bool("telemetry_consent_recorded")
-        .unwrap_or(false);
-    if already_recorded {
-        return false;
-    }
-    let onboarded = settings.get_bool("onboarding_completed").unwrap_or(false);
-    if !onboarded {
-        return false;
-    }
-    settings.put_bool("telemetry_consent_recorded", true);
-    true
 }
 
 /// Generate a JSON Schema string for the settings file.
@@ -693,7 +657,22 @@ impl SettingsDoc {
                 {
                     Some(json) => {
                         info!("[settings] Loaded canonical settings from {:?}", json_path);
-                        return Self::from_json_value(&json);
+                        // Only an absent flag identifies pre-consent settings.
+                        // Defaults and malformed values must not imply consent.
+                        let backfill_consent = json.get("telemetry_consent_recorded").is_none()
+                            && json.get("onboarding_completed").and_then(|v| v.as_bool())
+                                == Some(true);
+                        let mut settings = Self::from_json_value(&json);
+                        if backfill_consent {
+                            settings.put_bool("telemetry_consent_recorded", true);
+                            if let Err(e) = settings.save_json_mirror(json_path) {
+                                log::warn!(
+                                    "[settings] Failed to persist telemetry consent migration: {e}"
+                                );
+                                settings.put_bool("telemetry_consent_recorded", false);
+                            }
+                        }
+                        return settings;
                     }
                     None => {
                         log::warn!(
@@ -714,12 +693,35 @@ impl SettingsDoc {
                         automerge_path
                     );
                     let mut settings = Self { doc };
+                    let consent = settings
+                        .doc
+                        .get(automerge::ROOT, "telemetry_consent_recorded");
+                    let backfill_consent = matches!(consent, Ok(None))
+                        && matches!(
+                            settings.doc.get(automerge::ROOT, "onboarding_completed"),
+                            Ok(Some((automerge::Value::Scalar(value), _)))
+                                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+                        );
+                    let recorded = matches!(
+                        consent,
+                        Ok(Some((automerge::Value::Scalar(value), _)))
+                            if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+                    );
+                    // Consent requires a boolean, not the string coercion used
+                    // by general-purpose legacy settings accessors.
+                    settings.put_bool("telemetry_consent_recorded", recorded);
                     settings.migrate_flat_to_nested();
                     settings.migrate_null_keep_alive();
 
                     if let Some(json_path) = settings_json_path {
+                        if backfill_consent {
+                            settings.put_bool("telemetry_consent_recorded", true);
+                        }
                         if let Err(e) = settings.save_json_mirror(json_path) {
                             log::warn!("[settings] Failed to write migrated settings.json: {e}");
+                            if backfill_consent {
+                                settings.put_bool("telemetry_consent_recorded", false);
+                            }
                         }
                     }
 
@@ -1948,22 +1950,111 @@ mod tests {
     }
 
     #[test]
-    fn test_backfill_telemetry_consent_flips_for_onboarded_users() {
-        let mut s = SyncedSettings {
-            onboarding_completed: true,
-            telemetry_consent_recorded: false,
-            ..Default::default()
-        };
-        assert!(backfill_telemetry_consent(&mut s));
-        assert!(s.telemetry_consent_recorded);
-    }
+    fn test_telemetry_consent_migration_persisted_formats() {
+        use serde_json::json;
 
-    #[test]
-    fn test_backfill_telemetry_consent_noop_for_fresh_installs() {
-        let mut s = SyncedSettings::default();
-        // onboarding_completed defaults to false
-        assert!(!backfill_telemetry_consent(&mut s));
-        assert!(!s.telemetry_consent_recorded);
+        for legacy_automerge in [false, true] {
+            for onboarding in [false, true] {
+                for enabled in [false, true] {
+                    for consent in [
+                        None,
+                        Some(json!(false)),
+                        Some(json!(true)),
+                        Some(json!(null)),
+                        Some(json!("true")),
+                        Some(json!(1)),
+                        Some(json!({})),
+                        Some(json!([])),
+                    ] {
+                        let tmp = TempDir::new().unwrap();
+                        let automerge_path = tmp.path().join("settings.automerge");
+                        let json_path = tmp.path().join("settings.json");
+                        let expected =
+                            consent == Some(json!(true)) || (consent.is_none() && onboarding);
+                        let mut json = json!({
+                            "onboarding_completed": onboarding,
+                            "telemetry_enabled": enabled,
+                        });
+                        if let Some(value) = &consent {
+                            json["telemetry_consent_recorded"] = value.clone();
+                        }
+                        if legacy_automerge {
+                            let mut doc = AutoCommit::new();
+                            for (key, value) in json.as_object().unwrap() {
+                                match value {
+                                    serde_json::Value::Bool(value) => {
+                                        doc.put(automerge::ROOT, key.as_str(), *value).unwrap();
+                                    }
+                                    serde_json::Value::String(value) => {
+                                        doc.put(automerge::ROOT, key.as_str(), value.as_str())
+                                            .unwrap();
+                                    }
+                                    serde_json::Value::Null => {
+                                        doc.put(
+                                            automerge::ROOT,
+                                            key.as_str(),
+                                            automerge::ScalarValue::Null,
+                                        )
+                                        .unwrap();
+                                    }
+                                    serde_json::Value::Number(value) => {
+                                        doc.put(
+                                            automerge::ROOT,
+                                            key.as_str(),
+                                            value.as_i64().unwrap(),
+                                        )
+                                        .unwrap();
+                                    }
+                                    serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                                        let kind = if value.is_object() {
+                                            ObjType::Map
+                                        } else {
+                                            ObjType::List
+                                        };
+                                        doc.put_object(automerge::ROOT, key.as_str(), kind)
+                                            .unwrap();
+                                    }
+                                }
+                            }
+                            std::fs::write(&automerge_path, doc.save()).unwrap();
+                        } else {
+                            std::fs::write(&json_path, serde_json::to_vec(&json).unwrap()).unwrap();
+                            // Ordinary readers must not perform startup migration.
+                            let read = read_synced_settings_json(&json_path).unwrap();
+                            assert_eq!(
+                                read.telemetry_consent_recorded,
+                                consent == Some(json!(true))
+                            );
+                        }
+
+                        let loaded = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+                        let settings = loaded.get_all();
+                        assert_eq!(settings.telemetry_consent_recorded, expected,
+                            "automerge={legacy_automerge}, onboarding={onboarding}, consent={consent:?}");
+                        assert_eq!(settings.telemetry_enabled, enabled);
+                        assert_eq!(
+                            read_synced_settings_json(&json_path)
+                                .unwrap()
+                                .telemetry_consent_recorded,
+                            expected
+                        );
+
+                        let mut restarted =
+                            SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+                        assert_eq!(restarted.get_all(), settings);
+                        // A later explicit withdrawal must survive startup, even
+                        // with an onboarded legacy Automerge file still present.
+                        restarted.put_bool("telemetry_consent_recorded", false);
+                        restarted.save_json_mirror(&json_path).unwrap();
+                        let withdrawn =
+                            SettingsDoc::load_or_create(&automerge_path, Some(&json_path))
+                                .get_all();
+                        assert!(!withdrawn.telemetry_consent_recorded);
+                        assert_eq!(withdrawn.telemetry_enabled, enabled);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -1981,27 +2072,51 @@ mod tests {
     }
 
     #[test]
-    fn test_backfill_telemetry_consent_in_doc_flips_once() {
-        let mut doc = SettingsDoc::new();
-        doc.put_bool("onboarding_completed", true);
-        // Default: consent_recorded is false
-        assert!(!doc.get_bool("telemetry_consent_recorded").unwrap_or(false));
+    fn test_telemetry_consent_migration_requires_json_persistence() {
+        let tmp = TempDir::new().unwrap();
+        let automerge_path = tmp.path().join("settings.automerge");
+        let json_path = tmp.path().join("settings.json");
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "onboarding_completed", true)
+            .unwrap();
+        doc.put(automerge::ROOT, "telemetry_enabled", false)
+            .unwrap();
+        std::fs::write(&automerge_path, doc.save()).unwrap();
+        std::fs::create_dir(&json_path).unwrap();
 
-        // First call flips it and returns true
-        assert!(backfill_telemetry_consent_in_doc(&mut doc));
-        assert!(doc.get_bool("telemetry_consent_recorded").unwrap_or(false));
-
-        // Second call is a no-op and returns false
-        assert!(!backfill_telemetry_consent_in_doc(&mut doc));
+        for path in [None, Some(json_path.as_path())] {
+            let settings = SettingsDoc::load_or_create(&automerge_path, path).get_all();
+            assert!(!settings.telemetry_consent_recorded);
+            assert!(!settings.telemetry_enabled);
+        }
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_backfill_telemetry_consent_in_doc_noop_for_fresh_installs() {
-        let mut doc = SettingsDoc::new();
-        // onboarding_completed is false in a fresh doc; backfill must not
-        // synthesize consent that was never given.
-        assert!(!backfill_telemetry_consent_in_doc(&mut doc));
-        assert!(!doc.get_bool("telemetry_consent_recorded").unwrap_or(false));
+    fn test_telemetry_consent_migration_read_only_json_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let automerge_path = tmp.path().join("settings.automerge");
+        let json_path = tmp.path().join("settings.json");
+        let original = r#"{"onboarding_completed":true,"telemetry_enabled":false}"#;
+        std::fs::write(&json_path, original).unwrap();
+        std::fs::set_permissions(&json_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        // Privileged test runners can bypass filesystem permissions.
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open(&json_path)
+            .is_ok()
+        {
+            return;
+        }
+
+        for _ in 0..2 {
+            let settings = SettingsDoc::load_or_create(&automerge_path, Some(&json_path)).get_all();
+            assert!(!settings.telemetry_consent_recorded);
+            assert!(!settings.telemetry_enabled);
+            assert_eq!(std::fs::read_to_string(&json_path).unwrap(), original);
+        }
     }
 
     #[test]

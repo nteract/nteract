@@ -220,6 +220,8 @@ pub async fn probe_local_runtime(
         }
     };
     let info = DaemonInfo {
+        host_telemetry: info.host_telemetry,
+        host_telemetry_enabled: info.host_telemetry_enabled,
         endpoint: endpoint.to_string_lossy().into_owned(),
         protocol_version: info.protocol_version,
         daemon_api_version: info.daemon_api_version,
@@ -305,6 +307,8 @@ mod tests {
 
     fn compatible_info() -> DaemonInfo {
         DaemonInfo {
+            host_telemetry: false,
+            host_telemetry_enabled: false,
             endpoint: "test-runtime".into(),
             protocol_version: u32::from(notebook_protocol::connection::PROTOCOL_VERSION),
             daemon_api_version: crate::protocol::DAEMON_API_VERSION,

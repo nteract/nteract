@@ -933,6 +933,8 @@ mod tests {
 
     fn daemon_info(version: &str, pid: u32) -> runtimed_client::singleton::DaemonInfo {
         runtimed_client::singleton::DaemonInfo {
+            host_telemetry: false,
+            host_telemetry_enabled: false,
             endpoint: "/tmp/test.sock".to_string(),
             protocol_version: notebook_protocol::connection::PROTOCOL_VERSION.into(),
             daemon_api_version: runtimed_client::protocol::DAEMON_API_VERSION,

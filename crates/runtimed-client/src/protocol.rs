@@ -39,10 +39,14 @@ pub use notebook_protocol::protocol::{
 pub enum Request {
     /// Request an environment from the pool.
     /// If available, the daemon will claim it and return the path.
-    Take { env_type: EnvType },
+    Take {
+        env_type: EnvType,
+    },
 
     /// Return an environment to the pool (optional - daemon reclaims on death).
-    Return { env: PooledEnv },
+    Return {
+        env: PooledEnv,
+    },
 
     /// Get current pool statistics.
     Status,
@@ -92,8 +96,23 @@ pub enum Request {
     /// version is needed.
     GetDaemonInfo,
 
+    /// Claim one host/source for this persistent Pool connection.
+    RegisterHostTelemetry {
+        host_id: String,
+        source: crate::telemetry::HostTelemetrySource,
+        #[serde(default)]
+        allowed: bool,
+    },
+    UpdateHostTelemetryPermission {
+        allowed: bool,
+    },
+    RenewHostTelemetry,
+    CloseHostTelemetry,
+
     /// Read a terminal execution result by durable execution ID.
-    GetExecutionResult { execution_id: String },
+    GetExecutionResult {
+        execution_id: String,
+    },
 
     /// Get tokio runtime metrics (worker utilization, task counts, queue
     /// depths). Used by `runt daemon status --json` and diagnostic tools
@@ -140,6 +159,11 @@ pub enum Response {
     /// with `Response::Error { message: "Unknown request" }`; clients should
     /// treat that as "metadata unavailable".
     DaemonInfo {
+        /// Protocol support only; does not indicate that emission is enabled.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        host_telemetry: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        host_telemetry_enabled: bool,
         /// Numeric protocol version (matches `PROTOCOL_VERSION`).
         protocol_version: u32,
         /// Semantic daemon API version. Missing on pre-versioned daemons and
@@ -176,6 +200,9 @@ pub enum Response {
 
     /// Generic success acknowledgment.
     Ok,
+
+    /// The connection's host telemetry operation has been applied.
+    HostTelemetryAck,
 
     /// Durable execution record found by execution ID.
     ExecutionResult {

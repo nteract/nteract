@@ -748,6 +748,8 @@ mod tests {
 
     fn daemon_info(pid: u32, version: &str, api: u32) -> DaemonInfo {
         DaemonInfo {
+            host_telemetry: false,
+            host_telemetry_enabled: false,
             endpoint: "/tmp/runtimed.sock".to_string(),
             protocol_version: notebook_protocol::connection::PROTOCOL_VERSION.into(),
             daemon_api_version: api,
