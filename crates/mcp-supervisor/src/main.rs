@@ -3337,9 +3337,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let message = if builds_daemon {
                     "Release daemon + child startup build failed. See supervisor logs for the failing step, then run `up rebuild=true` to retry. Child-only rebuilds cannot verify daemon recovery."
                 } else if mode == DevMode::Attach {
-                    "MCP child startup build failed. See supervisor logs, fix the source, then reconnect this MCP server to retry (or enable NTERACT_DEV_WATCH=1 before startup). External builds alone do not clear this recorded failure."
+                    "MCP child startup build failed. See supervisor logs, fix the source, then reconnect this MCP server to retry. External builds alone do not clear this recorded failure."
                 } else {
-                    "MCP child startup build failed. See supervisor logs, then run `up rebuild=true` or reconnect this MCP server to retry. With NTERACT_DEV_WATCH=1, a corrected edit also retries."
+                    "MCP child startup build failed. See supervisor logs, then run `up rebuild=true` or reconnect this MCP server to retry."
                 };
                 error!("{message}");
                 state_for_init
