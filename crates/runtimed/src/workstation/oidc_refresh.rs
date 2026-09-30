@@ -2194,6 +2194,12 @@ mod tests {
                 == "rotated-refresh-1"
         })
         .await;
+        // The second caller's task holds the permit until its recheck under
+        // the lock is done; wait for it before counting issuer requests.
+        wait_until("the queued refresh task to finish", || {
+            client.single_flight.available_permits() == 1
+        })
+        .await;
         let fresh = client.refresh_or_reuse().await.unwrap();
         assert_ne!(fresh, "stale-access-token");
         assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
