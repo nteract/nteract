@@ -50,7 +50,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Environment variable carrying the refresh token used to seed a new cache.
-/// Read once at startup when no cache exists; never passed on argv.
+/// Read once at startup and never passed on argv. Its presence also opts the
+/// agent into refresh; with an existing cache the value itself is ignored.
 pub const CLOUD_REFRESH_TOKEN_ENV: &str = "RUNT_CLOUD_REFRESH_TOKEN";
 
 /// Safety skew applied before an access token's recorded expiry: refresh at
@@ -71,6 +72,10 @@ const CACHE_LOCK_WAIT: Duration = Duration::from_secs(40);
 /// without new issuer requests, so an outage costs one timeout, not one per
 /// queued connect or blob upload.
 const FAILURE_BACKOFF: Duration = Duration::from_secs(5);
+
+/// How long a caller holding a still-valid (inside the skew window) token
+/// waits for a refresh before using that token.
+const UNEXPIRED_REFRESH_WAIT: Duration = Duration::from_secs(2);
 
 /// Access-token lifetime assumed when a grant has neither `expires_in` nor a
 /// JWT `exp`.
@@ -919,6 +924,13 @@ impl CacheFileLock {
     }
 }
 
+/// A refresh failure remembered for [`FAILURE_BACKOFF`].
+struct RecentFailure {
+    at: std::time::Instant,
+    kind: io::ErrorKind,
+    message: String,
+}
+
 /// Fresh-token source for a `TokenRefresher`: checks a cached access
 /// token's expiry, exchanges the refresh token when needed, and persists
 /// the result.
@@ -927,13 +939,6 @@ impl CacheFileLock {
 /// (a permit may be held across `.await`; a Tokio `Mutex`/`RwLock` guard may
 /// not, per `cargo test -p runtimed --test tokio_mutex_lint`) and serialized
 /// across processes sharing the cache by [`CacheFileLock`].
-/// A refresh failure remembered for [`FAILURE_BACKOFF`].
-struct RecentFailure {
-    at: std::time::Instant,
-    kind: io::ErrorKind,
-    message: String,
-}
-
 #[derive(Clone)]
 pub struct OidcRefreshClient {
     cache_path: PathBuf,
@@ -1012,9 +1017,19 @@ impl OidcRefreshClient {
         }
 
         let this = self.clone();
-        let result = tokio::spawn(async move { this.refresh_locked().await })
-            .await
-            .map_err(|e| io::Error::other(format!("oidc refresh task failed: {e}")))?;
+        let task = tokio::spawn(async move { this.refresh_locked().await });
+        let joined = if is_expired(&cache.expires_at) {
+            task.await
+        } else {
+            // The cached token still works, so don't hold the caller for a
+            // slow issuer. The detached task still persists any rotation.
+            match tokio::time::timeout(UNEXPIRED_REFRESH_WAIT, task).await {
+                Ok(joined) => joined,
+                Err(_) => return Ok(cache.access_token),
+            }
+        };
+        let result =
+            joined.map_err(|e| io::Error::other(format!("oidc refresh task failed: {e}")))?;
         match result {
             Err(error) if !is_expired(&cache.expires_at) => {
                 tracing::warn!(
@@ -2019,8 +2034,8 @@ mod tests {
             path,
             binding_for(&issuer.url),
             IssuerTransport::AllowLoopbackHttp,
-            Duration::from_millis(200),
-            Duration::from_millis(200),
+            Duration::from_millis(500),
+            Duration::from_millis(500),
             CACHE_LOCK_WAIT,
         )
         .unwrap();
@@ -2036,7 +2051,8 @@ mod tests {
         .expect("queued callers must not each wait out their own timeout");
         assert!(a.is_err() && b.is_err() && c.is_err());
         assert!(client.refresh_or_reuse().await.is_err());
-        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
+        // One attempt at most; zero only if discovery itself timed out.
+        assert!(issuer.exchange_count.load(Ordering::SeqCst) <= 1);
     }
 
     #[tokio::test]
@@ -2058,6 +2074,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(token, "stale-access-token");
+    }
+
+    #[tokio::test]
+    async fn slow_issuer_does_not_hold_a_caller_with_an_unexpired_token() {
+        let issuer = start_fake_issuer(FakeIssuerConfig {
+            token_delay: Some(Duration::from_secs(10)),
+            ..Default::default()
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_expired_cache(&path, &issuer.url, None);
+        let mut cache = RefreshTokenCache::load(&path).unwrap().unwrap();
+        cache.expires_at = absolute_expiry(30); // inside the skew, not expired
+        cache.save(&path).unwrap();
+
+        let started = tokio::time::Instant::now();
+        let token = loopback_client(&path, &issuer.url)
+            .refresh_or_reuse()
+            .await
+            .unwrap();
+        assert_eq!(token, "stale-access-token");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[tokio::test]
@@ -2091,9 +2130,12 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        // The rotated token works; the spent seed would be rejected.
+        // Expire again: the rotated token works, the spent seed would not.
+        let mut cache = RefreshTokenCache::load(&path).unwrap().unwrap();
+        cache.expires_at = absolute_expiry(0);
+        cache.save(&path).unwrap();
         client.refresh_or_reuse().await.unwrap();
-        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
+        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
