@@ -290,7 +290,9 @@ mod tests {
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            let _ = stream.read(&mut request).await;
+            {
+                let _ = stream.read(&mut request).await;
+            }
             let _ = stream.write_all(&response).await;
         });
         format!("http://{address}")
