@@ -58,6 +58,50 @@ cargo xtask wasm runtimed     # rebuild runtimed-wasm only
 cargo xtask wasm sift         # rebuild sift-wasm only
 ```
 
+### MCP renderer development
+
+Run `cargo xtask run-mcp` from the worktree used by your MCP client. The
+supervisor checks generated assets before compiling and starting its child:
+WASM first, affected renderer bundles next, then the widget HTML and `runt`.
+The first build checks every bundle, including the hydrated LFS bundles, and
+records local content receipts under `target/xtask/`. This initial rebuild
+certifies current source inputs; an LFS output alone cannot establish that.
+Later
+runs compare input and output bytes, including imported TypeScript, CSS source
+directories, build configuration, and the package lockfile. Unchanged bundles
+retain their timestamps so Cargo can reuse the existing child binary.
+
+File watching is opt-in: set `NTERACT_DEV_WATCH=1` on the MCP server process.
+Renderer/widget edits rebuild the affected assets and restart only the MCP
+child if its binary changes. Generated outputs do not trigger another reload.
+Without watching, restart the MCP server, or use `up rebuild=true` in owner
+mode. Attach mode prepares the child and assets but never restarts the shared
+daemon. Development daemons serve renderer assets from this worktree's disk;
+installed stable/nightly daemons are not part of this workflow.
+
+If asset preparation fails and a child binary already exists, startup keeps
+that child available and reports the failure in supervisor status. With
+watching enabled, a corrected edit retries the build. A fresh checkout with
+no usable binary still requires a successful build before child tools work.
+
+For asset-only preparation or diagnostics:
+
+```bash
+cargo xtask artifacts ensure mcp-widget  # includes sift and renderer dependencies
+cargo xtask artifacts status mcp-widget
+cargo xtask artifacts verify mcp-widget
+```
+
+The widget embeds content hashes of lazy plugin assets, so a plugin-only edit
+also changes the widget's advertised resource URI after rebuilding. The child
+refreshes live tool/resource discovery and emits list-change notifications.
+The checked-in startup tool cache keeps its legacy readable widget URI for
+compatibility; result metadata alone does not update a host's tool catalog.
+MCP cannot force a host to replace an already-running widget. If your host
+retains its old catalog or widget, reconnect/restart that host's MCP integration
+(and, if necessary, the host application) to discover the new URI and open a
+fresh widget. Source freshness is not proof of host-side invalidation.
+
 ### Python bindings
 
 `cargo xtask dev` syncs the Python environment unless `--skip-install` is set.

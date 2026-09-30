@@ -638,6 +638,7 @@ jobs:
             packages/sift/public/wasm/
             apps/notebook/src/renderer-plugins/
             target/xtask/*.fingerprint
+            target/xtask/renderer-*.inputs.json
 
   js-tests:
     name: JS Tests & Benchmarks

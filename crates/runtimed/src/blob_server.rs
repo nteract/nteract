@@ -346,7 +346,10 @@ fn dev_plugin_assets_dir() -> Option<PathBuf> {
         return None;
     }
 
-    let workspace = runt_workspace::get_workspace_path()?;
+    let workspace = std::env::var_os("RUNTIMED_DEV_ASSET_ROOT")
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .or_else(runt_workspace::get_workspace_path)?;
     // Canonical dev source: the notebook renderer-plugin dir. The raw CJS
     // bundles living here are wrapped on the way out by `wrap_for_mcp_app`
     // for MCP App consumers and served verbatim to the notebook app.

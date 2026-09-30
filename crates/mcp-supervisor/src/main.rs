@@ -342,7 +342,10 @@ fn start_daemon(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env("RUNTIMED_DEV", "1")
-        .env("RUNTIMED_WORKSPACE_PATH", workspace_path);
+        .env("RUNTIMED_WORKSPACE_PATH", workspace_path)
+        // Isolated sessions use a disposable state namespace, but renderer
+        // assets still belong to the source worktree.
+        .env("RUNTIMED_DEV_ASSET_ROOT", project_root);
 
     match cmd.spawn() {
         Ok(child) => {
@@ -557,9 +560,13 @@ fn fingerprint_changed(before: &BinaryFingerprint, after: &BinaryFingerprint) ->
 ///
 /// Returns `true` on success, `false` on failure.
 fn run_cargo_build_daemon(project_root: &Path) -> bool {
+    if !run_xtask_wasm_ensure(project_root) || !ensure_mcp_assets(project_root) {
+        return false;
+    }
     info!("Building daemon + CLI (cargo build -p runtimed -p runt)...");
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("build")
+        .stdin(Stdio::null())
         .arg("-p")
         .arg("runtimed")
         .arg("-p")
@@ -599,6 +606,7 @@ fn run_xtask_wasm_ensure(project_root: &Path) -> bool {
     info!("Ensuring runtimed-wasm is current (cargo xtask wasm-ensure-runtime)...");
     let status = std::process::Command::new("cargo")
         .args(["run", "--package", "xtask", "--", "wasm-ensure-runtime"])
+        .stdin(Stdio::null())
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -620,15 +628,42 @@ fn run_xtask_wasm_ensure(project_root: &Path) -> bool {
     }
 }
 
-/// Build the runt CLI binary (which includes runt-mcp).
-/// Respects release mode so the built binary matches what cargo_binary() resolves.
+/// Prepare embedded assets before any child/daemon compilation.
+fn ensure_mcp_assets(project_root: &Path) -> bool {
+    info!("Ensuring renderer and widget inputs before compiling the MCP child...");
+    std::process::Command::new("cargo")
+        // Package managers must not read or change flags on the MCP input pipe.
+        .stdin(Stdio::null())
+        .args([
+            "run",
+            "--package",
+            "xtask",
+            "--",
+            "artifacts",
+            "ensure",
+            "mcp-widget",
+        ])
+        .current_dir(project_root)
+        // MCP stdout is exclusively JSON-RPC, including during preparation.
+        .stdout(Stdio::from(std::io::stderr()))
+        .stderr(Stdio::inherit())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Build the runt CLI binary (which includes runt-mcp) in the selected profile.
 fn build_runt_cli(project_root: &Path) -> bool {
+    if !ensure_mcp_assets(project_root) {
+        error!("MCP asset preparation failed; see build diagnostics above");
+        return false;
+    }
     let mut args = vec!["build", "-p", "runt"];
     if use_release_binaries() {
         args.push("--release");
     }
     let status = std::process::Command::new("cargo")
         .args(&args)
+        .stdin(Stdio::null())
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
@@ -728,6 +763,11 @@ enum ChangeKind {
     RustChanged,
     /// Rust MCP server files changed (runt-mcp, runtimed-client) — needs cargo build + restart.
     RustMcpChanged,
+    /// Renderer/widget inputs changed — ensure artifacts, then rebuild the child only.
+    AssetsChanged,
+    /// Python and compiled inputs changed in one pending batch. Preserve the
+    /// Python restart even if the compiled output turns out to be identical.
+    Mixed,
 }
 
 /// A managed long-running child process (vite, notebook app, etc.).
@@ -768,6 +808,9 @@ struct SupervisorState {
     socket_path: String,
     /// Last error message from child.
     last_error: Option<String>,
+    /// Build failures survive process restarts and unrelated successful builds.
+    child_build_error: Option<String>,
+    daemon_build_error: Option<String>,
     /// Whether we started the daemon (so we know to clean it up).
     daemon_child: Option<std::process::Child>,
     /// Channel to request a tool list changed notification from the server context.
@@ -775,6 +818,35 @@ struct SupervisorState {
     tool_list_changed_tx: Option<mpsc::Sender<()>>,
     /// Managed long-running processes (vite dev server, notebook app, etc.).
     managed: HashMap<String, ManagedProcess>,
+}
+
+impl SupervisorState {
+    fn reported_error(&self) -> Option<String> {
+        let errors: Vec<&str> = [
+            self.last_error.as_deref(),
+            self.child_build_error.as_deref(),
+            self.daemon_build_error.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!errors.is_empty()).then(|| errors.join("\n"))
+    }
+
+    fn build_failed(&mut self, includes_daemon: bool, message: String) {
+        if includes_daemon {
+            self.daemon_build_error = Some(message);
+        } else {
+            self.child_build_error = Some(message);
+        }
+    }
+
+    fn build_succeeded(&mut self, includes_daemon: bool) {
+        self.child_build_error = None;
+        if includes_daemon {
+            self.daemon_build_error = None;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -831,6 +903,8 @@ impl Supervisor {
                 isolated_context,
                 socket_path: String::new(),
                 last_error: None,
+                child_build_error: None,
+                daemon_build_error: None,
                 daemon_child: None,
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
@@ -986,7 +1060,7 @@ impl Supervisor {
         SupervisorStatus {
             child_running,
             restart_count,
-            last_error: state.last_error.clone(),
+            last_error: state.reported_error(),
             socket_path: state.socket_path.clone(),
             project_root: state.project_root.to_string_lossy().to_string(),
             mode: state.mode.as_str().to_string(),
@@ -1284,15 +1358,22 @@ impl Supervisor {
 
         let skip_maturin = std::env::var("SKIP_MATURIN").unwrap_or_default() == "1";
 
+        let child_before = binary_fingerprint(&project_root, "runt");
+        let mut build_failed = false;
         match kind {
-            ChangeKind::RustMcpChanged => {
-                info!("Rust MCP files changed, building runt...");
+            ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged => {
+                info!("MCP source/assets changed, checking assets and building runt...");
                 if !build_runt_cli(&project_root) {
-                    error!("cargo build -p runt failed, keeping current child");
+                    let message = "MCP asset preparation or runt build failed; keeping current child. See supervisor logs.";
+                    error!("{message}");
+                    self.state
+                        .write()
+                        .await
+                        .build_failed(false, message.to_string());
                     return;
                 }
             }
-            ChangeKind::RustChanged => {
+            ChangeKind::RustChanged | ChangeKind::Mixed => {
                 info!(
                     "Rust binding files changed, building runt{}...",
                     if skip_maturin {
@@ -1302,16 +1383,36 @@ impl Supervisor {
                     }
                 );
                 if !build_runt_cli(&project_root) {
-                    error!("cargo build -p runt failed, keeping current child");
-                    return;
-                }
-                if !skip_maturin && !run_maturin_develop(&project_root).success() {
+                    let message = "MCP asset preparation or runt build failed; compiled assets remain stale. See supervisor logs.";
+                    error!("{message}");
+                    self.state
+                        .write()
+                        .await
+                        .build_failed(false, message.to_string());
+                    if kind != ChangeKind::Mixed {
+                        return;
+                    }
+                    // Python is loaded at runtime: a failed compiled-asset
+                    // build must not discard the Python edit in this batch.
+                    build_failed = true;
+                } else if !skip_maturin && !run_maturin_develop(&project_root).success() {
                     warn!("maturin develop failed (runt mcp will still restart)");
                 }
             }
             ChangeKind::PythonOnly => {
                 info!("Python files changed; restarting child without rebuilding native bindings");
             }
+        }
+
+        if kind != ChangeKind::PythonOnly && !build_failed {
+            self.state.write().await.build_succeeded(false);
+        }
+
+        if matches!(kind, ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged)
+            && !fingerprint_changed(&child_before, &binary_fingerprint(&project_root, "runt"))
+        {
+            info!("Build was a no-op; keeping the current MCP child and catalog");
+            return;
         }
 
         // Clear circuit breaker for file-change-triggered restarts
@@ -1495,6 +1596,7 @@ impl Supervisor {
                     "up: cargo build -p runtimed failed. See the supervisor logs for details.",
                 )]));
             }
+            self.state.write().await.build_succeeded(true);
             let (daemon_after, child_after) = managed_binary_fingerprints(&project_root);
             daemon_changed_by_rebuild = fingerprint_changed(&daemon_before, &daemon_after);
             child_changed_by_rebuild = fingerprint_changed(&child_before, &child_after);
@@ -1750,7 +1852,7 @@ struct SupervisorStatus {
     child_running: bool,
     /// Number of times the child has been restarted.
     restart_count: u32,
-    /// Last error from the child process, if any.
+    /// Outstanding process and build errors, joined by newlines.
     last_error: Option<String>,
     /// Daemon socket path.
     socket_path: String,
@@ -2371,6 +2473,7 @@ impl Supervisor {
                         "cargo build -p runtimed failed — check the supervisor logs for details",
                     )]));
                 }
+                self.state.write().await.build_succeeded(true);
 
                 // 2. Rebuild Python bindings (maturin develop) — skip if
                 // SKIP_MATURIN=1 is set (speeds up Rust-only iteration).
@@ -2845,10 +2948,66 @@ fn daemon_log_path(
 // File watcher (phase 2)
 // ---------------------------------------------------------------------------
 
+fn merge_change(previous: Option<ChangeKind>, next: ChangeKind) -> ChangeKind {
+    match (previous, next) {
+        (Some(ChangeKind::Mixed), _) | (_, ChangeKind::Mixed) => ChangeKind::Mixed,
+        (Some(ChangeKind::PythonOnly), kind) if kind != ChangeKind::PythonOnly => ChangeKind::Mixed,
+        (Some(kind), ChangeKind::PythonOnly) if kind != ChangeKind::PythonOnly => ChangeKind::Mixed,
+        (_, ChangeKind::RustChanged) | (Some(ChangeKind::RustChanged), _) => {
+            ChangeKind::RustChanged
+        }
+        (_, ChangeKind::RustMcpChanged) | (Some(ChangeKind::RustMcpChanged), _) => {
+            ChangeKind::RustMcpChanged
+        }
+        (_, ChangeKind::AssetsChanged) | (Some(ChangeKind::AssetsChanged), _) => {
+            ChangeKind::AssetsChanged
+        }
+        _ => ChangeKind::PythonOnly,
+    }
+}
+
+fn drain_pending_changes(
+    mut kind: ChangeKind,
+    receiver: &mut mpsc::UnboundedReceiver<ChangeKind>,
+) -> ChangeKind {
+    while let Ok(next) = receiver.try_recv() {
+        kind = merge_change(Some(kind), next);
+    }
+    kind
+}
+
 /// Classify a changed file path into a change kind.
 fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
     let rel = path.strip_prefix(project_root).ok()?;
-    let rel_str = rel.to_string_lossy();
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+
+    if rel_str.starts_with("src/")
+        || rel_str.starts_with("packages/sift/src/")
+        || rel_str.starts_with("packages/runtimed/src/")
+        || rel_str.starts_with("packages/odometer/src/")
+        || rel_str.starts_with("apps/mcp-app/src/")
+        || matches!(
+            rel_str.as_ref(),
+            "apps/mcp-app/vite.config.ts"
+                | "apps/mcp-app/build-html.js"
+                | "apps/mcp-app/package.json"
+                | "apps/notebook/vite-plugin-isolated-renderer.ts"
+                | "scripts/build-renderer-plugins.ts"
+                | "package.json"
+                | "pnpm-lock.yaml"
+                | "pnpm-workspace.yaml"
+                | "tsconfig.json"
+                | "apps/mcp-app/tsconfig.json"
+                | "packages/sift/package.json"
+                | "packages/sift/tsconfig.json"
+                | "packages/runtimed/package.json"
+                | "packages/runtimed/tsconfig.json"
+                | "packages/odometer/package.json"
+                | "packages/odometer/tsconfig.json"
+        )
+    {
+        return Some(ChangeKind::AssetsChanged);
+    }
 
     // Rust source files that affect Python bindings (needs maturin develop + cargo build)
     // runtimed-client is shared between runtimed-py and runt-mcp, so changes there
@@ -2880,12 +3039,33 @@ fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
 /// significant change kind when files are modified.
 fn start_file_watcher(
     project_root: &Path,
-) -> Result<mpsc::Receiver<ChangeKind>, Box<dyn std::error::Error>> {
-    let (tx, rx) = mpsc::channel::<ChangeKind>(8);
+) -> Result<mpsc::UnboundedReceiver<ChangeKind>, Box<dyn std::error::Error>> {
+    let (tx, rx) = mpsc::unbounded_channel::<ChangeKind>();
     let project_root_owned = project_root.to_path_buf();
 
     // Paths to watch
     let watch_paths: Vec<PathBuf> = [
+        "src",
+        "packages/sift/src",
+        "packages/runtimed/src",
+        "packages/odometer/src",
+        "apps/mcp-app/src",
+        "apps/mcp-app/vite.config.ts",
+        "apps/mcp-app/build-html.js",
+        "apps/mcp-app/package.json",
+        "apps/notebook/vite-plugin-isolated-renderer.ts",
+        "scripts/build-renderer-plugins.ts",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "tsconfig.json",
+        "apps/mcp-app/tsconfig.json",
+        "packages/sift/package.json",
+        "packages/sift/tsconfig.json",
+        "packages/runtimed/package.json",
+        "packages/runtimed/tsconfig.json",
+        "packages/odometer/package.json",
+        "packages/odometer/tsconfig.json",
         "python/nteract/src",
         "python/runtimed/src",
         "crates/runtimed-py/src",
@@ -2922,19 +3102,13 @@ fn start_file_watcher(
                     continue;
                 }
                 if let Some(kind) = classify_change(&event.path, &project_root_owned) {
-                    most_significant = Some(match (&most_significant, &kind) {
-                        // Rust trumps Python
-                        (_, ChangeKind::RustChanged) => ChangeKind::RustChanged,
-                        (Some(ChangeKind::RustChanged), _) => ChangeKind::RustChanged,
-                        _ => kind,
-                    });
+                    most_significant = Some(merge_change(most_significant, kind));
                 }
             }
 
             if let Some(kind) = most_significant {
-                // Non-blocking send — if the channel is full, the watcher
-                // will coalesce into the next debounce window
-                let _ = tx.try_send(kind);
+                // Keep the final edit even when a build spans many debounce windows.
+                let _ = tx.send(kind);
             }
         },
     )?;
@@ -3146,16 +3320,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // 2a: Ensure daemon is running
         let mut daemon_child = None;
-        if !cargo_binary(&project_root, "runt").exists() {
-            info!("runt binary not found, building...");
+        {
+            info!("Checking MCP assets and child freshness...");
             let pr = project_root.clone();
-            let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
-                .await
-                .unwrap_or(false);
+            let builds_daemon = use_release_binaries() && mode != DevMode::Attach;
+            let build_ok = tokio::task::spawn_blocking(move || {
+                if builds_daemon {
+                    run_cargo_build_daemon(&pr)
+                } else {
+                    build_runt_cli(&pr)
+                }
+            })
+            .await
+            .unwrap_or(false);
             if !build_ok {
-                error!("Failed to build runt CLI");
-                child_ready.notify_waiters();
-                return;
+                let message = if builds_daemon {
+                    "Release daemon + child startup build failed. See supervisor logs for the failing step, then run `up rebuild=true` to retry. Child-only rebuilds cannot verify daemon recovery."
+                } else if mode == DevMode::Attach {
+                    "MCP child startup build failed. See supervisor logs, fix the source, then reconnect this MCP server to retry. External builds alone do not clear this recorded failure."
+                } else {
+                    "MCP child startup build failed. See supervisor logs, then run `up rebuild=true` or reconnect this MCP server to retry."
+                };
+                error!("{message}");
+                state_for_init
+                    .write()
+                    .await
+                    .build_failed(builds_daemon, message.to_string());
+                if !cargo_binary(&project_root, "runt").exists() {
+                    child_ready.notify_waiters();
+                    return;
+                }
+                warn!("Using the existing MCP child; watched edits can retry the build");
             }
         }
 
@@ -3203,12 +3398,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(_info) => {
                 info!("Daemon not running, starting it...");
-                if !cargo_binary(&project_root, "runtimed").exists()
-                    && !run_cargo_build_daemon(&project_root)
-                {
-                    error!("Failed to build runtimed daemon");
-                    child_ready.notify_waiters();
-                    return;
+                if !cargo_binary(&project_root, "runtimed").exists() {
+                    if !run_cargo_build_daemon(&project_root) {
+                        error!("Failed to build runtimed daemon");
+                        child_ready.notify_waiters();
+                        return;
+                    }
+                    state_for_init.write().await.build_succeeded(true);
                 }
                 daemon_child = start_daemon(
                     &project_root,
@@ -3239,6 +3435,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     child_ready.notify_waiters();
                     return;
                 }
+                state_for_init.write().await.build_succeeded(true);
 
                 match daemon_status(&project_root, &daemon_workspace_path) {
                     Some(info) => {
@@ -3277,28 +3474,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         };
-
-        // 2b: Fast-path check — only build if binary doesn't exist.
-        // If it exists, skip to child spawn immediately (file watcher will
-        // rebuild on source changes). This matches nteract-mcp's pattern.
-        let runt_binary = cargo_binary(&project_root, "runt");
-        if !runt_binary.exists() {
-            info!("runt binary not found, building...");
-            let pr = project_root.clone();
-            let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
-                .await
-                .unwrap_or(false);
-            if !build_ok {
-                error!("Failed to build runt — MCP server will not work");
-                child_ready.notify_waiters();
-                return;
-            }
-        } else {
-            info!(
-                "runt binary exists at {}, skipping build (file watcher will rebuild on changes)",
-                runt_binary.display()
-            );
-        }
 
         // Python bindings are rebuilt on demand via `up rebuild=true`.
         // Startup used to probe `import runtimed` and trigger `maturin
@@ -3398,7 +3573,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var("NTERACT_DEV_WATCH").unwrap_or_default() == "1" {
             let mut file_change_rx = start_file_watcher(&project_root).unwrap_or_else(|e| {
                 warn!("File watcher failed to start: {e}");
-                mpsc::channel(1).1
+                mpsc::unbounded_channel().1
             });
 
             let watcher_supervisor = Supervisor {
@@ -3406,6 +3581,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 child_ready: Arc::new(Notify::new()),
             };
             while let Some(change_kind) = file_change_rx.recv().await {
+                let change_kind = drain_pending_changes(change_kind, &mut file_change_rx);
                 info!("File change detected: {change_kind:?}");
                 watcher_supervisor.handle_file_change(change_kind).await;
             }
@@ -3912,6 +4088,103 @@ mod tests {
             Some(UNIX_EPOCH + Duration::from_secs(9)),
         ];
         assert_eq!(freshness_reason(Some(stamp), watched), None);
+    }
+
+    #[test]
+    fn asset_watch_covers_widget_renderer_css_and_build_inputs() {
+        for rel in [
+            "src/isolated-renderer/bokeh-renderer.tsx",
+            "src/styles/ansi.css",
+            "src/components/outputs/ansi-output.tsx",
+            "packages/sift/src/style.css",
+            "packages/runtimed/src/blob-resolver.ts",
+            "apps/mcp-app/src/mcp-app.tsx",
+            "apps/mcp-app/build-html.js",
+            "apps/mcp-app/vite.config.ts",
+            "scripts/build-renderer-plugins.ts",
+            "pnpm-lock.yaml",
+        ] {
+            assert_eq!(
+                classify_change(&root().join(rel), &root()),
+                Some(ChangeKind::AssetsChanged),
+                "{rel}"
+            );
+        }
+        for rel in [
+            "apps/notebook/src/renderer-plugins/bokeh.js",
+            "apps/mcp-app/dist/output.html",
+            "crates/runt-mcp/assets/_output.html",
+            "target/xtask/mcp-widget.inputs.json",
+        ] {
+            assert_eq!(
+                classify_change(&root().join(rel), &root()),
+                None,
+                "generated {rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_changes_preserve_the_strongest_build_in_any_order() {
+        assert_eq!(
+            merge_change(Some(ChangeKind::AssetsChanged), ChangeKind::PythonOnly),
+            ChangeKind::Mixed
+        );
+        assert_eq!(
+            merge_change(Some(ChangeKind::PythonOnly), ChangeKind::AssetsChanged),
+            ChangeKind::Mixed
+        );
+        assert_eq!(
+            merge_change(Some(ChangeKind::RustChanged), ChangeKind::AssetsChanged),
+            ChangeKind::RustChanged
+        );
+        assert_eq!(
+            merge_change(Some(ChangeKind::AssetsChanged), ChangeKind::RustChanged),
+            ChangeKind::RustChanged
+        );
+    }
+
+    #[test]
+    fn events_queued_during_a_build_are_drained_into_one_batch() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        sender.send(ChangeKind::AssetsChanged).unwrap();
+        sender.send(ChangeKind::PythonOnly).unwrap();
+        sender.send(ChangeKind::RustChanged).unwrap();
+        assert_eq!(
+            drain_pending_changes(ChangeKind::AssetsChanged, &mut receiver),
+            ChangeKind::Mixed
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn successful_child_build_preserves_unrelated_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(
+            dir.path().to_path_buf(),
+            DevMode::Attach,
+            dir.path().to_path_buf(),
+            None,
+            tx,
+        );
+        let mut state = supervisor.state.write().await;
+        state.last_error = Some("child restart failed".into());
+        state.build_failed(false, "asset build failed".into());
+        state.build_failed(true, "release daemon build failed".into());
+        state.build_succeeded(false);
+        assert_eq!(
+            state.reported_error().as_deref(),
+            Some("child restart failed\nrelease daemon build failed")
+        );
+        // A successful process restart only resolves the process error.
+        state.last_error = None;
+        assert_eq!(
+            state.reported_error().as_deref(),
+            Some("release daemon build failed")
+        );
+        state.build_succeeded(true);
+        assert_eq!(state.reported_error(), None);
     }
 
     #[test]

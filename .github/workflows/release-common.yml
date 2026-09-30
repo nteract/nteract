@@ -120,6 +120,7 @@ jobs:
             packages/sift/public/wasm/
             apps/notebook/src/renderer-plugins/
             target/xtask/*.fingerprint
+            target/xtask/renderer-*.inputs.json
 
   build-linux:
     name: Build Linux ${{ matrix.platform.arch }} Executables

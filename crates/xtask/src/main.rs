@@ -10,6 +10,7 @@ use std::process::{exit, Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+mod asset_receipt;
 mod bump;
 
 /// Find the workspace root (nearest ancestor containing a Cargo.toml with
@@ -2013,7 +2014,13 @@ fn ordered_artifact_scopes(scopes: &[ArtifactScope]) -> Vec<ArtifactScope> {
     ALL_ARTIFACT_SCOPES
         .iter()
         .copied()
-        .filter(|scope| scopes.contains(scope))
+        .filter(|scope| {
+            scopes.contains(scope)
+                || (scopes.contains(&ArtifactScope::McpWidget)
+                    && matches!(scope, ArtifactScope::Sift | ArtifactScope::Renderer))
+                || (scopes.contains(&ArtifactScope::Renderer)
+                    && matches!(scope, ArtifactScope::Sift))
+        })
         .collect()
 }
 
@@ -2078,7 +2085,23 @@ fn wasm_artifact_reason(
     reason.map(str::to_string)
 }
 
+const RENDERER_TARGETS: &[&str] = &[
+    "isolated-renderer",
+    "markdown",
+    "plotly",
+    "bokeh",
+    "panel",
+    "vega",
+    "leaflet",
+    "sift",
+];
+
 fn renderer_artifact_reason(strict: bool) -> Option<String> {
+    for target in RENDERER_TARGETS {
+        if let Some(reason) = asset_receipt::stale(Path::new("."), &format!("renderer-{target}")) {
+            return Some(format!("{target}: {reason}"));
+        }
+    }
     for output in LFS_RENDERER_PLUGIN_OUTPUTS {
         let path = Path::new(output);
         if !path.exists() {
@@ -2129,7 +2152,7 @@ fn is_git_lfs_pointer_file(path: &Path) -> bool {
 }
 
 fn mcp_widget_artifact_reason() -> Option<String> {
-    mcp_widget_needs_rebuild().map(str::to_string)
+    mcp_widget_needs_rebuild()
 }
 
 fn parse_renderer_plugin_targets(args: &[String]) -> Vec<String> {
@@ -2896,13 +2919,6 @@ fn cmd_mcp(print_config: bool, release: bool) {
     // Skip ensure_python_env/ensure_maturin_develop here — the supervisor
     // handles maturin develop asynchronously in its background init task.
     // Removing these saves 5-15s of startup time.
-
-    // Build the daemon in the requested mode so the supervisor finds it
-    if release {
-        println!("Building runtimed (release) for supervisor...");
-        run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
-        run_cmd("cargo", &["build", "--release", "-p", "runt"]);
-    }
 
     if print_config {
         // Build the supervisor, then run it with --print-config
@@ -4340,19 +4356,12 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 ///   or stale, but skip source-unchanged runs so wasm-pack does not rewrite
 ///   generated files and invalidate `runtimed` / `notebook` build scripts.
 ///
-/// - **Renderer plugin bundles** split into stable LFS-tracked third-party
-///   outputs (`plotly.js`, `vega.js`, `leaflet.*`) and generated local outputs
-///   (`isolated-renderer.*`, `markdown.*`, `bokeh.js`, `panel.js`, `sift.*`). We rebuild generated
-///   outputs when they're missing or pointer-shaped, and rebuild sift when it
-///   is stale relative to sift-wasm source.
-///
-/// Staleness gate: hash sift-wasm source (`crates/sift-wasm/src/**/*.rs`
-/// plus `Cargo.toml`) and compare against the previous run's fingerprint
-/// stored under `target/xtask/`. The earlier "did the glue bytes change?"
-/// check was a false positive each time wasm-pack regenerated the glue
-/// with the same source but slightly different internal metadata, which
-/// constantly re-emitted LFS-tracked renderer bundles and surfaced as phantom
-/// git dirt.
+/// - **Renderer plugin bundles** use receipts for their actual resolved source,
+///   CSS scan directories, build configuration, and output bytes. A checkout
+///   without receipts builds each target once, including hydrated LFS bundles:
+///   existing output alone cannot prove it matches the current renderer source.
+///   Later runs rebuild only stale targets, and byte-identical publication keeps
+///   output timestamps intact. Sift retains its additional wasm/glue checks.
 fn ensure_build_artifacts() {
     let sift_wasm_rebuilt = ensure_volatile_wasm_current();
     ensure_renderer_artifacts_current(sift_wasm_rebuilt);
@@ -4412,64 +4421,33 @@ fn ensure_renderer_artifacts_current(sift_wasm_rebuilt: bool) {
         _ => false,
     };
 
-    if !missing_lfs_tracked.is_empty()
-        || !generated_needs_rebuild.is_empty()
-        || sift_missing
-        || sift_source_changed
-        || sift_wasm_rebuilt
+    let mut targets: Vec<&str> = RENDERER_TARGETS
+        .iter()
+        .copied()
+        .filter(|target| {
+            if let Some(reason) =
+                asset_receipt::stale(Path::new("."), &format!("renderer-{target}"))
+            {
+                println!("[xtask] {target} renderer needs rebuild: {reason}");
+                true
+            } else {
+                *target == "sift" && (sift_missing || sift_source_changed || sift_wasm_rebuilt)
+            }
+        })
+        .collect();
+    // Missing expected outputs must rebuild even if a receipt was incomplete.
+    for output in missing_lfs_tracked
+        .iter()
+        .chain(generated_needs_rebuild.iter())
     {
-        if !missing_lfs_tracked.is_empty() {
-            println!("LFS-tracked renderer plugin bundles missing; rebuilding:");
-            for p in &missing_lfs_tracked {
-                println!("  - apps/notebook/src/renderer-plugins/{p}");
+        if let Some(target) = output.split('.').next() {
+            if !targets.contains(&target) {
+                targets.push(target);
             }
-            println!(
-                "(If these should already be on disk, run `git lfs pull` to hydrate LFS-tracked bundles.)"
-            );
         }
-        if !generated_needs_rebuild.is_empty() {
-            println!("Generated renderer plugin bundles missing or stale; rebuilding:");
-            for p in &generated_needs_rebuild {
-                println!("  - apps/notebook/src/renderer-plugins/{p}");
-            }
-        } else if sift_missing {
-            println!("[xtask] sift renderer bundle missing; rebuilding sift renderer plugin");
-        } else if sift_source_changed {
-            println!(
-                "[xtask] sift-wasm source changed; rebuilding sift renderer plugin so sift.js re-embeds the fresh __wbg_* names"
-            );
-        } else if sift_wasm_rebuilt {
-            println!(
-                "[xtask] sift-wasm rebuilt; rebuilding sift renderer plugin so sift.js re-embeds the fresh __wbg_* names"
-            );
-        }
-        if !missing_lfs_tracked.is_empty() {
-            cmd_renderer_plugins(&[]);
-        } else {
-            let mut targets = Vec::new();
-            if generated_needs_rebuild
-                .iter()
-                .any(|p| p.starts_with("isolated-renderer."))
-            {
-                targets.push("isolated-renderer");
-            }
-            if generated_needs_rebuild
-                .iter()
-                .any(|p| p.starts_with("markdown."))
-            {
-                targets.push("markdown");
-            }
-            if generated_needs_rebuild.contains(&"bokeh.js") {
-                targets.push("bokeh");
-            }
-            if generated_needs_rebuild.contains(&"panel.js") {
-                targets.push("panel");
-            }
-            if sift_missing || sift_source_changed || sift_wasm_rebuilt {
-                targets.push("sift");
-            }
-            cmd_renderer_plugins(&targets);
-        }
+    }
+    if !targets.is_empty() {
+        cmd_renderer_plugins(&targets);
     }
 
     if let Some(fp) = sift_source_fingerprint {
@@ -5125,82 +5103,13 @@ fn write_current_renderer_plugins_fingerprint() {
 
 /// Build the MCP Apps widget (apps/mcp-app) and copy it into the Python
 /// nteract package so it ships with the PyPI wheel.
-fn mcp_widget_needs_rebuild() -> Option<&'static str> {
-    // If any output is missing, must rebuild
-    let mut oldest_output = None;
+fn mcp_widget_needs_rebuild() -> Option<String> {
     for output in MCP_WIDGET_OUTPUTS {
-        let output = Path::new(output);
-        if !output.exists() {
-            return Some("output file missing");
-        }
-        if is_mcp_widget_placeholder(output) {
-            return Some("placeholder output file");
-        }
-        let Some(t) = modified_time(output) else {
-            return Some("could not read output timestamp");
-        };
-        oldest_output = Some(match oldest_output {
-            None => t,
-            Some(prev) => std::cmp::min(prev, t),
-        });
-    }
-    // Safety: we checked all outputs exist above, so oldest_output is always Some
-    let Some(oldest_output) = oldest_output else {
-        return Some("could not determine output timestamps");
-    };
-
-    // Check build scripts, lockfile, and all source files against the oldest output.
-    let top_level_sources = [
-        Path::new("apps/mcp-app/package.json"),
-        Path::new("apps/mcp-app/build-html.js"),
-        Path::new("apps/mcp-app/vite.config.ts"),
-        Path::new("apps/mcp-app/build-plugins.ts"),
-        Path::new("src/build/renderer-plugin-builder.ts"),
-        Path::new("apps/notebook/src/renderer-plugins/markdown.js"),
-        Path::new("apps/notebook/src/renderer-plugins/markdown.css"),
-        Path::new("apps/notebook/src/renderer-plugins/bokeh.js"),
-        Path::new("apps/notebook/src/renderer-plugins/panel.js"),
-        Path::new("apps/notebook/src/renderer-plugins/plotly.js"),
-        Path::new("apps/notebook/src/renderer-plugins/vega.js"),
-        Path::new("apps/notebook/src/renderer-plugins/leaflet.js"),
-        Path::new("apps/notebook/src/renderer-plugins/leaflet.css"),
-        Path::new("apps/notebook/src/renderer-plugins/sift.js"),
-        Path::new("apps/notebook/src/renderer-plugins/sift.css"),
-        Path::new("crates/sift-wasm/pkg/sift_wasm_bg.wasm"),
-        Path::new("pnpm-lock.yaml"),
-    ];
-    for src in &top_level_sources {
-        if let Some(src_time) = modified_time(src) {
-            if src_time > oldest_output {
-                return Some("source files changed");
-            }
+        if is_mcp_widget_placeholder(Path::new(output)) {
+            return Some("placeholder output file".into());
         }
     }
-    // Walk all files under apps/mcp-app/src/
-    if let Ok(entries) = std::fs::read_dir("apps/mcp-app/src") {
-        fn check_dir_recursive(dir: std::fs::ReadDir, threshold: std::time::SystemTime) -> bool {
-            for entry in dir.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if let Ok(sub) = std::fs::read_dir(&path) {
-                        if check_dir_recursive(sub, threshold) {
-                            return true;
-                        }
-                    }
-                } else if let Some(t) = modified_time(&path) {
-                    if t > threshold {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-        if check_dir_recursive(entries, oldest_output) {
-            return Some("source files changed");
-        }
-    }
-
-    None
+    asset_receipt::stale(Path::new("."), "mcp-widget")
 }
 
 fn is_mcp_widget_placeholder(path: &Path) -> bool {
@@ -5218,7 +5127,10 @@ fn build_mcp_widget() {
         println!("Building MCP Apps widget ({reason})...");
         require_pnpm();
         ensure_pnpm_install();
-        run_pnpm(&["exec", "vp", "run", "nteract-mcp-app#build"]);
+        // The content receipt owns freshness, including virtual modules and
+        // lazy asset hashes. Do not let a second task cache restore stale HTML.
+        run_pnpm(&["--dir", "apps/mcp-app", "exec", "vp", "build"]);
+        run_pnpm(&["--dir", "apps/mcp-app", "exec", "node", "build-html.js"]);
         let dest = Path::new("python/nteract/src/nteract/_widget.html");
         if !dest.exists() {
             eprintln!("Error: MCP widget build did not produce _widget.html");
@@ -6126,6 +6038,26 @@ mod tests {
                 action: ArtifactAction::Status,
                 scopes: vec![ArtifactScope::Runtime, ArtifactScope::Renderer],
             }
+        );
+    }
+
+    #[test]
+    fn widget_build_orders_transitive_artifacts() {
+        assert_eq!(
+            ordered_artifact_scopes(&[ArtifactScope::McpWidget]),
+            vec![
+                ArtifactScope::Sift,
+                ArtifactScope::Renderer,
+                ArtifactScope::McpWidget
+            ]
+        );
+        assert_eq!(
+            ordered_artifact_scopes(&[ArtifactScope::Renderer]),
+            vec![ArtifactScope::Sift, ArtifactScope::Renderer]
+        );
+        assert_eq!(
+            ordered_artifact_scopes(&[ArtifactScope::Runtime]),
+            vec![ArtifactScope::Runtime]
         );
     }
 

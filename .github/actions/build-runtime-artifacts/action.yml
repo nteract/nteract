@@ -13,7 +13,7 @@ description: >-
   Pass skip-wasm: true when pre-built WASM artifacts have already been
   downloaded from an earlier job (the build-wasm pattern). The downloaded
   bundle must include the generated outputs and target/xtask/*.fingerprint
-  files from the build job. Node/pnpm setup still runs so downstream steps
+  and target/xtask/renderer-*.inputs.json files from the build job. Node/pnpm setup still runs so downstream steps
   like `pnpm build` work.
 
 inputs:

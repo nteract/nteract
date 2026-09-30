@@ -357,9 +357,16 @@ Starts dev daemon, launches `nteract-dev`, spawns child `runt mcp`, proxies note
 
 ### Hot Reload Watches
 
-`python/nteract/src/`, `python/runtimed/src/`, `crates/runtimed-py/src/`, `crates/runtimed/src/`:
-- **Python changes:** Child restarts automatically
-- **Rust changes:** `maturin develop` runs first, then child restarts
+Watching is opt-in with `NTERACT_DEV_WATCH=1`. Startup and owner-mode
+`up rebuild=true` prepare generated assets before compiling the child.
+Renderer/widget source edits rebuild affected artifacts and refresh the child
+catalog only if its binary changes. Python changes restart the child; Rust
+binding changes also check the native bindings unless `SKIP_MATURIN=1`.
+
+See [MCP renderer development](../../../CONTRIBUTING.md#mcp-renderer-development)
+for asset receipts, dependency order, attach/isolated behavior, and host restart
+limitations. MCP list-change notifications do not force an existing host widget
+to reload.
 
 ### Direct Mode (no proxy)
 
