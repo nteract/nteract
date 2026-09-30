@@ -1852,7 +1852,7 @@ struct SupervisorStatus {
     child_running: bool,
     /// Number of times the child has been restarted.
     restart_count: u32,
-    /// Last error from the child process, if any.
+    /// Outstanding process and build errors, joined by newlines.
     last_error: Option<String>,
     /// Daemon socket path.
     socket_path: String,
@@ -3334,7 +3334,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .unwrap_or(false);
             if !build_ok {
-                let message = "MCP asset preparation or startup build failed; source changes are not yet compiled. See supervisor logs.";
+                let message = if builds_daemon {
+                    "Release daemon + child startup build failed. See supervisor logs for the failing step, then run `up rebuild=true` to retry. Child-only rebuilds cannot verify daemon recovery."
+                } else if mode == DevMode::Attach {
+                    "MCP child startup build failed. See supervisor logs, fix the source, then reconnect this MCP server to retry (or enable NTERACT_DEV_WATCH=1 before startup). External builds alone do not clear this recorded failure."
+                } else {
+                    "MCP child startup build failed. See supervisor logs, then run `up rebuild=true` or reconnect this MCP server to retry. With NTERACT_DEV_WATCH=1, a corrected edit also retries."
+                };
                 error!("{message}");
                 state_for_init
                     .write()
