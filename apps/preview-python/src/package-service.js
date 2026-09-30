@@ -5,7 +5,7 @@ import {
 } from "./package-resolver.js";
 import { PACKAGE_ACQUISITION_MS } from "./package-limits.js";
 
-export const PACKAGE_RUNTIME_VERSION = "0.29.4";
+export const PACKAGE_RUNTIME_VERSION = "0.28.3";
 export const packageName = (requirement) =>
   requirement
     .match(/^[A-Za-z0-9][A-Za-z0-9._-]*/)?.[0]
@@ -20,7 +20,7 @@ export function packageManifest(value) {
     // Both releases use Python 3.13. Only verified py3-none-any wheels can be
     // restored, and install() must still prove all requirements against the new
     // bundled inventory before a migrated manifest can be published.
-    !["0.28.3", PACKAGE_RUNTIME_VERSION].includes(value.pyodide) ||
+    !["0.29.4", PACKAGE_RUNTIME_VERSION].includes(value.pyodide) ||
     !Array.isArray(value.wheels) ||
     value.wheels.length > 32
   )
@@ -83,6 +83,7 @@ export async function installPackageManifest({ runtime, installed, signal }, inp
   const sessionSignal = signal;
   signal = AbortSignal.any([signal, AbortSignal.timeout(PACKAGE_ACQUISITION_MS)]);
   const previous = packageManifest(input.manifest);
+  const lockedFor = input.operation === "restore" ? input.manifest?.pyodide : undefined;
   let plan;
   if (input.operation === "restore") {
     const acquisition = new PackageAcquisition({ signal });
@@ -154,7 +155,9 @@ export async function installPackageManifest({ runtime, installed, signal }, inp
       return {
         status: "error",
         error:
-          "Installation failed. Some packages may have changed; saved requirements are unchanged.",
+          lockedFor && lockedFor !== PACKAGE_RUNTIME_VERSION
+            ? `Saved packages were locked for Pyodide ${lockedFor}. This Python runtime (Pyodide ${PACKAGE_RUNTIME_VERSION}) cannot restore all of them; PyArrow and newer included package versions are unavailable here. Remove those requirements, then restart Python. Saved requirements are unchanged.`
+            : "Installation failed. Some packages may have changed; saved requirements are unchanged.",
         needs_restart: true,
       };
     inventory(result.installed);

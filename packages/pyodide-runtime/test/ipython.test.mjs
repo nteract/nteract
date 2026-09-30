@@ -40,6 +40,8 @@ test(
     );
     python.runPython(await readFile(new URL("runtime/session.py", root), "utf8"));
     const evaluate = python.globals.get("evaluate");
+    const arrow = python.runPython("ARROW_AVAILABLE");
+    const noArrow = !arrow && "PyArrow is not bundled in this Pyodide runtime";
     t.after(() => evaluate.destroy());
     let sequence = 0;
     async function run(source, cellId = "cell") {
@@ -94,7 +96,7 @@ test(
       const plot = await run("import matplotlib.pyplot as plt\nplt.plot([1, 2], [3, 4]);");
       assert.ok(plot.outputs.some((o) => o.data?.["image/png"]));
     });
-    await t.test("Arrow and pandas display complete IPC beyond the old output limit", async () => {
+    await t.test("Arrow and pandas display complete IPC beyond the old output limit", { skip: noArrow }, async () => {
       const result = await run(
         "import pyarrow as pa, numpy as np\narrow_table = pa.table({'id': np.arange(150000, dtype=np.int64), 'value': np.arange(150000) * 0.5})\narrow_table",
       );
@@ -113,7 +115,7 @@ test(
       const empty = await run("pa.table({'empty': pa.array([], type=pa.int64())})");
       assert.ok(empty.outputs.at(-1).data["application/vnd.apache.arrow.stream"]);
     });
-    await t.test("Arrow limits count IPC bytes even when batches share a dictionary", async () => {
+    await t.test("Arrow limits count IPC bytes even when batches share a dictionary", { skip: noArrow }, async () => {
       await run(`dictionary = pa.array([f'{i:06d}' for i in range(2000)])
 encoded = pa.DictionaryArray.from_arrays(pa.array([0, 1, 2, 3], type=pa.int8()), dictionary)
 dictionary_table = pa.Table.from_batches([pa.record_batch([encoded], names=['category'])] * 10)
@@ -140,6 +142,7 @@ assert len(sink.getvalue()) < 65536 < dictionary_table.nbytes`);
     });
     await t.test(
       "oversized Arrow fails explicitly without a sampled table and recovers",
+      { skip: noArrow },
       async () => {
         python.runPython("saved_arrow_limit = MAX_ARROW_BYTES\nMAX_ARROW_BYTES = 1024");
         try {
@@ -180,6 +183,19 @@ reader = pa.RecordBatchReader.from_batches(batch.schema, batches())`);
         assert.equal(value(await run("3 + 3")), "6");
       },
     );
+    await t.test("without PyArrow a DataFrame keeps its HTML and plain reprs", { skip: arrow }, async () => {
+      const frame = await run("import pandas as pd\npd.DataFrame({'id': [1, 2], 'city': ['Oakland', 'San Jose']})");
+      assert.equal(frame.success, true, JSON.stringify(frame.outputs));
+      const data = frame.outputs.at(-1).data;
+      assert.ok(data["text/html"]?.includes("Oakland"));
+      assert.ok(data["text/plain"]?.includes("San Jose"));
+      assert.equal(data["application/vnd.apache.arrow.stream"], undefined);
+      assert.equal(value(await run("import sys\n'pyarrow' in sys.modules")), "False");
+      const missing = await run("import pyarrow");
+      assert.equal(missing.success, false);
+      assert.match(missing.outputs.at(-1).data[tracebackMime].ename, /ModuleNotFoundError/);
+      assert.equal(value(await run("2 + 2")), "4");
+    });
     await t.test("rich tracebacks preserve earlier cell lineage and recover", async () => {
       const definition = await run("def fail():\n    raise ValueError('expected')", "definition");
       const failed = await run("fail()", "caller");

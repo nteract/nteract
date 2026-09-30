@@ -10,10 +10,7 @@ export function importScripts() {
   throw new Error("Dynamic script loading is disabled");
 }
 export class WorkerGlobalScope {}
-// Newer Pyodide checks self instanceof WorkerGlobalScope. Keep that worker
-// shape inside this bundle while inheriting the existing host capabilities.
-Object.setPrototypeOf(WorkerGlobalScope.prototype, globalThis);
-export const self = Object.create(WorkerGlobalScope.prototype);
+export const self = Object.create(globalThis);
 Object.defineProperty(self, "location", { value: { href: "https://python-runtime.invalid/" } });
 export async function fetch(input) {
   if (String(input) === "https://python-runtime.invalid/python_stdlib.zip") {

@@ -14,6 +14,11 @@ import zipfile
 from pathlib import Path
 
 import micropip
+
+try:
+    from micropip import wheelinfo
+except ImportError:  # micropip >= 0.11
+    wheelinfo = None
 from micropip._compat import compatibility_layer
 from micropip._vendored.packaging.src.packaging.markers import default_environment
 from micropip._vendored.packaging.src.packaging.requirements import Requirement
@@ -124,6 +129,8 @@ async def plan_packages(payload_json):
     if payload.get("artifact"):
         artifact = payload["artifact"]
         _artifacts[artifact["url"]] = artifact
+    if wheelinfo is not None and hasattr(wheelinfo, "fetch_bytes"):
+        wheelinfo.fetch_bytes = _fetch_bytes
     transaction = OfflineTransaction(
         _compat_layer=OfflineCompatibility,
         ctx=default_environment(),

@@ -3,6 +3,7 @@
 import base64
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
 import sys
@@ -25,7 +26,11 @@ active_execution = None
 output_bytes = 0
 stream_bytes = 0
 output_context = ContextVar("nteract_execution_output", default=None)
-MAX_OUTPUT_BYTES = 128 * 1024 * 1024
+# PyArrow is a per-interpreter capability. Without it, DataFrames display
+# through IPython's text/html and text/plain reprs and the rich-output budget
+# stays at the size the host runtime was qualified for. find_spec does not import.
+ARROW_AVAILABLE = importlib.util.find_spec("pyarrow") is not None
+MAX_OUTPUT_BYTES = (128 if ARROW_AVAILABLE else 2) * 1024 * 1024
 MAX_STREAM_BYTES = 2 * 1024 * 1024
 MAX_ARROW_BYTES = 64 * 1024 * 1024
 MAX_OUTPUTS = 1000
@@ -280,9 +285,10 @@ class ArrowFormatter(BaseFormatter):
             return base64.b64encode(sink.getvalue()).decode("ascii")
 
 
-shell.display_formatter.formatters[_format.ARROW_STREAM_MIME] = ArrowFormatter(
-    parent=shell.display_formatter
-)
+if ARROW_AVAILABLE:
+    shell.display_formatter.formatters[_format.ARROW_STREAM_MIME] = ArrowFormatter(
+        parent=shell.display_formatter
+    )
 matplotlib.use("module://matplotlib_inline.backend_inline")
 matplotlib.interactive(True)
 configure_inline_support(shell, "inline")
