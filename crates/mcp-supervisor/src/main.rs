@@ -808,6 +808,9 @@ struct SupervisorState {
     socket_path: String,
     /// Last error message from child.
     last_error: Option<String>,
+    /// Build failures survive process restarts and unrelated successful builds.
+    child_build_error: Option<String>,
+    daemon_build_error: Option<String>,
     /// Whether we started the daemon (so we know to clean it up).
     daemon_child: Option<std::process::Child>,
     /// Channel to request a tool list changed notification from the server context.
@@ -815,6 +818,35 @@ struct SupervisorState {
     tool_list_changed_tx: Option<mpsc::Sender<()>>,
     /// Managed long-running processes (vite dev server, notebook app, etc.).
     managed: HashMap<String, ManagedProcess>,
+}
+
+impl SupervisorState {
+    fn reported_error(&self) -> Option<String> {
+        let errors: Vec<&str> = [
+            self.last_error.as_deref(),
+            self.child_build_error.as_deref(),
+            self.daemon_build_error.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        (!errors.is_empty()).then(|| errors.join("\n"))
+    }
+
+    fn build_failed(&mut self, includes_daemon: bool, message: String) {
+        if includes_daemon {
+            self.daemon_build_error = Some(message);
+        } else {
+            self.child_build_error = Some(message);
+        }
+    }
+
+    fn build_succeeded(&mut self, includes_daemon: bool) {
+        self.child_build_error = None;
+        if includes_daemon {
+            self.daemon_build_error = None;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -871,6 +903,8 @@ impl Supervisor {
                 isolated_context,
                 socket_path: String::new(),
                 last_error: None,
+                child_build_error: None,
+                daemon_build_error: None,
                 daemon_child: None,
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
@@ -1026,7 +1060,7 @@ impl Supervisor {
         SupervisorStatus {
             child_running,
             restart_count,
-            last_error: state.last_error.clone(),
+            last_error: state.reported_error(),
             socket_path: state.socket_path.clone(),
             project_root: state.project_root.to_string_lossy().to_string(),
             mode: state.mode.as_str().to_string(),
@@ -1325,14 +1359,17 @@ impl Supervisor {
         let skip_maturin = std::env::var("SKIP_MATURIN").unwrap_or_default() == "1";
 
         let child_before = binary_fingerprint(&project_root, "runt");
-        let mut build_error = None;
+        let mut build_failed = false;
         match kind {
             ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged => {
                 info!("MCP source/assets changed, checking assets and building runt...");
                 if !build_runt_cli(&project_root) {
                     let message = "MCP asset preparation or runt build failed; keeping current child. See supervisor logs.";
                     error!("{message}");
-                    self.state.write().await.last_error = Some(message.to_string());
+                    self.state
+                        .write()
+                        .await
+                        .build_failed(false, message.to_string());
                     return;
                 }
             }
@@ -1348,13 +1385,16 @@ impl Supervisor {
                 if !build_runt_cli(&project_root) {
                     let message = "MCP asset preparation or runt build failed; compiled assets remain stale. See supervisor logs.";
                     error!("{message}");
-                    self.state.write().await.last_error = Some(message.to_string());
+                    self.state
+                        .write()
+                        .await
+                        .build_failed(false, message.to_string());
                     if kind != ChangeKind::Mixed {
                         return;
                     }
                     // Python is loaded at runtime: a failed compiled-asset
                     // build must not discard the Python edit in this batch.
-                    build_error = Some(message.to_string());
+                    build_failed = true;
                 } else if !skip_maturin && !run_maturin_develop(&project_root).success() {
                     warn!("maturin develop failed (runt mcp will still restart)");
                 }
@@ -1364,11 +1404,14 @@ impl Supervisor {
             }
         }
 
+        if kind != ChangeKind::PythonOnly && !build_failed {
+            self.state.write().await.build_succeeded(false);
+        }
+
         if matches!(kind, ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged)
             && !fingerprint_changed(&child_before, &binary_fingerprint(&project_root, "runt"))
         {
             info!("Build was a no-op; keeping the current MCP child and catalog");
-            self.state.write().await.last_error = None;
             return;
         }
 
@@ -1378,9 +1421,6 @@ impl Supervisor {
         // Restart child via proxy (auto-rejoin is handled inside restart_child)
         match self.restart_child().await {
             Ok(()) => {
-                if let Some(message) = build_error {
-                    self.state.write().await.last_error = Some(message);
-                }
                 info!("Child restarted after file change ({kind:?})");
                 // Signal that the tool list may have changed
                 let tx = { self.state.read().await.tool_list_changed_tx.clone() };
@@ -1556,6 +1596,7 @@ impl Supervisor {
                     "up: cargo build -p runtimed failed. See the supervisor logs for details.",
                 )]));
             }
+            self.state.write().await.build_succeeded(true);
             let (daemon_after, child_after) = managed_binary_fingerprints(&project_root);
             daemon_changed_by_rebuild = fingerprint_changed(&daemon_before, &daemon_after);
             child_changed_by_rebuild = fingerprint_changed(&child_before, &child_after);
@@ -2432,6 +2473,7 @@ impl Supervisor {
                         "cargo build -p runtimed failed — check the supervisor logs for details",
                     )]));
                 }
+                self.state.write().await.build_succeeded(true);
 
                 // 2. Rebuild Python bindings (maturin develop) — skip if
                 // SKIP_MATURIN=1 is set (speeds up Rust-only iteration).
@@ -3281,8 +3323,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             info!("Checking MCP assets and child freshness...");
             let pr = project_root.clone();
+            let builds_daemon = use_release_binaries() && mode != DevMode::Attach;
             let build_ok = tokio::task::spawn_blocking(move || {
-                if use_release_binaries() && mode != DevMode::Attach {
+                if builds_daemon {
                     run_cargo_build_daemon(&pr)
                 } else {
                     build_runt_cli(&pr)
@@ -3293,7 +3336,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !build_ok {
                 let message = "MCP asset preparation or startup build failed; source changes are not yet compiled. See supervisor logs.";
                 error!("{message}");
-                state_for_init.write().await.last_error = Some(message.to_string());
+                state_for_init
+                    .write()
+                    .await
+                    .build_failed(builds_daemon, message.to_string());
                 if !cargo_binary(&project_root, "runt").exists() {
                     child_ready.notify_waiters();
                     return;
@@ -3346,12 +3392,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(_info) => {
                 info!("Daemon not running, starting it...");
-                if !cargo_binary(&project_root, "runtimed").exists()
-                    && !run_cargo_build_daemon(&project_root)
-                {
-                    error!("Failed to build runtimed daemon");
-                    child_ready.notify_waiters();
-                    return;
+                if !cargo_binary(&project_root, "runtimed").exists() {
+                    if !run_cargo_build_daemon(&project_root) {
+                        error!("Failed to build runtimed daemon");
+                        child_ready.notify_waiters();
+                        return;
+                    }
+                    state_for_init.write().await.build_succeeded(true);
                 }
                 daemon_child = start_daemon(
                     &project_root,
@@ -3382,6 +3429,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     child_ready.notify_waiters();
                     return;
                 }
+                state_for_init.write().await.build_succeeded(true);
 
                 match daemon_status(&project_root, &daemon_workspace_path) {
                     Some(info) => {
@@ -4101,6 +4149,36 @@ mod tests {
             ChangeKind::Mixed
         );
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn successful_child_build_preserves_unrelated_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(
+            dir.path().to_path_buf(),
+            DevMode::Attach,
+            dir.path().to_path_buf(),
+            None,
+            tx,
+        );
+        let mut state = supervisor.state.write().await;
+        state.last_error = Some("child restart failed".into());
+        state.build_failed(false, "asset build failed".into());
+        state.build_failed(true, "release daemon build failed".into());
+        state.build_succeeded(false);
+        assert_eq!(
+            state.reported_error().as_deref(),
+            Some("child restart failed\nrelease daemon build failed")
+        );
+        // A successful process restart only resolves the process error.
+        state.last_error = None;
+        assert_eq!(
+            state.reported_error().as_deref(),
+            Some("release daemon build failed")
+        );
+        state.build_succeeded(true);
+        assert_eq!(state.reported_error(), None);
     }
 
     #[test]
