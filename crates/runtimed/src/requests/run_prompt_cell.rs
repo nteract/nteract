@@ -351,7 +351,7 @@ fn signal_agent(child: &mut Child, _force: bool) {
 
 /// Kills whatever is left of the agent's process group (for example an MCP
 /// server it started) when the run ends or the daemon drops the task.
-struct AgentProcessGroup(Option<u32>);
+struct AgentProcessGroup(#[cfg_attr(not(unix), expect(dead_code))] Option<u32>);
 
 impl Drop for AgentProcessGroup {
     fn drop(&mut self) {
