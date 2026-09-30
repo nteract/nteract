@@ -113,10 +113,10 @@ pub struct CloudWorkstationMetadata {
 
 impl CloudAuth {
     /// Return a copy of this auth with its credential replaced by `token`,
-    /// preserving the variant (and the `Dev` user label). Used by the
-    /// token-refresher path so a reconnect re-auths with a freshly-minted token
-    /// without changing the auth *kind* the room expects.
-    fn with_token(&self, token: String) -> Self {
+    /// preserving the variant (and the `Dev` user label). Token-refresher
+    /// consumers (this transport's reconnects and the runtime's blob uploads)
+    /// use it so a freshly minted token keeps the auth *kind* the room expects.
+    pub fn with_token(&self, token: String) -> Self {
         match self {
             CloudAuth::OidcBearer { .. } => CloudAuth::OidcBearer { token },
             CloudAuth::AnacondaApiKey { .. } => CloudAuth::AnacondaApiKey { token },

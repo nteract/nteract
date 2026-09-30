@@ -44,4 +44,6 @@ pub use kernel_env::resolve_python_on_path;
 pub use launch_on_attach::{
     build_current_python_launch, CurrentPythonLaunch, CURRENT_PYTHON_ENV_SOURCE,
 };
-pub use oidc_refresh::{OidcRefreshClient, RefreshTokenCache};
+pub use oidc_refresh::{
+    OidcRefreshClient, OidcRefreshOptions, RefreshTokenCache, CLOUD_REFRESH_TOKEN_ENV,
+};

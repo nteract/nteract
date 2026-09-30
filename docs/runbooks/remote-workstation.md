@@ -225,14 +225,41 @@ against the same attach-job surface with `NTERACT_API_KEY` or
 `NOTEBOOK_CLOUD_URL`. The `apps/notebook-cloud` README covers the matching
 runtime smoke commands.
 
-For browser-coupled OIDC peers whose token expires, `cloud-runtime-agent`
-refreshes it automatically before it lapses: when started with
-`--auth-kind oidc` and a refresh-token cache is present (see
-`crates/runtimed/src/workstation/oidc_refresh.rs`), it checks the cached
-access token's expiry before each connect/reconnect and exchanges the
-refresh token for a new one when needed, so a long-lived peer survives
-token expiry without a restart. With no cache present, behavior is
-unchanged (static token, no refresh attempted).
+For OIDC peers whose token expires, `cloud-runtime-agent --auth-kind oidc`
+can renew it from a refresh-token cache (see
+`crates/runtimed/src/workstation/oidc_refresh.rs`). It checks the cached
+expiry before each room connect/reconnect and each output blob upload, and
+exchanges the refresh token when needed. Both paths use the same token.
+
+Seed a cache once by passing the refresh token through the environment,
+never argv:
+
+```bash
+RUNT_CLOUD_TOKEN=<access-token> RUNT_CLOUD_REFRESH_TOKEN=<refresh-token> \
+  runtimed cloud-runtime-agent \
+  --cloud-url https://<cloud-host> \
+  --notebook-id <id> \
+  --oidc-issuer https://<issuer> \
+  --oidc-client-id <public-client-id>
+```
+
+- The cache is a `0600` file per cloud origin in the runtimed config
+  directory; `--oidc-refresh-cache` picks another path.
+- It is bound to the cloud origin, issuer, client id, and (for JWTs) the
+  account. The agent refuses a cache or `RUNT_CLOUD_TOKEN` that doesn't match.
+- An existing cache wins over `RUNT_CLOUD_REFRESH_TOKEN`. Delete the cache to
+  re-seed.
+- Issuers must use `https`. A local dev issuer on `http://localhost` also needs
+  `--oidc-allow-loopback-http`.
+- Discovery must name the issuer exactly, and the token endpoint must be on
+  the issuer's origin. Redirects are not followed.
+- Agents sharing a cache refresh one at a time, so rotating refresh tokens
+  are not spent twice (unix).
+
+The cache is readable by anything running as the same OS user, including the
+kernel. `RUNT_CLOUD_REFRESH_TOKEN` is removed from the kernel environment, but
+that is hygiene, not isolation. With no cache, no seed, and no `--oidc-*`
+flags, the agent keeps the static `RUNT_CLOUD_TOKEN`.
 
 ## JupyterHub
 

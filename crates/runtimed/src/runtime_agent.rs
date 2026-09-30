@@ -282,12 +282,13 @@ pub async fn run_cloud_runtime_agent(
         initial_launch.as_ref().map(|(trigger, _)| *trigger),
     );
 
-    let output_blob_publisher = OutputBlobPublisher::cloud(&config);
     // A refresher lets a long-lived `--auth-kind oidc` peer survive token
-    // expiry across a reconnect; every other auth kind, and `oidc` with no
-    // refresh-token cache, keeps today's static-token transport unchanged —
-    // `resolve_token_refresher` already decided that upstream, so this is
-    // purely "which constructor to call".
+    // expiry. The blob publisher and the transport share it, so uploads and
+    // reconnects present the same current token. Every other auth kind, and
+    // `oidc` with no refresh-token cache, keeps the static token from
+    // `config.auth` on both paths; `resolve_token_refresher` decided that
+    // upstream.
+    let output_blob_publisher = OutputBlobPublisher::cloud(&config, token_refresher.clone());
     let transport = match token_refresher {
         Some(refresher) => {
             notebook_cloud_transport::CloudWsFrameTransport::with_token_refresher(config, refresher)

@@ -3,12 +3,14 @@
 //! Desktop/local kernels only need the local [`BlobStore`]. A cloud runtime
 //! peer also has to make those same content-addressed bytes available through
 //! preview's blob API before RuntimeStateDoc advertises the hash to browsers.
+//! When the agent has a [`TokenRefresher`], every upload asks it for the
+//! current token, so blob uploads and room reconnects share one credential.
 
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
-use notebook_cloud_transport::{CloudAuth, CloudWsConfig};
+use notebook_cloud_transport::{CloudAuth, CloudWsConfig, TokenRefresher};
 use reqwest::StatusCode;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
@@ -30,9 +32,11 @@ impl OutputBlobPublisher {
         Self { cloud: None }
     }
 
-    pub(crate) fn cloud(config: &CloudWsConfig) -> Self {
+    /// `refresher`, when set, supplies the token for each upload; `None`
+    /// keeps the static token from `config.auth`.
+    pub(crate) fn cloud(config: &CloudWsConfig, refresher: Option<TokenRefresher>) -> Self {
         Self {
-            cloud: Some(Arc::new(CloudBlobPublisher::new(config))),
+            cloud: Some(Arc::new(CloudBlobPublisher::new(config, refresher))),
         }
     }
 
@@ -94,19 +98,36 @@ struct CloudBlobPublisher {
     notebook_id: String,
     scope: String,
     auth: CloudAuth,
+    refresher: Option<TokenRefresher>,
     uploaded: Mutex<HashSet<String>>,
 }
 
 impl CloudBlobPublisher {
-    fn new(config: &CloudWsConfig) -> Self {
+    fn new(config: &CloudWsConfig, refresher: Option<TokenRefresher>) -> Self {
         Self {
             client: reqwest::Client::new(),
             cloud_url: config.cloud_url.trim_end_matches('/').to_string(),
             notebook_id: config.notebook_id.clone(),
             scope: config.scope.clone(),
             auth: config.auth.clone(),
+            refresher,
             uploaded: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// The credential for the next upload: the refresher's current token in
+    /// `config.auth`'s variant, or the static auth when there is no refresher.
+    async fn current_auth(&self, hash: &str) -> Result<CloudAuth, BlobPublishError> {
+        let Some(refresh) = &self.refresher else {
+            return Ok(self.auth.clone());
+        };
+        refresh()
+            .await
+            .map(|token| self.auth.with_token(token))
+            .map_err(|error| BlobPublishError::Credential {
+                hash: hash.to_string(),
+                message: error.to_string(),
+            })
     }
 
     async fn publish_blob(
@@ -169,6 +190,7 @@ impl CloudBlobPublisher {
         blob: &OutputBlobRef,
         bytes: Vec<u8>,
     ) -> Result<(), BlobPublishError> {
+        let auth = self.current_auth(&blob.hash).await?;
         let url = blob_upload_url(&self.cloud_url, &self.notebook_id, &blob.hash);
         let mut request = self
             .client
@@ -177,7 +199,7 @@ impl CloudBlobPublisher {
             .header("X-Operator", "agent:runt:blob-publisher")
             .header("Content-Type", &blob.media_type)
             .body(bytes);
-        request = apply_auth_headers(request, &self.auth);
+        request = apply_auth_headers(request, &auth);
 
         let response = request
             .send()
@@ -216,6 +238,8 @@ pub(crate) enum BlobPublishError {
     InvalidManifest { message: String },
     #[error("failed to upload blob {hash}: {message}")]
     RemoteRequest { hash: String, message: String },
+    #[error("no credential for blob {hash} upload: {message}")]
+    Credential { hash: String, message: String },
     #[error("blob {hash} upload failed with {status}: {body}")]
     RemoteStatus {
         hash: String,
@@ -233,7 +257,10 @@ impl BlobPublishError {
                     || *status == StatusCode::TOO_MANY_REQUESTS
                     || status.is_server_error()
             }
-            Self::MissingLocalBlob { .. }
+            // The refresher already bounds its own requests; retrying here
+            // would only stack more issuer timeouts onto the output path.
+            Self::Credential { .. }
+            | Self::MissingLocalBlob { .. }
             | Self::LocalRead { .. }
             | Self::SizeMismatch { .. }
             | Self::InvalidManifest { .. } => false,
@@ -363,5 +390,194 @@ mod tests {
             actual: 2,
         }
         .is_retryable());
+        assert!(!BlobPublishError::Credential {
+            hash: "a".to_string(),
+            message: "issuer timed out".to_string(),
+        }
+        .is_retryable());
+    }
+
+    // -- credential sharing ---------------------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Local blob endpoint that records each upload's `Authorization` header.
+    struct FakeBlobServer {
+        url: String,
+        authorizations: Arc<std::sync::Mutex<Vec<String>>>,
+        _shutdown: tokio::sync::oneshot::Sender<()>,
+    }
+
+    async fn start_fake_blob_server() -> FakeBlobServer {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let authorizations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = authorizations.clone();
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    accepted = listener.accept() => {
+                        let Ok((stream, _)) = accepted else { break };
+                        let seen = seen.clone();
+                        tokio::spawn(async move {
+                            let io = hyper_util::rt::TokioIo::new(stream);
+                            let service = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                                let seen = seen.clone();
+                                async move {
+                                    let auth = req
+                                        .headers()
+                                        .get("authorization")
+                                        .and_then(|v| v.to_str().ok())
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    seen.lock().unwrap().push(auth);
+                                    Ok::<_, std::convert::Infallible>(
+                                        hyper::Response::builder()
+                                            .status(201)
+                                            .body(http_body_util::Full::new(bytes::Bytes::new()))
+                                            .unwrap(),
+                                    )
+                                }
+                            });
+                            let _ = hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, service)
+                                .await;
+                        });
+                    }
+                }
+            }
+        });
+        FakeBlobServer {
+            url,
+            authorizations,
+            _shutdown: shutdown_tx,
+        }
+    }
+
+    fn oidc_config(cloud_url: &str, token: &str) -> CloudWsConfig {
+        CloudWsConfig {
+            cloud_url: cloud_url.to_string(),
+            notebook_id: "nb-1".to_string(),
+            scope: "runtime_peer".to_string(),
+            auth: CloudAuth::OidcBearer {
+                token: token.to_string(),
+            },
+            workstation: None,
+        }
+    }
+
+    async fn store_with_blobs(dir: &std::path::Path, count: usize) -> (BlobStore, Vec<String>) {
+        let store = BlobStore::new(dir.join("blobs"));
+        let mut hashes = Vec::new();
+        for i in 0..count {
+            hashes.push(
+                store
+                    .put(format!("blob-{i}").as_bytes(), "text/plain")
+                    .await
+                    .unwrap(),
+            );
+        }
+        (store, hashes)
+    }
+
+    async fn publish(
+        publisher: &OutputBlobPublisher,
+        store: &BlobStore,
+        hash: &str,
+    ) -> Result<(), BlobPublishError> {
+        let size = store.get(hash).await.unwrap().unwrap().len() as u64;
+        publisher
+            .publish_artifact(hash.to_string(), size, "text/plain".to_string(), store)
+            .await
+    }
+
+    #[tokio::test]
+    async fn uploads_without_a_refresher_keep_the_static_token() {
+        let server = start_fake_blob_server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, hashes) = store_with_blobs(dir.path(), 1).await;
+        let publisher = OutputBlobPublisher::cloud(&oidc_config(&server.url, "static-token"), None);
+
+        publish(&publisher, &store, &hashes[0]).await.unwrap();
+        assert_eq!(
+            *server.authorizations.lock().unwrap(),
+            vec!["Bearer static-token".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn each_upload_asks_the_refresher_for_the_current_token() {
+        let server = start_fake_blob_server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, hashes) = store_with_blobs(dir.path(), 2).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let refresher: TokenRefresher = Arc::new(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            Box::pin(async move { Ok(format!("fresh-token-{n}")) })
+        });
+        let publisher = OutputBlobPublisher::cloud(
+            &oidc_config(&server.url, "expired-static-token"),
+            Some(refresher),
+        );
+
+        publish(&publisher, &store, &hashes[0]).await.unwrap();
+        publish(&publisher, &store, &hashes[1]).await.unwrap();
+        assert_eq!(
+            *server.authorizations.lock().unwrap(),
+            vec![
+                "Bearer fresh-token-1".to_string(),
+                "Bearer fresh-token-2".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn refresher_failure_fails_the_upload_without_sending_a_stale_token() {
+        let server = start_fake_blob_server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, hashes) = store_with_blobs(dir.path(), 1).await;
+        let refresher: TokenRefresher = Arc::new(|| {
+            Box::pin(async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "oidc token refresh request failed",
+                ))
+            })
+        });
+        let publisher = OutputBlobPublisher::cloud(
+            &oidc_config(&server.url, "expired-static-token"),
+            Some(refresher),
+        );
+
+        let err = publish(&publisher, &store, &hashes[0]).await.unwrap_err();
+        assert!(matches!(err, BlobPublishError::Credential { .. }), "{err}");
+        assert!(server.authorizations.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn expired_oidc_cache_refreshes_before_a_blob_upload() {
+        use crate::workstation::oidc_refresh::test_support::*;
+
+        let issuer = start_fake_issuer(FakeIssuerConfig::default()).await;
+        let server = start_fake_blob_server().await;
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("oidc.json");
+        write_expired_cache(&cache_path, &issuer.url, None);
+        let refresher = loopback_client(&cache_path, &issuer.url).into_token_refresher();
+        let (store, hashes) = store_with_blobs(dir.path(), 1).await;
+        let publisher = OutputBlobPublisher::cloud(
+            &oidc_config(&server.url, "stale-access-token"),
+            Some(refresher),
+        );
+
+        publish(&publisher, &store, &hashes[0]).await.unwrap();
+        let seen = server.authorizations.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        assert_ne!(seen[0], "Bearer stale-access-token");
+        assert!(seen[0].starts_with("Bearer "));
+        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
     }
 }
