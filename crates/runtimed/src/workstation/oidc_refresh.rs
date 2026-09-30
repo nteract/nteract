@@ -25,6 +25,10 @@
 //! - Discovery and token requests have connect and total timeouts. A failed
 //!   refresh is shared with callers for [`FAILURE_BACKOFF`], and a cached token
 //!   that has not actually expired is still returned when refresh fails.
+//!   Inside the refresh skew, a caller whose cached token has not expired waits
+//!   at most [`UNEXPIRED_REFRESH_WAIT`] and then uses that token while the
+//!   refresh finishes in the background; if the token expires during that
+//!   wait, the caller keeps waiting for the refresh instead.
 //! - Exchanges run one at a time within a process and, on unix, are serialized
 //!   across processes by an advisory lock beside the cache, so a rotating
 //!   issuer never sees one refresh token spent twice. Other platforms get the
@@ -947,6 +951,8 @@ pub struct OidcRefreshClient {
     http: reqwest::Client,
     single_flight: Arc<tokio::sync::Semaphore>,
     lock_wait: Duration,
+    /// How long a caller with an unexpired cached token waits for a refresh.
+    unexpired_wait: Duration,
     /// Most recent refresh failure, for [`FAILURE_BACKOFF`]. A std mutex:
     /// only touched in synchronous sections, never held across `.await`.
     last_failure: Arc<std::sync::Mutex<Option<RecentFailure>>>,
@@ -989,8 +995,15 @@ impl OidcRefreshClient {
             http,
             single_flight: Arc::new(tokio::sync::Semaphore::new(1)),
             lock_wait,
+            unexpired_wait: UNEXPIRED_REFRESH_WAIT,
             last_failure: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    #[cfg(test)]
+    fn with_unexpired_wait(mut self, wait: Duration) -> Self {
+        self.unexpired_wait = wait;
+        self
     }
 
     fn load_bound(&self) -> io::Result<RefreshTokenCache> {
@@ -1010,6 +1023,13 @@ impl OidcRefreshClient {
     /// token between the issuer's response and the cache write. If refresh
     /// fails while the cached token has not actually expired, that token is
     /// still returned.
+    ///
+    /// When the cached token is inside the skew but not expired, the caller
+    /// waits at most `unexpired_wait` for the task. If the token is still
+    /// unexpired then, it is returned and the task keeps running detached
+    /// (it still holds the permit and lock through the save). If the token
+    /// expired during the wait, the caller keeps awaiting the task, so an
+    /// expired token is never returned.
     async fn refresh_or_reuse(&self) -> io::Result<String> {
         let cache = self.load_bound()?;
         if !needs_refresh(&cache.expires_at) {
@@ -1017,24 +1037,26 @@ impl OidcRefreshClient {
         }
 
         let this = self.clone();
-        let task = tokio::spawn(async move { this.refresh_locked().await });
+        let mut task = tokio::spawn(async move { this.refresh_locked().await });
         let joined = if is_expired(&cache.expires_at) {
-            task.await
+            (&mut task).await
         } else {
-            // The cached token still works, so don't hold the caller for a
-            // slow issuer. The detached task still persists any rotation.
-            match tokio::time::timeout(UNEXPIRED_REFRESH_WAIT, task).await {
+            match tokio::time::timeout(self.unexpired_wait, &mut task).await {
                 Ok(joined) => joined,
-                Err(_) => return Ok(cache.access_token),
+                // The cached token still works, so don't hold the caller for a
+                // slow issuer. Dropping the handle detaches the task; it still
+                // persists any rotation.
+                Err(_) if !is_expired(&cache.expires_at) => return Ok(cache.access_token),
+                // Expired while waiting: never hand out an expired token.
+                Err(_) => (&mut task).await,
             }
         };
         let result =
             joined.map_err(|e| io::Error::other(format!("oidc refresh task failed: {e}")))?;
         match result {
-            Err(error) if !is_expired(&cache.expires_at) => {
-                tracing::warn!(
-                    "oidc token refresh failed; using the unexpired cached token: {error}"
-                );
+            Err(_) if !is_expired(&cache.expires_at) => {
+                // `record_outcome` already logged the failure.
+                tracing::debug!("using the unexpired cached oidc token after refresh failed");
                 Ok(cache.access_token)
             }
             other => other,
@@ -1060,6 +1082,12 @@ impl OidcRefreshClient {
             .last_failure
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Err(error) = result {
+            // Logged here so a failure that lands after the caller already
+            // returned (detached refresh) still leaves a trace. Refresh errors
+            // never carry token values.
+            tracing::warn!("oidc token refresh failed: {error}");
+        }
         *guard = result.as_ref().err().map(|error| RecentFailure {
             at: std::time::Instant::now(),
             kind: error.kind(),
@@ -1197,6 +1225,7 @@ pub(crate) mod test_support {
     pub(crate) struct FakeIssuer {
         pub url: String,
         pub exchange_count: Arc<AtomicUsize>,
+        pub discovery_count: Arc<AtomicUsize>,
         _shutdown: tokio::sync::oneshot::Sender<()>,
     }
 
@@ -1211,6 +1240,8 @@ pub(crate) mod test_support {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let exchange_count = Arc::new(AtomicUsize::new(0));
+        let discovery_count = Arc::new(AtomicUsize::new(0));
+        let discoveries = discovery_count.clone();
         let state = Arc::new(std::sync::Mutex::new(State {
             valid_refresh_tokens: HashSet::from([SEED_REFRESH_TOKEN.to_string()]),
             next: 0,
@@ -1228,6 +1259,7 @@ pub(crate) mod test_support {
                         let config = config.clone();
                         let state = state.clone();
                         let counter = counter.clone();
+                        let discoveries = discoveries.clone();
                         let server_url = server_url.clone();
                         tokio::spawn(async move {
                             let io = hyper_util::rt::TokioIo::new(stream);
@@ -1235,14 +1267,18 @@ pub(crate) mod test_support {
                                 let config = config.clone();
                                 let state = state.clone();
                                 let counter = counter.clone();
+                                let discoveries = discoveries.clone();
                                 let server_url = server_url.clone();
                                 async move {
                                     let path = req.uri().path().to_string();
                                     let (status, body) = match path.as_str() {
-                                        "/.well-known/openid-configuration" => (200, serde_json::json!({
-                                            "issuer": config.discovery_issuer.clone().unwrap_or_else(|| server_url.clone()),
-                                            "token_endpoint": config.token_endpoint.clone().unwrap_or_else(|| format!("{server_url}/token")),
-                                        }).to_string()),
+                                        "/.well-known/openid-configuration" => {
+                                            discoveries.fetch_add(1, Ordering::SeqCst);
+                                            (200, serde_json::json!({
+                                                "issuer": config.discovery_issuer.clone().unwrap_or_else(|| server_url.clone()),
+                                                "token_endpoint": config.token_endpoint.clone().unwrap_or_else(|| format!("{server_url}/token")),
+                                            }).to_string())
+                                        }
                                         "/token" => {
                                             counter.fetch_add(1, Ordering::SeqCst);
                                             if let Some(delay) = config.token_delay {
@@ -1294,6 +1330,7 @@ pub(crate) mod test_support {
         FakeIssuer {
             url,
             exchange_count,
+            discovery_count,
             _shutdown: shutdown_tx,
         }
     }
@@ -2051,7 +2088,9 @@ mod tests {
         .expect("queued callers must not each wait out their own timeout");
         assert!(a.is_err() && b.is_err() && c.is_err());
         assert!(client.refresh_or_reuse().await.is_err());
-        // One attempt at most; zero only if discovery itself timed out.
+        // Exactly one refresh attempt reached the issuer. The token request
+        // count is zero only if that attempt's discovery itself timed out.
+        assert_eq!(issuer.discovery_count.load(Ordering::SeqCst), 1);
         assert!(issuer.exchange_count.load(Ordering::SeqCst) <= 1);
     }
 
@@ -2097,6 +2136,126 @@ mod tests {
             .unwrap();
         assert_eq!(token, "stale-access-token");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// Expired cache rewritten to expire `seconds` from now (inside the skew).
+    fn expire_cache_in(path: &Path, seconds: i64) {
+        let mut cache = RefreshTokenCache::load(path).unwrap().unwrap();
+        cache.expires_at = chrono::Utc::now()
+            .checked_add_signed(chrono::Duration::milliseconds(seconds * 1000))
+            .unwrap()
+            .to_rfc3339();
+        cache.save(path).unwrap();
+    }
+
+    async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_fallback_detaches_and_the_rotation_is_persisted() {
+        let issuer = start_fake_issuer(FakeIssuerConfig {
+            rotate: true,
+            token_delay: Some(Duration::from_millis(500)),
+            ..Default::default()
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_expired_cache(&path, &issuer.url, None);
+        expire_cache_in(&path, 30);
+        let client =
+            loopback_client(&path, &issuer.url).with_unexpired_wait(Duration::from_millis(50));
+
+        // The token endpoint answers after 500ms; the caller gives up at 50ms
+        // and gets the still-valid cached token.
+        let token = client.refresh_or_reuse().await.unwrap();
+        assert_eq!(token, "stale-access-token");
+
+        // The detached task (not aborted) finishes and persists the rotation.
+        wait_until("rotated refresh token to be persisted", || {
+            RefreshTokenCache::load(&path)
+                .unwrap()
+                .unwrap()
+                .refresh_token
+                == "rotated-refresh-1"
+        })
+        .await;
+        let fresh = client.refresh_or_reuse().await.unwrap();
+        assert_ne!(fresh, "stale-access-token");
+        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
+        assert_eq!(issuer.discovery_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failure_after_the_caller_returned_is_recorded_for_backoff() {
+        let issuer = start_fake_issuer(FakeIssuerConfig {
+            token_delay: Some(Duration::from_millis(300)),
+            ..Default::default()
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_expired_cache(&path, &issuer.url, None);
+        // An unknown refresh token makes the delayed exchange fail.
+        let mut cache = RefreshTokenCache::load(&path).unwrap().unwrap();
+        cache.refresh_token = "unknown-refresh-token".to_string();
+        cache.save(&path).unwrap();
+        expire_cache_in(&path, 30);
+        let client =
+            loopback_client(&path, &issuer.url).with_unexpired_wait(Duration::from_millis(50));
+
+        assert_eq!(
+            client.refresh_or_reuse().await.unwrap(),
+            "stale-access-token"
+        );
+        wait_until("the detached failure to be recorded", || {
+            client.recent_failure().is_some()
+        })
+        .await;
+
+        // Within the backoff the next caller gets the cached token without a
+        // second issuer round trip.
+        assert_eq!(
+            client.refresh_or_reuse().await.unwrap(),
+            "stale-access-token"
+        );
+        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
+        assert_eq!(issuer.discovery_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn token_that_expires_during_the_wait_is_not_returned() {
+        let issuer = start_fake_issuer(FakeIssuerConfig {
+            token_delay: Some(Duration::from_millis(600)),
+            ..Default::default()
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        write_expired_cache(&path, &issuer.url, None);
+        let mut cache = RefreshTokenCache::load(&path).unwrap().unwrap();
+        cache.expires_at = chrono::Utc::now()
+            .checked_add_signed(chrono::Duration::milliseconds(150))
+            .unwrap()
+            .to_rfc3339();
+        cache.save(&path).unwrap();
+        // Expiry (150ms) lands inside the 400ms wait, and the refresh answers
+        // after 600ms. If the cache is already expired when checked (slow
+        // runner), the caller awaits the refresh directly: same outcome.
+        let client =
+            loopback_client(&path, &issuer.url).with_unexpired_wait(Duration::from_millis(400));
+
+        let token = client.refresh_or_reuse().await.unwrap();
+        assert_ne!(token, "stale-access-token");
+        assert_eq!(issuer.exchange_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -261,6 +261,10 @@ RUNT_CLOUD_TOKEN=<access-token> RUNT_CLOUD_REFRESH_TOKEN=<refresh-token> \
   created first.
 - A failed refresh is not retried for 5 seconds. While the cached token has
   not actually expired, the agent keeps using it.
+- In the last minute before expiry, a connect or upload waits at most 2
+  seconds for a refresh, then uses the still-valid cached token while the
+  refresh finishes in the background. If the token expires during that wait,
+  it waits for the refresh instead. Refresh failures are logged locally.
 
 The cache is readable by anything running as the same OS user, including the
 kernel. `RUNT_CLOUD_REFRESH_TOKEN` is removed from the kernel environment, but
