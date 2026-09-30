@@ -790,6 +790,10 @@ jobs:
           args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
 
+      - name: Audit Windows CRT imports
+        shell: bash
+        run: node scripts/ci/audit-windows-crt-imports.mjs --machine x64 target/release/notebook.exe crates/notebook/binaries/*-x86_64-pc-windows-msvc.exe
+
       - name: Collect artifacts
         shell: bash
         run: |
@@ -996,6 +1000,10 @@ jobs:
           projectPath: crates/notebook
           args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
+
+      - name: Audit Windows CRT imports
+        shell: bash
+        run: node scripts/ci/audit-windows-crt-imports.mjs --machine arm64 target/release/notebook.exe crates/notebook/binaries/*-aarch64-pc-windows-msvc.exe
 
       - name: Collect artifacts
         shell: bash
@@ -1404,6 +1412,11 @@ jobs:
           else
             echo "sccache is not available on PATH"
           fi
+
+      - name: Audit Windows CRT imports
+        if: runner.os == 'Windows'
+        shell: bash
+        run: node scripts/ci/audit-windows-crt-imports.mjs --machine "${{ startsWith(matrix.platform.target, 'aarch64') && 'arm64' || 'x64' }}" python/runtimed/dist/*.whl
 
       - name: Set up native Python for Windows ARM64 wheel smoke
         if: matrix.platform.target == 'aarch64-pc-windows-msvc'

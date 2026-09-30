@@ -10,6 +10,8 @@ on:
       - .github/workflows/release-validation.yml
       - .github/workflows/pr-binary-generation.yml
       - .github/workflows/publish-npm.yml
+      - .cargo/config.toml
+      - scripts/ci/audit-windows-crt-imports.mjs
       - scripts/ci/check-release-tag.sh
       - scripts/ci/npm-release*
       - scripts/ci/smoke-windows-arm64-wheel.py
@@ -19,6 +21,7 @@ on:
       - scripts/ci/install-tauri-cli.sh
       - scripts/ci/fedora-appimage-smoke.sh
       - scripts/tests/test_release_tag.py
+      - scripts/tests/audit-windows-crt-imports.test.mjs
       - scripts/tests/release-workflow.test.mjs
       - scripts/tests/stage-notebook-sidecars.test.mjs
       - scripts/tests/npm-*.mjs
@@ -42,7 +45,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      - run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
+      - run: node --test scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
 
   windows-npm-packaging:
@@ -91,6 +94,9 @@ jobs:
           working-directory: python/runtimed
           sccache: false
           maturin-version: "v1.11.5"
+      - name: Audit Windows CRT imports
+        shell: bash
+        run: node scripts/ci/audit-windows-crt-imports.mjs --machine arm64 target/aarch64-pc-windows-msvc/release/runtimed.exe python/runtimed/dist/*.whl
       - name: Smoke produced wheel
         shell: pwsh
         run: |
