@@ -560,7 +560,7 @@ fn fingerprint_changed(before: &BinaryFingerprint, after: &BinaryFingerprint) ->
 ///
 /// Returns `true` on success, `false` on failure.
 fn run_cargo_build_daemon(project_root: &Path) -> bool {
-    if !ensure_mcp_assets(project_root) {
+    if !run_xtask_wasm_ensure(project_root) || !ensure_mcp_assets(project_root) {
         return false;
     }
     info!("Building daemon + CLI (cargo build -p runtimed -p runt)...");
@@ -641,7 +641,7 @@ fn ensure_mcp_assets(project_root: &Path) -> bool {
             "--",
             "artifacts",
             "ensure",
-            "all",
+            "mcp-widget",
         ])
         .current_dir(project_root)
         // MCP stdout is exclusively JSON-RPC, including during preparation.
@@ -654,6 +654,7 @@ fn ensure_mcp_assets(project_root: &Path) -> bool {
 /// Build the runt CLI binary (which includes runt-mcp) in the selected profile.
 fn build_runt_cli(project_root: &Path) -> bool {
     if !ensure_mcp_assets(project_root) {
+        error!("MCP asset preparation failed; see build diagnostics above");
         return false;
     }
     let mut args = vec!["build", "-p", "runt"];
@@ -1324,11 +1325,14 @@ impl Supervisor {
         let skip_maturin = std::env::var("SKIP_MATURIN").unwrap_or_default() == "1";
 
         let child_before = binary_fingerprint(&project_root, "runt");
+        let mut build_error = None;
         match kind {
             ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged => {
                 info!("MCP source/assets changed, checking assets and building runt...");
                 if !build_runt_cli(&project_root) {
-                    error!("cargo build -p runt failed, keeping current child");
+                    let message = "MCP asset preparation or runt build failed; keeping current child. See supervisor logs.";
+                    error!("{message}");
+                    self.state.write().await.last_error = Some(message.to_string());
                     return;
                 }
             }
@@ -1342,10 +1346,16 @@ impl Supervisor {
                     }
                 );
                 if !build_runt_cli(&project_root) {
-                    error!("cargo build -p runt failed, keeping current child");
-                    return;
-                }
-                if !skip_maturin && !run_maturin_develop(&project_root).success() {
+                    let message = "MCP asset preparation or runt build failed; compiled assets remain stale. See supervisor logs.";
+                    error!("{message}");
+                    self.state.write().await.last_error = Some(message.to_string());
+                    if kind != ChangeKind::Mixed {
+                        return;
+                    }
+                    // Python is loaded at runtime: a failed compiled-asset
+                    // build must not discard the Python edit in this batch.
+                    build_error = Some(message.to_string());
+                } else if !skip_maturin && !run_maturin_develop(&project_root).success() {
                     warn!("maturin develop failed (runt mcp will still restart)");
                 }
             }
@@ -1358,6 +1368,7 @@ impl Supervisor {
             && !fingerprint_changed(&child_before, &binary_fingerprint(&project_root, "runt"))
         {
             info!("Build was a no-op; keeping the current MCP child and catalog");
+            self.state.write().await.last_error = None;
             return;
         }
 
@@ -1367,6 +1378,9 @@ impl Supervisor {
         // Restart child via proxy (auto-rejoin is handled inside restart_child)
         match self.restart_child().await {
             Ok(()) => {
+                if let Some(message) = build_error {
+                    self.state.write().await.last_error = Some(message);
+                }
                 info!("Child restarted after file change ({kind:?})");
                 // Signal that the tool list may have changed
                 let tx = { self.state.read().await.tool_list_changed_tx.clone() };
@@ -2910,6 +2924,16 @@ fn merge_change(previous: Option<ChangeKind>, next: ChangeKind) -> ChangeKind {
     }
 }
 
+fn drain_pending_changes(
+    mut kind: ChangeKind,
+    receiver: &mut mpsc::UnboundedReceiver<ChangeKind>,
+) -> ChangeKind {
+    while let Ok(next) = receiver.try_recv() {
+        kind = merge_change(Some(kind), next);
+    }
+    kind
+}
+
 /// Classify a changed file path into a change kind.
 fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
     let rel = path.strip_prefix(project_root).ok()?;
@@ -3257,13 +3281,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             info!("Checking MCP assets and child freshness...");
             let pr = project_root.clone();
-            let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
-                .await
-                .unwrap_or(false);
+            let build_ok = tokio::task::spawn_blocking(move || {
+                if use_release_binaries() && mode != DevMode::Attach {
+                    run_cargo_build_daemon(&pr)
+                } else {
+                    build_runt_cli(&pr)
+                }
+            })
+            .await
+            .unwrap_or(false);
             if !build_ok {
-                error!("Failed to build runt CLI");
-                child_ready.notify_waiters();
-                return;
+                let message = "MCP asset preparation or startup build failed; source changes are not yet compiled. See supervisor logs.";
+                error!("{message}");
+                state_for_init.write().await.last_error = Some(message.to_string());
+                if !cargo_binary(&project_root, "runt").exists() {
+                    child_ready.notify_waiters();
+                    return;
+                }
+                warn!("Using the existing MCP child; watched edits can retry the build");
             }
         }
 
@@ -3492,6 +3527,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 child_ready: Arc::new(Notify::new()),
             };
             while let Some(change_kind) = file_change_rx.recv().await {
+                let change_kind = drain_pending_changes(change_kind, &mut file_change_rx);
                 info!("File change detected: {change_kind:?}");
                 watcher_supervisor.handle_file_change(change_kind).await;
             }
@@ -4052,6 +4088,19 @@ mod tests {
             merge_change(Some(ChangeKind::AssetsChanged), ChangeKind::RustChanged),
             ChangeKind::RustChanged
         );
+    }
+
+    #[test]
+    fn events_queued_during_a_build_are_drained_into_one_batch() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        sender.send(ChangeKind::AssetsChanged).unwrap();
+        sender.send(ChangeKind::PythonOnly).unwrap();
+        sender.send(ChangeKind::RustChanged).unwrap();
+        assert_eq!(
+            drain_pending_changes(ChangeKind::AssetsChanged, &mut receiver),
+            ChangeKind::Mixed
+        );
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

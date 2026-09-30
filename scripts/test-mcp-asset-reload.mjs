@@ -87,10 +87,17 @@ async function resourceBytes(uri) {
 }
 const evidence = {};
 try {
+  // The supervisor initializes its transport before compiling. A source error
+  // at startup must retain the prior child and still install the retry watcher.
+  fs.writeFileSync(source, `${original}\nconst intentionallyBrokenReloadProbe = ;\n`);
   await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "asset-reload-regression", version: "1" } });
   send({ method: "notifications/initialized" });
   await waitFor(async () => (await status()).child_running, "child startup");
   await waitFor(() => fs.readFileSync(".context/mcp-asset-reload/supervisor.log", "utf8").includes("Watching"), "watcher startup");
+  assert.match((await status()).last_error, /startup build failed/);
+  fs.writeFileSync(source, original);
+  await waitFor(async () => (await status()).last_error === null, "startup failure recovery");
+  console.log("Startup asset failure retained the child and recovered after a watched edit");
   const firstUri = await widgetUri();
   assert.match(firstUri, /^ui:\/\/nteract\/output-[0-9a-f]+\.html$/);
   const firstHtml = await resourceBytes(firstUri);
@@ -100,8 +107,9 @@ try {
   const stableTime = fs.statSync(stableOutput).mtimeMs;
   // Timestamp-only edits must not relink or restart the child.
   const binaryTime = fs.statSync("target/debug/runt").mtimeMs;
+  const logOffset = fs.readFileSync(".context/mcp-asset-reload/supervisor.log", "utf8").length;
   fs.utimesSync(source, new Date(), new Date());
-  await waitFor(() => fs.readFileSync(".context/mcp-asset-reload/supervisor.log", "utf8").includes("Build was a no-op"), "no-op watcher build");
+  await waitFor(() => fs.readFileSync(".context/mcp-asset-reload/supervisor.log", "utf8").slice(logOffset).includes("Build was a no-op"), "no-op watcher build");
   assert.equal(fs.statSync("target/debug/runt").mtimeMs, binaryTime);
   assert.equal(await widgetUri(), firstUri);
   assert.equal((await status()).restart_count, baselineStatus.restart_count);

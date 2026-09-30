@@ -63,7 +63,10 @@ cargo xtask wasm sift         # rebuild sift-wasm only
 Run `cargo xtask run-mcp` from the worktree used by your MCP client. The
 supervisor checks generated assets before compiling and starting its child:
 WASM first, affected renderer bundles next, then the widget HTML and `runt`.
-The first build records local content receipts under `target/xtask/`. Later
+The first build checks every bundle, including the hydrated LFS bundles, and
+records local content receipts under `target/xtask/`. This initial rebuild
+certifies current source inputs; an LFS output alone cannot establish that.
+Later
 runs compare input and output bytes, including imported TypeScript, CSS source
 directories, build configuration, and the package lockfile. Unchanged bundles
 retain their timestamps so Cargo can reuse the existing child binary.
@@ -75,6 +78,11 @@ Without watching, restart the MCP server, or use `up rebuild=true` in owner
 mode. Attach mode prepares the child and assets but never restarts the shared
 daemon. Development daemons serve renderer assets from this worktree's disk;
 installed stable/nightly daemons are not part of this workflow.
+
+If asset preparation fails and a child binary already exists, startup keeps
+that child available and reports the failure in supervisor status. With
+watching enabled, a corrected edit retries the build. A fresh checkout with
+no usable binary still requires a successful build before child tools work.
 
 For asset-only preparation or diagnostics:
 

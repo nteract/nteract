@@ -4356,19 +4356,12 @@ fn run_wasm_pack(needs_c_toolchain: bool, cmd: &str, args: &[&str]) {
 ///   or stale, but skip source-unchanged runs so wasm-pack does not rewrite
 ///   generated files and invalidate `runtimed` / `notebook` build scripts.
 ///
-/// - **Renderer plugin bundles** split into stable LFS-tracked third-party
-///   outputs (`plotly.js`, `vega.js`, `leaflet.*`) and generated local outputs
-///   (`isolated-renderer.*`, `markdown.*`, `bokeh.js`, `panel.js`, `sift.*`). We rebuild generated
-///   outputs when they're missing or pointer-shaped, and rebuild sift when it
-///   is stale relative to sift-wasm source.
-///
-/// Staleness gate: hash sift-wasm source (`crates/sift-wasm/src/**/*.rs`
-/// plus `Cargo.toml`) and compare against the previous run's fingerprint
-/// stored under `target/xtask/`. The earlier "did the glue bytes change?"
-/// check was a false positive each time wasm-pack regenerated the glue
-/// with the same source but slightly different internal metadata, which
-/// constantly re-emitted LFS-tracked renderer bundles and surfaced as phantom
-/// git dirt.
+/// - **Renderer plugin bundles** use receipts for their actual resolved source,
+///   CSS scan directories, build configuration, and output bytes. A checkout
+///   without receipts builds each target once, including hydrated LFS bundles:
+///   existing output alone cannot prove it matches the current renderer source.
+///   Later runs rebuild only stale targets, and byte-identical publication keeps
+///   output timestamps intact. Sift retains its additional wasm/glue checks.
 fn ensure_build_artifacts() {
     let sift_wasm_rebuilt = ensure_volatile_wasm_current();
     ensure_renderer_artifacts_current(sift_wasm_rebuilt);

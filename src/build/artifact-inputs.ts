@@ -5,6 +5,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Plugin } from "vite-plus";
 
+export function compareInputPaths(a: string, b: string): number {
+  const left = a.replace(/\\/g, "/");
+  const right = b.replace(/\\/g, "/");
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function sourceFiles(dir: string): string[] {
   return fs
     .readdirSync(dir, { withFileTypes: true })
@@ -13,7 +19,7 @@ function sourceFiles(dir: string): string[] {
       if (entry.isDirectory()) return sourceFiles(file);
       return /\.(ts|tsx|js|jsx|css|html|json)$/.test(entry.name) ? [file] : [];
     })
-    .sort();
+    .sort(compareInputPaths);
 }
 
 function readBytes(file: string, normalize: boolean): Buffer {
@@ -51,7 +57,8 @@ export function artifactInputs(root: string, extra: string[] = []) {
     buildEnd(error) {
       if (error) return;
       for (const id of [...this.getModuleIds()]) {
-        const file = id.split("?")[0];
+        // Rolldown may use forward slashes in module IDs on Windows.
+        const file = path.normalize(id.split("?")[0]);
         if (path.isAbsolute(file) && fs.existsSync(file) && fs.statSync(file).isFile()) {
           // Package contents are represented by the lockfile. Keep receipts
           // portable across pnpm's platform-specific node_modules layout.

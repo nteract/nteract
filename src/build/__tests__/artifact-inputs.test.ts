@@ -5,12 +5,22 @@ import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import {
   artifactInputs,
+  compareInputPaths,
   digestFile,
   writeArtifactReceipt,
   writeIfChanged,
 } from "../artifact-inputs";
 
 const roots: string[] = [];
+
+test("directory input order is portable across Windows and Unix", () => {
+  const unix = ["src/a0.ts", "src/a/b.ts", "src/a.ts"];
+  const windows = unix.map((file) => file.replace(/\//g, "\\"));
+  const expected = ["src/a.ts", "src/a/b.ts", "src/a0.ts"];
+  expect(unix.sort(compareInputPaths)).toEqual(expected);
+  expect(windows.sort(compareInputPaths).map((file) => file.replace(/\\/g, "/"))).toEqual(expected);
+});
+
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "nteract-asset-inputs-"));
   roots.push(root);
