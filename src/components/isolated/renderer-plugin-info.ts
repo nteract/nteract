@@ -5,6 +5,7 @@ import {
   NTERACT_BOKEH_SESSION_MIME_TYPE,
 } from "@/components/outputs/bokeh-mime";
 import { PANEL_EXEC_MIME_TYPE, PANEL_LOAD_MIME_TYPE } from "@/components/outputs/panel-mime";
+import { MARKDOWN_PROJECTION_MIME_TYPE } from "../../lib/markdown-projection";
 
 export type RendererPluginName =
   | "markdown"
@@ -21,6 +22,7 @@ export interface RendererPluginInfo {
 }
 
 const MIME_TO_PLUGIN: Record<string, RendererPluginInfo> = {
+  [MARKDOWN_PROJECTION_MIME_TYPE]: { name: "markdown", hasCss: true },
   "text/markdown": { name: "markdown", hasCss: true },
   "text/latex": { name: "markdown", hasCss: true },
   "application/vnd.plotly.v1+json": { name: "plotly", hasCss: false },

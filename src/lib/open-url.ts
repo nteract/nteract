@@ -6,6 +6,16 @@ type ExternalLinkHost = Pick<NotebookHost, "externalLinks">;
 
 let _host: ExternalLinkHost | null = null;
 
+/** Shared policy for external links from untrusted notebook content. */
+export function isSafeExternalUrl(url: unknown): url is string {
+  if (typeof url !== "string") return false;
+  try {
+    return ALLOWED_PROTOCOLS.has(new URL(url.trim()).protocol);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Register the host instance for `openUrl`.
  *
@@ -25,18 +35,9 @@ export function setOpenUrlHost(host: ExternalLinkHost | null): void {
 export async function openUrl(url: string): Promise<void> {
   const normalized = url.trim();
 
-  let parsed: URL;
-  try {
-    parsed = new URL(normalized);
-  } catch {
-    console.error("openUrl: refusing to open invalid URL", { url: normalized });
-    return;
-  }
-
-  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-    console.error("openUrl: refusing to open URL with disallowed protocol", {
+  if (!isSafeExternalUrl(normalized)) {
+    console.error("openUrl: refusing to open invalid or disallowed URL", {
       url: normalized,
-      protocol: parsed.protocol,
     });
     return;
   }

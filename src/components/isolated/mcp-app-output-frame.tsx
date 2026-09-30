@@ -1,5 +1,6 @@
 import type { OutputBlobResolver } from "./output-manifest";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isSafeExternalUrl } from "../../lib/open-url";
 import {
   createInlineOnlyBlobResolver,
   createMcpAppBlobResolver,
@@ -34,12 +35,23 @@ export interface McpAppOutputFrameProps {
   className?: string;
   onDiagnostic?: NteractOutputEmbedDiagnosticHandler;
   onError?: (error: { message: string; stack?: string }) => void;
+  onLinkClick?: (url: string) => void;
 }
 
 function cellsForProps(
   props: Pick<McpAppOutputFrameProps, "cell" | "cells">,
 ): readonly McpAppCellData[] {
   return props.cells ?? (props.cell ? [props.cell] : []);
+}
+
+function outputDocumentOrigin(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const origin = new URL(url).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
 }
 
 export function McpAppOutputFrame({
@@ -59,6 +71,7 @@ export function McpAppOutputFrame({
   className,
   onDiagnostic,
   onError,
+  onLinkClick,
 }: McpAppOutputFrameProps) {
   const targetRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<NteractOutputEmbedHandle | null>(null);
@@ -90,11 +103,13 @@ export function McpAppOutputFrame({
   const hostContextPatchRef = useRef(hostContextPatch);
   const onDiagnosticRef = useRef(onDiagnostic);
   const onErrorRef = useRef(onError);
+  const onLinkClickRef = useRef(onLinkClick);
 
   useEffect(() => {
     onDiagnosticRef.current = onDiagnostic;
     onErrorRef.current = onError;
-  }, [onDiagnostic, onError]);
+    onLinkClickRef.current = onLinkClick;
+  }, [onDiagnostic, onError, onLinkClick]);
 
   useEffect(() => {
     setFailed(false);
@@ -114,6 +129,15 @@ export function McpAppOutputFrame({
       ...(maxHeight === undefined ? {} : { maxHeight }),
       onDiagnostic(...args) {
         onDiagnosticRef.current?.(...args);
+      },
+      onLinkClick(url) {
+        if (!isSafeExternalUrl(url)) return;
+        const normalizedUrl = url.trim();
+        // srcdoc inherits this document's base URL; src uses the daemon URL.
+        // Neither origin is an external destination for the host's browser.
+        const frameOrigin = outputDocumentOrigin(outputDocumentUrl ?? document.baseURI);
+        if (new URL(normalizedUrl).origin === frameOrigin) return;
+        onLinkClickRef.current?.(normalizedUrl);
       },
       onError(error) {
         handleRef.current?.dispose();

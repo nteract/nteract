@@ -4,6 +4,7 @@ import { ISOLATED_FRAME_SANDBOX_ATTRS } from "../frame-config";
 import {
   MCP_UI_SIZE_CHANGED,
   NTERACT_INSTALL_RENDERER,
+  NTERACT_LINK_CLICK,
   NTERACT_RENDER_OUTPUT,
   NTERACT_RENDERER_READY,
 } from "../rpc-methods";
@@ -80,6 +81,32 @@ describe("createNteractOutputEmbed", () => {
     handle.dispose();
 
     expect(target.querySelector("iframe")).toBeNull();
+  });
+
+  it("forwards each legacy or RPC link click once through the dedicated callback", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const onLinkClick = vi.fn();
+    const handle = createNteractOutputEmbed({
+      target,
+      rendererBundle: { rendererCode: "", rendererCss: "" },
+      onLinkClick,
+    });
+    const frameWindow = handle.iframe.contentWindow!;
+    const data = { type: "link_click", payload: { url: "https://nteract.io/", newTab: false } };
+    window.dispatchEvent(new MessageEvent("message", { source: window, data }));
+    expect(onLinkClick).not.toHaveBeenCalled();
+    window.dispatchEvent(new MessageEvent("message", { source: frameWindow, data }));
+    expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/", false);
+
+    bootstrapFrame(frameWindow);
+    MockJsonRpcTransport.instances[0].notificationHandlers.get(NTERACT_LINK_CLICK)?.({
+      url: "https://nteract.io/docs",
+      newTab: true,
+    });
+    expect(onLinkClick).toHaveBeenCalledTimes(2);
+    expect(onLinkClick).toHaveBeenLastCalledWith("https://nteract.io/docs", true);
+    handle.dispose();
   });
 
   it("loads the isolated frame from the host configured output document URL", () => {

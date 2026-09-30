@@ -35,7 +35,11 @@ export function MarkdownCodeBlock({
 
   const copyCode = async () => {
     try {
-      await navigator.clipboard.writeText(code);
+      // Opaque output frames may not have clipboard-write permission. A copy
+      // command invoked by the user's click can still copy selected text.
+      if (!(window.self !== window.top && copySelectedCode(code))) {
+        await navigator.clipboard.writeText(code);
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), copyResetMs);
     } catch (error) {
@@ -78,6 +82,33 @@ export function MarkdownCodeBlock({
       />
     </div>
   );
+}
+
+function copySelectedCode(code: string): boolean {
+  if (typeof document.execCommand !== "function") return false;
+  const activeElement = document.activeElement;
+  const selection = window.getSelection();
+  const ranges = selection
+    ? Array.from({ length: selection.rangeCount }, (_, index) =>
+        selection.getRangeAt(index).cloneRange(),
+      )
+    : [];
+  const textarea = document.createElement("textarea");
+  textarea.value = code;
+  textarea.tabIndex = -1;
+  textarea.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+  document.body.append(textarea);
+  try {
+    textarea.select();
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+    if (activeElement instanceof HTMLElement) activeElement.focus({ preventScroll: true });
+    selection?.removeAllRanges();
+    for (const range of ranges) selection?.addRange(range);
+  }
 }
 
 export function markdownCodeBlockLanguageLabel(language: string | undefined): string {

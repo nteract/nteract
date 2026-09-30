@@ -42,6 +42,94 @@ describe("McpAppOutputFrame", () => {
     vi.clearAllMocks();
   });
 
+  it("forwards output links to the latest host callback without rebuilding the frame", async () => {
+    const rendererBundle = { rendererCode: "renderer", rendererCss: "css" };
+    const cell = cellWithHtmlOutput();
+    const first = vi.fn();
+    const latest = vi.fn();
+    const { rerender } = render(
+      <McpAppOutputFrame cell={cell} rendererBundle={rendererBundle} onLinkClick={first} />,
+    );
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
+    options.onLinkClick?.("https://nteract.io", false);
+    expect(first).toHaveBeenCalledWith("https://nteract.io");
+
+    rerender(
+      <McpAppOutputFrame cell={cell} rendererBundle={rendererBundle} onLinkClick={latest} />,
+    );
+    options.onLinkClick?.("https://nteract.io/docs", false);
+    expect(latest).toHaveBeenCalledExactlyOnceWith("https://nteract.io/docs");
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(createNteractOutputEmbed).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops unsafe schemes and malformed URLs before reaching the host", async () => {
+    const onLinkClick = vi.fn();
+    render(
+      <McpAppOutputFrame
+        cell={cellWithHtmlOutput()}
+        rendererBundle={{ rendererCode: "renderer", rendererCss: "css" }}
+        onLinkClick={onLinkClick}
+      />,
+    );
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
+    for (const url of [
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "about:srcdoc#heading",
+      "#heading",
+      "invalid",
+      null,
+      123,
+    ]) {
+      Reflect.apply(options.onLinkClick!, undefined, [url, false]);
+    }
+    expect(onLinkClick).not.toHaveBeenCalled();
+
+    options.onLinkClick?.("\u00a0 https://nteract.io/ \ufeff", false);
+    expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
+  });
+
+  it("keeps daemon-relative and fragment links out of the external browser", async () => {
+    const onLinkClick = vi.fn();
+    render(
+      <McpAppOutputFrame
+        cell={cellWithHtmlOutput()}
+        rendererBundle={{ rendererCode: "renderer", rendererCss: "css" }}
+        outputDocumentUrl="http://localhost:47830/output-frame"
+        onLinkClick={onLinkClick}
+      />,
+    );
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
+    options.onLinkClick?.("http://localhost:47830/output-frame#heading", false);
+    options.onLinkClick?.("http://localhost:47830/relative", false);
+    expect(onLinkClick).not.toHaveBeenCalled();
+    options.onLinkClick?.("https://nteract.io/", false);
+    expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
+  });
+
+  it("keeps srcdoc links resolved against the widget base out of the external browser", async () => {
+    const onLinkClick = vi.fn();
+    render(
+      <McpAppOutputFrame
+        cell={cellWithHtmlOutput()}
+        rendererBundle={{ rendererCode: "renderer", rendererCss: "css" }}
+        outputDocumentUrl={null}
+        onLinkClick={onLinkClick}
+      />,
+    );
+    await waitFor(() => expect(mockHandle.renderBatch).toHaveBeenCalled());
+    const options = vi.mocked(createNteractOutputEmbed).mock.calls[0][0];
+    options.onLinkClick?.(new URL("#heading", document.baseURI).href, false);
+    options.onLinkClick?.(new URL("./relative", document.baseURI).href, false);
+    expect(onLinkClick).not.toHaveBeenCalled();
+    options.onLinkClick?.("https://nteract.io/", false);
+    expect(onLinkClick).toHaveBeenCalledExactlyOnceWith("https://nteract.io/");
+  });
+
   it("adapts MCP App cell outputs into the shared isolated output embed", async () => {
     const rendererBundle = { rendererCode: "renderer", rendererCss: "css" };
     const rendererPluginLoader = vi.fn(async () => undefined);
