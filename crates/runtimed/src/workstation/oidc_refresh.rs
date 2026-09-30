@@ -2178,6 +2178,12 @@ mod tests {
         // and gets the still-valid cached token.
         let token = client.refresh_or_reuse().await.unwrap();
         assert_eq!(token, "stale-access-token");
+        // A second caller while the detached task is still in flight queues
+        // behind its permit/lock and must not start another exchange.
+        assert_eq!(
+            client.refresh_or_reuse().await.unwrap(),
+            "stale-access-token"
+        );
 
         // The detached task (not aborted) finishes and persists the rotation.
         wait_until("rotated refresh token to be persisted", || {
@@ -2234,24 +2240,20 @@ mod tests {
     #[tokio::test]
     async fn token_that_expires_during_the_wait_is_not_returned() {
         let issuer = start_fake_issuer(FakeIssuerConfig {
-            token_delay: Some(Duration::from_millis(600)),
+            token_delay: Some(Duration::from_secs(3)),
             ..Default::default()
         })
         .await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.json");
         write_expired_cache(&path, &issuer.url, None);
-        let mut cache = RefreshTokenCache::load(&path).unwrap().unwrap();
-        cache.expires_at = chrono::Utc::now()
-            .checked_add_signed(chrono::Duration::milliseconds(150))
-            .unwrap()
-            .to_rfc3339();
-        cache.save(&path).unwrap();
-        // Expiry (150ms) lands inside the 400ms wait, and the refresh answers
-        // after 600ms. If the cache is already expired when checked (slow
-        // runner), the caller awaits the refresh directly: same outcome.
+        // Expiry (1s) lands inside the 2s wait, and the refresh answers after
+        // 3s. The 1s head start keeps the pre-wait expiry check on the
+        // unexpired path even on a slow runner, so this exercises the recheck
+        // after the timeout.
+        expire_cache_in(&path, 1);
         let client =
-            loopback_client(&path, &issuer.url).with_unexpired_wait(Duration::from_millis(400));
+            loopback_client(&path, &issuer.url).with_unexpired_wait(Duration::from_secs(2));
 
         let token = client.refresh_or_reuse().await.unwrap();
         assert_ne!(token, "stale-access-token");
