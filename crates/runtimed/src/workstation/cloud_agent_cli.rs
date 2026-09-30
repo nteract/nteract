@@ -14,6 +14,7 @@
 //! command line / `ps` output. The flags carry only non-secret routing
 //! (URL, notebook id, scope, operator, auth *kind*).
 
+use super::oidc_refresh::{prepare_refresh_client, OidcRefreshOptions, CLOUD_REFRESH_TOKEN_ENV};
 use anyhow::{anyhow, Context, Result};
 use notebook_cloud_transport::{CloudAuth, CloudWsConfig};
 
@@ -96,6 +97,44 @@ pub fn build_cloud_config(
         auth,
         workstation: None,
     })
+}
+
+/// Construct the [`notebook_cloud_transport::TokenRefresher`] a long-lived
+/// `--auth-kind oidc` agent shares between its room transport and blob
+/// uploads.
+///
+/// Returns `Ok(None)` for every other auth kind (`workstation`,
+/// `anaconda-key`, and `dev` credentials don't expire the way an OIDC bearer
+/// does; see `docs/adr/hosted-credential-transport.md`, Decision 9), and for
+/// `oidc` with no [`CLOUD_REFRESH_TOKEN_ENV`] seed and no `--oidc-*` flags,
+/// whether or not a cache file exists. In both cases the agent keeps the
+/// static token from `config.auth`.
+///
+/// Errors when refresh was requested but cannot be set up safely: `--oidc-*`
+/// flags with a non-oidc kind, a cache bound to another cloud/issuer/client
+/// or account, a non-https issuer without the loopback opt-in, or flags with
+/// neither a cache nor a seed. See
+/// [`prepare_refresh_client`](super::oidc_refresh::prepare_refresh_client).
+pub fn resolve_token_refresher(
+    auth_kind: CloudAuthKind,
+    options: &OidcRefreshOptions,
+    config: &CloudWsConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<notebook_cloud_transport::TokenRefresher>> {
+    if auth_kind != CloudAuthKind::Oidc {
+        anyhow::ensure!(
+            !options.is_configured(),
+            "--oidc-* refresh flags require --auth-kind oidc"
+        );
+        return Ok(None);
+    }
+    let CloudAuth::OidcBearer { token } = &config.auth else {
+        return Ok(None);
+    };
+    let seed = env(CLOUD_REFRESH_TOKEN_ENV);
+    let client = prepare_refresh_client(options, &config.cloud_url, token, seed.as_deref())
+        .context("oidc token refresh setup")?;
+    Ok(client.map(super::oidc_refresh::OidcRefreshClient::into_token_refresher))
 }
 
 #[cfg(test)]
@@ -211,5 +250,128 @@ mod tests {
             cfg.auth,
             CloudAuth::OidcBearer { token } if token == "tok-trim"
         ));
+    }
+
+    fn valid_cache(path: &std::path::Path) {
+        super::super::oidc_refresh::RefreshTokenCache {
+            cloud_origin: "https://preview.runt.run".to_string(),
+            issuer: "https://issuer.example".to_string(),
+            client_id: "client".to_string(),
+            scope: None,
+            subject: None,
+            access_token: "at".to_string(),
+            refresh_token: "rt".to_string(),
+            expires_at: chrono::Utc::now()
+                .checked_add_signed(chrono::Duration::hours(1))
+                .unwrap()
+                .to_rfc3339(),
+        }
+        .save(path)
+        .unwrap();
+    }
+
+    fn cache_at(path: &std::path::Path) -> OidcRefreshOptions {
+        OidcRefreshOptions {
+            cache_path: Some(path.to_path_buf()),
+            ..Default::default()
+        }
+    }
+
+    fn config_for(kind: CloudAuthKind) -> CloudWsConfig {
+        build_cloud_config(
+            &args(kind),
+            env_from(&[(CLOUD_TOKEN_ENV, "tok"), (CLOUD_DEV_USER_ENV, "alice")]),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn resolve_token_refresher_is_none_for_non_oidc_kinds_without_refresh_flags() {
+        let env = env_from(&[(CLOUD_REFRESH_TOKEN_ENV, "seed")]);
+        for kind in [
+            CloudAuthKind::Workstation,
+            CloudAuthKind::AnacondaKey,
+            CloudAuthKind::Dev,
+        ] {
+            let refresher = resolve_token_refresher(
+                kind,
+                &OidcRefreshOptions::default(),
+                &config_for(kind),
+                &env,
+            )
+            .unwrap();
+            assert!(refresher.is_none(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_token_refresher_rejects_refresh_flags_for_non_oidc_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.json");
+        valid_cache(&cache_path);
+        let err = resolve_token_refresher(
+            CloudAuthKind::Workstation,
+            &cache_at(&cache_path),
+            &config_for(CloudAuthKind::Workstation),
+            env_from(&[]),
+        )
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("--auth-kind oidc"));
+    }
+
+    #[test]
+    fn resolve_token_refresher_errors_for_an_explicit_missing_cache_without_a_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("does-not-exist.json");
+        let err = resolve_token_refresher(
+            CloudAuthKind::Oidc,
+            &cache_at(&cache_path),
+            &config_for(CloudAuthKind::Oidc),
+            env_from(&[]),
+        )
+        .err()
+        .unwrap();
+        assert!(format!("{err:#}").contains(CLOUD_REFRESH_TOKEN_ENV));
+    }
+
+    #[test]
+    fn resolve_token_refresher_is_some_for_oidc_with_a_valid_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.json");
+        valid_cache(&cache_path);
+        assert!(resolve_token_refresher(
+            CloudAuthKind::Oidc,
+            &cache_at(&cache_path),
+            &config_for(CloudAuthKind::Oidc),
+            env_from(&[]),
+        )
+        .unwrap()
+        .is_some());
+    }
+
+    #[test]
+    fn resolve_token_refresher_seeds_from_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.json");
+        let options = OidcRefreshOptions {
+            cache_path: Some(cache_path.clone()),
+            issuer: Some("https://issuer.example".to_string()),
+            client_id: Some("client".to_string()),
+            ..Default::default()
+        };
+        assert!(resolve_token_refresher(
+            CloudAuthKind::Oidc,
+            &options,
+            &config_for(CloudAuthKind::Oidc),
+            env_from(&[(CLOUD_REFRESH_TOKEN_ENV, "seed")]),
+        )
+        .unwrap()
+        .is_some());
+        let cache = super::super::oidc_refresh::RefreshTokenCache::load(&cache_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cache.cloud_origin, "https://preview.runt.run");
+        assert_eq!(cache.refresh_token, "seed");
     }
 }

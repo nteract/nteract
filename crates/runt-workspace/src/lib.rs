@@ -1681,21 +1681,29 @@ pub fn settings_json_path() -> PathBuf {
         .join("settings.json")
 }
 
+/// Resolve `file_name` under the dev-mode-vs-production config location
+/// shared by [`session_state_path`], [`workstation_credentials_path`], and
+/// any other single-file, per-user config/credential path: per-worktree
+/// under [`daemon_base_dir`] in dev mode, or under the OS config directory
+/// namespaced by [`config_namespace`] in production. Centralized so this
+/// convention has exactly one place to change.
+pub fn config_or_dev_file(file_name: &str) -> PathBuf {
+    if is_dev_mode() {
+        daemon_base_dir().join(file_name)
+    } else {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(config_namespace())
+            .join(file_name)
+    }
+}
+
 /// Get the path to the session state file.
 ///
 /// In dev mode: stored per-worktree for isolation during development.
 /// In production: stored in config directory alongside settings.
 pub fn session_state_path() -> PathBuf {
-    if is_dev_mode() {
-        // Per-worktree session for dev isolation
-        daemon_base_dir().join("session.json")
-    } else {
-        // Production: config directory
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(config_namespace())
-            .join("session.json")
-    }
+    config_or_dev_file("session.json")
 }
 
 /// Get the path to the workstation credential file written by
@@ -1705,16 +1713,7 @@ pub fn session_state_path() -> PathBuf {
 /// In production: stored in config directory alongside settings
 /// (mirrors [`session_state_path`]).
 pub fn workstation_credentials_path() -> PathBuf {
-    if is_dev_mode() {
-        // Per-worktree credential for dev isolation
-        daemon_base_dir().join("workstation.json")
-    } else {
-        // Production: config directory
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(config_namespace())
-            .join("workstation.json")
-    }
+    config_or_dev_file("workstation.json")
 }
 
 /// Best-effort machine hostname for non-secret workstation identity labels.

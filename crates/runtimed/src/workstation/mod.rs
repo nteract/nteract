@@ -23,6 +23,7 @@ pub mod allocate;
 pub mod cloud_agent_cli;
 pub mod environments;
 pub mod launch_on_attach;
+pub mod oidc_refresh;
 
 pub use agent_loop::{
     run_workstation_agent, WorkstationAgentOptions, DEFAULT_HEARTBEAT_MS, DEFAULT_POLL_MS,
@@ -32,7 +33,9 @@ pub use allocate::{
     current_python_workstation_metadata, plan_current_python_allocation, Allocation,
     CurrentPythonLaunchSpec, RoomTarget,
 };
-pub use cloud_agent_cli::{build_cloud_config, CloudAgentArgs, CloudAuthKind, CLOUD_TOKEN_ENV};
+pub use cloud_agent_cli::{
+    build_cloud_config, resolve_token_refresher, CloudAgentArgs, CloudAuthKind, CLOUD_TOKEN_ENV,
+};
 pub use environments::{
     environments_from_pool_state, list_environments, EnvKind, EnvironmentPolicy,
     WorkstationEnvironment,
@@ -40,4 +43,7 @@ pub use environments::{
 pub use kernel_env::resolve_python_on_path;
 pub use launch_on_attach::{
     build_current_python_launch, CurrentPythonLaunch, CURRENT_PYTHON_ENV_SOURCE,
+};
+pub use oidc_refresh::{
+    OidcRefreshClient, OidcRefreshOptions, RefreshTokenCache, CLOUD_REFRESH_TOKEN_ENV,
 };

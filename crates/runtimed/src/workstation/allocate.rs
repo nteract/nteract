@@ -92,8 +92,16 @@ pub fn plan_current_python_allocation(
 /// to (`target`, `auth`), the interpreter and workspace facts the launch
 /// carries (`python_path`, `notebook_path`, `working_dir`, `env_vars`), the
 /// agent's blob store root (`blob_root`), and when the deferred launch applies
-/// (`launch_trigger`).
-#[derive(Debug, Clone)]
+/// (`launch_trigger`). `token_refresher`, when `Some`, lets a long-lived
+/// `--auth-kind oidc` peer survive token expiry across a reconnect;
+/// `None` preserves the historical static-token behavior for every other
+/// auth kind and for `oidc` with no refresh-token cache.
+///
+/// No `Debug` derive: `TokenRefresher` is `Arc<dyn Fn(...) -> ...>`, which
+/// doesn't implement `Debug` — matches
+/// `notebook_cloud_transport::CloudWsFrameTransport`, which carries the same
+/// field and is likewise not `Debug`.
+#[derive(Clone)]
 pub struct CurrentPythonLaunchSpec {
     pub target: RoomTarget,
     pub auth: CloudAuth,
@@ -103,6 +111,7 @@ pub struct CurrentPythonLaunchSpec {
     pub env_vars: HashMap<String, String>,
     pub blob_root: PathBuf,
     pub launch_trigger: LaunchTrigger,
+    pub token_refresher: Option<notebook_cloud_transport::TokenRefresher>,
 }
 
 /// Allocate a `current_python` runtime for a cloud room and run it to
@@ -134,6 +143,7 @@ pub async fn allocate_current_python_runtime(spec: CurrentPythonLaunchSpec) -> a
         allocation.operator,
         spec.blob_root,
         Some((spec.launch_trigger, allocation.initial_launch)),
+        spec.token_refresher,
     )
     .await
 }

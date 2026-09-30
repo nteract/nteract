@@ -59,6 +59,7 @@ use notebook_protocol::protocol::{
 const REDACT_ENV_VALUES_IN_OUTPUTS_ENV: &str = "NTERACT_REDACT_ENV_VALUES_IN_OUTPUTS";
 const KERNEL_ENV_SECRET_BLOCKLIST: &[&str] = &[
     "RUNT_CLOUD_TOKEN",
+    "RUNT_CLOUD_REFRESH_TOKEN",
     "NTERACT_API_KEY",
     "NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN",
 ];
@@ -3961,6 +3962,7 @@ mod tests {
     fn scrub_secret_kernel_env_prevents_cloud_credentials_from_inheriting() {
         let mut cmd = tokio::process::Command::new("python");
         cmd.env("RUNT_CLOUD_TOKEN", "cloud-secret");
+        cmd.env("RUNT_CLOUD_REFRESH_TOKEN", "refresh-secret");
         cmd.env("NTERACT_API_KEY", "api-secret");
         cmd.env("NOTEBOOK_CLOUD_PUBLISH_BEARER_TOKEN", "publish-secret");
         cmd.env("VISIBLE_KERNEL_ENV", "ok");

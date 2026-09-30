@@ -49,6 +49,9 @@ fn cli_command_name() -> &'static str {
     runt_workspace::public_cli_invocation()
 }
 
+// Parsed once per process and matched immediately; boxing the larger
+// variants would only add indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Report compiled runtime identity without starting or configuring anything.
@@ -199,6 +202,24 @@ enum Commands {
         /// synced execution intent.
         #[arg(long, value_parser = ["attach", "execute"], default_value = "attach")]
         launch_mode: String,
+        /// OIDC refresh-token cache file (`--auth-kind oidc`). Defaults to a
+        /// per-cloud-origin file in the runtimed config directory.
+        #[arg(long)]
+        oidc_refresh_cache: Option<PathBuf>,
+        /// OIDC issuer used to seed a new refresh cache from
+        /// RUNT_CLOUD_REFRESH_TOKEN; with an existing cache it must match.
+        #[arg(long)]
+        oidc_issuer: Option<String>,
+        /// Public OAuth client id used to seed a new refresh cache; with an
+        /// existing cache it must match.
+        #[arg(long)]
+        oidc_client_id: Option<String>,
+        /// Scope requested on refresh, recorded when seeding a new cache.
+        #[arg(long)]
+        oidc_scope: Option<String>,
+        /// Accept an `http` OIDC issuer on localhost/loopback (local dev only).
+        #[arg(long)]
+        oidc_allow_loopback_http: bool,
     },
 
     /// Serve this machine as a workstation for a hosted nteract cloud:
@@ -574,6 +595,11 @@ async fn main() -> anyhow::Result<()> {
             workstation_display_name,
             runtime_session_id,
             launch_mode,
+            oidc_refresh_cache,
+            oidc_issuer,
+            oidc_client_id,
+            oidc_scope,
+            oidc_allow_loopback_http,
         }) => {
             let cli_args = runtimed::workstation::CloudAgentArgs {
                 cloud_url,
@@ -587,6 +613,23 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("[cloud-runtime-agent] Config error: {}", e);
                         e
                     })?;
+            let refresh_options = runtimed::workstation::OidcRefreshOptions {
+                cache_path: oidc_refresh_cache,
+                issuer: oidc_issuer,
+                client_id: oidc_client_id,
+                scope: oidc_scope,
+                allow_loopback_http: oidc_allow_loopback_http,
+            };
+            let token_refresher = runtimed::workstation::resolve_token_refresher(
+                auth_kind,
+                &refresh_options,
+                &config,
+                |k| std::env::var(k).ok(),
+            )
+            .map_err(|e| {
+                eprintln!("[cloud-runtime-agent] Config error: {:#}", e);
+                e
+            })?;
             let blob_root = blob_root.unwrap_or_else(runtimed::default_blob_store_dir);
             let resolved_working_dir = working_dir.or_else(|| std::env::current_dir().ok());
             if python_path.is_none()
@@ -643,6 +686,7 @@ async fn main() -> anyhow::Result<()> {
                             env_vars: std::collections::HashMap::new(),
                             blob_root,
                             launch_trigger,
+                            token_refresher,
                         },
                     )
                     .await
@@ -655,7 +699,11 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
                     runtimed::runtime_agent::run_cloud_runtime_agent(
-                        config, operator, blob_root, None,
+                        config,
+                        operator,
+                        blob_root,
+                        None,
+                        token_refresher,
                     )
                     .await
                 }

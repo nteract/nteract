@@ -225,9 +225,51 @@ against the same attach-job surface with `NTERACT_API_KEY` or
 `NOTEBOOK_CLOUD_URL`. The `apps/notebook-cloud` README covers the matching
 runtime smoke commands.
 
-For browser-coupled OIDC peers whose token expires, mint fresh tokens via a
-refresher (the transport supports per-connect refresh; see
-`notebook-cloud-transport`'s `TokenRefresher`).
+For OIDC peers whose token expires, `cloud-runtime-agent --auth-kind oidc`
+can renew it from a refresh-token cache (see
+`crates/runtimed/src/workstation/oidc_refresh.rs`). It checks the cached
+expiry before each room connect/reconnect and each output blob upload, and
+exchanges the refresh token when needed. Both paths use the same token.
+
+Seed a cache once by passing the refresh token through the environment,
+never argv:
+
+```bash
+RUNT_CLOUD_TOKEN=<access-token> RUNT_CLOUD_REFRESH_TOKEN=<refresh-token> \
+  runtimed cloud-runtime-agent \
+  --cloud-url https://<cloud-host> \
+  --notebook-id <id> \
+  --oidc-issuer https://<issuer> \
+  --oidc-client-id <public-client-id>
+```
+
+- Refresh is opt-in on every start. Later runs pass the same `--oidc-issuer`
+  and `--oidc-client-id` (or `--oidc-refresh-cache`) to reuse the cache.
+  Without an `--oidc-*` flag or a seed, the agent ignores any cache.
+- The cache is a `0600` file per cloud origin in the runtimed config
+  directory; `--oidc-refresh-cache` picks another path.
+- It is bound to the cloud origin, issuer, client id, and (for JWTs) the
+  account. The agent refuses a cache or `RUNT_CLOUD_TOKEN` that doesn't match.
+- An existing cache wins over `RUNT_CLOUD_REFRESH_TOKEN`. Delete the cache to
+  re-seed.
+- Issuers must use `https`. A local dev issuer on `http://localhost` also needs
+  `--oidc-allow-loopback-http`.
+- Discovery must name the issuer exactly, and the token endpoint must be on
+  the issuer's origin. Redirects are not followed.
+- Agents sharing a cache refresh one at a time, so rotating refresh tokens
+  are not spent twice (unix). Seeding never overwrites a cache another agent
+  created first.
+- A failed refresh is not retried for 5 seconds. While the cached token has
+  not actually expired, the agent keeps using it.
+- In the last minute before expiry, a connect or upload waits at most 2
+  seconds for a refresh, then uses the still-valid cached token while the
+  refresh finishes in the background. If the token expires during that wait,
+  it waits for the refresh instead. Refresh failures are logged locally.
+
+The cache is readable by anything running as the same OS user, including the
+kernel. `RUNT_CLOUD_REFRESH_TOKEN` is removed from the kernel environment, but
+that is hygiene, not isolation. Without a seed or an `--oidc-*` flag, the
+agent keeps the static `RUNT_CLOUD_TOKEN`.
 
 ## JupyterHub
 
