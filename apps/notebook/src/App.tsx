@@ -132,7 +132,6 @@ import {
 import {
   openNotebookRailPanel,
   setNotebookRailCollapsed,
-  toggleNotebookRailPanel,
   useNotebookRailUiState,
 } from "@/components/notebook/state/rail-ui-state";
 import {
@@ -324,7 +323,7 @@ function resolveCommOutputs(
 
 function AppContent() {
   const host = useNotebookHost();
-  const { commentsEnabled, packageToggleEnabled } = notebookUiPolicy(host.name);
+  const { commentsEnabled } = notebookUiPolicy(host.name);
   const outputHostContext = useMemo(
     () =>
       host.outputDocumentUrl
@@ -1389,19 +1388,10 @@ function AppContent() {
   }, [envSource, envSyncState]);
 
   const renderedActiveRailPanel = activeRailPanel;
-  const packagesRailOpen = !railCollapsed && renderedActiveRailPanel === "packages";
 
   const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
     openNotebookRailPanel(panelId);
   }, []);
-
-  const handleTogglePackagesRail = useCallback(() => {
-    if (!shellCapabilities.canViewPackages) {
-      logger.debug("[App] handleTogglePackagesRail: package view capability unavailable, skipping");
-      return;
-    }
-    toggleNotebookRailPanel("packages");
-  }, [shellCapabilities.canViewPackages]);
 
   const handleNavigateOutlineItem = useCallback(
     (item: NotebookOutlineItem, href: string) => {
@@ -2123,8 +2113,6 @@ function AppContent() {
               focusedCellId={focusedCellId}
               lastCellId={cellIds.length > 0 ? cellIds[cellIds.length - 1] : null}
               onAddCell={handleAddCell}
-              onToggleDependencies={packageToggleEnabled ? handleTogglePackagesRail : undefined}
-              isDepsOpen={packagesRailOpen}
               capabilities={shellCapabilities}
               depsOutOfSync={envSyncState ? !envSyncState.inSync : false}
               updateStatus={updateStatus}

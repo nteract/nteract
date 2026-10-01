@@ -735,13 +735,6 @@ export function NotebookViewer({
     },
     [documentAnchors, handleSelectOutlineItem, railCollapsed],
   );
-  const handleTogglePackagesRail = useCallback(() => {
-    if (activeRailPanel === "packages" && !railCollapsed) {
-      setActiveNotebookRailPanel("outline");
-      return;
-    }
-    openNotebookRailPanel("packages");
-  }, [activeRailPanel, railCollapsed]);
   const handleRailPanelChange = useCallback((panelId: NotebookRailPanelId) => {
     setActiveNotebookRailPanel(panelId);
   }, []);
@@ -1779,7 +1772,6 @@ export function NotebookViewer({
         runtime={toolbarRuntime}
         runtimeTarget={shellCapabilities.runtime.target ?? null}
         environmentManager={toolbarEnvironmentManager}
-        environmentPanelOpen={activeRailPanel === "packages" && !railCollapsed}
         runtimeStatus={cloudRuntimeStatus}
         addCellControlsDisabled={editAccessPending}
         addAfterCellId={toolbarAddAfterCellId}
@@ -1789,7 +1781,6 @@ export function NotebookViewer({
         onRestartRuntime={handleCloudRestartRuntime}
         onRunAllCells={handleCloudRunAllCells}
         onRestartAndRunAll={handleCloudRestartAndRunAll}
-        onTogglePackages={handleTogglePackagesRail}
         workstationAction={workstationAction}
       />
     </NotebookToolbarFrame>

@@ -70,7 +70,14 @@ test.describe("notebook rail outline", () => {
       await page.getByRole("button", { name: "Packages", exact: true }).click();
       await expect(toolbar).toBeVisible();
 
-      await page.getByTestId("deps-toggle").click();
+      const indicator = page.getByTestId("runtime-environment-indicator");
+      await expect(indicator).toBeVisible();
+      await expect(indicator).not.toHaveAttribute("tabindex");
+      await indicator.click();
+      await expect(toolbar).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Packages", exact: true })).toBeHidden();
+
+      await page.getByRole("button", { name: "Packages", exact: true }).click();
       await expect(toolbar).toBeHidden();
       await expect(page.getByRole("button", { name: "Packages", exact: true })).toBeFocused();
     } finally {

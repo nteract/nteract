@@ -337,7 +337,6 @@ export function ContextControlsExample() {
             onAddCell={() => recordAction(activeTarget, "Add cell from toolbar")}
             onRunAllCells={() => recordAction(activeTarget, "Run all from toolbar")}
             onRestartRuntime={() => recordAction(activeTarget, "Restart from toolbar")}
-            onTogglePackages={() => recordAction(activeTarget, "Open packages from toolbar")}
             utilityControls={
               <div className="flex items-center gap-1">
                 <Button

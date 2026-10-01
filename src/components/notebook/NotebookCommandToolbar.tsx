@@ -52,7 +52,6 @@ export interface NotebookCommandToolbarProps {
     | "canEditStructure"
     | "canExecute"
     | "canRecoverRuntime"
-    | "canViewPackages"
     | "canManageSharing"
     | "canRequestEdit"
     | "auth"
@@ -60,7 +59,6 @@ export interface NotebookCommandToolbarProps {
   runtime?: string | null;
   runtimeTarget?: NotebookShellRuntimeTargetProjection | null;
   environmentManager?: NotebookEnvironmentManager | null;
-  environmentPanelOpen?: boolean;
   environmentOutOfSync?: boolean;
   runtimeStatus?: NotebookCommandToolbarStatus | null;
   startDisabled?: boolean;
@@ -75,7 +73,6 @@ export interface NotebookCommandToolbarProps {
   onRestartRuntime?: () => void;
   onRunAllCells?: () => void;
   onRestartAndRunAll?: () => void;
-  onTogglePackages?: () => void;
   updateAction?: NotebookCommandToolbarUpdateAction | null;
   workstationAction?: NotebookCommandToolbarWorkstationAction | null;
   presenceControls?: ReactNode;
@@ -94,7 +91,6 @@ export function NotebookCommandToolbar({
   runtime = null,
   runtimeTarget = null,
   environmentManager = null,
-  environmentPanelOpen = false,
   environmentOutOfSync = false,
   runtimeStatus,
   startDisabled = false,
@@ -106,7 +102,6 @@ export function NotebookCommandToolbar({
   onRestartRuntime,
   onRunAllCells,
   onRestartAndRunAll,
-  onTogglePackages,
   updateAction = null,
   workstationAction = null,
   presenceControls,
@@ -119,8 +114,7 @@ export function NotebookCommandToolbar({
   trailingControls,
   className,
 }: NotebookCommandToolbarProps) {
-  const { auth, canEditStructure, canExecute, canManageSharing, canRequestEdit, canViewPackages } =
-    capabilities;
+  const { auth, canEditStructure, canExecute, canManageSharing, canRequestEdit } = capabilities;
   const showAddCellControls = Boolean(onAddCell) && (canEditStructure || addCellControlsDisabled);
   const runtimeActions = projectNotebookCommandRuntimeActions({
     capabilities: { canExecute, canRecoverRuntime: capabilities.canRecoverRuntime },
@@ -133,7 +127,6 @@ export function NotebookCommandToolbar({
       startRuntime: Boolean(onStartRuntime),
     },
   });
-  const showPackageToggle = Boolean(runtime && canViewPackages && onTogglePackages);
   const runtimePeerCount = runtimeTarget?.runtimePeerCount ?? 0;
   const showRuntimePeerIndicator = runtimePeerCount > 0;
   const showAuthControls =
@@ -314,25 +307,21 @@ export function NotebookCommandToolbar({
         </button>
       ) : null}
 
-      {showPackageToggle ? (
-        <button
-          type="button"
-          onClick={onTogglePackages}
-          data-testid="deps-toggle"
+      {runtime ? (
+        <span
+          data-testid="runtime-environment-indicator"
           data-runtime={runtime ?? undefined}
           data-env-manager={environmentManager || undefined}
           data-runtime-target={runtimeTarget?.kind}
           data-runtime-peer-count={showRuntimePeerIndicator ? runtimePeerCount : undefined}
           className={cn(
-            "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+            "flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
             runtime === "deno"
-              ? "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-400"
-              : "bg-blue-500/10 text-blue-600 hover:bg-blue-500/20 dark:text-blue-400",
-            environmentPanelOpen && "ring-1 ring-current/25",
+              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+              : "bg-blue-500/10 text-blue-600 dark:text-blue-400",
           )}
           title={runtimeChipTitle({
             environmentManager,
-            environmentPanelOpen,
             runtime,
             runtimeTarget,
           })}
@@ -368,7 +357,7 @@ export function NotebookCommandToolbar({
               <ServerCog className="size-2.5" aria-hidden="true" />
             </>
           ) : null}
-        </button>
+        </span>
       ) : null}
 
       {runtimeStatus ? (
@@ -409,22 +398,19 @@ export function NotebookCommandToolbar({
 
 function runtimeChipTitle({
   environmentManager,
-  environmentPanelOpen,
   runtime,
   runtimeTarget,
 }: {
   environmentManager: NotebookEnvironmentManager | null;
-  environmentPanelOpen: boolean;
   runtime: string | null;
   runtimeTarget: NotebookShellRuntimeTargetProjection | null;
 }): string {
   const lang = runtime === "deno" ? "Deno/TypeScript" : "Python";
   const manager = environmentManager ? ` / ${environmentManager}` : "";
-  const action = environmentPanelOpen ? "close environment panel" : "open environment panel";
   const targetParts = runtimeTargetTitleParts(runtimeTarget);
   return targetParts.length > 0
-    ? `${lang}${manager} - ${targetParts.join(" · ")} - ${action}`
-    : `${lang}${manager} - ${action}`;
+    ? `${lang}${manager} - ${targetParts.join(" · ")}`
+    : `${lang}${manager}`;
 }
 
 function runtimeTargetTitleParts(

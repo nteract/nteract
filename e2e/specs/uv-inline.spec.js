@@ -29,12 +29,12 @@ describe("UV Inline Dependencies", () => {
   });
 
   it("should show UV badge in toolbar", async () => {
-    const depsToggle = await $('[data-testid="deps-toggle"]');
-    await depsToggle.waitForExist({ timeout: 10000 });
+    const indicator = await $('[data-testid="runtime-environment-indicator"]');
+    await indicator.waitForExist({ timeout: 10000 });
 
     await browser.waitUntil(
       async () => {
-        const mgr = await depsToggle.getAttribute("data-env-manager");
+        const mgr = await indicator.getAttribute("data-env-manager");
         return mgr === "uv";
       },
       {
@@ -44,8 +44,8 @@ describe("UV Inline Dependencies", () => {
       },
     );
 
-    expect(await depsToggle.getAttribute("data-env-manager")).toBe("uv");
-    expect(await depsToggle.getAttribute("data-runtime")).toBe("python");
+    expect(await indicator.getAttribute("data-env-manager")).toBe("uv");
+    expect(await indicator.getAttribute("data-runtime")).toBe("python");
   });
 
   it("should use inline environment path", async () => {

@@ -30,13 +30,13 @@ describe("UV pyproject.toml Detection", () => {
   });
 
   it("should show UV badge in toolbar", async () => {
-    const depsToggle = await $('[data-testid="deps-toggle"]');
-    await depsToggle.waitForExist({ timeout: 10000 });
+    const indicator = await $('[data-testid="runtime-environment-indicator"]');
+    await indicator.waitForExist({ timeout: 10000 });
 
     // env-manager syncs from RuntimeStateDoc after kernel launch — poll for it
     await browser.waitUntil(
       async () => {
-        const mgr = await depsToggle.getAttribute("data-env-manager");
+        const mgr = await indicator.getAttribute("data-env-manager");
         return mgr === "uv";
       },
       {
@@ -46,7 +46,7 @@ describe("UV pyproject.toml Detection", () => {
       },
     );
 
-    expect(await depsToggle.getAttribute("data-env-manager")).toBe("uv");
+    expect(await indicator.getAttribute("data-env-manager")).toBe("uv");
   });
 
   it("should execute code", async () => {

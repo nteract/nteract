@@ -72,7 +72,6 @@ const baseProps = {
   onRunAllCells: vi.fn(),
   onRestartAndRunAll: vi.fn(),
   onAddCell: vi.fn(),
-  onToggleDependencies: vi.fn(),
   capabilities: {
     canEditStructure: true,
     canExecute: true,
@@ -88,17 +87,14 @@ const baseProps = {
 };
 
 describe("NotebookToolbar", () => {
-  it("omits the package toggle without a handler and keeps execution controls", () => {
-    render(
-      <NotebookToolbar
-        {...baseProps}
-        runtime="python"
-        envSource="conda:env_yml"
-        onToggleDependencies={undefined}
-      />,
-    );
+  it("retains the passive environment indicator and execution controls", () => {
+    render(<NotebookToolbar {...baseProps} runtime="python" envSource="conda:env_yml" />);
 
-    expect(screen.queryByTestId("deps-toggle")).not.toBeInTheDocument();
+    const indicator = screen.getByTestId("runtime-environment-indicator");
+    expect(indicator).toHaveTextContent("Python");
+    expect(indicator).toHaveAttribute("data-env-manager", "conda");
+    expect(indicator.tagName).toBe("SPAN");
+    expect(indicator.tabIndex).toBe(-1);
     expect(screen.getByTestId("kernel-status")).toBeInTheDocument();
     expect(screen.getByTestId("restart-kernel-button")).toBeEnabled();
     expect(screen.getByTestId("run-all-button")).toBeEnabled();
@@ -226,8 +222,8 @@ describe("NotebookToolbar", () => {
           {...propsForStatus(KERNEL_STATUS.IDLE)}
         />,
       );
-      const toggle = screen.getByTestId("deps-toggle");
-      expect(toggle.dataset.envManager).toBe("uv");
+      const indicator = screen.getByTestId("runtime-environment-indicator");
+      expect(indicator.dataset.envManager).toBe("uv");
     });
 
     it("shows conda badge for conda envSource", () => {
@@ -239,8 +235,8 @@ describe("NotebookToolbar", () => {
           {...propsForStatus(KERNEL_STATUS.IDLE)}
         />,
       );
-      const toggle = screen.getByTestId("deps-toggle");
-      expect(toggle.dataset.envManager).toBe("conda");
+      const indicator = screen.getByTestId("runtime-environment-indicator");
+      expect(indicator.dataset.envManager).toBe("conda");
     });
 
     it("shows pixi badge for pixi:toml envSource", () => {
@@ -252,8 +248,8 @@ describe("NotebookToolbar", () => {
           {...propsForStatus(KERNEL_STATUS.IDLE)}
         />,
       );
-      const toggle = screen.getByTestId("deps-toggle");
-      expect(toggle.dataset.envManager).toBe("pixi");
+      const indicator = screen.getByTestId("runtime-environment-indicator");
+      expect(indicator.dataset.envManager).toBe("pixi");
     });
 
     it("uses envTypeHint when kernel is not idle/busy (e.g. during startup)", () => {
@@ -266,8 +262,8 @@ describe("NotebookToolbar", () => {
           {...propsForStatus(KERNEL_STATUS.STARTING)}
         />,
       );
-      const toggle = screen.getByTestId("deps-toggle");
-      expect(toggle.dataset.envManager).toBe("conda");
+      const indicator = screen.getByTestId("runtime-environment-indicator");
+      expect(indicator.dataset.envManager).toBe("conda");
     });
 
     it("shows no env badge for deno runtime", () => {
@@ -279,13 +275,13 @@ describe("NotebookToolbar", () => {
           {...propsForStatus(KERNEL_STATUS.IDLE)}
         />,
       );
-      const toggle = screen.getByTestId("deps-toggle");
-      expect(toggle.dataset.envManager).toBeUndefined();
+      const indicator = screen.getByTestId("runtime-environment-indicator");
+      expect(indicator.dataset.envManager).toBeUndefined();
     });
 
     it("hides runtime badge when runtime is null", () => {
       render(<NotebookToolbar {...baseProps} runtime={null} />);
-      expect(screen.queryByTestId("deps-toggle")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("runtime-environment-indicator")).not.toBeInTheDocument();
     });
   });
 
@@ -737,7 +733,6 @@ describe("connection/identity slot wiring", () => {
       /const \{ activePanelId: activeRailPanel, collapsed: railCollapsed \} = useNotebookRailUiState\(\)/,
     );
     expect(appSource).toMatch(/openNotebookRailPanel\(panelId\)/);
-    expect(appSource).toMatch(/toggleNotebookRailPanel\("packages"\)/);
     expect(appSource).not.toMatch(/\[activeRailPanel, setActiveRailPanel\] = useState/);
     expect(appSource).not.toMatch(/\[railCollapsed, setRailCollapsed\] = useState/);
   });

@@ -25,9 +25,9 @@ describe("Deno Kernel", () => {
   });
 
   it("should show Deno runtime in toolbar", async () => {
-    const depsToggle = await $('[data-testid="deps-toggle"]');
-    await depsToggle.waitForExist({ timeout: 10000 });
-    expect(await depsToggle.getAttribute("data-runtime")).toBe("deno");
+    const indicator = await $('[data-testid="runtime-environment-indicator"]');
+    await indicator.waitForExist({ timeout: 10000 });
+    expect(await indicator.getAttribute("data-runtime")).toBe("deno");
   });
 
   it("should execute TypeScript and show output", async () => {
