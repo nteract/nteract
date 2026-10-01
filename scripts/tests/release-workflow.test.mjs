@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import {spawnSync} from "node:child_process";
 import {readFileSync} from "node:fs";
 import {test} from "node:test";
+import {fileURLToPath} from "node:url";
 
 function workflow(name) {
   return readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8");
@@ -8,17 +10,24 @@ function workflow(name) {
 
 // Like the preview workflow contract tests, require the current plain job-ID
 // layout. Layout changes must update the contract instead of silently passing.
-const release = workflow("release-common");
-const jobs = new Map();
-let current;
-for (const line of release.split("\njobs:\n")[1].split("\n")) {
-  const start = /^  ([a-z][a-z0-9_-]*):$/.exec(line);
-  if (start) {
-    current = start[1];
-    assert.ok(!jobs.has(current), "duplicate workflow job");
-    jobs.set(current, "");
-  } else if (current) jobs.set(current, `${jobs.get(current)}${line}\n`);
+function workflowJobs(source) {
+  const parsed = new Map();
+  let current;
+  for (const line of source.split("\njobs:\n")[1].split("\n")) {
+    const start = /^  ([a-z][a-z0-9_-]*):$/.exec(line);
+    if (start) {
+      current = start[1];
+      assert.ok(!parsed.has(current), "duplicate workflow job");
+      parsed.set(current, "");
+    } else if (current) parsed.set(current, `${parsed.get(current)}${line}\n`);
+  }
+  return parsed;
 }
+
+const release = workflow("release-common");
+const jobs = workflowJobs(release);
+const validation = workflow("release-validation");
+const validationJobs = workflowJobs(validation);
 
 function needs(id) {
   const body = jobs.get(id);
@@ -102,5 +111,84 @@ test("Linux releases build, smoke, and publish both x64 and ARM64", () => {
       body.includes(`./release-assets/nteract-\${{ inputs.version_suffix }}-linux-${arch}.AppImage\n`),
       `missing linux-${arch} AppImage upload`,
     );
+  }
+});
+
+// Windows release validation runs on the native runner for each architecture.
+const WINDOWS_LEGS = [
+  {arch: "arm64", runner: "windows-11-vs2026-arm", target: "aarch64-pc-windows-msvc", npm: "win32-arm64-msvc"},
+  {arch: "x64", runner: "windows-latest", target: "x86_64-pc-windows-msvc", npm: "win32-x64-msvc"},
+];
+
+function matrixLeg(body, name, fields) {
+  const lines = [`          - name: ${name}`, ...Object.entries(fields).map(([key, value]) => `            ${key}: ${value}`)];
+  assert.ok(body.includes(`${lines.join("\n")}\n`), `missing matrix leg ${name}`);
+}
+
+function stepIndex(body, text) {
+  const index = body.indexOf(text);
+  assert.ok(index >= 0, `missing step text: ${text}`);
+  return index;
+}
+
+test("Windows wheel validation builds, audits, and smokes x64 and ARM64 natively", () => {
+  const body = validationJobs.get("windows-wheel");
+  assert.ok(body, "missing windows-wheel job");
+  assert.match(body, /^      fail-fast: false$/m);
+  for (const {arch, runner, target} of WINDOWS_LEGS) {
+    const name = `Native Windows ${arch === "x64" ? "x64" : "ARM64"} wheel`;
+    matrixLeg(body, name, {runner, target, arch});
+  }
+  assert.match(body, /^          architecture: \$\{\{ matrix\.arch \}\}$/m);
+  const audit = stepIndex(body, "run: node scripts/ci/audit-windows-crt-imports.mjs --machine ${{ matrix.arch }} target/${{ matrix.target }}/release/runtimed.exe python/runtimed/dist/*.whl");
+  const smoke = stepIndex(body, "python scripts/ci/smoke-windows-wheel.py ${{ matrix.arch }} python/runtimed/dist");
+  assert.ok(audit < smoke, "the CRT audit must run before the wheel smoke");
+  assert.match(jobs.get("build-python-wheels"), /python scripts\/ci\/smoke-windows-wheel\.py arm64 python\/runtimed\/dist/);
+});
+
+test("Windows npm addon validation loads the audited addon in native Node 24 and pinned Bun", () => {
+  const body = validationJobs.get("windows-node-addon");
+  assert.ok(body, "missing windows-node-addon job");
+  assert.match(body, /^      fail-fast: false$/m);
+  for (const {arch, runner, npm} of WINDOWS_LEGS) {
+    const name = `Native Windows ${arch === "x64" ? "x64" : "ARM64"} npm addon`;
+    matrixLeg(body, name, {runner, target: npm, arch});
+  }
+  assert.match(body, /^          node-version: "24"$/m);
+  assert.match(body, /^          bun-version: "1\.4\.1"$/m);
+  const addon = '"packages/runtimed-node/npm/${{ matrix.target }}/runtimed-node.${{ matrix.target }}.node"';
+  const order = [
+    "run: pnpm --dir packages/runtimed-node build",
+    'run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"',
+    'run: node scripts/ci/audit-windows-crt-imports.mjs --machine ${{ matrix.arch }} "packages/runtimed-node/npm/${{ matrix.target }}"',
+    `run: node scripts/ci/smoke-windows-node-addon.cjs \${{ matrix.arch }} ${addon}`,
+    "uses: oven-sh/setup-bun@v2",
+    `run: bun scripts/ci/smoke-windows-node-addon.cjs \${{ matrix.arch }} ${addon}`,
+  ].map((text) => stepIndex(body, text));
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "build, assemble, audit, then Node and Bun loads");
+});
+
+test("release validation reruns when the Windows smoke scripts change", () => {
+  const paths = validation.split("\n  workflow_dispatch:")[0];
+  for (const script of ["smoke-windows-node-addon.cjs", "smoke-windows-wheel.py", "audit-windows-crt-imports.mjs"]) {
+    assert.ok(paths.includes(`      - scripts/ci/${script}\n`), `missing path filter for ${script}`);
+  }
+});
+
+test("Windows smoke scripts reject bad arguments and non-native hosts", () => {
+  const script = (name) => fileURLToPath(new URL(`../ci/${name}`, import.meta.url));
+  const addon = spawnSync(process.execPath, [script("smoke-windows-node-addon.cjs"), "ia32", "x.node"], {encoding: "utf8"});
+  assert.equal(addon.status, 2, addon.stderr);
+  assert.match(addon.stderr, /usage:/);
+  const wheel = spawnSync("python3", [script("smoke-windows-wheel.py"), "ia32", "dist"], {encoding: "utf8"});
+  assert.notEqual(wheel.status, 0);
+  assert.match(wheel.stderr, /usage:/);
+  if (process.platform !== "win32") {
+    const foreign = spawnSync(process.execPath, [script("smoke-windows-node-addon.cjs"), "x64", "x.node"], {encoding: "utf8"});
+    assert.notEqual(foreign.status, 0);
+    assert.match(foreign.stderr, /expected win32/);
+    const foreignWheel = spawnSync("python3", [script("smoke-windows-wheel.py"), "x64", "dist"], {encoding: "utf8"});
+    assert.notEqual(foreignWheel.status, 0);
+    assert.match(foreignWheel.stderr, /requires native Windows x64 Python/);
   }
 });

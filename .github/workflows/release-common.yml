@@ -1429,7 +1429,7 @@ jobs:
         if: matrix.platform.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: |
-          python scripts/ci/smoke-windows-arm64-wheel.py python/runtimed/dist
+          python scripts/ci/smoke-windows-wheel.py arm64 python/runtimed/dist
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Set up native Python for Linux ARM64 wheel smoke
