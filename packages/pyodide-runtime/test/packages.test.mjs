@@ -51,8 +51,8 @@ test("shipped package versions match the initial interpreter inventory before no
   const wheels = JSON.parse(await readFile(new URL("dist/packages.json", root), "utf8"));
   const installed = JSON.parse(python.runPython("json.dumps(inventory())"));
   const included = includedPackageInventory(wheels, installed);
-  assert.ok(included.includes("pandas==2.3.3"));
-  assert.ok(included.includes("pyarrow==22.0.0"));
+  assert.ok(included.includes("pandas==2.3.1"));
+  assert.ok(!included.some((name) => name.startsWith("pyarrow==")));
   assert.ok(included.includes("numpy==2.2.5"));
   assert.ok(included.includes("matplotlib==3.8.4"));
   assert.ok(wheels.length > 10);
@@ -240,8 +240,8 @@ test(
         ),
         0,
       );
-      const included = await resolver.resolve(["pyarrow==22.0.0"]);
-      assert.deepEqual(included.wheels, [], "included PyArrow does not need a PyPI wheel");
+      // Pyodide 0.28.3 bundles no PyArrow, and PyPI has no pure wheel for it.
+      await assert.rejects(resolver.resolve(["pyarrow"]), { code: "unsupported_distribution" });
       await assert.rejects(resolver.resolve(["tensorflow"]), { code: "unsupported_distribution" });
       assert.equal(disposed, 5);
     } finally {

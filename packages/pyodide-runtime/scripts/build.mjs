@@ -51,13 +51,7 @@ await build({
     "./library-*.wasm",
   ],
   loader: { ".zip": "binary", ".py": "text" },
-  define: {
-    process: "undefined",
-    location: '"https://python-runtime.invalid/"',
-    "globalThis.WorkerGlobalScope": "WorkerGlobalScope",
-    "globalThis.self": "self",
-    "globalThis.importScripts": "importScripts",
-  },
+  define: { process: "undefined", location: '"https://python-runtime.invalid/"' },
   inject: ["runtime/assets.js"],
   plugins: [
     {

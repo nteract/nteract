@@ -27,7 +27,7 @@ qualified celld deployment.
 ## Build
 
 Run `pnpm --filter @nteract/preview-python build`. Runtime assets are pinned to
-Pyodide 0.29.4 and verified against the machine package's `runtime-lock.json`. Build output contains
+Pyodide 0.28.3 and verified against the machine package's `runtime-lock.json`. Build output contains
 local interpreter/stdlib assets; runtime startup does not fetch from a CDN.
 
 ## Provenance

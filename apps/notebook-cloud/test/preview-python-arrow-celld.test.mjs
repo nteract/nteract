@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { startProviderFixture } from "../../preview-python/test/provider-fixture.mjs";
 import { ManagedPythonRoom } from "../src/managed-python-room.ts";
@@ -13,10 +14,17 @@ import { initializeTestRuntimedWasm } from "./runtimed-wasm-test-loader.ts";
 import { fixture, sync } from "./preview-python-helpers.mjs";
 
 const arrowMime = "application/vnd.apache.arrow.stream";
+// Arrow output is a runtime capability. Skip, not fail, when the pinned
+// Pyodide ships no PyArrow; Sift and native Arrow paths are unaffected.
+const lockedPackages = new URL(
+  "../../../packages/pyodide-runtime/scripts/packages.mjs",
+  import.meta.url,
+);
+const pyodideArrow = /"pyarrow"\]/.test(readFileSync(lockedPackages, "utf8"));
 
 test(
   "real celld Arrow output follows accepted notebook source into durable blob references",
-  { timeout: 180_000, skip: !process.env.CELLD_BIN },
+  { timeout: 180_000, skip: !process.env.CELLD_BIN || (!pyodideArrow && "PyArrow is not bundled") },
   async (t) => {
     await initializeTestRuntimedWasm();
     const rows = Number(process.env.NTERACT_ARROW_ROWS ?? 100_000);

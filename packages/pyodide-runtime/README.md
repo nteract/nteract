@@ -41,7 +41,11 @@ until completion. Python's sleep and asyncio behavior are not overridden.
 Interrupt and deadline termination destroy the interpreter and lose variables.
 Neither prepared nor user-session snapshots exist.
 
-Pyodide 0.29.4 includes PyArrow 22.0.0. Arrow stream producers (including pandas
+Arrow display is a runtime capability. The pinned Pyodide 0.28.3 ships no
+PyArrow: DataFrames display through IPython's HTML and plain-text reprs,
+`import pyarrow` raises ModuleNotFoundError, and rich output keeps a 2 MiB
+budget. Sift and native-kernel Arrow rendering are unchanged. With a runtime
+that bundles PyArrow (Pyodide 0.29.4 includes PyArrow 22.0.0), Arrow stream producers (including pandas
 DataFrames and PyArrow tables) display through sift using ordinary Arrow IPC MIME
 bytes. The formatter reuses the launcher's Arrow stream import and writes at most
 64 MiB of complete IPC bytes; larger tables fail explicitly rather than silently
