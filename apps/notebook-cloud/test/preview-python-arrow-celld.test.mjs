@@ -16,7 +16,10 @@ import { fixture, sync } from "./preview-python-helpers.mjs";
 const arrowMime = "application/vnd.apache.arrow.stream";
 // Arrow output is a runtime capability. Skip, not fail, when the pinned
 // Pyodide ships no PyArrow; Sift and native Arrow paths are unaffected.
-const lockedPackages = new URL("../../../packages/pyodide-runtime/scripts/packages.mjs", import.meta.url);
+const lockedPackages = new URL(
+  "../../../packages/pyodide-runtime/scripts/packages.mjs",
+  import.meta.url,
+);
 const pyodideArrow = /"pyarrow"\]/.test(readFileSync(lockedPackages, "utf8"));
 
 test(
