@@ -157,6 +157,7 @@ import { getCellById, getNotebookCellsSnapshot } from "@/components/notebook/sta
 import { useNotebookViewModel } from "@/components/notebook/state/view-model-store";
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
+import { notebookUiPolicy } from "./lib/notebook-ui-policy";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterOutput } from "./types";
 
@@ -323,6 +324,7 @@ function resolveCommOutputs(
 
 function AppContent() {
   const host = useNotebookHost();
+  const { commentsEnabled, packageToggleEnabled } = notebookUiPolicy(host.name);
   const outputHostContext = useMemo(
     () =>
       host.outputDocumentUrl
@@ -677,7 +679,9 @@ function AppContent() {
     ],
   );
   const canMutateComments =
-    Boolean(commentsProjection) && canConnectionScopeMutateComments(connectionScope);
+    commentsEnabled &&
+    Boolean(commentsProjection) &&
+    canConnectionScopeMutateComments(connectionScope);
   const commentsPanelStatus =
     commentsProjection === null
       ? "Comments sync unavailable."
@@ -888,6 +892,7 @@ function AppContent() {
 
   const sourceCommentThreadsByCell = useMemo(() => {
     const map = new Map<string, SourceCommentThread[]>();
+    if (!commentsEnabled) return map;
     for (const thread of commentsProjection?.threads ?? []) {
       if (thread.anchor.kind !== "source_range") continue;
       const list = map.get(thread.anchor.cell_id) ?? [];
@@ -916,7 +921,7 @@ function AppContent() {
       map.set(thread.anchor.cell_id, list);
     }
     return map;
-  }, [commentsProjection, resolveCommentAuthor]);
+  }, [commentsEnabled, commentsProjection, resolveCommentAuthor]);
 
   useEffect(() => {
     setSourceCommentThreads(sourceCommentThreadsByCell);
@@ -1080,6 +1085,7 @@ function AppContent() {
     />
   );
   const commentsUiSurface = resolveCommentsUiSurface({
+    commentsEnabled,
     canCreateComments: canMutateComments,
     commentsPanel,
     onCreateSourceComment: handleRequestSourceComment,
@@ -2117,7 +2123,7 @@ function AppContent() {
               focusedCellId={focusedCellId}
               lastCellId={cellIds.length > 0 ? cellIds[cellIds.length - 1] : null}
               onAddCell={handleAddCell}
-              onToggleDependencies={handleTogglePackagesRail}
+              onToggleDependencies={packageToggleEnabled ? handleTogglePackagesRail : undefined}
               isDepsOpen={packagesRailOpen}
               capabilities={shellCapabilities}
               depsOutOfSync={envSyncState ? !envSyncState.inSync : false}

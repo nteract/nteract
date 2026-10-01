@@ -22,7 +22,7 @@ describe("resolveCommentsUiSurface", () => {
     expect(surface.onActivateCommentThread).toBe(onActivateCommentThread);
   });
 
-  it("always exposes Discussions in the rail", () => {
+  it("exposes Discussions in the rail for read-only comments", () => {
     const surface = resolveCommentsUiSurface({
       canCreateComments: false,
       commentsPanel: "comments panel",
@@ -43,6 +43,34 @@ describe("resolveCommentsUiSurface", () => {
     );
     expect(screen.getByRole("button", { name: "Discussions" })).toBeInTheDocument();
     expect(screen.getByText("comments panel")).toBeInTheDocument();
+  });
+
+  it("hides Discussions and all callbacks when comments are disabled", () => {
+    const surface = resolveCommentsUiSurface({
+      commentsEnabled: false,
+      canCreateComments: true,
+      commentsPanel: "comments panel",
+      onCreateSourceComment: vi.fn(),
+      onCreateOutputComment: vi.fn(),
+      onActivateCommentThread: vi.fn(),
+    });
+    render(
+      <NotebookRail
+        activePanelId="comments"
+        collapsed={false}
+        outlineItems={[]}
+        packagesPanel={<NotebookPackagesPanel>Packages</NotebookPackagesPanel>}
+        commentsPanel={surface.commentsPanel}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Discussions" })).not.toBeInTheDocument();
+    expect(screen.queryByText("comments panel")).not.toBeInTheDocument();
+    expect(surface.onCreateSourceComment).toBeUndefined();
+    expect(surface.onCreateOutputComment).toBeUndefined();
+    expect(surface.onActivateCommentThread).toBeUndefined();
   });
 
   it("keeps the panel and activation callback for read-only comments without create affordances", () => {
