@@ -474,7 +474,7 @@ describe("MediaRouter component", () => {
       expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
     });
 
-    it("renders projected markdown in the host DOM while omitting isolated blocks", () => {
+    it("requires iframe isolation for markdown projections containing raw HTML", () => {
       withMarkdownProjection({ isolated: true });
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -485,7 +485,7 @@ describe("MediaRouter component", () => {
       );
       const wrapper = container.firstChild as HTMLElement;
       expect(wrapper).toHaveAttribute("data-slot", "media-router");
-      expect(container.querySelector('[data-slot="projected-markdown-output"]')).not.toBeNull();
+      expect(container.querySelector('[data-slot="projected-markdown-output"]')).toBeNull();
       expect(container.querySelector('[data-slot="isolated-frame"]')).toBeNull();
       expect(screen.queryByText("Test")).not.toBeInTheDocument();
 

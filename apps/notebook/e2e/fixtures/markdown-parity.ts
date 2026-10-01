@@ -19,7 +19,7 @@ export const MARKDOWN_CELL_PARITY_SOURCE = [
   "a^2 + b^2 = c^2",
   "$$",
   "",
-  '<button id="markdown-parity-raw-html">raw html becomes text</button>',
+  "Inline <i>raw html becomes text</i> stays readable.",
   "",
   '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="HTML image" width="24px">',
   "",

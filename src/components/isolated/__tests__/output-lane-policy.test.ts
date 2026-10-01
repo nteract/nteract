@@ -145,14 +145,14 @@ describe("output lane policy", () => {
     ).toBe(false);
   });
 
-  it("keeps markdown outputs with isolated blocks in the DOM fast path", () => {
+  it("routes markdown outputs with isolated blocks to a sandboxed frame", () => {
     withMarkdownProjection("isolated");
 
     expect(
       outputSegmentLane(
         displayOutput("markdown-html-output", { "text/markdown": "<div>hi</div>" }),
       ),
-    ).toBe("dom");
+    ).toBe("static-frame");
   });
 
   it("routes Plotly charts onto standalone click-to-engage frames", () => {
@@ -347,7 +347,7 @@ describe("output lane policy", () => {
     const segments = splitOutputSegments([markdown, plotly, vegaOne, vegaTwo]);
 
     expect(segments.map((segment) => segment.lane)).toEqual([
-      "dom",
+      "static-frame",
       "plotly-frame",
       "vega-frame",
       "vega-frame",

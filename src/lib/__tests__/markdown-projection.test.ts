@@ -372,11 +372,25 @@ describe("markdown projection", () => {
     expect(canRenderMarkdownProjectionInHost(plan)).toBe(true);
   });
 
-  it("keeps projected raw HTML blocks host-renderable as omitted placeholders", () => {
+  it("routes projected raw HTML blocks to the isolated renderer", () => {
     const plan = projectMarkdownPlan('<button id="raw">raw html stays omitted</button>');
 
     expect(plan?.runs.some((run) => run.semantic === "isolated-placeholder")).toBe(true);
-    expect(canRenderMarkdownProjectionInHost(plan)).toBe(true);
+    expect(canRenderMarkdownProjectionInHost(plan)).toBe(false);
+  });
+
+  it("routes nested styled HTML callouts to the isolated renderer", () => {
+    const plan = projectMarkdownPlan(
+      [
+        '<div style="background:#E8F1FF; border-left:6px solid #2563EB; padding:14px 18px;">',
+        '<div style="font-weight:700;">Example objectives</div>',
+        "<div><ul><li>Compare two models.</li><li>Explain the result.</li></ul></div>",
+        "</div>",
+      ].join("\n"),
+    );
+
+    expect(plan?.blocks.some((block) => block.kind === "isolated")).toBe(true);
+    expect(canRenderMarkdownProjectionInHost(plan)).toBe(false);
   });
 
   it("projects standalone HTML images through the safe host image path", () => {

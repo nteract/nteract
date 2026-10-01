@@ -46,10 +46,9 @@ test.describe("markdown parity", () => {
     await expect(taskCheckboxes.nth(0)).toBeChecked();
     await expect(taskCheckboxes.nth(1)).not.toBeChecked();
 
-    // The parity contract is safety and fast host rendering: arbitrary raw HTML
-    // must not become live DOM in the parent notebook surface. Approved image
-    // metadata is projected through the same safe path as Markdown images.
-    await expect(markdownCell.locator("#markdown-parity-raw-html")).toHaveCount(0);
+    // Inline HTML stays plain text in the host; approved images use structured metadata.
+    await expect(markdownCell.locator('[data-slot="isolated-frame"]')).toHaveCount(0);
+    await expect(renderedMarkdown.locator("i")).toHaveCount(0);
     await expect(renderedMarkdown.getByText("raw html becomes text")).toBeVisible();
     const htmlImage = renderedMarkdown.getByRole("img", { name: "HTML image" });
     await expect(htmlImage).toBeVisible();
@@ -75,6 +74,38 @@ test.describe("markdown parity", () => {
     await expect
       .poll(async () => (await deepHeading.boundingBox())?.y ?? Infinity)
       .toBeLessThan((page.viewportSize()?.height ?? 720) - 32);
+  });
+
+  test("renders nested styled HTML callouts inside an opaque-origin sandbox", async ({ page }) => {
+    const markdownCell = await createParityMarkdownCell(
+      page,
+      [
+        "# HTML callout regression",
+        "",
+        '<div id="example-callout" style="background:#E8F1FF; border-left:6px solid #2563EB; padding:14px 18px;">',
+        '<div style="font-size:1.15em; font-weight:700;">Example objectives</div>',
+        "<div><ul><li>Compare two models.</li><li>Explain the result.</li></ul></div>",
+        "</div>",
+      ].join("\n"),
+    );
+    const renderedMarkdown = await renderedMarkdownSurface(markdownCell, "HTML callout regression");
+    const frame = markdownCell.locator('[data-slot="isolated-frame"]');
+
+    await expect(frame).toHaveAttribute(
+      "sandbox",
+      "allow-scripts allow-downloads allow-forms allow-pointer-lock",
+    );
+    await expect(markdownCell.locator("#example-callout")).toHaveCount(0);
+    await expect(renderedMarkdown.getByText("Example objectives")).toBeVisible();
+    await expect(renderedMarkdown.getByRole("listitem")).toHaveCount(2);
+    await expect(renderedMarkdown.locator("#example-callout")).toHaveCSS(
+      "background-color",
+      "rgb(232, 241, 255)",
+    );
+    await expect(renderedMarkdown.locator("#example-callout")).toHaveCSS(
+      "border-left-width",
+      "6px",
+    );
   });
 
   test("renders a markdown-heavy notebook surface with stable document geometry", async ({
