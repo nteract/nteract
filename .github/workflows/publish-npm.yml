@@ -135,6 +135,10 @@ jobs:
         run: pnpm --dir packages/runtimed-node build
       - name: Assemble platform package
         run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
+      - name: Audit Windows CRT imports
+        if: startsWith(matrix.target, 'win32-')
+        shell: bash
+        run: node scripts/ci/audit-windows-crt-imports.mjs --machine "${{ matrix.target == 'win32-arm64-msvc' && 'arm64' || 'x64' }}" "packages/runtimed-node/npm/${{ matrix.target }}"
       - name: Smoke native binding
         if: matrix.target == 'win32-arm64-msvc' || matrix.target == 'linux-arm64-gnu'
         run: pnpm --dir packages/runtimed-node smoke

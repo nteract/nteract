@@ -10,15 +10,19 @@ on:
       - .github/workflows/release-validation.yml
       - .github/workflows/pr-binary-generation.yml
       - .github/workflows/publish-npm.yml
+      - .cargo/config.toml
+      - scripts/ci/audit-windows-crt-imports.mjs
       - scripts/ci/check-release-tag.sh
       - scripts/ci/npm-release*
-      - scripts/ci/smoke-windows-arm64-wheel.py
+      - scripts/ci/smoke-windows-node-addon.cjs
+      - scripts/ci/smoke-windows-wheel.py
       - scripts/ci/smoke-linux-arm64-wheel.py
       - scripts/ci/stage-notebook-sidecars.sh
       - scripts/ci/install-linuxdeploy.sh
       - scripts/ci/install-tauri-cli.sh
       - scripts/ci/fedora-appimage-smoke.sh
       - scripts/tests/test_release_tag.py
+      - scripts/tests/audit-windows-crt-imports.test.mjs
       - scripts/tests/release-workflow.test.mjs
       - scripts/tests/stage-notebook-sidecars.test.mjs
       - scripts/tests/npm-*.mjs
@@ -42,7 +46,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      - run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
+      - run: node --test scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
 
   windows-npm-packaging:
@@ -58,10 +62,22 @@ jobs:
       - shell: bash
         run: node --test scripts/tests/npm-publish.test.mjs
 
-  windows-arm64-wheel:
-    name: Native Windows ARM64 wheel
-    runs-on: windows-11-vs2026-arm
+  windows-wheel:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Native Windows ARM64 wheel
+            runner: windows-11-vs2026-arm
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+          - name: Native Windows x64 wheel
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x64
     env:
       RUNT_BUILD_CHANNEL: nightly
     steps:
@@ -71,36 +87,91 @@ jobs:
       - uses: dsherret/rust-toolchain-file@v1
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: python-aarch64-pc-windows-msvc
+          shared-key: python-${{ matrix.target }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-          architecture: arm64
+          architecture: ${{ matrix.arch }}
       - uses: ./.github/actions/build-runtime-artifacts
       - name: Build bundled daemon and prerelease wheel
         shell: bash
         run: |
-          cargo build --release --target aarch64-pc-windows-msvc -p runtimed
-          cp target/aarch64-pc-windows-msvc/release/runtimed.exe python/runtimed/src/runtimed/_bin/
+          cargo build --release --target ${{ matrix.target }} -p runtimed
+          cp target/${{ matrix.target }}/release/runtimed.exe python/runtimed/src/runtimed/_bin/
           # A prerelease catches accidental fallback to a stable PyPI package.
           sed -i 's/^version = .*/version = "0.0.0a1"/' python/runtimed/pyproject.toml
       - uses: PyO3/maturin-action@v1
         with:
-          target: aarch64-pc-windows-msvc
+          target: ${{ matrix.target }}
           args: --release --out dist
           working-directory: python/runtimed
           sccache: false
           maturin-version: "v1.11.5"
+      - name: Audit Windows CRT imports
+        shell: bash
+        run: node scripts/ci/audit-windows-crt-imports.mjs --machine ${{ matrix.arch }} target/${{ matrix.target }}/release/runtimed.exe python/runtimed/dist/*.whl
       - name: Smoke produced wheel
         shell: pwsh
         run: |
-          python scripts/ci/smoke-windows-arm64-wheel.py python/runtimed/dist
+          python scripts/ci/smoke-windows-wheel.py ${{ matrix.arch }} python/runtimed/dist
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Smoke standalone daemon (separate from wheel)
         shell: pwsh
         run: |
-          & ./target/aarch64-pc-windows-msvc/release/runtimed.exe --help
+          & ./target/${{ matrix.target }}/release/runtimed.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # Build the real @runtimed/node addon on each native Windows runner, audit
+  # its CRT imports, and load that exact file in Node and in Bun.
+  windows-node-addon:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Native Windows ARM64 npm addon
+            runner: windows-11-vs2026-arm
+            target: win32-arm64-msvc
+            arch: arm64
+          - name: Native Windows x64 npm addon
+            runner: windows-latest
+            target: win32-x64-msvc
+            arch: x64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: node-${{ matrix.target }}
+      - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build native binding
+        run: pnpm --dir packages/runtimed-node build
+      - name: Assemble platform package
+        run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
+      - name: Audit Windows CRT imports
+        shell: bash
+        run: node scripts/ci/audit-windows-crt-imports.mjs --machine ${{ matrix.arch }} "packages/runtimed-node/npm/${{ matrix.target }}"
+      - name: Load addon in Node
+        shell: bash
+        run: node scripts/ci/smoke-windows-node-addon.cjs ${{ matrix.arch }} "packages/runtimed-node/npm/${{ matrix.target }}/runtimed-node.${{ matrix.target }}.node"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.1"
+      - name: Load addon in Bun
+        shell: bash
+        run: bun scripts/ci/smoke-windows-node-addon.cjs ${{ matrix.arch }} "packages/runtimed-node/npm/${{ matrix.target }}/runtimed-node.${{ matrix.target }}.node"
 
   linux-arm64-packages:
     name: Native Linux ARM64 wheel and npm package

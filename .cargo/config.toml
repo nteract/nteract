@@ -4,6 +4,15 @@ runt = "run --package runt --"
 
 [env]
 TS_RS_EXPORT_DIR = { value = "src/bindings", relative = true }
+# The Windows MSVC `crt-static` table below owns C runtime linkage. Tauri's
+# own hybrid mode (static vcruntime, dynamic UCRT) is switched on by
+# `cargo tauri` CLIs up to 2.11 exporting STATIC_VCRUNTIME=true, and by
+# tauri-build 2.7+ by default. Combined with `crt-static`, its
+# /NODEFAULTLIB:libucrt.lib link args leave UCRT symbols unresolved under
+# lld-link. Forcing "false" keeps it off for every CLI and
+# tauri-build version. When tauri-build moves to 2.7+, the equivalent
+# setting is `build.windows.staticVCRuntime: false` in tauri.conf.json.
+STATIC_VCRUNTIME = { value = "false", force = true }
 
 # macOS arm64 builds runtimed-py (pyo3) and runtimed-node (napi) as
 # host-loaded extension cdylibs whose libpython / Node ABI symbols resolve
@@ -15,3 +24,16 @@ TS_RS_EXPORT_DIR = { value = "src/bindings", relative = true }
 # block and carries the same dynamic_lookup flags (plus lld when present).
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+# Windows MSVC artifacts link the C runtime statically so no shipped binary
+# imports VCRUNTIME140*.dll or MSVCP*.dll. That covers the Tauri app, the
+# sidecars (runtimed is copied to %LOCALAPPDATA%\<namespace>\bin, away from
+# any app-local DLL), the runtimed-py extension and the runtimed-node addon.
+# `cc`-built C/C++ dependencies such as aws-lc-sys and ring follow
+# `crt-static` and compile with /MT. A RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS
+# environment variable replaces this table (napi also promotes
+# CARGO_BUILD_RUSTFLAGS to RUSTFLAGS), so builds that set one must carry the
+# same flag. scripts/ci/audit-windows-crt-imports.mjs checks the resulting
+# PE imports.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
