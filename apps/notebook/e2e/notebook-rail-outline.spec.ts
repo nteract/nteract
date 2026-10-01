@@ -61,6 +61,14 @@ test.describe("notebook rail outline", () => {
         expect(headerBox!.height).toBe(toolbarBox!.height);
       }
 
+      const indicator = page.getByTestId("runtime-environment-indicator");
+      await expect(indicator).toBeVisible();
+      await expect(indicator).not.toHaveAttribute("tabindex");
+      await indicator.click();
+      await expect(page.getByRole("heading", { name: "Packages", exact: true })).toBeVisible();
+      await expect(toolbar).toBeVisible();
+      expect(await logo.boundingBox()).toEqual(initialLogo);
+
       await page.getByTestId("add-code-cell-button").focus();
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(toolbar).toBeHidden();
@@ -70,7 +78,6 @@ test.describe("notebook rail outline", () => {
       await page.getByRole("button", { name: "Packages", exact: true }).click();
       await expect(toolbar).toBeVisible();
 
-      const indicator = page.getByTestId("runtime-environment-indicator");
       await expect(indicator).toBeVisible();
       await expect(indicator).not.toHaveAttribute("tabindex");
       await indicator.click();

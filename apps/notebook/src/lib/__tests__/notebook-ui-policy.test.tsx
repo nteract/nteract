@@ -7,7 +7,7 @@ import { notebookUiPolicy } from "../notebook-ui-policy";
 describe("notebookUiPolicy", () => {
   it.each(["electron", "tauri", "browser"])("controls pane entry points for %s", (hostName) => {
     const policy = notebookUiPolicy(hostName);
-    const enabled = hostName !== "electron";
+    const commentsEnabled = hostName !== "electron";
     const onCreateSourceComment = vi.fn();
     const onCreateOutputComment = vi.fn();
     const onActivateCommentThread = vi.fn();
@@ -20,10 +20,10 @@ describe("notebookUiPolicy", () => {
       onActivateCommentThread,
     });
 
-    expect(surface.commentsPanel).toBe(enabled ? "comments panel" : undefined);
-    expect(surface.onCreateSourceComment).toBe(enabled ? onCreateSourceComment : undefined);
-    expect(surface.onCreateOutputComment).toBe(enabled ? onCreateOutputComment : undefined);
-    expect(surface.onActivateCommentThread).toBe(enabled ? onActivateCommentThread : undefined);
+    expect(surface.commentsPanel).toBe(commentsEnabled ? "comments panel" : undefined);
+    expect(surface.onCreateSourceComment).toBe(commentsEnabled ? onCreateSourceComment : undefined);
+    expect(surface.onCreateOutputComment).toBe(commentsEnabled ? onCreateOutputComment : undefined);
+    expect(surface.onActivateCommentThread).toBe(commentsEnabled ? onActivateCommentThread : undefined);
 
     render(
       <NotebookCommandToolbar

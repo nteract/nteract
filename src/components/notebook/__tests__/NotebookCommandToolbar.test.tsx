@@ -13,7 +13,6 @@ const runtimeStatus = {
 const editableToolbarCapabilities = {
   canEditStructure: true,
   canExecute: true,
-  canViewPackages: true,
   canManageSharing: true,
   canRequestEdit: true,
   auth: {
