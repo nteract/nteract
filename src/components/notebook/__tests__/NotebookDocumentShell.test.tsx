@@ -1,15 +1,116 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ListTree } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { Rail } from "@/components/rail";
+import { Rail, RAIL_TAKEOVER_STAGE_CLASS_NAME } from "@/components/rail";
 import { NotebookRail, type NotebookRailPanelId } from "@/components/notebook-rail";
 import { NotebookBrandMark } from "../NotebookBrandMark";
 import { NotebookDocumentShell } from "../NotebookDocumentShell";
 import type { NotebookShellCapabilities } from "../capabilities";
 
 describe("NotebookDocumentShell", () => {
+  it.each(["rail", "stage"] as const)(
+    "preserves mounted notebook, output, and panel nodes when changing sides (%s)",
+    (placement) => {
+      const mounted = vi.fn();
+      const unmounted = vi.fn();
+      function NotebookContent() {
+        useEffect(() => {
+          mounted();
+          return unmounted;
+        }, []);
+        return (
+          <section aria-label="Notebook cells">
+            <input aria-label="Cell source" defaultValue="print(1)" />
+            <iframe title="Output frame" />
+          </section>
+        );
+      }
+      const shell = (railSide: "left" | "right") => (
+        <NotebookDocumentShell
+          railSide={railSide}
+          railPanelPlacement={placement}
+          toolbar={<button type="button">Run</button>}
+          toolbarPlacement="stage-content"
+          toolbarClassName={RAIL_TAKEOVER_STAGE_CLASS_NAME}
+          stageContentClassName={RAIL_TAKEOVER_STAGE_CLASS_NAME}
+          rail={
+            <Rail
+              railSide={railSide}
+              activePanelId="outline"
+              collapsed={false}
+              panelTitle="Outline"
+              items={[{ id: "outline", label: "Outline", icon: ListTree }]}
+              onActivePanelChange={vi.fn()}
+              onCollapsedChange={vi.fn()}
+            >
+              <input aria-label="Panel search" defaultValue="heading" />
+            </Rail>
+          }
+        >
+          <NotebookContent />
+        </NotebookDocumentShell>
+      );
+      const { container, rerender } = render(shell("left"));
+      const notebook = screen.getByLabelText("Notebook cells");
+      const notebookParent = notebook.parentElement;
+      const output = screen.getByTitle("Output frame");
+      const source = screen.getByRole("textbox", { name: "Cell source" });
+      const search = screen.getByRole("textbox", { name: "Panel search" });
+      const panelParent = search.closest('[data-slot="rail-panel"]')?.parentElement;
+      const runButton = screen.getByRole("button", { name: "Run" });
+      const toolbarParent = runButton.parentElement;
+      const panelHost = container.querySelector('[data-slot="notebook-document-rail-panel-host"]');
+
+      rerender(shell("right"));
+
+      expect(container.querySelector('[data-slot="notebook-document-body"]')).toHaveClass(
+        "flex-row-reverse",
+      );
+      expect(screen.getByLabelText("Notebook cells")).toBe(notebook);
+      expect(notebook.parentElement).toBe(notebookParent);
+      expect(screen.getByTitle("Output frame")).toBe(output);
+      expect(screen.getByRole("textbox", { name: "Cell source" })).toBe(source);
+      expect(screen.getByRole("textbox", { name: "Panel search" })).toBe(search);
+      expect(search.closest('[data-slot="rail-panel"]')?.parentElement).toBe(panelParent);
+      expect(screen.getByRole("button", { name: "Run" })).toBe(runButton);
+      expect(runButton.parentElement).toBe(toolbarParent);
+      expect(toolbarParent).toHaveClass(RAIL_TAKEOVER_STAGE_CLASS_NAME);
+      expect(mounted).toHaveBeenCalledTimes(1);
+      expect(unmounted).not.toHaveBeenCalled();
+      if (placement === "stage") {
+        expect(container.querySelector('[data-slot="notebook-document-stage-body"]')).toHaveClass(
+          "grid-cols-[minmax(0,1fr)_auto]",
+        );
+        expect(
+          container.querySelector('[data-slot="notebook-document-stage-content-toolbar"]'),
+        ).toHaveClass("col-start-1", "row-start-1");
+        expect(panelHost).toHaveClass("col-start-2", "row-start-1", "row-end-[-1]");
+        expect(panelHost).toContainElement(search);
+        expect(screen.getByTestId("rail")).not.toContainElement(search);
+        expect(notebookParent).toHaveClass(
+          "col-start-1",
+          "row-start-2",
+          RAIL_TAKEOVER_STAGE_CLASS_NAME,
+        );
+      } else {
+        expect(screen.getByTestId("rail")).toContainElement(search);
+        expect(panelHost).toBeNull();
+      }
+
+      rerender(shell("left"));
+      expect(screen.getByLabelText("Notebook cells")).toBe(notebook);
+      expect(screen.getByTitle("Output frame")).toBe(output);
+      expect(screen.getByRole("textbox", { name: "Panel search" })).toBe(search);
+      expect(container.querySelector('[data-slot="notebook-document-body"]')).not.toHaveClass(
+        "flex-row-reverse",
+      );
+      expect(mounted).toHaveBeenCalledTimes(1);
+      expect(unmounted).not.toHaveBeenCalled();
+    },
+  );
+
   it("renders rail, toolbar, notices, and notebook content in shared shell slots", () => {
     render(
       <NotebookDocumentShell

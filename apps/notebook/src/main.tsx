@@ -8,6 +8,7 @@ import { setErrorBoundarySink } from "@/lib/error-boundary";
 import { setBlobPortHost } from "./lib/blob-port";
 import { logger, setLoggerHost } from "./lib/logger";
 import { setMetadataTransport } from "./lib/notebook-metadata";
+import { initializeNotebookPresentation } from "./lib/notebook-presentation";
 import { setOpenUrlHost } from "./lib/open-url";
 import { ensureNotebookWasmReady } from "./lib/runtimed-wasm";
 import { createNotebookHost, isTauriRuntime } from "./host/create-notebook-host";
@@ -76,6 +77,7 @@ async function boot() {
   // through it (see @nteract/notebook-host types). Tauri and browser/dev hosts
   // provide the same transport surface to SyncEngine and NotebookClient.
   const host = await createNotebookHost();
+  initializeNotebookPresentation(host);
 
   // Module-scope helpers that can't reach for useNotebookHost() — hand them
   // the references they need right after the host is constructed.

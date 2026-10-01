@@ -434,6 +434,17 @@ export interface HostSettings {
 
 // ── Host ──────────────────────────────────────────────────────────────────
 
+/** Initial presentation for embedded hosts, not notebook state or authorization. */
+export interface NotebookPresentationConfig {
+  readonly rail?: {
+    /** Initial visibility. An explicit open command can reveal the rail. */
+    readonly visible?: boolean;
+    readonly side?: "left" | "right";
+    readonly initialCollapsed?: boolean;
+    readonly initialPanel?: "outline" | "packages";
+  };
+}
+
 /**
  * The top-level interface every host implementation provides.
  *
@@ -443,6 +454,7 @@ export interface HostSettings {
  */
 export interface NotebookHost {
   readonly name: "tauri" | "electron" | "browser" | (string & {});
+  readonly presentation?: NotebookPresentationConfig;
   /**
    * Standalone isolated-output document supplied by the host. Embedded hosts
    * should set this so output iframes do not fall back to `srcdoc`, whose CSP

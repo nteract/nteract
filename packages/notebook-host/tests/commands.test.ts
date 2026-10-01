@@ -1,5 +1,44 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { createCommandRegistry } from "../src/commands";
+import { createCommandRegistry, isNotebookCommand } from "../src/commands";
+
+describe("isNotebookCommand", () => {
+  it.each([
+    "notebook.save",
+    "notebook.open",
+    "notebook.clone",
+    "notebook.clearOutputs",
+    "notebook.clearAllOutputs",
+    "notebook.runAll",
+    "notebook.restartAndRunAll",
+    "notebook.rail.close",
+    "updater.check",
+  ])("accepts existing undefined-payload command %s", (id) => {
+    expect(isNotebookCommand({ id, payload: undefined })).toBe(true);
+    expect(isNotebookCommand({ id, payload: null })).toBe(false);
+  });
+
+  it("preserves existing cell-type payloads", () => {
+    for (const type of ["code", "markdown", "raw"]) {
+      expect(isNotebookCommand({ id: "notebook.insertCell", payload: { type } })).toBe(true);
+      expect(isNotebookCommand({ id: "notebook.changeCellType", payload: { type } })).toBe(
+        type !== "raw",
+      );
+    }
+  });
+
+  it.each([
+    null,
+    [],
+    { id: "unknown", payload: undefined },
+    { id: "notebook.insertCell", payload: "code" },
+    { id: "notebook.changeCellType", payload: { type: "python" } },
+    { id: "notebook.rail.open", payload: undefined },
+    { id: "notebook.rail.open", payload: [] },
+    { id: "notebook.rail.open", payload: { panelId: "comments" } },
+  ])("rejects malformed command %j", (command) => {
+    expect(isNotebookCommand(command)).toBe(false);
+  });
+});
 
 describe("createCommandRegistry()", () => {
   it("invokes the registered handler with the correct payload", async () => {

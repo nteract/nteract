@@ -27,6 +27,7 @@ const NOTEBOOK_OUTLINE_BODY_PADDING_PX = 12;
 const NOTEBOOK_OUTLINE_NESTED_STEP_PX = 21;
 
 export interface NotebookRailProps {
+  railSide?: "left" | "right";
   activePanelId: NotebookRailPanelId;
   collapsed: boolean;
   outlineItems: readonly NotebookOutlineItem[];
@@ -55,6 +56,7 @@ const baseRailButtons: Array<RailItem<NotebookRailPanelId>> = [
 ];
 
 export function NotebookRail({
+  railSide = "left",
   activePanelId,
   collapsed,
   outlineItems,
@@ -87,6 +89,7 @@ export function NotebookRail({
   const title = railButtons.find((item) => item.id === activePanelId)?.label;
   return (
     <Rail
+      railSide={railSide}
       activePanelId={activePanelId}
       collapsed={collapsed}
       items={railButtons}

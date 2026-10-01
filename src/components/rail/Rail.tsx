@@ -18,6 +18,8 @@ export interface RailItem<PanelId extends string = string> {
 }
 
 export interface RailProps<PanelId extends string = string> {
+  /** Physical sidebar edge. Hosts must use the same side for the shell and rail. */
+  railSide?: "left" | "right";
   activePanelId: PanelId;
   collapsed: boolean;
   items: readonly RailItem<PanelId>[];
@@ -37,6 +39,7 @@ export interface RailProps<PanelId extends string = string> {
 }
 
 export function Rail<PanelId extends string = string>({
+  railSide = "left",
   activePanelId,
   collapsed,
   items,
@@ -58,7 +61,8 @@ export function Rail<PanelId extends string = string>({
   const panel = collapsed ? null : (
     <div
       className={cn(
-        "flex min-h-0 max-w-[calc(100vw-3.5rem)] flex-col border-r bg-muted/60",
+        "flex min-h-0 max-w-[calc(100vw-3.5rem)] flex-col bg-muted/60",
+        railSide === "right" ? "border-l" : "border-r",
         panelClassName,
         RAIL_TAKEOVER_PANEL_CLASS_NAMES,
       )}
@@ -86,10 +90,15 @@ export function Rail<PanelId extends string = string>({
 
   const strip = (
     <aside
-      className={cn("flex min-h-0 shrink-0 bg-background", className)}
+      className={cn(
+        "flex min-h-0 shrink-0 bg-background",
+        railSide === "right" && "flex-row-reverse",
+        className,
+      )}
       data-testid={dataTestId}
       data-collapsed={collapsed ? "true" : "false"}
       data-panel-hosted={panelSlotNode ? "true" : "false"}
+      data-rail-side={railSide}
     >
       {/* Keep `w-14` paired with the 3.5rem takeover calculation above.
           The explicit rows mirror the shell's command row and body: the
@@ -105,7 +114,7 @@ export function Rail<PanelId extends string = string>({
         <div
           className={cn(
             "flex min-h-0 flex-col items-center gap-1 px-2 py-3",
-            collapsed && "border-r",
+            collapsed && (railSide === "right" ? "border-l" : "border-r"),
           )}
           data-slot="rail-body"
         >

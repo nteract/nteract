@@ -157,6 +157,7 @@ import { useNotebookViewModel } from "@/components/notebook/state/view-model-sto
 import { useDetectRuntime, useNotebookMetadata } from "./lib/notebook-metadata";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { notebookUiPolicy } from "./lib/notebook-ui-policy";
+import { registerNotebookRailCommands } from "./lib/notebook-presentation";
 import { startWindowFocusHandler } from "./lib/window-focus";
 import type { JupyterOutput } from "./types";
 
@@ -323,6 +324,8 @@ function resolveCommOutputs(
 
 function AppContent() {
   const host = useNotebookHost();
+  const railSide = host.presentation?.rail?.side ?? "left";
+  const [railVisible, setRailVisible] = useState(host.presentation?.rail?.visible ?? true);
   const { commentsEnabled } = notebookUiPolicy(host.name);
   const outputHostContext = useMemo(
     () =>
@@ -440,6 +443,7 @@ function AppContent() {
   const globalFind = useGlobalFind(cellIds);
 
   const { activePanelId: activeRailPanel, collapsed: railCollapsed } = useNotebookRailUiState();
+  const railEffectivelyCollapsed = !railVisible || railCollapsed;
   const stageHadFocusBeforeRailTakeoverRef = useRef(false);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
@@ -472,7 +476,7 @@ function AppContent() {
 
     const handleTakeoverChange = () => {
       focusActiveRailButtonWhenStageIsHidden(
-        railCollapsed,
+        railEffectivelyCollapsed,
         stageHadFocusBeforeRailTakeoverRef.current,
       );
     };
@@ -484,7 +488,7 @@ function AppContent() {
       takeoverQuery.removeEventListener("change", handleTakeoverChange);
       window.removeEventListener("resize", handleTakeoverChange);
     };
-  }, [railCollapsed]);
+  }, [railEffectivelyCollapsed]);
 
   // Daemon startup status (installing, starting, failed, etc.)
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
@@ -1044,7 +1048,7 @@ function AppContent() {
       if (!cellId) return;
 
       navigateToNotebookStageFromRail({
-        railCollapsed,
+        railCollapsed: railEffectivelyCollapsed,
         collapseRail: () => setNotebookRailCollapsed(true),
         navigate: () => {
           setFocusedCellId(cellId);
@@ -1056,7 +1060,7 @@ function AppContent() {
         },
       });
     },
-    [railCollapsed],
+    [railEffectivelyCollapsed],
   );
 
   const pendingSourceCommentAnchor =
@@ -1267,7 +1271,7 @@ function AppContent() {
   const activeOutlineItemId = useActiveOutlineItemId(
     outlineItems,
     cellIds,
-    !railCollapsed && activeRailPanel === "outline",
+    !railEffectivelyCollapsed && activeRailPanel === "outline",
   );
   const { selectedOutlineItemId, handleSelectOutlineItem } = useOutlineSelection({
     outlineItems,
@@ -1396,7 +1400,7 @@ function AppContent() {
   const handleNavigateOutlineItem = useCallback(
     (item: NotebookOutlineItem, href: string) => {
       return navigateNotebookOutlineFromRail({
-        railCollapsed,
+        railCollapsed: railEffectivelyCollapsed,
         collapseRail: () => setNotebookRailCollapsed(true),
         navigate: () =>
           navigateNotebookOutlineItem(item, href, {
@@ -1405,7 +1409,7 @@ function AppContent() {
           }),
       });
     },
-    [documentAnchors, railCollapsed],
+    [documentAnchors, railEffectivelyCollapsed],
   );
 
   const getObservedHeads = useCallback(() => getHandle()?.get_heads_hex() ?? [], [getHandle]);
@@ -1770,6 +1774,7 @@ function AppContent() {
       host.commands.register("notebook.clone", () => {
         commandHandlersRef.current.cloneNotebook();
       }),
+      registerNotebookRailCommands(host, () => setRailVisible(true)),
       registerInsertCellCommand(host.commands, () => commandHandlersRef.current.handleAddCell),
       host.commands.register("notebook.changeCellType", ({ type }) => {
         const focusedCellId = getFocusedCellId();
@@ -2072,6 +2077,7 @@ function AppContent() {
           creating={envBuildCreating}
         />
         <NotebookDocumentShell
+          railSide={railSide}
           capabilities={shellCapabilities}
           stageLabel="Notebook editor"
           notices={
@@ -2088,7 +2094,7 @@ function AppContent() {
           toolbarPlacement="stage-content"
           toolbarClassName={cn(
             "shrink-0 bg-background",
-            !railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+            !railEffectivelyCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
           )}
           toolbarLabel="Notebook execution and runtime controls"
           toolbar={
@@ -2124,9 +2130,13 @@ function AppContent() {
           // The expanded panel is hosted inside the stage, while the notebook
           // controls and content stay attached to the same live stage edge.
           railPanelPlacement="stage"
-          stageContentClassName={cn(!railCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME)}
+          stageContentClassName={cn(
+            !railEffectivelyCollapsed && NOTEBOOK_RAIL_TAKEOVER_STAGE_CLASS_NAME,
+          )}
           rail={
             <NotebookDocumentRail
+              railSide={railSide}
+              className={cn(!railVisible && "hidden")}
               leadingSlot={<NotebookBrandMark />}
               trailingSlot={
                 <NotebookConnectionIdentity
@@ -2137,7 +2147,7 @@ function AppContent() {
               }
               viewModel={notebookViewModel}
               activePanelId={renderedActiveRailPanel}
-              collapsed={railCollapsed}
+              collapsed={railEffectivelyCollapsed}
               outlineCellIds={cellIds}
               activeOutlineItemId={activeOutlineItemId}
               selectedOutlineItemId={selectedOutlineItemId}
