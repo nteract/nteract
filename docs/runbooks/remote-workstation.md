@@ -293,6 +293,47 @@ above apply unchanged. Use the workstation's task environment Python as
 `--python-path` so notebook execution sees the same dependencies as your
 flows.
 
+### The runtime-peer image
+
+nteract publishes a container image that bundles everything a workstation
+needs: the `runtimed` daemon, the pairing CLI, and a Python 3.12 environment
+with the kernel base packages already installed (`ipykernel`, `ipywidgets`,
+`anywidget`, `nbformat`, `pyarrow>=14`, `uv` — the same set the daemon
+installs into environments it manages). With this image there is no manual
+`pip install ipykernel` step, which is the failure mode behind the silent
+"Kernel running" traceback on machines whose system Python lacks `ipykernel`.
+
+- **Registry and tags**: `ghcr.io/anaconda/nteract-runtime-peer`, tagged with
+  the release version (`:<version>`), the channel (`:nightly` / `:stable`),
+  and `:latest` (stable only). Published by the release pipeline; the image's
+  `runtimed --version` matches the release it was built from.
+- **Entrypoint**: `runtimed` (no default subcommand). Run it as
+  `cloud-runtime-agent` / `workstation-agent`, or pair interactively first
+  (below).
+- **User and paths**: runs as non-root user `runt` (uid 1000);
+  `python3` is at `/usr/local/bin/python3` — pass it as `--python-path`.
+- **Writable volume**: one requirement — a writable `$HOME`
+  (`/home/runt`). The daemon keeps its launcher cache, blob store, and socket
+  under the home directory; mounting a per-user home (the Outerbounds
+  pattern) satisfies this.
+- **Network**: outbound only. The agent dials home; kernel ports bind
+  loopback inside the container. Nothing to expose.
+
+Pairing inside the container uses the bundled CLI (a first-run onboarding
+wizard in the image is planned as a follow-up; today you pair manually):
+
+```bash
+docker run -it --entrypoint bash ghcr.io/anaconda/nteract-runtime-peer:<tag>
+nteract workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
+nteract workstation run --python-path "$(command -v python3)"
+```
+
+The pairing code is minted from the hosted workstation panel and redeemed
+once; the resulting credential is stored with `0600` permissions in the
+container's home (mount durable storage there if the container restarts
+should keep its identity). Credentials ride in the environment
+(`RUNT_CLOUD_TOKEN`), never argv.
+
 ## What the workstation offers
 
 As of 2026-09-04, the shipped workstation agent advertises **Current Python**:
