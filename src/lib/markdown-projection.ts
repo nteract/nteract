@@ -312,7 +312,10 @@ export function renderedTextForSourceRange(
 }
 
 export function canRenderMarkdownProjectionInHost(plan: MarkdownProjectionPlan | null): boolean {
-  return plan != null;
+  // Raw HTML placeholders need the sandboxed renderer; the host view omits them.
+  return plan != null &&
+    !plan.blocks.some((block) => block.kind === "isolated") &&
+    !plan.runs.some((run) => run.semantic === "isolated-placeholder");
 }
 
 export function markdownProjectionPlanFromMimeData(data: unknown): MarkdownProjectionPlan | null {

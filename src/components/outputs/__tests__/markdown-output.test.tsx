@@ -194,6 +194,28 @@ describe("MarkdownOutput heading anchors", () => {
     );
   });
 
+  it("preserves nested HTML callout content and inline styles", () => {
+    const { container } = render(
+      <MarkdownOutput
+        content={[
+          '<div style="background:#E8F1FF; border-left:6px solid #2563EB; padding:14px 18px;">',
+          '<div style="font-size:1.15em; font-weight:700;">Example objectives</div>',
+          "<div><ul><li>Compare two models.</li><li>Explain the result.</li></ul></div>",
+          "</div>",
+        ].join("\n")}
+      />,
+    );
+
+    expect(screen.getByRole("list")).toHaveTextContent("Compare two models.Explain the result.");
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByText("Example objectives")).toHaveStyle({ fontWeight: "700" });
+    expect(container.querySelector('[data-slot="markdown-output"] > div')).toHaveStyle({
+      background: "#E8F1FF",
+      borderLeft: "6px solid #2563EB",
+      padding: "14px 18px",
+    });
+  });
+
   it("styles native disclosure blocks as compact appendices", () => {
     render(
       <MarkdownOutput

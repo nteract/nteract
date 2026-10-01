@@ -357,6 +357,58 @@ describe("MarkdownCell theme sync", () => {
     vi.clearAllMocks();
   });
 
+  it("renders isolated HTML projections through the sandboxed Markdown plugin", async () => {
+    const source = '<div style="background:#E8F1FF"><ul><li>Example objective</li></ul></div>';
+    const cell = makeTaskCell();
+    const markdownProjection: MarkdownProjectionPlan = {
+      ...cell.markdownProjection!,
+      source,
+      byteLength: source.length,
+      utf16Length: source.length,
+      blocks: [
+        {
+          ...cell.markdownProjection!.blocks[0],
+          kind: "isolated",
+          element: "div",
+          text: "[isolated active HTML region]",
+          sourceSpanByte: [0, source.length],
+          sourceSpanUtf16: [0, source.length],
+        },
+      ],
+      runs: [
+        {
+          ...cell.markdownProjection!.runs[0],
+          semantic: "isolated-placeholder",
+          renderedText: "[isolated active HTML region]",
+        },
+      ],
+    };
+    const { getByTestId, container } = render(
+      <MarkdownCell
+        cell={{ ...cell, source, markdownProjection }}
+        onFocus={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    expect(getByTestId("markdown-frame")).toBeInTheDocument();
+    expect(container.querySelector('[style*="background"]')).toBeNull();
+    await waitFor(() => {
+      expect(injectPluginsForMimes).toHaveBeenCalledWith(
+        mockFrameHandle,
+        ["text/markdown"],
+        expect.any(Set),
+      );
+      expect(mockFrameHandle.render).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mimeType: "text/markdown",
+          data: source,
+          replace: true,
+        }),
+      );
+    });
+  });
+
   it("passes the current color theme to the markdown iframe and re-syncs it on ready", async () => {
     mockColorTheme = "cream";
 
