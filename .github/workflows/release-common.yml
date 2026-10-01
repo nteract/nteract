@@ -1457,6 +1457,121 @@ jobs:
           name: wheels-${{ matrix.platform.target }}
           path: python/runtimed/dist
 
+  image-runtime-peer-build:
+    # Build and smoke the runtime-peer image (runtimed + notebook Python).
+    # See images/runtime-peer/README.md and
+    # docs/runbooks/remote-workstation.md. linux/amd64 only for v1.
+    #
+    # Runs concurrently with the desktop builds (no prerelease dependency
+    # here) and ends by pushing an immutable staging tag that nothing
+    # documents or consumes; only image-runtime-peer-publish turns it into
+    # version/channel/latest tags — and only after the release exists.
+    name: Build and smoke runtime-peer image
+    runs-on: ubuntu-24.04
+    needs: [compute-version]
+    permissions:
+      contents: read
+      packages: write
+    # Pinned to the anaconda org on purpose: docs/runbooks and the README
+    # document this exact path, and it must not drift with whatever fork or
+    # mirror happens to run the workflow.
+    env:
+      IMAGE: ghcr.io/anaconda/nteract-runtime-peer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --load is required: with the buildx builder the result otherwise never
+      # reaches the local image store and the smoke/push steps would fail.
+      # RUNT_BUILD_CHANNEL bakes the release channel into the binaries at
+      # compile time (crates/runt-workspace); without it the image would
+      # silently build as nightly even on the stable train.
+      - name: Build image
+        run: |
+          docker build \
+            --load \
+            --build-arg RUNT_BUILD_CHANNEL="${RUNT_BUILD_CHANNEL}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.version=${{ needs.compute-version.outputs.version }}" \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            -t "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}" \
+            -f images/runtime-peer/Dockerfile .
+
+      # Smoke gates the staging push: a failed in-container cell execution
+      # blocks publication. The version-parity check compares the daemon's
+      # --version against the release's base version (the binary reports the
+      # crate version; the full version string also carries the channel +
+      # timestamp suffix).
+      - name: Smoke image (gates push)
+        run: |
+          bash scripts/ci/runtime-peer-image-smoke.sh \
+            "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}" \
+            "${{ needs.compute-version.outputs.base_version }}"
+
+      - name: Push staging tag
+        run: |
+          docker push "$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
+
+  image-runtime-peer-publish:
+    # Promote the smoked staging image to the documented tags. Waits for the
+    # release to be published (`prerelease`), the same contract
+    # publish-plugin enforces: version/channel/:latest tags must never point
+    # at a version whose GitHub release failed to ship.
+    name: Publish runtime-peer image
+    runs-on: ubuntu-24.04
+    needs: [compute-version, prerelease, image-runtime-peer-build]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/anaconda/nteract-runtime-peer
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push (version + channel)
+        run: |
+          STAGING_TAG="$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
+          VERSION_TAG="$IMAGE:${{ needs.compute-version.outputs.version }}"
+          CHANNEL_TAG="$IMAGE:${{ env.RUNT_BUILD_CHANNEL }}"
+          docker pull "$STAGING_TAG"
+          docker tag "$STAGING_TAG" "$VERSION_TAG"
+          docker tag "$STAGING_TAG" "$CHANNEL_TAG"
+          docker push "$VERSION_TAG"
+          docker push "$CHANNEL_TAG"
+
+      - name: Tag and push latest (stable only)
+        if: inputs.github_release_prerelease == false
+        run: |
+          STAGING_TAG="$IMAGE:build-${{ env.NTERACT_BUILD_GIT_HASH }}"
+          docker tag "$STAGING_TAG" "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+
+      # A first-time push with GITHUB_TOKEN creates the org package as
+      # private; that must surface here, not as consumer pull failures later.
+      - name: Verify anonymous pull (gates on package visibility)
+        run: |
+          docker logout ghcr.io
+          docker pull "$IMAGE:${{ needs.compute-version.outputs.version }}"
+
   publish-plugin:
     # Assemble this release's channel-slice of the agent plugin
     # distribution repo (nteract/agent-plugins). One repo, two plugins:

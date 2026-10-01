@@ -21,3 +21,16 @@ docker-compose.yml
 .DS_Store
 *.log
 .context/
+
+# Python workspace artifacts
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Repo meta not needed inside the image build context
+.specify/
+specs/
+.github/
+coverage/
