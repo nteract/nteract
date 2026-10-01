@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { NotebookCommandToolbar } from "../NotebookCommandToolbar";
 
@@ -12,7 +13,6 @@ const runtimeStatus = {
 const editableToolbarCapabilities = {
   canEditStructure: true,
   canExecute: true,
-  canViewPackages: true,
   canManageSharing: true,
   canRequestEdit: true,
   auth: {
@@ -138,7 +138,6 @@ describe("NotebookCommandToolbar", () => {
         onRestartRuntime={() => {}}
         onRestartAndRunAll={() => {}}
         onInterruptRuntime={() => {}}
-        onTogglePackages={() => {}}
         identityControls={<button type="button">Kyle</button>}
       />,
     );
@@ -148,7 +147,10 @@ describe("NotebookCommandToolbar", () => {
 
     expect(onAddCell).toHaveBeenCalledWith("code", "cell-1");
     expect(onRunAllCells).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("deps-toggle")).toHaveAttribute("data-env-manager", "uv");
+    expect(screen.getByTestId("runtime-environment-indicator")).toHaveAttribute(
+      "data-env-manager",
+      "uv",
+    );
     expect(screen.getByRole("button", { name: "Kyle" })).toBeVisible();
   });
 
@@ -266,11 +268,10 @@ describe("NotebookCommandToolbar", () => {
           canExecute: false,
         }}
         runtime="python"
-        onTogglePackages={() => {}}
       />,
     );
 
-    expect(screen.getByTestId("deps-toggle")).toBeVisible();
+    expect(screen.getByTestId("runtime-environment-indicator")).toBeVisible();
     expect(screen.queryByTestId("kernel-status")).toBeNull();
     expect(screen.queryByTestId("run-all-button")).toBeNull();
   });
@@ -293,16 +294,59 @@ describe("NotebookCommandToolbar", () => {
           kernelStatusLabel: "idle",
           runtimePeerCount: 1,
         }}
-        onTogglePackages={() => {}}
       />,
     );
 
-    const chip = screen.getByTestId("deps-toggle");
+    const chip = screen.getByTestId("runtime-environment-indicator");
     expect(chip).toHaveAttribute("data-runtime-target", "cloud_workstation");
     expect(chip).toHaveAttribute("data-runtime-peer-count", "1");
     expect(chip).toHaveAttribute(
       "title",
-      "Python - Lab2 workstation · Ready · Kernel idle · 1 compute session - open environment panel",
+      "Python - Lab2 workstation · Ready · Kernel idle · 1 compute session",
+    );
+  });
+
+  it("keeps runtime metadata passive without package navigation capabilities", async () => {
+    const user = userEvent.setup();
+    const onRunAllCells = vi.fn();
+    render(
+      <NotebookCommandToolbar
+        capabilities={editableToolbarCapabilities}
+        runtime="python"
+        environmentManager="conda"
+        environmentOutOfSync
+        runtimeStatus={runtimeStatus}
+        onRunAllCells={onRunAllCells}
+        onRestartAndRunAll={() => {}}
+        trailingControls={<button type="button">Next control</button>}
+      />,
+    );
+
+    const indicator = screen.getByTestId("runtime-environment-indicator");
+    expect(indicator).toBeVisible();
+    expect(indicator.tagName).toBe("SPAN");
+    expect(indicator).toHaveTextContent("Python");
+    expect(indicator).toHaveAttribute("data-env-manager", "conda");
+    expect(indicator).toHaveAttribute("title", "Python / conda");
+    expect(indicator).not.toHaveAttribute("role");
+    expect(indicator).not.toHaveAttribute("tabindex");
+    expect(indicator.tabIndex).toBe(-1);
+    expect(indicator.className).not.toMatch(/hover:|cursor-|ring-/);
+    expect(indicator.querySelector("button, a, [tabindex]")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Python|environment panel/ })).toBeNull();
+
+    await user.click(indicator);
+    await user.keyboard("{Enter} ");
+    expect(onRunAllCells).not.toHaveBeenCalled();
+    expect(indicator).not.toHaveFocus();
+
+    screen.getByTestId("restart-run-all-button").focus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Next control" })).toHaveFocus();
+    expect(screen.getByTestId("kernel-status")).toBeVisible();
+    expect(screen.getByTestId("restart-run-all-button")).toHaveAttribute(
+      "title",
+      "Dependencies changed - restart kernel and run all cells",
     );
   });
 

@@ -26,23 +26,23 @@ describe("Prewarmed Environment Pool", () => {
   });
 
   it("should show Python runtime with UV badge", async () => {
-    const depsToggle = await $('[data-testid="deps-toggle"]');
-    await depsToggle.waitForExist({ timeout: 10000 });
-    expect(await depsToggle.getAttribute("data-runtime")).toBe("python");
+    const indicator = await $('[data-testid="runtime-environment-indicator"]');
+    await indicator.waitForExist({ timeout: 10000 });
+    expect(await indicator.getAttribute("data-runtime")).toBe("python");
 
     // env-manager syncs from RuntimeStateDoc after kernel launch — poll for it
     await browser.waitUntil(
       async () => {
-        const mgr = await depsToggle.getAttribute("data-env-manager");
+        const mgr = await indicator.getAttribute("data-env-manager");
         return mgr === "uv";
       },
       {
         timeout: 30000,
         interval: 500,
-        timeoutMsg: "UV badge never appeared on deps toggle",
+        timeoutMsg: "UV badge never appeared on runtime indicator",
       },
     );
-    const envManager = await depsToggle.getAttribute("data-env-manager");
+    const envManager = await indicator.getAttribute("data-env-manager");
     console.log(`[prewarmed-uv] env-manager: ${envManager}`);
     expect(envManager).toBe("uv");
   });

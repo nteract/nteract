@@ -44,9 +44,9 @@ test.describe("browser runtime fixture coverage", () => {
       });
       await waitForKernelStatus(page, "idle", 300_000);
 
-      const depsToggle = page.getByTestId("deps-toggle");
-      await expect(depsToggle).toHaveAttribute("data-runtime", "python");
-      await expect(depsToggle).toHaveAttribute("data-env-manager", "uv", {
+      const indicator = page.getByTestId("runtime-environment-indicator");
+      await expect(indicator).toHaveAttribute("data-runtime", "python");
+      await expect(indicator).toHaveAttribute("data-env-manager", "uv", {
         timeout: 30_000,
       });
 
@@ -67,7 +67,10 @@ test.describe("browser runtime fixture coverage", () => {
       await openNotebookPath(page, notebookPath);
       await waitForKernelStatus(page, "idle", 300_000);
 
-      await expect(page.getByTestId("deps-toggle")).toHaveAttribute("data-runtime", "deno");
+      await expect(page.getByTestId("runtime-environment-indicator")).toHaveAttribute(
+        "data-runtime",
+        "deno",
+      );
 
       const cell = page.locator('[data-cell-type="code"]').first();
       await setCellSource(cell, 'console.log("browser-deno-ok");');
@@ -87,9 +90,13 @@ test.describe("browser runtime fixture coverage", () => {
       });
       await waitForKernelStatus(page, "idle", 300_000);
 
-      await expect(page.getByTestId("deps-toggle")).toHaveAttribute("data-env-manager", "uv", {
-        timeout: 30_000,
-      });
+      await expect(page.getByTestId("runtime-environment-indicator")).toHaveAttribute(
+        "data-env-manager",
+        "uv",
+        {
+          timeout: 30_000,
+        },
+      );
 
       const cell = page.locator('[data-cell-type="code"]').first();
       await setCellSource(cell, "import httpx; print('browser-httpx-ok', httpx.__version__)");

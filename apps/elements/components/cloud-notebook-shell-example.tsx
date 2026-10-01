@@ -575,7 +575,6 @@ function CloudNotebookToolbar({
         onRestartRuntime={noop}
         onRunAllCells={noop}
         onRestartAndRunAll={noop}
-        onTogglePackages={noop}
       />
     </div>
   );

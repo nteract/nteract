@@ -29,12 +29,12 @@ describe("Conda Inline Dependencies", () => {
   });
 
   it("should show Conda badge in toolbar", async () => {
-    const depsToggle = await $('[data-testid="deps-toggle"]');
-    await depsToggle.waitForExist({ timeout: 10000 });
+    const indicator = await $('[data-testid="runtime-environment-indicator"]');
+    await indicator.waitForExist({ timeout: 10000 });
 
     await browser.waitUntil(
       async () => {
-        const mgr = await depsToggle.getAttribute("data-env-manager");
+        const mgr = await indicator.getAttribute("data-env-manager");
         return mgr === "conda";
       },
       {
@@ -44,8 +44,8 @@ describe("Conda Inline Dependencies", () => {
       },
     );
 
-    expect(await depsToggle.getAttribute("data-env-manager")).toBe("conda");
-    expect(await depsToggle.getAttribute("data-runtime")).toBe("python");
+    expect(await indicator.getAttribute("data-env-manager")).toBe("conda");
+    expect(await indicator.getAttribute("data-runtime")).toBe("python");
   });
 
   it("should use conda environment path", async () => {

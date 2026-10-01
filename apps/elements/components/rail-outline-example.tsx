@@ -148,7 +148,6 @@ export function RailOutlineExample() {
                     : "Kernel controls unavailable",
                   title: scenario.runtimeLabel,
                 }}
-                environmentPanelOpen={activePanel === "packages"}
                 environmentOutOfSync={!scenario.capabilities.canManagePackages}
                 addAfterCellId={focusedCellId ?? "cell-findings"}
                 capabilities={scenario.capabilities}
@@ -158,7 +157,6 @@ export function RailOutlineExample() {
                 onRestartRuntime={noop}
                 onRunAllCells={noop}
                 onRestartAndRunAll={noop}
-                onTogglePackages={() => setActivePanel("packages")}
               />
             }
           />

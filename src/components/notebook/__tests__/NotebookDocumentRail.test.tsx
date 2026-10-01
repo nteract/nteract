@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vite-plus/test";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { NotebookDocumentRail } from "../NotebookDocumentRail";
 import type { NotebookViewModel } from "../view-model";
 
@@ -57,6 +58,30 @@ describe("NotebookDocumentRail", () => {
     expect(screen.getByRole("heading", { name: "Packages" })).toBeVisible();
     expect(screen.queryByText("uv · 2 packages")).not.toBeInTheDocument();
     expect(screen.getByText("Package details")).toBeVisible();
+  });
+
+  it("keeps Packages navigation available by pointer and keyboard", async () => {
+    const user = userEvent.setup();
+    const onActivePanelChange = vi.fn();
+    render(
+      <NotebookDocumentRail
+        viewModel={viewModel}
+        activePanelId="outline"
+        collapsed={false}
+        packagesPanel={<p>Package details</p>}
+        onActivePanelChange={onActivePanelChange}
+        onCollapsedChange={() => {}}
+      />,
+    );
+
+    const packagesButton = screen.getByRole("button", { name: "Packages", exact: true });
+    await user.click(packagesButton);
+    expect(onActivePanelChange).toHaveBeenCalledWith("packages");
+
+    onActivePanelChange.mockClear();
+    packagesButton.focus();
+    await user.keyboard("{Enter}");
+    expect(onActivePanelChange).toHaveBeenCalledWith("packages");
   });
 
   it("forwards host outline selection state", () => {

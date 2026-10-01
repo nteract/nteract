@@ -39,7 +39,6 @@ function toolbarProps(
     capabilities: scenario.capabilities,
     runtime: "python",
     environmentManager: "uv",
-    environmentPanelOpen: false,
     environmentOutOfSync: scenario.packageState.syncState.status === "dirty",
     runtimeStatus: runtimeStatus("idle", scenario.runtimeLabel),
     addAfterCellId: firstRunnableCell?.id ?? cellIds[cellIds.length - 1] ?? null,
@@ -49,7 +48,6 @@ function toolbarProps(
     onRestartRuntime: noop,
     onRunAllCells: noop,
     onRestartAndRunAll: noop,
-    onTogglePackages: noop,
     identityControls: <ToolbarIdentityControls scenario={scenario} />,
     ...overrides,
   };

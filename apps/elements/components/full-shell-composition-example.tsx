@@ -293,10 +293,8 @@ export function FullShellCompositionExample() {
   const commandToolbar = (
     <FullShellCommandToolbar
       capabilities={capabilities}
-      activePanel={activePanel}
       railCollapsed={railCollapsed}
       onOpenPanels={host === "cloud" ? () => setRailCollapsed(false) : undefined}
-      onTogglePackages={() => togglePanel("packages")}
       onToggleWorkstations={host === "cloud" ? () => togglePanel("workstations") : undefined}
     />
   );
@@ -500,18 +498,14 @@ function FullShellHeader({
 }
 
 function FullShellCommandToolbar({
-  activePanel,
   capabilities,
   railCollapsed,
   onOpenPanels,
-  onTogglePackages,
   onToggleWorkstations,
 }: {
-  activePanel: NotebookRailPanelId;
   capabilities: NotebookShellCapabilities;
   railCollapsed: boolean;
   onOpenPanels?: () => void;
-  onTogglePackages: () => void;
   onToggleWorkstations?: () => void;
 }) {
   const runtimeStatus: NotebookCommandToolbarStatus = {
@@ -548,7 +542,6 @@ function FullShellCommandToolbar({
           runtime="python"
           runtimeTarget={capabilities.runtime.target ?? null}
           environmentManager={null}
-          environmentPanelOpen={activePanel === "packages" && !railCollapsed}
           runtimeStatus={runtimeStatus}
           addAfterCellId={initialFocusedCellId}
           onAddCell={noop}
@@ -557,7 +550,6 @@ function FullShellCommandToolbar({
           onRestartRuntime={noop}
           onRunAllCells={noop}
           onRestartAndRunAll={noop}
-          onTogglePackages={onTogglePackages}
           workstationAction={
             onToggleWorkstations
               ? {
