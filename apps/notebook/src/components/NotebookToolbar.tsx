@@ -47,7 +47,7 @@ interface NotebookToolbarProps {
   focusedCellId?: string | null;
   lastCellId?: string | null;
   onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
-  onToggleDependencies: () => void;
+  onToggleDependencies?: () => void;
   isDepsOpen?: boolean;
   capabilities: Pick<
     NotebookShellCapabilities,

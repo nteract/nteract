@@ -88,6 +88,22 @@ const baseProps = {
 };
 
 describe("NotebookToolbar", () => {
+  it("omits the package toggle without a handler and keeps execution controls", () => {
+    render(
+      <NotebookToolbar
+        {...baseProps}
+        runtime="python"
+        envSource="conda:env_yml"
+        onToggleDependencies={undefined}
+      />,
+    );
+
+    expect(screen.queryByTestId("deps-toggle")).not.toBeInTheDocument();
+    expect(screen.getByTestId("kernel-status")).toBeInTheDocument();
+    expect(screen.getByTestId("restart-kernel-button")).toBeEnabled();
+    expect(screen.getByTestId("run-all-button")).toBeEnabled();
+  });
+
   it("leaves branding to the fixed rail instead of the notebook command row", () => {
     render(<NotebookToolbar {...baseProps} {...propsForStatus(KERNEL_STATUS.IDLE)} />);
 
