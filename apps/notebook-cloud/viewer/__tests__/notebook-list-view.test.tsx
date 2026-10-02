@@ -11,6 +11,15 @@ import { CloudNotebookListView } from "../notebook-list-view";
 import { writeCachedCloudNotebookList } from "../notebook-list-cache";
 import type { CloudNotebookListItem } from "../notebook-dashboard";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
 const authConfig: CloudViewerAuthConfig = {
   localDev: null,
   oidc: null,
@@ -20,6 +29,7 @@ describe("CloudNotebookListView", () => {
   let storage: MemoryStorage;
 
   beforeEach(() => {
+    window.sessionStorage.clear();
     cloudNotebookHomeStore.seed(null, null);
     vi.useFakeTimers();
     storage = new MemoryStorage();
@@ -49,6 +59,200 @@ describe("CloudNotebookListView", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it.each(["Cancel", "Close", "Escape", "outside"])(
+    "dismisses busy create immediately with %s, restores initiating focus and retains uncertainty/title",
+    async (exit) => {
+      const pending = new Promise<Response>(() => {});
+      const fetchMock = vi.fn(async (_url, init?: RequestInit) =>
+        init?.method === "POST"
+          ? pending
+          : new Response(JSON.stringify({ ok: true, notebooks: [] })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      renderNotebookList({
+        mode: "dev",
+        token: "token",
+        user: "alice",
+        oidcClaims: null,
+        requestedScope: "owner",
+        problem: null,
+      });
+      await act(async () => {
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+      });
+      const trigger = screen.getAllByRole("button", { name: "New notebook" })[0]!;
+      trigger.focus();
+      fireEvent.click(trigger);
+      fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
+        target: { value: "Private retained title" },
+      });
+      fireEvent.submit(screen.getByRole("button", { name: "Create" }).closest("form")!);
+      if (exit === "Escape") fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+      else if (exit === "outside") {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        fireEvent.pointerDown(document.body);
+        fireEvent.click(document.body);
+      } else fireEvent.click(screen.getByRole("button", { name: exit }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+      fireEvent.click(trigger);
+      expect(screen.getByRole("textbox", { name: "Title" })).toHaveProperty(
+        "value",
+        "Private retained title",
+      );
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByRole("button", { name: "Create separate notebook" })).toBeTruthy();
+      expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    },
+  );
+
+  it("lets the user explicitly start a separate create after an unknown outcome", async () => {
+    const fetchMock = vi.fn(async (_url, init?: RequestInit) =>
+      init?.method === "POST"
+        ? new Promise<Response>(() => {})
+        : new Response(JSON.stringify({ ok: true, notebooks: [] })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    renderNotebookList({
+      mode: "dev",
+      token: "token",
+      user: "alice",
+      oidcClaims: null,
+      requestedScope: "owner",
+      problem: null,
+    });
+    await act(async () => {
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "New notebook" })[0]!);
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
+      target: { value: "First attempt title" },
+    });
+    fireEvent.submit(screen.getByRole("button", { name: "Create" }).closest("form")!);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Back to list" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "New notebook" })[0]!);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe(
+      "First attempt title",
+    );
+    expect(screen.getByRole("button", { name: "Create separate notebook" })).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+
+  it("does not allow a signed-in but API-not-ready user to open or submit Create", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    renderNotebookList(oidcAuth("alice"));
+    expect(screen.getByRole("button", { name: "New notebook" })).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: "New notebook" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "error"])(
+    "isolates account switch and old %s from a newer create indicator",
+    async (completion) => {
+      const old = deferred<Response>();
+      const current = deferred<Response>();
+      const fetchMock = vi.fn(async (_url, init?: RequestInit) =>
+        init?.method === "POST"
+          ? old.promise
+          : new Response(JSON.stringify({ ok: true, notebooks: [] })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      let authState: CloudPrototypeAuthState = {
+        mode: "dev",
+        token: "token",
+        user: "alice",
+        oidcClaims: null,
+        requestedScope: "owner",
+        problem: null,
+      };
+      const store = new CloudAuthStore({ readAuthState: () => authState });
+      render(
+        <CloudAuthStoreProvider store={store}>
+          <CloudNotebookListView authConfig={authConfig} />
+        </CloudAuthStoreProvider>,
+      );
+      await act(async () => {
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+      });
+      fireEvent.click(screen.getAllByRole("button", { name: "New notebook" })[0]!);
+      fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
+        target: { value: "Alice private title" },
+      });
+      fireEvent.submit(screen.getByRole("button", { name: "Create" }).closest("form")!);
+      await act(async () => {
+        authState = { ...authState, user: "bob" };
+        store.refreshAuthState();
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      fetchMock.mockImplementation(async (_url, init?: RequestInit) =>
+        init?.method === "POST"
+          ? current.promise
+          : new Response(JSON.stringify({ ok: true, notebooks: [] })),
+      );
+      fireEvent.click(screen.getAllByRole("button", { name: "New notebook" })[0]!);
+      expect(screen.getByRole("textbox", { name: "Title" })).not.toHaveProperty(
+        "value",
+        "Alice private title",
+      );
+      fireEvent.submit(screen.getByRole("button", { name: "Create" }).closest("form")!);
+      await act(async () => {
+        if (completion === "success")
+          old.resolve(
+            new Response(
+              JSON.stringify({ ok: true, notebook_id: "old", viewer_url: "/n/old/notebook" }),
+            ),
+          );
+        else old.reject(new Error("Alice raw secret"));
+      });
+      expect(screen.getByRole("button", { name: "Creating" })).toHaveProperty("disabled", true);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(window.location.pathname).toBe("/n");
+    },
+  );
+
+  it("unmount suppresses a late rejected create and never navigates", async () => {
+    const pending = deferred<Response>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, init?: RequestInit) =>
+        init?.method === "POST"
+          ? pending.promise
+          : new Response(JSON.stringify({ ok: true, notebooks: [] })),
+      ),
+    );
+    renderNotebookList({
+      mode: "dev",
+      token: "token",
+      user: "alice",
+      oidcClaims: null,
+      requestedScope: "owner",
+      problem: null,
+    });
+    await act(async () => {
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "New notebook" })[0]!);
+    fireEvent.submit(screen.getByRole("button", { name: "Create" }).closest("form")!);
+    cleanup();
+    await act(async () => {
+      pending.reject(new Error("private late rejection"));
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(window.location.pathname).toBe("/n");
   });
 
   it("keeps the dashboard shell through a cookie-only session check and delayed list", async () => {

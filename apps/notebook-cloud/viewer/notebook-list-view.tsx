@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { asyncScheduler, filter, fromEvent, merge } from "rxjs";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type MouseEvent,
+} from "react";
+import { asyncScheduler, combineLatest, filter, fromEvent, merge } from "rxjs";
+import { CloudCreateAttempt, useCloudCreateAttempt } from "./cloud-create-attempt";
+import { projectHostedCatalogAuthState } from "./hosted-catalog-auth";
 import { useCloudStores } from "./cloud-stores-context";
 import { useCloudNotebookHomeState } from "./use-cloud-notebook-home-store";
 import { notebookHomeEvents, notebookHomeEventsUrl } from "./notebook-home-events";
@@ -56,8 +66,8 @@ import {
 import { useCloudAuthStore } from "./cloud-auth-context";
 import { loadCloudNotebookListBootstrap } from "./cloud-viewer-config";
 import type { CloudAppSession } from "./app-session";
+import type { CloudCreateSnapshot } from "./cloud-create-attempt";
 import type {
-  CloudNotebookCreateResponse,
   CloudNotebookListBootstrap,
   CloudNotebookListResponse,
   CloudNotebookListSnapshot,
@@ -66,7 +76,6 @@ import type {
   CloudViewerAuthConfig,
 } from "./cloud-viewer-types";
 import {
-  cloudNotebookOpenUrlWithMode,
   isCloudNotebookListItem,
   isOptionalCloudNotebookListTotalCount,
   normalizeCloudNotebookListTotalCount,
@@ -114,7 +123,9 @@ export function CloudNotebookListView({
   const authRenewal = useCloudAuthRenewal();
   const { notebookHome } = useCloudStores();
   const identityKey = appSessionStatus.session
-    ? `session:${appSessionStatus.session.cache_key}`
+    ? appSessionStatus.session.account_key
+      ? `account:${appSessionStatus.session.account_key}`
+      : `session:${appSessionStatus.session.cache_key}`
     : authState.mode === "dev" && authState.token
       ? `dev:${authState.user ?? "browser-editor"}`
       : authState.oidcClaims?.sub
@@ -132,10 +143,69 @@ export function CloudNotebookListView({
     displayName: currentUserDisplay,
     avatar: currentUserAvatar,
   } = useCloudNotebookHomeState();
-  const [createState, setCreateState] = useState<"idle" | "starting">("idle");
-  const [createError, setCreateError] = useState<string | null>(null);
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [createTitle, setCreateTitle] = useState(() => defaultCloudNotebookTitle());
+  const createTriggerRef = useRef<HTMLElement | null>(null);
+  const [createDriver] = useState(
+    () =>
+      new CloudCreateAttempt({
+        context: () => {
+          const state = auth.authSnapshot;
+          const session = auth.appSessionSnapshot.session;
+          return {
+            account: session
+              ? state.mode === "dev"
+                ? `dev:${state.user ?? "browser-editor"}`
+                : session.account_key
+                  ? `account:${session.account_key}`
+                  : `legacy-session:${session.cache_key}`
+              : state.mode === "dev" && state.token
+                ? `dev:${state.user ?? "browser-editor"}`
+                : state.oidcClaims?.sub
+                  ? `oidc:${state.oidcClaims.sub}`
+                  : null,
+            credentialKey: session?.cache_key,
+            ready: projectHostedCatalogAuthState(state, { appSession: session }).canFetchCatalog,
+            endpoint: cloudNotebookCollectionEndpoint(),
+          };
+        },
+        fetch: (url, init) =>
+          fetchWithCloudPrototypeAuth(url, init, cloudAuthWithScope(auth.authSnapshot, "owner")),
+        navigate: (url) => window.location.assign(url),
+        origin: window.location.origin,
+      }),
+  );
+  const createAttempt = useCloudCreateAttempt(createDriver);
+  const createBusy = createAttempt.state === "creating";
+  useEffect(() => {
+    createDriver.activate();
+    const syncCreateContext = () => {
+      const previousAttempt = createDriver.snapshot;
+      createDriver.syncContext();
+      if (previousAttempt === createDriver.snapshot) return;
+      if (createDriver.snapshot.state === "ready") {
+        setCreateFormOpen(false);
+        setCreateTitle(defaultCloudNotebookTitle());
+      } else {
+        setCreateTitle(createDriver.snapshot.submittedTitle);
+      }
+    };
+    const subscription = combineLatest([auth.authState$, auth.appSessionView$]).subscribe(() => {
+      syncCreateContext();
+    });
+    const wake = merge(
+      fromEvent(window, "focus"),
+      fromEvent(document, "visibilitychange"),
+    ).subscribe(() => {
+      syncCreateContext();
+      createDriver.resume();
+    });
+    return () => {
+      subscription.unsubscribe();
+      wake.unsubscribe();
+      createDriver.dispose();
+    };
+  }, [auth, createDriver]);
   const [dashboardQuery, setDashboardQuery] = useState("");
   const [renameState, setRenameState] = useState<CloudNotebookRenameState | null>(null);
   const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
@@ -260,60 +330,29 @@ export function CloudNotebookListView({
     } else notebookHome.refresh();
   };
 
-  const openCreateForm = () => {
-    if (!signedIn) {
+  const openCreateForm = (event: MouseEvent<HTMLButtonElement>) => {
+    if (!canFetchNotebookList) {
       return;
     }
-    setCreateError(null);
-    setCreateTitle(defaultCloudNotebookTitle());
+    createTriggerRef.current = event.currentTarget;
     setCreateFormOpen(true);
   };
 
   const closeCreateForm = () => {
-    if (createState === "starting") {
-      return;
-    }
-    setCreateError(null);
+    const attempt = createDriver.snapshot;
+    const retainedTitle =
+      attempt.state === "ready" && !attempt.previousOutcomeUnknown
+        ? createTitle
+        : attempt.submittedTitle;
+    createDriver.dismiss(retainedTitle);
+    setCreateTitle(retainedTitle);
     setCreateFormOpen(false);
   };
 
-  const createNotebook = async (event: FormEvent<HTMLFormElement>) => {
+  const createNotebook = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!signedIn || createState === "starting") {
-      return;
-    }
     const title = createTitle.trim() || defaultCloudNotebookTitle();
-    try {
-      setCreateError(null);
-      setCreateState("starting");
-      const response = await fetchWithCloudPrototypeAuth(
-        cloudNotebookCollectionEndpoint(),
-        {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ title }),
-        },
-        cloudAuthWithScope(authState, "owner"),
-      );
-      if (!response.ok) {
-        throw await cloudResponseError(response, "Unable to create notebook");
-      }
-      const body = (await response.json()) as CloudNotebookCreateResponse;
-      if (body.ok !== true || typeof body.viewer_url !== "string") {
-        throw new Error("Unable to create notebook: response shape was invalid");
-      }
-      window.location.assign(
-        cloudNotebookOpenUrlWithMode(body.viewer_url, "edit", {
-          browserOrigin: window.location.origin,
-        }),
-      );
-    } catch (error) {
-      setCreateState("idle");
-      setCreateError(error instanceof Error ? error.message : String(error));
-    }
+    createDriver.submit(title);
   };
 
   const openRenameForm = useCallback((notebook: CloudNotebookListItem) => {
@@ -374,6 +413,9 @@ export function CloudNotebookListView({
   };
 
   const signOut = () => {
+    createDriver.dismiss();
+    setCreateFormOpen(false);
+    setCreateTitle(defaultCloudNotebookTitle());
     setDashboardQuery("");
     auth.clearAppSessionStatus();
     clearCachedCloudNotebookListFromLocalStorage();
@@ -434,17 +476,13 @@ export function CloudNotebookListView({
                   <RotateCcw aria-hidden="true" />
                   <span className="nb-btn-label">Refresh</span>
                 </Button>
-                <Button
-                  type="button"
-                  disabled={!signedIn || createState === "starting"}
-                  onClick={openCreateForm}
-                >
-                  {createState === "starting" ? (
+                <Button type="button" disabled={!canFetchNotebookList} onClick={openCreateForm}>
+                  {createBusy ? (
                     <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
                   ) : (
                     <Plus aria-hidden="true" />
                   )}
-                  {createState === "starting" ? "Creating" : "New notebook"}
+                  New notebook
                 </Button>
                 {signedIn ? (
                   <NotebookAccountMenu
@@ -494,12 +532,20 @@ export function CloudNotebookListView({
       ) : null}
       {createFormOpen ? (
         <CloudNotebookCreateDialog
-          title={createTitle}
-          createState={createState}
-          error={createError}
+          title={createAttempt.state === "ready" ? createTitle : createAttempt.submittedTitle}
+          attempt={createAttempt}
+          canSubmit={canFetchNotebookList}
+          restoreFocus={() => createTriggerRef.current?.focus({ preventScroll: true })}
           onClose={closeCreateForm}
           onCreate={createNotebook}
           onTitleChange={setCreateTitle}
+          onSeparateCreate={() => {
+            const title = defaultCloudNotebookTitle();
+            createDriver.dismiss(title);
+            setCreateTitle(title);
+            setCreateFormOpen(false);
+            requestAnimationFrame(() => setCreateFormOpen(true));
+          }}
         />
       ) : null}
       <NotebookSettingsDrawer
@@ -557,7 +603,10 @@ export function CloudNotebookListView({
           </CloudNotebookDashboardState>
         ) : listState.notebooks.length === 0 ? (
           <CloudNotebookDashboardState summary="0 notebooks">
-            <CloudNotebookListEmptyState signedIn={signedIn} onNewNotebook={openCreateForm} />
+            <CloudNotebookListEmptyState
+              signedIn={canFetchNotebookList}
+              onNewNotebook={openCreateForm}
+            />
           </CloudNotebookDashboardState>
         ) : dashboardModel ? (
           <CloudNotebookDashboard
@@ -623,32 +672,41 @@ function CloudNotebookSignedOutPanel({
 
 function CloudNotebookCreateDialog({
   title,
-  createState,
-  error,
+  attempt,
+  canSubmit,
+  restoreFocus,
   onClose,
   onCreate,
   onTitleChange,
+  onSeparateCreate,
 }: {
   title: string;
-  createState: "idle" | "starting";
-  error: string | null;
+  attempt: CloudCreateSnapshot;
+  canSubmit: boolean;
+  restoreFocus: () => void;
   onClose: () => void;
   onCreate: (event: FormEvent<HTMLFormElement>) => void;
   onTitleChange: (title: string) => void;
+  onSeparateCreate: () => void;
 }) {
-  const busy = createState === "starting";
+  const busy = attempt.state === "creating";
+  const unconfirmed = attempt.state === "unconfirmed";
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        // The shared Dialog owns focus trap, background inerting, Escape, and
-        // focus restore. Ignore close requests while the create is in flight.
-        if (!open && !busy) {
+        if (!open) {
           onClose();
         }
       }}
     >
-      <DialogContent className="nb-create-dialog" showCloseButton={!busy}>
+      <DialogContent
+        className="nb-create-dialog"
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          restoreFocus();
+        }}
+      >
         <form onSubmit={onCreate}>
           <DialogHeader>
             <DialogTitle>New notebook</DialogTitle>
@@ -668,23 +726,35 @@ function CloudNotebookCreateDialog({
               onChange={(event) => onTitleChange(event.currentTarget.value)}
             />
           </div>
-          {error ? (
+          {unconfirmed ? (
             <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
-              {error}
+              Creation is unconfirmed. It may have completed even though confirmation was not
+              received. Check the notebook list manually before deciding what to do next. A title
+              match or missing entry cannot confirm whether this request created a notebook.
             </div>
           ) : null}
           <DialogFooter>
-            <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>
-              Cancel
+            <Button type="button" variant="ghost" onClick={onClose}>
+              {unconfirmed ? "Back to list" : "Cancel"}
             </Button>
-            <Button type="submit" disabled={busy}>
-              {busy ? (
-                <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
-              ) : (
-                <Plus aria-hidden="true" />
-              )}
-              {busy ? "Creating" : "Create"}
-            </Button>
+            {!unconfirmed ? (
+              <Button type="submit" disabled={busy || !canSubmit}>
+                {busy ? (
+                  <Loader2 className="cloud-home-status-spinner" aria-hidden="true" />
+                ) : (
+                  <Plus aria-hidden="true" />
+                )}
+                {busy
+                  ? "Creating"
+                  : attempt.previousOutcomeUnknown
+                    ? "Create separate notebook"
+                    : "Create"}
+              </Button>
+            ) : (
+              <Button type="button" variant="outline" onClick={onSeparateCreate}>
+                Create a separate notebook
+              </Button>
+            )}
           </DialogFooter>
         </form>
       </DialogContent>
@@ -697,7 +767,7 @@ function CloudNotebookListEmptyState({
   onNewNotebook,
 }: {
   signedIn: boolean;
-  onNewNotebook: () => void;
+  onNewNotebook: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <div className="nb-empty">

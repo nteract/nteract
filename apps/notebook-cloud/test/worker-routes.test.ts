@@ -1074,6 +1074,7 @@ describe("Worker artifact routes", () => {
     assert.equal(body.session?.provider, "oidc");
     assert.equal(typeof body.session?.expires_at, "number");
     assert.equal(typeof body.session?.cache_key, "string");
+    assert.deepEqual(Object.keys(body.session!).sort(), ["cache_key", "expires_at", "provider"]);
 
     // The GET never validates upstream: its Server-Timing phases are the
     // cookie read and the sliding renewal, not auth_validate.
@@ -1115,6 +1116,7 @@ describe("Worker artifact routes", () => {
         headers: {
           Cookie:
             "unrelated=value; platform_session=host-session; __Host-nteract_cloud_app_session=old",
+          "X-Nteract-Session-Account-Key": "1",
         },
       }),
       env,
@@ -1140,7 +1142,21 @@ describe("Worker artifact routes", () => {
     assert.equal(body.session?.provider, "oidc");
     assert.equal(typeof body.session?.expires_at, "number");
     assert.equal(typeof body.session?.cache_key, "string");
+    assert.equal("account_key" in (body.session ?? {}), false);
     assert.equal(env.DB.profiles.get("user:example:session%2Fcookie%20user")?.email_verified, 1);
+    const renewedCookie = response.headers.get("Set-Cookie")!.split(";", 1)[0]!;
+    const negotiated = await worker.fetch(
+      new Request("https://cloud.test/api/auth/session", {
+        headers: {
+          Cookie: renewedCookie,
+          "X-Nteract-Session-Account-Key": "1",
+        },
+      }),
+      env,
+      fakeContext(),
+    );
+    const negotiatedSession = (await negotiated.json()).session;
+    assert.equal(typeof negotiatedSession.account_key, "string");
     assert.match(
       response.headers.get("Server-Timing") ?? "",
       /(^|, )host_bootstrap;dur=\d+/,
@@ -1306,6 +1322,11 @@ describe("Worker artifact routes", () => {
     assert.equal(bootstrap.session?.provider, "oidc");
     assert.equal(typeof bootstrap.session?.expires_at, "number");
     assert.equal(typeof bootstrap.session?.cache_key, "string");
+    assert.deepEqual(Object.keys(bootstrap.session!).sort(), [
+      "cache_key",
+      "expires_at",
+      "provider",
+    ]);
     assert.doesNotMatch(html, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(
       html,
@@ -1415,6 +1436,7 @@ describe("Worker artifact routes", () => {
     assert.equal(config.session?.provider, "oidc");
     assert.equal(typeof config.session?.expires_at, "number");
     assert.equal(typeof config.session?.cache_key, "string");
+    assert.deepEqual(Object.keys(config.session!).sort(), ["cache_key", "expires_at", "provider"]);
     assert.deepEqual(config.initialCatalogAccess, {
       scope: "owner",
       title: "Viewer Bootstrap Notebook",
@@ -10768,6 +10790,10 @@ class FakeD1Statement implements D1PreparedStatement {
         this.db.tableColumns.set(table, columns);
       }
     } else if (this.query.includes("INSERT OR IGNORE INTO notebook_acl")) {
+      // This fake starts with the modern schema. Seeded rows represent current
+      // ACL policy, not legacy rows needing startup migration/backfill.
+      if (this.query.includes("system/schema:notebook-cloud-"))
+        return { success: true, meta: { changes: 0 } };
       if (this.query.includes("'principal'") && this.query.includes("owner_principal")) {
         for (const notebook of this.db.notebooks.values()) {
           this.insertAclIfMissing({

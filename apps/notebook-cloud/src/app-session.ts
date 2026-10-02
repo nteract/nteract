@@ -40,6 +40,7 @@ export const NOTEBOOK_CLOUD_APP_SESSION_DISPLAY_NAME_MAX_LENGTH = 128;
 export const NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS = 6 * 60 * 60;
 export const NOTEBOOK_CLOUD_IDENTITY_PROOF_MAX_AGE_SECONDS = 6 * 60 * 60;
 export const NOTEBOOK_CLOUD_APP_SESSION_SECRET_MIN_LENGTH = 32;
+export const APP_SESSION_ACCOUNT_KEY_HEADER = "X-Nteract-Session-Account-Key";
 
 const SESSION_SIGNING_ALGORITHM = { name: "HMAC", hash: "SHA-256" };
 
@@ -275,6 +276,24 @@ async function appSessionCacheKey(
     ].join(":"),
   );
   return base64UrlEncodeBytes(signature);
+}
+
+export async function appSessionAccountKey(
+  env: AppSessionEnvironment,
+  session: CloudAppSession,
+  canonicalPrincipal = session.principal,
+): Promise<string> {
+  return base64UrlEncodeBytes(
+    await hmacSha256(
+      env,
+      JSON.stringify([
+        "app-session-account:v1",
+        session.provider,
+        session.principalNamespace,
+        canonicalPrincipal,
+      ]),
+    ),
+  );
 }
 
 async function verifyCloudAppSession(

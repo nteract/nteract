@@ -14,6 +14,8 @@ export interface CloudAppSession {
   provider: "oidc";
   expires_at: number;
   cache_key: string;
+  /** Opaque authenticated identity, stable across credential renewal. */
+  account_key?: string;
   /** Validated display name returned by the private server-session status API. */
   display_name?: string;
 }
@@ -105,7 +107,7 @@ export async function readCloudAppSessionStatus(input?: {
 }): Promise<CloudAppSessionStatus> {
   const response = await (input?.fetchImpl ?? fetch)(CLOUD_APP_SESSION_ENDPOINT, {
     credentials: "same-origin",
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", "X-Nteract-Session-Account-Key": "1" },
     signal: input?.signal,
   });
   if (!response.ok) {
@@ -142,13 +144,20 @@ export function isCloudAppSession(value: unknown): value is CloudAppSession {
     candidate.provider === "oidc" &&
     Number.isFinite(candidate.expires_at) &&
     typeof candidate.cache_key === "string" &&
+    (candidate.account_key === undefined ||
+      (typeof candidate.account_key === "string" &&
+        /^[a-zA-Z0-9_-]{1,128}$/.test(candidate.account_key))) &&
     (candidate.display_name === undefined ||
       (typeof candidate.display_name === "string" &&
         candidate.display_name.trim().length > 0 &&
         candidate.display_name.length <= 128)) &&
     Object.keys(candidate).every(
       (key) =>
-        key === "provider" || key === "expires_at" || key === "cache_key" || key === "display_name",
+        key === "provider" ||
+        key === "expires_at" ||
+        key === "cache_key" ||
+        key === "account_key" ||
+        key === "display_name",
     )
   );
 }

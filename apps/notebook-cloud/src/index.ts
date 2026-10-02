@@ -46,6 +46,7 @@ import {
   createWorkstationAttachJob,
   ensureCatalogSchema,
   getCanonicalPrincipalForTransport,
+  readCanonicalPrincipalForSession,
   getDefaultWorkstationId,
   getNotebookAclRows,
   getNotebookRow,
@@ -172,6 +173,8 @@ import {
   NOTEBOOK_CLOUD_APP_SESSION_COOKIE_NAME,
   NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS,
   appSessionConfigured,
+  appSessionAccountKey,
+  APP_SESSION_ACCOUNT_KEY_HEADER,
   appSessionHasFreshVerifiedEmail,
   appSessionRenewalCookie,
   clearCloudAppSessionCookie,
@@ -1201,9 +1204,12 @@ async function routeAppSession(
         ? null
         : await timing.time("host_bootstrap", () => hostSessionAppSessionCookie(request, env));
     const session = existingSession ?? bootstrapped?.session ?? null;
-    const response = await timing.time("renew_cookie", () =>
+    const response = await timing.time("renew_cookie", async () =>
       withAppSessionRenewalCookie(
-        json({ ok: true, session: session ? appSessionResponse(session) : null }),
+        json({
+          ok: true,
+          session: session ? await appSessionResponse(env, session, request, !bootstrapped) : null,
+        }),
         env,
         session,
       ),
@@ -1281,11 +1287,23 @@ async function hostSessionAppSessionCookie(
   return { cookie: appSessionCookie, identity, session };
 }
 
-function appSessionResponse(session: CloudAppSession): Record<string, unknown> {
+async function appSessionResponse(
+  env: Env,
+  session: CloudAppSession,
+  request?: Request,
+  includeAccountKey = true,
+): Promise<Record<string, unknown>> {
+  const canonicalPrincipal =
+    includeAccountKey && request?.headers.get(APP_SESSION_ACCOUNT_KEY_HEADER) === "1"
+      ? await readCanonicalPrincipalForSession(env, session.principal)
+      : null;
   return {
     provider: session.provider,
     expires_at: session.expiresAt,
     cache_key: session.cacheKey,
+    ...(canonicalPrincipal
+      ? { account_key: await appSessionAccountKey(env, session, canonicalPrincipal) }
+      : {}),
   };
 }
 
@@ -1398,12 +1416,28 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
   if (!notebookId) {
     return json({ error: "could not allocate notebook id" }, 500);
   }
+  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName ?? notebookTitle, env);
+  const apiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
+  const result = {
+    ok: true,
+    notebook_id: notebookId,
+    title: notebookTitle,
+    vanity_name: vanityName,
+    viewer_url: viewerUrl,
+    source_notebook_id: sourceNotebookId,
+    source_notebook_name: sourceNotebookName,
+    endpoints: {
+      catalog: apiBasePath,
+      blobs: `${apiBasePath}/blobs/{hash}`,
+      runtime_snapshots: `${apiBasePath}/runtime-snapshots/{runtimeHeadsHash}`,
+      comms_snapshots: `${apiBasePath}/comms-snapshots/{commsHeadsHash}`,
+      snapshots: `${apiBasePath}/snapshots/{notebookHeadsHash}`,
+    },
+  };
   const notebookCreation = await createNotebookWithOwnerAcl(env, notebookId, identity, {
     title: notebookTitle,
   });
-  if (!notebookCreation.created) {
-    return json({ error: "could not allocate notebook id" }, 500);
-  }
+  if (!notebookCreation.created) return json({ error: "could not allocate notebook id" }, 500);
   cloudLog("info", "notebook.created", {
     notebook_id: notebookId,
     owner_principal: notebookCreation.ownerPrincipal,
@@ -1413,28 +1447,7 @@ async function routeCreateNotebook(request: Request, env: Env): Promise<Response
     counter: "notebooks_created",
     counter_delta: 1,
   });
-
-  const viewerUrl = viewerUrlForRequest(request, notebookId, vanityName ?? notebookTitle, env);
-  const apiBasePath = `/api/n/${encodeURIComponent(notebookId)}`;
-  return json(
-    {
-      ok: true,
-      notebook_id: notebookId,
-      title: notebookTitle,
-      vanity_name: vanityName,
-      viewer_url: viewerUrl,
-      source_notebook_id: sourceNotebookId,
-      source_notebook_name: sourceNotebookName,
-      endpoints: {
-        catalog: apiBasePath,
-        blobs: `${apiBasePath}/blobs/{hash}`,
-        runtime_snapshots: `${apiBasePath}/runtime-snapshots/{runtimeHeadsHash}`,
-        comms_snapshots: `${apiBasePath}/comms-snapshots/{commsHeadsHash}`,
-        snapshots: `${apiBasePath}/snapshots/{notebookHeadsHash}`,
-      },
-    },
-    201,
-  );
+  return json(result, 201);
 }
 
 const DEFAULT_NOTEBOOK_LIST_LIMIT = 100;
@@ -6218,7 +6231,7 @@ async function viewer(
       canManageSharing: true,
     },
     initialCatalogAccess,
-    session: session ? appSessionResponse(session) : null,
+    session: session ? await appSessionResponse(env, session) : null,
     syncEndpoint: `/n/${encodeURIComponent(notebookId)}/sync`,
     blobBasePath: notebookCloudBlobBasePath(notebookId),
     rendererAssetsBasePath: rendererAssetsBasePath(env),
@@ -6566,7 +6579,7 @@ async function notebookListBootstrap(
     session,
     bootstrap: {
       kind: "notebook-list",
-      session: appSessionResponse(session),
+      session: await appSessionResponse(env, session),
       notebooks: notebookListResponseRows(request, notebooks, env, computeSessions),
       total_count: totalCount,
       saved_at: new Date().toISOString(),
