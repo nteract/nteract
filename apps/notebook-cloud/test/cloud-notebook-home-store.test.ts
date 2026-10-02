@@ -111,6 +111,7 @@ test("a stable account-key change resets list state even when the session creden
   });
   assert.equal(store.snapshot.list.kind, "ready");
   currentIdentity = "account:key-b";
+  dispose();
   const stop = store.activate({
     ...next.driver,
     get identityKey() {

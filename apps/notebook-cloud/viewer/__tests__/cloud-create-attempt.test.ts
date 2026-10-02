@@ -166,9 +166,7 @@ describe("CloudCreateAttempt", () => {
     driver.syncContext();
     context = { ...context, credentialKey: "cookie-two" };
     driver.syncContext();
-    pending.resolve(
-      Response.json({ ok: true, notebook_id: "nb", viewer_url: "/n/nb/notebook" }),
-    );
+    pending.resolve(Response.json({ ok: true, notebook_id: "nb", viewer_url: "/n/nb/notebook" }));
     await settle();
     expect(driver.snapshot).toMatchObject({ state: "ready", submittedTitle: "Retained title" });
     expect(navigate).toHaveBeenCalledWith("https://cloud.test/n/nb/notebook?mode=edit");
@@ -194,7 +192,10 @@ describe("CloudCreateAttempt", () => {
     driver.submit("Private title");
     context = { ...context, account: "legacy-session:cookie-two", credentialKey: "cookie-two" };
     driver.syncContext();
-    expect(driver.snapshot).toMatchObject({ state: "unconfirmed", submittedTitle: "Private title" });
+    expect(driver.snapshot).toMatchObject({
+      state: "unconfirmed",
+      submittedTitle: "Private title",
+    });
     driver.submit("Unsafe new POST");
     expect(fetch).toHaveBeenCalledTimes(1);
     driver.dispose();
@@ -211,14 +212,12 @@ describe("CloudCreateAttempt", () => {
       f.setAccount("account-b");
       f.driver.syncContext();
     }
-    pending.resolve(
-      Response.json({ ok: true, notebook_id: "nb", viewer_url: "/n/nb/notebook" }),
-    );
+    pending.resolve(Response.json({ ok: true, notebook_id: "nb", viewer_url: "/n/nb/notebook" }));
     await settle();
     expect(f.navigate).not.toHaveBeenCalled();
     if (action === "dismiss") expect(f.driver.snapshot.state).toBe("ready");
-    if (action === "account") expect(f.driver.snapshot).toMatchObject({ state: "ready", submittedTitle: "" });
+    if (action === "account")
+      expect(f.driver.snapshot).toMatchObject({ state: "ready", submittedTitle: "" });
     f.driver.dispose();
   });
-
 });

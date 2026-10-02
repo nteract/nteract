@@ -68,7 +68,11 @@ export class CloudCreateAttempt {
     ) {
       const title = this.snapshot.submittedTitle;
       this.invalidate();
-      this.state.next({ state: "unconfirmed", submittedTitle: title, previousOutcomeUnknown: true });
+      this.state.next({
+        state: "unconfirmed",
+        submittedTitle: title,
+        previousOutcomeUnknown: true,
+      });
     }
   }
 
@@ -113,7 +117,7 @@ export class CloudCreateAttempt {
       this.context = { ...current };
       this.state.next(
         uncertainSessionRotation
-        ? { state: "unconfirmed", submittedTitle, previousOutcomeUnknown: true }
+          ? { state: "unconfirmed", submittedTitle, previousOutcomeUnknown: true }
           : initial(),
       );
       return !this.disposed && current.ready && current.account !== null;

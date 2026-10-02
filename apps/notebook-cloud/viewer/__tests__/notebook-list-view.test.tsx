@@ -150,7 +150,6 @@ describe("CloudNotebookListView", () => {
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
 
-
   it("does not allow a signed-in but API-not-ready user to open or submit Create", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

@@ -4,9 +4,7 @@ import { expect, test } from "@playwright/test";
 test("confirmed create navigates to the created notebook without unconfirmed feedback", async ({
   page,
 }) => {
-  await page.goto(
-    `/local-auth?user=create-success-${randomUUID()}&scope=owner&next=%2Fn`,
-  );
+  await page.goto(`/local-auth?user=create-success-${randomUUID()}&scope=owner&next=%2Fn`);
   await page.getByRole("button", { name: "New notebook", exact: true }).first().click();
   await page.getByRole("textbox", { name: "Title" }).fill("Confirmed local create");
   await page.getByRole("button", { name: "Create", exact: true }).click();
@@ -32,9 +30,7 @@ test("committed create with lost response resets dialog and warns before a separ
     };
   });
 
-  await page.goto(
-    `/local-auth?user=create-browser-${randomUUID()}&scope=owner&next=%2Fn`,
-  );
+  await page.goto(`/local-auth?user=create-browser-${randomUUID()}&scope=owner&next=%2Fn`);
   const trigger = page.getByRole("button", { name: "New notebook", exact: true }).first();
   await expect(trigger).toBeEnabled();
   await trigger.click();
@@ -50,9 +46,9 @@ test("committed create with lost response resets dialog and warns before a separ
   await trigger.click();
   await expect(page.getByLabel("Title", { exact: true })).toHaveValue("Lost confirmation title");
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Create separate notebook", exact: true })).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Create separate notebook", exact: true }),
+  ).toBeEnabled();
   await expect(page.getByLabel("Title", { exact: true })).toHaveValue("Lost confirmation title");
-  await expect
-    .poll(() => page.evaluate(() => (window as any).createProbe.posts))
-    .toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as any).createProbe.posts)).toBe(1);
 });

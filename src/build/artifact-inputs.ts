@@ -56,7 +56,7 @@ export function artifactInputs(root: string, extra: string[] = []) {
     name: "artifact-inputs",
     buildEnd(error) {
       if (error) return;
-      for (const id of [...this.getModuleIds()]) {
+      for (const id of this.getModuleIds()) {
         // Rolldown may use forward slashes in module IDs on Windows.
         const file = path.normalize(id.split("?")[0]);
         if (path.isAbsolute(file) && fs.existsSync(file) && fs.statSync(file).isFile()) {

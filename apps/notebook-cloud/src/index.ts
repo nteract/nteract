@@ -1214,9 +1214,9 @@ async function routeAppSession(
         session,
       ),
     );
-  if (bootstrapped?.cookie) {
-    response.headers.append("Set-Cookie", bootstrapped.cookie);
-    ctx.waitUntil(syncAuthenticatedProfile(env, bootstrapped.identity));
+    if (bootstrapped?.cookie) {
+      response.headers.append("Set-Cookie", bootstrapped.cookie);
+      ctx.waitUntil(syncAuthenticatedProfile(env, bootstrapped.identity));
     }
     return timing.apply(response);
   }

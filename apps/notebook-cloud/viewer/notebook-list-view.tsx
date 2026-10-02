@@ -340,9 +340,10 @@ export function CloudNotebookListView({
 
   const closeCreateForm = () => {
     const attempt = createDriver.snapshot;
-    const retainedTitle = attempt.state === "ready" && !attempt.previousOutcomeUnknown
-      ? createTitle
-      : attempt.submittedTitle;
+    const retainedTitle =
+      attempt.state === "ready" && !attempt.previousOutcomeUnknown
+        ? createTitle
+        : attempt.submittedTitle;
     createDriver.dismiss(retainedTitle);
     setCreateTitle(retainedTitle);
     setCreateFormOpen(false);
@@ -531,9 +532,7 @@ export function CloudNotebookListView({
       ) : null}
       {createFormOpen ? (
         <CloudNotebookCreateDialog
-          title={createAttempt.state === "ready"
-            ? createTitle
-            : createAttempt.submittedTitle}
+          title={createAttempt.state === "ready" ? createTitle : createAttempt.submittedTitle}
           attempt={createAttempt}
           canSubmit={canFetchNotebookList}
           restoreFocus={() => createTriggerRef.current?.focus({ preventScroll: true })}
@@ -729,9 +728,9 @@ function CloudNotebookCreateDialog({
           </div>
           {unconfirmed ? (
             <div className="cloud-notebook-list-banner" data-kind="error" role="alert">
-              Creation is unconfirmed. It may have completed even though confirmation was not received.
-              Check the notebook list manually before deciding what to do next. A title match or
-              missing entry cannot confirm whether this request created a notebook.
+              Creation is unconfirmed. It may have completed even though confirmation was not
+              received. Check the notebook list manually before deciding what to do next. A title
+              match or missing entry cannot confirm whether this request created a notebook.
             </div>
           ) : null}
           <DialogFooter>
@@ -752,11 +751,7 @@ function CloudNotebookCreateDialog({
                     : "Create"}
               </Button>
             ) : (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={onSeparateCreate}
-              >
+              <Button type="button" variant="outline" onClick={onSeparateCreate}>
                 Create a separate notebook
               </Button>
             )}
