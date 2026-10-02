@@ -929,7 +929,7 @@ function AppContent() {
 
   const handleReplyCommentThread = useCallback(
     async (threadId: string, body: string) => {
-      if (!canMutateComments) return;
+      if (!canMutateComments) return failCommentAction("Comments are read-only.");
       const handle = getHandle();
       if (!handle || typeof handle.reply_comment_thread !== "function") {
         return failCommentAction("Comments sync unavailable.");

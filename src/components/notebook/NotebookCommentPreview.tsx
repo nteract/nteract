@@ -33,7 +33,7 @@ export function NotebookCommentPreview({
     return () => media.removeEventListener("change", update);
   }, []);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const card = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -47,7 +47,6 @@ export function NotebookCommentPreview({
   const close = () => {
     cancelTimer();
     setTarget(null);
-    setError(null);
   };
   useEffect(
     () => () => {
@@ -67,7 +66,6 @@ export function NotebookCommentPreview({
   };
   const open = (anchor: { id: string; element: HTMLElement }, pinned: boolean) => {
     cancelTimer();
-    setError(null);
     setTarget({ ...anchor, pinned });
   };
   const leave = () => {
@@ -162,9 +160,9 @@ export function NotebookCommentPreview({
                 />
               ))}
             </div>
-            {error ? (
+            {errors[thread.id] ? (
               <p role="alert" className="mt-3 text-xs text-destructive">
-                {error}
+                {errors[thread.id]}
               </p>
             ) : null}
             {!readOnly && onReplyThread ? (
@@ -176,16 +174,21 @@ export function NotebookCommentPreview({
                   placeholder="Reply…"
                   disabled={false}
                   compact
+                  clearOnEscape={false}
+                  onEscape={close}
                   value={drafts[thread.id] ?? ""}
                   onValueChange={(body) =>
                     setDrafts((current) => ({ ...current, [thread.id]: body }))
                   }
                   onSubmit={async (body) => {
-                    setError(null);
+                    setErrors((current) => ({ ...current, [thread.id]: "" }));
                     try {
                       await onReplyThread(thread.id, body);
                     } catch (failure) {
-                      setError(failure instanceof Error ? failure.message : "Reply failed.");
+                      setErrors((current) => ({
+                        ...current,
+                        [thread.id]: failure instanceof Error ? failure.message : "Reply failed.",
+                      }));
                       throw failure;
                     }
                   }}

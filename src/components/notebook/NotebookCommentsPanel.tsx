@@ -699,6 +699,7 @@ export function CommentComposer({
   autoFocusKey = null,
   placeholder,
   compact = false,
+  clearOnEscape = true,
   value,
   onValueChange,
   onEscape,
@@ -711,6 +712,8 @@ export function CommentComposer({
   placeholder: string;
   /** Collapse to a single line until focused or non-empty (used for replies). */
   compact?: boolean;
+  /** Inline previews dismiss without discarding their retained reply draft. */
+  clearOnEscape?: boolean;
   value?: string;
   onValueChange?: (body: string) => void;
   onEscape?: () => void;
@@ -771,7 +774,7 @@ export function CommentComposer({
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      setBody("");
+      if (clearOnEscape) setBody("");
       setFocused(false);
       textareaRef.current?.blur();
       onEscape?.();

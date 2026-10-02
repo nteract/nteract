@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { NotebookCommentPreview } from "@/components/notebook/NotebookCommentPreview";
@@ -87,6 +87,53 @@ describe("NotebookCommentPreview", () => {
     await user.click(screen.getByRole("button", { name: "Close comment preview" }));
     await user.click(trigger);
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Unsent thought");
+  });
+
+  it("preserves the populated reply when Escape dismisses the card", async () => {
+    const user = userEvent.setup();
+    const { trigger } = fixture();
+    await user.click(trigger);
+    await user.type(screen.getByRole("textbox"), "Keep my thought");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await user.click(trigger);
+    expect(screen.getByRole("textbox")).toHaveValue("Keep my thought");
+  });
+
+  it("keeps a late reply failure with its original thread", async () => {
+    const user = userEvent.setup();
+    let rejectReply!: (error: Error) => void;
+    const onReplyThread = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectReply = reject;
+        }),
+    );
+    render(
+      <NotebookCommentPreview
+        projection={{
+          ...projection,
+          threads: [...projection.threads, { ...projection.threads[0], id: "other" }],
+        }}
+        onReplyThread={onReplyThread}
+      >
+        <button type="button" data-comment-thread-id="thread">
+          First highlight
+        </button>
+        <button type="button" data-comment-thread-id="other">
+          Other highlight
+        </button>
+      </NotebookCommentPreview>,
+    );
+    await user.click(screen.getByText("First highlight"));
+    await user.type(screen.getByRole("textbox"), "Pending reply");
+    await user.click(screen.getByRole("button", { name: "Send reply" }));
+    await user.click(screen.getByText("Other highlight"));
+    await act(async () => rejectReply(new Error("First reply failed")));
+    expect(screen.queryByRole("alert")).toBeNull();
+    await user.click(screen.getByText("First highlight"));
+    expect(screen.getByRole("alert")).toHaveTextContent("First reply failed");
+    expect(screen.getByRole("textbox")).toHaveValue("Pending reply");
   });
 
   it("retains failed replies and displays the error", async () => {
