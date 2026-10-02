@@ -97,6 +97,34 @@ test("an account switch discards completions from the previous identity", async 
   stop();
 });
 
+test("a stable account-key change resets list state even when the session credential is unchanged", async () => {
+  const first = fixture();
+  const next = fixture();
+  const store = new CloudNotebookHomeStore();
+  let currentIdentity = "account:key-a";
+  const dispose = store.activate({
+    ...first.driver,
+    get identityKey() {
+      return currentIdentity;
+    },
+    seed: { notebooks: [], totalCount: 1 },
+  });
+  assert.equal(store.snapshot.list.kind, "ready");
+  currentIdentity = "account:key-b";
+  const stop = store.activate({
+    ...next.driver,
+    get identityKey() {
+      return currentIdentity;
+    },
+    seed: null,
+  });
+  assert.equal(store.snapshot.list.kind, "loading");
+  next.calls[0]!.resolve(body("bob"));
+  await settle();
+  assert.equal(store.snapshot.displayName, "bob");
+  stop();
+});
+
 test("a failed refresh retries without waiting for another server event", async () => {
   const f = fixture();
   const store = new CloudNotebookHomeStore();

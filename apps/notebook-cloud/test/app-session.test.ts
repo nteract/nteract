@@ -9,6 +9,7 @@ import {
   clearCloudAppSessionCookie,
   createCloudAppSessionCookie,
   readCloudAppSession,
+  appSessionAccountKey,
   type CloudAppSession,
 } from "../src/app-session";
 import type { AuthenticatedConnection } from "../src/identity";
@@ -136,6 +137,20 @@ describe("cloud app session cookies", () => {
     assert.equal(renewed?.displayName, session?.displayName);
     assert.equal(renewed?.issuedAt, renewalAt);
     assert.equal(renewed?.expiresAt, renewalAt + NOTEBOOK_CLOUD_APP_SESSION_MAX_AGE_SECONDS);
+    assert.notEqual(renewed?.cacheKey, session?.cacheKey);
+    assert.equal(
+      await appSessionAccountKey(env, renewed!),
+      await appSessionAccountKey(env, session!),
+    );
+    assert.notEqual(
+      await appSessionAccountKey(env, session!, "account:other"),
+      await appSessionAccountKey(env, session!),
+    );
+    assert.notEqual(
+      await appSessionAccountKey(env, { ...session!, principal: "user:other" }),
+      await appSessionAccountKey(env, session!),
+    );
+    assert.doesNotMatch(await appSessionAccountKey(env, session!), /anaconda|subject-a/);
   });
 
   it("does not renew before half its max age", async () => {
