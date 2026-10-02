@@ -580,7 +580,7 @@ function CommentResolutionReceipt({
   );
 }
 
-function CommentMessage({
+export function CommentMessage({
   message,
   isReply = false,
   resolveCommentAuthor,
@@ -692,7 +692,7 @@ function CommentBody({ body }: { body: string }) {
   return <ProjectedMarkdownView plan={plan} className="text-[13px] leading-[1.45]" />;
 }
 
-function CommentComposer({
+export function CommentComposer({
   ariaLabel,
   submitAriaLabel,
   disabled,

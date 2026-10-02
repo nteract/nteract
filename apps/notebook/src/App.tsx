@@ -1,3 +1,4 @@
+import { NotebookCommentPreview } from "@/components/notebook/NotebookCommentPreview";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   colorForActorIdentity,
@@ -899,7 +900,6 @@ function AppContent() {
     for (const thread of commentsProjection?.threads ?? []) {
       if (thread.anchor.kind !== "source_range") continue;
       const list = map.get(thread.anchor.cell_id) ?? [];
-      const firstMessage = thread.messages[0];
       const author = thread.created_by_actor_label
         ? resolveCommentAuthor(thread.created_by_actor_label)
         : undefined;
@@ -908,18 +908,6 @@ function AppContent() {
         anchor: thread.anchor,
         resolved: thread.status === "resolved",
         color: author?.color,
-        preview: firstMessage
-          ? {
-              authorName: author?.displayName ?? "Unknown",
-              authorColor: author?.color,
-              imageUrl: author?.imageUrl,
-              isAgent: author?.isAgent,
-              agentSlug: author?.agentSlug,
-              onBehalfOf: author?.onBehalfOf,
-              body: firstMessage.body,
-              replyCount: Math.max(0, thread.messages.length - 1),
-            }
-          : undefined,
       });
       map.set(thread.anchor.cell_id, list);
     }
@@ -2292,34 +2280,41 @@ function AppContent() {
               localActor={localActor}
             >
               <BokehSessionRuntimeProvider value={bokehSessionRuntime}>
-                <NotebookView
-                  cellIds={cellIds}
-                  outputHostContext={outputHostContext}
-                  isLoading={isLoading}
-                  capabilities={shellCapabilities}
-                  canAcceptCellMutations={canAcceptCellMutations}
-                  loadError={loadError}
-                  runtime={runtime}
-                  sessionRuntimeState={sessionStatus?.runtime_state ?? null}
-                  onReconnectRuntime={reconnectRuntime}
-                  onFocusCell={handleNotebookViewFocus}
-                  onExecuteCell={handleExecuteCell}
-                  onInterruptKernel={interruptKernel}
-                  onDeleteCell={deleteCell}
-                  onUpdateCellSource={updateCellSource}
-                  onAddCell={handleAddCell}
-                  onMoveCell={moveCell}
-                  onChangeCellType={setCellType}
-                  onReportOutputMatchCount={globalFind.reportOutputMatchCount}
-                  onSetCellSourceHidden={setCellSourceHidden}
-                  onSetCellOutputsHidden={setCellOutputsHidden}
-                  onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
-                  onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
-                  onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
-                  commentThreadsByCell={sourceCommentThreadsByCell}
-                  pendingCommentAnchor={pendingSourceCommentAnchor}
-                  markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
-                />
+                <NotebookCommentPreview
+                  projection={commentsProjection}
+                  readOnly={!canMutateComments}
+                  onReplyThread={handleReplyCommentThread}
+                  resolveCommentAuthor={resolveCommentAuthor}
+                >
+                  <NotebookView
+                    cellIds={cellIds}
+                    outputHostContext={outputHostContext}
+                    isLoading={isLoading}
+                    capabilities={shellCapabilities}
+                    canAcceptCellMutations={canAcceptCellMutations}
+                    loadError={loadError}
+                    runtime={runtime}
+                    sessionRuntimeState={sessionStatus?.runtime_state ?? null}
+                    onReconnectRuntime={reconnectRuntime}
+                    onFocusCell={handleNotebookViewFocus}
+                    onExecuteCell={handleExecuteCell}
+                    onInterruptKernel={interruptKernel}
+                    onDeleteCell={deleteCell}
+                    onUpdateCellSource={updateCellSource}
+                    onAddCell={handleAddCell}
+                    onMoveCell={moveCell}
+                    onChangeCellType={setCellType}
+                    onReportOutputMatchCount={globalFind.reportOutputMatchCount}
+                    onSetCellSourceHidden={setCellSourceHidden}
+                    onSetCellOutputsHidden={setCellOutputsHidden}
+                    onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
+                    onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
+                    onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
+                    commentThreadsByCell={sourceCommentThreadsByCell}
+                    pendingCommentAnchor={pendingSourceCommentAnchor}
+                    markdownHeadingAnchorsByCellId={markdownHeadingAnchorsByCellId}
+                  />
+                </NotebookCommentPreview>
               </BokehSessionRuntimeProvider>
             </CrdtBridgeProvider>
           </div>
