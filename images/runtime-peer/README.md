@@ -72,15 +72,21 @@ Container contract summary:
 
 ## Publication
 
-CI builds and publishes on the release train (`.github/workflows/release-common.yml`,
-job `image-runtime-peer`) to `ghcr.io/anaconda/nteract-runtime-peer` with
+**Temporarily disabled for both nightly and stable releases:** the image jobs
+were removed from the shared workflow because their `packages: write` request
+exceeded the callers' permissions and prevented the entire release from starting.
+No new runtime-peer images are published until registry permissions are resolved.
+Local builds remain available.
+
+The intended publication setup builds and publishes on the release train (`.github/workflows/release-common.yml`,
+jobs `image-runtime-peer-build` and `image-runtime-peer-publish`) to `ghcr.io/anaconda/nteract-runtime-peer` with
 `:<version>`, `:<channel>` (`nightly`/`stable`), and `:latest` (stable only)
 tags. First-publish may require org GHCR package settings/visibility
 configuration; local builds work without any registry.
 
 ## Known limitations (v1)
 
-- CI publishes linux/amd64 only; local builds follow the host platform (the
+- The publication setup targets linux/amd64 only; local builds follow the host platform (the
   Dockerfile is arch-aware via `TARGETARCH`, so an Apple Silicon daemon
   produces an arm64 image). arm64 publication is a follow-up.
 - The runtime base package list is derived from `UV_BASE_PACKAGES` at build
