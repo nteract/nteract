@@ -1429,12 +1429,14 @@ export class NotebookRoom {
               this.packageMutations.delete(notebookId);
             }
           } catch {
-            response = {
-              result: "sync_environment_failed",
-              error:
-                "Package changes could not be saved. Check the connection and Python status, then try again.",
-              needs_restart: false,
-            };
+            if (response?.needs_restart !== true) {
+              response = {
+                result: "sync_environment_failed",
+                error:
+                  "Package changes could not be saved. Check the connection and Python status, then try again.",
+                needs_restart: false,
+              };
+            }
           }
           const managed = this.managedPython.get(notebookId);
           if (managed)
@@ -4269,7 +4271,6 @@ export class NotebookRoom {
       const currentActivity = await materializer.getRuntimeExecutionActivity();
       if (currentActivity.executing || currentActivity.queueDepth > 0) return;
       if (!(await watchMatches())) return;
-      if (runtimePeers.some((peer) => this.peers.get(peer.id) !== peer)) return;
       try {
         await this.markSelectedRuntimeSessionCompletedForIdle(notebookId);
       } catch (error) {
@@ -4279,6 +4280,7 @@ export class NotebookRoom {
           error: errorMessage(error),
         });
       }
+      if (runtimePeers.some((peer) => this.peers.get(peer.id) !== peer)) return;
       const finalActivity = await materializer.getRuntimeExecutionActivity();
       if (
         finalActivity.executing ||

@@ -343,7 +343,9 @@ describe("NotebookRoom owner package operations", () => {
       },
     );
 
-  for (const outcome of ["success", "failure", "concurrent_edit", "interrupt"] as const) {
+  for (
+    const outcome of ["success", "failure", "restart_checkpoint_failure", "concurrent_edit", "interrupt"] as const
+  ) {
     it(
       `owns package completion after transport admission: ${outcome}`,
       { timeout: 3000 },
@@ -424,6 +426,10 @@ describe("NotebookRoom owner package operations", () => {
         Object.assign(room, {
           managedPython: new Map([["demo", { runtime, ready: Promise.resolve() }]]),
         });
+        if (outcome === "restart_checkpoint_failure")
+          materializer.checkpoint = async () => {
+            throw new Error("checkpoint failed");
+          };
         const request = (id: string, action: string, extra = {}) =>
           encodeTypedFrame(
             FrameType.REQUEST,
@@ -470,8 +476,12 @@ describe("NotebookRoom owner package operations", () => {
           );
         }
         finish(
-          outcome === "failure"
-            ? { status: "error", error: "No compatible package", needs_restart: false }
+          outcome === "failure" || outcome === "restart_checkpoint_failure"
+            ? {
+                status: "error",
+                error: "Package installation needs a restart",
+                needs_restart: outcome === "restart_checkpoint_failure",
+              }
             : { status: "ready", manifest: next, installed: ["six==1", "requests==2"] },
         );
         await state.drain();
@@ -482,6 +492,12 @@ describe("NotebookRoom owner package operations", () => {
           responses.find((response) => response.id === "packages")?.result,
           outcome === "success" ? "sync_environment_complete" : "sync_environment_failed",
         );
+        if (outcome === "restart_checkpoint_failure")
+          assert.equal(
+            responses.find((response) => response.id === "packages")?.needs_restart,
+            true,
+            "checkpoint failure must not hide the provider's restart requirement",
+          );
         assert.deepEqual(
           ((await materializer.getCloudPackageManifest()) as typeof baseline).requirements,
           outcome === "success"
@@ -9098,7 +9114,13 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
       await fixture.state.storage.delete("runtime_idle_watch");
       await fixture.state.storage.delete("runtime_idle_watch_alarm_at");
       let changed = false,
-        sends = 0;
+        sends = 0,
+        catalogCompletions = 0;
+      Object.assign(room, {
+        markSelectedRuntimeSessionCompletedForIdle: async () => {
+          catalogCompletions++;
+        },
+      });
       peer.socket.send = () => {
         sends++;
         throw new Error("runtime socket closed");
@@ -9118,6 +9140,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
       await fixture.drain();
       assert.equal(changed, true);
       assert.ok(sends > 0, "accepted real-host output attempted runtime delivery");
+      assert.equal(catalogCompletions, 1, "socket send failure must not skip catalog completion");
       assert.equal((await materializer.getWorkstationAttachment())?.status, "idle");
       assert.equal(harness.peers.has(peer.id), false);
       assert.equal(await fixture.state.storage.get("runtime_peer_gone_watch"), undefined);
