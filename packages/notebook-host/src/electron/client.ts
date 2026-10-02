@@ -1,3 +1,4 @@
+import { isNotebookCommand } from "../commands";
 import type {
   ElectronHostEvent,
   ElectronHostEventMessage,
@@ -47,6 +48,9 @@ function isInboundMessage(value: unknown): value is ElectronHostInboundMessage {
       ArrayBuffer.isView(value.frame) ||
       (Array.isArray(value.frame) && value.frame.every((byte) => Number.isInteger(byte)))
     );
+  }
+  if (value.type === "nteract:host-event" && value.event === "command") {
+    return isNotebookCommand(value.payload);
   }
   return (
     value.type === "nteract:host-event" && typeof value.event === "string" && "payload" in value

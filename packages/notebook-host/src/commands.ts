@@ -35,6 +35,8 @@ export interface CommandPayloads {
   "notebook.clearAllOutputs": void;
   "notebook.runAll": void;
   "notebook.restartAndRunAll": void;
+  "notebook.rail.open": { panelId: "outline" | "packages" };
+  "notebook.rail.close": undefined;
 
   // Updater — triggers the app's auto-updater check flow.
   "updater.check": void;
@@ -46,6 +48,46 @@ export interface CommandPayloads {
 }
 
 export type CommandId = keyof CommandPayloads;
+
+/** Validate inbound commands. Keep this allowlist aligned with CommandPayloads. */
+export function isNotebookCommand(value: unknown): value is {
+  id: CommandId;
+  payload: CommandPayloads[CommandId];
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const { id, payload } = value as Record<string, unknown>;
+  switch (id) {
+    case "notebook.insertCell":
+    case "notebook.changeCellType": {
+      if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return false;
+      const type = (payload as Record<string, unknown>).type;
+      return (
+        type === "code" || type === "markdown" || (id === "notebook.insertCell" && type === "raw")
+      );
+    }
+    case "notebook.rail.open":
+      return (
+        typeof payload === "object" &&
+        payload !== null &&
+        !Array.isArray(payload) &&
+        Reflect.ownKeys(payload).every((key) => key === "panelId") &&
+        ((payload as Record<string, unknown>).panelId === "outline" ||
+          (payload as Record<string, unknown>).panelId === "packages")
+      );
+    case "notebook.save":
+    case "notebook.open":
+    case "notebook.clone":
+    case "notebook.clearOutputs":
+    case "notebook.clearAllOutputs":
+    case "notebook.runAll":
+    case "notebook.restartAndRunAll":
+    case "notebook.rail.close":
+    case "updater.check":
+      return payload === undefined;
+    default:
+      return false;
+  }
+}
 
 export type CommandHandler<K extends CommandId> = (
   payload: CommandPayloads[K],

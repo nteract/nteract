@@ -1,5 +1,6 @@
 import type { ConnectionStatus } from "runtimed";
 import type { CommandId, CommandPayloads } from "../commands";
+import { isNotebookPresentationConfig } from "../presentation";
 import type {
   DaemonInfo,
   DaemonProgressPayload,
@@ -11,6 +12,7 @@ import type {
   HostNativeTheme,
   HostSyncedSettings,
   HostUpdaterState,
+  NotebookPresentationConfig,
   TyposquatWarning,
 } from "../types";
 
@@ -89,6 +91,7 @@ export interface ElectronHostBootstrap {
    */
   outputDocumentUrl: string;
   updaterState?: HostUpdaterState;
+  presentation?: NotebookPresentationConfig;
 }
 
 export interface ElectronHostFrameMessage {
@@ -144,6 +147,8 @@ export interface ElectronHostConnectMessage {
 export interface ElectronHostReadyMessage {
   type: "nteract:electron-host-ready";
   protocolVersion: typeof ELECTRON_HOST_PROTOCOL_VERSION;
+  /** Additive renderer features; absence identifies older embedded renderers. */
+  capabilities?: readonly string[];
 }
 
 export interface ElectronHostConnection {
@@ -195,7 +200,9 @@ export function isElectronHostConnectMessage(value: unknown): value is ElectronH
     candidate.type === "nteract:electron-host-connect" &&
     candidate.bootstrap?.protocolVersion === ELECTRON_HOST_PROTOCOL_VERSION &&
     typeof candidate.bootstrap.outputDocumentUrl === "string" &&
-    candidate.bootstrap.outputDocumentUrl.length > 0
+    candidate.bootstrap.outputDocumentUrl.length > 0 &&
+    (candidate.bootstrap.presentation === undefined ||
+      isNotebookPresentationConfig(candidate.bootstrap.presentation))
   );
 }
 
@@ -243,7 +250,17 @@ export function waitForElectronHostConnection(
     const onAbort = () => fail(new Error("Electron host connection was aborted."));
     const onMessage = (event: MessageEvent<unknown>) => {
       if (event.source !== expectedSource || event.origin !== options.parentOrigin) return;
-      if (!isElectronHostConnectMessage(event.data)) return;
+      if (!isElectronHostConnectMessage(event.data)) {
+        if (
+          typeof event.data === "object" &&
+          event.data !== null &&
+          (event.data as { type?: unknown }).type === "nteract:electron-host-connect"
+        ) {
+          for (const port of event.ports) port.close();
+          fail(new Error("Invalid Electron host connection bootstrap."));
+        }
+        return;
+      }
       const port = event.ports[0];
       if (!port) {
         fail(new Error("Electron host connection did not include a MessagePort."));
@@ -265,6 +282,7 @@ export function waitForElectronHostConnection(
         {
           type: "nteract:electron-host-ready",
           protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+          capabilities: ["presentation.rail"],
         } satisfies ElectronHostReadyMessage,
         options.parentOrigin,
       );
@@ -284,7 +302,7 @@ export function waitForElectronHostConnection(
 export interface OnElectronNotebookFrameReadyOptions {
   iframeWindow: WindowProxy;
   iframeOrigin: string;
-  onReady(): void;
+  onReady(message: ElectronHostReadyMessage): void;
 }
 
 /** Wait for the iframe listener before transferring its one-use MessagePort. */
@@ -303,8 +321,15 @@ export function onElectronNotebookFrameReady(
     ) {
       return;
     }
+    if (
+      message.capabilities !== undefined &&
+      (!Array.isArray(message.capabilities) ||
+        !message.capabilities.every((capability) => typeof capability === "string"))
+    ) {
+      return;
+    }
     window.removeEventListener("message", onMessage);
-    options.onReady();
+    options.onReady(message as ElectronHostReadyMessage);
   };
   window.addEventListener("message", onMessage);
   return () => window.removeEventListener("message", onMessage);
@@ -318,6 +343,14 @@ export function connectElectronNotebookFrame(
 ): void {
   if (targetOrigin === "*") {
     throw new Error("Electron notebook targetOrigin must be exact, not '*'.");
+  }
+  if (
+    !isElectronHostConnectMessage({
+      type: "nteract:electron-host-connect",
+      bootstrap: connection.bootstrap,
+    })
+  ) {
+    throw new Error("Invalid Electron host connection bootstrap.");
   }
   targetWindow.postMessage(
     {

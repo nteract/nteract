@@ -10,6 +10,8 @@ export interface NotebookDocumentShellProps {
    */
   rootElement?: "div" | "main";
   rail?: ReactNode;
+  /** Physical sidebar edge. Pass the same value to NotebookDocumentRail. */
+  railSide?: "left" | "right";
   railPanelPlacement?: "rail" | "stage";
   toolbar?: ReactNode;
   /**
@@ -36,6 +38,7 @@ export interface NotebookDocumentShellProps {
 export function NotebookDocumentShell({
   rootElement = "div",
   rail,
+  railSide = "left",
   railPanelPlacement = "rail",
   toolbar,
   toolbarPlacement = "shell",
@@ -91,10 +94,17 @@ export function NotebookDocumentShell({
       data-can-write-runtime-state={capabilities?.runtime.canWriteRuntimeState}
       data-runtime-connected={capabilities?.runtime.connected}
       data-slot="notebook-document-shell"
+      data-rail-side={railSide}
     >
       {toolbarPlacement === "shell" ? toolbarSlot : null}
       {noticesPlacement === "shell" ? noticesSlot : null}
-      <div className="flex min-h-0 flex-1 overflow-hidden" data-slot="notebook-document-body">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 overflow-hidden",
+          railSide === "right" && "flex-row-reverse",
+        )}
+        data-slot="notebook-document-body"
+      >
         {rail}
         <section
           className={cn("flex min-w-0 flex-1 flex-col", stageClassName)}
@@ -113,7 +123,10 @@ export function NotebookDocumentShell({
           {hostsRailPanelInStage ? (
             <div
               className={cn(
-                "grid min-h-0 min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] overflow-hidden",
+                "grid min-h-0 min-w-0 flex-1 overflow-hidden",
+                railSide === "right"
+                  ? "grid-cols-[minmax(0,1fr)_auto]"
+                  : "grid-cols-[auto_minmax(0,1fr)]",
                 hasStageContentToolbar
                   ? "grid-rows-[auto_minmax(0,1fr)]"
                   : "grid-rows-[minmax(0,1fr)]",
@@ -122,7 +135,10 @@ export function NotebookDocumentShell({
             >
               {hasStageContentToolbar ? (
                 <div
-                  className="col-start-2 row-start-1 min-w-0"
+                  className={cn(
+                    "row-start-1 min-w-0",
+                    railSide === "right" ? "col-start-1" : "col-start-2",
+                  )}
                   data-slot="notebook-document-stage-content-toolbar"
                 >
                   {toolbarInStageContent ? toolbarSlot : null}
@@ -133,12 +149,16 @@ export function NotebookDocumentShell({
               ) : null}
               <div
                 ref={setRailPanelSlotNode}
-                className="col-start-1 row-start-1 row-end-[-1] flex min-h-0 shrink-0"
+                className={cn(
+                  "row-start-1 row-end-[-1] flex min-h-0 shrink-0",
+                  railSide === "right" ? "col-start-2" : "col-start-1",
+                )}
                 data-slot="notebook-document-rail-panel-host"
               />
               <div
                 className={cn(
-                  "col-start-2 flex min-h-0 min-w-0 flex-1 flex-col",
+                  "flex min-h-0 min-w-0 flex-1 flex-col",
+                  railSide === "right" ? "col-start-1" : "col-start-2",
                   hasStageContentToolbar ? "row-start-2" : "row-start-1",
                   stageContentClassName,
                 )}

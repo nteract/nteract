@@ -3,7 +3,7 @@ import { createContext, useContext, type ReactNode } from "react";
 /**
  * Host-owned DOM node that an expanded rail panel renders into.
  *
- * The rail's icon strip stays where the host puts it (far left of the page
+ * The rail's icon strip stays where the host puts it (at either edge of the page
  * content). When a host provides a slot node, the expandable panel portals into
  * it instead of sitting inside the rail `aside`, so the panel can open below the
  * utility bar and beside the notebook content while the strip keeps full height.

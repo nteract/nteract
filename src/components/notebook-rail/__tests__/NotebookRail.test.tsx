@@ -36,6 +36,28 @@ const outlineItems = [
 ];
 
 describe("NotebookRail", () => {
+  it("forwards the right edge to shared rail chrome and takeover sizing", () => {
+    const { container } = render(
+      <NotebookRail
+        railSide="right"
+        activePanelId="packages"
+        collapsed={false}
+        outlineItems={[]}
+        packagesPanel={<p>Package details</p>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("notebook-rail")).toHaveAttribute("data-rail-side", "right");
+    expect(screen.getByTestId("notebook-rail")).toHaveClass("flex-row-reverse");
+    expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass(
+      "border-l",
+      ...NOTEBOOK_RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "),
+    );
+    expect(screen.getByRole("heading", { name: "Packages" })).toBeVisible();
+  });
+
   it("keeps the home control in the shared rail button family", () => {
     render(<NotebookRailHomeButton href="/n" />);
 
