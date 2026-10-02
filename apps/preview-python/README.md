@@ -104,6 +104,108 @@ paths, including the ownership boundaries tracked in
 [HTTP shared-promise ownership](https://github.com/nteract/nteract/issues/4296)
 and [stale-activation Storage/WebSocket authority](https://github.com/nteract/nteract/issues/4295).
 
+The stale-activation boundary has an isolated diagnostic probe. Use
+Node 22.18.0 or the repository-supported newer runtime with global `WebSocket`,
+`fetch`, and `AbortSignal.any` available:
+
+```sh
+CELLD_BIN=/absolute/path/to/celld \
+  node --test apps/preview-python/test/stale-activation-celld.test.mjs
+```
+
+The probe preserves the original combined reproduction and independently
+attempts stale storage writes and socket sends. It observes each callback's
+attempt and completion or rejection through the sibling object; missing
+settlement is inconclusive and fails the diagnostic rather than proving safety.
+Controls verify a settled, positively observed timer rejection (with no later
+attempts/effects) or fulfilled timer followed by fenced effects, distinct-sentinel
+live A/B writes and publication, and fresh fetch **and** `webSocketMessage` (`who`)
+handlers on **each** retained combined/KV/socket/timer scenario socket. A separate
+current-activation `timer-live` callback must fulfill its timer and complete a
+distinct-sentinel write and message, so a globally broken timer cannot count as
+stale rejection. Missing timer settlement/error evidence,
+old/new identity, or fresh-handler delivery fails; a stalled timer is not denial.
+
+Each run exclusively creates separate JSON and server-log evidence under
+`.context/stale-activation-authority/`. Records identify the native executable
+realpath and pre/post SHA256, probe source hashes, runtime version, effective
+configuration, independent surface outcomes, controls, and evidence paths.
+Set `ACTIVATION_EVIDENCE_INDEX` to append a JSON-lines run index before the final
+JSON write. Index entries use `qualificationVerdict: "not-run"` and
+`evidenceCommit: "pending-json"`; only the referenced completed JSON contains the
+decision. Append failure leaves partial log evidence, never a qualifying JSON.
+Repeated runs remain separate and historical verdicts are never edited in place.
+Exclusive writes do not prevent same-user tampering or authenticate review.
+Storage or socket leaks produce failing surface verdicts. Setup failures and timeouts are driver
+failures, not evidence that the authority defect was detected.
+
+Ordinary tests may skip this diagnostic without `CELLD_BIN`. The explicit
+qualification entry point does not:
+
+```sh
+CELLD_BIN=/absolute/path/to/celld \
+  ACTIVATION_SOURCE_COMMIT=reviewed-native-revision \
+  ACTIVATION_REVIEWED_EVIDENCE=/absolute/path/to/reviewed-bundle.json \
+  ACTIVATION_REVIEWED_SHA256=expected-64-lowercase-hex-digest \
+  pnpm --dir apps/preview-python qualify:activation
+```
+
+The trusted operator must explicitly select an independently reviewed local
+bundle and its expected SHA256. The tool verifies bytes and binding, **not human
+review authenticity or signing authority**. No approval file is auto-discovered.
+Missing inputs, missing/changed local content, bad hashes, failed controls,
+source/build/child identity gaps, or unsupported surfaces fail qualification.
+The bundle digest is checked before native launch and content/bindings after the
+run. This refusal applies only to this explicit command, never service launch,
+preview deployment, or ordinary diagnostics.
+
+The JSON bundle schema is `schemaVersion: 1` with these required fields:
+
+| Field | Required Value |
+| --- | --- |
+| `artifact` | `{ sha256, bytes, platform }` matching actual native bytes and `${process.platform}-${process.arch}` |
+| `sourceCommit` | Nonempty native revision matching `ACTIVATION_SOURCE_COMMIT` |
+| `sources` | Exact SHA256 for `driver`, `fixture`, `runner`, `harness`, `worker` |
+| `effectiveConfigSha256` | SHA256 of UTF-8 `JSON.stringify(provenance.effectiveConfig)` from the actual run |
+| `review` | `{ disposition: "reviewed", reference: "..." }`, an operator-selected claim, not authentication |
+| `controls` | `readoption`, `timer`, `live`, `bBackground`, all `"pass"` and matching observed results |
+| `claims` | Content references for `source`, `revocation`, `flush`, `build`, `childExecution`, `launchRace`, `configuration` |
+| `surfaces` | `asyncKvPut`, `webSocketPublish`, `asyncKvRead`, `asyncKvDelete`, `syncKv`, `sql`, `transaction`, `alarm`, each `{ disposition: "pass", evidence: <content reference> }` |
+
+Each content reference is `{ path, sha256 }`: a nonempty local file resolved
+relative to the bundle, with matching SHA256 (64 lowercase hex characters).
+References must contain reviewed source/native tests, release-revocation and
+admission/application/flush evidence, individual surface audits, build provenance,
+native child/re-exec identity, launch-race limits, and effective configuration.
+Paths are not fetched over the network. The tool checks their content, not whether
+the review's conclusions are correct. Source-backed unavailable surfaces remain
+`unaudited` and block qualification under the current policy, even if reviewed.
+
+Effective configuration records the fixture config, overrides, watch setting,
+sorted inherited environment key names, and a digest of the sorted effective
+environment values. Values are not persisted. The three evidence path/digest/index
+variables are excluded from that environment digest to avoid circular bundle
+binding; `ACTIVATION_SOURCE_COMMIT` is included. Do not put secrets into review
+references or logs. Native pre/post hashes alone do not prove child identity or
+eliminate executable replacement at launch; reviewed evidence must cover those
+limits. The tool adds `reviewedEvidence: { bundlePath, sha256, bundle }` separately:
+runtime `surfaces`, `controls`, `nativeAudit: "unverified"` and
+`flushFencing: "design-only"` are not overwritten by reviewed claims. Verdicts
+remain `pass/fail/not-run`; runtime surface enums remain `pass/fail/unaudited`.
+Serialized `pass` or verification labels cannot be reloaded as approval.
+
+Diagnostic success alone does not qualify a binary. No reviewed native candidate,
+deterministic delayed-flush barriers, six remaining native surface probes, or
+supported-platform qualification has been supplied here. Synthetic helper/driver
+fixtures test structure and faults only; they do not repair or qualify native
+authority. On known-bad binaries, observed stale effects must still fail. Run the
+local checks without native celld:
+
+```sh
+node --test apps/preview-python/test/stale-activation-runner.test.mjs \
+  apps/preview-python/test/stale-activation-driver.test.mjs
+```
+
 ## Notebook packages
 
 The shared package rail shows the shipped Python packages and versions before

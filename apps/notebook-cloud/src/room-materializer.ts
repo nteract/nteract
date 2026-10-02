@@ -60,6 +60,7 @@ interface RoomPeer {
 export class RoomMaterializer {
   private hostReady: Promise<RoomHostHandle> | undefined;
   private operationQueue: Promise<void> = Promise.resolve();
+  private lastCheckpointMetadata: string | undefined | null = null;
   private readonly notebookChangeWaiters = new Set<() => void>();
   private loadedPublishedRevisionId: string | null = null;
   private loadedPublishedNotebookHeads: string[] | null = null;
@@ -360,8 +361,17 @@ export class RoomMaterializer {
   }
 
   async checkpoint(): Promise<void> {
+    const expected = JSON.stringify(await this.state.storage.get(CHECKPOINT_META_KEY));
     const startedAt = Date.now();
     await this.withHost(async (host) => {
+      const current = JSON.stringify(await this.state.storage.get(CHECKPOINT_META_KEY));
+      // Detect observed replacement while queued or hydrating. This is not an
+      // atomic effect fence; stale storage handles must be revoked by the host.
+      if (
+        current !== expected &&
+        (this.lastCheckpointMetadata === null || current !== this.lastCheckpointMetadata)
+      )
+        throw new Error("Room checkpoint was replaced before persistence");
       const [notebookBytes, runtimeStateBytes, commsDocBytes, commentsDocBytes] = [
         toStoredArrayBuffer(host.save_notebook()),
         toStoredArrayBuffer(host.save_runtime_state_doc()),
@@ -388,6 +398,7 @@ export class RoomMaterializer {
         this.state.storage.put(CHECKPOINT_COMMENTS_DOC_KEY, commentsDocBytes),
         this.state.storage.put(CHECKPOINT_META_KEY, metadata),
       ]);
+      this.lastCheckpointMetadata = JSON.stringify(metadata);
       cloudLog("debug", "room.materializer.checkpoint.saved", {
         notebook_id: this.notebookId,
         duration_ms: durationMs(startedAt),
@@ -640,6 +651,10 @@ export class RoomMaterializer {
     cause: unknown,
   ): Promise<boolean> {
     const startedAt = Date.now();
+    const checkpointMetadata = await this.state.storage
+      .get(CHECKPOINT_META_KEY)
+      .then((value) => JSON.stringify(value))
+      .catch(() => null);
     const published = await this.loadLatestPublishedSnapshotPairForCheckpoint();
     if (!published) {
       return this.recoverHostFromCheckpointNow(operation, cause, startedAt);
@@ -653,7 +668,9 @@ export class RoomMaterializer {
         published.commentsDocBytes,
       );
       this.markLoadedPublishedSnapshot(published.revisionId, host);
-      await this.clearCheckpoint().catch((clearError: unknown) => {
+      await (
+        checkpointMetadata === null ? Promise.resolve() : this.clearCheckpoint(checkpointMetadata)
+      ).catch((clearError: unknown) => {
         cloudLog("warn", "room.materializer.checkpoint_clear_failed", {
           notebook_id: this.notebookId,
           operation,
@@ -759,7 +776,8 @@ export class RoomMaterializer {
     }
   }
 
-  private async clearCheckpoint(): Promise<void> {
+  private async clearCheckpoint(expected: string | undefined): Promise<void> {
+    if (JSON.stringify(await this.state.storage.get(CHECKPOINT_META_KEY)) !== expected) return;
     await Promise.all([
       this.state.storage.delete(CHECKPOINT_NOTEBOOK_KEY),
       this.state.storage.delete(CHECKPOINT_RUNTIME_STATE_KEY),
@@ -767,6 +785,7 @@ export class RoomMaterializer {
       this.state.storage.delete(CHECKPOINT_COMMENTS_DOC_KEY),
       this.state.storage.delete(CHECKPOINT_META_KEY),
     ]);
+    this.lastCheckpointMetadata = undefined;
   }
 
   private async loadCheckpoint(): Promise<{

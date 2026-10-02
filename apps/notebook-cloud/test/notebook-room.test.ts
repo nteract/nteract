@@ -1700,6 +1700,7 @@ describe("NotebookRoom peer lifecycle", () => {
       },
     } as never);
 
+    harness.peers.set(runtimePeer.id, runtimePeer);
     await harness.publishRuntimePeerAttachment("demo", runtimePeer);
 
     assert.deepEqual(publishedAttachment, {
@@ -1769,6 +1770,7 @@ describe("NotebookRoom peer lifecycle", () => {
       },
     } as never);
 
+    harness.peers.set(runtimePeer.id, runtimePeer);
     await harness.publishRuntimePeerAttachment("demo", runtimePeer);
 
     assert.deepEqual(publishedAttachment, {
@@ -1846,6 +1848,7 @@ describe("NotebookRoom peer lifecycle", () => {
       },
     } as never);
 
+    harness.peers.set(runtimePeer.id, runtimePeer);
     await harness.publishRuntimePeerAttachment("demo", runtimePeer);
 
     assert.deepEqual(publishedAttachment, {
@@ -1891,6 +1894,7 @@ describe("NotebookRoom peer lifecycle", () => {
       }),
     } as never);
 
+    harness.peers.set(runtimePeer.id, runtimePeer);
     await harness.publishRuntimePeerAttachment("demo", runtimePeer);
 
     assert.equal(checkpointed, 0, "ignored stale publishes are not checkpointed");
@@ -2208,6 +2212,7 @@ describe("NotebookRoom peer lifecycle", () => {
       removePeer: async () => undefined,
     } as never);
 
+    harness.peers.set(runtimePeer.id, runtimePeer);
     const attachPublish = harness.publishRuntimePeerAttachment("demo", runtimePeer);
     await firstCheckpointStarted;
 
@@ -2381,6 +2386,7 @@ describe("NotebookRoom peer lifecycle", () => {
       },
     } as never);
 
+    harness.peers.set(runtimePeer.id, runtimePeer);
     await harness.publishRuntimePeerAttachment("demo", runtimePeer);
 
     assert.deepEqual(publishedAttachment, {
@@ -2581,7 +2587,7 @@ describe("NotebookRoom peer lifecycle", () => {
       null,
     );
 
-    await harness.publishRuntimePeerAttachment("demo", {
+    const publishingPeer = {
       id: "runtime",
       socket: new FakeSocket().asCloudflareWebSocket(),
       identity: authenticateDevRequest(
@@ -2596,7 +2602,9 @@ describe("NotebookRoom peer lifecycle", () => {
         displayName: "lab2",
       },
       consecutiveRejectedFrames: 0,
-    });
+    };
+    harness.peers.set(publishingPeer.id, publishingPeer);
+    await harness.publishRuntimePeerAttachment("demo", publishingPeer);
 
     assert.equal(
       (publishedAttachment as { runtime_session_id?: string }).runtime_session_id,
@@ -5540,6 +5548,37 @@ describe("NotebookRoom materialized sync routing", () => {
     assert.equal(fixture.db.attachJobs[0].status, "completed", "disposal was confirmed");
   });
 
+  it("reports confirmed interrupt checkpoint failure instead of interrupt_sent", async (t) => {
+    const fixture = await managedPythonAdmissionFixture("connecting", {
+      immediateOpen: Response.json({ ok: true }),
+    });
+    t.after(() => fixture.close());
+    const owner = await fixture.connect("owner");
+    await fixture.seed(owner);
+    await fixture.execute(owner);
+    await fixture.drain();
+    t.mock.method(fixture.materializer, "checkpoint", async () => {
+      throw new Error("storage failed");
+    });
+    const response = owner.response("interrupt-failed");
+    await fixture.room.webSocketMessage(
+      owner.peer.socket,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({ id: "interrupt-failed", action: "interrupt_execution" }),
+        ),
+      ),
+    );
+    const result = await response;
+    assert.equal(result.result, "error");
+    assert.match(String(result.error), /recovery could not be saved/);
+    await owner.sync();
+    assert.equal(owner.runtimeState().workstation?.status, "error");
+    assert.equal(fixture.db.attachJobs[0].status, "failed");
+    assert.ok(fixture.requests.some((request) => request.path === "/close"));
+  });
+
   it("interrupts accepted managed intent while startup is still resolving its owner", async (t) => {
     const fixture = await managedPythonAdmissionFixture("connecting", { holdOwnerLookup: true });
     t.after(() => fixture.close());
@@ -6123,6 +6162,7 @@ describe("NotebookRoom materialized sync routing", () => {
         connectedAt: "2026-05-22T00:00:00.000Z",
       };
       const harness = roomHarness(room);
+      harness.peers.set(peer.id, peer);
       let materialized = 0;
       harness.materializers.set("demo", {
         receiveFrame: async () => {
@@ -6187,6 +6227,7 @@ describe("NotebookRoom materialized sync routing", () => {
       connectedAt: "2026-05-22T00:00:00.000Z",
     };
     const harness = roomHarness(room);
+    harness.peers.set(peer.id, peer);
 
     await harness.handleMessage(
       "demo",
@@ -7408,7 +7449,10 @@ async function managedPythonAdmissionFixture(
           : {
               fetch: async (request: Request) => {
                 const path = new URL(request.url).pathname;
-                requests.push({ path, ...(await request.clone().json()) });
+                requests.push({
+                  path,
+                  ...(request.method === "GET" ? {} : await request.clone().json()),
+                });
                 if (options.providerFetch) return options.providerFetch(request);
                 if (path === "/status")
                   return Response.json({ alive: options.sessionAlive ?? false, busy: false });
@@ -8202,14 +8246,40 @@ class FakeSocket {
   closeCode: number | undefined;
   closeReason: string | undefined;
   private attachment: unknown;
+  // Opt-in listener capture for tests that must prove a listener was really
+  // detached (e.g. AbortController-based removal), without changing the
+  // default no-op behavior every other FakeSocket user relies on.
+  private readonly captured: Array<{
+    type: string;
+    handler: (event: unknown) => void;
+    signal?: AbortSignal;
+  }> = [];
 
   constructor(
-    private readonly options: { throwOnSend?: boolean; onSend?: (frame: Uint8Array) => void } = {},
+    private readonly options: {
+      throwOnSend?: boolean;
+      onSend?: (frame: Uint8Array) => void;
+      captureListeners?: boolean;
+    } = {},
   ) {}
 
   accept(): void {}
 
-  addEventListener(): void {}
+  addEventListener(
+    type: string,
+    handler: (event: unknown) => void,
+    options?: { signal?: AbortSignal },
+  ): void {
+    if (!this.options.captureListeners) return;
+    this.captured.push({ type, handler, signal: options?.signal });
+  }
+
+  /** Fires `type` on every captured listener whose signal is not aborted. */
+  fire(type: string, event: unknown = {}): void {
+    for (const entry of this.captured) {
+      if (entry.type === type && !entry.signal?.aborted) entry.handler(event);
+    }
+  }
 
   send(message: string | ArrayBuffer | ArrayBufferView): void {
     if (this.options.throwOnSend) {
@@ -8373,3 +8443,1092 @@ for (const race of ["failure", "replacement"] as const)
       race === "failure" ? /saved package restore failed/ : /session changed/,
     );
   });
+
+describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
+  function gate() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { resolve, promise };
+  }
+  function peerWithScope(id: string, scope: "runtime_peer"): PeerForTest {
+    return {
+      id,
+      socket: new FakeSocket().asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request(`https://cloud.test/n/demo/sync?user=alice&scope=${scope}`),
+      ),
+      connectedAt: new Date().toISOString(),
+      workstation: { runtimeSessionId: "session" },
+    };
+  }
+  for (const deferred of [false, true])
+    it(`keeps replacement listeners alive after repeated ${deferred ? "deferred" : "direct"} old-peer removal`, async () => {
+      const fixture = hibernatedState([]);
+      const room = new NotebookRoom(fixture.state, {} as Env);
+      await fixture.drain();
+      const harness = roomHarness(room);
+      harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+      const old = peerWithScope("same-id", "runtime_peer");
+      const socket = new FakeSocket({ captureListeners: true });
+      const replacement = { ...old, socket: socket.asCloudflareWebSocket() };
+      const lifecycle = room as unknown as {
+        broadcastDepth: number;
+        flushPendingRemovals(): void;
+        acceptPeerSocket(n: string, p: PeerForTest): void;
+        peerListeners: Map<string, AbortController>;
+      };
+      harness.peers.set(old.id, old);
+      if (deferred) {
+        lifecycle.broadcastDepth = 1;
+        harness.removePeer("demo", old);
+      }
+      harness.peers.set(old.id, replacement);
+      lifecycle.acceptPeerSocket("demo", replacement);
+      const controller = lifecycle.peerListeners.get(old.id)!;
+      if (deferred) {
+        lifecycle.broadcastDepth = 0;
+        lifecycle.flushPendingRemovals();
+      }
+      harness.removePeer("demo", old);
+      harness.removePeer("demo", old);
+      assert.equal(controller.signal.aborted, false);
+      assert.equal(harness.peers.get(old.id), replacement);
+      socket.fire("message", { data: LIVENESS_PING });
+      await fixture.drain();
+      assert.equal(new TextDecoder().decode(socket.sent[0]), LIVENESS_PONG);
+      socket.fire("close", { code: 1000 });
+      socket.fire("error");
+      await fixture.drain();
+      assert.equal(controller.signal.aborted, true);
+      assert.equal(harness.peers.has(old.id), false);
+    });
+
+  it("keeps newly busy peers after the idle catalog await", async () => {
+    const fixture = alarmCapableState();
+    const room = new NotebookRoom(fixture.state, {} as Env);
+    await fixture.drain();
+    const peer = peerWithScope("rt", "runtime_peer");
+    roomHarness(room).peers.set(peer.id, peer);
+    await fixture.state.storage.put("runtime_idle_watch", "demo");
+    await fixture.state.storage.put("runtime_idle_watch_alarm_at", 0);
+    const entered = gate(),
+      release = gate();
+    let busy = false;
+    Object.assign(room, {
+      markSelectedRuntimeSessionCompletedForIdle: async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    roomHarness(room).materializers.set("demo", {
+      ...fakeMaterializer(noopMaterializedResult()),
+      getRuntimeExecutionActivity: async () => ({ executing: busy, queueDepth: 0 }),
+      reconcileRuntimeIdleTimeout: async () => noopMaterializedResult(),
+    });
+    const alarm = room.alarm();
+    await entered.promise;
+    busy = true;
+    release.resolve();
+    await alarm;
+    await fixture.drain();
+    assert.equal(roomHarness(room).peers.get(peer.id), peer);
+    assert.equal((peer.socket as unknown as FakeSocket).closed, false);
+  });
+
+  it("publishes and checkpoints accepted idle reconciliation despite catalog failure", async () => {
+    const fixture = alarmCapableState();
+    const room = new NotebookRoom(fixture.state, {} as Env);
+    await fixture.drain();
+    const peer = peerWithScope("rt", "runtime_peer");
+    roomHarness(room).peers.set(peer.id, peer);
+    await fixture.state.storage.put("runtime_idle_watch", "demo");
+    await fixture.state.storage.put("runtime_idle_watch_alarm_at", 0);
+    let checkpoints = 0,
+      deliveries = 0;
+    Object.assign(room, {
+      markSelectedRuntimeSessionCompletedForIdle: async () => {
+        throw new Error("catalog unavailable");
+      },
+      deliverRoomHostFrames: () => {
+        deliveries++;
+      },
+    });
+    const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+    roomHarness(room).materializers.set("demo", materializer as never);
+    await materializer.setWorkstationAttachment({
+      workstation_id: "ws",
+      display_name: "Python",
+      provider: "runtime_peer",
+      default_environment_label: "Python",
+      environment_policy: "runtime_peer",
+      status: "ready",
+      runtime_session_id: "session",
+    });
+    const checkpoint = materializer.checkpoint.bind(materializer);
+    materializer.checkpoint = async () => {
+      checkpoints++;
+      await checkpoint();
+    };
+    await room.alarm();
+    await fixture.drain();
+    assert.equal(deliveries, 1);
+    assert.equal(checkpoints, 1);
+    assert.equal((await materializer.getWorkstationAttachment())?.status, "idle");
+    assert.ok(await fixture.state.storage.get("room-host:checkpoint"));
+    assert.equal((peer.socket as unknown as FakeSocket).closed, true);
+  });
+
+  it("honors real host busy refusal when execution queues after idle activity", async () => {
+    const fixture = alarmCapableState();
+    const room = new NotebookRoom(fixture.state, {} as Env);
+    await fixture.drain();
+    const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+    roomHarness(room).materializers.set("demo", materializer as never);
+    const peer = peerWithScope("rt", "runtime_peer");
+    roomHarness(room).peers.set(peer.id, peer);
+    await materializer.setWorkstationAttachment({
+      workstation_id: "ws",
+      display_name: "Python",
+      provider: "runtime_peer",
+      default_environment_label: "Python",
+      environment_policy: "runtime_peer",
+      status: "ready",
+      runtime_session_id: "session",
+    });
+    await fixture.state.storage.put("runtime_idle_watch", "demo");
+    await fixture.state.storage.put("runtime_idle_watch_alarm_at", 0);
+    const entered = gate(),
+      release = gate();
+    const reconcile = materializer.reconcileRuntimeIdleTimeout.bind(materializer);
+    materializer.reconcileRuntimeIdleTimeout = async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return reconcile(...args);
+    };
+    let catalogCompletions = 0;
+    Object.assign(room, {
+      markSelectedRuntimeSessionCompletedForIdle: async () => {
+        catalogCompletions++;
+      },
+    });
+    const alarm = room.alarm();
+    await entered.promise;
+    await materializer.receiveFrame(
+      {
+        id: "owner",
+        identity: {
+          principal: "user:dev:alice",
+          actorLabel: "user:dev:alice/browser",
+          scope: "owner",
+        },
+      },
+      {
+        type: FrameType.REQUEST,
+        payload: new TextEncoder().encode(
+          JSON.stringify({
+            id: "queued",
+            action: "execute_cell",
+            cell_id: initialHostedCellIdForTest("demo"),
+          }),
+        ),
+      },
+    );
+    release.resolve();
+    await alarm;
+    await fixture.drain();
+    assert.equal(await materializer.getRuntimeQueueDepth(), 1);
+    assert.equal((await materializer.getWorkstationAttachment())?.status, "ready");
+    assert.equal(catalogCompletions, 0);
+    assert.equal(roomHarness(room).peers.get(peer.id), peer);
+    assert.equal((peer.socket as unknown as FakeSocket).closed, false);
+  });
+  for (const operation of ["cancel", "fail", "disconnect"] as const)
+    it(`rejects awaited ${operation} when checkpoint persistence fails`, async () => {
+      const fixture = hibernatedState([]);
+      const room = new NotebookRoom(fixture.state, {} as Env);
+      await fixture.drain();
+      let deliveries = 0,
+        closed = 0;
+      const changed = { ...noopMaterializedResult(), changed: true, runtime_state_changed: true };
+      Object.assign(room, {
+        deliverRoomHostFrames: () => {
+          deliveries++;
+        },
+      });
+      roomHarness(room).materializers.set("demo", {
+        ...fakeMaterializer(changed),
+        checkpoint: async () => {
+          throw new Error("storage failed");
+        },
+        getRuntimeExecutionActivity: async () => ({ executing: false, queueDepth: 1 }),
+        cancelUnstartedExecutions: async () => changed,
+        transitionManagedPythonSession: async () => changed,
+      } as never);
+      const runtime = {
+        sessionId: "session",
+        close: async () => {
+          closed++;
+        },
+        presence: { peer_id: "managed" },
+      };
+      Object.assign(room, { managedPython: new Map([["demo", { runtime }]]) });
+      const harness = room as unknown as {
+        cancelUnstartedExecutions(n: string): Promise<boolean>;
+        failManagedPython(n: string, r: unknown, e: Error): Promise<void>;
+        disconnectManagedPythonSession(n: string, s: string, e: Error, r: unknown): Promise<void>;
+      };
+      const pending =
+        operation === "cancel"
+          ? harness.cancelUnstartedExecutions("demo")
+          : operation === "fail"
+            ? harness.failManagedPython("demo", runtime, new Error("failed"))
+            : harness.disconnectManagedPythonSession(
+                "demo",
+                "session",
+                new Error("disconnected"),
+                runtime,
+              );
+      await assert.rejects(pending, /checkpoint|recovery/i);
+      await fixture.drain();
+      assert.equal(deliveries, 1, "live terminal publication survives persistence failure");
+      assert.equal(closed, operation === "cancel" ? 0 : 1, "cleanup must still complete");
+    });
+  for (const kind of ["summary", "peer"] as const)
+    for (const arm of [false, true])
+      it(`preserves ${kind} watch replacement during ${arm ? "arm" : "disarm"} refresh`, async () => {
+        const fixture = alarmCapableState();
+        const room = new NotebookRoom(fixture.state, {} as Env);
+        await fixture.drain();
+        const key = kind === "summary" ? "room_summary_refresh" : "runtime_peer_gone_watch";
+        const alarmKey = `${key}_alarm_at`;
+        await fixture.state.storage.put(key, "demo");
+        await fixture.state.storage.put(alarmKey, 100);
+        await fixture.state.storage.setAlarm!(200);
+        if (kind === "peer" && !arm)
+          roomHarness(room).peers.set("rt", peerWithScope("rt", "runtime_peer"));
+        const entered = gate();
+        const release = gate();
+        const get = fixture.state.storage.get.bind(fixture.state.storage);
+        let held = false,
+          observed: unknown;
+        fixture.state.storage.get = async <T>(readKey: string) => {
+          const value = await get<T>(readKey);
+          if (readKey === alarmKey && !held) {
+            held = true;
+            observed = value;
+            entered.resolve();
+            await release.promise;
+          }
+          return value;
+        };
+        const refresh =
+          kind === "summary"
+            ? (
+                room as unknown as {
+                  refreshRoomSummaryWatch(n: string, count: number): Promise<void>;
+                }
+              ).refreshRoomSummaryWatch("demo", arm ? 1 : 0)
+            : (roomHarness(room).refreshRuntimePeerWatch!("demo"), Promise.resolve());
+        await entered.promise;
+        await fixture.state.storage.put(key, "demo");
+        await fixture.state.storage.put(alarmKey, 200);
+        release.resolve();
+        await refresh;
+        await fixture.drain();
+        assert.equal(observed, 100, "refresh must observe the record before mutation");
+        assert.equal(await fixture.state.storage.get(key), "demo");
+        assert.equal(await fixture.state.storage.get(alarmKey), 200);
+        assert.equal(await fixture.getAlarm(), 200);
+      });
+
+  for (const phase of ["attachment", "reconcile"] as const)
+    it(`cancels consumed peer watch after rejoin/disarm during ${phase}`, async () => {
+      const fixture = alarmCapableState();
+      const room = new NotebookRoom(fixture.state, {} as Env);
+      await fixture.drain();
+      await fixture.state.storage.put("runtime_peer_gone_watch", "demo");
+      await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 0);
+      const entered = gate();
+      const release = gate();
+      let reconciles = 0,
+        invalidations = 0;
+      Object.assign(room, {
+        invalidateSelectedRuntimePeerSession: () => {
+          invalidations++;
+        },
+      });
+      roomHarness(room).materializers.set("demo", {
+        ...fakeMaterializer(noopMaterializedResult()),
+        getWorkstationAttachment: async () => {
+          if (phase === "attachment") {
+            entered.resolve();
+            await release.promise;
+          }
+          return null;
+        },
+        reconcileRuntimePeerGone: async () => {
+          reconciles++;
+          if (phase === "reconcile") {
+            entered.resolve();
+            await release.promise;
+          }
+          return noopMaterializedResult();
+        },
+      });
+      const alarm = room.alarm();
+      await entered.promise;
+      const rejoined = peerWithScope("rejoined", "runtime_peer");
+      roomHarness(room).peers.set(rejoined.id, rejoined);
+      roomHarness(room).refreshRuntimePeerWatch!("demo");
+      await fixture.drain();
+      assert.equal(await fixture.state.storage.get("runtime_peer_gone_watch"), undefined);
+      release.resolve();
+      await alarm;
+      await fixture.drain();
+      assert.equal(reconciles, phase === "attachment" ? 0 : 1);
+      assert.equal(invalidations, 0, "an entered continuation cannot invalidate a rejoined peer");
+      assert.equal(roomHarness(room).peers.get(rejoined.id), rejoined);
+    });
+
+  for (const outcome of ["busy", "idempotent"] as const)
+    it(`handles idle reconcile ${outcome} without guessing from changed:false`, async () => {
+      const fixture = alarmCapableState();
+      const room = new NotebookRoom(fixture.state, {} as Env);
+      await fixture.drain();
+      await fixture.state.storage.put("runtime_idle_watch", "demo");
+      await fixture.state.storage.put("runtime_idle_watch_alarm_at", 0);
+      const peer = peerWithScope("rt", "runtime_peer");
+      roomHarness(room).peers.set(peer.id, peer);
+      const entered = gate();
+      const release = gate();
+      let busy = false,
+        catalogCompletions = 0;
+      Object.assign(room, {
+        markSelectedRuntimeSessionCompletedForIdle: async () => {
+          catalogCompletions++;
+        },
+      });
+      roomHarness(room).materializers.set("demo", {
+        ...fakeMaterializer(noopMaterializedResult()),
+        getRuntimeExecutionActivity: async () => ({ executing: busy, queueDepth: busy ? 1 : 0 }),
+        reconcileRuntimeIdleTimeout: async () => {
+          entered.resolve();
+          await release.promise;
+          return noopMaterializedResult();
+        },
+      });
+      const alarm = room.alarm();
+      await entered.promise;
+      const prematureCompletions = catalogCompletions;
+      busy = outcome === "busy";
+      release.resolve();
+      await alarm;
+      await fixture.drain();
+      assert.equal(
+        prematureCompletions,
+        0,
+        "catalog completion must wait for reconcile acceptance",
+      );
+      assert.equal(catalogCompletions, outcome === "busy" ? 0 : 1);
+      assert.equal(roomHarness(room).peers.has(peer.id), outcome === "busy");
+      assert.equal((peer.socket as unknown as FakeSocket).closed, outcome === "idempotent");
+    });
+
+  for (const phase of ["authorization", "registry", "attachment"] as const)
+    it(`denies a removed runtime peer after ${phase} await`, async () => {
+      const fixture = hibernatedState([]);
+      const room = new NotebookRoom(fixture.state, {} as Env);
+      await fixture.drain();
+      const peer = peerWithScope("rt", "runtime_peer");
+      const harness = roomHarness(room);
+      harness.peers.set(peer.id, peer);
+      const entered = gate();
+      const release = gate();
+      let materialized = 0,
+        published = 0;
+      Object.assign(room, {
+        runtimePeerAuthorityError: async () => {
+          entered.resolve();
+          await release.promise;
+          return null;
+        },
+        registeredWorkstationForRuntimePeer: async () => {
+          if (phase === "registry") {
+            entered.resolve();
+            await release.promise;
+          }
+          return { failed: phase === "attachment", workstation: null };
+        },
+      });
+      harness.materializers.set("demo", {
+        ...fakeMaterializer(noopMaterializedResult()),
+        receiveFrame: async () => {
+          materialized++;
+          return noopMaterializedResult();
+        },
+        getWorkstationAttachment: async () => {
+          entered.resolve();
+          await release.promise;
+          return null;
+        },
+        setWorkstationAttachment: async () => {
+          published++;
+          return noopMaterializedResult();
+        },
+      });
+      const pending =
+        phase === "authorization"
+          ? harness.handleMessage(
+              "demo",
+              peer,
+              encodeTypedFrame(FrameType.RUNTIME_STATE_SYNC, new Uint8Array([0])),
+            )
+          : harness.publishRuntimePeerAttachment("demo", peer);
+      await entered.promise;
+      harness.removePeer("demo", peer);
+      release.resolve();
+      await pending;
+      await fixture.drain();
+      assert.equal(materialized, 0);
+      assert.equal(published, 0);
+      assert.equal((peer.socket as unknown as FakeSocket).sent.length, 0);
+    });
+
+  for (const phase of ["idle_activity", "idle_busy", "idle_catalog", "peer", "attachment"] as const)
+    it(`publishes accepted real host changes before a stale ${phase} continuation exits`, async (t) => {
+      const fixture = alarmCapableState();
+      const room = new NotebookRoom(fixture.state, {} as Env);
+      await fixture.drain();
+      const harness = roomHarness(room);
+      const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+      harness.materializers.set("demo", materializer as never);
+      const attachment = {
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Python",
+        environment_policy: "current_python",
+        status: "ready",
+        runtime_session_id: "job-old",
+      };
+      await materializer.setWorkstationAttachment(attachment);
+      const viewer = {
+        ...peerWithScope("viewer", "runtime_peer"),
+        identity: authenticateDevRequest(
+          new Request(
+            "https://cloud.test/n/demo/sync?user=alice&operator=browser:viewer&scope=viewer",
+          ),
+        ),
+      };
+      const runtime = peerWithScope("rt", "runtime_peer");
+      runtime.workstation = { workstationId: "ws-lab2", runtimeSessionId: "job-old" };
+      harness.peers.set(viewer.id, viewer);
+      if (phase !== "peer") harness.peers.set(runtime.id, runtime);
+      await harness.syncPeerFromRoomHost("demo", viewer);
+      const socket = viewer.socket as unknown as FakeSocket;
+      const client = NotebookHandle.create_bootstrap("viewer");
+      t.after(() => client.free());
+      for (let received = 0; received < socket.sent.length; received++) {
+        assert.ok(received < 100, "viewer sync converges");
+        const frame = socket.sent[received];
+        if (frame[0] !== FrameType.AUTOMERGE_SYNC && frame[0] !== FrameType.RUNTIME_STATE_SYNC)
+          continue;
+        for (const event of client.receive_frame(frame) as Array<{ reply?: number[] }>)
+          if (event.reply)
+            await harness.handleMessage(
+              "demo",
+              viewer,
+              encodeTypedFrame(frame[0], new Uint8Array(event.reply)),
+            );
+        if (frame[0] === FrameType.RUNTIME_STATE_SYNC) {
+          const reply = client.generate_runtime_state_sync_reply();
+          if (reply) await harness.handleMessage("demo", viewer, encodeTypedFrame(frame[0], reply));
+        }
+      }
+      socket.sent.length = 0;
+      const entered = gate(),
+        release = gate();
+      let changed = false,
+        saves = 0,
+        busy = false;
+      const checkpoint = materializer.checkpoint.bind(materializer);
+      materializer.checkpoint = async () => {
+        saves++;
+        return checkpoint();
+      };
+      const replaceWatch = async () => {
+        await fixture.state.storage.put("runtime_idle_watch", "demo");
+        await fixture.state.storage.put("runtime_idle_watch_alarm_at", Date.now() + 60_000);
+      };
+      if (phase.startsWith("idle")) {
+        const reconcile = materializer.reconcileRuntimeIdleTimeout.bind(materializer);
+        materializer.reconcileRuntimeIdleTimeout = async (...args) => {
+          const result = await reconcile(...args);
+          changed = result.changed;
+          if (phase === "idle_activity") await replaceWatch();
+          if (phase === "idle_busy") busy = true;
+          return result;
+        };
+        if (phase === "idle_busy") {
+          const activity = materializer.getRuntimeExecutionActivity.bind(materializer);
+          materializer.getRuntimeExecutionActivity = async () =>
+            busy ? { executing: true, queueDepth: 0 } : activity();
+        }
+        Object.assign(room, {
+          markSelectedRuntimeSessionCompletedForIdle: async () => {
+            entered.resolve();
+            await release.promise;
+          },
+        });
+      } else if (phase === "peer") {
+        const reconcile = materializer.reconcileRuntimePeerGone.bind(materializer);
+        materializer.reconcileRuntimePeerGone = async (...args) => {
+          const result = await reconcile(...args);
+          changed = result.changed;
+          entered.resolve();
+          await release.promise;
+          return result;
+        };
+      } else {
+        Object.assign(room, {
+          registeredWorkstationForRuntimePeer: async () => ({ failed: false, workstation: null }),
+        });
+        const set = materializer.setWorkstationAttachment.bind(materializer);
+        materializer.setWorkstationAttachment = async (...args) => {
+          const result = await set(...args);
+          changed = result.changed;
+          entered.resolve();
+          await release.promise;
+          return result;
+        };
+      }
+      const lifecycle = room as unknown as {
+        handleRuntimeIdleWatchAlarm(n: string): Promise<void>;
+        handleRuntimePeerWatchAlarm(n: string): Promise<void>;
+      };
+      const pending =
+        phase === "attachment"
+          ? harness.publishRuntimePeerAttachment("demo", runtime)
+          : phase === "peer"
+            ? lifecycle.handleRuntimePeerWatchAlarm("demo")
+            : lifecycle.handleRuntimeIdleWatchAlarm("demo");
+      if (phase !== "idle_activity" && phase !== "idle_busy") {
+        await entered.promise;
+        if (phase === "idle_catalog") await replaceWatch();
+        else
+          harness.peers.set(runtime.id, {
+            ...runtime,
+            socket: new FakeSocket().asCloudflareWebSocket(),
+          });
+        release.resolve();
+      }
+      await pending;
+      await fixture.drain();
+      assert.equal(changed, true, "the real host accepted a mutation");
+      assert.ok(
+        socket.sent.some((frame) => frame[0] === FrameType.RUNTIME_STATE_SYNC),
+        "accepted runtime output reaches the viewer",
+      );
+      assert.ok(saves > 0, "accepted host state is checkpointed");
+      assert.ok(await fixture.state.storage.get("room-host:checkpoint"));
+      if (phase.startsWith("idle")) {
+        assert.equal(
+          harness.peers.get(runtime.id),
+          runtime,
+          "replacement watch prevents destructive teardown",
+        );
+        if (phase !== "idle_busy")
+          assert.equal(await fixture.state.storage.get("runtime_idle_watch"), "demo");
+      }
+    });
+
+  for (const replacement of [false, true])
+    it(`fences accepted idle authority after runtime delivery fails (${replacement ? "newer selection" : "same selection"})`, async (t) => {
+      const fixture = alarmCapableState();
+      const room = new NotebookRoom(fixture.state, {} as Env);
+      await fixture.drain();
+      const harness = roomHarness(room);
+      const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+      harness.materializers.set("demo", materializer as never);
+      const attachment = {
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Python",
+        environment_policy: "current_python",
+        status: "ready",
+        runtime_session_id: "old",
+      };
+      await materializer.setWorkstationAttachment(attachment);
+      const lifecycle = room as unknown as {
+        selectedRuntimePeerSession(
+          n: string,
+        ): Promise<{ runtimeSessionId: string; status: string } | null>;
+        cacheSelectedRuntimePeerSession(n: string, a: typeof attachment): void;
+        handleRuntimeIdleWatchAlarm(n: string): Promise<void>;
+      };
+      assert.equal((await lifecycle.selectedRuntimePeerSession("demo"))?.status, "ready");
+      const peer = peerWithScope("rt", "runtime_peer");
+      peer.workstation = { workstationId: "ws-lab2", runtimeSessionId: "old" };
+      harness.peers.set(peer.id, peer);
+      const socket = peer.socket as unknown as FakeSocket;
+      const client = NotebookHandle.create_bootstrap("runtime");
+      t.after(() => client.free());
+      await harness.syncPeerFromRoomHost("demo", peer);
+      for (let received = 0; received < socket.sent.length; received++) {
+        assert.ok(received < 100, "runtime sync converges");
+        const frame = socket.sent[received];
+        if (frame[0] !== FrameType.AUTOMERGE_SYNC && frame[0] !== FrameType.RUNTIME_STATE_SYNC)
+          continue;
+        for (const event of client.receive_frame(frame) as Array<{ reply?: number[] }>)
+          if (event.reply)
+            await harness.handleMessage(
+              "demo",
+              peer,
+              encodeTypedFrame(frame[0], new Uint8Array(event.reply)),
+            );
+        if (frame[0] === FrameType.RUNTIME_STATE_SYNC) {
+          const reply = client.generate_runtime_state_sync_reply();
+          if (reply) await harness.handleMessage("demo", peer, encodeTypedFrame(frame[0], reply));
+        }
+      }
+      await fixture.drain();
+      await fixture.state.storage.delete("runtime_idle_watch");
+      await fixture.state.storage.delete("runtime_idle_watch_alarm_at");
+      let changed = false,
+        sends = 0;
+      peer.socket.send = () => {
+        sends++;
+        throw new Error("runtime socket closed");
+      };
+      const reconcile = materializer.reconcileRuntimeIdleTimeout.bind(materializer);
+      materializer.reconcileRuntimeIdleTimeout = async (...args) => {
+        const result = await reconcile(...args);
+        changed = result.changed;
+        if (replacement)
+          lifecycle.cacheSelectedRuntimePeerSession("demo", {
+            ...attachment,
+            runtime_session_id: "new",
+          });
+        return result;
+      };
+      await lifecycle.handleRuntimeIdleWatchAlarm("demo");
+      await fixture.drain();
+      assert.equal(changed, true);
+      assert.ok(sends > 0, "accepted real-host output attempted runtime delivery");
+      assert.equal((await materializer.getWorkstationAttachment())?.status, "idle");
+      assert.equal(harness.peers.has(peer.id), false);
+      assert.equal(await fixture.state.storage.get("runtime_peer_gone_watch"), undefined);
+      assert.ok(await fixture.state.storage.get("room-host:checkpoint"));
+      const selected = await lifecycle.selectedRuntimePeerSession("demo");
+      assert.equal(selected?.runtimeSessionId, replacement ? "new" : "old");
+      assert.equal(selected?.status, replacement ? "ready" : "idle");
+      assert.notEqual(
+        await harness.runtimePeerAuthorityError!("demo", peer.workstation),
+        null,
+        "old runtime cannot reconnect after accepted idle",
+      );
+    });
+
+  for (const lookup of ["lazy", "equivalent_refresh", "invalidated"] as const)
+    it(`runs consumed peer recovery when ${lookup} populates the same selected session`, async () => {
+      const fixture = alarmCapableState();
+      const room = new NotebookRoom(fixture.state, {} as Env);
+      await fixture.drain();
+      const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+      roomHarness(room).materializers.set("demo", materializer as never);
+      await materializer.setWorkstationAttachment({
+        workstation_id: "ws-lab2",
+        display_name: "Lab2",
+        provider: "runtime_peer",
+        default_environment_label: "Python",
+        environment_policy: "current_python",
+        status: "ready",
+        runtime_session_id: "job-old",
+      });
+      const selected = room as unknown as {
+        selectedRuntimePeerSession(n: string): Promise<unknown>;
+        cacheSelectedRuntimePeerSession(n: string, attachment: unknown): void;
+        invalidateSelectedRuntimePeerSession(n: string): void;
+      };
+      if (lookup === "equivalent_refresh") await selected.selectedRuntimePeerSession("demo");
+      await fixture.state.storage.put("runtime_peer_gone_watch", "demo");
+      await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 0);
+      const entered = gate(),
+        release = gate();
+      const get = materializer.getWorkstationAttachment.bind(materializer);
+      let reads = 0;
+      materializer.getWorkstationAttachment = async () => {
+        const attachment = await get();
+        if (reads++ === 0) {
+          entered.resolve();
+          await release.promise;
+        }
+        return attachment;
+      };
+      const alarm = room.alarm();
+      await entered.promise;
+      if (lookup === "lazy") await selected.selectedRuntimePeerSession("demo");
+      else if (lookup === "equivalent_refresh")
+        selected.cacheSelectedRuntimePeerSession("demo", await get());
+      else selected.invalidateSelectedRuntimePeerSession("demo");
+      release.resolve();
+      await alarm;
+      await fixture.drain();
+      if (lookup === "invalidated") {
+        assert.equal(
+          await fixture.state.storage.get("runtime_peer_gone_watch"),
+          "demo",
+          "deferred recovery is rearmed without a peer",
+        );
+        await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 0);
+        await room.alarm();
+        await fixture.drain();
+      }
+      assert.equal((await materializer.getWorkstationAttachment())?.status, "disconnected");
+      assert.equal(await fixture.state.storage.get("runtime_peer_gone_watch"), undefined);
+      assert.ok(await fixture.state.storage.get("room-host:checkpoint"));
+    });
+
+  for (const reconstructed of [false, true])
+    it(`retires idle managed catalog generation before resume after catalog failure (${reconstructed ? "reconstructed" : "live"})`, async (t) => {
+      const pool = new SessionPool({
+        warmCount: 0,
+        create: async () => ({
+          info: { installed: [] },
+          execute: async () => ({ success: true, execution_count: 1, outputs: [] }),
+          dispose: async () => {},
+        }),
+      });
+      const provider = createProviderService(pool);
+      const fixture = await managedPythonAdmissionFixture("ready", {
+        providerFetch: (request) => provider.fetch(request),
+      });
+      t.after(() => fixture.close());
+      const prepare = fixture.db.prepare.bind(fixture.db);
+      fixture.db.prepare = (query) => {
+        const statement = prepare(query);
+        if (query.includes("FROM workstations")) {
+          const first = statement.first.bind(statement);
+          statement.first = async <T>() => {
+            const row = await first<Record<string, unknown>>();
+            return (
+              row
+                ? { ...row, workstation_id: "celld-preview-python", provider: "celld-pyodide" }
+                : row
+            ) as T | null;
+          };
+        }
+        return statement;
+      };
+      const connection = await fixture.connect("idle-retry");
+      const old = fixture.db.attachJobs.find((job) => job.id === "managed-job")!;
+      old.updated_at = new Date().toISOString();
+      await fixture.startReplacement(true);
+      await fixture.drain();
+      await fixture.state.storage.delete("runtime_idle_watch");
+      await fixture.state.storage.delete("runtime_idle_watch_alarm_at");
+      fixture.db.beforeAttachUpdate = () => {
+        throw new Error("idle catalog unavailable");
+      };
+      await (
+        fixture.room as unknown as { handleRuntimeIdleWatchAlarm(n: string): Promise<void> }
+      ).handleRuntimeIdleWatchAlarm("demo");
+      await fixture.drain();
+      assert.equal(old.status, "running", "failed catalog write leaves the job active");
+      assert.equal((await fixture.materializer.getWorkstationAttachment())?.status, "idle");
+      assert.equal(
+        (await fixture.materializer.getWorkstationAttachment())?.runtime_session_id,
+        "managed-job",
+      );
+      assert.ok(
+        fixture.requests.some((request) => request.path === "/close"),
+        "idle cleanup still releases the provider",
+      );
+      await fixture.execute(connection);
+      await fixture.drain();
+      assert.equal(
+        (await fixture.materializer.getWorkstationAttachment())?.status,
+        "idle",
+        "catalog outage cannot resurrect the closed session",
+      );
+      assert.equal(
+        await fixture.materializer.getRuntimeQueueDepth(),
+        0,
+        "failed retirement cannot accept work for the closed session",
+      );
+      fixture.db.beforeAttachUpdate = undefined;
+      if (reconstructed) await fixture.reconstruct();
+      const resumed = reconstructed ? await fixture.connect("resumed") : connection;
+      await fixture.execute(resumed);
+      await fixture.drain();
+      const selected = await fixture.materializer.getWorkstationAttachment();
+      assert.notEqual(
+        selected?.runtime_session_id,
+        "managed-job",
+        "resume must not reuse the closed generation",
+      );
+      assert.equal(old.status, "completed");
+      assert.ok(
+        fixture.requests.some(
+          (request) =>
+            request.path === "/open" && request.sessionId === selected?.runtime_session_id,
+        ),
+      );
+    });
+
+  it("preserves a replacement peer watch during delayed clear", async () => {
+    const fixture = alarmCapableState();
+    const room = new NotebookRoom(fixture.state, {} as Env);
+    await fixture.drain();
+    await fixture.state.storage.put("runtime_peer_gone_watch", "demo");
+    await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 200);
+    await fixture.state.storage.setAlarm!(200);
+    await (
+      room as unknown as {
+        clearRuntimePeerWatch(
+          n: string,
+          expected: { notebookId: string; alarmAt: number },
+        ): Promise<void>;
+      }
+    ).clearRuntimePeerWatch("demo", { notebookId: "demo", alarmAt: 100 });
+    assert.equal(await fixture.state.storage.get("runtime_peer_gone_watch_alarm_at"), 200);
+    assert.equal(await fixture.getAlarm(), 200);
+  });
+
+  it("does not reschedule from an alarm snapshot replaced during reads", async () => {
+    const fixture = alarmCapableState();
+    const room = new NotebookRoom(fixture.state, {} as Env);
+    await fixture.drain();
+    await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 100);
+    await fixture.state.storage.setAlarm!(200);
+    const get = fixture.state.storage.get.bind(fixture.state.storage);
+    let reads = 0;
+    fixture.state.storage.get = async <T>(key: string) => {
+      const value = await get<T>(key);
+      if (key === "runtime_peer_gone_watch_alarm_at" && reads++ === 0)
+        await fixture.state.storage.put(key, 200);
+      return value;
+    };
+    await (room as unknown as { rescheduleRoomAlarm(): Promise<void> }).rescheduleRoomAlarm();
+    assert.equal(await fixture.getAlarm(), 200);
+  });
+
+  it("does not tear down runtime after a new idle watch arrives during activity", async () => {
+    const fixture = alarmCapableState();
+    const room = new NotebookRoom(fixture.state, {} as Env);
+    await fixture.drain();
+    await fixture.state.storage.put("runtime_idle_watch", "demo");
+    await fixture.state.storage.put("runtime_idle_watch_alarm_at", 1);
+    let tornDown = 0;
+    Object.assign(room, {
+      hasRuntimePeer: () => true,
+      markSelectedRuntimeSessionCompletedForIdle: async () => {
+        tornDown++;
+      },
+    });
+    roomHarness(room).materializers.set("demo", {
+      ...fakeMaterializer(noopMaterializedResult()),
+      getRuntimeExecutionActivity: async () => {
+        await fixture.state.storage.put("runtime_idle_watch", "demo");
+        await fixture.state.storage.put("runtime_idle_watch_alarm_at", Date.now() + 60_000);
+        return { executing: false, queueDepth: 0 };
+      },
+    });
+    await room.alarm();
+    await fixture.drain();
+    assert.equal(tornDown, 0);
+    assert.equal(await fixture.state.storage.get("runtime_idle_watch"), "demo");
+  });
+
+  it("preserves a replacement idle watch during the activity await", async () => {
+    const fixture = alarmCapableState();
+    const room = new NotebookRoom(fixture.state, {} as Env);
+    await fixture.drain();
+    await fixture.state.storage.put("runtime_idle_watch", "demo");
+    await fixture.state.storage.put("runtime_idle_watch_alarm_at", 100);
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    roomHarness(room).materializers.set("demo", {
+      ...fakeMaterializer(noopMaterializedResult()),
+      getRuntimeExecutionActivity: async () => {
+        entered();
+        await held;
+        return { executing: true, queueDepth: 0 };
+      },
+    });
+    roomHarness(room).refreshRuntimeIdleWatch!("demo");
+    await waiting;
+    await fixture.state.storage.put("runtime_idle_watch_alarm_at", 200);
+    release();
+    await fixture.drain();
+    assert.equal(await fixture.state.storage.get("runtime_idle_watch"), "demo");
+    assert.equal(await fixture.state.storage.get("runtime_idle_watch_alarm_at"), 200);
+  });
+
+  it("does not consume a replaced due alarm or reconcile its runtime", async () => {
+    const fixture = alarmCapableState();
+    const room = new NotebookRoom(fixture.state, {} as Env);
+    await fixture.drain();
+    await fixture.state.storage.put("runtime_peer_gone_watch", "demo");
+    await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", 1);
+    let reconciled = 0;
+    roomHarness(room).materializers.set("demo", {
+      ...fakeMaterializer(noopMaterializedResult()),
+      getWorkstationAttachment: async () => null,
+      reconcileRuntimePeerGone: async () => {
+        reconciled++;
+        return noopMaterializedResult();
+      },
+    });
+    const get = fixture.state.storage.get.bind(fixture.state.storage);
+    let replaced = false;
+    fixture.state.storage.get = async <T>(key: string) => {
+      if (key === "runtime_idle_watch" && !replaced) {
+        replaced = true;
+        await fixture.state.storage.put("runtime_peer_gone_watch_alarm_at", Date.now() + 60_000);
+      }
+      return get<T>(key);
+    };
+    await room.alarm();
+    await fixture.drain();
+    assert.equal(await fixture.state.storage.get("runtime_peer_gone_watch"), "demo");
+    assert.equal(reconciled, 0);
+    assert.ok((await fixture.getAlarm())! > Date.now());
+  });
+
+  for (const claim of ["pending", "failed", "delayed"] as const)
+    it(
+      `persists through actual room wiring without self-denying a ${claim} UUID claim`,
+      { timeout: 3000 },
+      async () => {
+        const state = hibernatedState([]);
+        await state.state.storage.put("room-host:activation-current", "previous-activation");
+        const put = state.state.storage.put.bind(state.state.storage);
+        let release!: () => void;
+        const hold = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        state.state.storage.put = async <T>(key: string, value: T) => {
+          if (key === "room-host:activation-current") {
+            if (claim === "failed") throw new Error("transient claim failure");
+            await hold;
+          }
+          await put(key, value);
+        };
+        const old = new NotebookRoom(state.state, {} as Env);
+        const fresh = claim === "delayed" ? new NotebookRoom(state.state, {} as Env) : old;
+        const harness = fresh as unknown as {
+          materializerFor(n: string): RoomMaterializer;
+          checkpointRoomHost(n: string, m: RoomMaterializer, operation: string): Promise<boolean>;
+        };
+        try {
+          if (claim === "delayed") release();
+          const materializer = harness.materializerFor("demo");
+          assert.equal(await harness.checkpointRoomHost("demo", materializer, "test"), true);
+          assert.ok(await state.state.storage.get("room-host:checkpoint"));
+          assert.ok(await state.state.storage.get("room-host:notebook-doc"));
+          assert.equal(
+            await state.state.storage.get("room-host:activation-current"),
+            "previous-activation",
+            "room must not issue an unordered ownership claim",
+          );
+        } finally {
+          release();
+          await state.drain();
+        }
+      },
+    );
+
+  it("reports skipped persistence from the materializer instead of success", async () => {
+    const state = hibernatedState([]);
+    const room = new NotebookRoom(state.state, {} as Env);
+    await state.drain();
+    const materializer = new RoomMaterializer("demo", state.state, {} as Env);
+    let release!: () => void;
+    Object.assign(materializer, {
+      operationQueue: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    });
+    const harness = room as unknown as {
+      checkpointRoomHost(n: string, m: RoomMaterializer, op: string): Promise<boolean>;
+    };
+    const saving = harness.checkpointRoomHost("demo", materializer, "test");
+    await Promise.resolve();
+    await state.state.storage.put("room-host:checkpoint", "replacement");
+    release();
+    assert.equal(await saving, false);
+    assert.equal(await state.state.storage.get("room-host:checkpoint"), "replacement");
+  });
+
+  for (const event of ["close", "error"] as const)
+    it(`detaches fallback socket listeners through ${event} peer removal`, async () => {
+      const state = hibernatedState([]);
+      const room = new NotebookRoom(state.state, {} as Env);
+      await state.drain();
+      const harness = roomHarness(room);
+      const socket = new FakeSocket({ captureListeners: true });
+      const listenerMap = (room as unknown as { peerListeners: Map<string, { abort(): void }> })
+        .peerListeners;
+      let dispatchCalls = 0;
+      Object.assign(room, {
+        dispatchSocketMessage: async () => {
+          dispatchCalls += 1;
+        },
+      });
+      const peer = {
+        id: "owner",
+        socket: socket.asCloudflareWebSocket(),
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+        ),
+        connectedAt: new Date().toISOString(),
+        workstation: null,
+      };
+      socket.serializeAttachment({
+        notebookId: "demo",
+        peerId: peer.id,
+        identity: peer.identity,
+        connectedAt: peer.connectedAt,
+      });
+      harness.peers.set(peer.id, peer);
+      (room as unknown as { acceptPeerSocket(n: string, p: typeof peer): void }).acceptPeerSocket(
+        "demo",
+        peer,
+      );
+      const controller = listenerMap.get(peer.id) as unknown as { signal: AbortSignal } | undefined;
+      assert.ok(controller, "the fallback path registers a detachable listener");
+      assert.equal(
+        (controller as unknown as { signal: AbortSignal }).signal.aborted,
+        false,
+        "the controller starts un-aborted",
+      );
+
+      socket.fire("message", { data: new Uint8Array() });
+      assert.equal(dispatchCalls, 1, "a live peer's message still dispatches");
+
+      // Exercise removePeer through the registered lifecycle listener, not the
+      // detach helper: membership and the AbortController must both be cleared.
+      harness.materializers.set("demo", fakeMaterializer(noopMaterializedResult()));
+      socket.fire(event, { code: 1000, reason: "test", wasClean: true });
+      await state.drain();
+      assert.equal(harness.peers.has(peer.id), false);
+      assert.equal(listenerMap.has(peer.id), false, "removal detaches the listener registration");
+      assert.equal(
+        (controller as unknown as { signal: AbortSignal }).signal.aborted,
+        true,
+        "detachPeerListeners aborts the controller",
+      );
+
+      socket.fire("message", { data: new Uint8Array() });
+      assert.equal(dispatchCalls, 1, "no dispatch fires for the removed peer");
+    });
+});
