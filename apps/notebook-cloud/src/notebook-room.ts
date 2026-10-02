@@ -302,6 +302,10 @@ export class NotebookRoom {
   private managedPythonStartup: Promise<void> = Promise.resolve();
   private readonly packageMutations = new Set<string>();
   private readonly peers = new Map<string, Peer>();
+  // AbortControllers for non-hibernation fallback listeners, so a removed
+  // peer's closures stop dispatching instead of staying attached forever
+  // (defense-in-depth for nteract#4295's retained-callback pattern).
+  private readonly peerListeners = new Map<string, AbortController>();
   private readonly socketRequests = new WeakMap<
     CloudflareWebSocket,
     { tail: Promise<void>; pending: number }
@@ -329,6 +333,7 @@ export class NotebookRoom {
   private readonly pendingManagedPythonProbes = new Set<string>();
   // A reset supersedes late probe results; a probe's own loss still needs reporting.
   private readonly retiredManagedPythonSessions = new Map<string, "lost" | "reset">();
+  private readonly selectedRuntimePeerSessionGenerations = new Map<string, number>();
   private readonly restoredPeersReady: Promise<void>;
   private readonly pendingRuntimePeerResponses = new Map<string, PendingRuntimePeerResponse>();
   // In-memory only by design: persisting on the frame hot path would cost more
@@ -856,6 +861,7 @@ export class NotebookRoom {
     }
 
     await this.restoredPeersReady;
+    if (this.peers.get(peer.id) !== peer) return;
     return this.dispatchSocketMessage(attachment.notebookId, peer, message);
   }
 
@@ -953,6 +959,7 @@ export class NotebookRoom {
     for (const { notebookId, peer } of restored) {
       if (peer.identity.scope === "runtime_peer") {
         const authorityError = await this.runtimePeerAuthorityError(notebookId, peer.workstation);
+        if (this.peers.get(peer.id) !== peer) continue;
         if (authorityError) {
           cloudLog("warn", "room.runtime_peer.rejected_on_restore", {
             notebook_id: notebookId,
@@ -1065,24 +1072,49 @@ export class NotebookRoom {
     }
 
     peer.socket.accept();
-    peer.socket.addEventListener("message", (event) => {
-      this.state.waitUntil(this.dispatchSocketMessage(notebookId, peer, event.data));
-    });
-    peer.socket.addEventListener("close", (event) => {
-      this.removePeer(notebookId, peer, {
-        observed: {
-          source: "websocket_close",
-          code: event.code,
-          reason: event.reason,
-          wasClean: event.wasClean,
-        },
-      });
-    });
-    peer.socket.addEventListener("error", (event) => {
-      this.removePeer(notebookId, peer, {
-        observed: { source: "websocket_error", error: "error" in event ? event.error : undefined },
-      });
-    });
+    const controller = new AbortController();
+    this.peerListeners.set(peer.id, controller);
+    peer.socket.addEventListener(
+      "message",
+      (event) => {
+        if (this.peers.get(peer.id) !== peer) return;
+        this.state.waitUntil(this.dispatchSocketMessage(notebookId, peer, event.data));
+      },
+      { signal: controller.signal },
+    );
+    peer.socket.addEventListener(
+      "close",
+      (event) => {
+        this.removePeer(notebookId, peer, {
+          observed: {
+            source: "websocket_close",
+            code: event.code,
+            reason: event.reason,
+            wasClean: event.wasClean,
+          },
+        });
+      },
+      { signal: controller.signal },
+    );
+    peer.socket.addEventListener(
+      "error",
+      (event) => {
+        this.removePeer(notebookId, peer, {
+          observed: {
+            source: "websocket_error",
+            error: "error" in event ? event.error : undefined,
+          },
+        });
+      },
+      { signal: controller.signal },
+    );
+  }
+
+  private detachPeerListeners(peer: Peer): void {
+    const controller = this.peerListeners.get(peer.id);
+    if (!controller) return;
+    controller.abort();
+    this.peerListeners.delete(peer.id);
   }
 
   private peerForSocket(socket: CloudflareWebSocket): Peer | undefined {
@@ -1090,7 +1122,8 @@ export class NotebookRoom {
     if (!attachment) {
       return undefined;
     }
-    return this.peers.get(attachment.peerId);
+    const peer = this.peers.get(attachment.peerId);
+    return peer?.socket === socket ? peer : undefined;
   }
 
   private removeAttachedPeer(socket: CloudflareWebSocket, observed: WebSocketDisconnect): void {
@@ -1100,7 +1133,7 @@ export class NotebookRoom {
     }
 
     const peer = this.peers.get(attachment.peerId);
-    if (!peer) {
+    if (!peer || peer.socket !== socket) {
       return;
     }
 
@@ -1153,6 +1186,7 @@ export class NotebookRoom {
 
     if (peer.identity.scope === "runtime_peer") {
       const authorityError = await this.runtimePeerAuthorityError(notebookId, peer.workstation);
+      if (this.peers.get(peer.id) !== peer) return;
       if (authorityError) {
         cloudLog("warn", "room.runtime_peer.stale_frame_closed", {
           notebook_id: notebookId,
@@ -1395,12 +1429,14 @@ export class NotebookRoom {
               this.packageMutations.delete(notebookId);
             }
           } catch {
-            response = {
-              result: "sync_environment_failed",
-              error:
-                "Package changes could not be saved. Check the connection and Python status, then try again.",
-              needs_restart: false,
-            };
+            if (response?.needs_restart !== true) {
+              response = {
+                result: "sync_environment_failed",
+                error:
+                  "Package changes could not be saved. Check the connection and Python status, then try again.",
+                needs_restart: false,
+              };
+            }
           }
           const managed = this.managedPython.get(notebookId);
           if (managed)
@@ -1893,15 +1929,22 @@ export class NotebookRoom {
     try {
       const materializer = this.materializerFor(notebookId);
       const registryLookup = await this.registeredWorkstationForRuntimePeer(notebookId, peer);
+      if (this.peers.get(peer.id) !== peer) return;
       const retainedAttachment = registryLookup.failed
         ? await materializer.getWorkstationAttachment()
         : null;
+      if (this.peers.get(peer.id) !== peer) return;
       const attachment = runtimePeerWorkstationAttachment(
         peer,
         registryLookup.workstation,
         retainedAttachment,
       );
       const result = await materializer.setWorkstationAttachment(attachment);
+      if (result.changed) {
+        this.deliverRoomHostFrames(notebookId, result);
+        await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
+      }
+      if (this.peers.get(peer.id) !== peer) return;
       if (result.ignored_stale) {
         cloudLog("warn", "room.workstation_attachment.stale_publish_ignored", {
           notebook_id: notebookId,
@@ -1913,10 +1956,6 @@ export class NotebookRoom {
         });
       } else {
         this.cacheSelectedRuntimePeerSession(notebookId, attachment);
-      }
-      if (result.changed) {
-        this.deliverRoomHostFrames(notebookId, result);
-        await this.checkpointRoomHost(notebookId, materializer, "runtime_peer_attachment");
       }
       this.refreshRuntimeIdleWatch(notebookId);
       await this.publishCurrentComputeSessionSummary(notebookId);
@@ -2340,7 +2379,10 @@ export class NotebookRoom {
     const result = await materializer.cancelUnstartedExecutions();
     if (!result.changed) return false;
     this.deliverRoomHostFrames(notebookId, result);
-    await this.checkpointRoomHost(notebookId, materializer, "interrupt_without_runtime_peer");
+    if (
+      !(await this.checkpointRoomHost(notebookId, materializer, "interrupt_without_runtime_peer"))
+    )
+      throw new Error("Interrupt recovery checkpoint failed");
     cloudLog("info", "room.interrupt.cancelled_unstarted", {
       notebook_id: notebookId,
       outbound_frame_count: result.outbound.length,
@@ -2814,8 +2856,13 @@ export class NotebookRoom {
         `Python could not reconnect: ${errorMessage(error).slice(0, 600)}. Start compute to retry the same session.`,
       );
       this.deliverRoomHostFrames(notebookId, result);
-      await this.checkpointRoomHost(notebookId, materializer, "managed_python_disconnected");
+      const persisted = await this.checkpointRoomHost(
+        notebookId,
+        materializer,
+        "managed_python_disconnected",
+      );
       await this.publishCurrentComputeSessionSummary(notebookId);
+      if (!persisted) throw new Error("Python disconnect recovery checkpoint failed");
     } finally {
       await closing;
     }
@@ -2865,6 +2912,7 @@ export class NotebookRoom {
     const failed = await materializer.transitionManagedPythonSession(sessionId, "error", reason);
     if (failed.ignored_stale) return null;
     let owner: string | null = null;
+    let persisted = false;
     try {
       owner = ownerPrincipal ?? (await managedPythonSessionOwner(this.env, notebookId, sessionId));
       // Retry deduplicates against active catalog jobs. Retire this job before
@@ -2881,9 +2929,10 @@ export class NotebookRoom {
     } finally {
       // A catalog failure must not leave the fenced runtime looking healthy.
       this.deliverRoomHostFrames(notebookId, failed);
-      await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
+      persisted = await this.checkpointRoomHost(notebookId, materializer, "managed_python_failed");
       await this.publishCurrentComputeSessionSummary(notebookId);
     }
+    if (!persisted) throw new Error("Python failure recovery checkpoint failed");
     return owner;
   }
 
@@ -2923,6 +2972,21 @@ export class NotebookRoom {
       actorLabel: EXECUTION_RESUME_ACTOR_LABEL,
     });
 
+    if (
+      workstationId === MANAGED_PYTHON_WORKSTATION &&
+      attachment.status === "idle" &&
+      attachment.runtime_session_id
+    ) {
+      // Idle cleanup can outlive a failed catalog write. Retire only that
+      // generation before deduplication, never replace a genuinely active job.
+      await updateWorkstationAttachJobStatus(this.env, {
+        ownerPrincipal,
+        workstationId,
+        jobId: attachment.runtime_session_id,
+        status: "completed",
+        errorMessage: null,
+      });
+    }
     const attachJob = await createWorkstationAttachJob(this.env, {
       notebookId,
       ownerPrincipal,
@@ -3049,6 +3113,15 @@ export class NotebookRoom {
         ? await managedPythonSessionOwner(this.env, notebookId, runtimeSessionId)
         : notebook.owner_principal;
     if (!ownerPrincipal) return;
+    const activity = await materializer.getRuntimeExecutionActivity();
+    if (activity.executing || activity.queueDepth > 0) return;
+    if (
+      !(await this.alarmTaskMatches(RUNTIME_IDLE_WATCH_KEY, RUNTIME_IDLE_WATCH_ALARM_AT_KEY, {
+        notebookId: undefined,
+        alarmAt: undefined,
+      }))
+    )
+      return;
     const job = await updateWorkstationAttachJobStatus(this.env, {
       ownerPrincipal,
       workstationId,
@@ -3121,13 +3194,26 @@ export class NotebookRoom {
     notebookId: string,
     attachment: WorkstationAttachmentState | null,
   ): void {
-    this.selectedRuntimePeerSessions.set(
-      notebookId,
-      selectedRuntimePeerSessionFromAttachment(attachment),
-    );
+    const selected = selectedRuntimePeerSessionFromAttachment(attachment);
+    const previous = this.selectedRuntimePeerSessions.get(notebookId);
+    if (
+      previous?.workstationId !== selected?.workstationId ||
+      previous?.runtimeSessionId !== selected?.runtimeSessionId ||
+      previous?.status !== selected?.status
+    ) {
+      this.selectedRuntimePeerSessionGenerations.set(
+        notebookId,
+        (this.selectedRuntimePeerSessionGenerations.get(notebookId) ?? 0) + 1,
+      );
+    }
+    this.selectedRuntimePeerSessions.set(notebookId, selected);
   }
 
   private invalidateSelectedRuntimePeerSession(notebookId: string): void {
+    this.selectedRuntimePeerSessionGenerations.set(
+      notebookId,
+      (this.selectedRuntimePeerSessionGenerations.get(notebookId) ?? 0) + 1,
+    );
     this.selectedRuntimePeerSessions.delete(notebookId);
   }
 
@@ -3428,7 +3514,7 @@ export class NotebookRoom {
     peer: Peer,
     closeOptions: PeerCloseOptions = {},
   ): void {
-    if (!this.peers.has(peer.id)) {
+    if (this.peers.get(peer.id) !== peer) {
       return;
     }
 
@@ -3446,6 +3532,7 @@ export class NotebookRoom {
   }
 
   private removePeer(notebookId: string, peer: Peer, closeOptions: PeerCloseOptions = {}): void {
+    if (this.peers.get(peer.id) !== peer) return;
     if (this.broadcastDepth > 0) {
       this.queuePeerRemoval(notebookId, peer, closeOptions);
       return;
@@ -3455,6 +3542,7 @@ export class NotebookRoom {
     if (!this.peers.delete(peer.id)) {
       return;
     }
+    this.detachPeerListeners(peer);
     const disconnectFields = webSocketDisconnectFields(
       this.state,
       peer.socket,
@@ -3708,15 +3796,31 @@ export class NotebookRoom {
       return;
     }
     try {
+      const expected = await this.readAlarmTask(
+        ROOM_SUMMARY_REFRESH_KEY,
+        ROOM_SUMMARY_REFRESH_ALARM_AT_KEY,
+      );
+      if (
+        !(await this.alarmTaskMatches(
+          ROOM_SUMMARY_REFRESH_KEY,
+          ROOM_SUMMARY_REFRESH_ALARM_AT_KEY,
+          expected,
+        ))
+      )
+        return;
       if (occupantCount <= 0) {
-        await storage.delete(ROOM_SUMMARY_REFRESH_KEY);
-        await storage.delete(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY);
+        await Promise.all([
+          storage.delete(ROOM_SUMMARY_REFRESH_KEY),
+          storage.delete(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY),
+        ]);
         await this.rescheduleRoomAlarm();
         return;
       }
       const alarmAt = Date.now() + ROOM_SUMMARY_REFRESH_MS;
-      await storage.put(ROOM_SUMMARY_REFRESH_KEY, notebookId);
-      await storage.put(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY, alarmAt);
+      await Promise.all([
+        storage.put(ROOM_SUMMARY_REFRESH_KEY, notebookId),
+        storage.put(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY, alarmAt),
+      ]);
       await this.rescheduleRoomAlarm();
     } catch (error) {
       cloudLog("warn", "room.summary_watch.refresh_failed", {
@@ -3738,15 +3842,33 @@ export class NotebookRoom {
     this.state.waitUntil(
       (async () => {
         try {
-          if (this.hasRuntimePeer()) {
-            await storage.delete(RUNTIME_PEER_WATCH_KEY);
-            await storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY);
+          const hasRuntimePeer = this.hasRuntimePeer();
+          const expected = await this.readAlarmTask(
+            RUNTIME_PEER_WATCH_KEY,
+            RUNTIME_PEER_WATCH_ALARM_AT_KEY,
+          );
+          if (
+            !(await this.alarmTaskMatches(
+              RUNTIME_PEER_WATCH_KEY,
+              RUNTIME_PEER_WATCH_ALARM_AT_KEY,
+              expected,
+            )) ||
+            this.hasRuntimePeer() !== hasRuntimePeer
+          )
+            return;
+          if (hasRuntimePeer) {
+            await Promise.all([
+              storage.delete(RUNTIME_PEER_WATCH_KEY),
+              storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY),
+            ]);
             await this.rescheduleRoomAlarm();
             return;
           }
           const alarmAt = Date.now() + RUNTIME_PEER_GONE_GRACE_MS;
-          await storage.put(RUNTIME_PEER_WATCH_KEY, notebookId);
-          await storage.put(RUNTIME_PEER_WATCH_ALARM_AT_KEY, alarmAt);
+          await Promise.all([
+            storage.put(RUNTIME_PEER_WATCH_KEY, notebookId),
+            storage.put(RUNTIME_PEER_WATCH_ALARM_AT_KEY, alarmAt),
+          ]);
           await this.rescheduleRoomAlarm();
         } catch (error) {
           cloudLog("warn", "room.runtime_peer_watch.refresh_failed", {
@@ -3758,14 +3880,27 @@ export class NotebookRoom {
     );
   }
 
-  private async clearRuntimePeerWatch(notebookId: string): Promise<void> {
+  private async clearRuntimePeerWatch(
+    notebookId: string,
+    expected: { notebookId: unknown; alarmAt: unknown },
+  ): Promise<void> {
     const storage = this.state.storage;
     if (!storage.setAlarm || !storage.deleteAlarm) {
       return;
     }
     try {
-      await storage.delete(RUNTIME_PEER_WATCH_KEY);
-      await storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY);
+      if (
+        !(await this.alarmTaskMatches(
+          RUNTIME_PEER_WATCH_KEY,
+          RUNTIME_PEER_WATCH_ALARM_AT_KEY,
+          expected,
+        ))
+      )
+        return;
+      await Promise.all([
+        storage.delete(RUNTIME_PEER_WATCH_KEY),
+        storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY),
+      ]);
       await this.rescheduleRoomAlarm();
     } catch (error) {
       cloudLog("warn", "room.runtime_peer_watch.clear_failed", {
@@ -3801,22 +3936,38 @@ export class NotebookRoom {
     this.state.waitUntil(
       (async () => {
         try {
+          const expected = await this.readAlarmTask(
+            RUNTIME_IDLE_WATCH_KEY,
+            RUNTIME_IDLE_WATCH_ALARM_AT_KEY,
+          );
           const activity = await this.materializerFor(notebookId).getRuntimeExecutionActivity();
+          if (
+            !(await this.alarmTaskMatches(
+              RUNTIME_IDLE_WATCH_KEY,
+              RUNTIME_IDLE_WATCH_ALARM_AT_KEY,
+              expected,
+            ))
+          )
+            return;
           if (activity.executing || activity.queueDepth > 0) {
-            await storage.delete(RUNTIME_IDLE_WATCH_KEY);
-            await storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
+            await Promise.all([
+              storage.delete(RUNTIME_IDLE_WATCH_KEY),
+              storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY),
+            ]);
             await this.rescheduleRoomAlarm();
             return;
           }
           const nowMs = Date.now();
-          const existingAlarmAt = await storage.get<unknown>(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
+          const existingAlarmAt = expected.alarmAt;
           if (!this.hasRuntimePeer()) {
             if (isFiniteTimestamp(existingAlarmAt) && existingAlarmAt > nowMs) {
               await this.rescheduleRoomAlarm();
               return;
             }
-            await storage.delete(RUNTIME_IDLE_WATCH_KEY);
-            await storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
+            await Promise.all([
+              storage.delete(RUNTIME_IDLE_WATCH_KEY),
+              storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY),
+            ]);
             await this.rescheduleRoomAlarm();
             return;
           }
@@ -3824,8 +3975,10 @@ export class NotebookRoom {
             return;
           }
           const alarmAt = nowMs + RUNTIME_IDLE_TTL_MS;
-          await storage.put(RUNTIME_IDLE_WATCH_KEY, notebookId);
-          await storage.put(RUNTIME_IDLE_WATCH_ALARM_AT_KEY, alarmAt);
+          await Promise.all([
+            storage.put(RUNTIME_IDLE_WATCH_KEY, notebookId),
+            storage.put(RUNTIME_IDLE_WATCH_ALARM_AT_KEY, alarmAt),
+          ]);
           await this.rescheduleRoomAlarm();
         } catch (error) {
           cloudLog("warn", "room.runtime_idle_watch.refresh_failed", {
@@ -3843,13 +3996,15 @@ export class NotebookRoom {
       return;
     }
 
-    const alarmTimes = [
-      await storage.get<unknown>(RUNTIME_PEER_WATCH_ALARM_AT_KEY),
-      await storage.get<unknown>(RUNTIME_IDLE_WATCH_ALARM_AT_KEY),
-      await storage.get<unknown>(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY),
-    ]
-      .filter(isFiniteTimestamp)
-      .sort((left, right) => left - right);
+    const keys = [
+      RUNTIME_PEER_WATCH_ALARM_AT_KEY,
+      RUNTIME_IDLE_WATCH_ALARM_AT_KEY,
+      ROOM_SUMMARY_REFRESH_ALARM_AT_KEY,
+    ];
+    const expected = await Promise.all(keys.map((key) => storage.get<unknown>(key)));
+    const current = await Promise.all(keys.map((key) => storage.get<unknown>(key)));
+    if (current.some((value, index) => value !== expected[index])) return;
+    const alarmTimes = current.filter(isFiniteTimestamp).sort((left, right) => left - right);
 
     if (alarmTimes.length === 0) {
       await storage.deleteAlarm();
@@ -3881,41 +4036,99 @@ export class NotebookRoom {
       nowMs,
     );
 
-    if (runtimeWatch) {
-      await storage.delete(RUNTIME_PEER_WATCH_KEY);
-      await storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY);
-      await this.handleRuntimePeerWatchAlarm(runtimeWatch);
+    if (
+      runtimeWatch &&
+      (await this.alarmTaskMatches(
+        RUNTIME_PEER_WATCH_KEY,
+        RUNTIME_PEER_WATCH_ALARM_AT_KEY,
+        runtimeWatch,
+      ))
+    ) {
+      await Promise.all([
+        storage.delete(RUNTIME_PEER_WATCH_KEY),
+        storage.delete(RUNTIME_PEER_WATCH_ALARM_AT_KEY),
+      ]);
+      await this.handleRuntimePeerWatchAlarm(runtimeWatch.notebookId);
     }
 
-    if (runtimeIdleWatch) {
-      await storage.delete(RUNTIME_IDLE_WATCH_KEY);
-      await storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY);
-      await this.handleRuntimeIdleWatchAlarm(runtimeIdleWatch);
+    if (
+      runtimeIdleWatch &&
+      (await this.alarmTaskMatches(
+        RUNTIME_IDLE_WATCH_KEY,
+        RUNTIME_IDLE_WATCH_ALARM_AT_KEY,
+        runtimeIdleWatch,
+      ))
+    ) {
+      await Promise.all([
+        storage.delete(RUNTIME_IDLE_WATCH_KEY),
+        storage.delete(RUNTIME_IDLE_WATCH_ALARM_AT_KEY),
+      ]);
+      await this.handleRuntimeIdleWatchAlarm(runtimeIdleWatch.notebookId);
     }
 
-    if (roomSummaryRefresh) {
-      await storage.delete(ROOM_SUMMARY_REFRESH_KEY);
-      await storage.delete(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY);
-      await this.publishRoomSummaryNow(roomSummaryRefresh, "refresh_alarm");
+    if (
+      roomSummaryRefresh &&
+      (await this.alarmTaskMatches(
+        ROOM_SUMMARY_REFRESH_KEY,
+        ROOM_SUMMARY_REFRESH_ALARM_AT_KEY,
+        roomSummaryRefresh,
+      ))
+    ) {
+      await Promise.all([
+        storage.delete(ROOM_SUMMARY_REFRESH_KEY),
+        storage.delete(ROOM_SUMMARY_REFRESH_ALARM_AT_KEY),
+      ]);
+      if (
+        await this.alarmTaskMatches(ROOM_SUMMARY_REFRESH_KEY, ROOM_SUMMARY_REFRESH_ALARM_AT_KEY, {
+          notebookId: undefined,
+          alarmAt: undefined,
+        })
+      )
+        await this.publishRoomSummaryNow(roomSummaryRefresh.notebookId, "refresh_alarm");
     }
 
     await this.rescheduleRoomAlarm();
+  }
+
+  private async readAlarmTask(
+    key: string,
+    alarmAtKey: string,
+  ): Promise<{ notebookId: unknown; alarmAt: unknown }> {
+    const [notebookId, alarmAt] = await Promise.all([
+      this.state.storage.get<unknown>(key),
+      this.state.storage.get<unknown>(alarmAtKey),
+    ]);
+    return { notebookId, alarmAt };
+  }
+
+  // Revalidation detects observed replacement, not atomic activation authority.
+  private async alarmTaskMatches(
+    key: string,
+    alarmAtKey: string,
+    expected: { notebookId: unknown; alarmAt: unknown },
+  ): Promise<boolean> {
+    const current = await this.readAlarmTask(key, alarmAtKey);
+    return current.notebookId === expected.notebookId && current.alarmAt === expected.alarmAt;
   }
 
   private async dueAlarmTask(
     key: string,
     alarmAtKey: string,
     nowMs: number,
-  ): Promise<string | null> {
-    const notebookId = await this.state.storage.get<unknown>(key);
+  ): Promise<{ notebookId: string; alarmAt: unknown } | null> {
+    const { notebookId, alarmAt } = await this.readAlarmTask(key, alarmAtKey);
     if (typeof notebookId !== "string" || notebookId.length === 0) {
       return null;
     }
-    const alarmAt = await this.state.storage.get<unknown>(alarmAtKey);
-    return !isFiniteTimestamp(alarmAt) || alarmAt <= nowMs ? notebookId : null;
+    return !isFiniteTimestamp(alarmAt) || alarmAt <= nowMs ? { notebookId, alarmAt } : null;
   }
 
   private async handleRuntimePeerWatchAlarm(notebookId: string): Promise<void> {
+    const expected = { notebookId: undefined, alarmAt: undefined };
+    const watchMatches = () =>
+      this.alarmTaskMatches(RUNTIME_PEER_WATCH_KEY, RUNTIME_PEER_WATCH_ALARM_AT_KEY, expected);
+    const selectedGeneration = this.selectedRuntimePeerSessionGenerations.get(notebookId);
+    if (!(await watchMatches())) return;
     if (this.hasRuntimePeer()) {
       cloudLog("info", "room.runtime_peer_watch.recovered", {
         notebook_id: notebookId,
@@ -3929,6 +4142,14 @@ export class NotebookRoom {
     const materializer = this.materializerFor(notebookId);
     try {
       const attachment = await materializer.getWorkstationAttachment();
+      if (!(await watchMatches())) return;
+      if (
+        this.hasRuntimePeer() ||
+        this.selectedRuntimePeerSessionGenerations.get(notebookId) !== selectedGeneration
+      ) {
+        if (!this.hasRuntimePeer()) this.refreshRuntimePeerWatch(notebookId);
+        return;
+      }
       if (attachment?.status === "idle") {
         cloudLog("info", "room.runtime_peer_watch.skipped_idle", {
           notebook_id: notebookId,
@@ -3946,14 +4167,30 @@ export class NotebookRoom {
     }
 
     try {
+      if (!(await watchMatches())) return;
+      if (
+        this.hasRuntimePeer() ||
+        this.selectedRuntimePeerSessionGenerations.get(notebookId) !== selectedGeneration
+      ) {
+        if (!this.hasRuntimePeer()) this.refreshRuntimePeerWatch(notebookId);
+        return;
+      }
       const result = await materializer.reconcileRuntimePeerGone(
         "runtime peer left the room and did not return within the grace window",
       );
-      this.invalidateSelectedRuntimePeerSession(notebookId);
       if (result.changed) {
         this.deliverRoomHostFrames(notebookId, result);
         this.scheduleRoomHostCheckpoint(notebookId, materializer, "runtime_peer_watch_reconcile");
       }
+      if (!(await watchMatches())) return;
+      if (
+        this.hasRuntimePeer() ||
+        this.selectedRuntimePeerSessionGenerations.get(notebookId) !== selectedGeneration
+      ) {
+        if (!this.hasRuntimePeer()) this.refreshRuntimePeerWatch(notebookId);
+        return;
+      }
+      this.invalidateSelectedRuntimePeerSession(notebookId);
       this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
       cloudLog("info", "room.runtime_peer_watch.reconciled", {
         notebook_id: notebookId,
@@ -3970,6 +4207,13 @@ export class NotebookRoom {
   }
 
   private async handleRuntimeIdleWatchAlarm(notebookId: string): Promise<void> {
+    const expected = { notebookId: undefined, alarmAt: undefined };
+    const watchMatches = () =>
+      this.alarmTaskMatches(RUNTIME_IDLE_WATCH_KEY, RUNTIME_IDLE_WATCH_ALARM_AT_KEY, expected);
+    const peerWatch = await this.readAlarmTask(
+      RUNTIME_PEER_WATCH_KEY,
+      RUNTIME_PEER_WATCH_ALARM_AT_KEY,
+    );
     let activity;
     try {
       activity = await this.materializerFor(notebookId).getRuntimeExecutionActivity();
@@ -3981,6 +4225,7 @@ export class NotebookRoom {
       return;
     }
 
+    if (!(await watchMatches())) return;
     if (activity.executing || activity.queueDepth > 0) {
       cloudLog("info", "room.runtime_idle_watch.deferred_for_execution", {
         notebook_id: notebookId,
@@ -3998,26 +4243,69 @@ export class NotebookRoom {
     }
 
     const updatedAt = new Date().toISOString();
+    const runtimePeers = [...this.peers.values()].filter(
+      (peer) => peer.identity.scope === "runtime_peer",
+    );
+    const managed = this.managedPython.get(notebookId);
+    let selectedGeneration = this.selectedRuntimePeerSessionGenerations.get(notebookId);
     try {
-      await this.markSelectedRuntimeSessionCompletedForIdle(notebookId);
+      if (!(await watchMatches())) return;
       const materializer = this.materializerFor(notebookId);
       const result = await materializer.reconcileRuntimeIdleTimeout(
         RUNTIME_IDLE_STATUS_MESSAGE,
         updatedAt,
       );
-      this.invalidateSelectedRuntimePeerSession(notebookId);
-      this.withRuntimePeerWatchSuppressed(() => {
-        if (result.changed) {
-          this.deliverRoomHostFrames(notebookId, result);
-          this.scheduleRoomHostCheckpoint(notebookId, materializer, "runtime_idle_timeout");
+      // The host already committed this mutation; later teardown guards must
+      // not discard its sync frames or checkpoint.
+      if (result.changed) {
+        // Delivery can remove a dead peer and skip later teardown. Fence the
+        // accepted idle state now, without invalidating a newer selection.
+        if (this.selectedRuntimePeerSessionGenerations.get(notebookId) === selectedGeneration) {
+          this.invalidateSelectedRuntimePeerSession(notebookId);
+          selectedGeneration = this.selectedRuntimePeerSessionGenerations.get(notebookId);
         }
+        this.withRuntimePeerWatchSuppressed(() => this.deliverRoomHostFrames(notebookId, result));
+        this.scheduleRoomHostCheckpoint(notebookId, materializer, "runtime_idle_timeout");
+      }
+      // An unchanged result can be refusal or idempotence; activity distinguishes them.
+      const currentActivity = await materializer.getRuntimeExecutionActivity();
+      if (currentActivity.executing || currentActivity.queueDepth > 0) return;
+      if (!(await watchMatches())) return;
+      try {
+        await this.markSelectedRuntimeSessionCompletedForIdle(notebookId);
+      } catch (error) {
+        // Catalog failure must not strand an already accepted host transition.
+        cloudLog("warn", "room.runtime_idle_watch.catalog_completion_failed", {
+          notebook_id: notebookId,
+          error: errorMessage(error),
+        });
+      }
+      if (runtimePeers.some((peer) => this.peers.get(peer.id) !== peer)) return;
+      const finalActivity = await materializer.getRuntimeExecutionActivity();
+      if (
+        finalActivity.executing ||
+        finalActivity.queueDepth > 0 ||
+        runtimePeers.some((peer) => this.peers.get(peer.id) !== peer)
+      )
+        return;
+      if (!(await watchMatches())) return;
+      if (
+        this.managedPython.get(notebookId) !== managed ||
+        this.selectedRuntimePeerSessionGenerations.get(notebookId) !== selectedGeneration ||
+        this.runtimePeerCount() !== runtimePeers.length + (managed ? 1 : 0) ||
+        runtimePeers.some((peer) => this.peers.get(peer.id) !== peer)
+      )
+        return;
+      this.invalidateSelectedRuntimePeerSession(notebookId);
+      if (managed) this.retiredManagedPythonSessions.set(managed.runtime.sessionId, "reset");
+      this.withRuntimePeerWatchSuppressed(() => {
         this.removeRuntimePeers(notebookId, {
           code: RUNTIME_IDLE_CLOSE_CODE,
           reason: RUNTIME_IDLE_CLOSE_REASON,
           suppressRuntimePeerWatch: true,
         });
       });
-      await this.clearRuntimePeerWatch(notebookId);
+      await this.clearRuntimePeerWatch(notebookId, peerWatch);
       this.state.waitUntil(this.publishCurrentComputeSessionSummary(notebookId));
       cloudLog("info", "room.runtime_idle_watch.torn_down", {
         notebook_id: notebookId,

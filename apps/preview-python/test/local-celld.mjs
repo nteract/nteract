@@ -9,7 +9,12 @@ const root = fileURLToPath(new URL("../.scratch/", import.meta.url));
 
 // Small real-server harness for runtime probes. Files and storage belong only
 // to this invocation; cleanup never targets another celld process.
-export async function startCelld(files, config = {}, environment = {}, { watch = false } = {}) {
+export async function startCelld(
+  files,
+  config = {},
+  environment = {},
+  { watch = false, executable = process.env.CELLD_BIN } = {},
+) {
   await mkdir(resolve(root, ".celld"), { recursive: true });
   const project = await mkdtemp(resolve(root, ".celld/probe-"));
   let child,
@@ -109,19 +114,25 @@ export async function startCelld(files, config = {}, environment = {}, { watch =
     await once(reservation, "listening");
     const port = reservation.address().port;
     await new Promise((done) => reservation.close(done));
-    const bin = process.env.CELLD_BIN;
+    const bin = executable;
     if (!bin) throw new Error("Set CELLD_BIN to a qualified celld Python Workers build");
+    const args = [
+      "dev",
+      project,
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      ...(watch ? [] : ["--no-watch"]),
+      "--logs",
+    ];
     const launch = async () => {
       let runLogs = "";
-      child = spawn(
-        bin,
-        ["dev", project, "--port", String(port), ...(watch ? [] : ["--no-watch"]), "--logs"],
-        {
-          detached: true,
-          stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, ...environment },
-        },
-      );
+      child = spawn(bin, args, {
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, ...environment },
+      });
       stopped = new Promise((done) => {
         child.once("exit", done);
         child.once("error", done);
@@ -163,6 +174,12 @@ export async function startCelld(files, config = {}, environment = {}, { watch =
       },
       close,
       logs: () => logs,
+      launchMetadata: {
+        executable: bin,
+        args,
+        project,
+        environment,
+      },
       async restart({ crash = false } = {}) {
         if (closing) throw new Error("Cannot restart a closed test server");
         const stoppedPids = await stop(crash);

@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "pnpm --filter @nteract/pyodide-runtime build && node scripts/build-provider.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "qualify:activation": "node test/stale-activation-celld.test.mjs --qualify"
   },
   "dependencies": {
     "@nteract/pyodide-runtime": "workspace:*",

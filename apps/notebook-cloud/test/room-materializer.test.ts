@@ -3308,3 +3308,116 @@ class FakeR2Object implements R2ObjectBody {
 
   writeHttpMetadata(_headers: Headers): void {}
 }
+
+describe("RoomMaterializer stale-activation replacement checks (#4295)", () => {
+  it("allows this materializer's concurrent queued checkpoints", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    await Promise.all([materializer.checkpoint(), materializer.checkpoint()]);
+    assert.equal((await state.storage.list()).size, 5);
+  });
+  for (const boundary of ["queue", "hydration"] as const)
+    it(`preserves a replacement checkpoint after ${boundary} before storage mutation`, async () => {
+      const state = fakeState();
+      let entered!: () => void;
+      let release!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const materializer = new RoomMaterializer("demo", state, {} as Env);
+      if (boundary === "queue") {
+        await materializer.getRuntimeQueueDepth();
+        Object.assign(materializer, { operationQueue: held });
+        entered();
+      } else {
+        const get = state.storage.get.bind(state.storage);
+        state.storage.get = async <T>(key: string) => {
+          if (key === "room-host:notebook-doc") {
+            entered();
+            await held;
+          }
+          return get<T>(key);
+        };
+      }
+      const saving = materializer.checkpoint();
+      await waiting;
+      await state.storage.put("room-host:checkpoint", "replacement");
+      release();
+      await assert.rejects(saving, /checkpoint was replaced/);
+      assert.deepEqual(
+        [...(await state.storage.list())],
+        [["room-host:checkpoint", "replacement"]],
+      );
+    });
+
+  it("does not delete replacement checkpoint bytes during published recovery", async () => {
+    const state = fakeState();
+    const snapshot = await createNotebookRoomSnapshot("demo", "published", "Recovered\n");
+    const env = fakePublishedSnapshotEnv({
+      notebookId: "demo",
+      revisionId: "revision-current",
+      actorLabel: "user:dev:publisher/agent:runt-publish",
+      notebookBytes: snapshot.notebookBytes,
+      runtimeStateBytes: snapshot.runtimeStateBytes,
+    });
+    const materializer = new RoomMaterializer("demo", state, env);
+    await materializer.checkpoint();
+    const host = await (
+      materializer as unknown as { loadHost(): Promise<{ sync_peer(): unknown }> }
+    ).loadHost();
+    host.sync_peer = () => {
+      throw new Error("recursive use of an object detected which would lead to unsafe aliasing");
+    };
+    const replacement = new Map<string, unknown>([
+      ["room-host:checkpoint", "replacement"],
+      ["room-host:notebook-doc", new Uint8Array([11]).buffer],
+      ["room-host:runtime-state-doc", new Uint8Array([12]).buffer],
+      ["room-host:comms-doc", new Uint8Array([13]).buffer],
+      ["room-host:comments-doc", new Uint8Array([14]).buffer],
+    ]);
+    const bucketGet = env.NOTEBOOK_SNAPSHOTS!.get.bind(env.NOTEBOOK_SNAPSHOTS!);
+    env.NOTEBOOK_SNAPSHOTS!.get = async (key) => {
+      for (const [checkpointKey, value] of replacement)
+        await state.storage.put(checkpointKey, value);
+      return bucketGet(key);
+    };
+    await materializer.syncPeer({
+      id: "viewer",
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=bob&operator=desktop:b&scope=viewer"),
+      ),
+    });
+    assert.deepEqual(await state.storage.list(), replacement);
+  });
+
+  it("propagates checkpoint storage failures", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    state.storage.put = async () => {
+      throw new Error("storage unavailable");
+    };
+    await assert.rejects(materializer.checkpoint(), /storage unavailable/);
+    assert.equal(
+      await state.storage.get("room-host:checkpoint"),
+      undefined,
+      "stale activation must not write checkpoints",
+    );
+    assert.ok(
+      !(await state.storage.list()).size,
+      "stale activation must not write checkpoint bytes",
+    );
+  });
+
+  it("writes checkpoints when no replacement is observed", async () => {
+    const state = fakeState();
+    const materializer = new RoomMaterializer("demo", state, {} as Env);
+    await materializer.checkpoint();
+    assert.ok(
+      await state.storage.get("room-host:checkpoint"),
+      "the current activation checkpoints normally",
+    );
+  });
+});
