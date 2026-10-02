@@ -804,7 +804,7 @@ function commentHighlightStyle(
 type CommentHighlightActivationProps = Pick<
   HTMLAttributes<HTMLSpanElement>,
   "aria-label" | "onClick" | "onKeyDown" | "role" | "tabIndex"
->;
+> & { "data-comment-thread-id"?: string };
 
 function commentHighlightActivationProps(
   highlight: MarkdownCommentHighlight | null,
@@ -815,6 +815,7 @@ function commentHighlightActivationProps(
 
   const activate = () => onActivateCommentThread(threadId);
   return {
+    "data-comment-thread-id": threadId,
     "aria-label": "Open comment thread",
     onClick: (event: MouseEvent<HTMLSpanElement>) => {
       event.stopPropagation();

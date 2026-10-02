@@ -1,6 +1,5 @@
 import {
   type CommentHighlight,
-  type CommentHighlightPreview,
   setCommentHighlightsEffect,
 } from "./comment-highlight-extension";
 import { resolveSourceRangeAnchor, type SourceRangeCommentAnchor } from "./comment-source-anchor";
@@ -11,7 +10,6 @@ export interface SourceCommentThread {
   anchor: SourceRangeCommentAnchor;
   resolved: boolean;
   color?: string;
-  preview?: CommentHighlightPreview;
 }
 
 let threadsByCell = new Map<string, SourceCommentThread[]>();
@@ -69,7 +67,6 @@ function dispatchCell(cellId: string): void {
       threadId: thread.threadId,
       resolved: thread.resolved,
       color: thread.color,
-      preview: thread.preview,
     });
   }
   view.dispatch({ effects: setCommentHighlightsEffect.of(highlights) });

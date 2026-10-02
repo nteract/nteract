@@ -580,7 +580,7 @@ function CommentResolutionReceipt({
   );
 }
 
-function CommentMessage({
+export function CommentMessage({
   message,
   isReply = false,
   resolveCommentAuthor,
@@ -692,13 +692,14 @@ function CommentBody({ body }: { body: string }) {
   return <ProjectedMarkdownView plan={plan} className="text-[13px] leading-[1.45]" />;
 }
 
-function CommentComposer({
+export function CommentComposer({
   ariaLabel,
   submitAriaLabel,
   disabled,
   autoFocusKey = null,
   placeholder,
   compact = false,
+  clearOnEscape = true,
   value,
   onValueChange,
   onEscape,
@@ -711,6 +712,8 @@ function CommentComposer({
   placeholder: string;
   /** Collapse to a single line until focused or non-empty (used for replies). */
   compact?: boolean;
+  /** Inline previews dismiss without discarding their retained reply draft. */
+  clearOnEscape?: boolean;
   value?: string;
   onValueChange?: (body: string) => void;
   onEscape?: () => void;
@@ -771,7 +774,7 @@ function CommentComposer({
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      setBody("");
+      if (clearOnEscape) setBody("");
       setFocused(false);
       textareaRef.current?.blur();
       onEscape?.();

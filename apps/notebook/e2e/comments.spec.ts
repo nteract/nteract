@@ -133,3 +133,45 @@ test("output comments remain in Discussions when a rerun replaces their output",
     await peer.close();
   }
 });
+
+test("source highlights open an inline thread and accept replies without opening Discussions", async ({
+  page,
+}) => {
+  const { ensureCodeCell, setCellSource } = await import("./helpers");
+  await openNotebookRoom(page, crypto.randomUUID());
+  const cell = await ensureCodeCell(page);
+  await setCellSource(cell, "value = 42");
+  const editor = cell.getByRole("textbox");
+  await editor.click();
+  await editor.press("ControlOrMeta+Home");
+  await editor.press("Shift+End");
+  await editor.press("ControlOrMeta+Alt+m");
+  const panel = page.getByTestId("notebook-comments-panel");
+  const composer = panel.getByRole("textbox", { name: /New .* comment/ });
+  await composer.fill("Read and reply beside this line.");
+  await composer.press("ControlOrMeta+Enter");
+  await expect(panel.getByText("Read and reply beside this line.")).toBeVisible();
+  await page.getByRole("button", { name: "Discussions", exact: true }).click();
+  await expect(panel).not.toBeVisible();
+  const mark = cell.locator("[data-comment-thread-id]").first();
+  await mark.hover();
+  const preview = page.getByRole("dialog", { name: "Comment thread" });
+  await expect(preview).toBeVisible();
+  await mark.click();
+  await expect(panel).not.toBeVisible();
+  await preview.getByRole("textbox", { name: "Reply to comment" }).fill("Replying inline");
+  await preview.getByRole("button", { name: "Send reply" }).click();
+  await expect(preview.getByText("Replying inline", { exact: true })).toBeVisible();
+  await expect(panel).not.toBeVisible();
+  await page.screenshot({ path: "test-results/inline-comment-wide.png" });
+  await page.keyboard.press("Escape");
+  await expect(preview).not.toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mark.click();
+  await expect(preview).toBeVisible();
+  const bounds = await preview.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: "test-results/inline-comment-narrow.png" });
+});
