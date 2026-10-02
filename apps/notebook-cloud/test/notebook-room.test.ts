@@ -343,9 +343,13 @@ describe("NotebookRoom owner package operations", () => {
       },
     );
 
-  for (
-    const outcome of ["success", "failure", "restart_checkpoint_failure", "concurrent_edit", "interrupt"] as const
-  ) {
+  for (const outcome of [
+    "success",
+    "failure",
+    "restart_checkpoint_failure",
+    "concurrent_edit",
+    "interrupt",
+  ] as const) {
     it(
       `owns package completion after transport admission: ${outcome}`,
       { timeout: 3000 },
