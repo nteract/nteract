@@ -25,6 +25,8 @@ interface CellContainerProps {
   rightGutterContent?: ReactNode;
   /** Content to render in the right margin aligned with output row (e.g., output controls) */
   outputRightGutterContent?: ReactNode;
+  /** Keep the right-margin cell controls visible without hover or focus. */
+  pinActions?: boolean;
   /** Remote peer presence indicators (colored dots showing who's on this cell) */
   presenceIndicators?: ReactNode;
   /** Custom color configuration for cell types not in defaults */
@@ -95,6 +97,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       stateLaneClassName,
       rightGutterContent,
       outputRightGutterContent,
+      pinActions = false,
       presenceIndicators,
       customGutterColors,
       isPreviousCellFromFocused = false,
@@ -178,7 +181,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
                 >
                   {codeContent}
                 </div>
-                <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>
+                <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused || pinActions}>
                   {rightGutterContent}
                 </CellActionOverlay>
               </div>
@@ -245,7 +248,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
               >
                 {children}
               </div>
-              <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused}>
+              <CellActionOverlay dataSlot="cell-action-overlay" visible={isFocused || pinActions}>
                 {rightGutterContent}
               </CellActionOverlay>
             </div>

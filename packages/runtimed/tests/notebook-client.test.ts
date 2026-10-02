@@ -224,6 +224,26 @@ describe("NotebookClient", () => {
     );
   });
 
+  it("attaches required heads to prompt runs so the daemon reads the synced prompt", async () => {
+    const { client, flush, sendRequest } = stubClientWithHeads(["head-a"]);
+
+    await client.runPromptCell("prompt-1");
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(sendRequest).toHaveBeenCalledWith(
+      { type: "run_prompt_cell", cell_id: "prompt-1" },
+      { required_heads: ["head-a"] },
+    );
+  });
+
+  it("cancels a prompt run by cell id", async () => {
+    const { client, sendRequest } = stubClient();
+
+    await client.cancelPromptCell("prompt-1");
+
+    expect(sendRequest).toHaveBeenCalledWith({ type: "cancel_prompt_cell", cell_id: "prompt-1" });
+  });
+
   it("passes caller-provided execution ids on daemon-managed execute requests", async () => {
     const { client, flush, sendRequest } = stubClientWithHeads(["head-a"]);
     const executionId = "11111111-1111-4111-8111-111111111111";

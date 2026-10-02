@@ -60,6 +60,7 @@ pub mod paths;
 pub(crate) mod pixi_project;
 pub mod process_groups;
 pub mod project_file;
+pub(crate) mod prompt_agent;
 pub(crate) mod requests;
 pub mod runtime_agent;
 pub mod runtime_agent_handle;

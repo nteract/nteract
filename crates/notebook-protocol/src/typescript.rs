@@ -18,6 +18,8 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "execute_cell_guarded",
     "interrupt_execution",
     "shutdown_kernel",
+    "run_prompt_cell",
+    "cancel_prompt_cell",
     "run_all_cells",
     "run_all_cells_guarded",
     "send_comm",
@@ -284,6 +286,8 @@ export type NotebookRequest =
     }}
   | {{ type: "interrupt_execution" }}
   | {{ type: "shutdown_kernel" }}
+  | {{ type: "run_prompt_cell"; cell_id: string }}
+  | {{ type: "cancel_prompt_cell"; cell_id: string }}
   | {{ type: "run_all_cells"; cell_execution_ids?: Record<string, string> | null }}
   | {{
       type: "run_all_cells_guarded";

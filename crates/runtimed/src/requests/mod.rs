@@ -63,6 +63,7 @@ pub(crate) fn publish_startup_queue_from_queued_executions(room: &NotebookRoom) 
 pub(crate) mod apply_bokeh_session_patch;
 pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
+pub(crate) mod cancel_prompt_cell;
 pub(crate) mod clone_notebook;
 pub(crate) mod complete;
 pub(crate) mod execute_cell;
@@ -73,6 +74,7 @@ pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;
 pub(crate) mod reconcile_notebook_source;
 pub(crate) mod run_all_cells;
+pub(crate) mod run_prompt_cell;
 pub(crate) mod save_notebook;
 pub(crate) mod send_comm;
 pub(crate) mod shutdown_kernel;
@@ -139,6 +141,8 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::ExecuteCellGuarded { .. } => "ExecuteCellGuarded",
         NotebookRequest::InterruptExecution { .. } => "InterruptExecution",
         NotebookRequest::ShutdownKernel { .. } => "ShutdownKernel",
+        NotebookRequest::RunPromptCell { .. } => "RunPromptCell",
+        NotebookRequest::CancelPromptCell { .. } => "CancelPromptCell",
         NotebookRequest::RunAllCells { .. } => "RunAllCells",
         NotebookRequest::RunAllCellsGuarded { .. } => "RunAllCellsGuarded",
         NotebookRequest::SendComm { .. } => "SendComm",
@@ -515,6 +519,28 @@ pub(crate) async fn handle_notebook_request(
         NotebookRequest::InterruptExecution {} => interrupt_execution::handle(room).await,
 
         NotebookRequest::ShutdownKernel {} => shutdown_kernel::handle(room).await,
+
+        NotebookRequest::RunPromptCell { cell_id } => {
+            let command = {
+                let settings = daemon.settings.read().await;
+                settings.get_all().agent_command
+            };
+            let daemon_path = std::env::var("PATH").unwrap_or_default();
+            let env = daemon
+                .shell_env_overlay()
+                .build_kernel_env_vars(&daemon_path);
+            let runt = run_prompt_cell::find_runt(env.get("PATH").unwrap_or(&daemon_path));
+            let launch = run_prompt_cell::AgentLaunch {
+                command,
+                env,
+                cwd: daemon.config.cache_dir.join("prompt-agent"),
+                runt,
+                socket_path: daemon.config.socket_path.clone(),
+            };
+            run_prompt_cell::handle(room, cell_id, &launch).await
+        }
+
+        NotebookRequest::CancelPromptCell { cell_id } => cancel_prompt_cell::handle(room, &cell_id),
 
         NotebookRequest::RunAllCells { cell_execution_ids } => {
             run_all_cells::handle_with_submitter(room, cell_execution_ids, submitter_actor_label)

@@ -17,7 +17,8 @@
 //!   disable_nteract_launcher: false
 //!   enable_comments: false
 //!   disable_auto_format: false
-//!   editor/                        ← nested Map
+//!   agent_command: "claude"
+//!   editor/                       ← nested Map
 //!     code_font_family: ""         ← Empty string means use the theme default
 //!     markdown_font_family: ""     ← Empty string means use the theme default
 //!     line_numbers: false
@@ -337,6 +338,12 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub disable_auto_format: bool,
 
+    /// Agent CLI that prompt cells run, resolved on the daemon's PATH when it
+    /// has no path separator. The command must accept the Claude Code
+    /// headless flags (`-p --output-format stream-json`).
+    #[serde(default = "default_agent_command")]
+    pub agent_command: String,
+
     /// Redact eligible environment variable values from text outputs for newly
     /// launched or restarted kernels.
     ///
@@ -415,6 +422,7 @@ impl Default for SyncedSettings {
             disable_nteract_launcher: false,
             enable_comments: false,
             disable_auto_format: false,
+            agent_command: default_agent_command(),
             redact_env_values_in_outputs: true,
             import_shell_environment: true,
             install_id: String::new(),
@@ -441,6 +449,9 @@ fn default_import_shell_environment() -> bool {
 
 fn default_keep_alive_secs() -> u64 {
     DEFAULT_KEEP_ALIVE_SECS
+}
+fn default_agent_command() -> String {
+    "claude".to_string()
 }
 fn default_uv_pool_size() -> u64 {
     DEFAULT_UV_POOL_SIZE
@@ -600,6 +611,11 @@ impl SettingsDoc {
             automerge::ROOT,
             "disable_auto_format",
             defaults.disable_auto_format,
+        );
+        let _ = doc.put(
+            automerge::ROOT,
+            "agent_command",
+            defaults.agent_command.as_str(),
         );
         let _ = doc.put(
             automerge::ROOT,
@@ -799,6 +815,9 @@ impl SettingsDoc {
         // disable_auto_format: boolean
         if let Some(disabled) = json.get("disable_auto_format").and_then(|v| v.as_bool()) {
             settings.put_bool("disable_auto_format", disabled);
+        }
+        if let Some(command) = json.get("agent_command").and_then(|v| v.as_str()) {
+            settings.put("agent_command", command);
         }
         if let Some(enabled) = json
             .get("redact_env_values_in_outputs")
@@ -1301,6 +1320,7 @@ impl SettingsDoc {
             disable_auto_format: self
                 .get_bool("disable_auto_format")
                 .unwrap_or(defaults.disable_auto_format),
+            agent_command: self.get("agent_command").unwrap_or(defaults.agent_command),
             redact_env_values_in_outputs: self
                 .get_bool("redact_env_values_in_outputs")
                 .unwrap_or(defaults.redact_env_values_in_outputs),
@@ -1561,6 +1581,17 @@ impl SettingsDoc {
                     current, disabled
                 );
                 self.put_bool("disable_auto_format", disabled);
+                changed = true;
+            }
+        }
+        if let Some(command) = json.get("agent_command").and_then(|v| v.as_str()) {
+            let current = self.get("agent_command");
+            if current.as_deref() != Some(command) {
+                info!(
+                    "[settings] apply_json_changes: agent_command changed {:?} -> {}",
+                    current, command
+                );
+                self.put("agent_command", command);
                 changed = true;
             }
         }
@@ -1900,6 +1931,39 @@ mod tests {
         let settings = doc.get_all();
         assert_eq!(doc.get_bool("disable_auto_format"), Some(true));
         assert!(settings.disable_auto_format);
+    }
+
+    #[test]
+    fn test_agent_command_defaults_to_claude() {
+        assert_eq!(SettingsDoc::new().get_all().agent_command, "claude");
+    }
+
+    #[test]
+    fn test_agent_command_can_be_set_from_json() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "agent_command": "/opt/agents/my-agent"
+        })));
+
+        assert_eq!(doc.get_all().agent_command, "/opt/agents/my-agent");
+    }
+
+    #[test]
+    fn test_settings_json_without_agent_command_still_deserializes() {
+        let settings: SyncedSettings =
+            serde_json::from_value(serde_json::json!({ "theme": "dark" })).unwrap();
+
+        assert_eq!(settings.agent_command, "claude");
+    }
+
+    #[test]
+    fn test_from_json_value_reads_agent_command() {
+        let doc = SettingsDoc::from_json_value(&serde_json::json!({
+            "agent_command": "/opt/agents/my-agent"
+        }));
+
+        assert_eq!(doc.get_all().agent_command, "/opt/agents/my-agent");
     }
 
     #[test]

@@ -667,6 +667,14 @@ pub enum NotebookRequest {
     /// Shutdown the kernel for this room.
     ShutdownKernel {},
 
+    /// Run a prompt cell: the daemon sends the cells above it to the
+    /// configured agent CLI and streams the reply into the prompt's
+    /// answer cell.
+    RunPromptCell { cell_id: String },
+
+    /// Stop the agent run for a prompt cell.
+    CancelPromptCell { cell_id: String },
+
     /// Run all code cells from the synced document.
     /// Daemon reads cell sources from the Automerge doc and queues them.
     RunAllCells {
@@ -1587,6 +1595,14 @@ mod tests {
             (
                 "shutdown_kernel",
                 serde_json::json!({ "action": "shutdown_kernel" }),
+            ),
+            (
+                "run_prompt_cell",
+                serde_json::json!({ "action": "run_prompt_cell", "cell_id": "cell-1" }),
+            ),
+            (
+                "cancel_prompt_cell",
+                serde_json::json!({ "action": "cancel_prompt_cell", "cell_id": "cell-1" }),
             ),
             (
                 "sync_environment",

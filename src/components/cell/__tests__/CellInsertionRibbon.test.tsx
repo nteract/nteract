@@ -19,6 +19,27 @@ describe("CellInsertionRibbon", () => {
     expect(onInsert).toHaveBeenCalledWith("code");
   });
 
+  it("offers a prompt cell next to code and markdown when the host supports prompts", () => {
+    const onInsert = vi.fn();
+    const { container } = render(<CellInsertionRibbon onInsert={onInsert} includePrompt />);
+
+    const addPromptButton = screen.getByTitle("Add prompt cell");
+    expect(addPromptButton).toHaveTextContent("Prompt");
+    fireEvent.pointerEnter(addPromptButton);
+    fireEvent.click(addPromptButton);
+
+    expect(container.querySelector('[data-slot="cell-adder-ribbon-intent"]')).toHaveClass(
+      "bg-purple-400",
+    );
+    expect(onInsert).toHaveBeenCalledWith("prompt");
+  });
+
+  it("leaves the prompt cell out for hosts that cannot run prompts", () => {
+    render(<CellInsertionRibbon onInsert={vi.fn()} />);
+
+    expect(screen.queryByTitle("Add prompt cell")).toBeNull();
+  });
+
   it("uses the left insertion channel as the resting code target", () => {
     const onInsert = vi.fn();
     const { container } = render(<CellInsertionRibbon onInsert={onInsert} />);

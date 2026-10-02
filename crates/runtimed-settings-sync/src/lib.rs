@@ -640,6 +640,7 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         enable_comments: get_bool("enable_comments").unwrap_or(defaults.enable_comments),
         disable_auto_format: get_bool("disable_auto_format")
             .unwrap_or(defaults.disable_auto_format),
+        agent_command: get_str("agent_command").unwrap_or(defaults.agent_command),
         redact_env_values_in_outputs: get_bool("redact_env_values_in_outputs")
             .unwrap_or(defaults.redact_env_values_in_outputs),
         import_shell_environment: get_bool("import_shell_environment")
@@ -845,6 +846,16 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::Dark);
         assert_eq!(settings.default_runtime, Runtime::Deno);
         assert_eq!(settings.default_python_env, PythonEnvType::Conda);
+    }
+
+    #[test]
+    fn test_get_all_reads_agent_command() {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "agent_command", "/opt/agents/my-agent")
+            .unwrap();
+
+        let settings = get_all_from_doc(&doc);
+        assert_eq!(settings.agent_command, "/opt/agents/my-agent");
     }
 
     #[test]

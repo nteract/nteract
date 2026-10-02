@@ -1551,6 +1551,18 @@ async fn connect_local_id_progressive(
     Ok(notebook_session_response(response, &notebook_id))
 }
 
+fn pin_allows(target: &NotebookTarget, pinned: Option<&str>) -> bool {
+    let Some(pinned) = pinned else {
+        return true;
+    };
+    match target {
+        NotebookTarget::LocalNotebookId(notebook_id) => {
+            uuid::Uuid::parse_str(notebook_id).ok() == uuid::Uuid::parse_str(pinned).ok()
+        }
+        _ => false,
+    }
+}
+
 /// Open a notebook through a monotonic, same-target-coalescing activation.
 pub async fn open_notebook(
     server: &NteractMcp,
@@ -1587,6 +1599,16 @@ pub async fn open_notebook(
             }
         }
     };
+
+    if !pin_allows(&target, server.pinned_notebook.as_deref()) {
+        return Err(McpError::invalid_params(
+            format!(
+                "This server may only connect to notebook_id {}",
+                server.pinned_notebook.as_deref().unwrap_or_default()
+            ),
+            None,
+        ));
+    }
 
     let (target, canonical_target) = match target {
         NotebookTarget::LocalPath(path) => {
@@ -2061,6 +2083,44 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
 
+    #[test]
+    fn pinned_server_only_connects_to_the_pinned_notebook() {
+        let pinned = "0b7c2a40-5f7e-4a11-9d8e-6b8f0c1d2e3f";
+
+        assert!(pin_allows(
+            &NotebookTarget::LocalNotebookId(pinned.to_string()),
+            Some(pinned)
+        ));
+        assert!(pin_allows(
+            &NotebookTarget::LocalNotebookId(pinned.to_uppercase()),
+            Some(pinned)
+        ));
+        assert!(!pin_allows(
+            &NotebookTarget::LocalNotebookId(uuid::Uuid::new_v4().to_string()),
+            Some(pinned)
+        ));
+        assert!(!pin_allows(
+            &NotebookTarget::LocalPath("/tmp/other.ipynb".to_string()),
+            Some(pinned)
+        ));
+        assert!(!pin_allows(
+            &NotebookTarget::Hosted {
+                domain: "example.com".to_string(),
+                notebook_id: pinned.to_string(),
+                source: cloud::HostedTargetSource::Url,
+            },
+            Some(pinned)
+        ));
+    }
+
+    #[test]
+    fn unpinned_server_connects_anywhere() {
+        assert!(pin_allows(
+            &NotebookTarget::LocalPath("/tmp/any.ipynb".to_string()),
+            None
+        ));
+    }
+
     fn test_incarnation(pid: u32) -> DaemonIncarnation {
         DaemonIncarnation {
             pid,
@@ -2101,6 +2161,48 @@ mod tests {
         );
         assert!(!error.message.contains("could not canonicalize"));
         assert!(server.session.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn pinned_server_refuses_to_connect_to_another_notebook() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None)
+            .with_local_runtime_admission(None)
+            .with_pinned_notebook("0b7c2a40-5f7e-4a11-9d8e-6b8f0c1d2e3f");
+        let request = make_request(
+            "connect_notebook",
+            serde_json::json!({"notebook_id": "12345678-1234-1234-1234-123456789abc"}),
+        );
+
+        let error = open_notebook(&server, &request).await.unwrap_err();
+
+        assert!(
+            error
+                .message
+                .contains("may only connect to notebook_id 0b7c2a40-5f7e-4a11-9d8e-6b8f0c1d2e3f"),
+            "{error:?}"
+        );
+        assert!(server.session.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn pinned_server_still_connects_to_its_own_notebook() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = NteractMcp::new(dir.path().join("missing.sock"), None, None)
+            .with_local_runtime_admission(None)
+            .with_pinned_notebook("12345678-1234-1234-1234-123456789abc");
+        let request = make_request(
+            "connect_notebook",
+            serde_json::json!({"notebook_id": "12345678-1234-1234-1234-123456789abc"}),
+        );
+
+        let error = open_notebook(&server, &request).await.unwrap_err();
+
+        assert!(!error.message.contains("may only connect"), "{error:?}");
+        assert!(
+            error.message.contains("automatic startup is unavailable"),
+            "{error:?}"
+        );
     }
 
     #[tokio::test]
