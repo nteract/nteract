@@ -239,14 +239,21 @@ its causal preconditions are met while sync continues unblocked.
 
 Settings have two distinct client shapes:
 
-- **Long-lived watchers** use `SyncClient::connect` and keep the initial
-  quiescence loop because they are about to wait on the same stream for future
-  daemon fanout.
+- **Long-lived watchers** use `SyncClient::connect`, then keep receiving
+  `recv_changes`. ACK-only frames are processed without emitting document changes.
+  Watch writes send immediately and require continued receiving. Failed or
+  cancelled writes close the connection in both modes; reconnect before retrying.
 - **One-shot command paths** use `SyncClient::connect_snapshot` /
-  `connect_snapshot_with_timeout`. They still perform as many Automerge rounds
-  as needed to satisfy the daemon's advertised heads, but they do not pay the
-  final blind 100ms receive timeout once the snapshot is causally present. The
-  snapshot exchange must remain bounded by a protocol timeout.
+  `connect_snapshot_with_timeout`. Their writes drive heads/need exchanges
+  until the daemon confirms all local changes, with a two-second deadline.
+  Sending one frame alone is insufficient because Bloom false positives can
+  require another round. A failed or cancelled write closes the connection.
+
+Both paths wait until the daemon's advertised heads are present, bounded by
+one deadline covering connection, handshake, and initial sync. Neither probes
+for quiescence with a timed partial-frame read. Initialization timeout or
+cancellation drops the connection; callers reconnect with fresh peer state.
+If a `recv_changes` future is cancelled, discard that client and reconnect.
 
 Do not route connected-window settings UX through the JSON watcher. The daemon
 persists `settings.json` for durability and imports external edits through a
