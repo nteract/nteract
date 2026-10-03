@@ -102,3 +102,7 @@ pub fn daemon_version() -> &'static str {
         )
     })
 }
+
+// Temporary, opt-in Windows restart investigation.
+#[cfg(windows)]
+mod windows_pipe_diagnostics;

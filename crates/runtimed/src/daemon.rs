@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 use tokio::net::UnixListener;
 
 #[cfg(windows)]
-use tokio::net::windows::named_pipe::ServerOptions;
+use crate::windows_pipe_diagnostics::TrackedPipe;
 
 use tokio::sync::RwLock;
 
@@ -2130,6 +2130,13 @@ impl Daemon {
         std::time::Duration::from_secs(300)
     }
 
+    /// Enable pipe lifetime observations for this test endpoint only.
+    #[cfg(windows)]
+    #[doc(hidden)]
+    pub fn trace_pipe_lifetime_for_test(&self) {
+        crate::windows_pipe_diagnostics::enable_for_test(&self.config.socket_path);
+    }
+
     /// Run the daemon server.
     pub async fn run(self: Arc<Self>) -> anyhow::Result<()> {
         // Platform-specific setup
@@ -2481,14 +2488,12 @@ impl Daemon {
         info!("[runtimed] Listening on {}", pipe_name);
 
         // Create the first pipe server instance
-        let mut server = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(&pipe_name)?;
+        let mut server = TrackedPipe::create(&pipe_name, true)?;
 
         loop {
             tokio::select! {
                 // Wait for a client to connect
-                connect_result = server.connect() => {
+                connect_result = server.inner.connect() => {
                     if let Err(e) = connect_result {
                         error!("[runtimed] Pipe connect error: {}", e);
                         continue;
@@ -2499,12 +2504,12 @@ impl Daemon {
 
                     // Create a new server instance BEFORE spawning the handler
                     // This allows new clients to connect while we handle the current one
-                    server = match ServerOptions::new().create(&pipe_name) {
+                    server = match TrackedPipe::create(&pipe_name, false) {
                         Ok(s) => s,
                         Err(e) => {
                             error!("[runtimed] Failed to create new pipe server: {}", e);
                             // Try to recover by creating a new first instance
-                            match ServerOptions::new().first_pipe_instance(true).create(&pipe_name) {
+                            match TrackedPipe::create(&pipe_name, true) {
                                 Ok(s) => s,
                                 Err(e) => {
                                     error!("[runtimed] Fatal: cannot create pipe server: {}", e);

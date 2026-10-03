@@ -308,6 +308,36 @@ async fn stop_daemon_for_replacement(
     }
 }
 
+// Write directly so observations are retained even when a probe passes under
+// the unchanged Build workflow's normal libtest output capture.
+macro_rules! diagnostic {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
+// Diagnostic-only strict boundary for the failing receipt restart fixture.
+async fn stop_daemon_for_diagnostic_replacement(
+    pool_client: &PoolClient,
+    daemon_handle: &mut tokio::task::JoinHandle<()>,
+) {
+    let shutdown = pool_client.shutdown().await;
+    diagnostic!("[restart-diagnostic] shutdown response: {shutdown:?}");
+    shutdown.expect("replacement requires a successful shutdown response");
+    match tokio::time::timeout(Duration::from_secs(2), &mut *daemon_handle).await {
+        Ok(result) => {
+            diagnostic!("[restart-diagnostic] daemon task completed: {result:?}");
+            result.expect("replacement requires a successful daemon task");
+        }
+        Err(error) => {
+            daemon_handle.abort();
+            let result = daemon_handle.await;
+            panic!("daemon did not stop before replacement: {error}; abort result={result:?}");
+        }
+    }
+}
+
 fn replacement_config(mut config: DaemonConfig, temp_dir: &TempDir, suffix: &str) -> DaemonConfig {
     // The test binary's global shutdown callback deliberately retains the
     // first in-process daemon. A real restart is a new process and releases
@@ -1140,6 +1170,8 @@ async fn test_strict_sync_receipt_cross_peer_and_restart_without_export() {
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
+    #[cfg(windows)]
+    daemon.trace_pipe_lifetime_for_test();
     let daemon_for_inspect = daemon.clone();
     let mut daemon_handle = tokio::spawn(async move { daemon.run().await.unwrap() });
     let pool = PoolClient::new(socket_path.clone());
@@ -1234,7 +1266,7 @@ async fn test_strict_sync_receipt_cross_peer_and_restart_without_export() {
     drop(changed);
     drop(peer);
     drop(owner);
-    stop_daemon_for_replacement(&pool, &mut daemon_handle).await;
+    stop_daemon_for_diagnostic_replacement(&pool, &mut daemon_handle).await;
 
     // No SaveNotebook request or .ipynb file exists: restart must use recovery.
     let daemon = Daemon::new_for_test(replacement_config(config, &temp_dir, "receipt")).unwrap();
@@ -1256,7 +1288,7 @@ async fn test_strict_sync_receipt_cross_peer_and_restart_without_export() {
         "accepted = 2"
     );
     drop(recovered);
-    stop_daemon_for_replacement(&pool, &mut daemon_handle).await;
+    stop_daemon_for_diagnostic_replacement(&pool, &mut daemon_handle).await;
 }
 
 #[tokio::test]
@@ -5917,3 +5949,7 @@ async fn test_released_claim_reacquired_on_reconnect_and_held_under_peers() {
     drop(rejoined);
     stop_claiming_daemon(&socket_a, handle_a).await;
 }
+
+#[cfg(windows)]
+#[path = "support/windows_restart_diagnostics.rs"]
+mod windows_restart_diagnostics;
