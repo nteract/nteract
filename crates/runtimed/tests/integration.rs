@@ -771,9 +771,11 @@ async fn test_settings_json_mirror_write_does_not_feedback_loop() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    let mut writer = SyncClient::connect_with_timeout(socket_path.clone(), Duration::from_secs(2))
-        .await
-        .expect("writer SyncClient should connect");
+    // Use the desktop's one-shot write contract, including daemon confirmation.
+    let mut writer =
+        SyncClient::connect_snapshot_with_timeout(socket_path.clone(), Duration::from_secs(2))
+            .await
+            .expect("writer SyncClient should connect");
     let mut observer = SyncClient::connect_with_timeout(socket_path, Duration::from_secs(2))
         .await
         .expect("observer SyncClient should connect");
