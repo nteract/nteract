@@ -188,59 +188,60 @@ describe("OwnerComputeIndex lease notifications and GC", () => {
     assert.match(events.notifications[0].body.reason as string, /lease expired/);
   });
 
-  it("fails active attach jobs when a lease lapses", async () => {
-    const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
-    const events = fakeWorkstationEvents();
-    const rooms = fakeNotebookRooms();
-    const jobs = new Map<string, WorkstationAttachJobRow>([
-      ["pending-job", attachJob("pending-job", "pending", { notebook_id: "nb-pending" })],
-      ["accepted-job", attachJob("accepted-job", "accepted", { notebook_id: "nb-accepted" })],
-      ["running-job", attachJob("running-job", "running", { notebook_id: "nb-running" })],
-      ["completed-job", attachJob("completed-job", "completed", { notebook_id: "nb-done" })],
-    ]);
-    const object = new OwnerComputeIndex(state, {
-      ...events.env,
-      DB: fakeAttachJobsDb(jobs),
-      NOTEBOOK_ROOMS: rooms.namespace,
-    } as Env);
+  for (const checkpointPersisted of [true, false])
+    it(`fails active attach jobs when a lease lapses despite repair checkpoint_persisted:${checkpointPersisted}`, async () => {
+      const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
+      const events = fakeWorkstationEvents();
+      const rooms = fakeNotebookRooms(checkpointPersisted);
+      const jobs = new Map<string, WorkstationAttachJobRow>([
+        ["pending-job", attachJob("pending-job", "pending", { notebook_id: "nb-pending" })],
+        ["accepted-job", attachJob("accepted-job", "accepted", { notebook_id: "nb-accepted" })],
+        ["running-job", attachJob("running-job", "running", { notebook_id: "nb-running" })],
+        ["completed-job", attachJob("completed-job", "completed", { notebook_id: "nb-done" })],
+      ]);
+      const object = new OwnerComputeIndex(state, {
+        ...events.env,
+        DB: fakeAttachJobsDb(jobs),
+        NOTEBOOK_ROOMS: rooms.namespace,
+      } as Env);
 
-    await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
-    const stored = values.get("lease:ws-a") as Record<string, unknown>;
-    values.set("lease:ws-a", { ...stored, lease_expires_at: Date.now() - 1 });
+      await object.fetch(leaseUpsert("ws-a", "user:dev:alice", 60_000));
+      const stored = values.get("lease:ws-a") as Record<string, unknown>;
+      values.set("lease:ws-a", { ...stored, lease_expires_at: Date.now() - 1 });
 
-    deliverAlarm();
-    await object.alarm();
-    await settle();
+      deliverAlarm();
+      await object.alarm();
+      await settle();
 
-    const expectedError = "workstation lease expired: no heartbeat within the lease window";
-    for (const jobId of ["pending-job", "accepted-job", "running-job"]) {
-      assert.equal(jobs.get(jobId)?.status, "failed");
-      assert.equal(jobs.get(jobId)?.error_message, expectedError);
-      assert.ok(jobs.get(jobId)?.finished_at);
-    }
-    assert.equal(jobs.get("completed-job")?.status, "completed");
-    assert.equal(jobs.get("completed-job")?.error_message, null);
+      const expectedError = "workstation lease expired: no heartbeat within the lease window";
+      for (const jobId of ["pending-job", "accepted-job", "running-job"]) {
+        assert.equal(jobs.get(jobId)?.status, "failed");
+        assert.equal(jobs.get(jobId)?.error_message, expectedError);
+        assert.ok(jobs.get(jobId)?.finished_at);
+      }
+      assert.equal(jobs.get("completed-job")?.status, "completed");
+      assert.equal(jobs.get("completed-job")?.error_message, null);
 
-    const attachNotifications = events.notifications.filter(
-      (entry) => entry.body.event === "attach_jobs",
-    );
-    assert.deepEqual(
-      new Set(attachNotifications.map((entry) => entry.body.job_id)),
-      new Set(["pending-job", "accepted-job", "running-job"]),
-    );
-    assert.equal(
-      events.notifications.some((entry) => entry.body.event === "went_offline"),
-      true,
-    );
-    assert.deepEqual(
-      new Set(rooms.repairs.map((repair) => repair.body.expected_runtime_session_id)),
-      new Set(["pending-job", "accepted-job", "running-job"]),
-    );
-    assert.equal(
-      rooms.repairs.every((repair) => repair.body.reason === expectedError),
-      true,
-    );
-  });
+      const attachNotifications = events.notifications.filter(
+        (entry) => entry.body.event === "attach_jobs",
+      );
+      assert.deepEqual(
+        new Set(attachNotifications.map((entry) => entry.body.job_id)),
+        new Set(["pending-job", "accepted-job", "running-job"]),
+      );
+      assert.equal(
+        events.notifications.some((entry) => entry.body.event === "went_offline"),
+        true,
+      );
+      assert.deepEqual(
+        new Set(rooms.repairs.map((repair) => repair.body.expected_runtime_session_id)),
+        new Set(["pending-job", "accepted-job", "running-job"]),
+      );
+      assert.equal(
+        rooms.repairs.every((repair) => repair.body.reason === expectedError),
+        true,
+      );
+    });
 
   it("does not retire managed Python sessions when browser-driven discovery expires", async () => {
     const { state, values, settle, deliverAlarm } = fakeStateWithAlarm();
@@ -415,7 +416,7 @@ function fakeWorkstationEvents(): {
   };
 }
 
-function fakeNotebookRooms(): {
+function fakeNotebookRooms(checkpointPersisted = true): {
   namespace: DurableObjectNamespace;
   repairs: Array<{ objectName: string; body: Record<string, unknown> }>;
 } {
@@ -428,7 +429,11 @@ function fakeNotebookRooms(): {
           objectName: id.name,
           body: (await request.json()) as Record<string, unknown>,
         });
-        return Response.json({ ok: true, repaired: true });
+        return Response.json({
+          ok: true,
+          repaired: true,
+          checkpoint_persisted: checkpointPersisted,
+        });
       },
     }),
   };

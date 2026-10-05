@@ -9,6 +9,81 @@ import { fixture, sync } from "./preview-python-helpers.mjs";
 import { RuntimeStatePeerHandle } from "../src/runtimed-wasm.ts";
 import { encodeTypedFrame } from "../src/protocol.ts";
 
+for (const phase of ["final_start", "pre_execution"])
+  test(`managed ${phase} checkpoint rejection propagates and cleanup still completes`, async (t) => {
+    await initializeTestRuntimedWasm();
+    const { host } = await fixture(t);
+    host.set_workstation_attachment_json(
+      JSON.stringify({
+        workstation_id: "celld-preview-python",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "connecting",
+        runtime_session_id: "session",
+      }),
+    );
+    let rejectCheckpoint = false,
+      checkpoints = 0,
+      removed = 0;
+    const requests = [];
+    const materializer = {
+      getCloudPackageManifest: async () => null,
+      setCloudPackageState: async (sessionId, value) =>
+        host.set_cloud_package_state_json(sessionId, JSON.stringify(value)),
+      syncPeer: async (peer) => host.sync_peer(peer.id, peer.identity.scope),
+      receiveFrame: async (peer, frame) =>
+        host.receive_peer_frame(
+          peer.id,
+          peer.identity.principal,
+          peer.identity.actorLabel,
+          peer.identity.scope,
+          false,
+          encodeTypedFrame(frame.type, frame.payload),
+        ),
+      checkpoint: async () => {
+        checkpoints++;
+        if (rejectCheckpoint || (phase === "final_start" && checkpoints === 2))
+          throw new Error("checkpoint rejected");
+      },
+      removePeer: async (id) => {
+        removed++;
+        host.remove_peer(id);
+      },
+    };
+    let runtime;
+    runtime = new ManagedPythonRoom(
+      {
+        NOTEBOOK_CLOUD_PYTHON_PROVIDER: "celld",
+        PREVIEW_PYTHON_SESSIONS: {
+          idFromName: (name) => name,
+          get: () => ({
+            fetch: async (request) => {
+              requests.push(new URL(request.url).pathname);
+              return Response.json({ ok: true });
+            },
+          }),
+        },
+      },
+      materializer,
+      "notebook",
+      "user:dev:owner",
+      "session",
+      (result) => runtime.accept(result),
+    );
+    if (phase === "final_start") await assert.rejects(runtime.start(), /checkpoint rejected/);
+    else {
+      await runtime.start();
+      rejectCheckpoint = true;
+      await assert.rejects(runtime.wake(), /checkpoint rejected/);
+    }
+    await runtime.close();
+    assert.equal(removed, 1);
+    assert.equal(requests.at(-1), "/close");
+    assert.ok(!requests.includes("/execute"), "checkpoint refusal cannot dispatch execution");
+  });
+
 for (const failurePhase of ["before_install", "after_install", "unconfirmed_install"])
   test(`package publication failure preserves recovery state: ${failurePhase}`, async (t) => {
     await initializeTestRuntimedWasm();
