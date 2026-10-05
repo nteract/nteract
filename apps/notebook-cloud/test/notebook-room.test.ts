@@ -8537,7 +8537,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
       release = gate();
     let busy = false;
     Object.assign(room, {
-      markSelectedRuntimeSessionCompletedForIdle: async () => {
+      markIdleRuntimeSessionCompleted: async () => {
         entered.resolve();
         await release.promise;
       },
@@ -8568,7 +8568,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
     let checkpoints = 0,
       deliveries = 0;
     Object.assign(room, {
-      markSelectedRuntimeSessionCompletedForIdle: async () => {
+      markIdleRuntimeSessionCompleted: async () => {
         throw new Error("catalog unavailable");
       },
       deliverRoomHostFrames: () => {
@@ -8629,7 +8629,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
     };
     let catalogCompletions = 0;
     Object.assign(room, {
-      markSelectedRuntimeSessionCompletedForIdle: async () => {
+      markIdleRuntimeSessionCompleted: async () => {
         catalogCompletions++;
       },
     });
@@ -8826,7 +8826,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
       let busy = false,
         catalogCompletions = 0;
       Object.assign(room, {
-        markSelectedRuntimeSessionCompletedForIdle: async () => {
+        markIdleRuntimeSessionCompleted: async () => {
           catalogCompletions++;
         },
       });
@@ -8997,7 +8997,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
             busy ? { executing: true, queueDepth: 0 } : activity();
         }
         Object.assign(room, {
-          markSelectedRuntimeSessionCompletedForIdle: async () => {
+          markIdleRuntimeSessionCompleted: async () => {
             entered.resolve();
             await release.promise;
           },
@@ -9064,14 +9064,31 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
       }
     });
 
-  for (const replacement of [false, true])
-    it(`fences accepted idle authority after runtime delivery fails (${replacement ? "newer selection" : "same selection"})`, async (t) => {
+  for (const continuation of ["send failure", "replacement", "removed peer"] as const)
+    it(`completes only the accepted idle session after ${continuation}`, async (t) => {
       const fixture = alarmCapableState();
-      const room = new NotebookRoom(fixture.state, {} as Env);
+      const db = new ResumeNotebookD1();
+      const env = { DB: db } as unknown as Env;
+      const room = new NotebookRoom(fixture.state, env);
       await fixture.drain();
       const harness = roomHarness(room);
-      const materializer = new RoomMaterializer("demo", fixture.state, {} as Env);
+      const materializer = new RoomMaterializer("demo", fixture.state, env);
       harness.materializers.set("demo", materializer as never);
+      for (const id of ["old", "new"])
+        db.attachJobs.push({
+          id,
+          notebook_id: "demo",
+          owner_principal: "user:dev:alice",
+          workstation_id: "ws-lab2",
+          status: id === "old" ? "running" : "pending",
+          trigger: "user_attach",
+          requested_by_actor_label: "user:dev:alice/browser",
+          requested_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          accepted_at: null,
+          finished_at: null,
+          error_message: null,
+        });
       const attachment = {
         workstation_id: "ws-lab2",
         display_name: "Lab2",
@@ -9088,11 +9105,14 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
         ): Promise<{ runtimeSessionId: string; status: string } | null>;
         cacheSelectedRuntimePeerSession(n: string, a: typeof attachment): void;
         handleRuntimeIdleWatchAlarm(n: string): Promise<void>;
+        withRuntimePeerWatchSuppressed(callback: () => void): void;
       };
       assert.equal((await lifecycle.selectedRuntimePeerSession("demo"))?.status, "ready");
       const peer = peerWithScope("rt", "runtime_peer");
       peer.workstation = { workstationId: "ws-lab2", runtimeSessionId: "old" };
       harness.peers.set(peer.id, peer);
+      const replacementPeer = peerWithScope("new-rt", "runtime_peer");
+      replacementPeer.workstation = { workstationId: "ws-lab2", runtimeSessionId: "new" };
       const socket = peer.socket as unknown as FakeSocket;
       const client = NotebookHandle.create_bootstrap("runtime");
       t.after(() => client.free());
@@ -9118,40 +9138,54 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
       await fixture.state.storage.delete("runtime_idle_watch");
       await fixture.state.storage.delete("runtime_idle_watch_alarm_at");
       let changed = false,
-        sends = 0,
-        catalogCompletions = 0;
-      Object.assign(room, {
-        markSelectedRuntimeSessionCompletedForIdle: async () => {
-          catalogCompletions++;
-        },
-      });
+        sends = 0;
       peer.socket.send = () => {
         sends++;
         throw new Error("runtime socket closed");
       };
       const reconcile = materializer.reconcileRuntimeIdleTimeout.bind(materializer);
       materializer.reconcileRuntimeIdleTimeout = async (...args) => {
-        const result = await reconcile(...args);
-        changed = result.changed;
-        if (replacement)
-          lifecycle.cacheSelectedRuntimePeerSession("demo", {
+        const pending = reconcile(...args);
+        if (continuation === "replacement") {
+          const replacement = {
             ...attachment,
             runtime_session_id: "new",
-          });
+            status: "connecting",
+          };
+          // Queue the replacement before reconciliation returns. A separate
+          // attachment read after that operation would capture the wrong job.
+          await materializer.setWorkstationAttachment(replacement);
+          lifecycle.cacheSelectedRuntimePeerSession("demo", replacement);
+          harness.peers.set(replacementPeer.id, replacementPeer);
+        }
+        const result = await pending;
+        changed = result.changed;
+        if (continuation === "removed peer")
+          lifecycle.withRuntimePeerWatchSuppressed(() => harness.removePeer("demo", peer));
         return result;
       };
       await lifecycle.handleRuntimeIdleWatchAlarm("demo");
       await fixture.drain();
       assert.equal(changed, true);
-      assert.ok(sends > 0, "accepted real-host output attempted runtime delivery");
-      assert.equal(catalogCompletions, 1, "socket send failure must not skip catalog completion");
-      assert.equal((await materializer.getWorkstationAttachment())?.status, "idle");
+      if (continuation !== "removed peer")
+        assert.ok(sends > 0, "accepted real-host output attempted runtime delivery");
+      assert.equal(db.attachJobs[0].status, "completed", "accepted idle job must complete");
+      assert.equal(db.attachJobs[1].status, "pending", "replacement job must remain available");
+      const replacement = continuation === "replacement";
+      assert.equal(
+        (await materializer.getWorkstationAttachment())?.status,
+        replacement ? "connecting" : "idle",
+      );
       assert.equal(harness.peers.has(peer.id), false);
       assert.equal(await fixture.state.storage.get("runtime_peer_gone_watch"), undefined);
       assert.ok(await fixture.state.storage.get("room-host:checkpoint"));
       const selected = await lifecycle.selectedRuntimePeerSession("demo");
       assert.equal(selected?.runtimeSessionId, replacement ? "new" : "old");
-      assert.equal(selected?.status, replacement ? "ready" : "idle");
+      assert.equal(selected?.status, replacement ? "connecting" : "idle");
+      if (replacement) {
+        assert.equal(harness.peers.get(replacementPeer.id), replacementPeer);
+        assert.equal((replacementPeer.socket as unknown as FakeSocket).closed, false);
+      }
       assert.notEqual(
         await harness.runtimePeerAuthorityError!("demo", peer.workstation),
         null,
@@ -9352,7 +9386,7 @@ describe("NotebookRoom stale-activation defense-in-depth (#4295)", () => {
     let tornDown = 0;
     Object.assign(room, {
       hasRuntimePeer: () => true,
-      markSelectedRuntimeSessionCompletedForIdle: async () => {
+      markIdleRuntimeSessionCompleted: async () => {
         tornDown++;
       },
     });

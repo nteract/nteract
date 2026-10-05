@@ -287,10 +287,14 @@ export class RoomMaterializer {
   async reconcileRuntimeIdleTimeout(
     reason: string,
     updatedAt: string,
-  ): Promise<RoomHostFrameResult> {
-    return this.withHost((host) =>
-      normalizeResult(host.reconcile_runtime_idle_timeout(reason, updatedAt)),
-    );
+  ): Promise<RoomHostFrameResult & { idleAttachment: WorkstationAttachmentState | null }> {
+    return this.withHost((host) => {
+      const result = normalizeResult(host.reconcile_runtime_idle_timeout(reason, updatedAt));
+      // Capture the accepted session in the same host operation, before a
+      // queued attachment replacement can change the catalog completion target.
+      const attachment = normalizeWorkstationAttachmentJson(host.get_workstation_attachment_json());
+      return { ...result, idleAttachment: attachment?.status === "idle" ? attachment : null };
+    });
   }
 
   async receiveFrame(

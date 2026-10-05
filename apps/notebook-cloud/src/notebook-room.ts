@@ -3094,26 +3094,24 @@ export class NotebookRoom {
     }
   }
 
-  private async markSelectedRuntimeSessionCompletedForIdle(notebookId: string): Promise<void> {
+  private async markIdleRuntimeSessionCompleted(
+    notebookId: string,
+    attachment: WorkstationAttachmentState | null,
+  ): Promise<void> {
     if (!this.env.DB) {
       return;
     }
-    const materializer = this.materializerFor(notebookId);
-    const [notebook, attachment] = await Promise.all([
-      getNotebookRow(this.env, notebookId),
-      materializer.getWorkstationAttachment(),
-    ]);
     const workstationId = attachment?.workstation_id.trim();
     const runtimeSessionId = attachment?.runtime_session_id?.trim();
-    if (!notebook || !workstationId || !runtimeSessionId) {
-      return;
-    }
+    if (!workstationId || !runtimeSessionId) return;
+    const notebook = await getNotebookRow(this.env, notebookId);
+    if (!notebook) return;
     const ownerPrincipal =
       workstationId === MANAGED_PYTHON_WORKSTATION
         ? await managedPythonSessionOwner(this.env, notebookId, runtimeSessionId)
         : notebook.owner_principal;
     if (!ownerPrincipal) return;
-    const activity = await materializer.getRuntimeExecutionActivity();
+    const activity = await this.materializerFor(notebookId).getRuntimeExecutionActivity();
     if (activity.executing || activity.queueDepth > 0) return;
     if (
       !(await this.alarmTaskMatches(RUNTIME_IDLE_WATCH_KEY, RUNTIME_IDLE_WATCH_ALARM_AT_KEY, {
@@ -4272,7 +4270,7 @@ export class NotebookRoom {
       if (currentActivity.executing || currentActivity.queueDepth > 0) return;
       if (!(await watchMatches())) return;
       try {
-        await this.markSelectedRuntimeSessionCompletedForIdle(notebookId);
+        await this.markIdleRuntimeSessionCompleted(notebookId, result.idleAttachment);
       } catch (error) {
         // Catalog failure must not strand an already accepted host transition.
         cloudLog("warn", "room.runtime_idle_watch.catalog_completion_failed", {
