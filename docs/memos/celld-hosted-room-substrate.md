@@ -85,6 +85,55 @@ None of these are blocking for a lab proof. Several are blocking for treating
 restarts are an outage (observed 2026-09-11, 16s down), and the 3–4s/30s
 failover numbers are unmeasured on this deployment's Cloudflare Tunnel path.
 
+## Promotion gates
+
+Treating celld as more than a lab/demo substrate requires all of the following
+to hold for the exact promoted binary (SHA256-pinned):
+
+- **Activation authority** ([nteract#4295](https://github.com/nteract/nteract/issues/4295)):
+  an evicted Durable Object activation must not be able to write storage or
+  publish on a retained WebSocket when a sibling activation in the same isolate
+  resumes its retained JavaScript callback. The host must bind retained resource
+  authority to the activation identity that granted it, validate that identity
+  at the native effect boundary (write admission and delayed flush; WebSocket
+  publication), and revoke it on release before a replacement activation can
+  operate on the same scope — while still allowing a freshly activated handler
+  to use hibernated sockets. JavaScript wrapper checks alone are insufficient
+  authority. The regression probe
+  `apps/preview-python/test/stale-activation-celld.test.mjs` diagnoses retained
+  storage and socket effects against an isolated candidate binary. Its immediate
+  effects and controls are not proof of delayed-flush fencing or of the complete
+  native read/delete, sync KV, SQL, transaction, and alarm boundaries. Missing
+  native evidence keeps full qualification blocked. Repository-local room
+  checks and socket cleanup are defense-in-depth, not a substitute for host
+  revocation. Evidence must identify the exact executable and independently
+  observed effects; optional skipped developer tests are not qualification.
+  The explicit `qualify:activation` verification is separate from normal service
+  launch and preview deployment. A reviewed qualification decision must bind
+  source/native release-revocation, delayed-application/flush interleavings,
+  individual surface dispositions and build/child-execution evidence to the
+  candidate hash/platform and probe configuration. Content-hash verification
+  establishes evidence identity, not the authenticity of a claimed human review.
+  Unsupported APIs need source-backed unavailability and an explicit reviewed
+  policy; they are not automatically passing surfaces. No runtime admission
+  manifest, launch refusal or preview hiding is part of this correction.
+- **HTTP shared-promise ownership**
+  ([nteract#4296](https://github.com/nteract/nteract/issues/4296)) and the
+  hard-termination fixes on the Python Workers branch
+  (`apps/preview-python` runtime qualification section).
+
+Neither gate has a complete passing record as of 2026-10-02. A local automated
+run on SHA256 `91f6d7a470720c300efddf75e666f121c0f51bbaf7a245d9d76efffaefeecf57`
+reproduced the #4295 stale storage write and socket publication, including the
+timer-first variant. This is local qualification evidence, not a production
+incident claim or evidence about every newer binary. The current work changes
+only nteract's diagnostics and bounded room behavior, not the celld runtime.
+The recorded failure is preserved with its original probe-source identity; it
+does not imply that later harness revisions, either historical ticket artifact,
+or all supported deployment platforms were retested. Native authority and the
+other promotion requirements remain open until reviewed exact-candidate evidence
+is complete.
+
 ## Open questions
 
 1. Is the product driver for celld actually BYOC/self-hosted, or is it ops

@@ -302,7 +302,11 @@ test("managed startup, failure and resume charge the attach-job owner rather tha
   await room.startManagedPython("coowner", resumed.runtime_session_id);
   while (tasks.size) await Promise.all(tasks);
   assert.equal(calls.filter((call) => call.path === "/open").length, 2);
-  await room.markSelectedRuntimeSessionCompletedForIdle("coowner");
+  const { idleAttachment } = await materializer.reconcileRuntimeIdleTimeout(
+    "runtime idle timeout",
+    new Date().toISOString(),
+  );
+  await room.markIdleRuntimeSessionCompleted("coowner", idleAttachment);
   assert.equal(
     sqlite
       .prepare("SELECT status FROM workstation_attach_jobs WHERE id = ?")
