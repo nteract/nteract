@@ -264,8 +264,8 @@ async fn process_restart_recovers_journal_only_untitled_notebook() {
         "journal remains unchanged"
     );
     process_restart_evidence(format_args!(
-        "validated journal={journal:?}, UUID={}, durable_heads={}, bytes={}, sha256={:x}, legacy_snapshot_quarantined={quarantined}",
-        facts.notebook_id, facts.durable_head_count, journal_before.len(), Sha256::digest(&journal_before)
+        "validated journal={journal:?}, UUID={}, durable_heads={}, bytes={}, sha256={}, legacy_snapshot_quarantined={quarantined}",
+        facts.notebook_id, facts.durable_head_count, journal_before.len(), hex::encode(Sha256::digest(&journal_before))
     ));
 
     let mut second = start_product_daemon(root.path(), &socket);
