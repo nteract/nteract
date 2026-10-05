@@ -1,5 +1,8 @@
 "use client";
 
+import { useState } from "react";
+import { NotebookCommentPreview } from "@/components/notebook/NotebookCommentPreview";
+import type { CommentsProjection } from "@/components/notebook/comment-types";
 import { ProjectedMarkdownView } from "@/components/markdown/ProjectedMarkdownView";
 import type { MarkdownProjectionPlan } from "../../../src/lib/markdown-projection";
 
@@ -79,16 +82,66 @@ const commentHighlightPlan: MarkdownProjectionPlan = {
 };
 
 export function CommentHighlightSurfacesExample() {
+  const [projection, setProjection] = useState<CommentsProjection>({
+    comments_doc_id: "preview-fixture",
+    threads: [
+      {
+        id: "inline-thread",
+        anchor: { kind: "notebook" },
+        status: "open",
+        position: "0",
+        badge_cell_ids: [],
+        created_at: "2026-10-02T12:00:00Z",
+        messages: [
+          {
+            id: "opening",
+            position: "0",
+            created_at: "2026-10-02T12:00:00Z",
+            created_by_actor_label: "Ada",
+            body: "Keep the conversation beside the text. We can read the whole thread and reply here without losing our place in the notebook.",
+          },
+        ],
+      },
+    ],
+  });
   return (
     <div className="not-prose my-6">
       <article className="mx-auto max-w-[760px] border border-border bg-background px-6 py-5 text-foreground shadow-sm max-sm:px-4">
-        <ProjectedMarkdownView
-          plan={commentHighlightPlan}
-          commentHighlights={[
-            { from: 0, to: 16, color: "#16a34a", resolved: false },
-            { from: 60, to: 75, color: "#7c3aed", resolved: true },
-          ]}
-        />
+        <NotebookCommentPreview
+          projection={projection}
+          resolveCommentAuthor={(name) => ({ displayName: name, color: "#947435" })}
+          onReplyThread={(id, body) =>
+            setProjection((current) => ({
+              ...current,
+              threads: current.threads.map((thread) =>
+                thread.id === id
+                  ? {
+                      ...thread,
+                      messages: [
+                        ...thread.messages,
+                        {
+                          id: String(thread.messages.length),
+                          position: String(thread.messages.length),
+                          body,
+                          created_at: "2026-10-02T12:01:00Z",
+                          created_by_actor_label: "You",
+                        },
+                      ],
+                    }
+                  : thread,
+              ),
+            }))
+          }
+        >
+          <ProjectedMarkdownView
+            plan={commentHighlightPlan}
+            onActivateCommentThread={() => {}}
+            commentHighlights={[
+              { from: 0, to: 16, color: "#d4a72c", resolved: false, threadId: "inline-thread" },
+              { from: 60, to: 75, color: "#7c3aed", resolved: true },
+            ]}
+          />
+        </NotebookCommentPreview>
       </article>
     </div>
   );
