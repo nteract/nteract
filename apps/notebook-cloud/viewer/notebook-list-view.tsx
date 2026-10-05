@@ -135,6 +135,7 @@ export function CloudNotebookListView({
     notebookHome.seed(
       cloudNotebookListSeedFromBootstrapOrCache(authState, appSessionStatus.session, bootstrap),
       identityKey,
+      appSessionStatus.session?.cache_key,
     );
     return null;
   });
@@ -260,6 +261,7 @@ export function CloudNotebookListView({
       retryButtonRef.current !== null && retryButtonRef.current === document.activeElement;
     const deactivate = notebookHome.activate({
       identityKey,
+      sessionCacheKey: appSessionStatus.session?.cache_key,
       gate: canFetchNotebookList ? "open" : waitingForSession ? "waiting" : "closed",
       seed,
       waitMs: initialCheckFailed ? 0 : Math.max(0, appSessionWaitDeadline),

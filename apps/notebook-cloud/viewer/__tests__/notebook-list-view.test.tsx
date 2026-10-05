@@ -860,6 +860,87 @@ describe("CloudNotebookListView", () => {
     }
   });
 
+  it.each(["bootstrap", "refreshed"])(
+    "keeps the current %s list when same-credential account-key hydration refetch fails",
+    async (source) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubGlobal(
+        "WebSocket",
+        class extends EventTarget {
+          send() {}
+          close() {}
+        },
+      );
+      const session = { provider: "oidc" as const, expires_at: 99_999, cache_key: "session-a" };
+      const bootstrap = document.createElement("script");
+      bootstrap.id = "nteract-cloud-bootstrap";
+      bootstrap.type = "application/json";
+      bootstrap.textContent = JSON.stringify({
+        kind: "notebook-list",
+        saved_at: "2026-09-24T12:00:00Z",
+        session,
+        notebooks: [notebook("old", "Bootstrap notebook")],
+      });
+      document.body.append(bootstrap);
+      const serverConfig: CloudViewerAuthConfig = {
+        localDev: null,
+        oidc: {
+          flow: "server",
+          issuer: "https://issuer.test",
+          clientId: "client-id",
+          redirectUri: `${window.location.origin}/oidc`,
+        },
+      };
+      const initialList = deferred<Response>();
+      const refetch = deferred<Response>();
+      const fetchMock = vi.fn(() => refetch.promise).mockReturnValueOnce(initialList.promise);
+      vi.stubGlobal("fetch", fetchMock);
+      const hydration = deferred<CloudAppSessionStatus>();
+      const store = new CloudAuthStore({ readAuthState: anonymousAuth });
+      const dispose = store.activate(
+        { authConfig: serverConfig, initialSession: session },
+        { now: () => 0, readAppSessionStatus: () => hydration.promise },
+      );
+      try {
+        render(
+          <CloudAuthStoreProvider store={store}>
+            <CloudNotebookListView authConfig={serverConfig} />
+          </CloudAuthStoreProvider>,
+        );
+        expect(screen.getByText("Bootstrap notebook")).toBeTruthy();
+        if (source === "refreshed") {
+          await act(async () => {
+            initialList.resolve(
+              new Response(
+                JSON.stringify({ ok: true, notebooks: [notebook("new", "Current notebook")] }),
+              ),
+            );
+          });
+        }
+        const currentTitle = source === "refreshed" ? "Current notebook" : "Bootstrap notebook";
+        expect(screen.getByText(currentTitle)).toBeTruthy();
+        await act(async () => {
+          hydration.resolve({
+            ok: true,
+            session: { ...session, account_key: "account-a", display_name: "Alice Example" },
+          });
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(screen.getByText(currentTitle)).toBeTruthy();
+        await act(async () => {
+          refetch.reject(new Error("offline"));
+        });
+        expect(screen.getByText(currentTitle)).toBeTruthy();
+        expect(screen.queryByRole("status", { name: "Loading notebooks" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+        if (source === "refreshed") expect(screen.queryByText("Bootstrap notebook")).toBeNull();
+      } finally {
+        dispose();
+        bootstrap.remove();
+      }
+    },
+  );
+
   it("keeps cached notebooks visible when revalidation fails", async () => {
     const auth = oidcAuth("alice@example.test");
     const cachedNotebooks = [notebook("nb-cached", "Cached Notebook")];

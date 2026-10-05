@@ -29,6 +29,7 @@ export interface NotebookHomeState {
 
 export interface NotebookHomeDriver {
   identityKey: string | null;
+  sessionCacheKey?: string;
   gate: "open" | "waiting" | "closed";
   seed: CloudNotebookListSnapshot | null;
   waitMs: number;
@@ -58,10 +59,21 @@ export class CloudNotebookHomeStore extends ObservableStore<NotebookHomeState> {
     super(initialState());
   }
 
-  seed(seed: CloudNotebookListSnapshot | null, identityKey: string | null): void {
+  seed(
+    seed: CloudNotebookListSnapshot | null,
+    identityKey: string | null,
+    sessionCacheKey?: string,
+  ): void {
     // Session renewal changes credentials, not the authorized projection.
     if (identityKey !== null && identityKey === this.identityKey) return;
+    // Private session hydration adds the account key omitted from HTML. Keep
+    // the current projection only when it belongs to that exact credential.
+    const hydratesSameSession =
+      sessionCacheKey !== undefined &&
+      this.identityKey === `session:${sessionCacheKey}` &&
+      identityKey?.startsWith("account:");
     this.identityKey = identityKey;
+    if (hydratesSameSession) return;
     this.setState({
       ...initialState(),
       list: seed ? { kind: "ready", ...seed } : { kind: "loading" },
@@ -80,7 +92,7 @@ export class CloudNotebookHomeStore extends ObservableStore<NotebookHomeState> {
   activate(driver: NotebookHomeDriver): () => void {
     const epoch = ++this.epoch;
     const subscriptions = new Subscription();
-    this.seed(driver.seed, driver.identityKey);
+    this.seed(driver.seed, driver.identityKey, driver.sessionCacheKey);
     if (driver.gate === "closed") {
       this.identityKey = null;
       driver.clear();
