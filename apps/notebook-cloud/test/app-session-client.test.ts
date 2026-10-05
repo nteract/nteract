@@ -17,7 +17,10 @@ describe("cloud app session client", () => {
       fetchImpl: async (input, init) => {
         assert.equal(input, CLOUD_APP_SESSION_ENDPOINT);
         assert.equal(init?.credentials, "same-origin");
-        assert.deepEqual(init?.headers, { Accept: "application/json" });
+        assert.deepEqual(init?.headers, {
+          Accept: "application/json",
+          "X-Nteract-Session-Account-Key": "1",
+        });
         return Response.json({
           ok: true,
           session: { provider: "oidc", expires_at: 1_800, cache_key: "cache-a" },

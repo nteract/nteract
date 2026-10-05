@@ -2305,3 +2305,15 @@ body {
     max-width: min(10rem, 36vw);
   }
 }
+.nb-create-diagnostics {
+  width: 100%;
+  min-height: 8rem;
+  resize: vertical;
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+}
+
+.nb-create-dialog {
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+}

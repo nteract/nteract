@@ -1,5 +1,11 @@
 import type { Env as NotebookEnvironment } from "./cloudflare-types.ts";
-import { createServerAppSession, type CloudAppSession } from "./app-session.ts";
+import {
+  appSessionAccountKey,
+  APP_SESSION_ACCOUNT_KEY_HEADER,
+  createServerAppSession,
+  type CloudAppSession,
+} from "./app-session.ts";
+import { readCanonicalPrincipalForSession } from "./storage.ts";
 import {
   AuthError,
   authenticateOidcRequest,
@@ -560,6 +566,16 @@ export async function serverOidcSessionStatus(
               provider: session.provider,
               expires_at: session.expiresAt,
               cache_key: session.cacheKey,
+              ...(request.headers.get(APP_SESSION_ACCOUNT_KEY_HEADER) === "1"
+                ? {
+                    account_key: await appSessionAccountKey(
+                      env,
+                      session,
+                      (await readCanonicalPrincipalForSession(env, session.principal)) ??
+                        session.principal,
+                    ),
+                  }
+                : {}),
               ...(session.displayName ? { display_name: session.displayName } : {}),
             }
           : null,

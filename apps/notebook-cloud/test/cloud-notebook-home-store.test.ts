@@ -97,6 +97,69 @@ test("an account switch discards completions from the previous identity", async 
   stop();
 });
 
+test("a stable account-key change resets list state even when the session credential is unchanged", async () => {
+  const first = fixture();
+  const next = fixture();
+  const store = new CloudNotebookHomeStore();
+  const dispose = store.activate({
+    ...first.driver,
+    identityKey: "account:key-a",
+    sessionCacheKey: "session-a",
+    seed: { notebooks: [], totalCount: 1 },
+  });
+  assert.equal(store.snapshot.list.kind, "ready");
+  dispose();
+  const stop = store.activate({
+    ...next.driver,
+    identityKey: "account:key-b",
+    sessionCacheKey: "session-a",
+    seed: null,
+  });
+  assert.equal(store.snapshot.list.kind, "loading");
+  next.calls[0]!.resolve(body("bob"));
+  await settle();
+  assert.equal(store.snapshot.displayName, "bob");
+  stop();
+});
+
+test("account-key hydration with a different credential clears the previous list", () => {
+  const f = fixture();
+  const store = new CloudNotebookHomeStore();
+  store.seed({ notebooks: [], totalCount: 1 }, "session:session-a");
+  const stop = store.activate({
+    ...f.driver,
+    identityKey: "account:key-b",
+    sessionCacheKey: "session-b",
+  });
+  assert.equal(store.snapshot.list.kind, "loading");
+  stop();
+});
+
+test("credential renewal within a stable account keeps the latest authorized projection", async () => {
+  const first = fixture();
+  const next = fixture();
+  const store = new CloudNotebookHomeStore();
+  const seed = { notebooks: [], totalCount: 1 };
+  const dispose = store.activate({
+    ...first.driver,
+    identityKey: "account:key-a",
+    sessionCacheKey: "session-a",
+    seed,
+  });
+  first.calls[0]!.resolve(body());
+  await settle();
+  const latest = store.snapshot;
+  dispose();
+  const stop = store.activate({
+    ...next.driver,
+    identityKey: "account:key-a",
+    sessionCacheKey: "session-renewed",
+    seed,
+  });
+  assert.equal(store.snapshot, latest);
+  stop();
+});
+
 test("a failed refresh retries without waiting for another server event", async () => {
   const f = fixture();
   const store = new CloudNotebookHomeStore();

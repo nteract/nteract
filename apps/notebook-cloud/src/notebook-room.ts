@@ -2888,6 +2888,8 @@ export class NotebookRoom {
         error: String(closeError),
       });
     });
+    let operationFailure: unknown;
+    let operationFailed = false;
     try {
       await this.failManagedPythonSession(
         notebookId,
@@ -2895,10 +2897,13 @@ export class NotebookRoom {
         error,
         runtime.ownerPrincipal,
       );
-    } finally {
-      await closing;
-      if (reportCleanupFailure && cleanupFailure) throw cleanupFailure;
+    } catch (failure) {
+      operationFailure = failure;
+      operationFailed = true;
     }
+    await closing;
+    if (reportCleanupFailure && cleanupFailure) throw cleanupFailure;
+    if (operationFailed) throw operationFailure;
   }
 
   private async failManagedPythonSession(
