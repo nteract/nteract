@@ -136,6 +136,92 @@ afterEach(() => {
 });
 
 describe("Electron notebook host", () => {
+  it("exposes an immutable presentation snapshot without adding absent defaults", () => {
+    const presentation = { rail: { visible: false, side: "right" as const } };
+    const host = createElectronHost({
+      port: linkedPorts().renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+        presentation,
+      },
+    });
+    expect(host.presentation).toEqual(presentation);
+    expect(host.presentation).not.toBe(presentation);
+    expect(host.presentation?.rail?.initialCollapsed).toBeUndefined();
+    presentation.rail.visible = true;
+    expect(host.presentation?.rail?.visible).toBe(false);
+    host.transport.disconnect();
+  });
+
+  it("leaves presentation absent for existing bootstraps", () => {
+    const host = createElectronHost({
+      port: linkedPorts().renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+      },
+    });
+    expect(host.presentation).toBeUndefined();
+    expect("presentation" in host).toBe(false);
+    host.transport.disconnect();
+  });
+
+  it("rejects malformed presentation before installing port listeners", () => {
+    const ports = linkedPorts();
+    const listen = vi.spyOn(ports.renderer, "addEventListener");
+    const start = vi.spyOn(ports.renderer, "start");
+    expect(() =>
+      createElectronHost({
+        port: ports.renderer,
+        bootstrap: {
+          protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+          outputDocumentUrl: "app://nteract/output-frame.html",
+          presentation: { rail: { side: "bottom" } } as never,
+        },
+      }),
+    ).toThrow("Invalid notebook presentation");
+    expect(listen).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("hands validated rail commands from the native host to renderer handlers", async () => {
+    const ports = linkedPorts();
+    const nativeRelay = fakeRelay();
+    const server = serveElectronNotebookHost({
+      port: ports.main,
+      relay: nativeRelay.relay,
+      handler: { invoke: vi.fn() } as unknown as ElectronNotebookHostHandler,
+    });
+    const host = createElectronHost({
+      port: ports.renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+      },
+    });
+    const open = vi.fn();
+    const close = vi.fn();
+    host.commands.register("notebook.rail.open", open);
+    host.commands.register("notebook.rail.close", close);
+    server.emit("command", { id: "notebook.rail.open", payload: { panelId: "outline" } });
+    server.emit("command", { id: "notebook.rail.open", payload: { panelId: "packages" } });
+    server.emit("command", { id: "notebook.rail.close", payload: undefined });
+    for (const payload of [
+      null,
+      {},
+      { panelId: "comments" },
+      { panelId: "outline", extra: true },
+    ]) {
+      server.emit("command", { id: "notebook.rail.open", payload });
+    }
+    server.emit("command", { id: "notebook.rail.close", payload: {} });
+    await flushMessages();
+    expect(open.mock.calls).toEqual([[{ panelId: "outline" }], [{ panelId: "packages" }]]);
+    expect(close).toHaveBeenCalledExactlyOnceWith(undefined);
+    await server.close();
+  });
+
   it("keeps the renderer and main-process method allowlists in sync", () => {
     expect([...ELECTRON_MAIN_HOST_METHODS].sort()).toEqual(
       [...ELECTRON_RENDERER_HOST_METHODS].sort(),

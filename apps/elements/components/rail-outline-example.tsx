@@ -76,6 +76,7 @@ export function RailOutlineExample() {
   const scenario = getElementsNotebookScenario(scenarioId);
   const [activePanel, setActivePanel] = useState<NotebookRailPanelId>("outline");
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railSide, setRailSide] = useState<"left" | "right">("left");
   const [selectedOutlineItemId, setSelectedOutlineItemId] = useState<string | null>(null);
   const [focusedCellId, setFocusedCellId] = useState("cell-clean-code");
   const [fixturesSeededFor, setFixturesSeededFor] = useState<ElementsNotebookScenarioId | null>(
@@ -124,6 +125,7 @@ export function RailOutlineExample() {
   return (
     <NotebookHostProvider host={notebookHost}>
       <NotebookDocumentShell
+        railSide={railSide}
         className="not-prose min-h-[560px] overflow-hidden rounded-lg border border-fd-border bg-fd-card text-fd-card-foreground shadow-sm md:min-h-[700px] max-[599.98px]:[&_[data-slot=notebook-document-stage-content]]:hidden max-[599.98px]:[&_[data-slot=notebook-rail-panel]]:min-w-0 max-[599.98px]:[&_[data-slot=notebook-rail-panel]]:max-w-none max-[599.98px]:[&_[data-slot=notebook-rail-panel]]:flex-1 max-[599.98px]:[&_[data-testid=notebook-rail]]:w-full"
         stageClassName="min-w-0 bg-fd-muted/20"
         stageContentClassName="min-w-[320px]"
@@ -163,6 +165,7 @@ export function RailOutlineExample() {
         }
         rail={
           <NotebookDocumentRail
+            railSide={railSide}
             viewModel={viewModel}
             activePanelId={activePanel}
             collapsed={railCollapsed}
@@ -190,6 +193,8 @@ export function RailOutlineExample() {
         }
         notices={
           <ScenarioNotice
+            railSide={railSide}
+            onRailSideChange={setRailSide}
             scenario={scenario}
             focusedCellId={focusedCellId}
             selectedOutlineTitle={selectedOutlineItem?.title}
@@ -236,11 +241,15 @@ export function RailOutlineExample() {
 }
 
 function ScenarioNotice({
+  railSide,
+  onRailSideChange,
   scenario,
   focusedCellId,
   selectedOutlineTitle,
   onScenarioChange,
 }: {
+  railSide: "left" | "right";
+  onRailSideChange: (side: "left" | "right") => void;
   scenario: ElementsNotebookScenario;
   focusedCellId: string;
   selectedOutlineTitle?: string;
@@ -260,6 +269,19 @@ function ScenarioNotice({
       </section>
 
       <div className="rounded-lg border border-fd-border bg-fd-background p-3 text-xs leading-5 text-fd-muted-foreground">
+        <label className="mb-2 flex items-center gap-2">
+          Sidebar side
+          <select
+            value={railSide}
+            onChange={(event) =>
+              onRailSideChange(event.target.value === "right" ? "right" : "left")
+            }
+            className="rounded border border-fd-border bg-fd-card px-2 py-1"
+          >
+            <option value="left">Left</option>
+            <option value="right">Right</option>
+          </select>
+        </label>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {scenarioIds.map((id) => {
             const option = getElementsNotebookScenario(id);

@@ -39,8 +39,26 @@ describe("NotebookDocumentRail", () => {
     );
 
     expect(screen.getByTestId("notebook-rail")).toHaveAttribute("data-collapsed", "false");
+    expect(screen.getByTestId("notebook-rail")).toHaveAttribute("data-rail-side", "left");
     expect(screen.queryByText("Runtime packages")).not.toBeInTheDocument();
     expect(screen.getByText("Package details")).toBeVisible();
+  });
+
+  it("forwards the host-selected right edge", () => {
+    const { container } = render(
+      <NotebookDocumentRail
+        railSide="right"
+        viewModel={viewModel}
+        activePanelId="packages"
+        collapsed={false}
+        packagesPanel={<p>Package details</p>}
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("notebook-rail")).toHaveAttribute("data-rail-side", "right");
+    expect(container.querySelector('[data-slot="notebook-rail-panel"]')).toHaveClass("border-l");
   });
 
   it("names the packages panel without duplicating view-model summaries", () => {

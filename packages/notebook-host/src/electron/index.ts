@@ -5,6 +5,7 @@ import {
   type SaveBlockedReason,
 } from "runtimed";
 import { createCommandRegistry } from "../commands";
+import { normalizeNotebookPresentationConfig } from "../presentation";
 import type {
   HostBlobResolver,
   HostBlobs,
@@ -55,6 +56,7 @@ export function createElectronHost(options: CreateElectronHostOptions): Notebook
       `Unsupported Electron host protocol ${options.bootstrap.protocolVersion}; expected ${ELECTRON_HOST_PROTOCOL_VERSION}.`,
     );
   }
+  const presentation = normalizeNotebookPresentationConfig(options.bootstrap.presentation);
   const outputDocumentUrl = options.bootstrap.outputDocumentUrl.trim();
   const outputDocumentProtocol = new URL(outputDocumentUrl).protocol;
   if (["javascript:", "data:", "blob:"].includes(outputDocumentProtocol)) {
@@ -139,6 +141,7 @@ export function createElectronHost(options: CreateElectronHostOptions): Notebook
   const host: NotebookHost = {
     name: "electron",
     outputDocumentUrl,
+    ...(presentation !== undefined ? { presentation } : {}),
     transport,
     daemon: {
       isConnected: () => invoke("daemon.isConnected", undefined),

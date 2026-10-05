@@ -16,6 +16,47 @@ const items = [
 ] satisfies Array<{ id: PanelId; label: string; icon: typeof ListTree }>;
 
 describe("Rail", () => {
+  it("mirrors inline panel order and borders without replacing mounted content", () => {
+    const rail = (railSide: "left" | "right", collapsed = false) => (
+      <Rail
+        railSide={railSide}
+        activePanelId="packages"
+        collapsed={collapsed}
+        items={items}
+        panelTitle="Packages"
+        onActivePanelChange={vi.fn()}
+        onCollapsedChange={vi.fn()}
+      >
+        <input aria-label="Dependency" defaultValue="numpy" />
+      </Rail>
+    );
+    const { container, rerender } = render(rail("left"));
+    const aside = screen.getByTestId("rail");
+    const strip = container.querySelector('[data-slot="rail-strip-grid"]');
+    const panel = container.querySelector('[data-slot="rail-panel"]');
+    const input = screen.getByRole("textbox", { name: "Dependency" });
+    fireEvent.change(input, { target: { value: "pandas" } });
+
+    rerender(rail("right"));
+
+    expect(aside).toHaveClass("flex-row-reverse");
+    expect(aside).toHaveAttribute("data-rail-side", "right");
+    expect(aside.firstElementChild).toBe(strip);
+    expect(aside.lastElementChild).toBe(panel);
+    expect(panel).toHaveClass("border-l", ...RAIL_TAKEOVER_PANEL_CLASS_NAMES.split(" "));
+    expect(panel).not.toHaveClass("border-r");
+    expect(screen.getByRole("textbox", { name: "Dependency" })).toBe(input);
+    expect(input).toHaveValue("pandas");
+
+    rerender(rail("right", true));
+    expect(container.querySelector('[data-slot="rail-body"]')).toHaveClass("border-l");
+    expect(container.querySelector('[data-slot="rail-body"]')).not.toHaveClass("border-r");
+    expect(container.querySelector('[data-slot="rail-leading-slot"]')).not.toHaveClass(
+      "border-l",
+      "border-r",
+    );
+  });
+
   it("renders the active panel chrome and content", () => {
     const { container } = render(
       <Rail

@@ -30,10 +30,13 @@ export type {
   HostUpdaterState,
   HostWindow,
   NotebookHost,
+  NotebookPresentationConfig,
   TrustInfo,
   TyposquatWarning,
   Unlisten,
 } from "./types";
+
+export { isNotebookPresentationConfig, normalizeNotebookPresentationConfig } from "./presentation";
 
 export {
   type CommandHandler,
@@ -41,6 +44,7 @@ export {
   type CommandPayloads,
   type CommandRegistry,
   createCommandRegistry,
+  isNotebookCommand,
 } from "./commands";
 
 export { NotebookHostProvider, type NotebookHostProviderProps, useNotebookHost } from "./react";

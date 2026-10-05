@@ -295,7 +295,12 @@ flows.
 
 ### The runtime-peer image
 
-nteract publishes a container image that bundles everything a workstation
+**Image publication is temporarily disabled for both nightly and stable releases**
+while the release workflow's registry permissions are resolved. No new image tags
+are produced. See [local build instructions](../../images/runtime-peer/README.md).
+The registry/tag scheme below describes the intended publishing setup.
+
+The runtime-peer container image bundles everything a workstation
 needs: the `runtimed` daemon, the pairing CLI, and a Python 3.12 environment
 with the kernel base packages already installed (`ipykernel`, `ipywidgets`,
 `anywidget`, `nbformat`, `pyarrow>=14`, `uv` — the same set the daemon
@@ -305,7 +310,7 @@ installs into environments it manages). With this image there is no manual
 
 - **Registry and tags**: `ghcr.io/anaconda/nteract-runtime-peer`, tagged with
   the release version (`:<version>`), the channel (`:nightly` / `:stable`),
-  and `:latest` (stable only). Published by the release pipeline; the image's
+  and `:latest` (stable only). When publication resumes, the release pipeline produces these tags; the image's
   `runtimed --version` matches the release it was built from.
 - **Entrypoint**: `runtimed` (no default subcommand). Run it as
   `cloud-runtime-agent` / `workstation-agent`, or pair interactively first
@@ -320,10 +325,11 @@ installs into environments it manages). With this image there is no manual
   loopback inside the container. Nothing to expose.
 
 Pairing inside the container uses the bundled CLI (a first-run onboarding
-wizard in the image is planned as a follow-up; today you pair manually):
+wizard in the image is planned as a follow-up; today you pair manually).
+Build `nteract-runtime-peer:dev` locally using the instructions above first:
 
 ```bash
-docker run -it --entrypoint bash ghcr.io/anaconda/nteract-runtime-peer:<tag>
+docker run -it --entrypoint bash nteract-runtime-peer:dev
 nteract workstation connect https://<cloud-host> --code XXXX-XXXX-XXXX
 nteract workstation run --python-path "$(command -v python3)"
 ```

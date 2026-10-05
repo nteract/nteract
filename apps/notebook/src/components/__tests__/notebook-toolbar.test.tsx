@@ -104,7 +104,9 @@ describe("NotebookToolbar", () => {
 
     expect(screen.queryByRole("img", { name: "nteract" })).not.toBeInTheDocument();
     const appSource = readFileSync(resolve(process.cwd(), "apps/notebook/src/App.tsx"), "utf8");
-    expect(appSource).toMatch(/<NotebookDocumentRail\s+leadingSlot=\{<NotebookBrandMark \/>\}/);
+    expect(appSource).toMatch(
+      /<NotebookDocumentRail\b[\s\S]*?leadingSlot=\{<NotebookBrandMark \/>\}/,
+    );
   });
 
   describe("start button visibility", () => {

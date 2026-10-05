@@ -1,3 +1,4 @@
+import { NotebookCommentPreview } from "@/components/notebook/NotebookCommentPreview";
 import {
   useCallback,
   useEffect,
@@ -1271,7 +1272,6 @@ export function NotebookViewer({
     for (const thread of commentsProjection?.threads ?? []) {
       if (thread.anchor.kind !== "source_range") continue;
       const list = map.get(thread.anchor.cell_id) ?? [];
-      const firstMessage = thread.messages[0];
       const author = thread.created_by_actor_label
         ? resolveCloudCommentAuthor(thread.created_by_actor_label)
         : undefined;
@@ -1280,18 +1280,6 @@ export function NotebookViewer({
         anchor: thread.anchor,
         resolved: thread.status === "resolved",
         color: author?.color,
-        preview: firstMessage
-          ? {
-              authorName: author?.displayName ?? "Unknown",
-              authorColor: author?.color,
-              imageUrl: author?.imageUrl,
-              isAgent: author?.isAgent,
-              agentSlug: author?.agentSlug,
-              onBehalfOf: author?.onBehalfOf,
-              body: firstMessage.body,
-              replyCount: Math.max(0, thread.messages.length - 1),
-            }
-          : undefined,
       });
       map.set(thread.anchor.cell_id, list);
     }
@@ -1976,38 +1964,45 @@ export function NotebookViewer({
           >
             {signedOutGate}
             {notebookViewSurface.shouldRenderNotebookView ? (
-              <NotebookView
-                cellIds={notebookCellIds}
-                isLoading={notebookViewIsLoading}
-                capabilities={shellCapabilities}
-                canAcceptCellMutations={canAcceptCellMutations}
-                runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
-                sessionRuntimeState={connectionError ? "error" : "ready"}
-                onFocusCell={handleNotebookViewFocus}
-                onExecuteCell={handleCloudExecuteCell}
-                onRequestExecuteCell={
-                  canRequestCloudCellExecution ? handleCloudRequestExecuteCell : undefined
-                }
-                // A running cell's Stop is the same owner-gated Interrupt as the
-                // toolbar (the button is inert when the cell cannot execute).
-                onInterruptKernel={handleCloudInterruptRuntime}
-                onDeleteCell={handleCloudDeleteCell}
-                onAddCell={handleCloudAddCell}
-                onMoveCell={handleCloudMoveCell}
-                onChangeCellType={handleCloudChangeCellType}
-                onSetCellSourceHidden={handleCloudSetCellSourceHidden}
-                onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
-                onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
-                onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
-                onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
-                commentThreadsByCell={sourceCommentThreadsByCell}
-                pendingCommentAnchor={pendingSourceCommentAnchor}
-                markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
-                outputHostContext={outputHostContext}
-                deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
-                deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
-                autoFocusFirstCell={false}
-              />
+              <NotebookCommentPreview
+                projection={commentsProjection}
+                readOnly={!canWriteComments}
+                onReplyThread={handleReplyCommentThread}
+                resolveCommentAuthor={resolveCloudCommentAuthor}
+              >
+                <NotebookView
+                  cellIds={notebookCellIds}
+                  isLoading={notebookViewIsLoading}
+                  capabilities={shellCapabilities}
+                  canAcceptCellMutations={canAcceptCellMutations}
+                  runtime={notebookLanguageRef.current === "deno" ? "deno" : "python"}
+                  sessionRuntimeState={connectionError ? "error" : "ready"}
+                  onFocusCell={handleNotebookViewFocus}
+                  onExecuteCell={handleCloudExecuteCell}
+                  onRequestExecuteCell={
+                    canRequestCloudCellExecution ? handleCloudRequestExecuteCell : undefined
+                  }
+                  // A running cell's Stop is the same owner-gated Interrupt as the
+                  // toolbar (the button is inert when the cell cannot execute).
+                  onInterruptKernel={handleCloudInterruptRuntime}
+                  onDeleteCell={handleCloudDeleteCell}
+                  onAddCell={handleCloudAddCell}
+                  onMoveCell={handleCloudMoveCell}
+                  onChangeCellType={handleCloudChangeCellType}
+                  onSetCellSourceHidden={handleCloudSetCellSourceHidden}
+                  onSetCellOutputsHidden={handleCloudSetCellOutputsHidden}
+                  onCreateSourceComment={commentsUiSurface.onCreateSourceComment}
+                  onCreateOutputComment={commentsUiSurface.onCreateOutputComment}
+                  onActivateCommentThread={commentsUiSurface.onActivateCommentThread}
+                  commentThreadsByCell={sourceCommentThreadsByCell}
+                  pendingCommentAnchor={pendingSourceCommentAnchor}
+                  markdownHeadingAnchorsByCellId={notebookViewModel.markdownHeadingAnchorsByCellId}
+                  outputHostContext={outputHostContext}
+                  deferOutputIsolatedFramesUntilVisible={!shellCapabilities.canEditCells}
+                  deferredOutputIsolatedFrameRootMargin={CLOUD_VIEWER_OUTPUT_IFRAME_ROOT_MARGIN}
+                  autoFocusFirstCell={false}
+                />
+              </NotebookCommentPreview>
             ) : null}
           </CrdtBridgeProvider>
         </PresenceValueProvider>

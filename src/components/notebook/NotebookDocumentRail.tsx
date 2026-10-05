@@ -4,6 +4,7 @@ import type { NotebookOutlineItem } from "runtimed";
 import type { NotebookViewModel } from "./view-model";
 
 export interface NotebookDocumentRailProps {
+  railSide?: "left" | "right";
   viewModel: Pick<NotebookViewModel, "outlineItems" | "packages">;
   activePanelId: NotebookRailPanelId;
   collapsed: boolean;
@@ -25,6 +26,7 @@ export interface NotebookDocumentRailProps {
 }
 
 export function NotebookDocumentRail({
+  railSide = "left",
   viewModel,
   activePanelId,
   collapsed,
@@ -46,6 +48,7 @@ export function NotebookDocumentRail({
 }: NotebookDocumentRailProps) {
   return (
     <NotebookRail
+      railSide={railSide}
       activePanelId={activePanelId}
       collapsed={collapsed}
       outlineItems={viewModel.outlineItems}

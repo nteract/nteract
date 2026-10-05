@@ -118,6 +118,54 @@ The bootstrap rejects wildcard origins. Register custom Electron schemes as
 standard, secure schemes so both parent and iframe have stable, non-opaque
 origins.
 
+## Notebook presentation
+
+Renderers that support sidebar configuration advertise `presentation.rail` in
+the ready message's optional `capabilities` array. Check that capability before
+enabling the feature in a host consuming a pinned notebook UI archive. Protocol
+version compatibility alone does not imply presentation support.
+
+Pass initial configuration through `ElectronHostBootstrap.presentation`:
+
+```ts
+presentation: {
+  rail: {
+    visible: true,
+    side: "right",
+    initialCollapsed: true,
+    initialPanel: "packages",
+  },
+},
+```
+
+All fields are optional. Existing hosts keep the left-side, visible, collapsed
+Outline rail. Configuration is validated at the Electron handshake and copied
+into an immutable host snapshot. Invalid fields or values reject the bootstrap.
+The host supplies initial preferences; user interaction owns panel selection and
+collapse after boot. This contract does not grant document or runtime access,
+enable comments, or persist preferences in the notebook.
+
+Use the existing host server's typed command event for later user intents:
+
+```ts
+server.emit("command", {
+  id: "notebook.rail.open",
+  payload: { panelId: "packages" },
+});
+server.emit("command", { id: "notebook.rail.close", payload: undefined });
+```
+
+Open restores an initially hidden rail and expands the requested Outline or
+Packages panel. Close collapses the panel while retaining the visible icon strip.
+An embedding that initially hides the rail must provide an accessible restore
+action. Commands target only the notebook attached to that host connection.
+The Python/environment status indicator remains passive.
+
+The rail and its projections stay inside the notebook iframe. Hosts need no
+imports of application stores, CSS-based rail suppression, generic IPC, or daemon
+protocol changes. Preference persistence and live configuration updates are not
+part of this initial contract.
+
 ## Isolated output document
 
 The notebook production build emits `output-frame.html`. Serve it as a real
