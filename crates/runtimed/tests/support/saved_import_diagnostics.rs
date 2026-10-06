@@ -1,4 +1,4 @@
-//! Temporary diagnostics for the saved-file import restart fixture.
+//! Temporary diagnostics for adjacent saved-file UUID restart fixtures.
 //! Keep its polling, shutdown budget, and transport ownership unchanged.
 
 use std::io::Write;
@@ -12,13 +12,15 @@ use tokio::task::JoinHandle;
 
 #[derive(Clone)]
 pub struct Diagnostics {
+    fixture: &'static str,
     start: Instant,
     socket: PathBuf,
 }
 
 impl Diagnostics {
-    pub fn new(socket: &Path) -> Self {
+    pub fn new(fixture: &'static str, socket: &Path) -> Self {
         Self {
+            fixture,
             start: Instant::now(),
             socket: socket.to_owned(),
         }
@@ -28,7 +30,8 @@ impl Diagnostics {
         // Direct stderr retains diagnostics even when libtest captures a pass.
         let _ = writeln!(
             std::io::stderr(),
-            "[saved-import {:?} +{:?}] {message}",
+            "[restart-fixture {} {:?} +{:?}] {message}",
+            self.fixture,
             self.socket,
             self.start.elapsed()
         );

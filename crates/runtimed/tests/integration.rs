@@ -4466,14 +4466,20 @@ async fn test_notebook_sync_uuid_follows_saved_path_across_daemon_restart() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
+    let diagnostics = saved_import_diagnostics::Diagnostics::new(
+        "test_notebook_sync_uuid_follows_saved_path_across_daemon_restart",
+        &socket_path,
+    );
     let saved_path = temp_dir.path().join("saved-from-untitled.ipynb");
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
-    let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
-    });
+    let mut daemon_handle = diagnostics.spawn("initial", daemon);
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert!(
+        diagnostics
+            .ready("initial", &pool_client, &mut daemon_handle)
+            .await
+    );
 
     let created = connect::connect_create(socket_path.clone(), create_spec("test"))
         .await
@@ -4507,15 +4513,19 @@ async fn test_notebook_sync_uuid_follows_saved_path_across_daemon_restart() {
     );
     let canonical_saved_path = std::fs::canonicalize(&saved_path).unwrap();
     drop(created);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    diagnostics
+        .stop("initial", &pool_client, &mut daemon_handle)
+        .await;
 
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "saved-path")).unwrap();
-    let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
-    });
+    let mut restarted_handle = diagnostics.spawn("replacement", restarted);
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert!(
+        diagnostics
+            .ready("replacement", &restarted_pool, &mut restarted_handle)
+            .await
+    );
 
     let rejoined = connect::connect(socket_path, notebook_id.clone(), "rejoin")
         .await
@@ -4543,7 +4553,9 @@ async fn test_notebook_sync_uuid_follows_saved_path_across_daemon_restart() {
     );
 
     drop(rejoined);
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    diagnostics
+        .stop("replacement", &restarted_pool, &mut restarted_handle)
+        .await;
 }
 
 /// UUID recovery must import the saved `.ipynb` when no recovery journal
@@ -4554,7 +4566,10 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
-    let diagnostics = saved_import_diagnostics::Diagnostics::new(&socket_path);
+    let diagnostics = saved_import_diagnostics::Diagnostics::new(
+        "test_notebook_sync_uuid_imports_saved_file_without_recovery_journal",
+        &socket_path,
+    );
     let saved_path = temp_dir.path().join("existing-saved-notebook.ipynb");
     write_test_ipynb(
         &saved_path,
@@ -4625,6 +4640,10 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
+    let diagnostics = saved_import_diagnostics::Diagnostics::new(
+        "test_notebook_sync_uuid_refuses_journal_without_source_file",
+        &socket_path,
+    );
     let saved_path = temp_dir.path().join("journal-only-source.ipynb");
     write_test_ipynb(
         &saved_path,
@@ -4632,11 +4651,13 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
     );
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
-    let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
-    });
+    let mut daemon_handle = diagnostics.spawn("initial", daemon);
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert!(
+        diagnostics
+            .ready("initial", &pool_client, &mut daemon_handle)
+            .await
+    );
 
     let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
         .await
@@ -4655,7 +4676,9 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
         .unwrap();
     opened.handle.confirm_sync().await.unwrap();
     drop(opened);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    diagnostics
+        .stop("initial", &pool_client, &mut daemon_handle)
+        .await;
 
     let persist_path = config
         .notebook_docs_dir
@@ -4669,11 +4692,13 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
 
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "journal-only")).unwrap();
-    let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
-    });
+    let mut restarted_handle = diagnostics.spawn("replacement", restarted);
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert!(
+        diagnostics
+            .ready("replacement", &restarted_pool, &mut restarted_handle)
+            .await
+    );
 
     match connect::connect(socket_path, notebook_id.clone(), "rejoin").await {
         Err(notebook_sync::SyncError::NotebookUnavailable(ref message))
@@ -4692,7 +4717,9 @@ async fn test_notebook_sync_uuid_refuses_journal_without_source_file() {
         "journal-only refusal must not publish a disconnected room: {rooms:?}"
     );
 
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    diagnostics
+        .stop("replacement", &restarted_pool, &mut restarted_handle)
+        .await;
 }
 
 /// A UUID-keyed legacy `.automerge` mirror is not authoritative for a saved
@@ -4704,6 +4731,10 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
+    let diagnostics = saved_import_diagnostics::Diagnostics::new(
+        "test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal",
+        &socket_path,
+    );
     let saved_path = temp_dir.path().join("mirror-source.ipynb");
     write_test_ipynb(
         &saved_path,
@@ -4711,11 +4742,13 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
     );
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
-    let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
-    });
+    let mut daemon_handle = diagnostics.spawn("initial", daemon);
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert!(
+        diagnostics
+            .ready("initial", &pool_client, &mut daemon_handle)
+            .await
+    );
 
     let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
         .await
@@ -4723,7 +4756,9 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
     let notebook_id = opened.info.notebook_id.clone();
     assert_session_ready(&opened.handle, "stale mirror setup").await;
     drop(opened);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    diagnostics
+        .stop("initial", &pool_client, &mut daemon_handle)
+        .await;
 
     std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
     let persist_path = config
@@ -4754,11 +4789,13 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
 
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "stale-mirror")).unwrap();
-    let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
-    });
+    let mut restarted_handle = diagnostics.spawn("replacement", restarted);
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert!(
+        diagnostics
+            .ready("replacement", &restarted_pool, &mut restarted_handle)
+            .await
+    );
 
     let rejoined = connect::connect(socket_path, notebook_id, "rejoin")
         .await
@@ -4779,7 +4816,9 @@ async fn test_notebook_sync_uuid_ignores_stale_mirror_without_recovery_journal()
     );
 
     drop(rejoined);
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    diagnostics
+        .stop("replacement", &restarted_pool, &mut restarted_handle)
+        .await;
 }
 
 /// A durable UUID-to-path binding is not itself recoverable notebook content.
@@ -4790,6 +4829,10 @@ async fn test_notebook_sync_refuses_stale_registry_path_without_phantom() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
+    let diagnostics = saved_import_diagnostics::Diagnostics::new(
+        "test_notebook_sync_refuses_stale_registry_path_without_phantom",
+        &socket_path,
+    );
     let notebook_path = temp_dir.path().join("removed-after-open.ipynb");
     write_test_ipynb(
         &notebook_path,
@@ -4797,11 +4840,13 @@ async fn test_notebook_sync_refuses_stale_registry_path_without_phantom() {
     );
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
-    let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
-    });
+    let mut daemon_handle = diagnostics.spawn("initial", daemon);
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert!(
+        diagnostics
+            .ready("initial", &pool_client, &mut daemon_handle)
+            .await
+    );
 
     let opened = connect::connect_open(socket_path.clone(), notebook_path.clone(), "open")
         .await
@@ -4809,7 +4854,9 @@ async fn test_notebook_sync_refuses_stale_registry_path_without_phantom() {
     let notebook_id = opened.info.notebook_id.clone();
     assert_session_ready(&opened.handle, "initial stale-registry setup").await;
     drop(opened);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    diagnostics
+        .stop("initial", &pool_client, &mut daemon_handle)
+        .await;
 
     std::fs::remove_file(&notebook_path).unwrap();
     std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
@@ -4831,11 +4878,13 @@ async fn test_notebook_sync_refuses_stale_registry_path_without_phantom() {
 
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "stale-registry")).unwrap();
-    let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
-    });
+    let mut restarted_handle = diagnostics.spawn("replacement", restarted);
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert!(
+        diagnostics
+            .ready("replacement", &restarted_pool, &mut restarted_handle)
+            .await
+    );
 
     match connect::connect(socket_path, notebook_id.clone(), "rejoin").await {
         Err(notebook_sync::SyncError::NotebookUnavailable(ref message))
@@ -4849,7 +4898,9 @@ async fn test_notebook_sync_refuses_stale_registry_path_without_phantom() {
         "stale registry refusal must not create a phantom room: {rooms:?}"
     );
 
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    diagnostics
+        .stop("replacement", &restarted_pool, &mut restarted_handle)
+        .await;
 }
 
 /// UUID attach must derive the same read-only capability as OpenNotebook.
