@@ -1,4 +1,4 @@
-import { terminateLoadedPython } from "./host-termination.js";
+import { retryableTermination, terminateLoadedPython } from "./host-termination.js";
 import { runWithDeadline } from "./runtime-deadline.js";
 import { validateExecutionResult } from "./execution-result.js";
 import source from "../dist/session.js";
@@ -79,11 +79,7 @@ export async function createCelldRuntime(
   });
   let disposed = false;
   let active = false;
-  let terminating;
-  async function terminate() {
-    terminating ??= terminateLoadedPython(stub);
-    return terminating;
-  }
+  const terminate = retryableTermination(() => terminateLoadedPython(stub));
   const dispose = async () => {
     if (disposed) return;
     // Python may spawn background tasks that outlive its execution response.

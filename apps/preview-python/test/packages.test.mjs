@@ -259,6 +259,40 @@ test("unconfirmed closed planners retain capacity after recovery is quarantined"
   assert.equal(creates, 4, "an unconfirmed closed planner continues to occupy its capacity slot");
 });
 
+test("planner cleanup retries termination with a fresh promise", async () => {
+  const planning = deferred();
+  let creates = 0;
+  let disposals = 0;
+  const resolver = new PackageResolver({
+    create: async () => {
+      creates++;
+      return {
+        plan: async () => {
+          if (creates === 1) await planning.promise;
+          return { status: "ready", wheels: [] };
+        },
+        dispose: async () => {
+          disposals++;
+          planning.resolve();
+          if (disposals === 1) throw new Error("transient termination failure");
+        },
+      };
+    },
+  });
+  const abort = new AbortController();
+  const pending = resolver.resolve("session-a", ["six"], { signal: abort.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  abort.abort();
+  await assert.rejects(pending, /abort/i);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(disposals, 1, "the first termination attempt failed");
+
+  await resolver.recover();
+  await resolver.resolve("session-a", ["six"]);
+  assert.equal(disposals, 2, "recovery invokes a fresh termination attempt");
+  assert.equal(creates, 2, "only confirmed cleanup permits a replacement planner");
+});
+
 const signal = () => new AbortController().signal;
 const deferred = () => {
   let resolve;

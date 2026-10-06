@@ -1,3 +1,4 @@
+import { defer, firstValueFrom, ReplaySubject, share } from "rxjs";
 import { PACKAGE_ACQUISITION_MS } from "./package-limits.js";
 
 const MAX_WHEEL_BYTES = 8 * 1024 * 1024;
@@ -438,11 +439,17 @@ export class PackageResolver {
     if (session.busy || session.closed) throw new PackageOperationError("planner_busy");
     session.busy = true;
     let planner = session.planner;
-    let cleanup;
+    let cleanup$;
     const disposeOnce = () => {
-      if (!planner) return Promise.resolve();
-      cleanup ??= Promise.resolve().then(() => planner.dispose());
-      return cleanup;
+      cleanup$ ??= defer(() => (planner ? planner.dispose() : Promise.resolve())).pipe(
+        share({
+          connector: () => new ReplaySubject(1),
+          resetOnError: true,
+          resetOnComplete: false,
+          resetOnRefCountZero: false,
+        }),
+      );
+      return firstValueFrom(cleanup$);
     };
     const terminate = () => {
       if (!planner) return;
