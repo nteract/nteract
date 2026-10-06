@@ -29,6 +29,17 @@ for (const line of workflow.split("\njobs:\n")[1].split("\n")) {
   } else if (current) jobs.set(current, `${jobs.get(current)}${line}\n`);
 }
 
+test("Linux publishers build on 22.04 and audit the installed tarball before upload", () => {
+  const native = jobs.get("pack-native");
+  assert.match(native, /target: linux-x64-gnu\n\s+runner: ubuntu-22\.04\n/);
+  assert.match(native, /target: linux-arm64-gnu\n\s+runner: ubuntu-22\.04-arm\n/);
+  const install = native.indexOf('npm install --prefix "$RUNNER_TEMP/npm-native-smoke"');
+  const audit = native.indexOf('node scripts/ci/audit-linux-node.mjs "$ARCH" "$RUNNER_TEMP/npm-native-smoke/node_modules/');
+  const upload = native.indexOf("uses: actions/upload-artifact@");
+  assert.ok(install >= 0 && audit > install && upload > audit);
+  assert.doesNotMatch(native, /continue-on-error:/);
+});
+
 for (const enabled of [undefined, "false", "true"]) {
   for (const channel of ["stable", "nightly"]) {
     test(`${channel} wrapper has exact native versions and ARM64 gate=${enabled}`, () => {
