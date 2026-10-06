@@ -1,36 +1,6 @@
 import { useEffect, useRef } from "react";
+import { plotlyThemeUpdate, withPlotlyTheme } from "./plotly-theme";
 import { cn } from "@/lib/utils";
-
-const DARK_TEXT = "rgba(200, 200, 200, 1)";
-const LIGHT_TEXT = "rgba(68, 68, 68, 1)";
-
-function darkLayoutOverrides(isDark: boolean): Record<string, unknown> {
-  const textColor = isDark ? DARK_TEXT : LIGHT_TEXT;
-  const gridColor = isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)";
-
-  return {
-    paper_bgcolor: "transparent",
-    plot_bgcolor: isDark ? "rgba(30, 30, 30, 1)" : "rgba(255, 255, 255, 1)",
-    font: { color: textColor },
-    xaxis: { gridcolor: gridColor, zerolinecolor: gridColor, color: textColor },
-    yaxis: { gridcolor: gridColor, zerolinecolor: gridColor, color: textColor },
-    legend: { font: { color: textColor } },
-    colorway: isDark
-      ? [
-          "#636efa",
-          "#ef553b",
-          "#00cc96",
-          "#ab63fa",
-          "#ffa15a",
-          "#19d3f3",
-          "#ff6692",
-          "#b6e880",
-          "#ff97ff",
-          "#fecb52",
-        ]
-      : undefined,
-  };
-}
 
 interface PlotlyData {
   data: unknown[];
@@ -45,12 +15,9 @@ interface PlotlyOutputProps {
 }
 
 /**
- * Render a Plotly chart inside an isolated iframe.
- *
- * This component expects `window.Plotly` to be available — it is injected
- * by the parent app via the iframe library loader before the render message
- * is sent. It does NOT import plotly.js directly, keeping it out of the
- * isolated renderer IIFE bundle.
+ * Direct Plotly adapter used by the Elements output-renderer examples.
+ * Those examples provide window.Plotly; notebook MIME outputs instead use
+ * the lazy isolated-renderer/plotly-renderer plugin.
  */
 export function PlotlyOutput({ data, className }: PlotlyOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -63,8 +30,7 @@ export function PlotlyOutput({ data, className }: PlotlyOutputProps) {
     const isDark = document.documentElement.classList.contains("dark");
 
     const layout: Record<string, unknown> = {
-      ...data.layout,
-      ...darkLayoutOverrides(isDark),
+      ...withPlotlyTheme(data.layout ?? {}, isDark),
       autosize: true,
     };
 
@@ -86,7 +52,7 @@ export function PlotlyOutput({ data, className }: PlotlyOutputProps) {
 
     const themeObserver = new MutationObserver(() => {
       const nowDark = document.documentElement.classList.contains("dark");
-      Plotly.relayout(el, darkLayoutOverrides(nowDark));
+      Plotly.relayout(el, plotlyThemeUpdate(data.layout ?? {}, nowDark));
     });
     themeObserver.observe(document.documentElement, {
       attributes: true,

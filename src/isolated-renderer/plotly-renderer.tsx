@@ -8,49 +8,9 @@
 
 import Plotly from "plotly.js-dist-min";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { plotlyThemeUpdate, withPlotlyTheme } from "@/components/outputs/plotly-theme";
 import { cn } from "@/lib/utils";
 import { measureDocumentHeight } from "./layout-measure";
-
-// --- Theme helpers ---
-
-const DARK_TEXT = "rgba(200, 200, 200, 1)";
-const LIGHT_TEXT = "rgba(68, 68, 68, 1)";
-
-function darkLayoutOverrides(isDark: boolean): Record<string, unknown> {
-  const textColor = isDark ? DARK_TEXT : LIGHT_TEXT;
-  const gridColor = isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)";
-
-  return {
-    paper_bgcolor: "transparent",
-    plot_bgcolor: isDark ? "rgba(30, 30, 30, 1)" : "rgba(255, 255, 255, 1)",
-    font: { color: textColor },
-    xaxis: {
-      gridcolor: gridColor,
-      zerolinecolor: gridColor,
-      color: textColor,
-    },
-    yaxis: {
-      gridcolor: gridColor,
-      zerolinecolor: gridColor,
-      color: textColor,
-    },
-    legend: { font: { color: textColor } },
-    colorway: isDark
-      ? [
-          "#636efa",
-          "#ef553b",
-          "#00cc96",
-          "#ab63fa",
-          "#ffa15a",
-          "#19d3f3",
-          "#ff6692",
-          "#b6e880",
-          "#ff97ff",
-          "#fecb52",
-        ]
-      : undefined,
-  };
-}
 
 // --- Types ---
 
@@ -142,10 +102,7 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
     // plotly's relayout path. The container CSS above keeps the chart and
     // its parent in agreement, so `responsive: true` (kept for window
     // resize) doesn't race with iframe init.
-    const layout: Record<string, unknown> = {
-      ...userLayout,
-      ...darkLayoutOverrides(isDark),
-    };
+    const layout = withPlotlyTheme(userLayout, isDark);
     if (layout.uirevision === undefined) {
       layout.uirevision = DEFAULT_UI_REVISION;
     }
@@ -177,7 +134,7 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
 
     const themeObserver = new MutationObserver(() => {
       const nowDark = document.documentElement.classList.contains("dark");
-      Plotly.relayout(el, darkLayoutOverrides(nowDark));
+      Plotly.relayout(el, plotlyThemeUpdate(userLayout, nowDark));
     });
     themeObserver.observe(document.documentElement, {
       attributes: true,
@@ -185,7 +142,7 @@ function PlotlyRenderer({ data: rawData }: RendererProps) {
     });
 
     return () => themeObserver.disconnect();
-  }, [data?.data]);
+  }, [data?.data, userLayout]);
 
   if (!data?.data) return null;
 

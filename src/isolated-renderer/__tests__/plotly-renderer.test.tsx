@@ -1,4 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { RendererProps } from "@/lib/renderer-registry";
@@ -157,5 +157,113 @@ describe("Plotly renderer plugin", () => {
       },
       "*",
     );
+  });
+  it.each([false, true])("preserves explicit axes and subplot geometry in dark=%s", (dark) => {
+    const Renderer = installPlotlyRenderer();
+    document.documentElement.classList.toggle("dark", dark);
+    const figure = {
+      data: [
+        { type: "scatter", x: [1, 10, 100], y: [1, 2, 3] },
+        { type: "scatter", x: [1, 2], y: [10, 100], xaxis: "x2", yaxis: "y2" },
+      ],
+      layout: {
+        xaxis: {
+          type: "log",
+          range: [0, 2],
+          title: { text: "Period", font: { size: 19 } },
+          domain: [0, 0.4],
+          anchor: "y",
+          tickfont: { family: "Georgia", size: 12 },
+        },
+        yaxis: { visible: false, range: [0, 4], domain: [0.6, 1], anchor: "x" },
+        xaxis2: { type: "date", domain: [0.6, 1], anchor: "y2", title: { text: "Date" } },
+        yaxis2: { type: "log", range: [1, 2], domain: [0, 0.35], anchor: "x2" },
+        font: { family: "Georgia", size: 18 },
+        legend: { orientation: "h", font: { family: "Arial", size: 16 } },
+        annotations: [{ x: 1, y: 2, xref: "x2", yref: "y2", text: "Keep me" }],
+        colorway: ["#123456", "#abcdef"],
+      },
+    };
+    const original = JSON.parse(JSON.stringify(figure));
+    render(<Renderer data={figure} mimeType="application/vnd.plotly.v1+json" />);
+    const layout = plotlyMocks.newPlot.mock.calls[0][1].layout;
+    expect(layout).toMatchObject(figure.layout);
+    expect(layout.xaxis2.gridcolor).toBe(dark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.1)");
+    expect(layout.yaxis2.color).toBe(dark ? "rgba(200, 200, 200, 1)" : "rgba(68, 68, 68, 1)");
+    expect(figure).toEqual(original);
+    document.documentElement.classList.remove("dark");
+  });
+
+  it("changes theme colors without replacing axes, fonts or a user's zoom", async () => {
+    const Renderer = installPlotlyRenderer();
+    document.documentElement.classList.remove("dark");
+    const figure = {
+      data: [{ x: [1, 10], y: [2, 3] }],
+      layout: {
+        xaxis: { type: "log", range: [0, 2] },
+        xaxis2: { domain: [0.6, 1], anchor: "y2" },
+        yaxis2: { domain: [0, 0.4], anchor: "x2" },
+        font: { family: "Georgia", size: 18 },
+        template: { layout: { xaxis3: { type: "log", domain: [0, 0.3] } } },
+      },
+    };
+    render(<Renderer data={figure} mimeType="application/vnd.plotly.v1+json" />);
+    const el = plotlyMocks.newPlot.mock.calls[0][0];
+    el.layout = { xaxis: { type: "log", range: [0.5, 1.5] } };
+    document.documentElement.classList.add("dark");
+    await waitFor(() => expect(plotlyMocks.relayout).toHaveBeenCalledTimes(1));
+    const update = plotlyMocks.relayout.mock.calls[0][1];
+    expect(update["xaxis.gridcolor"]).toBe("rgba(255, 255, 255, 0.1)");
+    expect(update["xaxis2.color"]).toBe("rgba(200, 200, 200, 1)");
+    expect(update["xaxis3.color"]).toBe("rgba(200, 200, 200, 1)");
+    expect(update["legend.font.color"]).toBe("rgba(200, 200, 200, 1)");
+    expect(update).not.toHaveProperty("xaxis");
+    expect(update).not.toHaveProperty("font");
+    expect(Object.keys(update).some((key) => /range|domain|anchor|type|title/.test(key))).toBe(
+      false,
+    );
+    document.documentElement.classList.remove("dark");
+    await waitFor(() => expect(plotlyMocks.relayout).toHaveBeenCalledTimes(2));
+    expect(plotlyMocks.relayout.mock.calls[1][1]["xaxis2.color"]).toBe("rgba(68, 68, 68, 1)");
+  });
+  it("keeps template axes and non-Cartesian layout intact across figure updates", async () => {
+    const Renderer = installPlotlyRenderer();
+    document.documentElement.classList.remove("dark");
+    const figure = {
+      data: [{ type: "scatter", x: [1, 10], y: [1, 2] }],
+      layout: {
+        template: {
+          layout: {
+            xaxis: { type: "log", range: [0, 2] },
+            yaxis: { visible: false },
+            xaxis2: { domain: [0.7, 1], anchor: "y2" },
+          },
+        },
+        scene: { xaxis: { type: "log", range: [0, 3] }, domain: { x: [0.5, 1], y: [0.5, 1] } },
+        polar: { radialaxis: { type: "log", range: [0, 2] }, domain: { x: [0, 0.4] } },
+        ternary: { sum: 100, domain: { x: [0, 0.4], y: [0, 0.4] } },
+        grid: { rows: 2, columns: 2, pattern: "independent" },
+        shapes: [{ type: "line", xref: "x2", yref: "y2", x0: 1, x1: 10, y0: 0, y1: 2 }],
+      },
+    };
+    const { rerender } = render(
+      <Renderer data={figure} mimeType="application/vnd.plotly.v1+json" />,
+    );
+    expect(plotlyMocks.newPlot.mock.calls[0][1].layout).toMatchObject(figure.layout);
+    const next = {
+      ...figure,
+      layout: {
+        ...figure.layout,
+        xaxis: { type: "log", range: [1, 4] },
+        xaxis4: { domain: [0.2, 0.5], anchor: "y4" },
+      },
+    };
+    rerender(<Renderer data={next} mimeType="application/vnd.plotly.v1+json" />);
+    const rendered = plotlyMocks.react.mock.calls.at(-1)![1].layout;
+    expect(rendered).toMatchObject(next.layout);
+    document.documentElement.classList.add("dark");
+    await waitFor(() => expect(plotlyMocks.relayout).toHaveBeenCalledTimes(1));
+    expect(plotlyMocks.relayout.mock.calls[0][1]["xaxis4.color"]).toBe("rgba(200, 200, 200, 1)");
+    document.documentElement.classList.remove("dark");
   });
 });
