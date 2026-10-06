@@ -1,3 +1,5 @@
+import {setTimeout as sleep} from "node:timers/promises";
+
 // Pure release decisions shared by the pack and OIDC-only publication jobs.
 export const nativeTargets = [
   "darwin-arm64",
@@ -187,34 +189,67 @@ export function publicationDecision(manifest, plan, packument) {
 export async function registryPackage(name, fetchImpl = fetch) {
   const response = await fetchImpl(`https://registry.npmjs.org/${encodeURIComponent(name)}`, {
     signal: AbortSignal.timeout(30_000),
+    headers: {"Cache-Control": "no-cache"},
   });
   if (response.status === 404) return { versions: {}, "dist-tags": {} };
   if (!response.ok) throw new Error(`Registry lookup failed for ${name}: HTTP ${response.status}`);
   return response.json();
 }
 
-export async function assertNativeDependencies(manifest, plan, fetchPackage = registryPackage) {
-  for (const [name, version] of Object.entries(manifest.optionalDependencies ?? {})) {
-    const packument = await fetchPackage(name);
-    const published = packument.versions?.[version];
-    if (!published || published.version !== version) throw new Error(`Required native package is not published: ${name}@${version}`);
-    assertPublishedIdentity(published, plan);
-  }
+export async function assertNativeDependencies(manifest, plan, fetchPackage = registryPackage, {
+  timeoutMs = 600_000, intervalMs = 10_000, now = () => performance.now(),
+  wait = sleep, onWait = message => console.error(message),
+} = {}) {
+  const deadline = now() + timeoutMs;
+  let missing = [];
+  do {
+    missing = [];
+    for (const [name, version] of Object.entries(manifest.optionalDependencies ?? {})) {
+      const packument = await fetchPackage(name);
+      const versions = packument?.versions;
+      if (!versions || typeof versions !== "object" || Array.isArray(versions)) {
+        throw new Error(`Invalid registry metadata for ${name}`);
+      }
+      const published = versions[version];
+      if (published === undefined) {
+        missing.push(`${name}@${version}`);
+      } else {
+        if (!published || typeof published !== "object" || Array.isArray(published) || published.version !== version) {
+          throw new Error(`Invalid existing registry version for ${name}@${version}`);
+        }
+        assertPublishedIdentity(published, plan);
+      }
+    }
+    if (missing.length === 0) return;
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    onWait(`Waiting for native npm publication: ${missing.join(", ")}`);
+    await wait(Math.min(intervalMs, remaining));
+  } while (now() < deadline);
+  throw new Error(`Required native package is not published after ${timeoutMs}ms: ${missing.join(", ")}`);
 }
 
-export async function publishPackage(manifest, plan, target, { fetchPackage = registryPackage, publish }) {
+export async function publishPackage(manifest, plan, target, { fetchPackage = registryPackage, publish, nativeWait }) {
   verifyManifest(manifest, plan, target);
   if (target !== "wrapper" && target !== "pi" && !plan.nativeTargets.includes(target)) {
     throw new Error("Native target is disabled by the publication gate");
   }
-  const packument = await fetchPackage(manifest.name);
-  const decision = publicationDecision(manifest, plan, packument);
+  let packument = await fetchPackage(manifest.name);
+  let decision = publicationDecision(manifest, plan, packument);
   if (decision === "stale") {
     throw new Error(`${manifest.name}@${manifest.version} is missing and would move ${plan.distTag} backwards; refusing incomplete older release`);
   }
   if (target === "wrapper") {
     if (decision === "existing") assertWrapperDependencies(packument.versions[manifest.version], plan);
-    await assertNativeDependencies(manifest, plan, fetchPackage);
+    await assertNativeDependencies(manifest, plan, fetchPackage, nativeWait);
+    // Recheck after waiting: never republish an existing version or move a tag
+    // backwards if another publisher completed while dependencies propagated.
+    if (decision === "publish") {
+      packument = await fetchPackage(manifest.name);
+      decision = publicationDecision(manifest, plan, packument);
+      if (decision === "stale") throw new Error("Wrapper release became stale while waiting for native publication");
+      if (decision === "existing") assertWrapperDependencies(packument.versions[manifest.version], plan);
+    }
   }
   if (decision === "publish") await publish();
   return {
