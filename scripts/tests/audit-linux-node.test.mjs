@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import {spawnSync} from "node:child_process";
+import {mkdtempSync, rmSync, symlinkSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {test} from "node:test";
 import {auditLinuxNode} from "../ci/audit-linux-node.mjs";
 
@@ -47,5 +52,21 @@ test("accepts Jammy libgcc version nodes for each architecture and rejects absen
   ]) {
     for (const version of accepted) assert.doesNotThrow(() => auditLinuxNode(output + `Name: GCC_${version}\n`, arch));
     for (const version of absent) assert.throws(() => auditLinuxNode(output + `Name: GCC_${version}\n`, arch), /baseline/);
+  }
+});
+
+test("CLI runs and rejects bad arguments when invoked through a symlink", () => {
+  const directory = mkdtempSync(join(tmpdir(), "audit-linux-node-"));
+  try {
+    const script = fileURLToPath(new URL("../ci/audit-linux-node.mjs", import.meta.url));
+    const link = join(directory, "audit.mjs");
+    symlinkSync(script, link);
+    for (const entry of [script, link]) {
+      const result = spawnSync(process.execPath, [entry], {encoding: "utf8"});
+      assert.equal(result.status, 1, `audit must run for ${entry}`);
+      assert.match(result.stderr, /usage: audit-linux-node/);
+    }
+  } finally {
+    rmSync(directory, {recursive: true, force: true});
   }
 });

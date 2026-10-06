@@ -2,6 +2,7 @@
 // Audit the installed npm tarball's ELF addon before loading or publishing it.
 // Requires GNU readelf (binutils); READELF may select llvm-readelf for local QA.
 import {execFileSync} from "node:child_process";
+import {realpathSync} from "node:fs";
 import {resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 
@@ -54,7 +55,7 @@ export function auditLinuxNode(output, arch) {
   return {arch, needed, versions: [...new Set(versions)]};
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const [arch, addon, ...extra] = process.argv.slice(2);
     if (!machines[arch] || !addon || extra.length) throw new Error("usage: audit-linux-node.mjs <x64|arm64> <addon.node>");
