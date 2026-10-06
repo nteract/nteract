@@ -7879,6 +7879,7 @@ dependencies = [
 name = "runt-mcp"
 version = "0.7.0"
 dependencies = [
+ "automerge 0.11.0",
  "base64 0.22.1",
  "chrono",
  "comments-doc",
