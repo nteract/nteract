@@ -169,7 +169,7 @@ async fn call_tool(
     bootstrap_session(&server, &args).await?;
 
     let request = request(args.tool.clone(), read_arguments(&args)?)?;
-    let result = runt_mcp::tools::dispatch(&server, &request)
+    let result = runt_mcp::cli::dispatch(&server, &request)
         .await
         .map_err(|e| anyhow!("tool call failed: {e}"))?;
 

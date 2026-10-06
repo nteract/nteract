@@ -308,6 +308,37 @@ async fn stop_daemon_for_replacement(
     }
 }
 
+// A task join is not a Windows process-exit boundary: accepted pipe handlers
+// and their cancelled overlapped I/O may still own the old named pipe.
+async fn stop_receipt_daemon_for_replacement(
+    pool: &PoolClient,
+    task: &mut tokio::task::JoinHandle<()>,
+    socket: &Path,
+) {
+    pool.shutdown().await.expect("clean shutdown accepted");
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        (&mut *task)
+            .await
+            .expect("daemon task completed successfully");
+        #[cfg(windows)]
+        windows_restart::wait_for_pipe_release(socket)
+            .await
+            .expect("old pipe released");
+        #[cfg(not(windows))]
+        let _ = socket;
+    })
+    .await;
+    if let Err(error) = result {
+        task.abort();
+        let _ = task.await;
+        panic!("daemon and transport did not stop before replacement: {error}");
+    }
+}
+
+#[cfg(windows)]
+#[path = "support/windows_restart.rs"]
+mod windows_restart;
+
 fn replacement_config(mut config: DaemonConfig, temp_dir: &TempDir, suffix: &str) -> DaemonConfig {
     // The test binary's global shutdown callback deliberately retains the
     // first in-process daemon. A real restart is a new process and releases
@@ -771,9 +802,11 @@ async fn test_settings_json_mirror_write_does_not_feedback_loop() {
     let pool_client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&pool_client).await);
 
-    let mut writer = SyncClient::connect_with_timeout(socket_path.clone(), Duration::from_secs(2))
-        .await
-        .expect("writer SyncClient should connect");
+    // Use the desktop's one-shot write contract, including daemon confirmation.
+    let mut writer =
+        SyncClient::connect_snapshot_with_timeout(socket_path.clone(), Duration::from_secs(2))
+            .await
+            .expect("writer SyncClient should connect");
     let mut observer = SyncClient::connect_with_timeout(socket_path, Duration::from_secs(2))
         .await
         .expect("observer SyncClient should connect");
@@ -1234,13 +1267,13 @@ async fn test_strict_sync_receipt_cross_peer_and_restart_without_export() {
     drop(changed);
     drop(peer);
     drop(owner);
-    stop_daemon_for_replacement(&pool, &mut daemon_handle).await;
+    stop_receipt_daemon_for_replacement(&pool, &mut daemon_handle, &socket_path).await;
 
     // No SaveNotebook request or .ipynb file exists: restart must use recovery.
     let daemon = Daemon::new_for_test(replacement_config(config, &temp_dir, "receipt")).unwrap();
     let mut daemon_handle = tokio::spawn(async move { daemon.run().await.unwrap() });
     assert!(wait_for_daemon(&pool).await);
-    let recovered = connect::connect(socket_path, notebook_id, "receipt-recovered")
+    let recovered = connect::connect(socket_path.clone(), notebook_id, "receipt-recovered")
         .await
         .unwrap();
     assert_session_ready(&recovered.handle, "recovered receipt").await;
@@ -1256,7 +1289,7 @@ async fn test_strict_sync_receipt_cross_peer_and_restart_without_export() {
         "accepted = 2"
     );
     drop(recovered);
-    stop_daemon_for_replacement(&pool, &mut daemon_handle).await;
+    stop_receipt_daemon_for_replacement(&pool, &mut daemon_handle, &socket_path).await;
 }
 
 #[tokio::test]

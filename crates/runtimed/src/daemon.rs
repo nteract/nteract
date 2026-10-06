@@ -75,6 +75,39 @@ fn registry_binding_has_source_file(source_path: &Path) -> bool {
     source_path.is_file()
 }
 
+// UUID attach must recognize the authoritative journal even when process exit
+// prevented the legacy debounced snapshot from being written. An empty or
+// corrupt journal is not evidence that a notebook can be recovered.
+async fn has_recoverable_notebook_state(persist_path: &Path, id: uuid::Uuid) -> bool {
+    use crate::notebook_sync_server::recovery::{RecoveryJournal, RecoveryLatestOutcome};
+
+    let persist_path = persist_path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        if persist_path.is_file() {
+            return true;
+        }
+        let journal = RecoveryJournal::new(persist_path.with_extension("recovery"));
+        match journal.latest_record() {
+            Ok(RecoveryLatestOutcome::Recovered(recovered)) => {
+                recovered.record.manifest.notebook_id == id
+                    // Saved notebooks must enter through the registry branch,
+                    // which checks their source file and cross-daemon claim.
+                    && recovered.record.manifest.canonical_path.is_none()
+            }
+            Ok(RecoveryLatestOutcome::Unavailable { .. }) => false,
+            Err(error) => {
+                warn!("[runtimed] Cannot inspect recovery journal for {id}: {error}");
+                false
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        warn!("[runtimed] Recovery admission task failed for {id}: {error}");
+        false
+    })
+}
+
 /// Configuration for the pool daemon.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -3103,8 +3136,9 @@ impl Daemon {
                             },
                         )
                         .await?
-                    } else if persisted_doc_path.exists() {
-                        // Not resident but recoverable: reload from the persisted doc.
+                    } else if has_recoverable_notebook_state(&persisted_doc_path, parsed).await {
+                        // Journal-first recovery also works before the legacy
+                        // debounced snapshot has ever reached disk.
                         crate::notebook_sync_server::get_or_create_room_result(
                             &self.notebook_rooms,
                             parsed,
@@ -7850,6 +7884,77 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn uuid_attach_recognizes_journal_without_legacy_snapshot() {
+        use crate::notebook_sync_server::recovery::{
+            source_fingerprint, RecoveryJournal, RecoveryManifest,
+        };
+        let temp = TempDir::new().unwrap();
+        let id = uuid::Uuid::new_v4();
+        let snapshot_path = temp.path().join("untitled.automerge");
+        let mut doc = notebook_doc::NotebookDoc::new_with_actor(&id.to_string(), "test");
+        doc.add_cell_after("receipt", "code", None).unwrap();
+        doc.update_source("receipt", "accepted = 2").unwrap();
+        let mut manifest = RecoveryManifest::new(
+            1,
+            id,
+            None,
+            notebook_doc::SCHEMA_VERSION,
+            source_fingerprint(&[]),
+            0,
+        );
+        manifest.durable_heads = doc.get_heads().iter().map(|head| head.0).collect();
+        RecoveryJournal::new(snapshot_path.with_extension("recovery"))
+            .append(&manifest, &doc.save())
+            .unwrap();
+        assert!(!snapshot_path.exists());
+        assert!(has_recoverable_notebook_state(&snapshot_path, id).await);
+        assert!(!has_recoverable_notebook_state(&snapshot_path, uuid::Uuid::new_v4()).await);
+        // A journal with a saved path must not bypass source/claim admission.
+        manifest.sequence += 1;
+        manifest.canonical_path = Some(temp.path().join("saved.ipynb"));
+        RecoveryJournal::new(snapshot_path.with_extension("recovery"))
+            .append(&manifest, &doc.save())
+            .unwrap();
+        assert!(!has_recoverable_notebook_state(&snapshot_path, id).await);
+    }
+
+    #[tokio::test]
+    async fn uuid_attach_rejects_absent_empty_and_corrupt_journals() {
+        let temp = TempDir::new().unwrap();
+        let snapshot = temp.path().join("missing.automerge");
+        let journal = snapshot.with_extension("recovery");
+        let id = uuid::Uuid::new_v4();
+        assert!(!has_recoverable_notebook_state(&snapshot, id).await);
+        for bytes in [b"".as_slice(), b"corrupt journal".as_slice()] {
+            std::fs::write(&journal, bytes).unwrap();
+            assert!(!has_recoverable_notebook_state(&snapshot, id).await);
+            assert_eq!(std::fs::read(&journal).unwrap(), bytes);
+            assert!(!snapshot.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn uuid_attach_refuses_unreadable_journal_without_mutation() {
+        let temp = TempDir::new().unwrap();
+        let snapshot = temp.path().join("unreadable.automerge");
+        let journal = snapshot.with_extension("recovery");
+        std::fs::create_dir(&journal).unwrap();
+        assert!(!has_recoverable_notebook_state(&snapshot, uuid::Uuid::new_v4()).await);
+        assert!(journal.is_dir());
+        assert!(!snapshot.exists());
+    }
+
+    #[tokio::test]
+    async fn uuid_attach_keeps_legacy_snapshot_admission() {
+        let temp = TempDir::new().unwrap();
+        let snapshot = temp.path().join("legacy.automerge");
+        let id = uuid::Uuid::new_v4();
+        let mut doc = notebook_doc::NotebookDoc::new_with_actor(&id.to_string(), "test");
+        std::fs::write(&snapshot, doc.save()).unwrap();
+        assert!(has_recoverable_notebook_state(&snapshot, id).await);
+    }
 
     #[test]
     fn registry_binding_requires_source_file() {

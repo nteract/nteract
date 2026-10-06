@@ -522,7 +522,7 @@ const SCHEMA_MIGRATIONS = [
 
 // Prototype-local schema memo. The Worker binds every room to the same D1
 // database; production multi-binding hosts should scope this per binding.
-let schemaReady: Promise<void> | undefined;
+const schemaReady = new WeakMap<object, Promise<void>>();
 
 export function snapshotKey(notebookId: string, headsHash: string): string {
   return `n/${encodePathComponent(notebookId)}/snapshots/${encodePathComponent(headsHash)}.am`;
@@ -548,22 +548,23 @@ export function roomSummaryKey(notebookId: string): string {
   return `n/${encodePathComponent(notebookId)}/room-summary.json`;
 }
 
-export async function ensureCatalogSchema(env: Env): Promise<void> {
+export async function ensureCatalogSchema(env: Pick<Env, "DB">): Promise<void> {
   if (!env.DB) {
     return;
   }
 
-  schemaReady ??= initializeCatalogSchema(env)
-    .then(() => undefined)
-    .catch((error: unknown) => {
-      schemaReady = undefined;
+  let ready = schemaReady.get(env.DB);
+  if (!ready) {
+    ready = initializeCatalogSchema(env).catch((error: unknown) => {
+      schemaReady.delete(env.DB!);
       throw error;
     });
-
-  await schemaReady;
+    schemaReady.set(env.DB, ready);
+  }
+  await ready;
 }
 
-async function initializeCatalogSchema(env: Env): Promise<void> {
+async function initializeCatalogSchema(env: Pick<Env, "DB">): Promise<void> {
   for (const statement of SCHEMA_STATEMENTS) {
     await env.DB!.prepare(statement).run();
   }
@@ -574,7 +575,7 @@ async function initializeCatalogSchema(env: Env): Promise<void> {
   await backfillNotebookAcl(env);
 }
 
-export async function runCatalogMigrations(env: Env): Promise<void> {
+export async function runCatalogMigrations(env: Pick<Env, "DB">): Promise<void> {
   for (const migration of SCHEMA_MIGRATIONS) {
     if (await tableHasColumn(env, migration.table, migration.column)) {
       continue;
@@ -583,12 +584,16 @@ export async function runCatalogMigrations(env: Env): Promise<void> {
   }
 }
 
-async function tableHasColumn(env: Env, table: string, column: string): Promise<boolean> {
+async function tableHasColumn(
+  env: Pick<Env, "DB">,
+  table: string,
+  column: string,
+): Promise<boolean> {
   const result = await env.DB!.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
   return result.results?.some((row) => row.name === column) ?? false;
 }
 
-async function backfillNotebookAcl(env: Env): Promise<void> {
+async function backfillNotebookAcl(env: Pick<Env, "DB">): Promise<void> {
   await env
     .DB!.prepare(
       `INSERT OR IGNORE INTO notebook_acl (
@@ -1779,8 +1784,37 @@ export async function createNotebookWithOwnerAcl(
   };
 }
 
+/** Session reads must not initialize the notebook catalog or backfill ACLs. */
+export async function readCanonicalPrincipalForSession(
+  env: Pick<Env, "DB">,
+  transportPrincipal: string,
+): Promise<string | null> {
+  if (!env.DB) return null;
+  try {
+    const row = await env.DB.prepare(
+      `SELECT canonical_principal
+         FROM principal_account_links
+        WHERE transport_principal = ?`,
+    )
+      .bind(transportPrincipal)
+      .first<Pick<PrincipalAccountLinkRow, "canonical_principal">>();
+    return row?.canonical_principal ?? null;
+  } catch (error) {
+    // Older auth-only deployments have no account-link migration. Storage
+    // failures must not silently change an authenticated account's identity.
+    if (
+      error instanceof Error &&
+      /^(?:D1_ERROR: )?no such table: (?:main\.)?principal_account_links(?:: SQLITE_ERROR)?$/.test(
+        error.message,
+      )
+    )
+      return null;
+    throw error;
+  }
+}
+
 export async function getCanonicalPrincipalForTransport(
-  env: Env,
+  env: Pick<Env, "DB">,
   transportPrincipal: string,
 ): Promise<string | null> {
   if (!env.DB) {

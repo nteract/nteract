@@ -112,6 +112,14 @@ are sharing a compatible runtime from another installation.
 Notebook operations use the same implementation as MCP. Execution operates on
 synced cell IDs, preserving the document seen by other peers. `nb call --json`
 returns the complete MCP tool result; a failed tool result exits unsuccessfully.
+One-shot calls keep the attachment open while waiting up to 125 seconds for
+current document state, and for a running kernel when the operation executes
+code. This readiness budget is separate from the tool's execution `timeout_secs`.
+Trust requirements, failed sources, and failed kernel launches return errors;
+the wait does not approve trust or restart a kernel. Historical result lookup
+and session-control tools retain their own access rules. MCP connections still
+return progressive readiness.
+
 Run `--help` on a command for its argument and output contract. Observation
 commands such as status and listing do not implicitly start services.
 

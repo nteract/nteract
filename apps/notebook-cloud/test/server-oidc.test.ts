@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
 import { describe, it, type TestContext } from "node:test";
 import { createLocalOidcIssuer } from "@nteract/local-oidc";
 import type {
@@ -9,7 +10,7 @@ import type {
   D1Value,
   Env,
 } from "../src/cloudflare-types.ts";
-import { readCloudAppSession } from "../src/app-session.ts";
+import { readCloudAppSession, appSessionAccountKey } from "../src/app-session.ts";
 import {
   beginServerOidcLogin,
   completeServerOidcLogin,
@@ -539,6 +540,104 @@ describe("server OIDC with SQLite persistence", { concurrency: false }, () => {
     for (const secret of f.secrets) assert.equal(JSON.stringify(row).includes(secret), false);
     assert.match(login.completed.headers.get("Set-Cookie")!, /HttpOnly; Secure; SameSite=Lax/);
     assert.doesNotMatch(login.completed.headers.get("Set-Cookie")!, /Domain=/i);
+  });
+
+  it("negotiates a canonical account key without catalog initialization on a cold binding", async (t) => {
+    const f = await fixture(t);
+    const login = await f.login();
+    for (const migration of [
+      "0001_initial",
+      "0003_notebook_acl",
+      "0004_notebook_acl_public_check",
+      "0007_principal_account_links",
+    ]) {
+      f.db.sqlite.exec(
+        await readFile(new URL(`../migrations/${migration}.sql`, import.meta.url), "utf8"),
+      );
+    }
+    f.db.sqlite
+      .prepare(
+        "INSERT INTO principal_account_links (transport_principal,canonical_principal,provider) VALUES (?,?,'oidc')",
+      )
+      .run("user:test:alice", "account:test:alice");
+    f.db.sqlite
+      .prepare(
+        "INSERT INTO notebooks (id,owner_principal,latest_revision_id) VALUES ('historical-private','account:test:alice','published-revision')",
+      )
+      .run();
+    const queries: string[] = [];
+    const coldEnv = {
+      ...f.env,
+      DB: {
+        prepare(sql: string) {
+          queries.push(sql);
+          return f.db.prepare(sql);
+        },
+        exec: f.db.exec.bind(f.db),
+        batch: f.db.batch.bind(f.db),
+      },
+    };
+    const request = f.request(undefined, login.sessionCookie);
+    request.headers.set("X-Nteract-Session-Account-Key", "1");
+    const session = await readCloudAppSession(f.env, request);
+    assert.ok(session);
+    const expected = await appSessionAccountKey(f.env, session, "account:test:alice");
+    const first = await serverOidcSessionStatus(request, coldEnv, noopProfile);
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).session.account_key, expected);
+    assert.equal(
+      f.db.sqlite
+        .prepare("SELECT count(*) AS n FROM notebook_acl WHERE subject_kind='public'")
+        .get()!.n,
+      0,
+    );
+    const catalogQueries = queries.filter(
+      (sql) => !sql.includes("oidc_server_sessions") && !sql.includes("oidc_login_transactions"),
+    );
+    assert.equal(catalogQueries.length, 1);
+    assert.match(catalogQueries[0]!, /^SELECT canonical_principal\s+FROM principal_account_links/);
+    f.expireAccess();
+    const second = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal((await second.json()).session.account_key, expected);
+    f.db.sqlite
+      .prepare("UPDATE principal_account_links SET canonical_principal='account:test:other'")
+      .run();
+    const switched = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.notEqual((await switched.json()).session.account_key, expected);
+  });
+
+  it("falls back only for an absent account-link table and fails closed on storage outages", async (t) => {
+    const f = await fixture(t);
+    const login = await f.login();
+    const request = f.request(undefined, login.sessionCookie);
+    request.headers.set("X-Nteract-Session-Account-Key", "1");
+    const session = await readCloudAppSession(f.env, request);
+    assert.ok(session);
+    const response = await serverOidcSessionStatus(request, f.env, noopProfile);
+    assert.equal(response.status, 200);
+    assert.equal(
+      (await response.json()).session.account_key,
+      await appSessionAccountKey(f.env, session),
+    );
+    assert.equal(
+      f.db.sqlite
+        .prepare("SELECT count(*) AS n FROM sqlite_master WHERE name='principal_account_links'")
+        .get()!.n,
+      0,
+    );
+    const originalPrepare = f.db.prepare.bind(f.db);
+    t.mock.method(f.db, "prepare", (sql: string) => {
+      if (sql.includes("principal_account_links")) throw new Error("D1 unavailable");
+      return originalPrepare(sql);
+    });
+    assert.equal((await serverOidcSessionStatus(request, f.env, noopProfile)).status, 503);
+    const legacy = await serverOidcSessionStatus(
+      f.request(undefined, login.sessionCookie),
+      f.env,
+      noopProfile,
+    );
+    assert.equal(legacy.status, 200, "legacy status does not depend on the catalog");
+    assert.equal("account_key" in (await legacy.json()).session, false);
   });
 
   it("rejects wrong state, missing or wrong browser cookies and callback replay", async (t) => {

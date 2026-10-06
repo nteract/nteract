@@ -11,6 +11,19 @@ for (const scope of ["owner", "editor", "viewer"])
       let providerCloses = 0;
       let catalogStatus = "running";
       const db = {
+        async batch(statements) {
+          const previousStatus = catalogStatus;
+          const results = [];
+          try {
+            for (const statement of statements) {
+              results.push(await statement.run());
+            }
+            return results;
+          } catch (error) {
+            catalogStatus = previousStatus;
+            throw error;
+          }
+        },
         prepare(sql) {
           return {
             bind() {
@@ -252,6 +265,19 @@ for (const catalogFails of [false, true])
     let catalogStatus = "running";
     let recoveryVisible = false;
     const db = {
+      async batch(statements) {
+        const previousStatus = catalogStatus;
+        const results = [];
+        try {
+          for (const statement of statements) {
+            results.push(await statement.run());
+          }
+          return results;
+        } catch (error) {
+          catalogStatus = previousStatus;
+          throw error;
+        }
+      },
       prepare(sql) {
         return {
           bind() {
