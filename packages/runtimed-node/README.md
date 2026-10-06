@@ -409,6 +409,18 @@ installed through `@runtimed/node`:
 
 They contain only the compiled native `.node` binary for their target platform.
 
+Linux GNU builds target Ubuntu 22.04 (glibc 2.35) and newer, on x64 and ARM64.
+They require the system OpenSSL 3 libraries (`libssl.so.3` and `libcrypto.so.3`)
+and `libgcc_s.so.1`. Release builds use Ubuntu 22.04 on both architectures;
+CI audits the installed package's ELF requirements and loads the packed wrapper
+and addon on that baseline. A newer CI host alone does not establish compatibility:
+the compiler's sysroot and linked libraries determine the binary requirements.
+
+This baseline applies to builds containing the Linux compatibility fix, including
+nightlies. The published 0.6.0 Linux packages require glibc 2.39. A loader error saying
+“Cannot find native binding” can wrap a libc or shared-library load error; inspect
+its `cause` chain before treating it as a missing npm optional dependency.
+
 
 ### Shared execution state
 

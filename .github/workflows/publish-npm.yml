@@ -79,6 +79,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/npm-release-tools"
           cp scripts/ci/npm-release*.mjs "$RUNNER_TEMP/npm-release-tools/"
+          cp scripts/ci/audit-linux-node.mjs "$RUNNER_TEMP/npm-release-tools/"
           node scripts/ci/npm-release-cli.mjs plan "$RUNNER_TEMP/release-identity.json" release-source/packages/runtimed-node/package.json "$RUNNER_TEMP/npm-release-tools/plan.json"
       - uses: actions/upload-artifact@v7
         with:
@@ -100,10 +101,11 @@ jobs:
         include:
           - target: darwin-arm64
             runner: macos-latest
+          # Compile/link against the oldest supported userspace, not latest.
           - target: linux-x64-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
           - target: linux-arm64-gnu
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
           - target: win32-x64-msvc
             runner: windows-latest
           - target: win32-arm64-msvc
@@ -157,6 +159,15 @@ jobs:
           test "${#TARBALLS[@]}" -eq 1
           npm install --prefix "$RUNNER_TEMP/npm-native-smoke" --ignore-scripts --no-audit --no-fund "${TARBALLS[0]}"
           node "$RUNNER_TEMP/npm-release-tools/npm-release-cli.mjs" smoke "$RUNNER_TEMP/npm-release-tools/plan.json" "${{ matrix.target }}" "$RUNNER_TEMP/npm-native-smoke"
+      - name: Audit installed Linux addon against Ubuntu 22.04
+        if: startsWith(matrix.target, 'linux-')
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          ARCH="${TARGET#linux-}"
+          ARCH="${ARCH%-gnu}"
+          node "$RUNNER_TEMP/npm-release-tools/audit-linux-node.mjs" "$ARCH" "$RUNNER_TEMP/npm-native-smoke/node_modules/@runtimed/node-$TARGET/runtimed-node.$TARGET.node"
       - uses: actions/upload-artifact@v7
         with:
           name: npm-package-${{ matrix.target }}

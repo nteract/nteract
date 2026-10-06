@@ -29,6 +29,24 @@ const jobs = workflowJobs(release);
 const validation = workflow("release-validation");
 const validationJobs = workflowJobs(validation);
 
+test("Linux npm validation tests packed wrapper and addon on the oldest supported userspace", () => {
+  const body = validationJobs.get("linux-node-addon");
+  assert.match(body, /arch: x64\n\s+runner: ubuntu-22\.04\n/);
+  assert.match(body, /arch: arm64\n\s+runner: ubuntu-22\.04-arm\n/);
+  assert.match(body, /glibcVersionRuntime, '2\.35'/);
+  assert.match(body, /require\.cache\[require\.resolve\(process\.env\.ADDON\)\]/);
+  const install = body.indexOf('npm install --prefix "$RUNNER_TEMP/npm-linux/installed"');
+  const audit = body.indexOf('node scripts/ci/audit-linux-node.mjs "$ARCH" "$ADDON"');
+  const load = body.indexOf("const rt = require(wrapper)");
+  assert.ok(install >= 0 && audit > install && load > audit);
+  assert.doesNotMatch(body, /continue-on-error:/);
+  for (const path of ["scripts/ci/audit-linux-node.mjs", "scripts/tests/audit-linux-node.test.mjs", "crates/runtimed-node/**", "Cargo.lock", "rust-toolchain.toml"]) {
+    assert.ok(validation.includes(`      - ${path}\n`), `missing trigger: ${path}`);
+  }
+  assert.match(validationJobs.get("linux-arm64-packages"), /name: validation-npm-linux-arm64-gnu-ubuntu2404/);
+  assert.doesNotMatch(validationJobs.get("linux-arm64-packages"), /name: npm-package-linux-arm64-gnu\n/);
+});
+
 function needs(id) {
   const body = jobs.get(id);
   assert.ok(body, `missing job ${id}`);

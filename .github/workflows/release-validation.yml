@@ -11,6 +11,7 @@ on:
       - .github/workflows/pr-binary-generation.yml
       - .github/workflows/publish-npm.yml
       - .cargo/config.toml
+      - scripts/ci/audit-linux-node.mjs
       - scripts/ci/audit-windows-crt-imports.mjs
       - scripts/ci/check-release-tag.sh
       - scripts/ci/npm-release*
@@ -22,10 +23,15 @@ on:
       - scripts/ci/install-tauri-cli.sh
       - scripts/ci/fedora-appimage-smoke.sh
       - scripts/tests/test_release_tag.py
+      - scripts/tests/audit-linux-node.test.mjs
       - scripts/tests/audit-windows-crt-imports.test.mjs
       - scripts/tests/release-workflow.test.mjs
       - scripts/tests/stage-notebook-sidecars.test.mjs
       - scripts/tests/npm-*.mjs
+      - crates/runtimed-node/**
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
       - packages/runtimed-node/**
       - python/runtimed/pyproject.toml
   workflow_dispatch:
@@ -46,7 +52,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-      - run: node --test scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
+      - run: node --test scripts/tests/audit-linux-node.test.mjs scripts/tests/audit-windows-crt-imports.test.mjs scripts/tests/release-workflow.test.mjs scripts/tests/stage-notebook-sidecars.test.mjs scripts/tests/npm-*.mjs
       - run: python3 -m unittest scripts/tests/test_release_tag.py -v
 
   windows-npm-packaging:
@@ -173,6 +179,71 @@ jobs:
         shell: bash
         run: bun scripts/ci/smoke-windows-node-addon.cjs ${{ matrix.arch }} "packages/runtimed-node/npm/${{ matrix.target }}/runtimed-node.${{ matrix.target }}.node"
 
+  linux-node-addon:
+    name: Linux npm package (${{ matrix.arch }}, Ubuntu 22.04)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      RUNT_BUILD_CHANNEL: stable
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+      - uses: dsherret/rust-toolchain-file@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: node-linux-${{ matrix.arch }}-glibc235
+      - uses: pnpm/action-setup@v6
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build and pack native addon and wrapper
+        env:
+          TARGET: linux-${{ matrix.arch }}-gnu
+        run: |
+          pnpm --dir packages/runtimed-node build
+          pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "$TARGET"
+          mkdir -p "$RUNNER_TEMP/npm-linux/native" "$RUNNER_TEMP/npm-linux/wrapper"
+          pnpm --dir "packages/runtimed-node/npm/$TARGET" pack --pack-destination "$RUNNER_TEMP/npm-linux/native"
+          pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP/npm-linux/wrapper"
+      - name: Install, audit and load the packed packages on the oldest supported userspace
+        env:
+          ARCH: ${{ matrix.arch }}
+          TARGET: linux-${{ matrix.arch }}-gnu
+        run: |
+          npm install --prefix "$RUNNER_TEMP/npm-linux/installed" --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP/npm-linux/native/"*.tgz "$RUNNER_TEMP/npm-linux/wrapper/"*.tgz
+          ADDON="$RUNNER_TEMP/npm-linux/installed/node_modules/@runtimed/node-$TARGET/runtimed-node.$TARGET.node"
+          node scripts/ci/audit-linux-node.mjs "$ARCH" "$ADDON"
+          export ADDON
+          node <<'JS'
+          const assert = require('node:assert/strict');
+          const path = require('node:path');
+          assert.equal(process.arch, process.env.ARCH);
+          assert.equal(process.report.getReport().header.glibcVersionRuntime, '2.35');
+          const wrapper = path.join(process.env.RUNNER_TEMP, 'npm-linux/installed/node_modules/@runtimed/node');
+          const rt = require(wrapper);
+          assert.equal(typeof rt.defaultSocketPath(), 'string');
+          assert.ok(require.cache[require.resolve(process.env.ADDON)], 'wrapper must load the audited, installed addon');
+          console.log('Loaded packed wrapper and native addon:', process.env.ADDON);
+          JS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-linux-glibc235-${{ matrix.arch }}
+          path: ${{ runner.temp }}/npm-linux/**/*.tgz
+          if-no-files-found: error
+
   linux-arm64-packages:
     name: Native Linux ARM64 wheel and npm package
     runs-on: ubuntu-24.04-arm
@@ -236,7 +307,8 @@ jobs:
           pnpm --dir packages/runtimed-node smoke:api
       - uses: actions/upload-artifact@v7
         with:
-          name: npm-package-linux-arm64-gnu
+          # Ubuntu 24.04 API smoke output; bootstrap uses the audited publisher.
+          name: validation-npm-linux-arm64-gnu-ubuntu2404
           path: ${{ runner.temp }}/npm-package/*.tgz
           if-no-files-found: error
 
