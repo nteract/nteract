@@ -416,8 +416,8 @@ CI audits the installed package's ELF requirements and loads the packed wrapper
 and addon on that baseline. A newer CI host alone does not establish compatibility:
 the compiler's sysroot and linked libraries determine the binary requirements.
 
-This baseline applies to builds containing the Linux compatibility fix. Previously
-published packages through 0.6.0 require glibc 2.39. A loader error saying
+This baseline applies to builds containing the Linux compatibility fix, including
+nightlies. The published 0.6.0 Linux packages require glibc 2.39. A loader error saying
 “Cannot find native binding” can wrap a libc or shared-library load error; inspect
 its `cause` chain before treating it as a missing npm optional dependency.
 

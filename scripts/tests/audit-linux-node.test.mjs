@@ -25,7 +25,7 @@ test("rejects the published glibc 2.39 regression even with weak symbols", () =>
 });
 
 test("compares version components numerically and fails on newer or private ABIs", () => {
-  for (const version of ["GLIBC_2.100", "GLIBC_2.35.1", "GLIBC_PRIVATE", "GLIBC_ABI_DT_RELR", "OPENSSL_3.2.0", "GCC_7.0.0"]) {
+  for (const version of ["GLIBC_2.100", "GLIBC_2.35.1", "GLIBC_PRIVATE", "GLIBC_ABI_DT_RELR", "OPENSSL_3.2.0", "GCC_13.0.0"]) {
     assert.throws(() => auditLinuxNode(elf + `Name: ${version}\n`, "x64"), /baseline/);
   }
   assert.doesNotThrow(() => auditLinuxNode(elf.replace("GLIBC_2.35", "GLIBC_2.9"), "x64"));
@@ -37,4 +37,15 @@ test("fails closed for malformed output, wrong architecture and unexpected depen
   }
   assert.throws(() => auditLinuxNode(elf, "arm64"), /Expected arm64/);
   assert.throws(() => auditLinuxNode(elf + "(NEEDED) Shared library: [libstdc++.so.6]\n", "x64"), /Unexpected shared library/);
+});
+
+test("accepts Jammy libgcc version nodes for each architecture and rejects absent nodes", () => {
+  const arm = elf.replace("Advanced Micro Devices X86-64", "AArch64");
+  for (const [arch, output, accepted, absent] of [
+    ["x64", elf, ["4.8.0", "7.0.0", "12.0.0"], ["4.5.0", "11.0", "13.0.0"]],
+    ["arm64", arm, ["4.5.0", "7.0.0", "11.0"], ["4.8.0", "12.0.0", "13.0.0"]],
+  ]) {
+    for (const version of accepted) assert.doesNotThrow(() => auditLinuxNode(output + `Name: GCC_${version}\n`, arch));
+    for (const version of absent) assert.throws(() => auditLinuxNode(output + `Name: GCC_${version}\n`, arch), /baseline/);
+  }
 });

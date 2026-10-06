@@ -43,6 +43,8 @@ test("Linux npm validation tests packed wrapper and addon on the oldest supporte
   for (const path of ["scripts/ci/audit-linux-node.mjs", "scripts/tests/audit-linux-node.test.mjs", "crates/runtimed-node/**", "Cargo.lock", "rust-toolchain.toml"]) {
     assert.ok(validation.includes(`      - ${path}\n`), `missing trigger: ${path}`);
   }
+  assert.match(validationJobs.get("linux-arm64-packages"), /name: validation-npm-linux-arm64-gnu-ubuntu2404/);
+  assert.doesNotMatch(validationJobs.get("linux-arm64-packages"), /name: npm-package-linux-arm64-gnu\n/);
 });
 
 function needs(id) {

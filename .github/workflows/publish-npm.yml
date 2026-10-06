@@ -79,6 +79,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/npm-release-tools"
           cp scripts/ci/npm-release*.mjs "$RUNNER_TEMP/npm-release-tools/"
+          cp scripts/ci/audit-linux-node.mjs "$RUNNER_TEMP/npm-release-tools/"
           node scripts/ci/npm-release-cli.mjs plan "$RUNNER_TEMP/release-identity.json" release-source/packages/runtimed-node/package.json "$RUNNER_TEMP/npm-release-tools/plan.json"
       - uses: actions/upload-artifact@v7
         with:
@@ -166,7 +167,7 @@ jobs:
         run: |
           ARCH="${TARGET#linux-}"
           ARCH="${ARCH%-gnu}"
-          node scripts/ci/audit-linux-node.mjs "$ARCH" "$RUNNER_TEMP/npm-native-smoke/node_modules/@runtimed/node-$TARGET/runtimed-node.$TARGET.node"
+          node "$RUNNER_TEMP/npm-release-tools/audit-linux-node.mjs" "$ARCH" "$RUNNER_TEMP/npm-native-smoke/node_modules/@runtimed/node-$TARGET/runtimed-node.$TARGET.node"
       - uses: actions/upload-artifact@v7
         with:
           name: npm-package-${{ matrix.target }}

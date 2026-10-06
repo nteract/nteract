@@ -307,7 +307,8 @@ jobs:
           pnpm --dir packages/runtimed-node smoke:api
       - uses: actions/upload-artifact@v7
         with:
-          name: npm-package-linux-arm64-gnu
+          # Ubuntu 24.04 API smoke output; bootstrap uses the audited publisher.
+          name: validation-npm-linux-arm64-gnu-ubuntu2404
           path: ${{ runner.temp }}/npm-package/*.tgz
           if-no-files-found: error
 

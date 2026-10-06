@@ -84,7 +84,7 @@ Linux and Windows ARM64 npm publication each require a one-time bootstrap. Until
 
 To enable either ARM64 npm platform:
 
-1. Download `npm-package-linux-arm64-gnu` or `npm-package-win32-arm64-msvc` from a successful **Publish npm packages** run for the intended source commit. Inspect the tarball's package name, version, and channel before publishing. **Release validation** also supplies a Linux ARM64 tarball.
+1. Download `npm-package-linux-arm64-gnu` or `npm-package-win32-arm64-msvc` from a successful **Publish npm packages** run for the intended source commit. Inspect the tarball's package name, version, and channel before publishing. Linux bootstrap uses the publisher's audited Ubuntu 22.04 package; the Ubuntu 24.04 **Release validation** artifact is only for API smoke testing.
 2. With an authenticated npm maintainer account, publish that tarball using `npm publish <tarball> --tag <latest-or-nightly> --access public`, selecting `nightly` for a nightly version and `latest` for a stable version. Inspect existing tags first so bootstrap does not move a channel backwards.
 3. Configure the package's npm trusted publisher for organization `nteract`, repository `nteract`, workflow `publish-npm.yml`, allowing `npm publish`.
 4. Verify the package is readable from the registry and its trusted-publisher settings are correct, then set that platform's variable to `true` in the repository's Actions variables. The next npm release publishes it alongside the other enabled platforms and includes it in the wrapper. If that wrapper version was already published without the platform, use a new successful nightly run or bump the stable package version before releasing; npm versions are immutable.

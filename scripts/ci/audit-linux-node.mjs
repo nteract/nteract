@@ -10,6 +10,13 @@ const libraries = new Set([
   "libssl.so.3", "libcrypto.so.3", "libgcc_s.so.1", "libm.so.6", "libc.so.6",
 ]);
 
+// Version definitions from Jammy's original libgcc-s1 12-20220319-1ubuntu1
+// packages. ARM64 and x64 export different nodes; package versions are not ABIs.
+const gccVersions = {
+  x64: new Set(["3.0", "3.3", "3.3.1", "3.4", "3.4.2", "3.4.4", "4.0.0", "4.2.0", "4.3.0", "4.7.0", "4.8.0", "7.0.0", "12.0.0"]),
+  arm64: new Set(["3.0", "3.3", "3.3.1", "3.4", "3.4.2", "3.4.4", "4.0.0", "4.2.0", "4.3.0", "4.5.0", "4.7.0", "7.0.0", "11.0"]),
+};
+
 function newerThan(version, ceiling) {
   const parts = version.split(".").map(Number);
   const limit = ceiling.split(".").map(Number);
@@ -37,10 +44,10 @@ export function auditLinuxNode(output, arch) {
   // still produce mandatory GLIBC_2.39 entries in .gnu.version_r.
   const versions = [...output.matchAll(/Name:\s+((?:GLIBC|OPENSSL|GCC)_[\w.]+)/g)].map(match => match[1]);
   if (!versions.some(version => version.startsWith("GLIBC_"))) throw new Error("Missing glibc version requirements");
-  const ceilings = {GLIBC: "2.35", OPENSSL: "3.0.0", GCC: "4.2.0"};
+  const ceilings = {GLIBC: "2.35", OPENSSL: "3.0.0"};
   for (const version of versions) {
     const match = /^(GLIBC|OPENSSL|GCC)_([0-9]+(?:\.[0-9]+)*)$/.exec(version);
-    if (!match || newerThan(match[2], ceilings[match[1]])) {
+    if (!match || (match[1] === "GCC" ? !gccVersions[arch].has(match[2]) : newerThan(match[2], ceilings[match[1]]))) {
       throw new Error(`${version} exceeds the Ubuntu 22.04 baseline`);
     }
   }
