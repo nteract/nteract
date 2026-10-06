@@ -144,6 +144,7 @@ test("partial native publication blocks wrapper; retry can finish after the miss
   natives.delete(last.name);
   let publishes = 0;
   const dependencies = {
+    nativeWait: {timeoutMs: 0},
     fetchPackage: async name => natives.has(name) ? packument([natives.get(name)]) : empty(),
     publish: () => { publishes++; },
   };
@@ -176,4 +177,104 @@ test("disabled ARM64 is still packable but cannot be published", async () => {
       fetchPackage: async () => empty(), publish: () => assert.fail(),
     }), /publication gate/);
   }
+});
+
+function readinessFixture() {
+  const wrapper = wrapperForPlan(plan);
+  const natives = new Map(plan.nativeTargets.map(target => {
+    const name = packageName(target);
+    return [name, stampManifest({name, version: plan.baseVersion}, plan, target)];
+  }));
+  let clock = 0;
+  const waits = [];
+  const messages = [];
+  return {wrapper, natives, waits, messages, nativeWait: {
+    timeoutMs: 100, intervalMs: 20, now: () => clock,
+    wait: async ms => { waits.push(ms); clock += ms; },
+    onWait: message => messages.push(message),
+  }};
+}
+
+test("wrapper waits for exact native versions then publishes only once", async () => {
+  const f = readinessFixture();
+  let publishes = 0;
+  const result = await publishPackage(f.wrapper, plan, "wrapper", {
+    nativeWait: f.nativeWait,
+    fetchPackage: async name => name === f.wrapper.name || f.waits.length < 2 ? empty() : packument([f.natives.get(name)]),
+    publish: () => publishes++,
+  });
+  assert.equal(result.status, "published");
+  assert.equal(publishes, 1);
+  assert.deepEqual(f.waits, [20, 20]);
+  assert.match(f.messages[0], /node-darwin-arm64@/);
+});
+
+test("permanent absence exhausts one shared deadline without publishing", async () => {
+  const f = readinessFixture();
+  await assert.rejects(publishPackage(f.wrapper, plan, "wrapper", {
+    nativeWait: f.nativeWait, fetchPackage: async () => empty(),
+    publish: () => assert.fail("missing dependencies must not publish"),
+  }), /not published after 100ms/);
+  assert.deepEqual(f.waits, [20, 20, 20, 20, 20]);
+});
+
+test("provenance and permanent registry errors fail immediately even with missing peers", async () => {
+  for (const bad of [null, [], {versions: []}, {versions: {[plan.version]: null}}, {versions: {[plan.version]: {version: "wrong"}}},
+    ...["sourceSha", "runId", "channel"].map(key => packument([{...manifest, nteractRelease: {...manifest.nteractRelease, [key]: "wrong"}}])),
+    new Error("HTTP 403"), new Error("network failed")]) {
+    const f = readinessFixture();
+    await assert.rejects(publishPackage(f.wrapper, plan, "wrapper", {
+      nativeWait: f.nativeWait,
+      fetchPackage: async name => {
+        if (name === f.wrapper.name || name === packageName("darwin-arm64")) return empty();
+        if (bad instanceof Error) throw bad;
+        return bad;
+      },
+      publish: () => assert.fail("permanent errors must not publish"),
+    }));
+    assert.deepEqual(f.waits, []);
+  }
+});
+
+test("wrapper rechecks identity and rollback guard after propagation wait", async () => {
+  for (const change of ["existing", "newer", "collision"]) {
+    const f = readinessFixture();
+    let wrapperReads = 0;
+    const dependencies = {
+      nativeWait: f.nativeWait,
+      fetchPackage: async name => {
+        if (name !== f.wrapper.name) return f.waits.length ? packument([f.natives.get(name)]) : empty();
+        if (++wrapperReads === 1) return empty();
+        if (change === "existing") return packument([f.wrapper]);
+        if (change === "collision") return packument([{...f.wrapper, nteractRelease: {...f.wrapper.nteractRelease, sourceSha: "b".repeat(40)}}]);
+        const newer = {...f.wrapper, version: "0.5.6-nightly.101", nteractRelease: {...f.wrapper.nteractRelease, runId: "101"}};
+        return packument([newer], "nightly", newer.version);
+      },
+      publish: () => assert.fail("must not publish after registry changes"),
+    };
+    if (change === "existing") assert.equal((await publishPackage(f.wrapper, plan, "wrapper", dependencies)).status, "existing");
+    else await assert.rejects(publishPackage(f.wrapper, plan, "wrapper", dependencies), /stale|identity mismatch/);
+  }
+});
+
+test("native readiness requests cache revalidation", async () => {
+  await registryPackage(manifest.name, async (_url, options) => {
+    assert.equal(options.headers["Cache-Control"], "no-cache");
+    return {status: 200, ok: true, json: async () => empty()};
+  });
+});
+
+
+test("an observed existing wrapper stays existing if a later replica omits it", async () => {
+  const f = readinessFixture();
+  let wrapperReads = 0;
+  const result = await publishPackage(f.wrapper, plan, "wrapper", {
+    nativeWait: f.nativeWait,
+    fetchPackage: async name => name === f.wrapper.name
+      ? (++wrapperReads === 1 ? packument([f.wrapper]) : empty())
+      : packument([f.natives.get(name)]),
+    publish: () => assert.fail("never republish an observed immutable version"),
+  });
+  assert.equal(result.status, "existing");
+  assert.deepEqual(result.registryRelease, f.wrapper.nteractRelease);
 });
