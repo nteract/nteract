@@ -92,9 +92,7 @@ test("all bundled dependency closures validate against the pinned Pyodide lock",
 for requirement in json.loads(bundled_specs_json):
     _validate_installed([requirement])
 `);
-    const pending = install(
-      JSON.stringify({ requirements: ["ipython==9.0.2"], wheels: [] }),
-    );
+    const pending = install(JSON.stringify({ requirements: ["ipython==9.0.2"], wheels: [] }));
     try {
       const result = JSON.parse(await pending);
       assert.equal(result.status, "ready", "bundled IPython lock restores without PyPI wheels");
@@ -366,11 +364,7 @@ test(
       assert.ok(transitive.wheels.some((wheel) => wheel.name === "pysocks"));
       assert.ok(transitive.wheels.some((wheel) => wheel.name === "urllib3"));
       const transitiveResult = await invoke(install, transitive);
-      assert.equal(
-        transitiveResult.status,
-        "ready",
-        JSON.stringify(transitiveResult),
-      );
+      assert.equal(transitiveResult.status, "ready", JSON.stringify(transitiveResult));
       const oldNotebookTenant = await pythonPackages();
       const oldNotebookInstall = oldNotebookTenant.globals.get("install_packages");
       try {
