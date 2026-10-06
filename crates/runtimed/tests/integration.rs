@@ -335,6 +335,9 @@ async fn stop_receipt_daemon_for_replacement(
     }
 }
 
+#[path = "support/saved_import_diagnostics.rs"]
+mod saved_import_diagnostics;
+
 #[cfg(windows)]
 #[path = "support/windows_restart.rs"]
 mod windows_restart;
@@ -4551,6 +4554,7 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
+    let diagnostics = saved_import_diagnostics::Diagnostics::new(&socket_path);
     let saved_path = temp_dir.path().join("existing-saved-notebook.ipynb");
     write_test_ipynb(
         &saved_path,
@@ -4562,11 +4566,13 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
     );
 
     let daemon = Daemon::new_for_test(config.clone()).unwrap();
-    let mut daemon_handle = tokio::spawn(async move {
-        daemon.run().await.ok();
-    });
+    let mut daemon_handle = diagnostics.spawn("initial", daemon);
     let pool_client = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&pool_client).await);
+    assert!(
+        diagnostics
+            .ready("initial", &pool_client, &mut daemon_handle)
+            .await
+    );
 
     let opened = connect::connect_open(socket_path.clone(), saved_path.clone(), "open")
         .await
@@ -4575,20 +4581,25 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
     assert_session_ready(&opened.handle, "initial saved notebook open").await;
     assert_eq!(opened.handle.get_cells().len(), 3);
     drop(opened);
-    stop_daemon_for_replacement(&pool_client, &mut daemon_handle).await;
+    diagnostics
+        .stop("initial", &pool_client, &mut daemon_handle)
+        .await;
 
     if config.notebook_docs_dir.exists() {
         std::fs::remove_dir_all(&config.notebook_docs_dir).unwrap();
     }
     std::fs::create_dir_all(&config.notebook_docs_dir).unwrap();
 
+    diagnostics.event("journal directory removed and recreated");
     let restarted =
         Daemon::new_for_test(replacement_config(config, &temp_dir, "no-journal")).unwrap();
-    let mut restarted_handle = tokio::spawn(async move {
-        restarted.run().await.ok();
-    });
+    let mut restarted_handle = diagnostics.spawn("replacement", restarted);
     let restarted_pool = PoolClient::new(socket_path.clone());
-    assert!(wait_for_daemon(&restarted_pool).await);
+    assert!(
+        diagnostics
+            .ready("replacement", &restarted_pool, &mut restarted_handle)
+            .await
+    );
 
     let rejoined = connect::connect(socket_path, notebook_id, "rejoin")
         .await
@@ -4601,7 +4612,9 @@ async fn test_notebook_sync_uuid_imports_saved_file_without_recovery_journal() {
         .any(|cell| cell.source == "persisted_value_2 = 2"));
 
     drop(rejoined);
-    stop_daemon_for_replacement(&restarted_pool, &mut restarted_handle).await;
+    diagnostics
+        .stop("replacement", &restarted_pool, &mut restarted_handle)
+        .await;
 }
 
 /// A recovery journal is preserved when the last saved `.ipynb` disappears,
