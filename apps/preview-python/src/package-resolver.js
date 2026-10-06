@@ -6,14 +6,14 @@ const MAX_METADATA_BYTES = 8 * 1024 * 1024;
 const MAX_STEPS = 64;
 const MAX_WHEELS = 32;
 const MAX_REQUIREMENTS = 64;
+const MAX_WARM_PLANNERS = 4;
 
 const PACKAGE_ERRORS = Object.freeze({
   invalid_requirement:
     "Use a PyPI package name with optional version constraints or extras. Wheel URLs and local paths are unsupported.",
   planner_busy: "Another package installation is being prepared. Try again shortly.",
-  add_cooldown: "Wait a few seconds before starting another package installation.",
-  planner_unavailable:
-    "The package service needs recovery before it can prepare another installation. Try again later.",
+  planner_failed:
+    "The package service is unavailable and requires its runtime provider to restart. Restarting Python in this notebook will not reset the package service.",
   incompatible:
     "A requested version conflicts with an included package. The included scientific package versions are fixed.",
   unavailable:
@@ -289,54 +289,200 @@ export class PackageAcquisition {
   }
 }
 
-/** One disposable, offline planning interpreter per deployment at a time.
+/** One warm, offline planning interpreter per deployment.
  * It never receives notebook source, state, credentials or tenant callbacks.
  */
+const PLANNER_RECOVERY_TTL_MS = 300_000;
+const PLANNER_RECOVERY_ATTEMPTS = 5;
+
 export class PackageResolver {
   #create;
   #fetch;
-  #busy = false;
-  #retained = false;
+  #clock;
+  #sessions = new Map();
   get status() {
-    return this.#retained ? "recovery_required" : this.#busy ? "busy" : "ready";
+    return [...this.#sessions.values()].some((session) => session.busy) ? "busy" : "ready";
   }
-  constructor({ create, fetchImpl = fetch }) {
+  constructor({ create, fetchImpl = fetch, clock = Date.now }) {
     this.#create = create;
     this.#fetch = fetchImpl;
+    this.#clock = clock;
   }
 
-  async resolve(requirements, { constraints = [], signal } = {}) {
+  #session(sessionKey) {
+    let session = this.#sessions.get(sessionKey);
+    if (!session) {
+      const activeSessions = [...this.#sessions.values()].filter(
+        (candidate) =>
+          !candidate.closed || candidate.stray || candidate.planner || candidate.closing,
+      ).length;
+      if (activeSessions >= MAX_WARM_PLANNERS) throw new PackageOperationError("planner_busy");
+      session = {
+        planner: undefined,
+        busy: false,
+        stray: undefined,
+        recovering: undefined,
+        closed: false,
+      };
+      this.#sessions.set(sessionKey, session);
+    }
+    return session;
+  }
+
+  async #recover(sessionKey, session) {
+    const stray = session.stray;
+    if (!stray) return;
+    if (session.recovering) return session.recovering;
+    if (
+      stray.attempts >= PLANNER_RECOVERY_ATTEMPTS ||
+      this.#clock() - stray.since >= PLANNER_RECOVERY_TTL_MS
+    ) {
+      session.quarantined = true;
+      console.warn(
+        JSON.stringify({
+          event: "python.package_planner.quarantined",
+          notebook_session: sessionKey,
+          attempts: stray.attempts,
+        }),
+      );
+      return;
+    }
+    session.recovering = (async () => {
+      try {
+        if (typeof stray.dispose !== "function")
+          throw new Error("Planner termination cannot be confirmed without a retry handle");
+        await stray.dispose();
+      } catch {
+        stray.attempts += 1;
+        console.warn(
+          JSON.stringify({
+            event: "python.package_planner.cleanup_unconfirmed",
+            notebook_session: sessionKey,
+            retained: true,
+          }),
+        );
+        return;
+      }
+      session.stray = undefined;
+      if (session.closed) this.#sessions.delete(sessionKey);
+    })().finally(() => {
+      session.recovering = undefined;
+    });
+    return session.recovering;
+  }
+
+  async recover() {
+    await Promise.all(
+      [...this.#sessions.entries()].map(([sessionKey, session]) =>
+        this.#recover(sessionKey, session),
+      ),
+    );
+  }
+
+  async expireClosedSessions() {
+    for (const [sessionKey, session] of this.#sessions)
+      if (session.closed && !session.busy) await this.disposeSession(sessionKey);
+  }
+
+  async disposeSession(sessionKey) {
+    const session = this.#sessions.get(sessionKey);
+    if (!session) return;
+    session.closed = true;
+    if (session.busy) return;
+    if (session.closing) return session.closing;
+    const planner = session.planner;
+    session.planner = undefined;
+    if (!planner) {
+      if (!session.stray) this.#sessions.delete(sessionKey);
+      return;
+    }
+    session.closing = Promise.resolve()
+      .then(() => planner.dispose())
+      .then(() => {
+        if (!session.stray) this.#sessions.delete(sessionKey);
+      })
+      .catch(() => {
+        session.stray = { dispose: () => planner.dispose(), since: this.#clock(), attempts: 0 };
+        console.warn(
+          JSON.stringify({
+            event: "python.package_planner.cleanup_unconfirmed",
+            notebook_session: sessionKey,
+            retained: true,
+          }),
+        );
+      })
+      .finally(() => {
+        session.closing = undefined;
+      });
+    return session.closing;
+  }
+
+  async resolve(sessionKey, requirements, { constraints = [], signal } = {}) {
     validateRequirements(requirements);
     validateRequirements(constraints);
-    if (this.#busy)
-      throw new PackageOperationError(this.#retained ? "planner_unavailable" : "planner_busy");
-    this.#busy = true;
-    let planner;
-    let retained = false;
+    const session = this.#session(sessionKey);
+    if (session.quarantined) throw new PackageOperationError("planner_failed");
+    if (session.stray && typeof session.stray.dispose !== "function") {
+      session.stray.attempts++;
+      throw new PackageOperationError("planner_failed");
+    }
+    const deadline = AbortSignal.timeout(PACKAGE_ACQUISITION_MS);
+    const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    while (session.stray) {
+      combined.throwIfAborted();
+      await this.#recover(sessionKey, session);
+      if (session.quarantined) throw new PackageOperationError("planner_failed");
+      if (session.stray) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (session.quarantined) throw new PackageOperationError("planner_failed");
+    if (session.busy || session.closed) throw new PackageOperationError("planner_busy");
+    session.busy = true;
+    let planner = session.planner;
     let cleanup;
-    const disposePlanner = () => {
-      // Abort and finally can overlap while host termination is pending.
-      // Both must await the same cleanup result, including an unknown result.
+    const disposeOnce = () => {
       if (!planner) return Promise.resolve();
       cleanup ??= Promise.resolve().then(() => planner.dispose());
       return cleanup;
     };
-    const deadline = AbortSignal.timeout(PACKAGE_ACQUISITION_MS);
-    const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const terminate = () => {
-      void disposePlanner().catch(() => {
-        retained = true;
-      });
+      if (!planner) return;
+      if (session.planner === planner) session.planner = undefined;
+      session.stray = { dispose: () => disposeOnce(), since: this.#clock(), attempts: 0 };
+      void disposeOnce().then(
+        () => {
+          session.stray = undefined;
+          if (session.closed) this.#sessions.delete(sessionKey);
+        },
+        () => this.#logCleanupFailure(sessionKey),
+      );
     };
     combined.addEventListener("abort", terminate, { once: true });
     try {
-      planner = await this.#create();
+      if (!planner) {
+        try {
+          planner = await this.#create();
+          session.planner = planner;
+        } catch (error) {
+          if (error?.runtimeRetained)
+            session.stray = {
+              dispose: error.retryTermination,
+              since: this.#clock(),
+              attempts: 0,
+            };
+          throw error;
+        }
+      }
       combined.throwIfAborted();
       const acquisition = new PackageAcquisition({ fetchImpl: this.#fetch, signal: combined });
       let artifact;
       for (let step = 0; step < MAX_STEPS; step++) {
         combined.throwIfAborted();
-        const result = await planner.plan({ requirements, constraints, artifact });
+        const result = await planner.plan({
+          requirements,
+          constraints,
+          artifact,
+          reset: step === 0,
+        });
         combined.throwIfAborted();
         if (result.status === "ready")
           return { requirements, wheels: acquisition.selected(result.wheels) };
@@ -350,22 +496,47 @@ export class PackageResolver {
       }
       throw new PackageOperationError("resolution_limit");
     } catch (error) {
-      if (error?.runtimeRetained) retained = true;
+      if (error?.runtimeRetained || error?.cause?.runtimeInvalidated) {
+        if (session.planner === planner) session.planner = undefined;
+        session.stray = {
+          dispose: planner ? () => disposeOnce() : error.retryTermination,
+          since: this.#clock(),
+          attempts: 0,
+        };
+      } else if (!(error instanceof PackageOperationError) && session.planner === planner) {
+        // Unknown planner exceptions make its state unsafe to reuse. Package
+        // errors such as not-found are expected results and preserve the warm planner.
+        session.planner = undefined;
+        try {
+          await disposeOnce();
+        } catch {
+          session.stray = { dispose: () => disposeOnce(), since: this.#clock(), attempts: 0 };
+        }
+      }
       throw error;
     } finally {
       combined.removeEventListener("abort", terminate);
-      try {
-        await disposePlanner();
-      } catch {
-        retained = true;
-      }
-      // Unknown cleanup retains this single reservation until provider restart.
-      this.#busy = retained;
-      this.#retained = retained;
-      if (retained)
-        console.warn(
-          JSON.stringify({ event: "python.package_planner.cleanup_unconfirmed", retained: true }),
-        );
+      session.busy = false;
+      if (session.closed)
+        void this.disposeSession(sessionKey).catch((error) => {
+          console.warn(
+            JSON.stringify({
+              event: "python.package_planner.closed_session_cleanup_failed",
+              notebook_session: sessionKey,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        });
     }
+  }
+
+  #logCleanupFailure(sessionKey) {
+    console.warn(
+      JSON.stringify({
+        event: "python.package_planner.cleanup_unconfirmed",
+        notebook_session: sessionKey,
+        retained: true,
+      }),
+    );
   }
 }

@@ -207,6 +207,7 @@ interface PendingFrameAck {
   reject: (error: Error) => void;
   resolve: () => void;
   timeoutId: ReturnType<typeof setTimeout>;
+  requestId?: string;
 }
 
 interface PendingRequestResponse {
@@ -937,8 +938,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   private readySettled = false;
   private listeners = new Set<FrameListener>();
   private queuedFrames: number[][] = [];
-  // Hosted room accept/reject controls currently carry only the frame type, not
-  // a request id, so pending acknowledgements are matched FIFO per frame type.
+  // Request identity is used when the room provides it; legacy controls remain FIFO.
   private pendingFrameAcks = new Map<number, PendingFrameAck[]>();
   private pendingRequestResponses = new Map<string, PendingRequestResponse>();
   private readyResolve!: (message: CloudRoomReady) => void;
@@ -1332,7 +1332,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
   async sendTypedRequest(
     frameType: FrameTypeValue,
     payload: Uint8Array,
-    _id: string,
+    id: string,
     timeoutMs: number,
     timeoutLabel = "cloud request",
   ): Promise<NotebookResponse> {
@@ -1342,7 +1342,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
       );
     }
 
-    const pendingAck = this.registerFrameAck(frameType, timeoutMs, timeoutLabel);
+    const pendingAck = this.registerFrameAck(frameType, timeoutMs, timeoutLabel, id);
     try {
       await this.sendFrame(frameType, payload);
       await pendingAck.promise;
@@ -1366,7 +1366,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
       );
     }
 
-    const pendingAck = this.registerFrameAck(frameType, timeoutMs, timeoutLabel);
+    const pendingAck = this.registerFrameAck(frameType, timeoutMs, timeoutLabel, id);
     const pendingResponse = this.registerRequestResponse(id, timeoutMs, timeoutLabel);
     try {
       await this.sendFrame(frameType, payload);
@@ -1484,11 +1484,12 @@ export class CloudWebSocketTransport implements NotebookTransport {
       if (control.type === "cloud_room_ready") {
         this.handleRoomReady(control, socket);
       } else if (control.type === "cloud_frame_accepted") {
-        this.resolveFrameAck(control.frame_type);
+        this.resolveFrameAck(control.frame_type, control.request_id ?? undefined);
       } else if (control.type === "cloud_frame_rejected") {
         this.rejectFrameAck(
           control.frame_type,
           new Error(`cloud room rejected frame: ${control.reason}`),
+          control.request_id ?? undefined,
         );
       }
       return;
@@ -1544,6 +1545,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
     frameType: FrameTypeValue,
     timeoutMs: number,
     timeoutLabel: string,
+    requestId?: string,
   ): { cancel: () => void; promise: Promise<void> } {
     let pending!: PendingFrameAck;
     const promise = new Promise<void>((resolve, reject) => {
@@ -1551,7 +1553,7 @@ export class CloudWebSocketTransport implements NotebookTransport {
         this.removeFrameAck(frameType, pending);
         reject(new Error(`${timeoutLabel} timed out waiting for cloud room frame acceptance`));
       }, timeoutMs);
-      pending = { reject, resolve, timeoutId };
+      pending = { reject, resolve, timeoutId, requestId };
       const queue = this.pendingFrameAcks.get(frameType) ?? [];
       queue.push(pending);
       this.pendingFrameAcks.set(frameType, queue);
@@ -1564,23 +1566,39 @@ export class CloudWebSocketTransport implements NotebookTransport {
     };
   }
 
-  private resolveFrameAck(frameType: number): void {
-    const pending = this.shiftFrameAck(frameType);
+  private resolveFrameAck(frameType: number, requestId?: string): void {
+    const pending = requestId
+      ? this.removeFrameAckByRequestId(frameType, requestId)
+      : this.shiftFrameAck(frameType);
     if (!pending) return;
     clearTimeout(pending.timeoutId);
     pending.resolve();
   }
 
-  private rejectFrameAck(frameType: number | undefined, error: Error): void {
+  private rejectFrameAck(frameType: number | undefined, error: Error, requestId?: string): void {
     if (frameType === undefined) {
       this.rejectPendingFrameAcks(error);
       return;
     }
 
-    const pending = this.shiftFrameAck(frameType);
+    const pending = requestId
+      ? this.removeFrameAckByRequestId(frameType, requestId)
+      : this.shiftFrameAck(frameType);
     if (!pending) return;
     clearTimeout(pending.timeoutId);
     pending.reject(error);
+  }
+
+  private removeFrameAckByRequestId(
+    frameType: number,
+    requestId: string,
+  ): PendingFrameAck | undefined {
+    const queue = this.pendingFrameAcks.get(frameType);
+    const index = queue?.findIndex((pending) => pending.requestId === requestId) ?? -1;
+    if (!queue || index < 0) return undefined;
+    const [pending] = queue.splice(index, 1);
+    if (queue.length === 0) this.pendingFrameAcks.delete(frameType);
+    return pending;
   }
 
   private shiftFrameAck(frameType: number): PendingFrameAck | undefined {

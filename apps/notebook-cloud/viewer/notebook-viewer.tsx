@@ -619,10 +619,18 @@ export function NotebookViewer({
   const runtimePeerAvailable = cloudPresenceHasRuntimePeer(presenceSnapshot);
   const isManagedPython = workstationAttachment?.workstation_id === "celld-preview-python";
   const packageSessionId = workstationAttachment?.runtime_session_id ?? null;
+  const packageActionSession = useRef(packageSessionId);
+  const packageActionSequence = useRef(0);
   const [packageActionError, setPackageActionError] = useState<{
-    session: string | null;
+    runtime: NonNullable<typeof liveRuntimeRef.current>;
+    sessionId: string | null;
+    sequence: number;
     message: string;
   } | null>(null);
+  if (packageActionSession.current !== packageSessionId) {
+    packageActionSession.current = packageSessionId;
+    packageActionSequence.current++;
+  }
   const cloudPackages = useMemo(
     () =>
       projectCloudPackages(
@@ -644,14 +652,42 @@ export function NotebookViewer({
     async (operation: "add" | "remove" | "clear", requirement: string) => {
       const runtime = liveRuntimeRef.current;
       if (!runtime || connectionScope !== "owner" || !isManagedPython) return false;
+      const sequence = ++packageActionSequence.current;
       setPackageActionError(null);
-      const result = await runtime.transport.changeCloudPackage(operation, requirement);
-      if (liveRuntimeRef.current !== runtime) return false;
-      if (result.result === "sync_environment_failed") {
-        setPackageActionError({ session: packageSessionId, message: result.error });
+      try {
+        const result = await runtime.transport.changeCloudPackage(operation, requirement);
+        if (
+          liveRuntimeRef.current !== runtime ||
+          packageActionSession.current !== packageSessionId ||
+          packageActionSequence.current !== sequence
+        )
+          return false;
+        if (result.result === "sync_environment_failed") {
+          setPackageActionError({
+            runtime,
+            sessionId: packageSessionId,
+            sequence,
+            message: result.error,
+          });
+          return false;
+        }
+        setPackageActionError(null);
+        return result.result === "sync_environment_complete";
+      } catch (error) {
+        if (
+          liveRuntimeRef.current !== runtime ||
+          packageActionSession.current !== packageSessionId ||
+          packageActionSequence.current !== sequence
+        )
+          return false;
+        setPackageActionError({
+          runtime,
+          sessionId: packageSessionId,
+          sequence,
+          message: error instanceof Error ? error.message : String(error),
+        });
         return false;
       }
-      return result.result === "sync_environment_complete";
     },
     [connectionScope, isManagedPython, liveRuntimeRef, packageSessionId],
   );
@@ -1602,7 +1638,9 @@ export function NotebookViewer({
             key={packageSessionId ?? "offline"}
             {...cloudPackages}
             error={
-              packageActionError?.session === packageSessionId
+              packageActionError?.sessionId === packageSessionId &&
+              packageActionError?.runtime === liveRuntimeRef.current &&
+              packageActionError.sequence === packageActionSequence.current
                 ? packageActionError.message
                 : cloudPackages.error
             }

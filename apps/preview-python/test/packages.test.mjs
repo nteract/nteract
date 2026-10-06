@@ -33,6 +33,232 @@ const wheel = (name, dependencies = []) => ({
   dependencies,
 });
 const empty = packageManifest(null);
+
+test("warm planner is reused across sequential successful resolutions", async () => {
+  let creates = 0;
+  let disposes = 0;
+  let plans = 0;
+  const resetFlags = [];
+  const planner = {
+    plan: async ({ reset }) => {
+      plans++;
+      resetFlags.push(reset);
+      return { status: "ready", wheels: [] };
+    },
+    dispose: async () => {
+      disposes++;
+    },
+  };
+  const resolver = new PackageResolver({
+    create: async () => {
+      creates++;
+      return planner;
+    },
+  });
+
+  await resolver.resolve("session-a", ["requests"]);
+  await resolver.resolve("session-a", ["six"]);
+
+  assert.equal(creates, 1);
+  assert.equal(plans, 2);
+  assert.deepEqual(resetFlags, [true, true], "each resolve begins with an isolated artifact cache");
+  assert.equal(disposes, 0);
+  assert.equal(resolver.status, "ready");
+});
+
+test("warm planner survives a package-not-found resolution", async () => {
+  let creates = 0;
+  let planCalls = 0;
+  const resetFlags = [];
+  const planner = {
+    plan: async ({ reset }) => {
+      planCalls++;
+      resetFlags.push(reset);
+      if (planCalls === 1) throw new PackageOperationError("package_not_found");
+      return { status: "ready", wheels: [] };
+    },
+    dispose: async () => {},
+  };
+  const resolver = new PackageResolver({
+    create: async () => {
+      creates++;
+      return planner;
+    },
+  });
+
+  await assert.rejects(resolver.resolve("session-a", ["request"]), { code: "package_not_found" });
+  await resolver.resolve("session-a", ["requests"]);
+
+  assert.equal(creates, 1, "a package lookup error doesn't destroy a healthy planner");
+  assert.equal(planCalls, 2);
+  assert.deepEqual(resetFlags, [true, true]);
+  assert.equal(resolver.status, "ready");
+});
+
+test("confirmed planner invalidation recreates the warm planner on the next resolve", async () => {
+  let creates = 0;
+  let first = true;
+  const resolver = new PackageResolver({
+    create: async () => {
+      const createdAt = ++creates;
+      return {
+        plan: async () => {
+          if (createdAt === 1 && first) {
+            first = false;
+            throw new Error(
+              "Python runtime invalidated after execution termination; recreate the worker",
+            );
+          }
+          return { status: "ready", wheels: [] };
+        },
+        dispose: async () => {},
+      };
+    },
+  });
+
+  await assert.rejects(resolver.resolve("session-a", ["requests"]));
+  await resolver.resolve("session-a", ["six"]);
+
+  assert.equal(creates, 2);
+  assert.equal(resolver.status, "ready");
+});
+
+test("warm planners are isolated by notebook runtime session", async () => {
+  let creates = 0;
+  const plannerIds = [];
+  const resolver = new PackageResolver({
+    create: async () => {
+      const plannerId = ++creates;
+      return {
+        plan: async () => {
+          plannerIds.push(plannerId);
+          return { status: "ready", wheels: [] };
+        },
+        dispose: async () => {},
+      };
+    },
+  });
+  const a = await resolver.resolve("session-a", ["requests"]);
+  const b = await resolver.resolve("session-b", ["requests"]);
+  const aAgain = await resolver.resolve("session-a", ["six"]);
+  assert.equal(creates, 2);
+  assert.deepEqual(plannerIds, [1, 2, 1]);
+  assert.deepEqual(a.wheels, []);
+  assert.deepEqual(b.wheels, []);
+  assert.deepEqual(aAgain.wheels, []);
+});
+
+test("warm planner registry respects provider interpreter capacity", async () => {
+  let creates = 0;
+  const resolver = new PackageResolver({
+    create: async () => {
+      creates++;
+      return { plan: async () => ({ status: "ready", wheels: [] }), dispose: async () => {} };
+    },
+  });
+  for (const session of ["session-a", "session-b", "session-c", "session-d"])
+    await resolver.resolve(session, ["six"]);
+  await assert.rejects(resolver.resolve("session-e", ["six"]), { code: "planner_busy" });
+  assert.equal(creates, 4, "fifth notebook cannot allocate beyond the provider planner cap");
+});
+
+test("closing a runtime disposes only its session planner once", async () => {
+  let creates = 0;
+  const disposals = [];
+  const resolver = new PackageResolver({
+    create: async () => {
+      const plannerId = ++creates;
+      return {
+        plan: async () => ({ status: "ready", wheels: [] }),
+        dispose: async () => {
+          disposals.push(plannerId);
+        },
+      };
+    },
+  });
+  await resolver.resolve("notebook-a", ["requests"]);
+  await resolver.resolve("notebook-b", ["six"]);
+  await Promise.all([resolver.disposeSession("notebook-a"), resolver.disposeSession("notebook-a")]);
+  await resolver.resolve("notebook-b", ["six"]);
+  assert.deepEqual(disposals, [1]);
+  assert.equal(creates, 2, "the other notebook keeps and reuses its planner");
+});
+
+test("planner capacity remains reserved until closed-session termination is confirmed", async () => {
+  const termination = deferred();
+  let creates = 0;
+  const resolver = new PackageResolver({
+    create: async () => {
+      creates++;
+      return {
+        plan: async () => ({ status: "ready", wheels: [] }),
+        dispose: async () => termination.promise,
+      };
+    },
+  });
+
+  await resolver.resolve("notebook-a", ["requests"]);
+  const closing = resolver.disposeSession("notebook-a");
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const session of ["notebook-b", "notebook-c", "notebook-d"])
+    await resolver.resolve(session, ["six"]);
+  await assert.rejects(resolver.resolve("notebook-e", ["six"]), { code: "planner_busy" });
+  assert.equal(creates, 4, "pending termination continues to reserve the closing planner slot");
+
+  termination.resolve();
+  await closing;
+  await resolver.resolve("notebook-e", ["six"]);
+  assert.equal(creates, 5, "confirmed termination releases capacity");
+});
+
+test("session close during an active resolve disposes that planner after completion", async () => {
+  const planning = deferred();
+  let disposals = 0;
+  const resolver = new PackageResolver({
+    create: async () => ({
+      plan: async () => planning.promise,
+      dispose: async () => {
+        disposals++;
+      },
+    }),
+  });
+  const pending = resolver.resolve("notebook-a", ["requests"]);
+  await new Promise((resolve) => setImmediate(resolve));
+  await resolver.disposeSession("notebook-a");
+  assert.equal(disposals, 0, "active planner isn't disposed out from under its operation");
+  planning.resolve({ status: "ready", wheels: [] });
+  await pending;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(disposals, 1, "closed session planner is disposed after resolve settles");
+  assert.equal(resolver.status, "ready");
+});
+
+test("unconfirmed closed planners retain capacity after recovery is quarantined", async () => {
+  let now = 0;
+  let creates = 0;
+  const resolver = new PackageResolver({
+    clock: () => now,
+    create: async () => {
+      creates++;
+      return {
+        plan: async () => ({ status: "ready", wheels: [] }),
+        dispose: async () => {
+          throw new Error("termination unconfirmed");
+        },
+      };
+    },
+  });
+  await resolver.resolve("notebook-a", ["requests"]);
+  await resolver.disposeSession("notebook-a");
+  now += 300_000;
+  await resolver.recover();
+  await assert.rejects(resolver.resolve("notebook-a", ["six"]), { code: "planner_failed" });
+  for (const session of ["notebook-b", "notebook-c", "notebook-d"])
+    await resolver.resolve(session, ["six"]);
+  await assert.rejects(resolver.resolve("notebook-e", ["six"]), { code: "planner_busy" });
+  assert.equal(creates, 4, "an unconfirmed closed planner continues to occupy its capacity slot");
+});
+
 const signal = () => new AbortController().signal;
 const deferred = () => {
   let resolve;
@@ -215,16 +441,11 @@ test("provider admission bounds all package buffers and gives waiting owners a t
   });
   await firstStarted.promise;
   assert.throws(() => admission.run("alice", signal(), async () => {}), { code: "planner_busy" });
-  const b = admission.run(
-    "bob",
-    signal(),
-    async () => {
-      order.push("b");
-      secondStarted.resolve();
-      await second.promise;
-    },
-    { cooldown: false },
-  );
+  const b = admission.run("bob", signal(), async () => {
+    order.push("b");
+    secondStarted.resolve();
+    await second.promise;
+  });
   const cancelled = new AbortController();
   const c = admission.run("carol", cancelled.signal, async () => {
     order.push("unexpected");
@@ -236,16 +457,14 @@ test("provider admission bounds all package buffers and gives waiting owners a t
   await a;
   await secondStarted.promise;
   assert.deepEqual(order, ["a", "b"], "a restore must share the add buffer reservation");
-  assert.throws(() => admission.run("alice", signal(), async () => {}), { code: "add_cooldown" });
   second.resolve();
   await b;
-  // Restoring the same owner's saved environment is not subject to add cooldown.
   await new Promise((resolve) => setImmediate(resolve));
-  await admission.run("alice", signal(), async () => order.push("restore"), { cooldown: false });
-  assert.deepEqual(order, ["a", "b", "restore"]);
+  await admission.run("alice", signal(), async () => order.push("alice-next"));
+  assert.deepEqual(order, ["a", "b", "alice-next"]);
 });
 
-test("planner abort disposes the interpreter and leaves no reusable busy reservation", async () => {
+test("planner abort schedules cleanup without exposing recovery state to the next resolve", async () => {
   const started = deferred(),
     ended = deferred();
   let disposals = 0;
@@ -263,25 +482,67 @@ test("planner abort disposes the interpreter and leaves no reusable busy reserva
     }),
   });
   const abort = new AbortController();
-  const pending = resolver.resolve(["six"], { signal: abort.signal });
+  const pending = resolver.resolve("session-a", ["six"], { signal: abort.signal });
   await started.promise;
   abort.abort();
   await assert.rejects(pending, /abort/i);
-  assert.equal(disposals, 1, "abort and finally share one host cleanup");
-  await resolver.resolve([]);
+  await resolver.resolve("session-a", []);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(disposals >= 1, "aborted planner cleanup runs in the background");
 });
 
-test("failed planner cleanup retains its sole reservation", async () => {
+test("package-not-found keeps the warm planner and the next add runs immediately", async () => {
+  let creates = 0;
+  let plans = 0;
   const resolver = new PackageResolver({
-    create: async () => ({
-      plan: async () => ({ status: "ready", wheels: [] }),
-      dispose: async () => {
-        throw new Error("host termination unconfirmed");
-      },
-    }),
+    create: async () => {
+      creates++;
+      return {
+        plan: async () => {
+          plans++;
+          if (plans === 1) throw new PackageOperationError("package_not_found");
+          return { status: "ready", wheels: [] };
+        },
+        dispose: async () => {},
+      };
+    },
   });
-  await resolver.resolve([]);
-  await assert.rejects(resolver.resolve([]), { code: "planner_unavailable" });
+  await assert.rejects(resolver.resolve("session-a", ["request"]), { code: "package_not_found" });
+  await resolver.resolve("session-a", ["requests"]);
+  assert.equal(creates, 1, "a real package error doesn't dispose the warm planner");
+  assert.equal(plans, 2);
+});
+
+test("success, not-found, success reuses the production celld planner adapter", async () => {
+  let creates = 0;
+  const requests = [];
+  const resolver = new PackageResolver({
+    create: async () => {
+      creates++;
+      return {
+        resetPlanner: async () => {},
+        plan: async ({ requirements, reset }) => {
+          requests.push({ requirements: [...requirements], reset });
+          if (requirements.includes("request"))
+            throw new PackageOperationError("package_not_found");
+          return { status: "ready", wheels: [] };
+        },
+        dispose: async () => {},
+      };
+    },
+  });
+  await resolver.resolve("session-a", ["requests"]);
+  await assert.rejects(resolver.resolve("session-a", ["request"]), { code: "package_not_found" });
+  await resolver.resolve("session-a", ["six"]);
+  assert.equal(creates, 1);
+  assert.deepEqual(
+    requests.map((request) => request.reset),
+    [true, true, true],
+  );
+  assert.deepEqual(
+    requests.map((request) => request.requirements),
+    [["requests"], ["request"], ["six"]],
+  );
 });
 
 test("stale locks retain intent until explicit removal or clearing", () => {
@@ -303,7 +564,6 @@ test("safe package errors distinguish expected failures without exposing arbitra
   for (const code of [
     "invalid_requirement",
     "planner_busy",
-    "planner_unavailable",
     "incompatible",
     "unavailable",
     "unsupported_distribution",
@@ -327,14 +587,11 @@ const metadataEntry = (value) => ({
 
 test("native-only metadata is an unsupported distribution, not a metadata fetch failure", async () => {
   let installs = 0;
-  let disposals = 0;
   const previous = { ...empty, requirements: ["requests"], wheels: [wheel("requests")] };
   const resolver = new PackageResolver({
     create: async () => ({
       plan: async () => ({ status: "fetch", url: "https://pypi.org/pypi/tensorflow/json" }),
-      dispose: async () => {
-        disposals++;
-      },
+      dispose: async () => {},
     }),
     fetchImpl: async () =>
       Response.json({
@@ -366,7 +623,6 @@ test("native-only metadata is an unsupported distribution, not a metadata fetch 
   assert.equal(result.needs_restart, false);
   assert.equal(result.manifest, undefined);
   assert.equal(installs, 0);
-  assert.equal(disposals, 1);
   assert.deepEqual(previous.requirements, ["requests"]);
 });
 
@@ -502,7 +758,7 @@ test("repeated metadata requests stop at the total step budget", async () => {
     }),
     fetchImpl: async () => Response.json({ releases: {} }),
   });
-  await assert.rejects(resolver.resolve(["six"]), /resolution limit/);
+  await assert.rejects(resolver.resolve("session-a", ["six"]), /resolution limit/);
   assert.equal(steps, 64);
 });
 
@@ -613,9 +869,7 @@ test("a long add cannot make a restore lose its FIFO turn to a later owner", asy
   };
   const a = admission.run("alice", signal(), operation("add-a", entered, first));
   await entered.promise;
-  const c = admission.run("carol", signal(), operation("restore", restoring, restore), {
-    cooldown: false,
-  });
+  const c = admission.run("carol", signal(), operation("restore", restoring, restore));
   t.mock.timers.tick(88_000);
   const b = admission.run("bob", signal(), operation("add-b"));
   t.mock.timers.tick(2_000);
@@ -674,9 +928,7 @@ test("queued timeout and cancellation release bounded owner reservations", async
   abort.abort();
   await cancellation;
   const expiry = assert.rejects(
-    admission.run("waiting", signal(), async () => assert.fail("expired operation ran"), {
-      cooldown: false,
-    }),
+    admission.run("waiting", signal(), async () => assert.fail("expired operation ran")),
     { code: "planner_busy" },
   );
   t.mock.timers.tick(PACKAGE_QUEUE_WAIT_MS);
@@ -684,25 +936,67 @@ test("queued timeout and cancellation release bounded owner reservations", async
   assert.deepEqual(admission.status, { active: true, waiting: 0 });
   held.resolve();
   await active;
-  await admission.run("waiting", signal(), async () => {}, { cooldown: false });
+  await admission.run("waiting", signal(), async () => {});
   await admission.run("cancelled", signal(), async () => {});
 });
 
-test("cooldown survives another owner's turn and retains bounded bookkeeping", async () => {
-  let now = 0;
-  const admission = new PackageAdmission({ clock: () => now });
-  for (let i = 0; i < 32; i++) await admission.run(`owner-${i}`, signal(), async () => {});
+test("a new add after a completed install starts immediately", async () => {
+  const admission = new PackageAdmission();
+  const order = [];
+  await admission.run("alice", signal(), async () => order.push("first"));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.throws(() => admission.run("owner-0", signal(), async () => {}), { code: "add_cooldown" });
-  assert.throws(() => admission.run("owner-32", signal(), async () => {}), {
+  await admission.run("alice", signal(), async () => order.push("second"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["first", "second"]);
+  assert.deepEqual(admission.status, { active: false, waiting: 0 });
+});
+
+test("active duplicate owners and full queue remain bounded without completion cooldown", async () => {
+  const admission = new PackageAdmission();
+  const order = [];
+  await admission.run("alice", signal(), async () => order.push("alice-add"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const held = deferred();
+  const active = admission.run("bob", signal(), () => held.promise);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.throws(() => admission.run("bob", signal(), async () => {}), { code: "planner_busy" });
+  const waiting = Array.from({ length: PACKAGE_MAX_WAITING }, (_, index) =>
+    admission.run(`owner-${index}`, signal(), async () => order.push(`owner-${index}`)),
+  );
+  assert.throws(() => admission.run("mallory", signal(), async () => {}), {
     code: "planner_busy",
   });
-  now = 5_000;
+  held.resolve();
+  await Promise.all([active, ...waiting]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(admission.status, { active: false, waiting: 0 });
+});
+
+test("an aborted queued add leaves no owner reservation behind", async () => {
+  const admission = new PackageAdmission();
+  await admission.run("alice", signal(), async () => {});
+  await new Promise((resolve) => setImmediate(resolve));
+  const abort = new AbortController();
+  const queued = admission.run("alice", abort.signal, async () =>
+    assert.fail("aborted queued add ran"),
+  );
+  const rejection = assert.rejects(queued, /abort/);
+  abort.abort();
+  await rejection;
+  await admission.run("alice", signal(), async () => {});
+});
+
+test("many completed owners do not prevent an owner from adding again", async () => {
+  const admission = new PackageAdmission();
+  for (let i = 0; i < 32; i++) await admission.run(`owner-${i}`, signal(), async () => {});
+  await new Promise((resolve) => setImmediate(resolve));
   await admission.run("owner-0", signal(), async () => {});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(admission.status, { active: false, waiting: 0 });
 });
 
 for (const cleanupFails of [false, true])
-  test(`abort waits for one asynchronous planner cleanup, failure=${cleanupFails}`, async () => {
+  test(`abort returns promptly while planner cleanup runs in the background, failure=${cleanupFails}`, async () => {
     const planning = deferred(),
       ended = deferred(),
       cleanup = deferred(),
@@ -725,14 +1019,15 @@ for (const cleanupFails of [false, true])
       }),
     });
     const abort = new AbortController();
-    const pending = resolver.resolve(["six"], { signal: abort.signal });
+    const pending = resolver.resolve("session-a", ["six"], { signal: abort.signal });
     const rejected = assert.rejects(pending, /abort/i);
     await planning.promise;
     abort.abort();
-    await disposing.promise;
-    assert.equal(resolver.status, "busy");
-    cleanup.resolve();
     await rejected;
+    await disposing.promise;
+    cleanup.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(disposals, 1);
-    assert.equal(resolver.status, cleanupFails ? "recovery_required" : "ready");
+    assert.equal(resolver.status, "ready", "cleanup state is internal, not a user-visible wedge");
+    if (!cleanupFails) await resolver.resolve("session-a", ["six"]);
   });

@@ -1,8 +1,6 @@
 import { PackageOperationError } from "./package-resolver.js";
 import { PACKAGE_MAX_WAITING, PACKAGE_QUEUE_WAIT_MS } from "./package-limits.js";
 
-const MAX_COOLDOWN_OWNERS = 32;
-
 // Acquisition has 120s and installation has a separate 30s wall deadline.
 // Keep FIFO positions through preceding turns and their cleanup allowance,
 // instead of expiring every 20s and making
@@ -17,36 +15,23 @@ export class PackageAdmission {
   #active = null;
   #queue = [];
   #owners = new Set();
-  #lastFinished = new Map();
-  #clock;
-  constructor({ clock = Date.now } = {}) {
-    this.#clock = clock;
-  }
+  constructor() {}
 
   get status() {
     return { active: !!this.#active, waiting: this.#queue.length };
   }
 
-  run(owner, signal, operation, { cooldown = true } = {}) {
+  run(owner, signal, operation) {
     signal.throwIfAborted();
-    const now = this.#clock();
-    for (const [principal, finished] of this.#lastFinished)
-      if (now - finished >= 5_000) this.#lastFinished.delete(principal);
     if (this.#owners.has(owner) || this.#queue.length >= PACKAGE_MAX_WAITING) {
       throw new PackageOperationError("planner_busy");
     }
-    if (cooldown && this.#lastFinished.has(owner)) {
-      throw new PackageOperationError("add_cooldown");
-    }
-    if (cooldown && this.#lastFinished.size + this.#owners.size >= MAX_COOLDOWN_OWNERS)
-      throw new PackageOperationError("planner_busy");
     this.#owners.add(owner);
     return new Promise((resolve, reject) => {
       const entry = {
         owner,
         signal,
         operation,
-        cooldown,
         resolve,
         reject,
         timer: undefined,
@@ -61,14 +46,24 @@ export class PackageAdmission {
         signal.removeEventListener("abort", entry.abort);
         reject(error);
       };
+      const enqueue = () => {
+        if (signal.aborted) return remove(signal.reason);
+        if (this.#queue.length >= PACKAGE_MAX_WAITING) {
+          this.#owners.delete(owner);
+          signal.removeEventListener("abort", entry.abort);
+          reject(new PackageOperationError("planner_busy"));
+          return;
+        }
+        entry.timer = setTimeout(
+          () => remove(new PackageOperationError("planner_busy")),
+          PACKAGE_QUEUE_WAIT_MS,
+        );
+        this.#queue.push(entry);
+        this.#pump();
+      };
       entry.abort = () => remove(signal.reason);
       signal.addEventListener("abort", entry.abort, { once: true });
-      entry.timer = setTimeout(
-        () => remove(new PackageOperationError("planner_busy")),
-        PACKAGE_QUEUE_WAIT_MS,
-      );
-      this.#queue.push(entry);
-      this.#pump();
+      enqueue();
     });
   }
 
@@ -86,9 +81,6 @@ export class PackageAdmission {
       })
       .then(entry.resolve, entry.reject)
       .finally(() => {
-        if (entry.cooldown) {
-          this.#lastFinished.set(entry.owner, this.#clock());
-        }
         this.#owners.delete(entry.owner);
         this.#active = null;
         this.#pump();

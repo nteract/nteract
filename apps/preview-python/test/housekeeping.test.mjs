@@ -2,7 +2,119 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ensureHousekeepingAlarm, runHousekeepingAlarm } from "../src/housekeeping.js";
 import { SessionPool } from "../src/session-pool.js";
+import { PackageResolver } from "../src/package-resolver.js";
 import { createProviderService } from "../src/provider-service.js";
+
+test("housekeeping preserves a warm planner across idle sweeps", async () => {
+  let alarm = null;
+  let now = 0;
+  let disposeCalls = 0;
+  let creates = 0;
+  const resolver = new PackageResolver({
+    clock: () => now,
+    create: async () => {
+      creates++;
+      return {
+        plan: async () => ({ status: "ready", wheels: [] }),
+        dispose: async () => {
+          disposeCalls++;
+        },
+      };
+    },
+  });
+  await resolver.resolve("session-one", ["six"]);
+  assert.equal(resolver.status, "ready");
+  const pool = new SessionPool({
+    maxSessions: 1,
+    warmCount: 0,
+    idleMs: 1,
+    clock: () => now,
+    create: async () => ({ dispose: async () => {} }),
+  });
+  await runHousekeepingAlarm(
+    {
+      setAlarm: async (deadline) => {
+        alarm = deadline;
+      },
+    },
+    pool,
+    now,
+    resolver,
+  );
+  assert.equal(alarm, 60_000);
+  assert.equal(resolver.status, "ready", "idle cleanup is not exposed as recovery");
+  assert.equal(disposeCalls, 0, "housekeeping doesn't dispose the warm planner");
+  now += 15 * 60_000;
+  await runHousekeepingAlarm(
+    {
+      setAlarm: async (deadline) => {
+        alarm = deadline;
+      },
+    },
+    pool,
+    now,
+    resolver,
+  );
+  assert.equal(disposeCalls, 0, "idle time doesn't force a termination probe");
+  assert.equal(resolver.status, "ready");
+  await resolver.resolve("session-one", ["requests"]);
+  assert.equal(creates, 1, "the same warm planner serves the later resolution");
+});
+
+test("housekeeping sweep leaves an unwedged planner resolver alone", async () => {
+  let creates = 0;
+  const resolver = new PackageResolver({
+    create: async () => {
+      creates++;
+      return { plan: async () => ({ status: "ready", wheels: [] }), dispose: async () => {} };
+    },
+  });
+  const pool = new SessionPool({
+    maxSessions: 1,
+    warmCount: 0,
+    idleMs: 1,
+    create: async () => ({ dispose: async () => {} }),
+  });
+  await runHousekeepingAlarm({ setAlarm: async () => {} }, pool, 0, resolver);
+  assert.equal(resolver.status, "ready");
+  assert.equal(creates, 0, "a ready resolver is not touched by the sweep");
+});
+
+test("housekeeping preserves the warm planner across idle sweeps", async () => {
+  let now = 0;
+  let creates = 0;
+  let disposes = 0;
+  const resolver = new PackageResolver({
+    clock: () => now,
+    create: async () => {
+      creates++;
+      return {
+        plan: async () => ({ status: "ready", wheels: [] }),
+        dispose: async () => {
+          disposes++;
+        },
+      };
+    },
+  });
+  await resolver.resolve("session-one", ["six"]);
+  assert.equal(resolver.status, "ready");
+  const pool = new SessionPool({
+    maxSessions: 1,
+    warmCount: 0,
+    idleMs: 1,
+    clock: () => now,
+    create: async () => ({ dispose: async () => {} }),
+  });
+  const storage = { setAlarm: async () => {} };
+  await runHousekeepingAlarm(storage, pool, now, resolver);
+  assert.equal(disposes, 0, "a recently used warm planner remains available");
+  now += 15 * 60_000;
+  await runHousekeepingAlarm(storage, pool, now, resolver);
+  assert.equal(disposes, 0, "the provider-scoped planner stays warm through idle sweeps");
+  assert.equal(resolver.status, "ready");
+  await resolver.resolve("session-one", ["requests"]);
+  assert.equal(creates, 1);
+});
 
 test("alarm reschedules and reports quarantined cleanup without rejecting each sweep", async (t) => {
   const warnings = t.mock.method(console, "warn", () => {});

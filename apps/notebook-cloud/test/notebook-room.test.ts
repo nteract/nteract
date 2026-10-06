@@ -343,6 +343,328 @@ describe("NotebookRoom owner package operations", () => {
       },
     );
 
+  for (const operation of ["remove", "clear"] as const) {
+    it(`waits for managed readiness before waking after ${operation}`, async () => {
+      const state = hibernatedState([]);
+      const db = new NotebookOwnerD1();
+      const prepare = db.prepare.bind(db);
+      db.prepare = (query) => {
+        const statement = prepare(query);
+        if (query.includes("FROM notebook_acl"))
+          statement.all = async <T>() =>
+            d1OkResult<T>([
+              {
+                scope: "owner",
+                subject_kind: "principal",
+                subject: "user:dev:alice",
+                notebook_id: "demo",
+              } as T,
+            ]);
+        return statement;
+      };
+      const env = { DB: db } as unknown as Env;
+      const room = new NotebookRoom(state.state, env);
+      await state.drain();
+      const harness = roomHarness(room);
+      const materializer = new RoomMaterializer("demo", state.state, env);
+      harness.materializers.set("demo", materializer as never);
+      await materializer.setWorkstationAttachment({
+        workstation_id: "celld-preview-python",
+        display_name: "Python",
+        provider: "celld-pyodide",
+        default_environment_label: "Python",
+        environment_policy: "curated",
+        status: "ready",
+        runtime_session_id: "package-session",
+      });
+      await materializer.compareSetCloudPackageManifest(null, {
+        version: 1,
+        pyodide: "0.28.3",
+        requirements: ["six"],
+        wheels: [],
+      });
+      let finishReady!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        finishReady = resolve;
+      });
+      let wakes = 0;
+      const runtime = {
+        ownerPrincipal: "user:dev:alice",
+        sessionId: "package-session",
+        presence: { peer_id: "runtime", connection_scope: "runtime_peer" },
+        wake: async () => {
+          wakes += 1;
+        },
+        close: async () => {},
+        accept: () => {},
+      };
+      Object.assign(room, {
+        managedPython: new Map([["demo", { runtime, ready }]]),
+      });
+
+      const socket = new FakeSocket();
+      const peer = {
+        id: "owner",
+        socket: socket.asCloudflareWebSocket(),
+        identity: authenticateDevRequest(
+          new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+        ),
+        connectedAt: new Date().toISOString(),
+        workstation: null,
+      };
+      socket.serializeAttachment({
+        notebookId: "demo",
+        peerId: peer.id,
+        identity: peer.identity,
+        connectedAt: peer.connectedAt,
+      });
+      harness.peers.set(peer.id, peer);
+      const id = `package-${operation}`;
+      const requestOperation = operation;
+      await room.webSocketMessage(
+        peer.socket,
+        encodeTypedFrame(
+          FrameType.REQUEST,
+          new TextEncoder().encode(
+            JSON.stringify({
+              id,
+              action: "cloud_package_change",
+              operation: requestOperation,
+              requirement: operation === "remove" ? "six" : "",
+            }),
+          ),
+        ),
+      );
+      for (let round = 0; round < 50; round++) {
+        if (
+          socket.sent.some(
+            (frame) =>
+              frame[0] === FrameType.RESPONSE &&
+              JSON.parse(new TextDecoder().decode(frame.slice(1))).id === id,
+          )
+        )
+          break;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const response = socket.sent
+        .filter((frame) => frame[0] === FrameType.RESPONSE)
+        .map((frame) => JSON.parse(new TextDecoder().decode(frame.slice(1))))
+        .find((frame) => frame.id === id);
+      assert.ok(response, "terminal package response does not block on readiness");
+      assert.equal(wakes, 0, "managed runtime is not woken before readiness");
+
+      finishReady();
+      await state.drain();
+      assert.equal(wakes, 1, "selected managed runtime wakes after readiness");
+    });
+  }
+
+  it("does not wake a replaced runtime after package completion waits for readiness", async () => {
+    const state = hibernatedState([]);
+    const db = new NotebookOwnerD1();
+    const prepare = db.prepare.bind(db);
+    db.prepare = (query) => {
+      const statement = prepare(query);
+      if (query.includes("FROM notebook_acl"))
+        statement.all = async <T>() =>
+          d1OkResult<T>([
+            {
+              scope: "owner",
+              subject_kind: "principal",
+              subject: "user:dev:alice",
+              notebook_id: "demo",
+            } as T,
+          ]);
+      return statement;
+    };
+    const env = { DB: db } as unknown as Env;
+    const room = new NotebookRoom(state.state, env);
+    await state.drain();
+    const harness = roomHarness(room);
+    const materializer = new RoomMaterializer("demo", state.state, env);
+    harness.materializers.set("demo", materializer as never);
+    await materializer.setWorkstationAttachment({
+      workstation_id: "celld-preview-python",
+      display_name: "Python",
+      provider: "celld-pyodide",
+      default_environment_label: "Python",
+      environment_policy: "curated",
+      status: "ready",
+      runtime_session_id: "package-session",
+    });
+    let finishReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      finishReady = resolve;
+    });
+    let oldWakes = 0;
+    let newWakes = 0;
+    const runtime = {
+      ownerPrincipal: "user:dev:alice",
+      sessionId: "package-session",
+      presence: { peer_id: "runtime", connection_scope: "runtime_peer" },
+      wake: async () => {
+        oldWakes++;
+      },
+      close: async () => {},
+      accept: () => {},
+    };
+    harness.managedPython.set("demo", { runtime, ready } as never);
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+      ),
+      connectedAt: new Date().toISOString(),
+      workstation: null,
+    };
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: peer.id,
+      identity: peer.identity,
+      connectedAt: peer.connectedAt,
+    });
+    harness.peers.set(peer.id, peer);
+    await room.webSocketMessage(
+      peer.socket,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({
+            id: "remove-before-replacement",
+            action: "cloud_package_change",
+            operation: "clear",
+            requirement: "",
+          }),
+        ),
+      ),
+    );
+    for (let round = 0; round < 50; round++) {
+      if (socket.sent.some((frame) => frame[0] === FrameType.RESPONSE)) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.ok(socket.sent.some((frame) => frame[0] === FrameType.RESPONSE));
+    harness.managedPython.set("demo", {
+      runtime: {
+        ...runtime,
+        sessionId: "replacement-session",
+        wake: async () => {
+          newWakes++;
+        },
+      },
+      ready: Promise.resolve(),
+    } as never);
+    finishReady();
+    await state.drain();
+    assert.equal(oldWakes, 0);
+    assert.equal(newWakes, 0);
+    assert.equal(harness.managedPython.get("demo")?.runtime.sessionId, "replacement-session");
+  });
+
+  it("preserves restart-required state through package checkpoint failure", async (t) => {
+    const state = hibernatedState([]);
+    const db = new NotebookOwnerD1();
+    const prepare = db.prepare.bind(db);
+    db.prepare = (query) => {
+      const statement = prepare(query);
+      if (query.includes("FROM notebook_acl"))
+        statement.all = async <T>() =>
+          d1OkResult<T>([
+            {
+              scope: "owner",
+              subject_kind: "principal",
+              subject: "user:dev:alice",
+              notebook_id: "demo",
+            } as T,
+          ]);
+      return statement;
+    };
+    const env = { DB: db } as unknown as Env;
+    const room = new NotebookRoom(state.state, env);
+    await state.drain();
+    const harness = roomHarness(room);
+    const materializer = new RoomMaterializer("demo", state.state, env);
+    harness.materializers.set("demo", materializer as never);
+    const attachment = {
+      workstation_id: "celld-preview-python",
+      display_name: "Python",
+      provider: "celld-pyodide",
+      default_environment_label: "Python",
+      environment_policy: "curated",
+      status: "ready",
+      runtime_session_id: "package-session",
+    } as const;
+    await materializer.setWorkstationAttachment(attachment);
+    await materializer.compareSetCloudPackageManifest(null, {
+      version: 1,
+      pyodide: "0.28.3",
+      requirements: [],
+      wheels: [],
+    });
+    const runtime = {
+      ownerPrincipal: "user:dev:alice",
+      sessionId: "package-session",
+      presence: { peer_id: "runtime", connection_scope: "runtime_peer" },
+      installPackages: async () => ({
+        status: "error" as const,
+        error: "Install left Python uncertain",
+        needs_restart: true,
+      }),
+      wake: async () => {},
+      close: async () => {},
+      accept: () => {},
+    };
+    Object.assign(room, {
+      managedPython: new Map([["demo", { runtime, ready: Promise.resolve() }]]),
+    });
+    const checkpoint = t.mock.method(materializer, "checkpoint", async () => {
+      throw new Error("checkpoint unavailable");
+    });
+    const socket = new FakeSocket();
+    const peer = {
+      id: "owner",
+      socket: socket.asCloudflareWebSocket(),
+      identity: authenticateDevRequest(
+        new Request("https://cloud.test/n/demo/sync?user=alice&operator=browser:a&scope=owner"),
+      ),
+      connectedAt: new Date().toISOString(),
+      workstation: null,
+    };
+    socket.serializeAttachment({
+      notebookId: "demo",
+      peerId: peer.id,
+      identity: peer.identity,
+      connectedAt: peer.connectedAt,
+    });
+    harness.peers.set(peer.id, peer);
+    await room.webSocketMessage(
+      peer.socket,
+      encodeTypedFrame(
+        FrameType.REQUEST,
+        new TextEncoder().encode(
+          JSON.stringify({
+            id: "restart-checkpoint",
+            action: "cloud_package_change",
+            operation: "add",
+            requirement: "six",
+          }),
+        ),
+      ),
+    );
+    for (let round = 0; round < 50; round++) {
+      if (socket.sent.some((frame) => frame[0] === FrameType.RESPONSE)) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const response = socket.sent
+      .filter((frame) => frame[0] === FrameType.RESPONSE)
+      .map((frame) => JSON.parse(new TextDecoder().decode(frame.slice(1))))
+      .find((frame) => frame.id === "restart-checkpoint");
+    assert.equal(response?.needs_restart, true);
+    assert.equal(checkpoint.mock.callCount(), 1, "failure occurs during managed cleanup");
+    assert.equal(harness.managedPython.has("demo"), false, "uncertain Python is retired");
+  });
+
   for (const outcome of ["success", "failure", "concurrent_edit", "interrupt"] as const) {
     it(
       `owns package completion after transport admission: ${outcome}`,
@@ -6051,6 +6373,8 @@ describe("NotebookRoom materialized sync routing", () => {
     const rejected = decodeJsonPayload<Record<string, unknown>>(socket.sent[0].slice(1));
     assert.equal(rejected.type, "cloud_frame_rejected");
     assert.equal(rejected.reason, "editor cannot write request frames");
+    assert.equal(rejected.request_id, "request-1");
+    assert.equal(rejected.action, "execute_cell");
   });
 
   it("rejects response-bearing runtime REQUEST frames instead of acknowledging no-ops", async () => {
@@ -7260,6 +7584,18 @@ type PeerForTest = {
 
 interface RoomHarness {
   peers: Map<string, PeerForTest>;
+  managedPython: Map<
+    string,
+    {
+      runtime: {
+        ownerPrincipal: string;
+        sessionId: string;
+        wake(): Promise<void>;
+        close(): Promise<void>;
+      };
+      ready: Promise<void>;
+    }
+  >;
   materializers: Map<
     string,
     {
