@@ -60,6 +60,8 @@ export type SessionControlMessage =
       type: "cloud_frame_accepted";
       notebook_id: string;
       peer_id: string;
+      request_id?: string | null;
+      action?: string | null;
       frame_type: number;
       byte_length: number;
       timestamp: string;
@@ -69,6 +71,8 @@ export type SessionControlMessage =
       notebook_id: string;
       peer_id: string;
       frame_type?: number;
+      action?: string;
+      request_id?: string | null;
       reason: string;
       timestamp: string;
     }

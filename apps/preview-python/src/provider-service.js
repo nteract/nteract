@@ -72,7 +72,9 @@ export function createProviderService(pool, storage, packageResolver) {
               // request must never resurrect a released session generation.
               if (storage) await storage.put(fence, true);
               else closed.add(key);
-              return { operation: pool.release(key) };
+              return {
+                operation: Promise.all([pool.release(key), packageResolver?.disposeSession?.(key)]),
+              };
             }
             if (storage ? await storage.get(fence) : closed.has(key))
               throw new SessionLostError("Session was released; allocate a new runtime session");
@@ -91,11 +93,8 @@ export function createProviderService(pool, storage, packageResolver) {
           try {
             return Response.json(
               await pool.packages(key, input.operation_id, (session) =>
-                packageAdmission.run(
-                  input.ownerPrincipal,
-                  session.signal,
-                  () => installPackageManifest(session, input, packageResolver),
-                  { cooldown: input.operation !== "restore" },
+                packageAdmission.run(input.ownerPrincipal, session.signal, () =>
+                  installPackageManifest({ ...session, key }, input, packageResolver),
                 ),
               ),
             );

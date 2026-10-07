@@ -43,6 +43,7 @@ export class PreviewPythonSessions {
       create: () => createCelldRuntime(env, { wallMs: PACKAGE_INSTALL_MS }),
     });
     this.service = createProviderService(this.pool, state.storage, this.packageResolver);
+    this.pool.onRelease = (key) => this.packageResolver.disposeSession(key);
   }
   async fetch(request) {
     // Alarms are only lifecycle housekeeping; no notebook code is replayed.
@@ -55,7 +56,7 @@ export class PreviewPythonSessions {
     return this.service.fetch(request);
   }
   async alarm() {
-    await runHousekeepingAlarm(this.state.storage, this.pool);
+    await runHousekeepingAlarm(this.state.storage, this.pool, Date.now(), this.packageResolver);
   }
 }
 

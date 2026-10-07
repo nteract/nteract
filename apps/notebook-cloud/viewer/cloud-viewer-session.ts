@@ -1338,7 +1338,7 @@ export function useCloudViewerSession({
           // A failed command does not invalidate the synced notebook or disable
           // its toolbar. Keep it retryable on the existing room connection.
           if (message.frame_type === FrameType.REQUEST) {
-            setRequestError(message.reason);
+            if (message.action !== "cloud_package_change") setRequestError(message.reason);
             return;
           }
           if (isRecoverableCloudFrameRejection(message)) {

@@ -126,6 +126,14 @@ interface SelectedRuntimePeerSession {
 interface RejectFrameOptions {
   countsTowardStreak?: boolean;
   sendControl?: boolean;
+  requestId?: string | null;
+  action?: string | null;
+}
+
+function rejectionMetadata(frame: TypedFrame): Pick<RejectFrameOptions, "requestId" | "action"> {
+  if (frame.type !== FrameType.REQUEST) return {};
+  const metadata = requestEnvelopeMetadataFromPayload(frame.payload);
+  return { requestId: metadata.id, action: metadata.action };
 }
 
 interface PeerCloseOptions {
@@ -882,8 +890,11 @@ export class NotebookRoom {
     if (bytes?.[0] === FrameType.REQUEST) {
       const queue = this.socketRequests.get(peer.socket) ?? { tail: Promise.resolve(), pending: 0 };
       if (queue.pending >= 128) {
+        const metadata = requestEnvelopeMetadataFromPayload(bytes.subarray(1));
         this.rejectFrame(notebookId, peer, FrameType.REQUEST, "too many pending socket requests", {
           countsTowardStreak: false,
+          requestId: metadata.id,
+          action: metadata.action,
         });
         return;
       }
@@ -902,10 +913,14 @@ export class NotebookRoom {
               peer_id: peer.id,
               error: errorMessage(error),
             });
-            if (this.peers.get(peer.id) === peer)
+            if (this.peers.get(peer.id) === peer) {
+              const metadata = requestEnvelopeMetadataFromPayload(bytes.subarray(1));
               this.rejectFrame(notebookId, peer, FrameType.REQUEST, errorMessage(error), {
                 countsTowardStreak: false,
+                requestId: metadata.id,
+                action: metadata.action,
               });
+            }
           } finally {
             queue.pending--;
           }
@@ -1215,6 +1230,7 @@ export class NotebookRoom {
         peer,
         frame.type,
         `${frameTypeName(frame.type)} frame payload exceeds ${sizeLimits.cap} byte limit`,
+        rejectionMetadata(frame),
       );
       return;
     }
@@ -1225,6 +1241,7 @@ export class NotebookRoom {
         peer,
         frame.type,
         `${frameTypeName(frame.type)} is server-originated`,
+        rejectionMetadata(frame),
       );
       return;
     }
@@ -1235,6 +1252,7 @@ export class NotebookRoom {
         peer,
         frame.type,
         `${peer.identity.scope} cannot write ${frameTypeName(frame.type)} frames`,
+        rejectionMetadata(frame),
       );
       return;
     }
@@ -1273,6 +1291,11 @@ export class NotebookRoom {
       );
       return;
     }
+
+    const requestMetadata =
+      normalizedFrame.type === FrameType.REQUEST
+        ? requestEnvelopeMetadataFromPayload(normalizedFrame.payload)
+        : null;
 
     if (!shouldBroadcastFrame(normalizedFrame, peer.identity)) {
       // Anonymous public viewers are read-only observers. Their presence is
@@ -1320,15 +1343,13 @@ export class NotebookRoom {
       return;
     }
 
-    const requestMetadata =
-      normalizedFrame.type === FrameType.REQUEST
-        ? requestEnvelopeMetadataFromPayload(normalizedFrame.payload)
-        : null;
     if (requestMetadata?.action === "cloud_package_change") {
       this.sendControl(notebookId, peer, {
         type: "cloud_frame_accepted",
         notebook_id: notebookId,
         peer_id: peer.id,
+        request_id: requestMetadata.id,
+        action: requestMetadata.action,
         frame_type: normalizedFrame.type,
         byte_length: normalizedFrame.payload.byteLength,
         timestamp: receivedAt,
@@ -1339,7 +1360,9 @@ export class NotebookRoom {
       // restart/interrupt requests on this socket able to cancel the session.
       this.state.waitUntil(
         (async () => {
+          const managedForWake = this.managedPython.get(notebookId);
           let response;
+          let shouldWake = true;
           try {
             if (
               peer.identity.scope !== "owner" ||
@@ -1389,6 +1412,7 @@ export class NotebookRoom {
                 if (this.managedPython.get(notebookId) !== managed)
                   throw new Error("Python session changed");
                 if (result.status === "error") {
+                  shouldWake = !result.needs_restart;
                   response = {
                     result: "sync_environment_failed",
                     error: result.error,
@@ -1438,12 +1462,14 @@ export class NotebookRoom {
               };
             }
           }
-          const managed = this.managedPython.get(notebookId);
-          if (managed)
+          if (managedForWake && shouldWake)
             this.state.waitUntil(
-              managed.runtime
-                .wake()
-                .catch((error) => this.failManagedPython(notebookId, managed.runtime, error)),
+              this.wakeManagedPythonWhenReady(
+                notebookId,
+                managedForWake,
+                this.materializerFor(notebookId),
+                "fail",
+              ),
             );
           this.sendFrameToPeer(
             notebookId,
@@ -1666,7 +1692,7 @@ export class NotebookRoom {
           peer,
           normalizedFrame.type,
           error instanceof Error ? error.message : String(error),
-          { countsTowardStreak: false },
+          { countsTowardStreak: false, ...rejectionMetadata(normalizedFrame) },
         );
         return;
       }
@@ -1686,6 +1712,7 @@ export class NotebookRoom {
           );
         this.rejectFrame(notebookId, peer, normalizedFrame.type, reason, {
           countsTowardStreak: false,
+          ...rejectionMetadata(normalizedFrame),
         });
         return;
       }
@@ -1704,6 +1731,7 @@ export class NotebookRoom {
         await this.failManagedPython(notebookId, managed.runtime, new Error(reason));
         this.rejectFrame(notebookId, peer, normalizedFrame.type, reason, {
           countsTowardStreak: false,
+          ...rejectionMetadata(normalizedFrame),
         });
         return;
       }
@@ -1720,7 +1748,7 @@ export class NotebookRoom {
         peer,
         normalizedFrame.type,
         `hosted cloud rooms do not yet support response-bearing runtime request ${unsupportedRuntimeRequestAction}`,
-        { countsTowardStreak: false },
+        { countsTowardStreak: false, ...rejectionMetadata(normalizedFrame) },
       );
       return;
     }
@@ -1743,7 +1771,7 @@ export class NotebookRoom {
           peer,
           normalizedFrame.type,
           `room host rejected ${frameTypeName(normalizedFrame.type)} frame: ${String(error)}`,
-          { countsTowardStreak: false },
+          { countsTowardStreak: false, ...rejectionMetadata(normalizedFrame) },
         );
         return;
       }
@@ -1776,11 +1804,7 @@ export class NotebookRoom {
         const managed = this.managedPython.get(notebookId);
         if (managed)
           this.state.waitUntil(
-            managed.ready
-              .then(() => managed.runtime.wake())
-              .catch((error) => {
-                return this.failManagedPython(notebookId, managed.runtime, error);
-              }),
+            this.wakeManagedPythonWhenReady(notebookId, managed, materializer, "skip"),
           );
         this.refreshRuntimeIdleWatch(notebookId);
         this.state.waitUntil(
@@ -2868,6 +2892,32 @@ export class NotebookRoom {
     }
   }
 
+  private async wakeManagedPythonWhenReady(
+    notebookId: string,
+    managed: { runtime: ManagedPythonRoom; ready: Promise<void> },
+    materializer: RoomMaterializer,
+    mismatchPolicy: "fail" | "skip",
+  ): Promise<void> {
+    try {
+      const [, attachment, ownerCanExecute] = await Promise.all([
+        managed.ready,
+        materializer.getWorkstationAttachment(),
+        managedPythonOwnerCanExecute(this.env, notebookId, managed.runtime.ownerPrincipal),
+      ]);
+      if (this.managedPython.get(notebookId) !== managed) return;
+      const mismatch = (message: string): void => {
+        if (mismatchPolicy === "fail") throw new Error(message);
+      };
+      if (attachment?.runtime_session_id !== managed.runtime.sessionId)
+        return mismatch("Python session changed before wake");
+      if (!ownerCanExecute) return mismatch("Compute owner access revoked");
+      if (this.managedPython.get(notebookId) !== managed) return;
+      await managed.runtime.wake();
+    } catch (error) {
+      await this.failManagedPython(notebookId, managed.runtime, error);
+    }
+  }
+
   private async failManagedPython(
     notebookId: string,
     runtime: ManagedPythonRoom,
@@ -3408,6 +3458,8 @@ export class NotebookRoom {
       peer_id: peer.id,
       frame_type: frameType,
       reason,
+      request_id: options.requestId ?? null,
+      action: options.action ?? undefined,
       timestamp: new Date().toISOString(),
     });
   }

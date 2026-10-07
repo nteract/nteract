@@ -11,7 +11,12 @@ export async function runWithDeadline(run, { timeoutMs, terminate, message }) {
     }, timeoutMs);
   });
   try {
-    return await Promise.race([Promise.resolve().then(run), timeout]);
+    const result = await Promise.race([Promise.resolve().then(run), timeout]);
+    if (deadlineError) {
+      await termination;
+      throw deadlineError;
+    }
+    return result;
   } catch (error) {
     if (deadlineError) {
       await termination;

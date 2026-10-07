@@ -227,6 +227,7 @@ export class SessionPool {
         expected.releaseOwner();
         expected.cleanupComplete = true;
       }
+      await this.onRelease?.(key);
       if (this.#sessions.get(key) === expected) this.#sessions.delete(key);
     })().finally(() => {
       expected.closing = undefined;

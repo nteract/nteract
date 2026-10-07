@@ -20,6 +20,7 @@ async function initialize(env) {
     stdout: () => {},
     stderr: () => {},
   });
+  python.globals.set("pyodide_lock_json", JSON.stringify(lockFileContents));
   for (const wheel of wheels) {
     const response = await env.PACKAGES.fetch("https://packages.invalid/" + wheel.filename);
     if (!response.ok) throw new Error("Pinned package unavailable: " + wheel.name);
@@ -74,6 +75,14 @@ export default {
         packages.destroy();
       }
     }
+    if (path === "/planner-artifacts" && import.meta.env?.DEV) {
+      const urls = python.globals.get("planner_artifact_urls");
+      try {
+        return Response.json(urls().toJs());
+      } finally {
+        urls.destroy();
+      }
+    }
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
     if (busy) return new Response("Session is executing", { status: 409 });
     busy = true;
@@ -81,10 +90,10 @@ export default {
     try {
       const payload = await request.json();
       if (path === "/plan" || path === "/install") {
-        const nextRole = path === "/plan" ? "planner" : "tenant";
-        if (role && role !== nextRole)
+        const roleForPath = path === "/plan" ? "planner" : "tenant";
+        if (role && role !== roleForPath)
           return new Response("Session role mismatch", { status: 409 });
-        role = nextRole;
+        role = roleForPath;
         const pending = (path === "/plan" ? plan : install)(JSON.stringify(payload));
         try {
           return new Response(await pending, { headers: { "content-type": "application/json" } });

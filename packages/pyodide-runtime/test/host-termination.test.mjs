@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { terminateLoadedPython } from "../src/host-termination.js";
+import { retryableTermination, terminateLoadedPython } from "../src/host-termination.js";
 const marker = "Python runtime invalidated after execution termination; recreate the worker";
 for (const probe of [
   true,
@@ -33,3 +33,33 @@ for (const probe of [
     assert.equal(called, 1);
   });
 }
+
+test("termination retries after a failed host invalidation attempt", async () => {
+  let attempts = 0;
+  const terminate = retryableTermination(async () => {
+    attempts++;
+    if (attempts === 1) throw new Error("host control unavailable");
+  });
+
+  await assert.rejects(terminate(), /host control unavailable/);
+  await terminate();
+  assert.equal(attempts, 2, "a rejected termination attempt is not cached forever");
+});
+
+test("concurrent termination callers share the in-flight attempt", async () => {
+  let attempts = 0;
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const terminate = retryableTermination(async () => {
+    attempts++;
+    await pending;
+  });
+
+  const first = terminate();
+  const second = terminate();
+  assert.equal(attempts, 1);
+  release();
+  await Promise.all([first, second]);
+});

@@ -498,6 +498,8 @@ describe("cloud live sync", () => {
         type: "cloud_frame_accepted",
         notebook_id: "room",
         peer_id: "peer-1",
+        request_id: envelope.id,
+        action: envelope.action,
         frame_type: FrameType.REQUEST,
         byte_length: frame.byteLength - 1,
         timestamp: "2026-06-06T00:00:00.000Z",
@@ -520,16 +522,62 @@ describe("cloud live sync", () => {
 
       const response = transport.sendRequest({ type: "execute_cell", cell_id: "cell-1" });
       await nextMicrotask();
+      const request = JSON.parse(new TextDecoder().decode(socket.sent[0].slice(1)));
       socket.control({
         type: "cloud_frame_rejected",
         notebook_id: "room",
         peer_id: "peer-1",
         frame_type: FrameType.REQUEST,
+        request_id: request.id,
+        action: request.action,
         reason: "viewer cannot write request frames",
         timestamp: "2026-06-06T00:00:00.000Z",
       });
 
       await assert.rejects(response, /viewer cannot write request frames/);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("matches concurrent request rejection by ID when ACKs arrive out of order", async () => {
+    const fake = installFakeWebSocket();
+    try {
+      const transport = createTransport();
+      const socket = await waitForSocket(0);
+      socket.open();
+      socket.ready("peer-1");
+      await transport.ready;
+
+      const first = transport.sendRequest({ type: "execute_cell", cell_id: "first" });
+      const second = transport.sendRequest({ type: "execute_cell", cell_id: "second" });
+      await nextMicrotask();
+      const firstRequest = JSON.parse(new TextDecoder().decode(socket.sent[0].slice(1)));
+      const secondRequest = JSON.parse(new TextDecoder().decode(socket.sent[1].slice(1)));
+
+      socket.control({
+        type: "cloud_frame_rejected",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        request_id: secondRequest.id,
+        action: secondRequest.action,
+        reason: "second request denied",
+        timestamp: "2026-06-06T00:00:00.000Z",
+      });
+      await assert.rejects(second, /second request denied/);
+
+      socket.control({
+        type: "cloud_frame_accepted",
+        notebook_id: "room",
+        peer_id: "peer-1",
+        frame_type: FrameType.REQUEST,
+        request_id: firstRequest.id,
+        action: firstRequest.action,
+        byte_length: socket.sent[0].byteLength - 1,
+        timestamp: "2026-06-06T00:00:00.000Z",
+      });
+      assert.deepEqual(await first, { result: "ok" });
     } finally {
       fake.restore();
     }

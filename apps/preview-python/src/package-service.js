@@ -79,7 +79,7 @@ function inventory(value) {
 }
 
 /** Trusted provider operation, executed under the tenant pool's busy guard. */
-export async function installPackageManifest({ runtime, installed, signal }, input, resolver) {
+export async function installPackageManifest({ key, runtime, installed, signal }, input, resolver) {
   const sessionSignal = signal;
   signal = AbortSignal.any([signal, AbortSignal.timeout(PACKAGE_ACQUISITION_MS)]);
   const previous = packageManifest(input.manifest);
@@ -97,7 +97,7 @@ export async function installPackageManifest({ runtime, installed, signal }, inp
       ...previous.requirements.filter((req) => packageName(req) !== name),
       requirement,
     ];
-    plan = await resolver.resolve(requirements, {
+    plan = await resolver.resolve(key, requirements, {
       constraints: previous.wheels
         .filter((wheel) => wheel.name !== name)
         .map((wheel) => `${wheel.name}==${wheel.version}`),

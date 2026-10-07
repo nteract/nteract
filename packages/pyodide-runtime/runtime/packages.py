@@ -8,6 +8,7 @@ and independently validates origins, hashes, sizes, and resource budgets.
 import base64
 import hashlib
 import importlib.metadata
+import importlib.util
 import io
 import json
 import zipfile
@@ -24,6 +25,12 @@ from micropip._vendored.packaging.src.packaging.markers import default_environme
 from micropip._vendored.packaging.src.packaging.requirements import Requirement
 from micropip._vendored.packaging.src.packaging.utils import canonicalize_name
 from micropip.transaction import Transaction
+
+_pyodide_lock = json.loads(pyodide_lock_json)
+_pyodide_packages = {
+    canonicalize_name(entry.get("name", name)): entry
+    for name, entry in _pyodide_lock["packages"].items()
+}
 
 _artifacts = {}
 
@@ -95,12 +102,14 @@ def inventory():
 
 
 def _validate_installed(requirements):
-    """Check the complete installed closure, including requested extras, offline.
+    """Check the installed dependency closure without trusting the saved lock.
 
-    A saved lock is notebook input, not proof that its roots and dependencies
-    exist. Micropip's deps=False install alone cannot establish that contract.
+    Bundled packages use Pyodide's pinned dependency graph because their wheel
+    metadata can name distributions Pyodide deliberately does not install.
+    Other packages use their installed wheel metadata, including requested
+    extras, so an incomplete saved wheel set cannot be reported as restored.
     """
-    pending = [(Requirement(req), frozenset()) for req in requirements]
+    pending = [(Requirement(raw), frozenset()) for raw in requirements]
     visited = set()
     checked = 0
     while pending:
@@ -113,19 +122,50 @@ def _validate_installed(requirements):
             for extra in parent_extras | {""}
         ):
             continue
+        name = canonicalize_name(req.name)
         dist = importlib.metadata.distribution(req.name)
         if not req.specifier.contains(dist.version, prereleases=True):
             raise ValueError("incomplete_package_plan")
-        key = (canonicalize_name(req.name), frozenset(req.extras))
+        key = (name, frozenset(req.extras))
         if key in visited:
             continue
         visited.add(key)
-        for dependency in dist.requires or []:
-            pending.append((Requirement(dependency), frozenset(req.extras)))
+        bundled = _pyodide_packages.get(name)
+        if bundled and dist.version == bundled["version"]:
+            for dependency in bundled["depends"]:
+                dependency_name = canonicalize_name(dependency)
+                dependency_entry = _pyodide_packages.get(dependency_name)
+                if not dependency_entry:
+                    raise ValueError("incomplete_package_plan")
+                if dependency_entry.get("package_type") == "cpython_module":
+                    imports = dependency_entry.get("imports") or [dependency_name]
+                    if any(importlib.util.find_spec(module) is None for module in imports):
+                        raise ValueError("incomplete_package_plan")
+                    continue
+                pending.append(
+                    (
+                        Requirement(f"{dependency_name}=={dependency_entry['version']}"),
+                        frozenset(),
+                    )
+                )
+            # Pyodide's lock is authoritative for bundled base dependencies,
+            # but explicitly requested extras still need their dependencies.
+            for dependency in dist.requires or []:
+                parsed = Requirement(dependency)
+                if parsed.marker and "extra" in str(parsed.marker):
+                    pending.append((parsed, frozenset(req.extras)))
+        else:
+            for dependency in dist.requires or []:
+                pending.append((Requirement(dependency), frozenset(req.extras)))
 
 
 async def plan_packages(payload_json):
     payload = json.loads(payload_json)
+    # The trusted provider may reuse this offline planner across requests.
+    # Clear prior wheel bytes only at a resolution boundary, not between the
+    # multiple fetch/plan rounds needed to resolve one request.
+    if payload.get("reset") is True:
+        _artifacts.clear()
     if payload.get("artifact"):
         artifact = payload["artifact"]
         _artifacts[artifact["url"]] = artifact
@@ -190,3 +230,7 @@ async def install_packages(payload_json):
     finally:
         for path in paths:
             path.unlink(missing_ok=True)
+
+
+def planner_artifact_urls():
+    return sorted(_artifacts)

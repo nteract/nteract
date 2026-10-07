@@ -20,6 +20,8 @@ async function pythonPackages() {
     stderr() {},
   });
   const packages = JSON.parse(await readFile(new URL("dist/packages.json", root), "utf8"));
+  const lockUrl = new URL("pyodide-lock.json", new URL(import.meta.resolve("pyodide")));
+  python.globals.set("pyodide_lock_json", await readFile(lockUrl, "utf8"));
   for (const { filename } of packages)
     python.unpackArchive(
       new Uint8Array(await readFile(new URL(`.scratch/packages/${filename}`, root))),
@@ -80,6 +82,30 @@ test("shipped package versions match the initial interpreter inventory before no
   );
 });
 
+test("all bundled dependency closures validate against the pinned Pyodide lock", async () => {
+  const python = await pythonPackages();
+  const install = python.globals.get("install_packages");
+  try {
+    const installed = JSON.parse(python.runPython("json.dumps(inventory())"));
+    python.globals.set("bundled_specs_json", JSON.stringify(installed));
+    python.runPython(`
+for requirement in json.loads(bundled_specs_json):
+    _validate_installed([requirement])
+`);
+    const pending = install(JSON.stringify({ requirements: ["ipython==9.0.2"], wheels: [] }));
+    try {
+      const result = JSON.parse(await pending);
+      assert.equal(result.status, "ready", "bundled IPython lock restores without PyPI wheels");
+      assert.ok(result.installed.includes("ipython==9.0.2"));
+    } finally {
+      pending.destroy();
+    }
+  } finally {
+    python.globals.delete("bundled_specs_json");
+    install.destroy();
+  }
+});
+
 test("pinned micropip resolves a dependency cycle without leaving asynchronous work", async () => {
   const python = await pythonPackages();
   const artifacts = JSON.parse(
@@ -131,7 +157,7 @@ cycle_artifacts()
     },
   });
   try {
-    const result = await resolver.resolve(["cycle-a"]);
+    const result = await resolver.resolve("test-session", ["cycle-a"]);
     assert.deepEqual(result.wheels.map((wheel) => wheel.name).sort(), ["cycle-a", "cycle-b"]);
     assert.ok(rounds < 10);
     assert.deepEqual(result.wheels.find((wheel) => wheel.name === "cycle-a").dependencies, [
@@ -139,6 +165,114 @@ cycle_artifacts()
     ]);
   } finally {
     plan.destroy();
+  }
+});
+
+test("planner reset clears prior request artifacts between resolutions", async () => {
+  const python = await pythonPackages();
+  const plan = python.globals.get("plan_packages");
+  const artifactUrls = python.globals.get("planner_artifact_urls");
+  const invoke = async (value) => {
+    const pending = plan(JSON.stringify(value));
+    try {
+      return JSON.parse(await pending);
+    } finally {
+      pending.destroy();
+    }
+  };
+  const url = "https://pypi.org/pypi/snowballstemmer/json";
+  try {
+    await invoke({
+      requirements: ["snowballstemmer"],
+      constraints: [],
+      artifact: {
+        url,
+        body: JSON.stringify({ info: { name: "snowballstemmer" }, releases: {} }),
+      },
+    });
+    assert.deepEqual(artifactUrls().toJs(), [url]);
+    const next = await invoke({
+      requirements: ["snowballstemmer"],
+      constraints: [],
+      reset: true,
+    });
+    assert.equal(next.status, "fetch", "a new resolve must fetch rather than reuse prior metadata");
+    assert.equal(next.url, url);
+    assert.deepEqual(artifactUrls().toJs(), []);
+  } finally {
+    artifactUrls.destroy();
+    plan.destroy();
+  }
+});
+
+test("a package typo does not prevent installing bundled pandas", async () => {
+  const planner = await pythonPackages();
+  const tenant = await pythonPackages();
+  const plan = planner.globals.get("plan_packages");
+  const install = tenant.globals.get("install_packages");
+  const resolver = new PackageResolver({
+    create: async () => ({
+      plan: async (value) => {
+        const pending = plan(JSON.stringify(value));
+        try {
+          return JSON.parse(await pending);
+        } finally {
+          pending.destroy();
+        }
+      },
+      dispose: async () => {},
+    }),
+    fetchImpl: async () => new Response("not found", { status: 404 }),
+  });
+  try {
+    await assert.rejects(resolver.resolve("session", ["request"]), { code: "package_not_found" });
+    const resolved = await resolver.resolve("session", ["pandas"]);
+    assert.deepEqual(resolved.wheels, []);
+    const pending = install(JSON.stringify(resolved));
+    let result;
+    try {
+      result = JSON.parse(await pending);
+    } finally {
+      pending.destroy();
+    }
+    assert.equal(result.status, "ready", JSON.stringify(result));
+    assert.ok(result.installed.includes("pandas==2.3.1"));
+  } finally {
+    await resolver.disposeSession("session");
+    plan.destroy();
+    install.destroy();
+  }
+});
+
+test("restore rejects a missing transitive dependency from a saved wheel", async () => {
+  const python = await pythonPackages();
+  const install = python.globals.get("install_packages");
+  try {
+    const wheel = JSON.parse(
+      python.runPython(`
+import base64, hashlib, io, json, zipfile
+buffer = io.BytesIO()
+with zipfile.ZipFile(buffer, "w") as archive:
+    archive.writestr("synthetic_parent-1.0.dist-info/METADATA", "Metadata-Version: 2.1\\nName: synthetic-parent\\nVersion: 1.0\\nRequires-Dist: synthetic-child>=1\\n")
+    archive.writestr("synthetic_parent-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\\nGenerator: nteract-test\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")
+data = buffer.getvalue()
+json.dumps({"body": base64.b64encode(data).decode(), "sha256": hashlib.sha256(data).hexdigest(), "filename": "synthetic_parent-1.0-py3-none-any.whl"})
+`),
+    );
+    const pending = install(
+      JSON.stringify({
+        requirements: ["synthetic-parent"],
+        wheels: [{ ...wheel, name: "synthetic-parent", version: "1.0" }],
+      }),
+    );
+    try {
+      const result = JSON.parse(await pending);
+      assert.equal(result.status, "error", "restore must reject its missing transitive dependency");
+    } finally {
+      pending.destroy();
+    }
+  } finally {
+    install.destroy();
   }
 });
 
@@ -204,8 +338,9 @@ test(
       }),
     });
     try {
-      const resolved = await resolver.resolve(["snowballstemmer>=2,<4"]);
-      assert.equal(disposed, 1);
+      const sessionKey = "runtime-test-session";
+      const resolved = await resolver.resolve(sessionKey, ["snowballstemmer>=2,<4"]);
+      assert.equal(disposed, 0, "normal resolution keeps the session-scoped planner warm");
       assert.ok(resolved.wheels.some((wheel) => wheel.name === "snowballstemmer"));
       assert.equal(
         python.runPython(
@@ -222,10 +357,24 @@ test(
         ),
         "run",
       );
-      const transitive = await resolver.resolve(["requests[socks]>=2.32,<3"]);
+      await assert.rejects(resolver.resolve(sessionKey, ["request"]), {
+        code: "package_not_found",
+      });
+      const transitive = await resolver.resolve(sessionKey, ["requests[socks]>=2.32,<3"]);
       assert.ok(transitive.wheels.some((wheel) => wheel.name === "pysocks"));
       assert.ok(transitive.wheels.some((wheel) => wheel.name === "urllib3"));
-      assert.equal((await invoke(install, transitive)).status, "ready");
+      const transitiveResult = await invoke(install, transitive);
+      assert.equal(transitiveResult.status, "ready", JSON.stringify(transitiveResult));
+      const oldNotebookTenant = await pythonPackages();
+      const oldNotebookInstall = oldNotebookTenant.globals.get("install_packages");
+      try {
+        const restored = await invoke(oldNotebookInstall, transitive);
+        assert.equal(restored.status, "ready", "saved pure-wheel dependency closure restores");
+        assert.ok(restored.installed.includes("requests==2.34.2"));
+        assert.ok(restored.installed.includes("pysocks==1.7.1"));
+      } finally {
+        oldNotebookInstall.destroy();
+      }
       const incomplete = await invoke(install, {
         requirements: ["not-a-real-installed-package==1"],
         wheels: [],
@@ -233,7 +382,10 @@ test(
       assert.equal(incomplete.status, "error");
       const unsatisfied = await invoke(install, { requirements: ["requests<1"], wheels: [] });
       assert.equal(unsatisfied.status, "error");
-      await assert.rejects(resolver.resolve(["requests>=2", "requests<1"]), /compatible|conflicts/);
+      await assert.rejects(
+        resolver.resolve(sessionKey, ["requests>=2", "requests<1"]),
+        /compatible|conflicts/,
+      );
       assert.equal(
         await python.runPythonAsync(
           "import asyncio\nlen([task for task in asyncio.all_tasks() if task is not asyncio.current_task()])",
@@ -241,9 +393,15 @@ test(
         0,
       );
       // Pyodide 0.28.3 bundles no PyArrow, and PyPI has no pure wheel for it.
-      await assert.rejects(resolver.resolve(["pyarrow"]), { code: "unsupported_distribution" });
-      await assert.rejects(resolver.resolve(["tensorflow"]), { code: "unsupported_distribution" });
-      assert.equal(disposed, 5);
+      await assert.rejects(resolver.resolve(sessionKey, ["pyarrow"]), {
+        code: "unsupported_distribution",
+      });
+      await assert.rejects(resolver.resolve(sessionKey, ["tensorflow"]), {
+        code: "unsupported_distribution",
+      });
+      assert.equal(disposed, 0, "expected package errors do not dispose the warm planner");
+      await resolver.disposeSession(sessionKey);
+      assert.equal(disposed, 1, "closing the session disposes its planner");
     } finally {
       plan.destroy();
       install.destroy();
