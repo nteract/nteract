@@ -1,8 +1,8 @@
 # Explicit notebook attachments in MCP
 
-**Status:** In progress, 2026-10-08. The registry is implemented; mandatory
-attachment targeting across initialize-based and native protocols is being
-completed and independently validated.
+**Status:** Accepted, 2026-10-08. The registry and mandatory attachment targeting
+apply across initialize-based and native protocols. Qualification boundaries
+are recorded below.
 
 This decision supersedes active-notebook routing, connect supersession and
 parked-cache ownership in [MCP Session Lifecycle and Daemon
