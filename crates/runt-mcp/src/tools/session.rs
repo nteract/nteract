@@ -71,7 +71,8 @@ async fn resolve_room_notebook_path(server: &NteractMcp, notebook_id: &str) -> O
         .and_then(|room| room.notebook_path)
 }
 
-/// Maximum number of parked sessions. When this limit is reached, the
+/// Maximum number of compatibility-cache entries. Explicit attachment
+/// ownership lives in the registry and is unaffected by cache eviction. The
 /// parked session chosen by HashMap iteration order is evicted to make room. This
 /// bounds the resource footprint of a long-lived MCP process that touches
 /// many notebooks - without a cap, every notebook ever opened keeps its
@@ -105,6 +106,13 @@ async fn park_session(server: &NteractMcp, old: NotebookSession) {
     });
     // Park the session: peer connection stays alive, no eviction.
     let mut parked = server.parked_sessions.write().await;
+    if !server
+        .attachments
+        .read_entries()
+        .contains_key(&old.notebook_handle)
+    {
+        return; // Release won the race with compatibility-cache insertion.
+    }
 
     // Arbitrary-order eviction: if at capacity, drop an existing parked session.
     if parked.len() >= MAX_PARKED_SESSIONS {
@@ -119,14 +127,6 @@ async fn park_session(server: &NteractMcp, old: NotebookSession) {
     }
 
     parked.insert(session_key, old);
-}
-
-/// Try to resume a parked hosted session for the given notebook URL.
-///
-/// Returns `Some(session)` if a parked session was found and removed from
-/// the parked map. The caller should install it as the active session.
-async fn take_parked_session(server: &NteractMcp, notebook_id: &str) -> Option<NotebookSession> {
-    server.parked_sessions.write().await.remove(notebook_id)
 }
 
 /// Resolve a user-provided path: expand ~ to home dir and resolve relative paths
@@ -215,11 +215,12 @@ async fn canonical_local_id_target_for_server(
     // the room. While that narrow window is open, wait for publication (or
     // for the leader to register the UUID alias) instead of treating the UUID
     // as a competing target generation.
-    let mut attempts = if server.session_activation.has_current_local_path_flight() {
-        40
-    } else {
-        1
-    };
+    let mut attempts =
+        if !crate::targets::native() && server.session_activation.has_current_local_path_flight() {
+            40
+        } else {
+            1
+        };
     loop {
         let rooms = PoolClient::new(server.socket_path.clone())
             .list_rooms()
@@ -765,20 +766,24 @@ async fn install_activated_session(
             ));
         }
     }
-    let session_key = session.session_key();
-    let previous = lease.install_in_slot(&server.session, session).await?;
-
-    // A different target may begin immediately after publication. This
-    // session remains the installed, usable identity until that newer attempt
-    // actually publishes; failed attempts never poison the active slot.
-    if !lease.is_current() {
-        if let Some(old) = previous {
-            if old.session_key() != session_key {
-                park_session(server, old).await;
-            }
-        }
-        return Err(superseded_result(lease));
+    let reservation = crate::targets::take_reservation(server).map_err(|message| {
+        activation_error(
+            "attachment_limit",
+            message,
+            lease.generation(),
+            lease.target(),
+        )
+    })?;
+    if crate::targets::native() {
+        server.attachments.insert(session, reservation);
+        return Ok(());
     }
+    let session_key = session.session_key();
+    let previous = lease
+        .install_in_slot_with(&server.session, session, |session| {
+            server.attachments.insert(session.clone(), reservation);
+        })
+        .await?;
 
     if let Some(old) = previous {
         if old.session_key() != session_key {
@@ -968,46 +973,31 @@ pub async fn disconnect_notebook(
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     if let Some(handle) = crate::targets::current() {
-        let removed = {
+        let removed = server.attachments.remove(&handle);
+        if removed.is_none() {
+            return Err(McpError::invalid_params(
+                "Notebook attachment expired",
+                None,
+            ));
+        }
+        {
             let mut active = server.session.write().await;
             if active
                 .as_ref()
                 .is_some_and(|session| session.notebook_handle == handle)
             {
                 server.advance_session_intent_epoch();
-                active.take()
-            } else {
-                None
+                active.take();
             }
-        };
-        if let Some(session) = removed {
-            *server.last_session_drop.write().await = Some(SessionDropInfo {
-                reason: SessionDropReason::Disconnected,
-                notebook_id: session.notebook_id.clone(),
-                notebook_path: session.notebook_path.clone(),
-                rejoin_target: Some(session.rejoin_target()),
-            });
-            drop(session);
-            return tool_success(
-                "Released the notebook attachment. Connect again to obtain a new handle.",
-            );
         }
-        let removed = {
-            let mut parked = server.parked_sessions.write().await;
-            let key = parked
-                .iter()
-                .find(|(_, session)| session.notebook_handle == handle)
-                .map(|(key, _)| key.clone());
-            key.and_then(|key| parked.remove(&key))
-        };
-        if removed.is_some() {
-            drop(removed);
-            return tool_success("Released the parked notebook attachment.");
-        }
-        return Err(McpError::invalid_params(
-            "Notebook attachment expired",
-            None,
-        ));
+        server
+            .parked_sessions
+            .write()
+            .await
+            .retain(|_, session| session.notebook_handle != handle);
+        return tool_success(
+            "Released the notebook attachment. Connect again to obtain a new handle.",
+        );
     }
     let target_id = arg_str(request, "notebook_id");
 
@@ -1017,6 +1007,7 @@ pub async fn disconnect_notebook(
             let removed = server.parked_sessions.write().await.remove(id);
             if let Some(session) = removed {
                 tracing::info!("[mcp] Disconnecting parked session {}", id);
+                server.attachments.remove(&session.notebook_handle);
                 drop(session);
                 return tool_success(&format!(
                     "Disconnected parked session {}. Peer connection released; \
@@ -1057,6 +1048,7 @@ pub async fn disconnect_notebook(
                     rejoin_target: Some(session.rejoin_target()),
                 });
                 tracing::info!("[mcp] Disconnecting active session {}", id);
+                server.attachments.remove(&session.notebook_handle);
                 drop(session);
                 return tool_success(&format!(
                     "Disconnected active session {}. No active session now; \
@@ -1096,6 +1088,7 @@ pub async fn disconnect_notebook(
                         rejoin_target: Some(session.rejoin_target()),
                     });
                     tracing::info!("[mcp] Disconnecting active session {}", notebook_id);
+                    server.attachments.remove(&session.notebook_handle);
                     drop(session);
                     tool_success(&format!(
                         "Disconnected active session {}. No active session now; \
@@ -1256,76 +1249,6 @@ async fn connect_hosted_notebook(
     if !lease.is_current() {
         return Ok(superseded_result(lease));
     }
-    if let Some(mut parked) = take_parked_session(server, &session_key).await {
-        if !lease.is_current() {
-            // Put the peer back instead of dropping a healthy parked session
-            // merely because another target won during the map lookup.
-            server
-                .parked_sessions
-                .write()
-                .await
-                .insert(session_key.clone(), parked);
-            return Ok(superseded_result(lease));
-        }
-        tracing::info!("[mcp] Resuming parked hosted session {}", session_key);
-        parked.reactivate(lease.generation(), lease.target());
-        let handle = &parked.handle;
-        let runtime_info = read_runtime_info(handle);
-        let deps = get_dependencies(handle);
-        let cells_summary = format_cell_summaries(handle);
-        let project_context = read_project_context(handle);
-
-        let mut response = serde_json::json!({
-            "notebook_id": handle.notebook_id(),
-            "connected": true,
-            "resumed": true,
-            "source": "hosted",
-            "domain": domain_config.base_url,
-            "target": session_key,
-            "runtime": runtime_info,
-            "dependencies": deps,
-            "project_context": project_context,
-            "cells": cells_summary,
-        });
-
-        if let Some(ref prev_id) = prev {
-            if *prev_id != notebook_id {
-                response["switched_from"] = serde_json::json!(prev_id);
-            }
-        }
-
-        add_progressive_session_fields(&mut response, &parked);
-        let previous = match lease
-            .install_in_slot_recovering(&server.session, parked)
-            .await
-        {
-            Ok(previous) => previous,
-            Err((result, rejected)) => {
-                server
-                    .parked_sessions
-                    .write()
-                    .await
-                    .insert(session_key.clone(), rejected);
-                return Ok(result);
-            }
-        };
-        if !lease.is_current() {
-            if let Some(old) = previous {
-                if old.session_key() != session_key {
-                    park_session(server, old).await;
-                }
-            }
-            return Ok(superseded_result(lease));
-        }
-        if let Some(old) = previous {
-            if old.session_key() != session_key {
-                park_session(server, old).await;
-            }
-        }
-        server.parked_sessions.write().await.remove(&session_key);
-        return Ok(notebook_session_response(response, &notebook_id));
-    }
-
     match cloud::connect_hosted_notebook(&domain_config, &notebook_id).await {
         Ok(result) => {
             let handle = &result.handle;
@@ -1551,7 +1474,8 @@ async fn connect_local_id_progressive(
     Ok(notebook_session_response(response, &notebook_id))
 }
 
-/// Open a notebook through a monotonic, same-target-coalescing activation.
+/// Acquire an independent native attachment, or select through the legacy
+/// monotonic, same-target-coalescing adapter.
 pub async fn open_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -1594,7 +1518,11 @@ pub async fn open_notebook(
             (NotebookTarget::LocalPath(path), canonical)
         }
         NotebookTarget::LocalNotebookId(notebook_id) => {
-            let canonical = canonical_local_id_target_for_server(server, &notebook_id).await?;
+            let canonical = if crate::targets::native() {
+                canonical_local_id_target(&notebook_id)?
+            } else {
+                canonical_local_id_target_for_server(server, &notebook_id).await?
+            };
             let normalized = uuid::Uuid::parse_str(&notebook_id)
                 .map_err(|_| McpError::invalid_params("Invalid notebook_id", None))?
                 .hyphenated()
@@ -1619,15 +1547,25 @@ pub async fn open_notebook(
         }
     };
 
-    if let Some(result) = reuse_active_session(server, &canonical_target).await {
-        return Ok(result);
+    if !crate::targets::native() {
+        if let Some(result) = reuse_active_session(server, &canonical_target).await {
+            return Ok(result);
+        }
     }
-
-    let mut lease = match server.session_activation.begin(canonical_target) {
+    let activation = if crate::targets::native() {
+        std::sync::Arc::new(crate::session_activation::SessionActivation::default())
+    } else {
+        server.session_activation.clone()
+    };
+    let mut lease = match activation.begin(canonical_target) {
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
         ActivationTicket::Leader(lease) => lease,
     };
-    let prev = previous_notebook_id(server).await;
+    let prev = if crate::targets::native() {
+        None
+    } else {
+        previous_notebook_id(server).await
+    };
     let outcome = match target {
         NotebookTarget::LocalPath(path) => {
             connect_local_path_progressive(server, path, prev, &lease).await
@@ -1694,11 +1632,20 @@ pub async fn create_notebook(
         "local:create:{}",
         uuid::Uuid::new_v4().hyphenated()
     ));
-    let mut activation_lease = match server.session_activation.begin(create_target) {
+    let activation = if crate::targets::native() {
+        std::sync::Arc::new(crate::session_activation::SessionActivation::default())
+    } else {
+        server.session_activation.clone()
+    };
+    let mut activation_lease = match activation.begin(create_target) {
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
         ActivationTicket::Leader(lease) => lease,
     };
-    let prev = previous_notebook_id(server).await;
+    let prev = if crate::targets::native() {
+        None
+    } else {
+        previous_notebook_id(server).await
+    };
 
     let outcome = async {
         if let Err(error) = server.admit_local_runtime().await {

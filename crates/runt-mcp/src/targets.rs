@@ -2,12 +2,60 @@
 use crate::NteractMcp;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData;
-tokio::task_local! { static TARGET: Option<String>; }
+tokio::task_local! {
+    static TARGET: Option<String>;
+    static NATIVE: bool;
+    static RESERVATION: std::cell::RefCell<Option<crate::attachments::AttachmentReservation>>;
+}
+pub(crate) fn native() -> bool {
+    NATIVE.try_with(|native| *native).unwrap_or(false)
+}
+pub(crate) fn take_reservation(
+    server: &NteractMcp,
+) -> Result<crate::attachments::AttachmentReservation, &'static str> {
+    RESERVATION
+        .try_with(|reservation| reservation.borrow_mut().take())
+        .ok()
+        .flatten()
+        .map(Ok)
+        .unwrap_or_else(|| server.attachments.reserve())
+}
+
 pub(crate) fn current() -> Option<String> {
     TARGET.try_with(Clone::clone).ok().flatten()
 }
 
 pub(crate) async fn dispatch(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+    native: bool,
+) -> Result<CallToolResult, ErrorData> {
+    let reservation = if native
+        && matches!(
+            request.name.as_ref(),
+            "connect_notebook" | "create_notebook"
+        ) {
+        Some(
+            server
+                .attachments
+                .reserve()
+                .map_err(|message| ErrorData::invalid_params(message, None))?,
+        )
+    } else {
+        None
+    };
+    NATIVE
+        .scope(
+            native,
+            RESERVATION.scope(
+                std::cell::RefCell::new(reservation),
+                dispatch_inner(server, request, native),
+            ),
+        )
+        .await
+}
+
+async fn dispatch_inner(
     server: &NteractMcp,
     request: &CallToolRequestParams,
     native: bool,

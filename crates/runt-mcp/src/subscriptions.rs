@@ -58,19 +58,33 @@ pub(crate) async fn listen(
                 None,
             ));
         }
-        prepared.push((uri, target, observer, baseline.cursor));
+        let expiration = server
+            .attachments
+            .read_entries()
+            .get(handle)
+            .map(|entry| entry.expiration())
+            .ok_or_else(|| McpError::invalid_params("Notebook attachment expired", None))?;
+        prepared.push((uri, target, observer, baseline.cursor, expiration));
     }
     // Receivers and cursors exist before the client sees its acknowledgment.
     mcp_transport::acknowledge(context.request_context()).await?;
     let mut watches = tokio::task::JoinSet::new();
-    for (uri, target, observer, mut cursor) in prepared {
+    for (uri, target, observer, mut cursor, mut expiration) in prepared {
         let sink = context.sink().clone();
         watches.spawn(async move {
             loop {
-                let change = observer
-                    .wait(&cursor, Duration::from_secs(50))
-                    .await
-                    .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                if *expiration.borrow() {
+                    let _ = sink.notify_resource_updated(&uri).await;
+                    return Ok::<(), McpError>(());
+                }
+                let change = tokio::select! {
+                    change = observer.wait(&cursor, Duration::from_secs(50)) => change,
+                    _ = expiration.changed() => {
+                        let _ = sink.notify_resource_updated(&uri).await;
+                        return Ok::<(), McpError>(());
+                    }
+                }
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?;
                 cursor = change.cursor;
                 let invalidated = matches!(
                     change.outcome,
@@ -129,12 +143,24 @@ impl Drop for ResourceSubscriptions {
 }
 
 impl ResourceSubscriptions {
+    #[cfg(test)]
     pub(crate) fn subscribe(
         self: &Arc<Self>,
         uri: String,
         target: NotebookResourceUri,
         observer: ObservationReader,
         peer: Peer<RoleServer>,
+    ) -> Result<(), McpError> {
+        self.subscribe_with_expiration(uri, target, observer, peer, None)
+    }
+
+    pub(crate) fn subscribe_with_expiration(
+        self: &Arc<Self>,
+        uri: String,
+        target: NotebookResourceUri,
+        observer: ObservationReader,
+        peer: Peer<RoleServer>,
+        mut expiration: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<(), McpError> {
         let baseline = observer
             .read(None)
@@ -170,7 +196,21 @@ impl ResourceSubscriptions {
         let task = tokio::spawn(async move {
             let mut cursor = baseline.cursor;
             loop {
-                let Ok(change) = observer.wait(&cursor, Duration::from_secs(50)).await else {
+                let result = tokio::select! {
+                    change = observer.wait(&cursor, Duration::from_secs(50)) => change,
+                    _ = async {
+                        match expiration.as_mut() {
+                            Some(expiration) => {
+                                if !*expiration.borrow() { let _ = expiration.changed().await; }
+                            }
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        let _ = peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(&task_uri)).await;
+                        break;
+                    }
+                };
+                let Ok(change) = result else {
                     break;
                 };
                 cursor = change.cursor;

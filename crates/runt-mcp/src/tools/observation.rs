@@ -54,17 +54,38 @@ pub async fn wait_for_notebook_change(
             "message":"This notebook attachment is no longer available. Connect again and obtain a new handle."
         })));
     };
-    crate::targets::with_handle(
-        params.notebook_handle.clone(),
-        run_wait(
-            server,
-            &params,
-            &notebook_id,
-            &observer,
-            Duration::from_secs_f64(seconds),
-        ),
-    )
-    .await
+    let expiration = server
+        .attachments
+        .read_entries()
+        .get(&params.notebook_handle)
+        .map(|entry| entry.expiration());
+    let Some(mut expiration) = expiration else {
+        return Ok(unavailable_attachment(&params));
+    };
+    let result = tokio::select! {
+        result = crate::targets::with_handle(
+            params.notebook_handle.clone(),
+            run_wait(server, &params, &notebook_id, &observer, Duration::from_secs_f64(seconds)),
+        ) => result,
+        _ = async {
+            if !*expiration.borrow() { let _ = expiration.changed().await; }
+        } => return Ok(unavailable_attachment(&params)),
+    };
+    if server
+        .attachment_identity(&params.notebook_handle)
+        .await
+        .is_none()
+    {
+        return Ok(unavailable_attachment(&params));
+    }
+    result
+}
+
+fn unavailable_attachment(params: &WaitForNotebookChangeParams) -> CallToolResult {
+    CallToolResult::structured(serde_json::json!({
+        "outcome":"unavailable", "notebook_handle":params.notebook_handle,
+        "message":"This notebook attachment is no longer available. Connect again and obtain a new handle."
+    }))
 }
 
 async fn run_wait(

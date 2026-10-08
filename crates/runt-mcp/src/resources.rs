@@ -115,6 +115,16 @@ pub(crate) async fn list_resources_for_mode(
         NOTEBOOK_CONTEXT_PRIORITY,
     ));
 
+    let attachments = server
+        .attachments
+        .read_entries()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for handle in attachments {
+        resources.push(attachment_cells_resource_link(&handle));
+    }
+
     let notebook_ids = if native {
         Vec::new()
     } else {
@@ -346,9 +356,9 @@ async fn known_session_notebook_ids(server: &NteractMcp) -> Vec<String> {
     if let Some(session) = server.session.read().await.as_ref() {
         notebook_ids.push(session.notebook_id.clone());
     }
-    for notebook_id in server.parked_sessions.read().await.keys() {
-        if !notebook_ids.iter().any(|known_id| known_id == notebook_id) {
-            notebook_ids.push(notebook_id.clone());
+    for entry in server.attachments.read_entries().values() {
+        if !notebook_ids.contains(&entry.session.notebook_id) {
+            notebook_ids.push(entry.session.notebook_id.clone());
         }
     }
     notebook_ids
@@ -388,25 +398,29 @@ pub(crate) async fn resource_session(
             session.notebook_id == notebook_id
         }
     };
-    let mut found = {
-        let active = server.session.read().await;
-        active
-            .as_ref()
-            .filter(|session| matches(session))
-            .map(capture)
-            .transpose()?
-    };
+    let mut found = None;
     {
-        let parked = server.parked_sessions.read().await;
-        for session in parked.values().filter(|session| matches(session)) {
-            if let Some((_, handle, _, _)) = &found {
-                if *handle == session.notebook_handle {
-                    continue;
-                }
+        let entries = server.attachments.read_entries();
+        for session in entries
+            .values()
+            .map(|entry| &entry.session)
+            .filter(|session| matches(session))
+        {
+            if found.is_some() {
                 return Err(McpError::invalid_params("Ambiguous notebook ID; read its nteract://sessions/{notebook_handle} resource instead", None));
             }
             found = Some(capture(session)?);
         }
+    }
+    // Legacy automatic rejoin can install a selection before registry recovery
+    // integration. It is never a fallback for an expired explicit handle.
+    if !by_handle && found.is_none() {
+        let active = server.session.read().await;
+        found = active
+            .as_ref()
+            .filter(|session| matches(session))
+            .map(capture)
+            .transpose()?;
     }
     if let Some(found) = found {
         return Ok(found);

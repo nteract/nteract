@@ -21,6 +21,7 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
 use tokio::sync::RwLock;
 
+pub mod attachments;
 pub mod cli;
 pub mod cloud;
 pub mod daemon_watch;
@@ -123,16 +124,18 @@ pub struct NteractMcp {
     /// Missing policy preserves legacy behavior. A policy without a launcher
     /// enables strict admission for custom or shared alternate endpoints.
     local_runtime_admission: Option<LocalRuntimeAdmission>,
+    attachments: Arc<attachments::AttachmentRegistry>,
     session: Arc<RwLock<Option<NotebookSession>>>,
     /// Explicit tool intent epoch used to invalidate daemon auto-rejoin work.
     /// The epoch is advanced while holding the active-session write lock so a
     /// completed background connection cannot resurrect a session after the
     /// user deliberately disconnected it.
     session_intent_epoch: Arc<AtomicU64>,
-    /// Owns monotonically ordered notebook activation generations and
-    /// coalesces concurrent connections to the same canonical target.
+    /// Legacy selection adapter: orders competing selections and coalesces
+    /// same-target calls. Native acquisitions each have their own activation.
     session_activation: Arc<SessionActivation>,
-    /// Parked sessions from previous `connect_notebook` / `create_notebook`
+    /// Compatibility peer cache, independent of retained attachment ownership.
+    /// Parked sessions from legacy `connect_notebook` / `create_notebook`
     /// calls. When an agent switches notebooks, the old session is moved here
     /// instead of being dropped, keeping the daemon peer connection alive so
     /// the room doesn't hit the eviction timer. On switch-back, the parked
@@ -193,52 +196,36 @@ impl NteractMcp {
         &self,
         handle: &str,
     ) -> Option<(String, Option<String>)> {
-        {
-            let active = self.session.read().await;
-            if let Some(session) = active
-                .as_ref()
-                .filter(|session| session.notebook_handle == handle)
-            {
-                return Some((session.notebook_id.clone(), session.notebook_path.clone()));
-            }
-        }
-        self.parked_sessions
-            .read()
-            .await
-            .values()
-            .find(|session| session.notebook_handle == handle)
-            .map(|session| (session.notebook_id.clone(), session.notebook_path.clone()))
+        self.attachments.read_entries().get(handle).map(|entry| {
+            (
+                entry.session.notebook_id.clone(),
+                entry.session.notebook_path.clone(),
+            )
+        })
     }
+
+    /// Shared explicit ownership for daemon reconciliation. Removal expires a
+    /// handle; recovery must never install a replacement under that handle.
+    pub fn attachments(&self) -> &Arc<attachments::AttachmentRegistry> {
+        &self.attachments
+    }
+
     pub(crate) async fn observer_for_handle(
         &self,
         notebook_handle: &str,
     ) -> Result<Option<(String, observation::ObservationReader)>, McpError> {
-        let capture = |session: &NotebookSession| {
-            session
-                .access(session::SessionRequirement::DocumentRead)
-                .map_err(resources::resource_session_access_error)?;
-            session
-                .observer()
-                .map(|observer| Some((session.notebook_id.clone(), observer)))
-                .map_err(|error| McpError::internal_error(error, None))
+        let entries = self.attachments.read_entries();
+        let Some(entry) = entries.get(notebook_handle) else {
+            return Ok(None);
         };
-        {
-            let active = self.session.read().await;
-            if let Some(session) = active
-                .as_ref()
-                .filter(|session| session.notebook_handle == notebook_handle)
-            {
-                return capture(session);
-            }
-        }
-        let parked = self.parked_sessions.read().await;
-        match parked
-            .values()
-            .find(|session| session.notebook_handle == notebook_handle)
-        {
-            Some(session) => capture(session),
-            None => Ok(None),
-        }
+        let session = &entry.session;
+        session
+            .access(session::SessionRequirement::DocumentRead)
+            .map_err(resources::resource_session_access_error)?;
+        session
+            .observer()
+            .map(|observer| Some((session.notebook_id.clone(), observer)))
+            .map_err(|error| McpError::internal_error(error, None))
     }
 
     /// Create a new MCP server instance.
@@ -258,6 +245,7 @@ impl NteractMcp {
                 output_resource_session: None,
             }),
             local_runtime_admission: None,
+            attachments: Arc::default(),
             session: Arc::new(RwLock::new(None)),
             session_intent_epoch: Arc::new(AtomicU64::new(0)),
             session_activation: Arc::new(SessionActivation::default()),
@@ -379,30 +367,20 @@ impl NteractMcp {
     /// snapshot. Contention waits for ownership to resolve; it is not evidence
     /// that local durable outputs are absent.
     pub(crate) async fn local_runtime_metadata(&self) -> LocalRuntimeMetadata {
-        let target = targets::current();
-        {
-            let active = self.session.read().await;
-            if let Some(session) = active.as_ref() {
-                if target
-                    .as_ref()
-                    .is_none_or(|target| session.notebook_handle == *target)
-                {
-                    return self.local_metadata_snapshot(!session.is_hosted());
-                }
-            } else if target.is_none() {
-                return self.local_metadata_snapshot(true);
-            }
+        if let Some(target) = targets::current() {
+            let allowed = self
+                .attachments
+                .read_entries()
+                .get(&target)
+                .is_some_and(|entry| !entry.session.is_hosted());
+            return self.local_metadata_snapshot(allowed);
         }
-        let Some(target) = target else {
-            return self.local_metadata_snapshot(true);
-        };
-        let allowed = {
-            let parked = self.parked_sessions.read().await;
-            parked
-                .values()
-                .find(|session| session.notebook_handle == target)
-                .is_some_and(|session| !session.is_hosted())
-        };
+        let allowed = self
+            .session
+            .read()
+            .await
+            .as_ref()
+            .is_none_or(|session| !session.is_hosted());
         self.local_metadata_snapshot(allowed)
     }
 
@@ -471,20 +449,11 @@ impl NteractMcp {
         requirement: SessionRequirement,
     ) -> Result<Option<SessionAccess>, SessionAccessError> {
         if let Some(handle) = targets::current() {
-            {
-                let active = self.session.read().await;
-                if let Some(session) = active
-                    .as_ref()
-                    .filter(|session| session.notebook_handle == handle)
-                {
-                    return session.access(requirement).map(Some);
-                }
-            }
-            let parked = self.parked_sessions.read().await;
-            return parked
-                .values()
-                .find(|session| session.notebook_handle == handle)
-                .map(|session| session.access(requirement))
+            return self
+                .attachments
+                .read_entries()
+                .get(&handle)
+                .map(|entry| entry.session.access(requirement))
                 .transpose();
         }
         let guard = self.session.read().await;
@@ -553,24 +522,36 @@ impl NteractMcp {
                 return Err(Self::superseded_access_error(access));
             }
             {
+                let mut entries = self.attachments.write_entries();
+                if let Some(entry) = entries.get_mut(&handle) {
+                    entry.session.notebook_path = Some(path.clone());
+                } else {
+                    return Err(Self::superseded_access_error(access));
+                }
+            }
+            {
                 let mut active = self.session.write().await;
                 if let Some(session) = active
                     .as_mut()
                     .filter(|session| session.notebook_handle == handle)
                 {
-                    session.notebook_path = Some(path);
-                    return Ok(());
+                    session.notebook_path = Some(path.clone());
                 }
             }
-            let mut parked = self.parked_sessions.write().await;
-            if let Some(session) = parked
-                .values_mut()
-                .find(|session| session.notebook_handle == handle)
             {
-                session.notebook_path = Some(path);
-                return Ok(());
+                let mut parked = self.parked_sessions.write().await;
+                for session in parked
+                    .values_mut()
+                    .filter(|session| session.notebook_handle == handle)
+                {
+                    session.notebook_path = Some(path.clone());
+                }
             }
-            return Err(Self::superseded_access_error(access));
+            return if self.attachments.read_entries().contains_key(&handle) {
+                Ok(())
+            } else {
+                Err(Self::superseded_access_error(access))
+            };
         }
         let generation = access.readiness.session_generation;
         let target = &access.readiness.target;
@@ -589,7 +570,14 @@ impl NteractMcp {
         if !activation_current {
             return Err(Self::superseded_access_error(access));
         }
-        session.notebook_path = Some(path);
+        session.notebook_path = Some(path.clone());
+        if let Some(entry) = self
+            .attachments
+            .write_entries()
+            .get_mut(&session.notebook_handle)
+        {
+            entry.session.notebook_path = Some(path);
+        }
         Ok(())
     }
 
@@ -622,6 +610,7 @@ impl NteractMcp {
             );
             drop(session);
         }
+        self.attachments.write_entries().clear();
         // Drop all parked sessions so their daemon peer connections close.
         let parked = std::mem::take(&mut *self.parked_sessions.write().await);
         if !parked.is_empty() {
@@ -907,15 +896,25 @@ impl ServerHandler for NteractMcp {
                 ))
             }
         };
-        let (_, _, handle, observer) = resources::resource_session(
+        let (_, notebook_handle, handle, observer) = resources::resource_session(
             self,
             notebook_id,
             request.uri.starts_with("nteract://sessions/"),
         )
         .await?;
         drop(handle);
-        self.resource_subscriptions
-            .subscribe(request.uri, target, observer, context.peer)
+        let expiration = self
+            .attachments
+            .read_entries()
+            .get(&notebook_handle)
+            .map(|entry| entry.expiration());
+        self.resource_subscriptions.subscribe_with_expiration(
+            request.uri,
+            target,
+            observer,
+            context.peer,
+            expiration,
+        )
     }
 
     #[allow(deprecated)]
@@ -1050,6 +1049,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn release_isolated_from_other_attachment_and_legacy_selection() {
+        let server = NteractMcp::new("unused.sock".into(), None, None);
+        let peer = metadata_test_handle("same-notebook").await;
+        let a = NotebookSession::hosted(
+            peer.clone(),
+            "same-notebook".into(),
+            "https://example.com".into(),
+        );
+        let b = NotebookSession::hosted(peer, "same-notebook".into(), "https://example.com".into());
+        let a_handle = a.notebook_handle.clone();
+        let b_handle = b.notebook_handle.clone();
+        assert_ne!(a_handle, b_handle);
+        *server.session.write().await = Some(b.clone());
+        server
+            .attachments
+            .insert(a, server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert(b, server.attachments.reserve().unwrap());
+        let mut a_expired = server.attachments.read_entries()[&a_handle].expiration();
+        let b_expired = server.attachments.read_entries()[&b_handle].expiration();
+        let request = CallToolRequestParams::new("disconnect_notebook").with_arguments(
+            serde_json::json!({ "notebook_handle": a_handle })
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let result = targets::dispatch(&server, &request, true).await.unwrap();
+        assert_ne!(result.is_error, Some(true));
+        a_expired.changed().await.unwrap();
+        assert!(*a_expired.borrow());
+        assert!(!*b_expired.borrow());
+        assert!(server.attachment_identity(&a_handle).await.is_none());
+        assert!(server.attachment_identity(&b_handle).await.is_some());
+        assert_eq!(
+            server
+                .session
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .notebook_handle,
+            b_handle
+        );
+        assert!(targets::dispatch(&server, &request, true).await.is_err());
+        targets::with_handle(b_handle, async {
+            // Ownership does not bypass runtime readiness: this fixture has no ready runtime.
+            assert!(server
+                .session_access(SessionRequirement::Execute)
+                .await
+                .is_err());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn full_registry_refuses_admission_without_expiring_live_handles() {
+        let server = NteractMcp::new("unused.sock".into(), None, None);
+        let peer = metadata_test_handle("retained").await;
+        let mut handles = Vec::new();
+        for _ in 0..attachments::MAX_ATTACHMENTS {
+            let session = NotebookSession::hosted(
+                peer.clone(),
+                "retained".into(),
+                "https://example.com".into(),
+            );
+            handles.push(session.notebook_handle.clone());
+            server
+                .attachments
+                .insert(session, server.attachments.reserve().unwrap());
+        }
+        let request = CallToolRequestParams::new("create_notebook");
+        let error = targets::dispatch(&server, &request, true)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("attachment_limit"));
+        for handle in &handles {
+            assert!(server.attachment_identity(handle).await.is_some());
+        }
+        drop(server.attachments.remove(&handles[0]));
+        assert!(server.attachments.reserve().is_ok());
+        assert!(server.attachment_identity(&handles[1]).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn cache_eviction_does_not_expire_retained_attachment() {
+        let server = NteractMcp::new("unused.sock".into(), None, None);
+        let session = NotebookSession::local(
+            metadata_test_handle("retained").await,
+            "retained".into(),
+            None,
+            None,
+        );
+        let handle = session.notebook_handle.clone();
+        server
+            .attachments
+            .insert(session.clone(), server.attachments.reserve().unwrap());
+        server
+            .parked_sessions
+            .write()
+            .await
+            .insert("retained".into(), session);
+        server.parked_sessions.write().await.clear();
+        assert!(server.attachment_identity(&handle).await.is_some());
+        server.shutdown().await;
+        assert!(server.attachment_identity(&handle).await.is_none());
+    }
+
+    #[tokio::test]
     async fn local_metadata_waits_for_session_writer_without_losing_durable_path() {
         use std::future::Future;
         let server = NteractMcp::new(
@@ -1078,7 +1186,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_metadata_suppression_follows_explicit_parked_handles() {
+    async fn hosted_metadata_suppression_follows_retained_handles() {
         let server = NteractMcp::new(
             "unused.sock".into(),
             Some("http://localhost:12345".into()),
@@ -1097,6 +1205,12 @@ mod tests {
             "https://hosted.example".into(),
         );
         let hosted_handle = hosted.notebook_handle.clone();
+        server
+            .attachments
+            .insert(local.clone(), server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert(hosted.clone(), server.attachments.reserve().unwrap());
         *server.session.write().await = Some(local);
         server
             .parked_sessions
