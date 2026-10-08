@@ -1,16 +1,26 @@
 //! Explicit attachment ownership, independent of legacy notebook selection.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::session::NotebookSession;
+use crate::session::{DaemonIncarnation, NotebookSession};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentOrigin {
     Explicit,
     Legacy,
+}
+
+/// Source and authority must match before a native open can share a peer.
+/// The endpoint is fixed by the owning MCP server. Hosted connections are not
+/// pooled without a stable authenticated source identity.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BackingPeerKey {
+    pub target: String,
+    pub incarnation: DaemonIncarnation,
+    pub operator: String,
 }
 
 pub const MAX_ATTACHMENTS: usize = 128;
@@ -81,6 +91,8 @@ impl Drop for AttachmentEntry {
 pub struct AttachmentRegistry {
     pub entries: RwLock<HashMap<String, AttachmentEntry>>,
     capacity: Arc<Semaphore>,
+    /// Weak gates serialize compatible native acquisition, never retain peers.
+    acquisition_gates: Mutex<HashMap<BackingPeerKey, Weak<Semaphore>>>,
 }
 
 impl Default for AttachmentRegistry {
@@ -88,6 +100,7 @@ impl Default for AttachmentRegistry {
         Self {
             entries: RwLock::new(HashMap::new()),
             capacity: Arc::new(Semaphore::new(MAX_ATTACHMENTS)),
+            acquisition_gates: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -139,6 +152,20 @@ impl AttachmentRegistry {
         );
     }
 
+    pub(crate) fn acquisition_gate(&self, key: BackingPeerKey) -> Arc<Semaphore> {
+        let mut gates = self
+            .acquisition_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gates.retain(|_, gate| gate.strong_count() != 0);
+        if let Some(gate) = gates.get(&key).and_then(Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(Semaphore::new(1));
+        gates.insert(key, Arc::downgrade(&gate));
+        gate
+    }
+
     pub fn remove(&self, handle: &str) -> Option<AttachmentEntry> {
         let entry = self.write_entries().remove(handle);
         if let Some(entry) = &entry {
@@ -161,5 +188,61 @@ mod tests {
         assert!(registry.reserve().is_err());
         reservations.pop();
         assert!(registry.reserve().is_ok());
+    }
+
+    fn key(target: &str) -> BackingPeerKey {
+        BackingPeerKey {
+            target: target.into(),
+            incarnation: DaemonIncarnation {
+                pid: 1,
+                started_at: chrono::Utc::now(),
+            },
+            operator: "agent:test:owner".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn gates_share_only_exact_identity_and_cancelled_waiters_do_not_block_retry() {
+        let registry = AttachmentRegistry::default();
+        let key = key("local:path:/same.ipynb");
+        let first = registry.acquisition_gate(key.clone());
+        let follower = registry.acquisition_gate(key.clone());
+        assert!(Arc::ptr_eq(&first, &follower));
+        let permit = Arc::clone(&first).acquire_owned().await.unwrap();
+        let waiter_gate = Arc::clone(&follower);
+        let waiter = tokio::spawn(async move { waiter_gate.acquire_owned().await });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        let mut other = key.clone();
+        other.target = "local:path:/other.ipynb".into();
+        assert!(!Arc::ptr_eq(
+            &first,
+            &registry.acquisition_gate(other.clone())
+        ));
+        other = key.clone();
+        other.incarnation.pid += 1;
+        assert!(!Arc::ptr_eq(
+            &first,
+            &registry.acquisition_gate(other.clone())
+        ));
+        other = key;
+        other.operator = "agent:other:owner".into();
+        assert!(!Arc::ptr_eq(&first, &registry.acquisition_gate(other)));
+        drop(permit);
+        assert!(first.try_acquire().is_ok());
+    }
+
+    #[test]
+    fn abandoned_gates_do_not_form_a_strong_or_unbounded_cache() {
+        let registry = AttachmentRegistry::default();
+        let gate = registry.acquisition_gate(key("first"));
+        let weak = Arc::downgrade(&gate);
+        drop(gate);
+        assert!(weak.upgrade().is_none());
+        for index in 0..1000 {
+            drop(registry.acquisition_gate(key(&index.to_string())));
+        }
+        assert_eq!(registry.acquisition_gates.lock().unwrap().len(), 1);
     }
 }

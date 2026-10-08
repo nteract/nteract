@@ -776,6 +776,26 @@ async fn install_activated_session(
         )
     })?;
     if crate::targets::explicit_attachment_mode() {
+        let mut session = session;
+        let operator = server.get_operator().await;
+        session.backing_key = crate::targets::backing_key()
+            .or_else(|| {
+                session.local_daemon_incarnation.clone().map(|incarnation| {
+                    crate::attachments::BackingPeerKey {
+                        target: format!("local:id:{}", session.notebook_id),
+                        incarnation,
+                        operator,
+                    }
+                })
+            })
+            .filter(|key| {
+                session.local_daemon_incarnation.as_ref() == Some(&key.incarnation)
+                    && session.handle.get_actor_id().is_ok_and(|actor| {
+                        actor
+                            .rsplit_once('/')
+                            .is_some_and(|(_, operator)| operator == key.operator)
+                    })
+            });
         server.attachments.insert(session, reservation);
         return Ok(());
     }
@@ -1475,6 +1495,224 @@ async fn connect_local_id_progressive(
     Ok(notebook_session_response(response, &notebook_id))
 }
 
+/// Format a newly owned attachment to an existing peer without weakening its
+/// retained projection or causal head evidence.
+fn shared_attachment_response(session: &NotebookSession) -> Result<CallToolResult, CallToolResult> {
+    let access = session
+        .access(SessionRequirement::ProjectionRead)
+        .map_err(|error| {
+            activation_error(
+                error.code,
+                &error.message,
+                session.activation_generation,
+                &CanonicalNotebookTarget::new(session.activation_target.clone()),
+            )
+        })?;
+    let projection = if access.readiness.interactive {
+        None
+    } else {
+        access.projection
+    };
+    let (runtime, dependencies, project_context, cells) = match projection {
+        Some(projection) => (
+            projected_runtime_info(&projection),
+            projection.dependencies.clone(),
+            serde_json::to_value(&projection.runtime.project_context).unwrap_or_default(),
+            format_projected_cell_summaries(&projection.cells),
+        ),
+        None => {
+            session
+                .access(SessionRequirement::DocumentRead)
+                .map_err(|error| {
+                    activation_error(
+                        error.code,
+                        &error.message,
+                        session.activation_generation,
+                        &CanonicalNotebookTarget::new(session.activation_target.clone()),
+                    )
+                })?;
+            // Document readiness does not imply runtime readiness. A shared
+            // open may safely report an unknown runtime without a kernel.
+            let runtime = if session.access(SessionRequirement::RuntimeRead).is_ok() {
+                read_runtime_info(&session.handle)
+            } else {
+                serde_json::json!({"kernel_status": "unknown"})
+            };
+            (
+                runtime,
+                get_dependencies(&session.handle),
+                read_project_context(&session.handle),
+                format_cell_summaries(&session.handle),
+            )
+        }
+    };
+    let mut response = serde_json::json!({
+        "notebook_id": session.notebook_id,
+        "connected": true,
+        "runtime": runtime,
+        "dependencies": dependencies,
+        "project_context": project_context,
+        "cells": cells,
+    });
+    if let Some(path) = &session.notebook_path {
+        response["path"] = serde_json::json!(path);
+        response["notebook_path"] = serde_json::json!(path);
+    }
+    add_progressive_session_fields(&mut response, session);
+    Ok(notebook_session_response(response, &session.notebook_id))
+}
+
+async fn open_explicit_attachment(
+    server: &NteractMcp,
+    target: NotebookTarget,
+    requested: CanonicalNotebookTarget,
+) -> Result<CallToolResult, McpError> {
+    // Direct hosted transport has no daemon incarnation and resolves mutable
+    // credentials on connect. Do not share it without an authenticated key.
+    let key = if matches!(target, NotebookTarget::Hosted { .. }) {
+        None
+    } else {
+        if let Err(error) = server.admit_local_runtime().await {
+            return tool_error(&error);
+        }
+        let canonical = match &target {
+            NotebookTarget::LocalNotebookId(id) => {
+                canonical_local_id_target_for_server(server, id).await?
+            }
+            _ => requested.clone(),
+        };
+        current_daemon_incarnation(server).await.map(|incarnation| {
+            crate::attachments::BackingPeerKey {
+                target: canonical.as_str().to_string(),
+                incarnation,
+                operator: String::new(),
+            }
+        })
+    };
+    let key = match key {
+        Some(mut key) => {
+            key.operator = server.get_operator().await;
+            Some(key)
+        }
+        None => None,
+    };
+    let gate = key
+        .as_ref()
+        .map(|key| server.attachments.acquisition_gate(key.clone()));
+    let _permit = match &gate {
+        Some(gate) => Some(
+            std::sync::Arc::clone(gate)
+                .acquire_owned()
+                .await
+                .map_err(|_| McpError::internal_error("Notebook acquisition gate closed", None))?,
+        ),
+        None => None,
+    };
+    let activation = std::sync::Arc::new(crate::session_activation::SessionActivation::default());
+    let mut lease = match activation.begin(requested) {
+        ActivationTicket::Leader(lease) => lease,
+        ActivationTicket::Follower(_) => unreachable!("fresh activation has no follower"),
+    };
+
+    if let Some(key) = &key {
+        if current_daemon_incarnation(server).await.as_ref() != Some(&key.incarnation) {
+            return Ok(activation_error(
+                "daemon_replaced",
+                "The local daemon changed while waiting to acquire a backing peer; retry the connection",
+                lease.generation(), lease.target(),
+            ));
+        }
+        if server.get_operator().await != key.operator {
+            return Ok(activation_error(
+                "source_identity_changed",
+                "The operator changed while waiting to acquire a backing peer; retry the connection",
+                lease.generation(), lease.target(),
+            ));
+        }
+        // Resolve from current daemon room metadata, never activation aliases:
+        // saving a shared notebook can move its path while its old activation
+        // target still names the original file.
+        let rooms = PoolClient::new(server.socket_path.clone())
+            .list_rooms()
+            .await
+            .map_err(|error| {
+                McpError::internal_error(
+                    format!("Failed to resolve backing notebook: {error}"),
+                    None,
+                )
+            })?;
+        let mut matches = rooms.into_iter().filter(|room| match &target {
+            NotebookTarget::LocalPath(path) => {
+                room.notebook_path.as_deref().is_some_and(|room_path| {
+                    canonical_local_path_target(room_path) == canonical_local_path_target(path)
+                })
+            }
+            NotebookTarget::LocalNotebookId(id) => room.notebook_id == *id,
+            NotebookTarget::Hosted { .. } => false,
+        });
+        let resolved = matches.next().filter(|_| matches.next().is_none());
+        let candidate = resolved.as_ref().and_then(|room| {
+            server
+                .attachments
+                .read_entries()
+                .values()
+                .find_map(|entry| {
+                    let session = &entry.session;
+                    let compatible = session.backing_key.as_ref().is_some_and(|existing| {
+                        existing.incarnation == key.incarnation && existing.operator == key.operator
+                    });
+                    let readiness = session.readiness();
+                    (compatible
+                        && !session.is_hosted()
+                        && session.notebook_id == room.notebook_id
+                        && session.local_daemon_incarnation.as_ref() == Some(&key.incarnation)
+                        && session.handle.status().connection == ConnectionState::Connected
+                        && readiness.source_state["phase"] == "ready"
+                        && (readiness.interactive || readiness.projection_ready))
+                        .then(|| session.fresh_attachment(lease.generation(), lease.target()))
+                })
+        });
+        if let Some(mut session) = candidate {
+            session.notebook_path = resolved.and_then(|room| room.notebook_path);
+            let response = match shared_attachment_response(&session) {
+                Ok(response) => response,
+                Err(error) => return Ok(error),
+            };
+            if let Err(result) = crate::targets::with_backing_key(
+                Some(key.clone()),
+                install_activated_session(server, &lease, session),
+            )
+            .await
+            {
+                return Ok(result);
+            }
+            lease.complete(&response);
+            return Ok(response);
+        }
+    }
+
+    let outcome = crate::targets::with_backing_key(key, async {
+        match target {
+            NotebookTarget::LocalPath(path) => {
+                connect_local_path_progressive(server, path, None, &lease).await
+            }
+            NotebookTarget::LocalNotebookId(id) => {
+                connect_local_id_progressive(server, id, None, &lease).await
+            }
+            NotebookTarget::Hosted {
+                domain,
+                notebook_id,
+                ..
+            } => connect_hosted_notebook(server, domain, notebook_id, None, &lease).await,
+        }
+    })
+    .await;
+    if let Ok(result) = &outcome {
+        lease.complete(result);
+    }
+    outcome
+}
+
 /// Acquire an independent native attachment, or select through the legacy
 /// monotonic, same-target-coalescing adapter.
 pub async fn open_notebook(
@@ -1548,6 +1786,9 @@ pub async fn open_notebook(
         }
     };
 
+    if crate::targets::explicit_attachment_mode() {
+        return open_explicit_attachment(server, target, canonical_target).await;
+    }
     if !crate::targets::explicit_attachment_mode() {
         if let Some(result) = reuse_active_session(server, &canonical_target).await {
             return Ok(result);
@@ -2014,6 +2255,58 @@ mod tests {
             pid,
             started_at: Utc.timestamp_opt(pid.into(), 0).single().unwrap(),
         }
+    }
+
+    #[tokio::test]
+    async fn shared_response_propagates_pending_and_disconnected_access_failure() {
+        struct Frames(
+            tokio::sync::mpsc::UnboundedReceiver<notebook_protocol::connection::TypedNotebookFrame>,
+        );
+        impl notebook_protocol::connection::FrameSource for Frames {
+            async fn recv_frame(
+                &mut self,
+            ) -> Option<std::io::Result<notebook_protocol::connection::TypedNotebookFrame>>
+            {
+                self.0.recv().await.map(Ok)
+            }
+        }
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handle = notebook_sync::connect::connect_frame_io(
+            "test".into(),
+            "local:test/agent:test",
+            Frames(receiver),
+            notebook_protocol::connection::WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        let mut status = handle.subscribe_status();
+        let local = NotebookSession::local(
+            handle.clone(),
+            "test".into(),
+            None,
+            Some(test_incarnation(1)),
+        );
+        let error = shared_attachment_response(&local).unwrap_err();
+        assert!(first_text(&error).contains("notebook_not_ready"));
+        let hosted =
+            NotebookSession::hosted(handle.clone(), "test".into(), "https://example.com".into());
+        assert!(shared_attachment_response(&hosted).is_ok());
+        drop(sender);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while status.borrow_and_update().connection != ConnectionState::Disconnected {
+                status.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let error = shared_attachment_response(&hosted).unwrap_err();
+        assert!(first_text(&error).contains("sync_failed"));
+        let observer = hosted.observer().unwrap();
+        assert_eq!(
+            observer.read(None).unwrap().outcome,
+            crate::observation::ChangeOutcome::Unavailable
+        );
     }
 
     fn make_request(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {

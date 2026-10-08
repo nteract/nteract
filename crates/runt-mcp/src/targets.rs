@@ -6,6 +6,16 @@ tokio::task_local! {
     static TARGET: Option<String>;
     static EXPLICIT_ATTACHMENT: bool;
     static RESERVATION: std::cell::RefCell<Option<crate::attachments::AttachmentReservation>>;
+    static BACKING_KEY: Option<crate::attachments::BackingPeerKey>;
+}
+pub(crate) fn backing_key() -> Option<crate::attachments::BackingPeerKey> {
+    BACKING_KEY.try_with(Clone::clone).ok().flatten()
+}
+pub(crate) async fn with_backing_key<T>(
+    key: Option<crate::attachments::BackingPeerKey>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    BACKING_KEY.scope(key, future).await
 }
 pub(crate) fn explicit_attachment_mode() -> bool {
     EXPLICIT_ATTACHMENT

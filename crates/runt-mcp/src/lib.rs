@@ -1079,9 +1079,58 @@ mod tests {
             }
             assert_eq!(
                 registry.read_entries()[&handle].origin(),
-                if legacy { attachments::AttachmentOrigin::Legacy } else { attachments::AttachmentOrigin::Explicit }
+                if legacy {
+                    attachments::AttachmentOrigin::Legacy
+                } else {
+                    attachments::AttachmentOrigin::Explicit
+                }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn shared_peer_attachments_keep_independent_expiry_and_last_owner_drops_observer() {
+        let registry = attachments::AttachmentRegistry::default();
+        let peer = metadata_test_handle("shared-notebook").await;
+        let a =
+            NotebookSession::hosted(peer, "shared-notebook".into(), "https://example.com".into());
+        let observer = a.observer().unwrap();
+        let b = a.fresh_attachment(
+            7,
+            &session_activation::CanonicalNotebookTarget::new("hosted:other-target"),
+        );
+        assert_ne!(a.notebook_handle, b.notebook_handle);
+        assert_eq!(a.activation_generation, 0);
+        assert_eq!(b.activation_generation, 7);
+        assert!(observer.same_attachment(&b.observer().unwrap()));
+        let a_handle = a.notebook_handle.clone();
+        let b_handle = b.notebook_handle.clone();
+        registry.insert(a, registry.reserve().unwrap());
+        registry.insert_legacy(b, registry.reserve().unwrap());
+        let mut a_expiry = registry.read_entries()[&a_handle].expiration();
+        let b_expiry = registry.read_entries()[&b_handle].expiration();
+        assert_eq!(
+            registry.read_entries()[&a_handle].origin(),
+            attachments::AttachmentOrigin::Explicit
+        );
+        assert_eq!(
+            registry.read_entries()[&b_handle].origin(),
+            attachments::AttachmentOrigin::Legacy
+        );
+        drop(registry.remove(&a_handle));
+        a_expiry.changed().await.unwrap();
+        assert!(*a_expiry.borrow());
+        assert!(!*b_expiry.borrow());
+        assert_ne!(
+            observer.read(None).unwrap().outcome,
+            observation::ChangeOutcome::Unavailable
+        );
+        drop(registry.remove(&b_handle));
+        assert!(*b_expiry.borrow());
+        assert_eq!(
+            observer.read(None).unwrap().outcome,
+            observation::ChangeOutcome::Unavailable
+        );
     }
 
     #[tokio::test]

@@ -195,6 +195,7 @@ pub struct NotebookSession {
     /// Opaque identity of this concrete attachment. Compatibility clones preserve it;
     /// reconnecting creates a new handle.
     pub notebook_handle: String,
+    pub(crate) backing_key: Option<crate::attachments::BackingPeerKey>,
     observation: Arc<OnceLock<Result<crate::observation::ObservationOwner, String>>>,
     /// The Automerge document handle for this notebook.
     pub handle: DocHandle,
@@ -218,6 +219,19 @@ pub struct NotebookSession {
 }
 
 impl NotebookSession {
+    /// A new logical owner of the same connected replica and observation task.
+    /// Clone remains compatibility identity-preserving; native acquire uses this.
+    pub(crate) fn fresh_attachment(
+        &self,
+        generation: u64,
+        target: &CanonicalNotebookTarget,
+    ) -> Self {
+        let mut attachment = self.clone();
+        attachment.notebook_handle = uuid::Uuid::new_v4().to_string();
+        attachment.reactivate(generation, target);
+        attachment
+    }
+
     pub fn observer(&self) -> Result<crate::observation::ObservationReader, String> {
         self.observation
             .get_or_init(|| {
@@ -238,6 +252,7 @@ impl NotebookSession {
         let activation_target = format!("local:id:{notebook_id}");
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
+            backing_key: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -261,6 +276,7 @@ impl NotebookSession {
     ) -> Self {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
+            backing_key: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -279,6 +295,7 @@ impl NotebookSession {
         let activation_target = crate::cloud::hosted_notebook_url(&domain, &notebook_id);
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
+            backing_key: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -300,6 +317,7 @@ impl NotebookSession {
     ) -> Self {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
+            backing_key: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
