@@ -488,7 +488,7 @@ impl NteractMcp {
             {
                 Ok(())
             } else {
-                Err(Self::superseded_access_error(access))
+                Err(Self::expired_attachment_access_error(access))
             };
         }
         let generation = access.readiness.session_generation;
@@ -519,14 +519,14 @@ impl NteractMcp {
     ) -> Result<(), SessionAccessError> {
         if let Some(handle) = targets::current() {
             if access.notebook_handle != handle {
-                return Err(Self::superseded_access_error(access));
+                return Err(Self::expired_attachment_access_error(access));
             }
             {
                 let mut entries = self.attachments.write_entries();
                 if let Some(entry) = entries.get_mut(&handle) {
                     entry.session.notebook_path = Some(path.clone());
                 } else {
-                    return Err(Self::superseded_access_error(access));
+                    return Err(Self::expired_attachment_access_error(access));
                 }
             }
             {
@@ -550,7 +550,7 @@ impl NteractMcp {
             return if self.attachments.read_entries().contains_key(&handle) {
                 Ok(())
             } else {
-                Err(Self::superseded_access_error(access))
+                Err(Self::expired_attachment_access_error(access))
             };
         }
         let generation = access.readiness.session_generation;
@@ -579,6 +579,15 @@ impl NteractMcp {
             entry.session.notebook_path = Some(path);
         }
         Ok(())
+    }
+
+    fn expired_attachment_access_error(access: &SessionAccess) -> SessionAccessError {
+        SessionAccessError {
+            code: "attachment_expired",
+            message: "Notebook attachment expired; connect again and obtain a new handle"
+                .to_string(),
+            readiness: Box::new(access.readiness.clone()),
+        }
     }
 
     fn superseded_access_error(access: &SessionAccess) -> SessionAccessError {
@@ -1086,6 +1095,199 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn scoped_tool_completion_fences_release_but_preserves_original_failures() {
+        let server = NteractMcp::new("unused.sock".into(), None, None);
+        let session = NotebookSession::hosted(
+            metadata_test_handle("same-notebook").await,
+            "same-notebook".into(),
+            "https://example.com".into(),
+        );
+        let handle = session.notebook_handle.clone();
+        server
+            .attachments
+            .insert(session, server.attachments.reserve().unwrap());
+        let success = CallToolResult::success(vec![crate::formatting::assistant_text(
+            "admitted mutation persisted",
+        )]);
+        assert_eq!(
+            targets::finish_scoped_tool(&server, "set_cell", Some(&handle), Ok(success.clone()))
+                .unwrap(),
+            success
+        );
+        tokio::task::yield_now().await;
+        drop(server.attachments.remove(&handle));
+        for name in ["set_cell", "create_cell", "delete_cell", "get_all_cells"] {
+            let result =
+                targets::finish_scoped_tool(&server, name, Some(&handle), Ok(success.clone()))
+                    .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(
+                result.structured_content.as_ref().unwrap()["error"]["code"],
+                "attachment_expired"
+            );
+            assert_eq!(
+                result.structured_content.as_ref().unwrap()["error"]["notebook_handle"],
+                handle
+            );
+            assert!(
+                result.structured_content.as_ref().unwrap()["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("may already have taken effect")
+            );
+        }
+        assert_eq!(
+            targets::finish_scoped_tool(
+                &server,
+                "disconnect_notebook",
+                Some(&handle),
+                Ok(success.clone())
+            )
+            .unwrap(),
+            success
+        );
+        assert_eq!(
+            targets::finish_scoped_tool(&server, "set_cell", None, Ok(success.clone())).unwrap(),
+            success
+        );
+        let unknown = McpError::internal_error(
+            "sync outcome unknown",
+            Some(serde_json::json!({"request_id":"original"})),
+        );
+        assert_eq!(
+            targets::finish_scoped_tool(&server, "set_cell", Some(&handle), Err(unknown.clone()))
+                .unwrap_err(),
+            unknown
+        );
+        let failure =
+            CallToolResult::error(vec![crate::formatting::assistant_text("source conflict")]);
+        assert_eq!(
+            targets::finish_scoped_tool(&server, "set_cell", Some(&handle), Ok(failure.clone()))
+                .unwrap(),
+            failure
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_post_await_validation_reports_expiry_without_affecting_other_owner() {
+        let server = NteractMcp::new("unused.sock".into(), None, None);
+        let a = NotebookSession::hosted(
+            metadata_test_handle("same-notebook").await,
+            "same-notebook".into(),
+            "https://example.com".into(),
+        );
+        let b = a.fresh_attachment(
+            2,
+            &session_activation::CanonicalNotebookTarget::new(a.activation_target.clone()),
+        );
+        let a_handle = a.notebook_handle.clone();
+        let b_handle = b.notebook_handle.clone();
+        let a_access = a.access(SessionRequirement::ProjectionRead).unwrap();
+        let b_access = b.access(SessionRequirement::ProjectionRead).unwrap();
+        *server.session.write().await = Some(b.clone());
+        server
+            .attachments
+            .insert(a, server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert(b, server.attachments.reserve().unwrap());
+
+        // A captured token cannot be applied through another live attachment,
+        // even when both logical owners share the same physical replica.
+        targets::with_handle(b_handle.clone(), async {
+            assert_eq!(
+                server
+                    .ensure_session_access_current(&a_access)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "attachment_expired"
+            );
+            assert_eq!(
+                server
+                    .update_session_path_if_current(&a_access, "wrong.ipynb".into())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "attachment_expired"
+            );
+        })
+        .await;
+
+        targets::with_handle(a_handle.clone(), async {
+            server
+                .ensure_session_access_current(&a_access)
+                .await
+                .unwrap();
+            tokio::task::yield_now().await;
+            drop(server.attachments.remove(&a_handle));
+            let error = server
+                .ensure_session_access_current(&a_access)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "attachment_expired");
+            assert!(!error.message.contains("superseded"));
+            assert_eq!(
+                server
+                    .update_session_path_if_current(&a_access, "released.ipynb".into())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "attachment_expired"
+            );
+        })
+        .await;
+
+        targets::with_handle(b_handle.clone(), async {
+            server
+                .ensure_session_access_current(&b_access)
+                .await
+                .unwrap();
+            server
+                .update_session_path_if_current(&b_access, "survivor.ipynb".into())
+                .await
+                .unwrap();
+        })
+        .await;
+        assert_eq!(
+            server.attachments.read_entries()[&b_handle]
+                .session
+                .notebook_path
+                .as_deref(),
+            Some("survivor.ipynb")
+        );
+        assert_eq!(
+            server
+                .session
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .notebook_path
+                .as_deref(),
+            Some("survivor.ipynb")
+        );
+
+        // The legacy active-slot fence keeps its existing error contract.
+        assert_eq!(
+            server
+                .ensure_session_access_current(&a_access)
+                .await
+                .unwrap_err()
+                .code,
+            "session_superseded"
+        );
+        assert_eq!(
+            server
+                .update_session_path_if_current(&a_access, "legacy.ipynb".into())
+                .await
+                .unwrap_err()
+                .code,
+            "session_superseded"
+        );
     }
 
     #[tokio::test]

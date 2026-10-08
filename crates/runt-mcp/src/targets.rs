@@ -120,9 +120,37 @@ async fn dispatch_inner(
             ));
         }
     }
-    TARGET
-        .scope(target, crate::tools::dispatch(server, &request))
-        .await
+    let outcome = TARGET
+        .scope(target.clone(), crate::tools::dispatch(server, &request))
+        .await;
+    finish_scoped_tool(server, &request.name, target.as_deref(), outcome)
+}
+
+/// Fence successful completions against the logical owner captured at admission.
+/// Already-admitted side effects can persist after release; this does not imply
+/// rollback. Preserve original failures, including uncertain sync outcomes.
+pub(crate) fn finish_scoped_tool(
+    server: &NteractMcp,
+    name: &str,
+    handle: Option<&str>,
+    outcome: Result<CallToolResult, ErrorData>,
+) -> Result<CallToolResult, ErrorData> {
+    let Some(handle) = handle else { return outcome };
+    if name == "disconnect_notebook"
+        || !matches!(&outcome, Ok(result) if result.is_error != Some(true))
+        || server.attachments.read_entries().contains_key(handle)
+    {
+        return outcome;
+    }
+    let details = serde_json::json!({"error": {
+        "code": "attachment_expired",
+        "message": "Notebook attachment expired before this operation completed; an admitted operation may already have taken effect. Connect again and obtain a new handle",
+        "notebook_handle": handle,
+    }});
+    let mut result =
+        CallToolResult::error(vec![crate::formatting::assistant_text(details.to_string())]);
+    result.structured_content = Some(details);
+    Ok(result)
 }
 
 pub(crate) async fn with_handle<T>(

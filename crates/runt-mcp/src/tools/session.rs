@@ -1533,16 +1533,41 @@ fn shared_attachment_response(session: &NotebookSession) -> Result<CallToolResul
                 })?;
             // Document readiness does not imply runtime readiness. A shared
             // open may safely report an unknown runtime without a kernel.
-            let runtime = if session.access(SessionRequirement::RuntimeRead).is_ok() {
-                read_runtime_info(&session.handle)
-            } else {
-                serde_json::json!({"kernel_status": "unknown"})
-            };
+            let (runtime, project_context, cells) =
+                if session.access(SessionRequirement::RuntimeRead).is_ok() {
+                    (
+                        read_runtime_info(&session.handle),
+                        read_project_context(&session.handle),
+                        format_cell_summaries(&session.handle),
+                    )
+                } else {
+                    let cells = session
+                        .handle
+                        .get_cells()
+                        .iter()
+                        .map(|cell| {
+                            formatting::format_cell_summary(
+                                &cell.id,
+                                &cell.cell_type,
+                                &cell.source,
+                                formatting::CellSummaryContext::default(),
+                                60,
+                                &[],
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    (
+                        serde_json::json!({"kernel_status": "unknown"}),
+                        serde_json::Value::Null,
+                        cells,
+                    )
+                };
             (
                 runtime,
                 get_dependencies(&session.handle),
-                read_project_context(&session.handle),
-                format_cell_summaries(&session.handle),
+                project_context,
+                cells,
             )
         }
     };
@@ -2291,7 +2316,21 @@ mod tests {
         assert!(first_text(&error).contains("notebook_not_ready"));
         let hosted =
             NotebookSession::hosted(handle.clone(), "test".into(), "https://example.com".into());
-        assert!(shared_attachment_response(&hosted).is_ok());
+        handle
+            .add_cell_with_source("cell-pending", "code", None, "pending runtime sentinel")
+            .unwrap();
+        assert!(hosted.access(SessionRequirement::RuntimeRead).is_err());
+        let response = shared_attachment_response(&hosted).unwrap();
+        let body: serde_json::Value = serde_json::from_str(first_text(&response)).unwrap();
+        assert_eq!(
+            body["runtime"],
+            serde_json::json!({"kernel_status":"unknown"})
+        );
+        assert!(body["project_context"].is_null());
+        let cells = body["cells"].as_str().unwrap();
+        assert!(cells.contains("pending runtime sentinel"));
+        assert!(!cells.contains("never_run"));
+        assert!(!cells.contains("exec="));
         drop(sender);
         tokio::time::timeout(Duration::from_secs(2), async {
             while status.borrow_and_update().connection != ConnectionState::Disconnected {
