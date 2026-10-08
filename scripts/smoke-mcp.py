@@ -34,6 +34,7 @@ import re
 import shutil
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,18 @@ KERNEL_READY_TIMEOUT_SECS = 240
 
 class SmokeRetry(Exception):
     """Raised when a smoke pass hit a transient condition worth retrying."""
+
+
+@dataclass(frozen=True)
+class NotebookAttachment:
+    session: ClientSession
+    notebook_id: str
+    notebook_handle: str
+
+    async def call_tool(self, name: str, arguments: dict):
+        return await self.session.call_tool(
+            name, {**arguments, "notebook_handle": self.notebook_handle}
+        )
 
 
 def fail(msg: str) -> None:
@@ -300,7 +313,7 @@ async def create_notebook_checked(
     session: ClientSession,
     label: str,
     args: dict | None = None,
-) -> str:
+) -> NotebookAttachment:
     """Create a notebook and fail/retry immediately if auto-launch failed."""
     create = await session.call_tool("create_notebook", args or {})
     body = text_of(create)
@@ -312,10 +325,13 @@ async def create_notebook_checked(
     notebook_id = parsed.get("notebook_id") if parsed else None
     if not isinstance(notebook_id, str) or not notebook_id:
         fail(f"create_notebook({label}) did not return notebook_id: {body}")
+    notebook_handle = parsed.get("notebook_handle") if parsed else None
+    if not isinstance(notebook_handle, str) or not notebook_handle.strip():
+        fail(f"create_notebook({label}) did not return notebook_handle: {body}")
 
     error_details = kernel_launch_error(body)
     if not error_details:
-        return notebook_id
+        return NotebookAttachment(session, notebook_id, notebook_handle)
 
     message = f"create_notebook({label}) reported kernel launch error: {error_details}"
     if TRANSIENT_KERNEL_LAUNCH_RE.search(error_details):
@@ -339,16 +355,16 @@ async def run_smoke_pass(label: str, pass_fn, session: ClientSession) -> None:
             await asyncio.sleep(delay)
 
 
-async def run_cell_and_get_body(session: ClientSession, source: str, label: str) -> str:
+async def run_cell_and_get_body(notebook: NotebookAttachment, source: str, label: str) -> str:
     """Create a code cell, execute it, return the result body once `done`.
 
     Polls `get_results` for up to 240s to cover the slow path where the
     kernel needs to install dependencies on first execute.
     """
-    cell_id = await create_code_cell(session, source, label)
+    cell_id = await create_code_cell(notebook, source, label)
 
     print(f"[{label}] execute_cell {cell_id}")
-    exec_result = await session.call_tool("execute_cell", {"cell_id": cell_id})
+    exec_result = await notebook.call_tool("execute_cell", {"cell_id": cell_id})
     if exec_result.isError:
         fail(f"execute_cell errored: {text_of(exec_result)}")
     print(text_of(exec_result))
@@ -369,7 +385,7 @@ async def run_cell_and_get_body(session: ClientSession, source: str, label: str)
 
     for attempt in range(120):
         await asyncio.sleep(2)
-        results = await session.call_tool("get_results", {"execution_id": execution_id})
+        results = await notebook.call_tool("get_results", {"execution_id": execution_id})
         body = text_of(results)
         if ERROR_RE.search(body) and "Execution not found" not in body:
             fail(f"execution errored: {body}")
@@ -383,10 +399,10 @@ async def run_cell_and_get_body(session: ClientSession, source: str, label: str)
     fail(f"[{label}] execution did not complete within 240s")
 
 
-async def create_code_cell(session: ClientSession, source: str, label: str) -> str:
+async def create_code_cell(notebook: NotebookAttachment, source: str, label: str) -> str:
     """Create a code cell and return its cell_id."""
     print(f"[{label}] create_cell")
-    cell = await session.call_tool(
+    cell = await notebook.call_tool(
         "create_cell",
         {"cell_type": "code", "source": source},
     )
@@ -400,10 +416,10 @@ async def create_code_cell(session: ClientSession, source: str, label: str) -> s
     return match.group(0)
 
 
-async def first_cell_id(session: ClientSession, label: str) -> str:
-    """Return the current notebook's first cell_id."""
+async def first_cell_id(notebook: NotebookAttachment, label: str) -> str:
+    """Return the captured notebook's first cell_id."""
     print(f"[{label}] get_all_cells(format=json, count=1)")
-    result = await session.call_tool("get_all_cells", {"format": "json", "count": 1})
+    result = await notebook.call_tool("get_all_cells", {"format": "json", "count": 1})
     body = text_of(result)
     if result.isError:
         fail(f"[{label}] get_all_cells errored: {body}")
@@ -417,10 +433,12 @@ async def first_cell_id(session: ClientSession, label: str) -> str:
     return cell_id
 
 
-async def set_code_cell(session: ClientSession, cell_id: str, source: str, label: str) -> None:
+async def set_code_cell(
+    notebook: NotebookAttachment, cell_id: str, source: str, label: str
+) -> None:
     """Update an existing cell to code with the given source."""
     print(f"[{label}] set_cell {cell_id}")
-    result = await session.call_tool(
+    result = await notebook.call_tool(
         "set_cell",
         {"cell_id": cell_id, "cell_type": "code", "source": source},
     )
@@ -435,14 +453,14 @@ async def basic_pass(session: ClientSession, smoke_root: Path) -> None:
     working_dir.mkdir(parents=True, exist_ok=True)
 
     print("[basic] create_notebook")
-    notebook_id = await create_notebook_checked(
+    notebook = await create_notebook_checked(
         session,
         "basic",
         {"working_dir": str(working_dir)},
     )
-    await wait_for_kernel_ready(session, notebook_id, "basic")
+    await wait_for_kernel_ready(session, notebook.notebook_id, "basic")
 
-    body = await run_cell_and_get_body(session, "print(1 + 1)", "basic")
+    body = await run_cell_and_get_body(notebook, "print(1 + 1)", "basic")
     out = stdout_of(body)
     if out != "2":
         fail(f"[basic] stdout was {out!r}, expected '2'")
@@ -455,12 +473,12 @@ async def polars_pass(session: ClientSession, smoke_root: Path) -> None:
     working_dir.mkdir(parents=True, exist_ok=True)
 
     print("[polars] create_notebook(dependencies=['polars'])")
-    notebook_id = await create_notebook_checked(
+    notebook = await create_notebook_checked(
         session,
         "polars",
         {"dependencies": ["polars"], "working_dir": str(working_dir)},
     )
-    await wait_for_kernel_ready(session, notebook_id, "polars")
+    await wait_for_kernel_ready(session, notebook.notebook_id, "polars")
 
     # Final expression `df` triggers an execute_result with the polars repr
     # (text/html + text/plain). Asserting on column names and values keeps the
@@ -470,7 +488,7 @@ async def polars_pass(session: ClientSession, smoke_root: Path) -> None:
         "df = pl.DataFrame({'name': ['a', 'b', 'c'], 'value': [10, 20, 30]})\n"
         "df\n"
     )
-    body = await run_cell_and_get_body(session, src, "polars")
+    body = await run_cell_and_get_body(notebook, src, "polars")
     out = stdout_of(body)
 
     expected_tokens = ("name", "value", "10", "20", "30")
@@ -624,7 +642,7 @@ async def viz_llm_pass(
     working_dir.mkdir(parents=True, exist_ok=True)
 
     print("[viz-llm] create_notebook(dependencies=['pandas', 'plotly', 'altair'])")
-    notebook_id = await create_notebook_checked(
+    notebook = await create_notebook_checked(
         session,
         "viz-llm",
         {
@@ -632,16 +650,16 @@ async def viz_llm_pass(
             "working_dir": str(working_dir),
         },
     )
-    await wait_for_kernel_ready(session, notebook_id, "viz-llm")
+    await wait_for_kernel_ready(session, notebook.notebook_id, "viz-llm")
 
-    import_cell_id = await first_cell_id(session, "viz-llm/imports")
-    await set_code_cell(session, import_cell_id, VIZ_IMPORT_CELL, "viz-llm/imports")
-    await create_code_cell(session, VIZ_DATAFRAME_CELL, "viz-llm/dataframe")
-    await create_code_cell(session, VIZ_PLOTLY_CELL, "viz-llm/plotly")
-    await create_code_cell(session, VIZ_ALTAIR_CELL, "viz-llm/altair")
+    import_cell_id = await first_cell_id(notebook, "viz-llm/imports")
+    await set_code_cell(notebook, import_cell_id, VIZ_IMPORT_CELL, "viz-llm/imports")
+    await create_code_cell(notebook, VIZ_DATAFRAME_CELL, "viz-llm/dataframe")
+    await create_code_cell(notebook, VIZ_PLOTLY_CELL, "viz-llm/plotly")
+    await create_code_cell(notebook, VIZ_ALTAIR_CELL, "viz-llm/altair")
 
     print("[viz-llm] run_all_cells")
-    result = await session.call_tool("run_all_cells", {"timeout_secs": 300})
+    result = await notebook.call_tool("run_all_cells", {"timeout_secs": 300})
     transcript = content_transcript_of(result)
     print(transcript)
     if result.isError:
@@ -676,7 +694,7 @@ async def smoke(
 ) -> None:
     params = StdioServerParameters(
         command=str(runt_exe),
-        args=["mcp"],
+        args=["mcp", "--no-show"],
         env={
             key: os.environ[key]
             for key in ("RUNTIMED_DEV", "RUNTIMED_WORKSPACE_PATH", "RUNTIMED_SOCKET_PATH")

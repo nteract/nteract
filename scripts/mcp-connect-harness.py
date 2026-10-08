@@ -19,7 +19,7 @@ Then run a cold/warm profile::
         --fixture-cells 64 --samples 3
 
 Use ``--parallel 2`` to probe duplicate connects against one MCP process.
-Use ``--suite progressive`` to add same-target coalescing, target-switch, and
+Use ``--suite progressive`` to add independent same-target owners, overlapping targets, and
 degraded-source scenarios. The progressive suite also starts one MCP child
 with its NotebookDoc sync reactor deliberately stalled after handshake. This
 proves that projection reads stay available while mutation and execution gates
@@ -181,6 +181,13 @@ def notebook_id_arg(value: str) -> str:
     if normalized is None:
         raise argparse.ArgumentTypeError("notebook ID must be a UUID")
     return normalized
+
+
+def attachment_arguments(notebook_handle: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Bind one request to its exact acquisition, never a process-wide selection."""
+    if not isinstance(notebook_handle, str) or not notebook_handle.strip():
+        raise ValueError("acquisition did not return a nonempty notebook_handle")
+    return {**arguments, "notebook_handle": notebook_handle}
 
 
 class McpProcess:
@@ -458,6 +465,8 @@ def summarize_connect(
         "structured_state_errors": transition_errors,
         "response_valid": response_valid,
         "notebook_id": notebook_id,
+        "notebook_handle": response_object.get("notebook_handle"),
+        "notebook_path": response_object.get("notebook_path"),
         "response_cells_kind": response_kind,
         "response_cells_bytes": cells_bytes,
         "cell_count": len(response_cell_ids),
@@ -482,6 +491,9 @@ def summarize_connect(
 
 def progressive_contract_errors(response: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    handle = response.get("notebook_handle")
+    if not isinstance(handle, str) or not handle.strip():
+        errors.append("notebook_handle must be a nonempty string")
     projected_cell_ids, _ = connect_cell_ids(response)
     if len(projected_cell_ids) != len(set(projected_cell_ids)):
         errors.append("projection cell IDs must be unique")
@@ -845,6 +857,7 @@ async def monitor_active_peers(
 async def poll_document_until_interactive(
     client: McpProcess,
     *,
+    notebook_handle: str,
     ready_timeout_secs: float,
     poll_interval_ms: float,
 ) -> dict[str, Any]:
@@ -860,7 +873,9 @@ async def poll_document_until_interactive(
     attempts: list[dict[str, Any]] = []
     while True:
         summary = summarize_get_all(
-            *await measured_tool(client, "get_all_cells", {"format": "json"})
+            *await measured_tool(
+                client, "get_all_cells", attachment_arguments(notebook_handle, {"format": "json"})
+            )
         )
         attempts.append(summary)
         if summary["ok"] and not summary.get("projection_only"):
@@ -905,6 +920,7 @@ async def poll_document_until_interactive(
 async def poll_noop_mutation_until_interactive(
     client: McpProcess,
     *,
+    notebook_handle: str,
     cell_id: str | None,
     ready_timeout_secs: float,
     poll_interval_ms: float,
@@ -929,7 +945,9 @@ async def poll_noop_mutation_until_interactive(
     attempts: list[dict[str, Any]] = []
     while True:
         summary = summarize_generic_tool(
-            *await measured_tool(client, "set_cell", {"cell_id": cell_id})
+            *await measured_tool(
+                client, "set_cell", attachment_arguments(notebook_handle, {"cell_id": cell_id})
+            )
         )
         attempts.append(summary)
         if summary["ok"]:
@@ -960,6 +978,36 @@ async def poll_noop_mutation_until_interactive(
         "transient_error_codes": sorted(set(transient_codes)),
         "notebook_not_ready_observed": "notebook_not_ready" in transient_codes,
         "structured_transitions_valid": structured_transitions_valid,
+    }
+
+
+async def probe_attachment(
+    client: McpProcess,
+    connect: dict[str, Any],
+    ready_timeout_secs: float,
+    poll_interval_ms: float,
+) -> dict[str, Any]:
+    handle = connect["notebook_handle"]
+    convergence, mutation = await asyncio.gather(
+        poll_document_until_interactive(
+            client,
+            notebook_handle=handle,
+            ready_timeout_secs=ready_timeout_secs,
+            poll_interval_ms=poll_interval_ms,
+        ),
+        poll_noop_mutation_until_interactive(
+            client,
+            notebook_handle=handle,
+            cell_id=next(iter(connect.get("cell_ids", [])), None),
+            ready_timeout_secs=ready_timeout_secs,
+            poll_interval_ms=poll_interval_ms,
+        ),
+    )
+    return {
+        "notebook_handle": handle,
+        "document_convergence": convergence,
+        "interactive_noop_mutation_probe": mutation,
+        "ok": convergence["ok"] and mutation["ok"],
     }
 
 
@@ -996,32 +1044,43 @@ async def run_sample(
             summarize_connect(elapsed, result, error, fixture_cell_ids)
             for elapsed, result, error in connect_measurements
         ]
-        mutation_probe_cell_id = next(
-            (
-                cell_id
-                for connect in connect_summaries
-                for cell_id in connect.get("cell_ids", [])[:1]
-            ),
-            None,
-        )
+        if not all(connect["ok"] for connect in connect_summaries):
+            return {
+                "sample": sample,
+                "ok": False,
+                "connects": connect_summaries,
+                "error": "acquisition failed; no unqualified probes were sent",
+                "mcp_stderr_tail": client.stderr_lines[-80:],
+            }
         runtime_execute_probe = {
             "ok": True,
             "skipped": True,
             "reason": "connect response did not advertise a closed runtime/execute gate",
         }
-        runtime_gate_is_closed = any(
-            isinstance(connect.get("readiness"), dict)
-            and connect["readiness"].get("runtime") is False
-            and isinstance(connect.get("capabilities"), dict)
-            and connect["capabilities"].get("execute") is False
-            for connect in connect_summaries
+        runtime_probe_owner = next(
+            (
+                connect
+                for connect in connect_summaries
+                if isinstance(connect.get("readiness"), dict)
+                and connect["readiness"].get("runtime") is False
+                and isinstance(connect.get("capabilities"), dict)
+                and connect["capabilities"].get("execute") is False
+                and connect.get("cell_ids")
+            ),
+            None,
         )
-        if runtime_gate_is_closed and mutation_probe_cell_id is not None:
+        if runtime_probe_owner is not None:
             runtime_execute_probe = summarize_generic_tool(
                 *await measured_tool(
                     client,
                     "execute_cell",
-                    {"cell_id": mutation_probe_cell_id, "timeout_secs": 0.1},
+                    attachment_arguments(
+                        runtime_probe_owner["notebook_handle"],
+                        {
+                            "cell_id": runtime_probe_owner["cell_ids"][0],
+                            "timeout_secs": 0.1,
+                        },
+                    ),
                 )
             )
             # The probe races room activation: before the room is interactive
@@ -1041,19 +1100,14 @@ async def run_sample(
                 runtime_execute_probe.get("tool_error") is False
                 and runtime_execute_probe.get("error_code") is None
             )
-        convergence, interactive_probe = await asyncio.gather(
-            poll_document_until_interactive(
-                client,
-                ready_timeout_secs=ready_timeout_secs,
-                poll_interval_ms=poll_interval_ms,
-            ),
-            poll_noop_mutation_until_interactive(
-                client,
-                cell_id=mutation_probe_cell_id,
-                ready_timeout_secs=ready_timeout_secs,
-                poll_interval_ms=poll_interval_ms,
-            ),
+        owner_probes = await asyncio.gather(
+            *(
+                probe_attachment(client, connect, ready_timeout_secs, poll_interval_ms)
+                for connect in connect_summaries
+            )
         )
+        convergence = owner_probes[0]["document_convergence"]
+        interactive_probe = owner_probes[0]["interactive_noop_mutation_probe"]
         after_ms, after_result, after_error = await measured_tool(
             client, "list_active_notebooks", {}
         )
@@ -1068,6 +1122,7 @@ async def run_sample(
             "active_notebooks_before": before_value,
             "active_notebooks_before_error": before_error,
             "connects": connect_summaries,
+            "owner_probes": owner_probes,
             "document_convergence": convergence,
             "interactive_noop_mutation_probe": interactive_probe,
             "runtime_execute_probe": runtime_execute_probe,
@@ -1080,12 +1135,12 @@ async def run_sample(
             "mcp_stderr_tail": client.stderr_lines[-80:],
         }
         immediate_ids = convergence["immediate"].get("cell_ids", [])
-        actual_ids = convergence["final"].get("cell_ids", [])
         connects_ok = all(connect["ok"] for connect in sample_result["connects"])
         connect_ids_match_read = all(
-            projected_ids_match_document(connect, actual_ids)
-            for connect in sample_result["connects"]
-            if connect["ok"]
+            projected_ids_match_document(
+                connect, probe["document_convergence"]["final"].get("cell_ids", [])
+            )
+            for connect, probe in zip(connect_summaries, owner_probes, strict=True)
         )
         connect_notebook_ids = [
             connect["notebook_id"] for connect in sample_result["connects"] if connect["ok"]
@@ -1096,8 +1151,9 @@ async def run_sample(
             for connect in sample_result["connects"]
             if connect["ok"]
         ]
-        same_target_generation_coalesced = (
-            len(connect_generations) == parallel and len(set(connect_generations)) == 1
+        connect_handles = [connect["notebook_handle"] for connect in connect_summaries]
+        independent_owners = (
+            len(connect_handles) == parallel and len(set(connect_handles)) == parallel
         )
         projection_signatures = [
             (
@@ -1108,11 +1164,19 @@ async def run_sample(
             for connect in sample_result["connects"]
             if connect["ok"] and isinstance(connect.get("projection"), dict)
         ]
-        same_target_projection_coalesced = (
+        same_target_projection_equal = (
             len(projection_signatures) == parallel and len(set(projection_signatures)) == 1
         )
+        baseline_peers = max(
+            (
+                room.get("active_peers", 0)
+                for room in matching_active_rooms(before_value, connect_args)
+            ),
+            default=0,
+        )
         parallel_peer_count_bounded = (
-            peer_monitor is None or peer_monitor.get("max_active_peers", 0) <= 1
+            peer_monitor is None
+            or peer_monitor.get("max_active_peers", 0) <= baseline_peers + parallel
         )
         active_room_ids = [
             notebook_id
@@ -1129,7 +1193,16 @@ async def run_sample(
             requested_notebook_id is not None
             and all(notebook_id == requested_notebook_id for notebook_id in connect_notebook_ids)
         )
-        fixture_ids_match = fixture_cell_ids is None or actual_ids == fixture_cell_ids
+        requested_path = connect_args.get("path")
+        canonical_path_matches = not isinstance(requested_path, str) or all(
+            isinstance(connect.get("notebook_path"), str)
+            and os.path.realpath(connect["notebook_path"]) == os.path.realpath(requested_path)
+            for connect in connect_summaries
+        )
+        fixture_ids_match = fixture_cell_ids is None or all(
+            probe["document_convergence"]["final"].get("cell_ids", []) == fixture_cell_ids
+            for probe in owner_probes
+        )
         runtime_gate_ok = (
             runtime_execute_probe.get("skipped") is True
             or runtime_execute_probe.get("gate_proved") is True
@@ -1139,29 +1212,30 @@ async def run_sample(
             connects_ok
             and connect_ids_match_read
             and connect_notebook_ids_consistent
-            and same_target_generation_coalesced
-            and same_target_projection_coalesced
+            and independent_owners
             and parallel_peer_count_bounded
             and connect_notebook_ids_match_active_room
             and connect_notebook_ids_match_target
-            and convergence["ok"]
-            and interactive_probe["ok"]
+            and canonical_path_matches
+            and all(probe["ok"] for probe in owner_probes)
             and fixture_ids_match
             and runtime_gate_ok
         )
         sample_result["connect_cell_ids_match_immediate_read"] = (
             all(
-                projected_ids_match_document(connect, immediate_ids)
-                for connect in sample_result["connects"]
-                if connect["ok"]
+                projected_ids_match_document(
+                    connect, probe["document_convergence"]["immediate"].get("cell_ids", [])
+                )
+                for connect, probe in zip(connect_summaries, owner_probes, strict=True)
             )
-            if convergence["immediate"]["ok"]
+            if all(probe["document_convergence"]["immediate"]["ok"] for probe in owner_probes)
             else None
         )
         sample_result["connect_cell_ids_match_eventual_read"] = connect_ids_match_read
         sample_result["connect_notebook_ids_consistent"] = connect_notebook_ids_consistent
-        sample_result["same_target_generation_coalesced"] = same_target_generation_coalesced
-        sample_result["same_target_projection_coalesced"] = same_target_projection_coalesced
+        sample_result["independent_attachment_owners"] = independent_owners
+        sample_result["connect_notebook_handles"] = connect_handles
+        sample_result["same_target_projection_equal"] = same_target_projection_equal
         sample_result["parallel_peer_count_bounded"] = parallel_peer_count_bounded
         sample_result["connect_session_generations"] = connect_generations
         sample_result["active_room_notebook_ids"] = active_room_ids
@@ -1169,6 +1243,7 @@ async def run_sample(
             connect_notebook_ids_match_active_room
         )
         sample_result["connect_notebook_ids_match_target"] = connect_notebook_ids_match_target
+        sample_result["canonical_notebook_paths_match_target"] = canonical_path_matches
         sample_result["fixture_cell_ids_match_immediate_read"] = (
             (fixture_cell_ids is None or immediate_ids == fixture_cell_ids)
             if convergence["immediate"]["ok"]
@@ -1187,18 +1262,6 @@ async def run_sample(
         return sample_result
     finally:
         await client.close()
-
-
-def summary_generation(summary: dict[str, Any]) -> int | None:
-    generation = summary.get("session_generation")
-    if isinstance(generation, int) and not isinstance(generation, bool):
-        return generation
-    payload = summary.get("error_payload")
-    if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
-        generation = payload["error"].get("session_generation")
-        if isinstance(generation, int) and not isinstance(generation, bool):
-            return generation
-    return None
 
 
 async def run_target_switch_scenario(
@@ -1221,66 +1284,59 @@ async def run_target_switch_scenario(
         first_measurement = await first_task
         first = summarize_connect(*first_measurement, first_cell_ids)
         second = summarize_connect(*second_measurement, second_cell_ids)
-        mutation_probe_cell_id = next(iter(second.get("cell_ids", [])), None)
-        convergence, interactive_probe = await asyncio.gather(
-            poll_document_until_interactive(
-                client,
-                ready_timeout_secs=ready_timeout_secs,
-                poll_interval_ms=poll_interval_ms,
-            ),
-            poll_noop_mutation_until_interactive(
-                client,
-                cell_id=mutation_probe_cell_id,
-                ready_timeout_secs=ready_timeout_secs,
-                poll_interval_ms=poll_interval_ms,
-            ),
+        if not first["ok"] or not second["ok"]:
+            return {
+                "ok": False,
+                "first_connect": first,
+                "second_connect": second,
+                "error": "both overlapping acquisitions must succeed independently",
+            }
+        first_probe, second_probe = await asyncio.gather(
+            probe_attachment(client, first, ready_timeout_secs, poll_interval_ms),
+            probe_attachment(client, second, ready_timeout_secs, poll_interval_ms),
         )
         _, active_result, active_error = await measured_tool(client, "list_active_notebooks", {})
         active_value = tool_payload(active_result) if active_result is not None else None
 
-        final_ids = convergence["final"].get("cell_ids", [])
-        second_ids_match = second_cell_ids is None or final_ids == second_cell_ids
-        second_projection_ids_stable = projected_ids_match_document(second, final_ids)
-        first_generation = summary_generation(first)
-        second_generation = summary_generation(second)
-        generations_ordered = (
-            first_generation is not None
-            and second_generation is not None
-            and second_generation > first_generation
+        first_ids = first_probe["document_convergence"]["final"].get("cell_ids", [])
+        second_ids = second_probe["document_convergence"]["final"].get("cell_ids", [])
+        first_ids_match = first_cell_ids is None or first_ids == first_cell_ids
+        second_ids_match = second_cell_ids is None or second_ids == second_cell_ids
+        projections_stable = projected_ids_match_document(
+            first, first_ids
+        ) and projected_ids_match_document(second, second_ids)
+        independent_owners = first["notebook_handle"] != second["notebook_handle"]
+        distinct_targets = first["notebook_id"] != second["notebook_id"]
+        active_matches_both = (
+            len(matching_active_rooms(active_value, first_args)) == 1
+            and len(matching_active_rooms(active_value, second_args)) == 1
         )
-        supersession_observed = first.get("error_code") == "session_superseded"
-        active_rooms = matching_active_rooms(active_value, second_args)
-        active_matches_second = len(active_rooms) == 1
         return {
             "ok": (
-                supersession_observed
-                and second["ok"]
-                and generations_ordered
-                and convergence["ok"]
-                and interactive_probe["ok"]
+                independent_owners
+                and distinct_targets
+                and first_probe["ok"]
+                and second_probe["ok"]
+                and first_ids_match
                 and second_ids_match
-                and second_projection_ids_stable
-                and active_matches_second
+                and projections_stable
+                and active_matches_both
                 and active_error is None
             ),
             "first_connect": first,
             "second_connect": second,
-            "first_generation": first_generation,
-            "second_generation": second_generation,
-            "generations_ordered": generations_ordered,
-            "supersession_observed": supersession_observed,
-            "note": (
-                "first activation was explicitly superseded"
-                if supersession_observed
-                else "overlapping first activation was not rejected as session_superseded"
-            ),
-            "document_convergence": convergence,
-            "interactive_noop_mutation_probe": interactive_probe,
+            "independent_attachment_owners": independent_owners,
+            "distinct_notebook_targets": distinct_targets,
+            "note": "overlapping A/B acquisitions retain independently usable handles",
+            "owner_probes": [first_probe, second_probe],
+            "document_convergence": second_probe["document_convergence"],
+            "interactive_noop_mutation_probe": second_probe["interactive_noop_mutation_probe"],
+            "final_cell_ids_match_first_target": first_ids_match,
             "final_cell_ids_match_second_target": second_ids_match,
-            "projection_cell_ids_match_second_document": second_projection_ids_stable,
+            "projection_cell_ids_match_documents": projections_stable,
             "active_notebooks": active_value,
             "active_notebooks_error": active_error,
-            "active_room_matches_second_target": active_matches_second,
+            "active_rooms_match_both_targets": active_matches_both,
             "mcp_stderr_tail": client.stderr_lines[-80:],
         }
     finally:
@@ -1297,12 +1353,25 @@ async def run_degraded_source_scenario(
     try:
         measurement = await measured_tool(client, "connect_notebook", {"path": str(degraded_path)})
         summary = summarize_connect(*measurement, None)
+        _, active_result, active_error = await measured_tool(client, "list_active_notebooks", {})
+        active_value = tool_payload(active_result) if active_result is not None else None
+        no_phantom = (
+            active_error is None
+            and active_result is not None
+            and not active_result.get("isError")
+            and isinstance(active_value, list)
+            and not matching_active_rooms(active_value, {"path": str(degraded_path)})
+        )
         return {
             "ok": summary.get("tool_error") is True
-            and summary.get("error_code") == "source_degraded",
+            and summary.get("error_code") == "source_degraded"
+            and not summary.get("notebook_handle")
+            and no_phantom,
             "expected_error_code": "source_degraded",
             "connect": summary,
             "false_success_observed": summary.get("ok") is True,
+            "no_phantom_room": no_phantom,
+            "active_notebooks_error": active_error,
             "mcp_stderr_tail": client.stderr_lines[-80:],
         }
     finally:
@@ -1381,8 +1450,17 @@ async def run_stalled_peer_scenario(
             *await measured_tool(client, "connect_notebook", connect_args),
             None,
         )
+        if not connect["ok"]:
+            return {
+                "ok": False,
+                "connect": connect,
+                "error": "stalled-peer acquisition failed; no unqualified probes were sent",
+            }
+        handle = connect["notebook_handle"]
         projection_read = summarize_get_all(
-            *await measured_tool(client, "get_all_cells", {"format": "json"})
+            *await measured_tool(
+                client, "get_all_cells", attachment_arguments(handle, {"format": "json"})
+            )
         )
         cell_id = next(iter(connect.get("cell_ids", [])), None)
         mutation_attempts: list[dict[str, Any]] = []
@@ -1393,7 +1471,9 @@ async def run_stalled_peer_scenario(
         ):
             mutation_attempts.append(
                 summarize_generic_tool(
-                    *await measured_tool(client, "set_cell", {"cell_id": cell_id})
+                    *await measured_tool(
+                        client, "set_cell", attachment_arguments(handle, {"cell_id": cell_id})
+                    )
                 )
             )
             execution_attempts.append(
@@ -1401,7 +1481,7 @@ async def run_stalled_peer_scenario(
                     *await measured_tool(
                         client,
                         "execute_cell",
-                        {"cell_id": cell_id, "timeout_secs": 0.1},
+                        attachment_arguments(handle, {"cell_id": cell_id, "timeout_secs": 0.1}),
                     )
                 )
             )
@@ -1533,7 +1613,7 @@ async def run(args: argparse.Namespace) -> int:
                 filename="mcp-connect-switch-b.ipynb",
                 cell_id_prefix="switch-b",
             )
-            log("running target-switch/supersession scenario")
+            log("running overlapping A/B ownership scenario")
             report["scenarios"]["target_switch"] = await run_target_switch_scenario(
                 runt_exe,
                 env,
@@ -1688,7 +1768,7 @@ def parse_args() -> argparse.Namespace:
         "--switch-delay-ms",
         type=float,
         default=10,
-        help="Delay between overlapping A and B target activations (default: 10)",
+        help="Delay between overlapping A and B acquisitions (default: 10)",
     )
     parser.add_argument("--report", type=Path, help="Also write the JSON report to this path")
     parser.add_argument("--keep-fixture", action="store_true")
@@ -1766,6 +1846,7 @@ def run_self_tests() -> int:
     head = "a" * 64
     valid_response = {
         "notebook_id": "00000000-0000-4000-8000-000000000001",
+        "notebook_handle": "opaque-owner-a",
         "cells": "⏺ ━━━ cell stable-cell (code)\n",
         "session_generation": 7,
         "source_state": {
@@ -1796,6 +1877,14 @@ def run_self_tests() -> int:
     check(connect_summary["ok"])
     check(connect_summary["session_generation"] == 7)
     check(connect_summary["cell_ids"] == ["stable-cell"])
+    check(connect_summary["notebook_handle"] == "opaque-owner-a")
+    missing_handle = {**valid_response, "notebook_handle": "  "}
+    check(
+        "notebook_handle must be a nonempty string" in progressive_contract_errors(missing_handle)
+    )
+    args = {"cell_id": "stable-cell"}
+    check(attachment_arguments("opaque-owner-a", args)["notebook_handle"] == "opaque-owner-a")
+    check("notebook_handle" not in args)
 
     invalid_response = json.loads(json.dumps(valid_response))
     invalid_response["readiness"]["projection"] = False

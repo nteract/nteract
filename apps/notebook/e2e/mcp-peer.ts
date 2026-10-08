@@ -20,6 +20,29 @@ interface CallToolResult {
   isError?: boolean;
 }
 
+interface ConnectResponse {
+  notebook_handle?: string;
+  capabilities?: { mutate?: boolean };
+}
+
+interface NotebookAttachment {
+  readonly handle: string;
+  readonly response: ConnectResponse;
+}
+
+class McpToolError extends Error {
+  readonly code: string | undefined;
+
+  constructor(name: string, text: string) {
+    super(`MCP tool ${name} failed: ${text}`);
+    try {
+      this.code = (JSON.parse(text) as { error?: { code?: string } }).error?.code;
+    } catch {
+      this.code = undefined;
+    }
+  }
+}
+
 const REQUEST_TIMEOUT_MS = 120_000;
 
 export class McpPeer {
@@ -28,7 +51,11 @@ export class McpPeer {
   private nextId = 1;
   private stdout = "";
   private stderr = "";
-  private notebookHandle: string | undefined;
+  // This E2E peer owns one attachment for its whole lifetime. It cannot be
+  // repurposed as a process-wide "current notebook" router.
+  private attachment:
+    | { readonly notebookId: string; readonly ready: Promise<NotebookAttachment> }
+    | undefined;
 
   private constructor(child: ChildProcessWithoutNullStreams) {
     this.child = child;
@@ -74,33 +101,72 @@ export class McpPeer {
   }
 
   async connectNotebook(notebookId: string): Promise<unknown> {
-    // Connecting can return a readable projection before the replica can mutate.
-    // Reconnecting to the same active target samples its readiness without
-    // replacing the session. Never use a trial mutation as a readiness probe.
+    if (this.attachment) {
+      if (this.attachment.notebookId !== notebookId) {
+        throw new Error(
+          "This MCP peer owns one notebook; start another peer for a different target",
+        );
+      }
+    } else {
+      this.attachment = Object.freeze({ notebookId, ready: this.acquireNotebook(notebookId) });
+    }
+    return (await this.attachment.ready).response;
+  }
+
+  private async acquireNotebook(notebookId: string): Promise<NotebookAttachment> {
+    const response = (await this.callToolJson("connect_notebook", {
+      notebook_id: notebookId,
+    })) as ConnectResponse;
+    const handle = response.notebook_handle;
+    if (typeof handle !== "string" || !handle.trim()) {
+      throw new Error(
+        `connect_notebook did not return a notebook_handle: ${JSON.stringify(response)}`,
+      );
+    }
+    const attachment = Object.freeze({ handle, response });
+    if (response.capabilities?.mutate === true) return attachment;
+    // One acquisition can return a projection before convergence. Poll that
+    // owner's document; neither acquire another handle nor try a mutation.
     const deadline = Date.now() + 30_000;
-    let result: { notebook_handle?: string; capabilities?: { mutate?: boolean } };
     do {
-      result = (await this.callToolJson("connect_notebook", {
-        notebook_id: notebookId,
-      })) as { notebook_handle?: string; capabilities?: { mutate?: boolean } };
-      if (result.capabilities?.mutate) {
-        this.notebookHandle = result.notebook_handle;
-        return result;
+      try {
+        const cells = await this.callToolJson("get_all_cells", {
+          notebook_handle: handle,
+          format: "json",
+        });
+        // Interactive get_all_cells is a JSON array. A retained projection is
+        // an object with explicit readiness, and does not authorize mutation.
+        if (Array.isArray(cells)) return attachment;
+        const readiness = (
+          cells as {
+            readiness?: { interactive?: boolean; capabilities?: { mutate?: boolean } };
+          }
+        )?.readiness;
+        if (readiness?.interactive === true && readiness.capabilities?.mutate === true) {
+          return attachment;
+        }
+      } catch (error) {
+        if (
+          !(error instanceof McpToolError) ||
+          !["notebook_not_ready", "runtime_not_ready"].includes(error.code ?? "")
+        ) {
+          throw error;
+        }
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (Date.now() < deadline);
-    throw new Error(`Notebook did not become ready for mutations: ${JSON.stringify(result)}`);
+    throw new Error(`Notebook attachment ${handle} did not become ready for mutations`);
   }
 
   async createCell(source: string, cellType = "code"): Promise<string> {
-    const text = await this.callToolText("create_cell", { source, cell_type: cellType });
+    const text = await this.callAttachmentToolText("create_cell", { source, cell_type: cellType });
     const match = text.match(/Created cell:\s*([^\s]+)/);
     if (!match) throw new Error(`create_cell did not return a cell id: ${text}`);
     return match[1];
   }
 
   async setCell(cellId: string, source: string, andRun = false): Promise<unknown> {
-    return await this.callToolJson("set_cell", {
+    return await this.callAttachmentToolJson("set_cell", {
       cell_id: cellId,
       source,
       and_run: andRun,
@@ -109,15 +175,18 @@ export class McpPeer {
   }
 
   async moveCell(cellId: string, afterCellId: string | null): Promise<unknown> {
-    return this.callToolText("move_cell", { cell_id: cellId, after_cell_id: afterCellId });
+    return this.callAttachmentToolText("move_cell", {
+      cell_id: cellId,
+      after_cell_id: afterCellId,
+    });
   }
 
   async deleteCell(cellId: string): Promise<unknown> {
-    return this.callToolText("delete_cell", { cell_id: cellId });
+    return this.callAttachmentToolText("delete_cell", { cell_id: cellId });
   }
 
   async createComment(body: string, cellId?: string): Promise<string> {
-    const text = await this.callToolText("create_comment", {
+    const text = await this.callAttachmentToolText("create_comment", {
       anchor: cellId ? { cell_id: cellId } : { notebook: true },
       body,
     });
@@ -127,13 +196,13 @@ export class McpPeer {
   }
 
   async replyComment(threadId: string, body: string): Promise<unknown> {
-    return await this.callToolText("reply_comment", { thread_id: threadId, body });
+    return await this.callAttachmentToolText("reply_comment", { thread_id: threadId, body });
   }
 
   async readCommentBodies(threadId: string): Promise<string[]> {
-    if (!this.notebookHandle) throw new Error("Connect a notebook before reading comments");
+    const attachment = await this.requireAttachment();
     const result = (await this.request("resources/read", {
-      uri: `nteract://sessions/${this.notebookHandle}/comments`,
+      uri: `nteract://sessions/${attachment.handle}/comments`,
     })) as { contents: Array<{ text: string }> };
     const projection = JSON.parse(result.contents[0].text) as {
       threads: Array<{ id: string; messages: Array<{ body: string }> }>;
@@ -146,7 +215,7 @@ export class McpPeer {
   }
 
   async manageDependencies(dependencies: string[]): Promise<unknown> {
-    return await this.callToolJson("manage_dependencies", {
+    return await this.callAttachmentToolJson("manage_dependencies", {
       add: dependencies,
       trust: true,
       apply: "sync",
@@ -191,12 +260,37 @@ export class McpPeer {
       arguments: args,
     })) as CallToolResult;
     const text = result.content?.find((item) => item.type === "text")?.text ?? "";
-    if (result.isError) throw new Error(`MCP tool ${name} failed: ${text}`);
+    if (result.isError) throw new McpToolError(name, text);
     return text;
   }
 
   private async callToolJson(name: string, args: Record<string, unknown>): Promise<unknown> {
     const text = await this.callToolText(name, args);
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+
+  private async requireAttachment(): Promise<NotebookAttachment> {
+    if (!this.attachment) throw new Error("Connect a notebook before calling notebook tools");
+    return this.attachment.ready;
+  }
+
+  private async callAttachmentToolText(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<string> {
+    const attachment = await this.requireAttachment();
+    return this.callToolText(name, { ...args, notebook_handle: attachment.handle });
+  }
+
+  private async callAttachmentToolJson(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    const text = await this.callAttachmentToolText(name, args);
     try {
       return JSON.parse(text);
     } catch {
