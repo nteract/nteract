@@ -1497,7 +1497,9 @@ async fn connect_local_id_progressive(
 
 /// Format a newly owned attachment to an existing peer without weakening its
 /// retained projection or causal head evidence.
-fn shared_attachment_response(session: &NotebookSession) -> Result<CallToolResult, CallToolResult> {
+fn shared_attachment_response(
+    session: &NotebookSession,
+) -> Result<CallToolResult, Box<CallToolResult>> {
     let access = session
         .access(SessionRequirement::ProjectionRead)
         .map_err(|error| {
@@ -1701,7 +1703,7 @@ async fn open_explicit_attachment(
             session.notebook_path = resolved.and_then(|room| room.notebook_path);
             let response = match shared_attachment_response(&session) {
                 Ok(response) => response,
-                Err(error) => return Ok(error),
+                Err(error) => return Ok(*error),
             };
             if let Err(result) = crate::targets::with_backing_key(
                 Some(key.clone()),
