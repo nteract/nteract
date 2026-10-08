@@ -1,261 +1,182 @@
 ---
 name: mcp-session-lifecycle
 description: >
-  Understand the MCP server session lifecycle: proxy supervision, daemon
-  watch loop, session state machine, rejoin/reconnect races, and room
-  eviction. Use when working on runt-mcp, runt-mcp-proxy, daemon_watch.rs,
-  or any code that reads/writes the session Arc<RwLock<Option<NotebookSession>>>.
+  Understand the MCP server session lifecycle: attachment ownership, proxy
+  supervision, daemon reconciliation, explicit notebook routing, readiness,
+  scoped subscriptions, rejoin races, and room eviction. Use when working on
+  runt-mcp, runt-mcp-proxy, daemon_watch.rs, or notebook attachment lifetimes.
 ---
 
 # MCP Session Lifecycle
 
-Use this skill when debugging session state, changing reconnection logic,
-working on the proxy, or reasoning about races between background rejoin
-and user-initiated tool calls.
+Use this skill when debugging notebook routing, attachment ownership,
+reconnection, observation, or proxy behavior. Read the owning source and tests;
+a protocol version or a successful connect is not proof of notebook readiness.
 
-Source checkpoint: 2026-09-04 at `6bff3e7b`. The decision record is
-`docs/adr/mcp-session-lifecycle.md`. Read the source functions below rather
-than copying an abbreviated session struct or reconnect algorithm.
+The current routing decision is
+[explicit notebook attachments](../../../docs/adr/mcp-explicit-notebook-attachments.md).
+The earlier [lifecycle record](../../../docs/adr/mcp-session-lifecycle.md)
+preserves daemon and recovery decisions; its active-selection routing is
+superseded by the attachment contract.
 
 ## Three Layers
 
-- **Process supervision:** installed `nteract-mcp` and development
-  `mcp-supervisor` use the `runt-mcp-proxy` library to supervise a `runt mcp`
-  child. The library is not an executable entrypoint.
-- **MCP session state:** the child owns one active `NotebookSession`, a bounded
-  map of parked sessions, explicit activation generations, and the daemon
-  watch loop.
-- **Daemon room state:** `runtimed` owns notebook rooms, runtime state, kernels,
-  recovery, and peer accounting. Kernel teardown and room reaping are separate.
+- **Process supervision:** installed `nteract mcp`/`nteract-mcp` and development
+  `mcp-supervisor` use the `runt-mcp-proxy` library to supervise a worker. The
+  library is not a standalone MCP entrypoint.
+- **Notebook attachments:** the `runt mcp` worker retains a registry of logical
+  notebook owners, each addressed by an opaque `notebook_handle`. Its active
+  slot, parked map and activation helpers also support internal recovery; they
+  do not supply a missing notebook target for public tool requests.
+- **Daemon rooms:** `runtimed` owns notebook content, source recovery, runtime
+  documents, kernels, saves and peer accounting.
 
-The shipped MCP entrypoints use stdio. Multiple MCP clients can run separate
-children against the same daemon, including the same notebook room. Concurrent
-requests on one stdio connection share that child's active slot; they are not
-independent MCP clients. The daemon's multiplexed notebook frames are a
-separate protocol, not an HTTP MCP endpoint.
+Separate children can share one daemon. One stdio process can also receive
+interleaved requests from unrelated chats. Neither the connection, process,
+request ID nor client label identifies a chat's notebook. Attribution is not
+an authorization boundary for same-user local clients.
 
-Entry points: `crates/runt/src/lib.rs`,
-`crates/nteract-mcp/src/lib.rs`, and
-`crates/mcp-supervisor/src/main.rs`.
+## Explicit Targets on Every Protocol
 
-## Proxy Layer
+Every notebook-scoped `tools/call` requires a nonempty `notebook_handle`,
+including initialize-based clients. This is an application argument, separate
+from MCP protocol negotiation. Missing targets fail before notebook or runtime
+side effects. Discovery and connect/create do not require an existing handle.
 
-`McpProxy::track_session` and `session::extract_session_id` track one preferred
-restart target, despite the field name `last_notebook_id`:
+Connect/create return a fresh logical attachment and its exact handle. Retain
+that handle for subsequent operations. Repeated same-notebook acquisitions have
+independent ownership and release. Opening B never changes what an A-qualified
+request means. A `cell_id` is resolved inside the explicitly selected notebook.
 
-- Successful connect/create calls prefer the child's canonical file path for
-  local file-backed notebooks, falling back to a UUID. Hosted targets retain
-  their URL identity.
-- Successful `save_notebook` promotes a local UUID target to the saved path.
-- Disconnecting the active notebook clears the handoff. Disconnecting another
-  parked notebook preserves it. Failed calls do not replace the target.
-- Restart re-resolves the child executable and seeds
-  `NTERACT_MCP_REJOIN_NOTEBOOK`. It does not reconstruct the parked map.
-- Exit 75 is an intentional daemon-upgrade handoff, separate from the normal
-  crash budget. Other restarts are subject to the proxy's restart controls.
-- Daemon-version banners compare the old and new child's reported
-  `ServerInfo.server_info.title`, not binary SHA. A banner says rejoin was
-  requested; it does not prove that notebook readiness has completed.
-- The `reconnect` tool restarts the child, not the daemon.
+`targets::dispatch` scopes the handle to the request. Access goes through
+`NteractMcp::session_access` and `NotebookSession::access`, cloning owned state
+before awaits. Successful handle-scoped completions revalidate membership;
+expired completion does not claim rollback of already-admitted side effects.
+Original failures, including unknown outcomes, remain intact.
 
-See `crates/runt-mcp-proxy/src/session.rs:17`,
-`crates/runt-mcp-proxy/src/proxy.rs:310`, `:962`, and `:1268`.
-A closed-child forwarding failure is retried once; this is not an exactly-once
-mutation guarantee (`proxy.rs:658`).
+Tool schemas advertise the required handle, including the startup cache. A
+proxy must not silently discard it when forwarding to an older worker that
+cannot route attachments. Read the proxy's admission checks and version-skew
+fixtures before changing compatibility behavior.
 
-## Active and Parked Sessions
+Relevant source: `crates/runt-mcp/src/targets.rs`, `attachments.rs`, `lib.rs`,
+`session.rs`, and `crates/mcp-transport/src/lib.rs`.
 
-`NteractMcp` holds the active slot and parked map in
-`crates/runt-mcp/src/lib.rs:119`. `NotebookSession` in
-`crates/runt-mcp/src/session.rs` carries the handle, target, activation identity,
-readiness evidence, and local daemon incarnation when applicable.
+## Ownership and Retention
 
-Switching targets parks the previous peer instead of immediately disconnecting
-it. `MAX_PARKED_SESSIONS` is eight; overflow removes an entry by arbitrary
-HashMap iteration order. Parked peers keep their rooms from reaching zero
-peers, so they can keep kernels alive. Local switch-back establishes a fresh
-activation and removes the old parked peer after successful publication;
-parked-handle reuse is not a universal reconnect contract.
+The registry retains at most 128 logical attachments plus pending acquisitions.
+Reservations count toward that limit and return on cancellation or failure.
+There is no TTL or arbitrary ownership eviction. Release removes only the named
+handle, signals its expiry immediately, and returns its capacity slot.
 
-Most notebook tools operate on the active target. Exceptions include explicit
-parked-session disconnect and notebook-ID resource reads against connected or
-parked local sessions. A parked map does not provide independent active tool
-contexts for multiple MCP clients.
+Logical ownership is separate from a physical peer. Compatible healthy local
+acquisitions may share backing by canonical target, fixed endpoint, live daemon
+incarnation and operator. Sharing never reuses an unhealthy or unready replica
+or a stale saved-path alias. A failed optional room listing skips reuse and
+attempts guarded fresh admission. Hosted peers are not pooled without a stable
+authenticated principal/source key. Dropping the last owner releases the backing.
 
-See `park_session`, `install_activated_session`, and `disconnect_notebook` in
-`crates/runt-mcp/src/tools/session.rs:74`, `:742`, and `:949`, and
-`handle_for_notebook` in `crates/runt-mcp/src/resources.rs:285`.
+The bounded parked cache is not the ownership registry. Dropping a cache entry
+must not release an independently retained attachment. Legacy notebook-ID
+resource URIs still identify a notebook explicitly; ambiguous identities require
+an exact handle. They never justify an implicit tool target.
 
-## The Watch Loop State Machine
-
-`crates/runt-mcp/src/daemon_watch.rs:238` reconciles session ownership against a
-live daemon incarnation (`pid + started_at`), not a disconnect latch:
-
-1. A daemon event wakes the watcher. Lagged delivery also requires a fresh
-   observation. The watcher directly calls `query_daemon_info(socket_path)`;
-   it does not decide from `DaemonConnection`'s cached heartbeat info.
-2. A failed identity query alone is not proof of daemon loss. Without an
-   explicit `Disconnected` event, defer reconciliation and retain the handles.
-3. Compare a live version with the startup baseline. A mismatch exits with 75;
-   if startup had no daemon, the first live version establishes the baseline.
-4. Remove active and parked local handles bound to a different incarnation, or
-   to no live incarnation after confirmed absence. Hosted sessions are excluded
-   from this local ownership reconciliation.
-5. Preserve the removed active session's best recovery target, preferring a
-   saved path. Local recovery requires a live daemon and empty slot; try the
-   proxy handoff target first, then that preserved target.
-
-Hosted proxy handoffs are attempted immediately at watcher entry, without a
-local daemon event or incarnation. Failed hosted recovery has a bounded retry
-timer independent of the local event stream. Both paths retain the explicit
-session intent epoch and publication slot guards; local recovery still checks
-daemon incarnation before and after connection/readiness.
-
-A same-incarnation heartbeat leaves healthy bindings alone. A same-version
-restart changes incarnation and invalidates old local handles even if a
-`Disconnected` event was missed. Removing parked local handles does not enqueue
-recovery for every parked notebook.
-
-See `RecoveryState`, `reconcile_sessions`, and `watch`. Focused tests in the
-same file cover same-incarnation heartbeats, lagged delivery, failed identity
-queries, stale parked handles, and tool-installed replacements.
-
-## The Session-Write Guard
-
-Background rejoin connects outside the session lock. Local rejoin samples the
-expected daemon incarnation before and after connection/readiness. Then
-`publish_rejoined_session` checks the captured `session_intent_epoch` and slot
-emptiness under the same write lock that installs the session. Any already
-installed session wins, including one for the same notebook. Explicit
-disconnect advances the epoch under that lock so a completed background
-connection cannot resurrect the disconnected session.
-
-Explicit connect/create activation has a separate generation owner:
-`SessionActivation`. Same-target in-flight connects share a result. Selecting a
-different canonical target supersedes the older attempt; A→B→A must not join
-stale A work. `ActivationLease::install_in_slot_recovering` rechecks ownership
-under the slot lock and restores the previous occupant if the installation
-commit is refused. A failed replacement does not invalidate the healthy
-installed session.
-
-Use these production helpers, not a read-lock check followed by a separate
-write. See `crates/runt-mcp/src/daemon_watch.rs:365`, `:493`, `:567`,
-`crates/runt-mcp/src/session_activation.rs:76`, `:225`, and
-`crates/runt-mcp/src/tools/session.rs:977`.
-
-## Session Access Pattern
-
-An installed session is not a readiness guarantee. Acquire access through
-`require_session_access!` or `require_handle!` with the appropriate
-`SessionRequirement`. `NteractMcp::session_access` checks installed activation
-identity and delegates to `NotebookSession::access`; the returned handle is
-owned, so the slot lock is released before async work.
+## Readiness and Execution Gates
 
 | Requirement | Gate |
 |-------------|------|
-| `ProjectionRead` | Retained projection or interactive document; use the bounded projection before interactivity |
-| `DocumentRead`, `DocumentMutation` | Interactive local document with the required readiness evidence |
-| `KernelControl` | Interactive document; a running kernel is not required to launch or restart it |
+| `ProjectionRead` | Retained projection or interactive document |
+| `DocumentRead`, `DocumentMutation` | Interactive document with source/readiness evidence |
+| `KernelControl` | Interactive document; kernel need not already run |
 | `RuntimeRead` | Connected, ready local RuntimeStateDoc |
-| `Execute` | Interactive document and ready runtime; execution keeps its causal `required_heads` gate |
+| `Execute` | Interactive document and ready runtime, plus causal `required_heads` |
 
-Retained projection reads do not authorize mutations or execution. Local sync
-failure, source degradation, runtime unreadiness, and superseded activation
-have distinct error paths. Use `ensure_session_access_current` after async work
-before continuing an operation on the captured active target. Do not keep a
-session lock across connection, file loading, projection, or sync waits.
+Retained projection reads do not authorize mutation or execution. Local connect
+may return before interactivity with a heads-qualified control-plane projection.
+Create and internal rejoin await their readiness paths. Hosted readiness uses
+its connected-replica contract. Execute synced notebook cells by `cell_id`; never
+send a separate code string that can diverge from the document.
 
-See `crates/runt-mcp/src/tools/mod.rs:18`, `crates/runt-mcp/src/lib.rs:273`,
-`crates/runt-mcp/src/session.rs:323`, `:485`, and `:595`.
+## Scoped Observations
 
-Local `connect_notebook` returns a retained control-plane projection while
-peers converge. `create_notebook` and background local rejoin still await
-session readiness. Do not apply the progressive-connect contract to all three
-paths. The response fields and historical API sketch are distinguished in
-`docs/memos/mcp-connect-initial-projection.md`.
+Handle-qualified resources use `nteract://sessions/{notebook_handle}/cells`,
+`/cells/{cell_id}`, and `/comments`. Observers capture identity before waiting
+and subscribe before baseline capture. Cursors belong to an exact observation
+journal; stale/foreign cursors require a fresh baseline.
 
-## Rejoin: File-Backed vs Ephemeral
+Legacy `resources/subscribe` and native `subscriptions/listen` watch their
+captured attachment. The proxy reference-counts child URI leases: canceling or
+releasing one listener cannot unsubscribe another. Cached acquisition rechecks
+child admission before acknowledging a new listener. Native notifications
+preserve the upstream subscription ID. Child replacement ends old streams;
+clients obtain new handles and baselines rather than rebinding old ones.
 
-Prefer a saved file path for automatic rejoin. The watcher verifies that the
-source file exists and calls `connect_open(path)`. UUID-only attachment is
-also recoverable when the daemon has a resident room, a persistent UUID/path
-registry binding with available source, or a persisted untitled document.
-The registry is identity, not content: a missing source file is not permission
-to load a stale mirror or invent an empty notebook.
+Membership expiry and terminal observation loss are distinct:
 
-For a UUID target, call `connect(uuid)` and trust the daemon's attach-only
-admission. `SyncError::NotebookUnavailable` is definitive and records
-`Evicted` without retry. Do not use `list_rooms` as an existence precheck; an
-unlisted room may still be recoverable. Transient failures retain the recovery
-target for later attempts.
+- Release/incarnation expiry produces `attachment_expired` and the metadata key
+  `io.nteract/attachmentExpired`.
+- A terminal disconnected backing produces `attachment_unavailable` and
+  `io.nteract/attachmentUnavailable`. Its watch ends, but registry ownership and
+  capacity remain until deliberate release or membership expiry. Read/admission
+  errors preserve their original code/message/readiness and add typed data.
 
-Daemon authority is not an atomic check-and-load guarantee. The legacy snapshot
-existence check at `crates/runtimed/src/daemon.rs:3122` precedes awaited room
-creation. If that snapshot disappears and no journal is recovered,
-`crates/runtimed/src/notebook_sync_server/room.rs:1945–1955` can create a fresh
-document. Keep this limitation distinct from the already-absent UUID refusal.
+Already-signaled expiry wins. Pending readiness, missing cells and untyped
+transient failures do not end a live URI lease. A mixed listener survives until
+its last URI ends. Observation receivers do not independently keep notebook
+peers or kernels alive.
 
-Persisted untitled notebooks are not the same as explicitly ephemeral
-notebooks. MCP `create_notebook` defaults to `ephemeral=true`; do not promise
-recovery after loss of its content merely because a UUID is known.
+`wait_for_notebook_change` is the bounded fallback: explicit handle, optional
+cursor/execution ID, 25-second default and 50-second maximum, with eight waits
+per connection. Canceling observation does not interrupt the kernel.
 
-See `crates/runtimed/src/daemon.rs:3041`,
-`crates/runt-mcp/src/daemon_watch.rs:485`, `:506`, `:615`, and
-`crates/runt-mcp/src/tools/session.rs:1602`. The daemon integration tests at
-`crates/runtimed/tests/integration.rs:4015` and `:4054` cover refusal without a
-phantom room and saved-path recovery by UUID across restart.
+Relevant source: `resources.rs`, `subscriptions.rs`, `tools/observation.rs`,
+proxy `native_subscriptions.rs`, `observation_bridge.rs`, and `child.rs`.
 
-## Daemon Room Lifetime
+## Recovery and Daemon Incarnation
 
-Only the last peer leaving schedules kernel teardown, after `keep_alive_secs`
-(default 30 seconds). Room state, autosave, and file watchers remain resident.
-Teardown revalidates peer count and connection generation before destructive
-work; the destructive latch tells reconnecting peers not to reuse a doomed
-kernel.
+Local handles carry daemon identity `pid + started_at`. The watcher queries
+live identity directly; cached heartbeat events only wake reconciliation.
+Failed identity lookup alone does not prove loss. Confirmed absence or a
+replacement incarnation expires affected local registry handles; hosted
+attachments survive local-daemon reconciliation. Healthy same-incarnation
+heartbeats do not expire ownership.
 
-The ghost-room reaper separately sweeps eligible peerless, kernel-less rooms
-every five minutes, with a 24-hour TTL and soft cap of 32. Removal requires the
-durability barrier and final admission checks; reconnects and reservations
-protect rooms from stale reaping decisions.
+Preserve original source recovery. Prefer a canonical saved path; UUID admission
+remains daemon-authoritative and may recover from resident rooms, persisted
+untitled content or UUID/path bindings. A missing source is not permission to
+invent an empty notebook or load a stale mirror. Do not use `list_rooms` as an
+existence precheck. `NotebookUnavailable` is definitive; transient failures
+retain internal recovery context.
 
-See `crates/runtimed/src/notebook_sync_server/peer_eviction.rs:107`, `:269`,
-and `crates/runtimed/src/daemon.rs:484`, `:5834`. Kernel teardown is not proof
-that a notebook has become unavailable.
+Internal rejoin captures the intent epoch and daemon incarnation, connects
+outside locks, rechecks incarnation, then publishes under the slot write lock
+only if intent and slot ownership still permit it. Explicit disconnect must not
+be undone by late background work. These helpers preserve internal recovery;
+they never make an old public handle name a new peer.
 
-## Session Drop Tracking
+Proxy restart re-resolves the child executable. Exit 75 is an intentional
+upgrade handoff, separate from crash budget. `reconnect` replaces the worker,
+not the daemon. A recovery banner is not proof of notebook readiness. All old
+worker handles expire. No ambiguous mutation is automatically replayed;
+`outcome_unknown` requires state inspection before any caller retry.
 
-`last_session_drop` is best-effort recovery context, not another session:
+Relevant source: `daemon_watch.rs`, `session_activation.rs`, proxy `proxy.rs`,
+`session.rs`, `version.rs`, and `circuit_breaker.rs`.
 
-- `Switched`: the old target was replaced and may still be parked.
-- `Disconnected`: stale local ownership was removed, recovery failed, or the
-  user explicitly disconnected. Explicit disconnect cancels automatic rejoin.
-- `Evicted`: rejoin received a definitive unavailable refusal or found a missing
-  saved source. It does not mean every kernel keepalive timeout deletes a room.
+## Daemon Room Lifetime and Protocol Limits
 
-`SessionDropInfo` retains notebook ID, path, and rejoin target for
-`no_session_error`. See `crates/runt-mcp/src/session.rs:636` and the recording
-sites in `daemon_watch.rs` and `tools/session.rs`.
+Only the last physical peer leaving schedules kernel teardown after keepalive.
+Teardown and room reaping separately revalidate ownership/generation and
+persistence. Kernel teardown is not proof that notebook source is unavailable.
+See `runtimed/src/notebook_sync_server/peer_eviction.rs` and `runtimed/src/daemon.rs`.
 
-## Concurrent MCP Clients and Attribution
+The transport supports initialize-based MCP revisions through `2025-11-25` and
+native per-request `2026-07-28` metadata. The private worker handshake uses
+`2025-11-25`; it still requires explicit notebook arguments. Invalid native
+metadata must not start recovery/setup or dispatch an application operation.
+Request cancellation and transport teardown have separate owned scopes.
 
-Separate MCP children sharing a daemon are implemented. Each child has its own
-active selection; the room can have multiple peers. The upstream handshake
-supplies the display label and an `agent:<slug>:<session>` operator suffix.
-The proxy preserves the suffix across child restarts. Attribution is not a
-separate authorization boundary for every same-user local client.
-
-Multiple independently routed MCP clients inside one child are not implemented
-by the shipped stdio entrypoints. Neither concurrent request IDs nor parked
-notebooks provide that routing. See `crates/runt-mcp/src/lib.rs:48`, `:119`,
-`:464`, and `crates/runt-mcp-proxy/src/proxy.rs:180`, `:227`.
-
-## MCP Protocol Checkpoint
-
-`crates/mcp-transport/src/lib.rs` supports both legacy initialize-based
-sessions and native MCP `2026-07-28` per-request negotiation. The first valid
-native request opens the lifecycle; invalid metadata must not start recovery
-or runtime setup. `require_protocol`, `ProtocolSession::wait_for_native`, and
-`server_with_protocol` keep the two modes distinct. A legacy initialized
-session cannot switch to native negotiation in place. Read this source and
-its wire tests before changing transport admission; support for the native
-lifecycle is not a blanket claim of complete protocol conformance.
+Source and isolated Unix wire tests do not qualify Codex rendering, Windows,
+live hosted authentication, installed package delivery or real kernel execution.
+Many distinct physical peers also retain a separate presence-frame protocol
+limit; logical peer sharing is not a protocol-cap increase.

@@ -12,6 +12,11 @@ readiness state. The design sections below preserve the original recommendation;
 they are not an exact description of today's response schema or a claim that
 every proposed diagnostic and acceptance scenario has shipped.
 
+Current request targeting follows
+[Explicit notebook attachments in MCP](../adr/mcp-explicit-notebook-attachments.md).
+The same-target coalescing and supersession descriptions below are historical;
+public acquisitions now retain independent handles.
+
 ## Implementation checkpoint: 2026-09-04
 
 At source baseline `6bff3e7b`, progressive local `connect_notebook` and

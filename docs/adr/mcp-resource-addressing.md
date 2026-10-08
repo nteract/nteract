@@ -2,6 +2,12 @@
 
 **Status:** Draft, 2026-05-25.
 
+This record preserves the original resource proposal. Current attachment
+identity, handle-qualified addressing and subscription lifetimes are defined in
+[Explicit notebook attachments in MCP](mcp-explicit-notebook-attachments.md).
+Notebook-ID URIs remain compatibility reads; a resource URI never supplies a
+missing notebook target for a tool request.
+
 ## Context
 
 The MCP server now exposes read-only notebook resources alongside the existing

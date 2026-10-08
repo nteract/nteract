@@ -2,6 +2,12 @@
 
 **Status:** Accepted, 2026-07-13; amended 2026-08-20 and 2026-09-04; supersedes Draft from 2026-05-23.
 
+The active-selection routing, connect supersession, parked-cache ownership and
+implicit tool examples in this record are superseded by
+[Explicit notebook attachments in MCP](mcp-explicit-notebook-attachments.md).
+The remaining daemon authority, source recovery and readiness decisions remain
+in force. The implementation descriptions below preserve the earlier checkpoint.
+
 Source checkpoint: 2026-09-04 at `6bff3e7b`. This record describes the shipped
 initialize-based MCP implementation, not conformance with the upstream
 `2026-07-28` protocol revision. See [MCP protocol checkpoint](#mcp-protocol-checkpoint).
