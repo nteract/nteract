@@ -56,6 +56,30 @@ impl Drop for Lease {
         }
     }
 }
+impl Lease {
+    /// End only this listener's use of a URI. Other listeners retain their ref.
+    pub(crate) fn release_uri(&mut self, uri: &str) {
+        let mut removed = Vec::new();
+        self.keys.retain(|key| {
+            if key.1 == uri {
+                removed.push(key.clone());
+                false
+            } else {
+                true
+            }
+        });
+        if removed.is_empty() {
+            return;
+        }
+        if let Some(permit) = self
+            .permit
+            .as_mut()
+            .and_then(|permit| permit.split(removed.len()))
+        {
+            let _ = self.sender.send(Operation::Release(removed, permit));
+        }
+    }
+}
 impl Registry {
     pub(crate) async fn acquire(
         &self,
@@ -246,6 +270,55 @@ mod tests {
             Ok(())
         }
     }
+    #[tokio::test]
+    async fn partial_listener_expiry_returns_capacity_without_unsubscribing_other_users() {
+        let registry = Registry::default();
+        let subscribed = Arc::new(AtomicUsize::new(0));
+        let unsubscribed = Arc::new(AtomicUsize::new(0));
+        let child = Child {
+            subscribed: subscribed.clone(),
+            unsubscribed: unsubscribed.clone(),
+        };
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { child.serve(server_pipe).await.unwrap() });
+        let mut client = ().serve(client_pipe).await.unwrap();
+        let mut server = task.await.unwrap();
+        let mut mixed = registry
+            .acquire(
+                1,
+                vec!["fixture://a".into(), "fixture://b".into()],
+                client.peer().clone(),
+            )
+            .await
+            .unwrap();
+        let other = registry
+            .acquire(1, vec!["fixture://a".into()], client.peer().clone())
+            .await
+            .unwrap();
+        mixed.release_uri("fixture://a");
+        mixed.release_uri("fixture://b");
+        mixed.release_uri("fixture://b");
+        // Acquisition acknowledgment orders behind release processing.
+        let barrier = registry
+            .acquire(1, vec!["fixture://c".into()], client.peer().clone())
+            .await
+            .unwrap();
+        assert_eq!(unsubscribed.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.slots.available_permits(), 126);
+        drop(mixed);
+        drop(other);
+        let next = registry
+            .acquire(1, vec!["fixture://c".into()], client.peer().clone())
+            .await
+            .unwrap();
+        assert_eq!(unsubscribed.load(Ordering::SeqCst), 2);
+        drop(barrier);
+        drop(next);
+        drop(registry);
+        client.close().await.unwrap();
+        server.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn cancelling_one_listener_keeps_the_shared_child_watch_until_the_last_lease() {
         let registry = Registry::default();

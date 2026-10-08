@@ -39,9 +39,20 @@ impl ClientHandler for ChildClientHandler {
     }
     async fn on_resource_updated(
         &self,
-        params: rmcp::model::ResourceUpdatedNotificationParam,
-        _: rmcp::service::NotificationContext<RoleChild>,
+        mut params: rmcp::model::ResourceUpdatedNotificationParam,
+        context: rmcp::service::NotificationContext<RoleChild>,
     ) {
+        // The SDK extracts _meta before dispatch. On its legacy client path
+        // the extracted object lives in extensions rather than context.meta.
+        let mut meta = params.meta.take().unwrap_or_default();
+        if let Some(extracted) = context
+            .extensions
+            .get::<rmcp::model::NotificationMetaObject>()
+        {
+            meta.extend(extracted.clone());
+        }
+        meta.extend(context.meta);
+        params.meta = Some(meta);
         let _ = self.notifications.send(params);
     }
     fn get_info(&self) -> rmcp::model::ClientInfo {

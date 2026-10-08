@@ -21,6 +21,12 @@ struct ScopedRequest {
     last_progress: Arc<Mutex<Option<tokio::time::Instant>>>,
 }
 
+pub(crate) fn is_native() -> bool {
+    UPSTREAM_REQUEST
+        .try_with(|scope| mcp_transport::is_native(&scope.context))
+        .unwrap_or(false)
+}
+
 /// Preserve the upstream request while supervisor helpers forward to the child.
 /// The scope follows this future only; independent requests have separate state.
 pub async fn scope<T>(

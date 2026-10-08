@@ -274,8 +274,12 @@ async fn relay(
             break;
         }
         let update = match notifications.recv().await {
-            Ok(event) => event.uri == uri,
-            Err(broadcast::error::RecvError::Lagged(_)) => true,
+            Ok(event) => (event.uri == uri).then_some(event),
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                crate::proxy::reconcile_listener_updates(&child, std::slice::from_ref(&uri))
+                    .await
+                    .pop()
+            }
             Err(broadcast::error::RecvError::Closed) => {
                 let _ = upstream
                     .notify_resource_updated(ResourceUpdatedNotificationParam::new(&uri))
@@ -283,13 +287,17 @@ async fn relay(
                 break;
             }
         };
-        if update
-            && upstream
-                .notify_resource_updated(ResourceUpdatedNotificationParam::new(&uri))
-                .await
-                .is_err()
-        {
-            break;
+        if let Some(update) = update {
+            let terminal = crate::proxy::attachment_expiry(
+                update
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("io.nteract/attachmentExpired")),
+            )
+            .is_some();
+            if upstream.notify_resource_updated(update).await.is_err() || terminal {
+                break;
+            }
         }
     }
 }

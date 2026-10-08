@@ -10,6 +10,7 @@ use rmcp_legacy::model::{
 use rmcp_legacy::service::{NotificationContext, RequestContext, RoleServer};
 use rmcp_legacy::{ClientHandler, ErrorData, ServerHandler};
 use serde_json::json;
+mod attachments;
 
 pub const CHILD_MODE: &str = "NTERACT_COMPATIBILITY_CHILD";
 pub const READY: &str = "nteract-compatibility-fixture-ready";
@@ -349,6 +350,16 @@ pub fn run_child_if_requested() {
         .expect("fixture runtime");
     runtime.block_on(async {
         match mode.as_str() {
+            "attachments" => {
+                use rmcp::ServiceExt;
+                attachments::Child::default()
+                    .serve(rmcp::transport::stdio())
+                    .await
+                    .unwrap()
+                    .waiting()
+                    .await
+                    .unwrap();
+            }
             "legacy" | "response-loss" => {
                 use rmcp_legacy::ServiceExt;
                 LegacyChild {

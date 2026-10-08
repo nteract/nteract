@@ -32,9 +32,8 @@ pub fn extract_session_id(
             let target = args.and_then(|a| a.get("target")).and_then(Value::as_str);
 
             // A hosted/view-only URL target is a cross-machine identity the
-            // proxy must preserve verbatim. A *local* target (a UUID or a path)
-            // is not durable across a daemon swap, so it does NOT short-circuit
-            // here — it falls through to the file-path preference below.
+            // proxy must preserve verbatim. A local UUID/path falls through to
+            // the canonical saved-path preference below.
             if let Some(t) = target {
                 if is_hosted_target(t) {
                     return Some(t.to_string());
@@ -53,10 +52,9 @@ pub fn extract_session_id(
             }
 
             // Local notebook: prefer the file path the child reports for
-            // file-backed rooms. The path is the only handle that survives a
-            // daemon swap — rejoining by UUID lands on an empty room because the
-            // UUID is daemon-instance scoped (ADR mcp-session-lifecycle,
-            // Decision 8). The child surfaces `notebook_path` (absolute) in
+            // file-backed rooms. UUID attachment may also recover through the
+            // daemon's persistent registry, but the canonical path supplies
+            // the preferred source locator. The child surfaces `notebook_path` in
             // connect/create responses for file-backed rooms; ephemeral
             // notebooks omit it and legitimately rejoin by UUID below.
             if let Some(path) = extract_notebook_path_from_result(result) {
@@ -82,9 +80,9 @@ pub fn extract_session_id(
             extract_notebook_id_from_result(result)
         }
         // Saving an ephemeral notebook promotes its durable restart identity
-        // from the daemon-scoped UUID tracked at creation time to the canonical
-        // path returned by the daemon. Without this update, an upgrade hands the
-        // stale UUID to the new daemon and the notebook cannot be recovered.
+        // from a UUID-only locator to the canonical saved path. The UUID may
+        // remain recoverable through the daemon registry; content recovery is
+        // still the daemon's decision, never a proxy empty-notebook fallback.
         "save_notebook" => extract_path_from_result(result),
         _ => None,
     }

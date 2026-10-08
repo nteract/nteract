@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetMeta, Implementation,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ServerCapabilities,
     ServerInfo, Tool,
@@ -164,6 +164,8 @@ pub struct ProxyState {
     /// both forms to recognize an explicit disconnect by notebook id.
     last_notebook_session_id: Option<String>,
     last_notebook_handle: Option<String>,
+    /// Release intent fences late session responses from restoring a handoff.
+    handoff_revision: u64,
     /// Upstream MCP client name (forwarded to child).
     pub upstream_name: String,
     /// Upstream MCP client title (forwarded to child).
@@ -229,6 +231,7 @@ impl McpProxy {
                 last_notebook_id: None,
                 last_notebook_session_id: None,
                 last_notebook_handle: None,
+                handoff_revision: 0,
                 upstream_name: "unknown".to_string(),
                 upstream_title: None,
                 last_daemon_version: None,
@@ -266,11 +269,13 @@ impl McpProxy {
         &self,
         context: rmcp::service::SubscriptionContext,
     ) -> Result<(), McpError> {
-        let uris = context
+        let mut uris = context
             .accepted()
             .resource_subscriptions
             .clone()
             .unwrap_or_default();
+        uris.sort();
+        uris.dedup();
         if uris.is_empty() {
             mcp_transport::acknowledge(context.request_context()).await?;
             return Ok(());
@@ -287,31 +292,69 @@ impl McpProxy {
                 child.service().lifetime.clone(),
             )
         };
-        let _lease = tokio::select! {
+        let mut lease = tokio::select! {
             _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
             _ = lifetime.closed() => return Ok(()),
-            lease = self.native_subscriptions.acquire(generation, uris.clone(), peer) => lease?,
+            lease = self.native_subscriptions.acquire(generation, uris.clone(), peer.clone()) => lease?,
         };
         mcp_transport::acknowledge(context.request_context()).await?;
         loop {
-            let changed = tokio::select! {
+            let updates = tokio::select! {
                 _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
                 _ = lifetime.closed() => return Ok(()),
                 update = notifications.recv() => match update {
-                    Ok(update) => vec![update.uri],
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => uris.clone(),
+                    Ok(update) => Some(vec![update]),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
                 },
             };
-            for uri in changed {
-                if uris.contains(&uri) {
+            let updates = match updates {
+                Some(updates) => updates,
+                None => tokio::select! {
+                    _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+                    _ = lifetime.closed() => return Ok(()),
+                    updates = reconcile_listener_updates(&peer, &uris) => updates,
+                },
+            };
+            for mut update in updates {
+                if uris.contains(&update.uri) {
+                    let terminal = attachment_expiry(
+                        update
+                            .meta
+                            .as_ref()
+                            .and_then(|meta| meta.get("io.nteract/attachmentExpired")),
+                    )
+                    .cloned();
+                    // The private child's subscription/protocol metadata must
+                    // not leak into the upstream subscription. Preserve its
+                    // application expiry marker, then let the sink set our ID.
+                    update.meta = terminal.as_ref().map(|terminal| {
+                        let mut meta = rmcp::model::NotificationMetaObject::default();
+                        meta.insert("io.nteract/attachmentExpired".into(), terminal.clone());
+                        meta
+                    });
+                    let uri = update.uri.clone();
+                    let meta = update.meta.take().unwrap_or_default();
+                    let mut notification =
+                        rmcp::model::ServerNotification::ResourceUpdatedNotification(
+                            rmcp::model::ResourceUpdatedNotification::new(update),
+                        );
+                    *notification.get_meta_mut() = meta;
                     tokio::select! {
                         _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
-                        result = tokio::time::timeout(Duration::from_secs(1), context.sink().notify_resource_updated(uri)) => {
+                        _ = lifetime.closed() => return Ok(()),
+                        result = tokio::time::timeout(Duration::from_secs(1), context.sink().send(notification)) => {
                             result.map_err(|_| McpError::internal_error("Subscription delivery timed out; read a fresh baseline", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?;
                         }
                     }
+                    if terminal.is_some() {
+                        uris.retain(|active| active != &uri);
+                        lease.release_uri(&uri);
+                    }
                 }
+            }
+            if uris.is_empty() {
+                return Ok(());
             }
         }
     }
@@ -859,8 +902,14 @@ impl McpProxy {
     /// Prepends any pending reconnection message to the result.
     pub async fn forward_tool_call(
         &self,
-        params: CallToolRequestParams,
+        mut params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
+        if crate::request_scope::is_native() {
+            params.meta.get_or_insert_with(Default::default).insert(
+                "io.nteract/attachmentMode".into(),
+                serde_json::json!("explicit"),
+            );
+        }
         // Record release intent before sending: a lost disconnect reply must
         // not cause the replacement child to rejoin the notebook just released.
         if params.name.as_ref() == "disconnect_notebook" {
@@ -868,8 +917,9 @@ impl McpProxy {
         }
         // First attempt
         let failure = match self.try_forward_tool_call(&params).await {
-            Ok(mut result) => {
-                self.track_session(&params, &result).await;
+            Ok(success) => {
+                self.track_session_for_call(&params, &success).await;
+                let mut result = success.result;
                 self.prepend_reconnection_message(&mut result).await;
                 return Ok(result);
             }
@@ -930,14 +980,15 @@ impl McpProxy {
         }
 
         // Second attempt after restart
-        let mut result = match self.try_forward_tool_call(&params).await {
-            Ok(result) => result,
+        let success = match self.try_forward_tool_call(&params).await {
+            Ok(success) => success,
             Err(failure) if failure.may_have_run && !tool_can_be_replayed(&params.name) => {
                 return Ok(unknown_tool_outcome(&params.name, &failure, None));
             }
             Err(failure) => return Err(failure.error),
         };
-        self.track_session(&params, &result).await;
+        self.track_session_for_call(&params, &success).await;
+        let mut result = success.result;
         self.prepend_reconnection_message(&mut result).await;
         Ok(result)
     }
@@ -1145,7 +1196,7 @@ impl McpProxy {
     async fn try_forward_tool_call(
         &self,
         params: &CallToolRequestParams,
-    ) -> Result<CallToolResult, ForwardToolFailure> {
+    ) -> Result<ForwardToolSuccess, ForwardToolFailure> {
         let snapshot = self
             .child_peer_snapshot()
             .await
@@ -1173,12 +1224,18 @@ impl McpProxy {
         )
         .await
         {
-            Ok(response) => complete_tool_response(response).map_err(|error| ForwardToolFailure {
-                error,
-                generation: Some(generation),
-                transport_closed: false,
-                may_have_run: true,
-            }),
+            Ok(response) => complete_tool_response(response)
+                .map(|result| ForwardToolSuccess {
+                    result,
+                    generation,
+                    handoff_revision: snapshot.handoff_revision,
+                })
+                .map_err(|error| ForwardToolFailure {
+                    error,
+                    generation: Some(generation),
+                    transport_closed: false,
+                    may_have_run: true,
+                }),
             Err(rmcp::service::ServiceError::McpError(error)) => Err(ForwardToolFailure {
                 error,
                 generation: Some(generation),
@@ -1247,6 +1304,33 @@ impl McpProxy {
     }
 
     async fn clear_disconnect_handoff(&self, params: &CallToolRequestParams) {
+        if params
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("io.nteract/attachmentMode"))
+            .is_some_and(|mode| mode != "explicit")
+        {
+            return;
+        }
+        if explicit_attachment_mode(params)
+            && params
+                .arguments
+                .as_ref()
+                .is_none_or(|args| !args.contains_key("notebook_handle"))
+        {
+            return;
+        }
+        // Invalid/conflicting selectors are rejected by the child, not intent.
+        if params.arguments.as_ref().is_some_and(|args| {
+            args.get("notebook_handle").is_some_and(|value| {
+                value.as_str().is_none_or(str::is_empty)
+                    || args.get("notebook_id").is_some_and(|id| !id.is_null())
+            }) || args
+                .get("notebook_id")
+                .is_some_and(|id| !id.is_null() && id.as_str().is_none())
+        }) {
+            return;
+        }
         let requested_id = params
             .arguments
             .as_ref()
@@ -1271,17 +1355,51 @@ impl McpProxy {
             state.last_notebook_id = None;
             state.last_notebook_session_id = None;
             state.last_notebook_handle = None;
+            state.handoff_revision = state.handoff_revision.wrapping_add(1);
         }
     }
 
+    #[cfg(test)]
     async fn track_session(&self, params: &CallToolRequestParams, result: &CallToolResult) {
-        if params.name.as_ref() == "disconnect_notebook" && result.is_error != Some(true) {
+        if params.name == "disconnect_notebook" && result.is_error != Some(true) {
             self.clear_disconnect_handoff(params).await;
+        }
+        let (generation, handoff_revision) = {
+            let state = self.state.read().await;
+            (state.child_generation, state.handoff_revision)
+        };
+        self.track_session_for_call(
+            params,
+            &ForwardToolSuccess {
+                result: result.clone(),
+                generation,
+                handoff_revision,
+            },
+        )
+        .await;
+    }
+
+    async fn track_session_for_call(
+        &self,
+        params: &CallToolRequestParams,
+        success: &ForwardToolSuccess,
+    ) {
+        if explicit_attachment_mode(params) {
+            return;
+        }
+        let result = &success.result;
+        if params.name.as_ref() == "disconnect_notebook" && result.is_error != Some(true) {
+            // Intent was recorded before dispatch, including lost replies.
             return;
         }
 
         if let Some(id) = session::extract_session_id(params, result) {
             let mut state = self.state.write().await;
+            if state.child_generation != success.generation
+                || state.handoff_revision != success.handoff_revision
+            {
+                return;
+            }
             if params.name == "save_notebook" {
                 if let Some(handle) = params
                     .arguments
@@ -1375,6 +1493,7 @@ impl McpProxy {
             peer: client.peer().clone(),
             progress: client.service().progress.clone(),
             generation: state.child_generation,
+            handoff_revision: state.handoff_revision,
         })
     }
 
@@ -1415,6 +1534,68 @@ struct ChildPeerSnapshot {
     peer: Peer<child::RoleChild>,
     progress: tokio::sync::broadcast::Sender<rmcp::model::ProgressNotificationParam>,
     generation: u64,
+    handoff_revision: u64,
+}
+
+#[derive(Debug)]
+struct ForwardToolSuccess {
+    result: CallToolResult,
+    generation: u64,
+    handoff_revision: u64,
+}
+
+fn explicit_attachment_mode(params: &CallToolRequestParams) -> bool {
+    params
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("io.nteract/attachmentMode"))
+        == Some(&serde_json::json!("explicit"))
+}
+
+pub(crate) fn attachment_expiry(data: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    data.filter(|data| {
+        data["code"] == "attachment_expired"
+            && data["notebook_handle"]
+                .as_str()
+                .is_some_and(|handle| !handle.is_empty())
+    })
+}
+
+/// A terminal notification may have been dropped by the bounded relay. Read
+/// each remaining URI against the same child; only a structured attachment
+/// expiry is terminal. Missing cells and transient errors still invalidate.
+pub(crate) async fn reconcile_listener_updates(
+    peer: &Peer<child::RoleChild>,
+    uris: &[String],
+) -> Vec<rmcp::model::ResourceUpdatedNotificationParam> {
+    let mut reads = tokio::task::JoinSet::new();
+    for uri in uris {
+        let peer = peer.clone();
+        let uri = uri.clone();
+        reads.spawn(async move {
+            let mut update = rmcp::model::ResourceUpdatedNotificationParam::new(&uri);
+            if let Ok(Err(rmcp::service::ServiceError::McpError(error))) = tokio::time::timeout(
+                Duration::from_secs(5),
+                peer.read_resource_once(ReadResourceRequestParams::new(uri)),
+            )
+            .await
+            {
+                if let Some(expiry) = attachment_expiry(error.data.as_ref()) {
+                    let mut meta = rmcp::model::NotificationMetaObject::default();
+                    meta.insert("io.nteract/attachmentExpired".into(), expiry.clone());
+                    update.meta = Some(meta);
+                }
+            }
+            update
+        });
+    }
+    let mut updates = Vec::new();
+    while let Some(result) = reads.join_next().await {
+        if let Ok(update) = result {
+            updates.push(update);
+        }
+    }
+    updates
 }
 
 #[derive(Debug)]
@@ -1560,10 +1741,12 @@ impl ServerHandler for McpProxy {
         ))
         .with_instructions(
             "nteract MCP server for Jupyter notebooks. \
-             Each connection has one active notebook session. \
-             Use list_active_notebooks to discover open notebooks, \
-             then connect_notebook or create_notebook to set your active session. \
-             Calling these again switches your active session.",
+             Native notebook operations use the notebook_handle returned by \
+             connect_notebook or create_notebook for that independent attachment. \
+             Release affects only the named attachment. Daemon replacement expires \
+             local attachments; child replacement expires all attachments. Connect \
+             again, read a fresh baseline, and resubscribe. Legacy initialized \
+             clients retain active-notebook selection and automatic locator rejoin.",
         )
     }
 
@@ -1792,8 +1975,9 @@ fn reconnect_tool() -> Tool {
         RECONNECT_TOOL_NAME,
         "Restart the nteract MCP child process and reconnect to the daemon. \
          Use when tools are hanging, returning stale errors, or after a daemon \
-         upgrade. Child-only — the daemon itself is managed by the installed \
-         nteract app.",
+         upgrade. All existing attachment handles expire; connect again, read a \
+         fresh baseline, and resubscribe. Legacy clients may automatically rejoin \
+         their selected target. The daemon is managed by the installed nteract app.",
         schema,
     )
 }
@@ -2393,6 +2577,104 @@ mod tests {
     }
 
     // ── Session tracking via track_session ────────────────────────────
+
+    #[tokio::test]
+    async fn stale_child_or_release_revision_cannot_restore_legacy_handoff() {
+        let proxy = McpProxy::new(test_config(), None);
+        let params = CallToolRequestParams::new("connect_notebook").with_arguments(
+            serde_json::from_value(serde_json::json!({"target":"old-notebook"})).unwrap(),
+        );
+        let success = ForwardToolSuccess {
+            result: CallToolResult::success(vec![ContentBlock::text(
+                r#"{"notebook_id":"old-notebook","notebook_handle":"old-handle"}"#,
+            )]),
+            generation: 0,
+            handoff_revision: 0,
+        };
+        proxy.state.write().await.child_generation = 1;
+        proxy.track_session_for_call(&params, &success).await;
+        assert!(proxy.state.read().await.last_notebook_id.is_none());
+        proxy.state.write().await.child_generation = 0;
+        proxy
+            .clear_disconnect_handoff(&CallToolRequestParams::new("disconnect_notebook"))
+            .await;
+        proxy.track_session_for_call(&params, &success).await;
+        assert!(proxy.state.read().await.last_notebook_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_opens_do_not_set_handoff_and_invalid_releases_do_not_clear_it() {
+        let proxy = McpProxy::new(test_config(), None);
+        let params = serde_json::from_value(serde_json::json!({"name":"connect_notebook","arguments":{"target":"native-notebook"},"_meta":{"io.nteract/attachmentMode":"explicit"}})).unwrap();
+        let result = CallToolResult::success(vec![ContentBlock::text(
+            r#"{"notebook_id":"native-notebook"}"#,
+        )]);
+        proxy.track_session(&params, &result).await;
+        assert!(proxy.state.read().await.last_notebook_id.is_none());
+        {
+            let mut state = proxy.state.write().await;
+            state.last_notebook_id = Some("legacy-notebook".into());
+            state.last_notebook_handle = Some("legacy-handle".into());
+        }
+        for arguments in [
+            serde_json::json!({"notebook_handle":"legacy-handle","notebook_id":"conflict"}),
+            serde_json::json!({"notebook_handle":null}),
+            serde_json::json!({"notebook_id":12}),
+        ] {
+            let params = CallToolRequestParams::new("disconnect_notebook")
+                .with_arguments(serde_json::from_value(arguments).unwrap());
+            proxy.clear_disconnect_handoff(&params).await;
+            assert_eq!(
+                proxy.state.read().await.last_notebook_id.as_deref(),
+                Some("legacy-notebook")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lag_reconciliation_distinguishes_attachment_expiry_from_missing_cells() {
+        struct ReadChild;
+        impl ServerHandler for ReadChild {
+            async fn read_resource(
+                &self,
+                request: ReadResourceRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<ReadResourceResponse, McpError> {
+                if request.uri.contains("expired") {
+                    Err(McpError::resource_not_found(
+                        "Expired",
+                        Some(
+                            serde_json::json!({"code":"attachment_expired","notebook_handle":"expired"}),
+                        ),
+                    ))
+                } else {
+                    Err(McpError::resource_not_found("Missing cell", None))
+                }
+            }
+        }
+        use rmcp::ServiceExt;
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { ReadChild.serve(server_pipe).await.unwrap() });
+        let mut client = ().serve(client_pipe).await.unwrap();
+        let mut server = task.await.unwrap();
+        let uris = vec![
+            "nteract://sessions/expired/cells".into(),
+            "nteract://sessions/live/cells/missing".into(),
+        ];
+        let updates = reconcile_listener_updates(client.peer(), &uris).await;
+        assert_eq!(updates.len(), 2);
+        for update in updates {
+            let terminal = attachment_expiry(
+                update
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("io.nteract/attachmentExpired")),
+            );
+            assert_eq!(terminal.is_some(), update.uri.contains("expired"));
+        }
+        client.close().await.unwrap();
+        server.close().await.unwrap();
+    }
 
     #[tokio::test]
     async fn track_session_captures_connect_notebook() {

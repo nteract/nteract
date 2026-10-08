@@ -117,6 +117,120 @@ async fn native_tool_uses_a_private_legacy_child_with_empty_capabilities() {
 }
 
 #[tokio::test]
+async fn native_attachment_bridge_preserves_b_listener_when_a_expires() {
+    async fn take_update(wire: &mut Wire, uri: &str) -> Value {
+        loop {
+            if let Some(index) = wire.notifications.iter().position(|message| {
+                message["method"] == "notifications/resources/updated"
+                    && message["params"]["uri"] == uri
+            }) {
+                return wire.notifications.remove(index);
+            }
+            let message = wire.receive().await;
+            assert!(message.get("id").is_none(), "{message}");
+            wire.notifications.push(message);
+        }
+    }
+    let (_dir, proxy, _) = isolated_proxy_with_mode("attachments");
+    let mut wire = Wire::start(proxy.clone());
+    let mut handles = Vec::new();
+    for id in [1, 2] {
+        let response = wire.request(id, "tools/call", Some(json!({"name":"connect_notebook","arguments":{"target":"same-notebook"},"_meta":modern_meta("2026-07-28",false)}))).await;
+        let data = &response["result"]["structuredContent"];
+        assert_eq!(data["attachmentMode"], "explicit", "{response}");
+        assert_eq!(data["protocolVersion"], "2025-11-25");
+        handles.push(data["notebook_handle"].as_str().unwrap().to_owned());
+    }
+    assert_ne!(handles[0], handles[1]);
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    let uris: Vec<_> = handles
+        .iter()
+        .map(|handle| format!("nteract://sessions/{handle}/cells"))
+        .collect();
+    wire.send(json!({"jsonrpc":"2.0","id":10,"method":"subscriptions/listen","params":{"_meta":modern_meta("2026-07-28",false),"notifications":{"resourceSubscriptions":uris}}})).await;
+    let ack = wire.receive().await;
+    assert_eq!(
+        ack["method"], "notifications/subscriptions/acknowledged",
+        "{ack}"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            wire.receive().await["method"],
+            "notifications/resources/updated"
+        );
+    }
+    let mut listener_completed = false;
+    for (index, handle) in handles.iter().enumerate() {
+        let id = 20 + index as u64;
+        wire.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"disconnect_notebook","arguments":{"notebook_handle":handle},"_meta":modern_meta("2026-07-28",false)}})).await;
+        let released = loop {
+            let message = wire.receive().await;
+            if message["id"] == id {
+                break message;
+            }
+            if message["id"] == 10 {
+                assert_eq!(index, 1, "A release must not complete B's listener");
+                assert_eq!(message["result"]["resultType"], "complete");
+                listener_completed = true;
+            } else {
+                wire.notifications.push(message);
+            }
+        };
+        assert_ne!(released["result"]["isError"], true, "{released}");
+        let terminal = take_update(&mut wire, &uris[index]).await;
+        assert_eq!(terminal["params"]["uri"], uris[index]);
+        assert_eq!(
+            terminal["params"]["_meta"]["io.nteract/attachmentExpired"]["notebook_handle"], *handle,
+            "{terminal}"
+        );
+        assert_eq!(
+            terminal["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            10
+        );
+        if index == 0 {
+            let edited = wire.request(30, "tools/call", Some(json!({"name":"fixture_edit","arguments":{"notebook_handle":handles[1]},"_meta":modern_meta("2026-07-28",false)}))).await;
+            assert_ne!(edited["result"]["isError"], true);
+            let update = take_update(&mut wire, &uris[1]).await;
+            assert_eq!(update["params"]["uri"], uris[1]);
+            assert!(update["params"]["_meta"]
+                .get("io.nteract/attachmentExpired")
+                .is_none());
+        }
+    }
+    if !listener_completed {
+        let completed = wire.receive().await;
+        assert_eq!(completed["id"], 10);
+        assert_eq!(completed["result"]["resultType"], "complete");
+    }
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
+async fn native_child_restart_requires_fresh_handles_and_does_not_seed_rejoin() {
+    let (_dir, proxy, _) = isolated_proxy_with_mode("attachments");
+    let mut wire = Wire::start(proxy.clone());
+    let request = json!({"name":"connect_notebook","arguments":{"target":"same-notebook"},"_meta":modern_meta("2026-07-28",false)});
+    let first = wire.request(1, "tools/call", Some(request.clone())).await;
+    let old = first["result"]["structuredContent"]["notebook_handle"]
+        .as_str()
+        .unwrap();
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    proxy.restart_child().await.unwrap();
+    let expired = wire.request(2, "tools/call", Some(json!({"name":"fixture_edit","arguments":{"notebook_handle":old},"_meta":modern_meta("2026-07-28",false)}))).await;
+    assert_eq!(expired["error"]["code"], -32602, "{expired}");
+    let second = wire.request(3, "tools/call", Some(request)).await;
+    assert_ne!(
+        second["result"]["structuredContent"]["notebook_handle"],
+        old
+    );
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    stop_child(&proxy).await;
+    wire.finish().await;
+}
+
+#[tokio::test]
 async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
     for name in ["execute_cell", "future_mutation"] {
         let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");

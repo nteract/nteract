@@ -1147,6 +1147,7 @@ async fn run_mcp_server(
 
     // Grab shared state handles before serving (serve consumes the server)
     let session = server.session().clone();
+    let attachments = server.attachments().clone();
     let session_for_shutdown = session.clone();
     let session_intent_epoch = server.session_intent_epoch().clone();
     let peer_label = server.peer_label_shared().clone();
@@ -1178,6 +1179,7 @@ async fn run_mcp_server(
             daemon_conn,
             socket_path: watch_socket,
             session,
+            attachments,
             peer_label,
             operator,
             last_session_drop,
