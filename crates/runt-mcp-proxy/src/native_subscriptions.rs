@@ -196,11 +196,9 @@ async fn run(mut operations: mpsc::UnboundedReceiver<Operation>) {
                         break;
                     }
                     let key = (generation, uri.clone());
-                    if let Some(watch) = watches.get_mut(&key) {
-                        watch.users += 1;
-                        keys.push(key);
-                        continue;
-                    }
+                    // A cached reference can outlive the child's terminal
+                    // notification. Repeat idempotent child admission before
+                    // acknowledging a new listener, even when users remain.
                     let result = tokio::time::timeout(
                         Duration::from_secs(5),
                         child.subscribe(SubscribeRequestParams::new(&uri)),
@@ -208,13 +206,13 @@ async fn run(mut operations: mpsc::UnboundedReceiver<Operation>) {
                     .await;
                     match result {
                         Ok(Ok(_)) => {
-                            watches.insert(
-                                key.clone(),
-                                Watch {
+                            watches
+                                .entry(key.clone())
+                                .or_insert_with(|| Watch {
                                     peer: child.clone(),
-                                    users: 1,
-                                },
-                            );
+                                    users: 0,
+                                })
+                                .users += 1;
                             keys.push(key);
                         }
                         Ok(Err(rmcp::service::ServiceError::McpError(mut child_error))) => {
@@ -247,18 +245,27 @@ mod tests {
     use super::*;
     use rmcp::service::{RequestContext, RoleServer};
     use rmcp::{ServerHandler, ServiceExt};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     struct Child {
         subscribed: Arc<AtomicUsize>,
         unsubscribed: Arc<AtomicUsize>,
+        expired: Arc<AtomicBool>,
     }
     impl ServerHandler for Child {
         async fn subscribe(
             &self,
-            _: SubscribeRequestParams,
+            request: SubscribeRequestParams,
             _: RequestContext<RoleServer>,
         ) -> Result<(), ErrorData> {
             self.subscribed.fetch_add(1, Ordering::SeqCst);
+            if request.uri == "fixture://expired" && self.expired.load(Ordering::SeqCst) {
+                return Err(ErrorData::resource_not_found(
+                    "Notebook attachment expired",
+                    Some(serde_json::json!({
+                        "code": "attachment_expired", "notebook_handle": "expired",
+                    })),
+                ));
+            }
             Ok(())
         }
         async fn unsubscribe(
@@ -278,6 +285,7 @@ mod tests {
         let child = Child {
             subscribed: subscribed.clone(),
             unsubscribed: unsubscribed.clone(),
+            expired: Arc::default(),
         };
         let (server_pipe, client_pipe) = tokio::io::duplex(65536);
         let task = tokio::spawn(async move { child.serve(server_pipe).await.unwrap() });
@@ -327,6 +335,7 @@ mod tests {
         let child = Child {
             subscribed: subscribed.clone(),
             unsubscribed: unsubscribed.clone(),
+            expired: Arc::default(),
         };
         let (server_pipe, client_pipe) = tokio::io::duplex(65536);
         let task = tokio::spawn(async move { child.serve(server_pipe).await.unwrap() });
@@ -340,7 +349,7 @@ mod tests {
             .acquire(1, vec!["fixture://one".into()], client.peer().clone())
             .await
             .unwrap();
-        assert_eq!(subscribed.load(Ordering::SeqCst), 1);
+        assert_eq!(subscribed.load(Ordering::SeqCst), 2);
         drop(first);
         let third = registry
             .acquire(1, vec!["fixture://one".into()], client.peer().clone())
@@ -354,8 +363,151 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unsubscribed.load(Ordering::SeqCst), 1);
-        assert_eq!(subscribed.load(Ordering::SeqCst), 2);
+        assert_eq!(subscribed.load(Ordering::SeqCst), 4);
         drop(barrier);
+        drop(registry);
+        client.close().await.unwrap();
+        server.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn expired_shared_watch_rejects_new_users_and_rolls_back_only_their_references() {
+        let registry = Registry::default();
+        let subscribed = Arc::new(AtomicUsize::new(0));
+        let unsubscribed = Arc::new(AtomicUsize::new(0));
+        let expired = Arc::new(AtomicBool::new(false));
+        let child = Child {
+            subscribed: subscribed.clone(),
+            unsubscribed: unsubscribed.clone(),
+            expired: expired.clone(),
+        };
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { child.serve(server_pipe).await.unwrap() });
+        let mut client = ().serve(client_pipe).await.unwrap();
+        let mut server = task.await.unwrap();
+        let live = registry
+            .acquire(1, vec!["fixture://live".into()], client.peer().clone())
+            .await
+            .unwrap();
+        let stale = registry
+            .acquire(1, vec!["fixture://expired".into()], client.peer().clone())
+            .await
+            .unwrap();
+        // Keep the old lease after the child has ended this attachment's watch.
+        expired.store(true, Ordering::SeqCst);
+        let error = match registry
+            .acquire(
+                1,
+                vec!["fixture://live".into(), "fixture://expired".into()],
+                client.peer().clone(),
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("expired cached watch admitted a new listener"),
+        };
+        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(error.data.unwrap()["code"], "attachment_expired");
+        assert_eq!(subscribed.load(Ordering::SeqCst), 4);
+        assert_eq!(unsubscribed.load(Ordering::SeqCst), 0);
+        assert_eq!(registry.slots.available_permits(), 126);
+
+        // Failure removed the temporary live reference, so its original owner
+        // can release the child watch without waiting for the stale owner.
+        drop(live);
+        let barrier = registry
+            .acquire(1, vec!["fixture://barrier".into()], client.peer().clone())
+            .await
+            .unwrap();
+        assert_eq!(unsubscribed.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.slots.available_permits(), 126);
+        drop(stale);
+        let next = registry
+            .acquire(1, vec!["fixture://barrier".into()], client.peer().clone())
+            .await
+            .unwrap();
+        assert_eq!(unsubscribed.load(Ordering::SeqCst), 2);
+        drop(barrier);
+        drop(next);
+        drop(registry);
+        client.close().await.unwrap();
+        server.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_shared_admission_preserves_the_existing_listener() {
+        struct GatedChild {
+            calls: AtomicUsize,
+            unsubscribed: Arc<AtomicUsize>,
+            reached: Arc<tokio::sync::Notify>,
+            resume: Arc<tokio::sync::Notify>,
+        }
+        impl ServerHandler for GatedChild {
+            async fn subscribe(
+                &self,
+                _: SubscribeRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<(), ErrorData> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    self.reached.notify_one();
+                    self.resume.notified().await;
+                }
+                Ok(())
+            }
+            async fn unsubscribe(
+                &self,
+                _: UnsubscribeRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<(), ErrorData> {
+                self.unsubscribed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let registry = Arc::new(Registry::default());
+        let unsubscribed = Arc::new(AtomicUsize::new(0));
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let child = GatedChild {
+            calls: AtomicUsize::new(0),
+            unsubscribed: unsubscribed.clone(),
+            reached: reached.clone(),
+            resume: resume.clone(),
+        };
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { child.serve(server_pipe).await.unwrap() });
+        let mut client = ().serve(client_pipe).await.unwrap();
+        let mut server = task.await.unwrap();
+        let first = registry
+            .acquire(1, vec!["fixture://shared".into()], client.peer().clone())
+            .await
+            .unwrap();
+        let pending_registry = registry.clone();
+        let peer = client.peer().clone();
+        let pending = tokio::spawn(async move {
+            pending_registry
+                .acquire(1, vec!["fixture://shared".into()], peer)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), reached.notified())
+            .await
+            .unwrap();
+        pending.abort();
+        assert!(matches!(pending.await, Err(error) if error.is_cancelled()));
+        resume.notify_one();
+        let barrier = registry
+            .acquire(1, vec!["fixture://barrier".into()], client.peer().clone())
+            .await
+            .unwrap();
+        assert_eq!(unsubscribed.load(Ordering::SeqCst), 0);
+        assert_eq!(registry.slots.available_permits(), 126);
+        drop(first);
+        let next = registry
+            .acquire(1, vec!["fixture://barrier".into()], client.peer().clone())
+            .await
+            .unwrap();
+        assert_eq!(unsubscribed.load(Ordering::SeqCst), 1);
+        drop(barrier);
+        drop(next);
         drop(registry);
         client.close().await.unwrap();
         server.close().await.unwrap();
