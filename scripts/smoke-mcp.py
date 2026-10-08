@@ -92,6 +92,11 @@ def content_text_blocks(result) -> list[str]:
     return [c.text for c in result.content if hasattr(c, "text")]
 
 
+def tool_is_error(result) -> bool:
+    """Accept both SDK attribute spellings for the MCP isError wire field."""
+    return bool(getattr(result, "isError", getattr(result, "is_error", False)))
+
+
 def text_of(result) -> str:
     """Concat all text-typed content blocks from a tool result."""
     return "\n".join(content_text_blocks(result))
@@ -272,7 +277,7 @@ async def wait_for_kernel_ready(
     while True:
         rooms_result = await session.call_tool("list_active_notebooks", {})
         body = text_of(rooms_result)
-        if rooms_result.isError:
+        if tool_is_error(rooms_result):
             fail(f"[{label}] list_active_notebooks errored while waiting for kernel: {body}")
 
         rooms = parse_json_value(body)
@@ -317,7 +322,7 @@ async def create_notebook_checked(
     """Create a notebook and fail/retry immediately if auto-launch failed."""
     create = await session.call_tool("create_notebook", args or {})
     body = text_of(create)
-    if create.isError:
+    if tool_is_error(create):
         fail(f"create_notebook({label}) errored: {body}")
     print(body)
 
@@ -365,7 +370,7 @@ async def run_cell_and_get_body(notebook: NotebookAttachment, source: str, label
 
     print(f"[{label}] execute_cell {cell_id}")
     exec_result = await notebook.call_tool("execute_cell", {"cell_id": cell_id})
-    if exec_result.isError:
+    if tool_is_error(exec_result):
         fail(f"execute_cell errored: {text_of(exec_result)}")
     print(text_of(exec_result))
 
@@ -406,7 +411,7 @@ async def create_code_cell(notebook: NotebookAttachment, source: str, label: str
         "create_cell",
         {"cell_type": "code", "source": source},
     )
-    if cell.isError:
+    if tool_is_error(cell):
         fail(f"[{label}] create_cell errored: {text_of(cell)}")
     print(text_of(cell))
 
@@ -421,7 +426,7 @@ async def first_cell_id(notebook: NotebookAttachment, label: str) -> str:
     print(f"[{label}] get_all_cells(format=json, count=1)")
     result = await notebook.call_tool("get_all_cells", {"format": "json", "count": 1})
     body = text_of(result)
-    if result.isError:
+    if tool_is_error(result):
         fail(f"[{label}] get_all_cells errored: {body}")
 
     cells = parse_json_value(body)
@@ -442,7 +447,7 @@ async def set_code_cell(
         "set_cell",
         {"cell_id": cell_id, "cell_type": "code", "source": source},
     )
-    if result.isError:
+    if tool_is_error(result):
         fail(f"[{label}] set_cell errored: {text_of(result)}")
     print(text_of(result))
 
@@ -662,7 +667,7 @@ async def viz_llm_pass(
     result = await notebook.call_tool("run_all_cells", {"timeout_secs": 300})
     transcript = content_transcript_of(result)
     print(transcript)
-    if result.isError:
+    if tool_is_error(result):
         fail(f"[viz-llm] run_all_cells errored: {transcript}")
     if "Execution completed (4 succeeded)" not in transcript:
         fail(f"[viz-llm] run_all_cells did not report four successful cells:\n{transcript}")
