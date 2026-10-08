@@ -391,42 +391,67 @@ pub(crate) async fn resource_session(
             observer,
         ))
     };
-    let matches = |session: &crate::session::NotebookSession| {
-        if by_handle {
-            session.notebook_handle == notebook_id
-        } else {
-            session.notebook_id == notebook_id
-        }
-    };
-    let mut found = None;
-    {
+    if by_handle {
         let entries = server.attachments.read_entries();
-        for session in entries
-            .values()
-            .map(|entry| &entry.session)
-            .filter(|session| matches(session))
-        {
-            if found.is_some() {
-                return Err(McpError::invalid_params("Ambiguous notebook ID; read its nteract://sessions/{notebook_handle} resource instead", None));
-            }
-            found = Some(capture(session)?);
-        }
+        return entries
+            .get(notebook_id)
+            .map(|entry| capture(&entry.session))
+            .unwrap_or_else(|| Err(crate::attachments::expired_resource_error(notebook_id)));
     }
-    // Legacy automatic rejoin can install a selection before registry recovery
-    // integration. It is never a fallback for an expired explicit handle.
-    if !by_handle && found.is_none() {
+    let found = {
+        // ID resources are compatibility addressing. A live legacy selection
+        // wins without changing any subscription's previously captured handle.
         let active = server.session.read().await;
-        found = active
+        let entries = server.attachments.read_entries();
+        if let Some(entry) = active
             .as_ref()
-            .filter(|session| matches(session))
-            .map(capture)
-            .transpose()?;
-    }
+            .filter(|session| session.notebook_id == notebook_id)
+            .and_then(|session| entries.get(&session.notebook_handle))
+            .filter(|entry| entry.origin() == crate::attachments::AttachmentOrigin::Legacy)
+        {
+            return capture(&entry.session);
+        }
+        let mut legacy = entries.values().filter(|entry| {
+            entry.origin() == crate::attachments::AttachmentOrigin::Legacy
+                && entry.session.notebook_id == notebook_id
+        });
+        if let Some(first) = legacy.next() {
+            let key = first.session.session_key();
+            let mut selected = first;
+            for entry in legacy {
+                if entry.session.session_key() != key {
+                    return Err(McpError::invalid_params(
+                        "Ambiguous legacy notebook ID across sources; use its exact notebook_handle resource",
+                        None,
+                    ));
+                }
+                let rank = |entry: &crate::attachments::AttachmentEntry| {
+                    (
+                        entry
+                            .session
+                            .access(crate::session::SessionRequirement::DocumentRead)
+                            .is_ok(),
+                        entry.session.activation_generation,
+                        entry.session.notebook_handle.clone(),
+                    )
+                };
+                if rank(entry) > rank(selected) {
+                    selected = entry;
+                }
+            }
+            return capture(&selected.session);
+        }
+        let mut explicit = entries
+            .values()
+            .filter(|entry| entry.session.notebook_id == notebook_id);
+        let first = explicit.next();
+        if explicit.next().is_some() {
+            return Err(McpError::invalid_params("Ambiguous notebook ID; read its nteract://sessions/{notebook_handle} resource instead", None));
+        }
+        first.map(|entry| capture(&entry.session)).transpose()?
+    };
     if let Some(found) = found {
         return Ok(found);
-    }
-    if by_handle {
-        return Err(crate::attachments::expired_resource_error(notebook_id));
     }
     Err(McpError::resource_not_found(
         format!(

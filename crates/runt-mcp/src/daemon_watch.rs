@@ -716,7 +716,7 @@ async fn rejoin(
                     new_session,
                     session_intent_epoch,
                     expected_intent_epoch,
-                    |session| attachments.insert(session.clone(), reservation),
+                    |session| attachments.insert_legacy(session.clone(), reservation),
                 )
                 .await
                 {
@@ -859,7 +859,7 @@ async fn rejoin_hosted(
                     new_session,
                     session_intent_epoch,
                     expected_intent_epoch,
-                    |session| attachments.insert(session.clone(), reservation),
+                    |session| attachments.insert_legacy(session.clone(), reservation),
                 )
                 .await
                 {
@@ -1010,13 +1010,17 @@ mod tests {
         let reservation = registry.reserve().unwrap();
         assert_eq!(
             publish_rejoined_session(&slot, new, &epoch, 4, |session| registry
-                .insert(session.clone(), reservation))
+                .insert_legacy(session.clone(), reservation))
             .await,
             PublicationResult::Installed
         );
         assert_ne!(old_handle, new_handle);
         assert!(!registry.read_entries().contains_key(&old_handle));
         assert!(registry.read_entries().contains_key(&new_handle));
+        assert_eq!(
+            registry.read_entries()[&new_handle].origin(),
+            crate::attachments::AttachmentOrigin::Legacy,
+        );
         assert_eq!(
             slot.read().await.as_ref().unwrap().notebook_handle,
             new_handle
@@ -1031,7 +1035,7 @@ mod tests {
         let reservation = registry.reserve().unwrap();
         assert_eq!(
             publish_rejoined_session(&slot, replacement, &epoch, 4, |session| registry
-                .insert(session.clone(), reservation))
+                .insert_legacy(session.clone(), reservation))
             .await,
             PublicationResult::Superseded
         );
@@ -1044,7 +1048,7 @@ mod tests {
         let reservation = registry.reserve().unwrap();
         assert_eq!(
             publish_rejoined_session(&slot, cancelled, &epoch, 4, |session| registry
-                .insert(session.clone(), reservation))
+                .insert_legacy(session.clone(), reservation))
             .await,
             PublicationResult::Cancelled
         );
