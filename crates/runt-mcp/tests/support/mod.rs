@@ -18,6 +18,7 @@ pub struct Wire {
     writer: WriteHalf<DuplexStream>,
     task: JoinHandle<Result<bool, String>>,
     pub notifications: Vec<Value>,
+    responses: Vec<Value>,
 }
 
 impl Wire {
@@ -39,6 +40,7 @@ impl Wire {
             writer,
             task,
             notifications: Vec::new(),
+            responses: Vec::new(),
         }
     }
 
@@ -63,25 +65,64 @@ impl Wire {
     }
 
     pub async fn request(&mut self, id: u64, method: &str, params: Option<Value>) -> Value {
+        self.send_request(id, method, params).await;
+        self.response(id).await
+    }
+
+    /// Send without awaiting the result, so tests can force overlapping requests.
+    pub async fn send_request(&mut self, id: u64, method: &str, params: Option<Value>) {
         let mut message = json!({"jsonrpc": "2.0", "id": id, "method": method});
         if let Some(params) = params {
             message["params"] = params;
         }
         self.send(message).await;
-        loop {
-            let response = self.receive().await;
-            if response.get("id").is_none() {
-                assert!(response["method"].is_string());
-                self.notifications.push(response);
-                continue;
+    }
+
+    pub async fn response(&mut self, id: u64) -> Value {
+        timeout(DEADLINE, async {
+            loop {
+                if let Some(index) = self.responses.iter().position(|r| r["id"] == id) {
+                    return self.responses.remove(index);
+                }
+                self.buffer_next().await;
             }
-            assert_eq!(response["id"], id, "response IDs must be preserved");
+        })
+        .await
+        .unwrap_or_else(|_| panic!("response {id} timed out"))
+    }
+
+    async fn buffer_next(&mut self) {
+        let message = self.receive().await;
+        if message.get("id").is_none() {
+            assert!(message["method"].is_string());
+            self.notifications.push(message);
+        } else {
             assert_ne!(
-                response.get("result").is_some(),
-                response.get("error").is_some()
+                message.get("result").is_some(),
+                message.get("error").is_some()
             );
-            return response;
+            self.responses.push(message);
         }
+    }
+
+    /// Only a matching event after the caller's marker can satisfy this wait.
+    /// Responses from concurrent tool/listen requests remain available by ID.
+    pub async fn notification_after(
+        &mut self,
+        after: usize,
+        predicate: impl Fn(&Value) -> bool,
+    ) -> Value {
+        timeout(DEADLINE, async {
+            loop {
+                if let Some(message) = self.notifications.iter().skip(after).find(|n| predicate(n))
+                {
+                    return message.clone();
+                }
+                self.buffer_next().await;
+            }
+        })
+        .await
+        .expect("fresh matching notification did not arrive")
     }
 
     pub async fn initialize(&mut self, version: &str) -> Value {

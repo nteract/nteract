@@ -7899,6 +7899,7 @@ dependencies = [
  "rmcp 3.2.0",
  "runt-workspace",
  "runtime-doc",
+ "runtimed",
  "runtimed-client",
  "runtimed-outputs",
  "schemars 1.2.1",

@@ -40,6 +40,7 @@ url = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+runtimed = { path = "../runtimed" }
 automerge = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client"] }
