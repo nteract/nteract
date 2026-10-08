@@ -7,6 +7,12 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::session::NotebookSession;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentOrigin {
+    Explicit,
+    Legacy,
+}
+
 pub const MAX_ATTACHMENTS: usize = 128;
 /// Application semantics only: the private proxy child remains legacy initialized.
 pub const ATTACHMENT_MODE_META_KEY: &str = "io.nteract/attachmentMode";
@@ -44,11 +50,16 @@ pub struct AttachmentReservation {
 /// Removing an entry releases its capacity and peer ownership together.
 pub struct AttachmentEntry {
     pub session: NotebookSession,
+    origin: AttachmentOrigin,
     _reservation: AttachmentReservation,
     expired: tokio::sync::watch::Sender<bool>,
 }
 
 impl AttachmentEntry {
+    pub fn origin(&self) -> AttachmentOrigin {
+        self.origin
+    }
+
     pub fn expiration(&self) -> tokio::sync::watch::Receiver<bool> {
         self.expired.subscribe()
     }
@@ -101,6 +112,19 @@ impl AttachmentRegistry {
     }
 
     pub fn insert(&self, session: NotebookSession, reservation: AttachmentReservation) {
+        self.insert_with_origin(session, reservation, AttachmentOrigin::Explicit);
+    }
+
+    pub fn insert_legacy(&self, session: NotebookSession, reservation: AttachmentReservation) {
+        self.insert_with_origin(session, reservation, AttachmentOrigin::Legacy);
+    }
+
+    fn insert_with_origin(
+        &self,
+        session: NotebookSession,
+        reservation: AttachmentReservation,
+        origin: AttachmentOrigin,
+    ) {
         let mut entries = self.write_entries();
         // A UUID identifies one ownership lifetime, never a target cache entry.
         assert!(!entries.contains_key(&session.notebook_handle));
@@ -108,6 +132,7 @@ impl AttachmentRegistry {
             session.notebook_handle.clone(),
             AttachmentEntry {
                 session,
+                origin,
                 _reservation: reservation,
                 expired: tokio::sync::watch::channel(false).0,
             },

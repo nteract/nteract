@@ -1062,6 +1062,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attachment_origins_are_independent_of_backing_session_source() {
+        let registry = attachments::AttachmentRegistry::default();
+        for legacy in [false, true] {
+            let session = NotebookSession::hosted(
+                metadata_test_handle("same-notebook").await,
+                "same-notebook".into(),
+                "https://example.com".into(),
+            );
+            let handle = session.notebook_handle.clone();
+            let reservation = registry.reserve().unwrap();
+            if legacy {
+                registry.insert_legacy(session, reservation);
+            } else {
+                registry.insert(session, reservation);
+            }
+            assert_eq!(
+                registry.read_entries()[&handle].origin(),
+                if legacy { attachments::AttachmentOrigin::Legacy } else { attachments::AttachmentOrigin::Explicit }
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn release_isolated_from_other_attachment_and_legacy_selection() {
         let server = NteractMcp::new("unused.sock".into(), None, None);
         let peer = metadata_test_handle("same-notebook").await;
