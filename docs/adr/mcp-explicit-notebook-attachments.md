@@ -140,8 +140,11 @@ refresh a running host's model context.
 Prefer in-place catalog refresh within the existing chat. The proxy publishes
 the actual child's catalog, advertises `listChanged`, and uses standard catalog
 notifications to ask supporting hosts to relist. Native clients receive these
-notifications through an accepted catalog subscription. Cache freshness hints
-do not force a host to replace schemas already supplied to its model.
+notifications through an accepted catalog subscription. Publication requires
+successful, nonempty discovery from the current connected child. Failed, empty,
+stale or disconnected discovery retains prior definitions without publishing a
+change or proving child capabilities. Cache freshness hints do not force a host
+to replace schemas already supplied to its model.
 
 A stale call without a handle must fail before effects and explain the required
 target and catalog refresh. It must not be translated using the last-opened

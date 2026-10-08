@@ -68,7 +68,8 @@ guess a target or restore implicit selection. An already-running old proxy may
 need that reconnect to load new code. After child replacement, acquire the
 intended notebook again, read a baseline and resubscribe; inspect ambiguous
 mutations before retry. Configuration reload alone does not prove a catalog
-refresh.
+refresh. Catalog publication requires successful discovery from the current
+connected child; fallback or rewritten schemas never prove child capability.
 
 Relevant source: `crates/runt-mcp/src/targets.rs`, `attachments.rs`, `lib.rs`,
 `session.rs`, and `crates/mcp-transport/src/lib.rs`.
