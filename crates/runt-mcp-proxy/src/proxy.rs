@@ -318,19 +318,14 @@ impl McpProxy {
             };
             for mut update in updates {
                 if uris.contains(&update.uri) {
-                    let terminal = attachment_expiry(
-                        update
-                            .meta
-                            .as_ref()
-                            .and_then(|meta| meta.get("io.nteract/attachmentExpired")),
-                    )
-                    .cloned();
+                    let terminal = attachment_terminal(update.meta.as_ref())
+                        .map(|(key, signal)| (key, signal.clone()));
                     // The private child's subscription/protocol metadata must
                     // not leak into the upstream subscription. Preserve its
-                    // application expiry marker, then let the sink set our ID.
-                    update.meta = terminal.as_ref().map(|terminal| {
+                    // application terminal marker, then let the sink set our ID.
+                    update.meta = terminal.as_ref().map(|(key, terminal)| {
                         let mut meta = rmcp::model::NotificationMetaObject::default();
-                        meta.insert("io.nteract/attachmentExpired".into(), terminal.clone());
+                        meta.insert((*key).into(), terminal.clone());
                         meta
                     });
                     let uri = update.uri.clone();
@@ -1553,17 +1548,51 @@ fn explicit_attachment_mode(params: &CallToolRequestParams) -> bool {
 }
 
 pub(crate) fn attachment_expiry(data: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    attachment_terminal_data(data, "attachment_expired")
+}
+
+fn attachment_unavailability(data: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    attachment_terminal_data(data, "attachment_unavailable")
+}
+
+fn attachment_terminal_data<'a>(
+    data: Option<&'a serde_json::Value>,
+    code: &str,
+) -> Option<&'a serde_json::Value> {
     data.filter(|data| {
-        data["code"] == "attachment_expired"
+        data["code"] == code
             && data["notebook_handle"]
                 .as_str()
                 .is_some_and(|handle| !handle.is_empty())
     })
 }
 
+pub(crate) fn attachment_terminal(
+    meta: Option<&rmcp::model::NotificationMetaObject>,
+) -> Option<(&'static str, &serde_json::Value)> {
+    let meta = meta?;
+    attachment_expiry(meta.get("io.nteract/attachmentExpired"))
+        .map(|data| ("io.nteract/attachmentExpired", data))
+        .or_else(|| {
+            attachment_unavailability(meta.get("io.nteract/attachmentUnavailable"))
+                .map(|data| ("io.nteract/attachmentUnavailable", data))
+        })
+}
+
+fn attachment_terminal_error(
+    data: Option<&serde_json::Value>,
+) -> Option<(&'static str, &serde_json::Value)> {
+    attachment_expiry(data)
+        .map(|data| ("io.nteract/attachmentExpired", data))
+        .or_else(|| {
+            attachment_unavailability(data).map(|data| ("io.nteract/attachmentUnavailable", data))
+        })
+}
+
 /// A terminal notification may have been dropped by the bounded relay. Read
 /// each remaining URI against the same child; only a structured attachment
-/// expiry is terminal. Missing cells and transient errors still invalidate.
+/// expiry or unavailable observation is terminal. Missing cells and transient
+/// errors without those typed reasons still invalidate.
 pub(crate) async fn reconcile_listener_updates(
     peer: &Peer<child::RoleChild>,
     uris: &[String],
@@ -1580,9 +1609,9 @@ pub(crate) async fn reconcile_listener_updates(
             )
             .await
             {
-                if let Some(expiry) = attachment_expiry(error.data.as_ref()) {
+                if let Some((key, signal)) = attachment_terminal_error(error.data.as_ref()) {
                     let mut meta = rmcp::model::NotificationMetaObject::default();
-                    meta.insert("io.nteract/attachmentExpired".into(), expiry.clone());
+                    meta.insert(key.into(), signal.clone());
                     update.meta = Some(meta);
                 }
             }
@@ -2632,7 +2661,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lag_reconciliation_distinguishes_attachment_expiry_from_missing_cells() {
+    async fn lag_reconciliation_distinguishes_terminal_attachments_from_nonterminal_errors() {
         struct ReadChild;
         impl ServerHandler for ReadChild {
             async fn read_resource(
@@ -2647,6 +2676,15 @@ mod tests {
                             serde_json::json!({"code":"attachment_expired","notebook_handle":"expired"}),
                         ),
                     ))
+                } else if request.uri.contains("unavailable") {
+                    Err(McpError::internal_error(
+                        "sync_failed",
+                        Some(
+                            serde_json::json!({"code":"attachment_unavailable","notebook_handle":"unavailable"}),
+                        ),
+                    ))
+                } else if request.uri.contains("pending") {
+                    Err(McpError::internal_error("notebook_not_ready", None))
                 } else {
                     Err(McpError::resource_not_found("Missing cell", None))
                 }
@@ -2660,17 +2698,20 @@ mod tests {
         let uris = vec![
             "nteract://sessions/expired/cells".into(),
             "nteract://sessions/live/cells/missing".into(),
+            "nteract://sessions/unavailable/cells".into(),
+            "nteract://sessions/pending/cells".into(),
         ];
         let updates = reconcile_listener_updates(client.peer(), &uris).await;
-        assert_eq!(updates.len(), 2);
+        assert_eq!(updates.len(), 4);
         for update in updates {
-            let terminal = attachment_expiry(
-                update
-                    .meta
-                    .as_ref()
-                    .and_then(|meta| meta.get("io.nteract/attachmentExpired")),
-            );
-            assert_eq!(terminal.is_some(), update.uri.contains("expired"));
+            let terminal = attachment_terminal(update.meta.as_ref());
+            if update.uri.contains("expired") {
+                assert_eq!(terminal.unwrap().0, "io.nteract/attachmentExpired");
+            } else if update.uri.contains("unavailable") {
+                assert_eq!(terminal.unwrap().0, "io.nteract/attachmentUnavailable");
+            } else {
+                assert!(terminal.is_none());
+            }
         }
         client.close().await.unwrap();
         server.close().await.unwrap();

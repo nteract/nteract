@@ -258,6 +258,14 @@ mod tests {
             _: RequestContext<RoleServer>,
         ) -> Result<(), ErrorData> {
             self.subscribed.fetch_add(1, Ordering::SeqCst);
+            if request.uri == "fixture://unavailable" && self.expired.load(Ordering::SeqCst) {
+                return Err(ErrorData::internal_error(
+                    "sync_failed",
+                    Some(serde_json::json!({
+                        "code": "attachment_unavailable", "notebook_handle": "unavailable",
+                    })),
+                ));
+            }
             if request.uri == "fixture://expired" && self.expired.load(Ordering::SeqCst) {
                 return Err(ErrorData::resource_not_found(
                     "Notebook attachment expired",
@@ -372,6 +380,25 @@ mod tests {
 
     #[tokio::test]
     async fn expired_shared_watch_rejects_new_users_and_rolls_back_only_their_references() {
+        rejected_shared_watch(
+            "fixture://expired",
+            "attachment_expired",
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unavailable_shared_watch_preserves_sync_error_and_other_listener_references() {
+        rejected_shared_watch(
+            "fixture://unavailable",
+            "attachment_unavailable",
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+        )
+        .await;
+    }
+
+    async fn rejected_shared_watch(uri: &str, code: &str, error_code: rmcp::model::ErrorCode) {
         let registry = Registry::default();
         let subscribed = Arc::new(AtomicUsize::new(0));
         let unsubscribed = Arc::new(AtomicUsize::new(0));
@@ -390,7 +417,7 @@ mod tests {
             .await
             .unwrap();
         let stale = registry
-            .acquire(1, vec!["fixture://expired".into()], client.peer().clone())
+            .acquire(1, vec![uri.into()], client.peer().clone())
             .await
             .unwrap();
         // Keep the old lease after the child has ended this attachment's watch.
@@ -398,16 +425,16 @@ mod tests {
         let error = match registry
             .acquire(
                 1,
-                vec!["fixture://live".into(), "fixture://expired".into()],
+                vec!["fixture://live".into(), uri.into()],
                 client.peer().clone(),
             )
             .await
         {
             Err(error) => error,
-            Ok(_) => panic!("expired cached watch admitted a new listener"),
+            Ok(_) => panic!("terminal cached watch admitted a new listener"),
         };
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert_eq!(error.data.unwrap()["code"], "attachment_expired");
+        assert_eq!(error.code, error_code);
+        assert_eq!(error.data.unwrap()["code"], code);
         assert_eq!(subscribed.load(Ordering::SeqCst), 4);
         assert_eq!(unsubscribed.load(Ordering::SeqCst), 0);
         assert_eq!(registry.slots.available_permits(), 126);

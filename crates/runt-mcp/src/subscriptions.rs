@@ -166,9 +166,16 @@ impl ResourceSubscriptions {
             .read(None)
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
         if baseline.outcome == ChangeOutcome::Unavailable {
+            if let Some((handle, expired)) = expiration.as_ref() {
+                if *expired.borrow() {
+                    return Err(crate::attachments::expired_resource_error(handle));
+                }
+            }
             return Err(McpError::resource_not_found(
                 "Notebook attachment is no longer available",
-                None,
+                expiration
+                    .as_ref()
+                    .map(|(handle, _)| crate::attachments::unavailable_resource_data(handle)),
             ));
         }
         let mut tasks = self
@@ -207,7 +214,7 @@ impl ResourceSubscriptions {
                         }
                     } => {
                         if let Some((handle, _)) = expiration.as_ref() {
-                            let _ = peer.notify_resource_updated(crate::attachments::expired_resource_notification(&task_uri, handle)).await;
+                            let _ = tokio::time::timeout(Duration::from_secs(1), peer.notify_resource_updated(crate::attachments::expired_resource_notification(&task_uri, handle))).await;
                         }
                         break;
                     }
@@ -216,36 +223,32 @@ impl ResourceSubscriptions {
                     break;
                 };
                 cursor = change.cursor;
-                let invalidated = matches!(
-                    change.outcome,
-                    ChangeOutcome::Unavailable | ChangeOutcome::ResyncRequired
-                );
+                if change.outcome == ChangeOutcome::Unavailable {
+                    let update = match expiration.as_ref() {
+                        Some((handle, expired)) if *expired.borrow() => {
+                            crate::attachments::expired_resource_notification(&task_uri, handle)
+                        }
+                        Some((handle, _)) => {
+                            crate::attachments::unavailable_resource_notification(&task_uri, handle)
+                        }
+                        None => ResourceUpdatedNotificationParam::new(&task_uri),
+                    };
+                    // Disconnected is terminal for this observation peer even
+                    // if its daemon incarnation and logical handle remain live.
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(1),
+                        peer.notify_resource_updated(update),
+                    )
+                    .await;
+                    break;
+                }
+                let invalidated = matches!(change.outcome, ChangeOutcome::ResyncRequired);
                 if (invalidated || affects(&target, &change.changes))
                     && peer
                         .notify_resource_updated(ResourceUpdatedNotificationParam::new(&task_uri))
                         .await
                         .is_err()
                 {
-                    break;
-                }
-                if change.outcome == ChangeOutcome::Unavailable {
-                    // A disconnected peer can become unavailable before the
-                    // watcher confirms daemon replacement. Keep lifetime
-                    // tracking until the registry actually expires membership.
-                    if let Some((handle, expiration)) = expiration.as_mut() {
-                        while !*expiration.borrow() {
-                            if expiration.changed().await.is_err() {
-                                break;
-                            }
-                        }
-                        let _ = peer
-                            .notify_resource_updated(
-                                crate::attachments::expired_resource_notification(
-                                    &task_uri, handle,
-                                ),
-                            )
-                            .await;
-                    }
                     break;
                 }
             }
@@ -343,6 +346,229 @@ mod tests {
         ) {
             let _ = self.0.send(params.uri);
         }
+    }
+
+    struct TypedNotifications(tokio::sync::mpsc::UnboundedSender<ResourceUpdatedNotificationParam>);
+    impl ClientHandler for TypedNotifications {
+        async fn on_resource_updated(
+            &self,
+            mut params: ResourceUpdatedNotificationParam,
+            context: NotificationContext<RoleClient>,
+        ) {
+            let mut meta = params.meta.take().unwrap_or_default();
+            if let Some(extracted) = context.extensions.get::<NotificationMetaObject>() {
+                meta.extend(extracted.clone());
+            }
+            meta.extend(context.meta);
+            params.meta = Some(meta);
+            let _ = self.0.send(params);
+        }
+    }
+
+    async fn local_peer(
+        id: &str,
+        incarnation: crate::session::DaemonIncarnation,
+    ) -> (
+        crate::session::NotebookSession,
+        tokio::sync::mpsc::UnboundedSender<notebook_protocol::connection::TypedNotebookFrame>,
+    ) {
+        use notebook_protocol::connection::{
+            FrameSource, NotebookFrameType, TypedNotebookFrame, WriterFrameSink,
+        };
+        use notebook_protocol::protocol::{
+            InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire,
+            SessionControlMessage, SessionSyncStatusWire,
+        };
+        struct Frames(tokio::sync::mpsc::UnboundedReceiver<TypedNotebookFrame>);
+        impl FrameSource for Frames {
+            async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+                self.0.recv().await.map(Ok)
+            }
+        }
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handle = notebook_sync::connect::connect_frame_io(
+            id.into(),
+            "local:test/agent:test",
+            Frames(receiver),
+            WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        let mut status = handle.subscribe_status();
+        sender
+            .send(TypedNotebookFrame {
+                frame_type: NotebookFrameType::SessionControl,
+                payload: serde_json::to_vec(&SessionControlMessage::SyncStatus(
+                    SessionSyncStatusWire {
+                        notebook_doc: NotebookDocPhaseWire::Interactive,
+                        runtime_state: RuntimeStatePhaseWire::Ready,
+                        initial_load: InitialLoadPhaseWire::NotNeeded,
+                    },
+                ))
+                .unwrap(),
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !status.borrow_and_update().session_ready() {
+                status.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        (
+            crate::session::NotebookSession::local(handle, id.into(), None, Some(incarnation)),
+            sender,
+        )
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn disconnected_peer_ends_only_its_watch_and_retains_its_attachment() {
+        use crate::attachments::{ATTACHMENT_EXPIRED_META_KEY, ATTACHMENT_UNAVAILABLE_META_KEY};
+        let incarnation = crate::session::DaemonIncarnation {
+            pid: 123,
+            started_at: chrono::Utc::now(),
+        };
+        let (a, sender_a) = local_peer("a", incarnation.clone()).await;
+        let (b, _sender_b) = local_peer("b", incarnation.clone()).await;
+        let handle_a = a.notebook_handle.clone();
+        let handle_b = b.notebook_handle.clone();
+        let peer_b = b.handle.clone();
+        let mut status_a = a.handle.subscribe_status();
+        let observer_a = a.observer().unwrap();
+        let server = crate::NteractMcp::new_no_show("unused-test-socket".into(), None, None);
+        let attachments = server.attachments.clone();
+        let watches = server.resource_subscriptions.clone();
+        attachments.insert(a, attachments.reserve().unwrap());
+        attachments.insert(b, attachments.reserve().unwrap());
+        let expired_a = attachments
+            .read_entries()
+            .get(&handle_a)
+            .unwrap()
+            .expiration();
+        let uri_a = format!("nteract://sessions/{handle_a}/cells");
+        let uri_b = format!("nteract://sessions/{handle_b}/cells");
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { server.serve(server_pipe).await.unwrap() });
+        let (tx, mut updates) = tokio::sync::mpsc::unbounded_channel();
+        let mut client = TypedNotifications(tx).serve(client_pipe).await.unwrap();
+        let mut service = task.await.unwrap();
+        for uri in [&uri_a, &uri_b] {
+            client
+                .subscribe(SubscribeRequestParams::new(uri))
+                .await
+                .unwrap();
+        }
+        drop(sender_a);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while status_a.borrow_and_update().connection
+                != notebook_sync::status::ConnectionState::Disconnected
+            {
+                status_a.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let update = tokio::time::timeout(Duration::from_secs(2), updates.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(update.uri, uri_a);
+        let meta = update.meta.unwrap();
+        assert_eq!(
+            meta.get(ATTACHMENT_UNAVAILABLE_META_KEY),
+            Some(&crate::attachments::unavailable_resource_data(&handle_a))
+        );
+        assert!(!meta.contains_key(ATTACHMENT_EXPIRED_META_KEY));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !watches.tasks.lock().unwrap().contains_key(&uri_a) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(watches.tasks.lock().unwrap().contains_key(&uri_b));
+        assert!(!*expired_a.borrow());
+        assert_eq!(
+            attachments
+                .read_entries()
+                .get(&handle_a)
+                .unwrap()
+                .session
+                .local_daemon_incarnation,
+            Some(incarnation)
+        );
+        let error = client
+            .read_resource(ReadResourceRequestParams::new(&uri_a))
+            .await
+            .unwrap_err();
+        let rmcp::ServiceError::McpError(error) = error else {
+            panic!("expected resource access error")
+        };
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert!(error.message.contains("sync_failed"));
+        assert_eq!(
+            error.data,
+            Some(crate::attachments::unavailable_resource_data(&handle_a))
+        );
+        let error = client
+            .subscribe(SubscribeRequestParams::new(&uri_a))
+            .await
+            .unwrap_err();
+        let rmcp::ServiceError::McpError(error) = error else {
+            panic!("expected subscription admission error")
+        };
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(
+            error.data,
+            Some(crate::attachments::unavailable_resource_data(&handle_a))
+        );
+        client
+            .read_resource(ReadResourceRequestParams::new(&uri_b))
+            .await
+            .unwrap();
+        peer_b
+            .add_cell_with_source("survivor", "code", None, "healthy B edit")
+            .unwrap();
+        let update = tokio::time::timeout(Duration::from_secs(2), updates.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(update.uri, uri_b);
+        assert!(!update
+            .meta
+            .as_ref()
+            .unwrap()
+            .contains_key(ATTACHMENT_UNAVAILABLE_META_KEY));
+        assert!(!update
+            .meta
+            .as_ref()
+            .unwrap()
+            .contains_key(ATTACHMENT_EXPIRED_META_KEY));
+        // Once membership really ends, expiration takes precedence over the
+        // same peer's permanent unavailability, without waiting for recovery.
+        drop(attachments.remove(&handle_a).unwrap());
+        assert!(*expired_a.borrow());
+        let error = watches
+            .subscribe_with_expiration(
+                uri_a.clone(),
+                NotebookResourceUri::Cells {
+                    notebook_id: handle_a.clone(),
+                },
+                observer_a,
+                service.peer().clone(),
+                Some((handle_a.clone(), expired_a)),
+            )
+            .unwrap_err();
+        assert_eq!(error.data.unwrap()["code"], "attachment_expired");
+        assert!(error.message.contains("Notebook attachment expired"));
+        assert!(attachments.read_entries().contains_key(&handle_b));
+        client.close().await.unwrap();
+        service.close().await.unwrap();
     }
     struct Server {
         registry: Arc<ResourceSubscriptions>,

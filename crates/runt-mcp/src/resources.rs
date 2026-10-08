@@ -243,7 +243,7 @@ pub async fn read_resource(
             let (notebook_id, handle_id, _handle, observer) =
                 resource_session(server, &notebook_id, uri.starts_with("nteract://sessions/"))
                     .await?;
-            let snapshot = observed_read(&observer)?;
+            let snapshot = observed_attachment_read(server, &observer, &handle_id)?;
             let text = cells_json(&notebook_id, &snapshot.snapshot, &handle_id);
             observed_resource(uri, text, &handle_id, &snapshot)
         }
@@ -254,7 +254,7 @@ pub async fn read_resource(
             let (notebook_id, handle_id, _handle, observer) =
                 resource_session(server, &notebook_id, uri.starts_with("nteract://sessions/"))
                     .await?;
-            let snapshot = observed_read(&observer)?;
+            let snapshot = observed_attachment_read(server, &observer, &handle_id)?;
             let text = cell_json(&notebook_id, &snapshot.snapshot, &cell_id, &handle_id)?;
             observed_resource(uri, text, &handle_id, &snapshot)
         }
@@ -265,7 +265,7 @@ pub async fn read_resource(
             // Settle pending comments/state frames so a read right after join
             // does not race the daemon's initial CommentsDocSync.
             let _ = handle.confirm_state_sync().await;
-            let snapshot = observed_read(&observer)?;
+            let snapshot = observed_attachment_read(server, &observer, &handle_id)?;
             let projection =
                 snapshot.snapshot.comments.as_ref().ok_or_else(|| {
                     McpError::internal_error("Comments are not available yet", None)
@@ -380,7 +380,17 @@ pub(crate) async fn resource_session(
     let capture = |session: &crate::session::NotebookSession| {
         let access = session
             .access(crate::session::SessionRequirement::DocumentRead)
-            .map_err(resource_session_access_error)?;
+            .map_err(|error| {
+                let mut error = resource_session_access_error(error);
+                if session.handle.status().connection
+                    == notebook_sync::status::ConnectionState::Disconnected
+                {
+                    error.data = Some(crate::attachments::unavailable_resource_data(
+                        &session.notebook_handle,
+                    ));
+                }
+                error
+            })?;
         let observer = session
             .observer()
             .map_err(|error| McpError::internal_error(error, None))?;
@@ -460,6 +470,26 @@ pub(crate) async fn resource_session(
         ),
         None,
     ))
+}
+
+fn observed_attachment_read(
+    server: &NteractMcp,
+    observer: &ObservationReader,
+    handle: &str,
+) -> Result<ChangeRead, McpError> {
+    observed_read(observer).map_err(|mut error| {
+        // This reader's resource-not-found is specifically terminal observation
+        // loss. Preserve its original wire code/message and classify membership
+        // separately; missing cells are resolved later and never pass here.
+        if error.code == rmcp::model::ErrorCode::RESOURCE_NOT_FOUND {
+            error.data = if server.attachments.read_entries().contains_key(handle) {
+                Some(crate::attachments::unavailable_resource_data(handle))
+            } else {
+                crate::attachments::expired_resource_error(handle).data
+            };
+        }
+        error
+    })
 }
 
 fn observed_read(observer: &ObservationReader) -> Result<ChangeRead, McpError> {

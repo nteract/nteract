@@ -28,6 +28,26 @@ pub const MAX_ATTACHMENTS: usize = 128;
 pub const ATTACHMENT_MODE_META_KEY: &str = "io.nteract/attachmentMode";
 /// Terminal signal on legacy resource notifications, recoverable through resource reads.
 pub const ATTACHMENT_EXPIRED_META_KEY: &str = "io.nteract/attachmentExpired";
+/// Terminal observation loss does not end logical registry membership.
+pub const ATTACHMENT_UNAVAILABLE_META_KEY: &str = "io.nteract/attachmentUnavailable";
+
+pub(crate) fn unavailable_resource_data(handle: &str) -> serde_json::Value {
+    serde_json::json!({"code": "attachment_unavailable", "notebook_handle": handle})
+}
+
+pub(crate) fn unavailable_resource_notification(
+    uri: &str,
+    handle: &str,
+) -> rmcp::model::ResourceUpdatedNotificationParam {
+    let mut notification = rmcp::model::ResourceUpdatedNotificationParam::new(uri);
+    let mut meta = rmcp::model::NotificationMetaObject::new();
+    meta.insert(
+        ATTACHMENT_UNAVAILABLE_META_KEY.into(),
+        unavailable_resource_data(handle),
+    );
+    notification.meta = Some(meta);
+    notification
+}
 
 pub(crate) fn expired_resource_error(handle: &str) -> rmcp::ErrorData {
     rmcp::ErrorData::resource_not_found(
