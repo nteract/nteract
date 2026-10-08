@@ -105,6 +105,90 @@ async fn native_multi_resource_listener_survives_one_attachment_release() {
 }
 
 #[tokio::test]
+async fn released_owner_rejects_admitted_mutation_completion_while_survivor_stays_live() {
+    let fixture = Fixture::start().await;
+    let path = fixture.notebook("shared", "baseline");
+    let mut wire = fixture.wire();
+    let a1 = open(&mut wire, 10, &path, true).await;
+    let a2 = open(&mut wire, 11, &path, true).await;
+    fixture.ready(&a1).await;
+    fixture.ready(&a2).await;
+    fixture.synced(&a1).await;
+    fixture.synced(&a2).await;
+    let survivor_uri = uri(&a2);
+    listen(&mut wire, 70, std::slice::from_ref(&survivor_uri)).await;
+    let docs = {
+        let entries = fixture.server.attachments().read_entries();
+        [
+            entries[&a1].session.handle.clone(),
+            entries[&a2].session.handle.clone(),
+        ]
+    };
+    let admitted_edit = "A1 edit admitted before release";
+    let mut gate = fixture.sync_gate(&path);
+    wire.send_request(
+        12,
+        "tools/call",
+        Some(tool_params(
+            "set_cell",
+            json!({"notebook_handle":a1,"cell_id":"sentinel","source":admitted_edit}),
+            true,
+        )),
+    )
+    .await;
+    gate.reached().await;
+    tokio::time::timeout(support::DEADLINE, async {
+        while docs[0].get_cell_source("sentinel").as_deref() != Some(admitted_edit) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("owner one must enter the captured mutation before release");
+    release(&mut wire, 13, &a1, true).await;
+    gate.release();
+    let expired_completion = wire.response(12).await;
+    // The admitted edit can reach the daemon. Expiry rejection must not imply
+    // rollback; observe the edit through the surviving actual attachment.
+    tokio::time::timeout(support::DEADLINE, async {
+        while docs[1].get_cell_source("sentinel").as_deref() != Some(admitted_edit) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("admitted edit must remain visible through owner two");
+    assert_eq!(
+        read(&mut wire, 14, &a2, true).await["cells"][0]["source_preview"],
+        admitted_edit
+    );
+    let marker = wire.notifications.len();
+    result(&mutate(&mut wire, 15, &a2, "A2 edit after expired completion", true).await);
+    update(&mut wire, marker, 70, &survivor_uri).await;
+    fixture.synced(&a2).await;
+    assert_eq!(
+        read(&mut wire, 16, &a2, true).await["cells"][0]["source_preview"],
+        "A2 edit after expired completion"
+    );
+    eprintln!("surviving A2 observed admitted A1 edit, mutated, synced, and delivered its fresh subscription update");
+    assert!(
+        expired_completion.get("error").is_some()
+            || expired_completion["result"]["isError"] == true,
+        "released owner must reject its post-await completion: error={:?}, isError={:?}",
+        expired_completion.get("error"),
+        expired_completion["result"]["isError"]
+    );
+    let expiry_code = expired_completion["error"]["data"]["code"]
+        .as_str()
+        .or_else(|| expired_completion["result"]["structuredContent"]["error"]["code"].as_str());
+    assert_eq!(
+        expiry_code,
+        Some("attachment_expired"),
+        "completion must identify the released attachment"
+    );
+    cancel(&mut wire, 70).await;
+    fixture.stop(wire).await;
+}
+
+#[tokio::test]
 async fn cancelling_one_native_listener_keeps_other_listener_and_notebook_live() {
     let fixture = Fixture::start().await;
     let path_a = fixture.notebook("a", "A baseline");

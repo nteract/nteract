@@ -161,8 +161,8 @@ async fn in_flight_a_mutation_finishes_on_a_after_b_is_published() {
 async fn same_notebook_opens_have_independent_handles_and_release() {
     let fixture = Fixture::start().await;
     let a = fixture.notebook("a", "shared source");
-    let mut gate1 = fixture.gate(&a);
-    let mut gate2 = fixture.gate(&a);
+    let capacity = fixture.reserve_all_but(2);
+    let mut gate = fixture.gate(&a);
     let mut wire = fixture.wire();
     wire.send_request(
         10,
@@ -170,18 +170,18 @@ async fn same_notebook_opens_have_independent_handles_and_release() {
         Some(tool_params("connect_notebook", json!({"path":a}), true)),
     )
     .await;
-    gate1.reached().await;
+    gate.reached().await;
     wire.send_request(
         11,
         "tools/call",
         Some(tool_params("connect_notebook", json!({"path":a}), true)),
     )
     .await;
-    gate2.reached().await;
-    gate2.release();
-    let second = payload(&wire.response(11).await);
-    gate1.release();
+    fixture.wait_for_reserved_capacity().await;
+    drop(capacity);
+    gate.release();
     let first = payload(&wire.response(10).await);
+    let second = payload(&wire.response(11).await);
     let first_handle = first["notebook_handle"].as_str().unwrap();
     let second_handle = second["notebook_handle"].as_str().unwrap();
     assert_ne!(first_handle, second_handle);
@@ -334,26 +334,26 @@ async fn legacy_explicit_marker_retains_independent_owners_without_reselecting()
     wire.initialized().await;
     let selected_handle = open(&mut wire, 10, &selected_path, false).await;
     fixture.ready(&selected_handle).await;
-    let mut first_gate = fixture.gate(&a);
-    let mut second_gate = fixture.gate(&a);
+    let capacity = fixture.reserve_all_but(2);
+    let mut gate = fixture.gate(&a);
     wire.send_request(
         11,
         "tools/call",
         Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
     )
     .await;
-    first_gate.reached().await;
+    gate.reached().await;
     wire.send_request(
         12,
         "tools/call",
         Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
     )
     .await;
-    second_gate.reached().await;
-    second_gate.release();
-    let second = payload(&wire.response(12).await);
-    first_gate.release();
+    fixture.wait_for_reserved_capacity().await;
+    drop(capacity);
+    gate.release();
     let first = payload(&wire.response(11).await);
+    let second = payload(&wire.response(12).await);
     let first_handle = first["notebook_handle"].as_str().unwrap();
     let second_handle = second["notebook_handle"].as_str().unwrap();
     assert_ne!(first_handle, second_handle);
@@ -445,6 +445,124 @@ async fn legacy_explicit_marker_retains_independent_owners_without_reselecting()
     let invalid = wire.request(23, "tools/call", Some(json!({"name":"connect_notebook","arguments":{"path":a},"_meta":{"io.nteract/attachmentMode":"other"}}))).await;
     assert_eq!(invalid["error"]["code"], -32602);
     assert_eq!(fixture.server.attachments().read_entries().len(), 2);
+    fixture.stop(wire).await;
+}
+
+#[tokio::test]
+async fn legacy_switch_back_keeps_retained_handle_and_notebook_id_resource_usable() {
+    let fixture = Fixture::start().await;
+    let a = fixture.notebook("a", "legacy A");
+    let b = fixture.notebook("b", "legacy B");
+    let mut wire = fixture.wire();
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    let first_response = wire
+        .request(
+            10,
+            "tools/call",
+            Some(tool_params("connect_notebook", json!({"path":a}), false)),
+        )
+        .await;
+    let first = payload(&first_response);
+    let a_handle = first["notebook_handle"].as_str().unwrap();
+    fixture.ready(a_handle).await;
+    let b_handle = open(&mut wire, 11, &b, false).await;
+    fixture.ready(&b_handle).await;
+    let selected_a = open(&mut wire, 12, &a, false).await;
+    fixture.ready(&selected_a).await;
+    assert_eq!(
+        read(&mut wire, 13, a_handle, false).await["cells"][0]["source_preview"],
+        "legacy A"
+    );
+    let id_uri = format!(
+        "nteract://notebooks/{}/cells",
+        first["notebook_id"].as_str().unwrap()
+    );
+    let by_id = wire
+        .request(14, "resources/read", Some(json!({"uri":id_uri})))
+        .await;
+    result(&by_id);
+    assert_eq!(
+        selected_a, a_handle,
+        "switch-back must reuse its compatibility owner"
+    );
+    result(&mutate(&mut wire, 15, a_handle, "A after switch-back", false).await);
+    let selected = wire
+        .request(
+            16,
+            "tools/call",
+            Some(tool_params(
+                "get_cell",
+                json!({"cell_id":"sentinel"}),
+                false,
+            )),
+        )
+        .await;
+    assert!(result(&selected)
+        .to_string()
+        .contains("A after switch-back"));
+    assert_eq!(
+        read(&mut wire, 17, &b_handle, false).await["cells"][0]["source_preview"],
+        "legacy B"
+    );
+    fixture.stop(wire).await;
+}
+
+#[tokio::test]
+async fn legacy_repeated_a_b_selection_keeps_two_owners_and_original_peers() {
+    let fixture = Fixture::start().await;
+    let a = fixture.notebook("a", "legacy A");
+    let b = fixture.notebook("b", "legacy B");
+    let mut wire = fixture.wire();
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    let a_handle = open(&mut wire, 10, &a, false).await;
+    fixture.ready(&a_handle).await;
+    let b_handle = open(&mut wire, 11, &b, false).await;
+    fixture.ready(&b_handle).await;
+    let original_docs = {
+        let entries = fixture.server.attachments().read_entries();
+        [
+            entries[&a_handle].session.handle.clone(),
+            entries[&b_handle].session.handle.clone(),
+        ]
+    };
+    let pool = runtimed_client::client::PoolClient::new(fixture.root.path().join("daemon.sock"));
+    for index in 0..160 {
+        let (path, expected) = if index % 2 == 0 {
+            (&a, &a_handle)
+        } else {
+            (&b, &b_handle)
+        };
+        let handle = open(&mut wire, 20 + index, path, false).await;
+        fixture.ready(&handle).await;
+        let retained = fixture.server.attachments().read_entries().len();
+        let rooms = pool.list_rooms().await.unwrap();
+        let peers: usize = rooms.iter().map(|room| room.active_peers).sum();
+        eprintln!("legacy switch {index}: {retained} retained owners, {peers} active daemon peers");
+        assert_eq!(
+            retained, 2,
+            "selection must not accumulate compatibility owners"
+        );
+        assert_eq!(handle, *expected);
+        assert_eq!(peers, 2, "selection must not open replacement daemon peers");
+        // Strict receipts from the original captured handles catch peer
+        // replacement even if a broken implementation reuses the handle text.
+        for doc in &original_docs {
+            tokio::time::timeout(support::DEADLINE, doc.confirm_notebook_sync())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+    assert_eq!(
+        read(&mut wire, 500, &a_handle, false).await["cells"][0]["source_preview"],
+        "legacy A"
+    );
+    assert_eq!(
+        read(&mut wire, 501, &b_handle, false).await["cells"][0]["source_preview"],
+        "legacy B"
+    );
     fixture.stop(wire).await;
 }
 

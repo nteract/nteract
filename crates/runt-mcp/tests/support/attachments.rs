@@ -21,6 +21,29 @@ use crate::support::{modern_meta, Wire, DEADLINE};
 
 const CHILD_ROOT: &str = "NTERACT_ATTACHMENT_TEST_ROOT";
 
+/// Opt-in daemon diagnostics for isolated stress probes; no logging dependency
+/// or developer-wide tracing configuration is needed by the fixture.
+struct FixtureTrace(std::sync::atomic::AtomicU64);
+impl tracing::Subscriber for FixtureTrace {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() <= tracing::Level::WARN
+            || (metadata
+                .target()
+                .starts_with("runtimed::notebook_sync_server")
+                && *metadata.level() <= tracing::Level::DEBUG)
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        eprintln!("{event:?}");
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 /// Re-executed by Fixture with a fully isolated process environment. In a normal
 /// test run this helper does nothing; it never starts a developer daemon.
 #[test]
@@ -32,6 +55,10 @@ fn daemon_fixture_process() {
         std::env::var_os("HOME"),
         Some(root.join("home").into_os_string())
     );
+    if std::env::var("NTERACT_ATTACHMENT_TRACE").as_deref() == Ok("1") {
+        tracing::subscriber::set_global_default(FixtureTrace(std::sync::atomic::AtomicU64::new(1)))
+            .unwrap();
+    }
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let config = DaemonConfig {
             socket_path: root.join("daemon.sock"),
@@ -94,6 +121,15 @@ impl Drop for DaemonProcess {
 }
 impl Fixture {
     pub async fn start() -> Self {
+        Self::start_inner(false, true).await
+    }
+    pub async fn start_with_trace() -> Self {
+        Self::start_inner(true, true).await
+    }
+    pub async fn start_direct_with_trace() -> Self {
+        Self::start_inner(true, false).await
+    }
+    async fn start_inner(trace: bool, use_relay: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("home")).unwrap();
         // The UV warmer probes the tool before checking its disabled pool.
@@ -127,6 +163,7 @@ impl Fixture {
                 .env("RUNTIMED_DEV", "1")
                 .env("RUNTIMED_WORKSPACE_PATH", root.path())
                 .env(CHILD_ROOT, root.path())
+                .env("NTERACT_ATTACHMENT_TRACE", if trace { "1" } else { "0" })
                 .stdin(Stdio::null())
                 .stdout(log.try_clone().unwrap())
                 .stderr(log)
@@ -209,8 +246,16 @@ impl Fixture {
             }
         });
         let server = Arc::new(
-            NteractMcp::new_no_show(relay_path, None, Some(root.path().join("blobs")))
-                .with_execution_store_path(Some(root.path().join("executions"))),
+            NteractMcp::new_no_show(
+                if use_relay {
+                    relay_path
+                } else {
+                    root.path().join("daemon.sock")
+                },
+                None,
+                Some(root.path().join("blobs")),
+            )
+            .with_execution_store_path(Some(root.path().join("executions"))),
         );
         Self {
             root,
@@ -272,6 +317,36 @@ impl Fixture {
 
     pub fn wire(&self) -> Wire {
         Wire::start(self.server.clone())
+    }
+
+    /// Leave exactly `opens` admission slots free, including existing owners.
+    /// Used with the default current-thread tokio test runtime to observe
+    /// concurrent request admission without requiring another physical peer.
+    pub fn reserve_all_but(
+        &self,
+        opens: usize,
+    ) -> Vec<runt_mcp::attachments::AttachmentReservation> {
+        let retained = self.server.attachments().read_entries().len();
+        (0..runt_mcp::attachments::MAX_ATTACHMENTS - retained - opens)
+            .map(|_| self.server.attachments().reserve().unwrap())
+            .collect()
+    }
+
+    pub async fn wait_for_reserved_capacity(&self) {
+        timeout(DEADLINE, async {
+            loop {
+                let remaining = self.server.attachments().reserve();
+                if remaining.is_err() {
+                    break;
+                }
+                // The probe must release the free slot before yielding to the
+                // follower request on this current-thread runtime.
+                drop(remaining);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both requests must reserve their admission slots");
     }
 
     pub async fn ready(&self, attachment: &str) {
