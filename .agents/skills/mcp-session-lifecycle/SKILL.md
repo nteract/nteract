@@ -59,6 +59,17 @@ proxy must not silently discard it when forwarding to an older worker that
 cannot route attachments. Read the proxy's admission checks and version-skew
 fixtures before changing compatibility behavior.
 
+Catalog migration and attachment recovery are separate. Prefer standard
+`tools/list_changed` notification and native catalog subscription relisting
+inside the existing chat. A server can invalidate its own cache and notify a
+host; it cannot replace schemas already in the host's model context. If a host
+keeps old definitions, reconnect its MCP connection and relist rather than
+guess a target or restore implicit selection. An already-running old proxy may
+need that reconnect to load new code. After child replacement, acquire the
+intended notebook again, read a baseline and resubscribe; inspect ambiguous
+mutations before retry. Configuration reload alone does not prove a catalog
+refresh.
+
 Relevant source: `crates/runt-mcp/src/targets.rs`, `attachments.rs`, `lib.rs`,
 `session.rs`, and `crates/mcp-transport/src/lib.rs`.
 

@@ -137,6 +137,23 @@ handle from a successful connect/create. Cached tool definitions and old skill
 examples must be refreshed along with the worker; app bundling alone does not
 refresh a running host's model context.
 
+Prefer in-place catalog refresh within the existing chat. The proxy publishes
+the actual child's catalog, advertises `listChanged`, and uses standard catalog
+notifications to ask supporting hosts to relist. Native clients receive these
+notifications through an accepted catalog subscription. Cache freshness hints
+do not force a host to replace schemas already supplied to its model.
+
+A stale call without a handle must fail before effects and explain the required
+target and catalog refresh. It must not be translated using the last-opened
+notebook, the stdio connection or a guessed chat identity. If the host retains
+old definitions, reconnect the MCP connection within that chat to load the new
+proxy and relist; recreating the chat or notebook is not part of the migration.
+The first upgrade cannot replace code in an already-running old proxy process.
+After worker replacement, reacquire the explicitly intended notebook, read a
+fresh baseline and resubscribe. Inspect an unknown mutation outcome before any
+retry. A configuration reload alone is not proof that the host replaced its
+connection or catalog.
+
 The bundled Stable and Nightly REPL instructions retain each task's handle and
 pass it on reads, edits, execution, dependency management, saves, show and
 release. Unknown mutation/execution outcomes require state inspection before a
