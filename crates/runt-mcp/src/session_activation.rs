@@ -256,11 +256,16 @@ impl ActivationLease {
         }
         let previous = guard.replace(session);
         if !self.mark_installed() {
-            let stale = guard.take().expect("just installed");
+            let Some(stale) = guard.take() else {
+                unreachable!("slot contains the session installed immediately above");
+            };
             *guard = previous;
             return Err((self.superseded_result(), stale));
         }
-        retain(guard.as_ref().expect("just installed"));
+        let Some(installed) = guard.as_ref() else {
+            unreachable!("slot contains the session installed immediately above");
+        };
+        retain(installed);
         Ok(previous)
     }
 

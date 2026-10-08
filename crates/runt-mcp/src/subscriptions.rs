@@ -160,12 +160,8 @@ impl ResourceSubscriptions {
         target: NotebookResourceUri,
         observer: ObservationReader,
         peer: Peer<RoleServer>,
-        expiration: Option<(String, tokio::sync::watch::Receiver<bool>)>,
+        mut expiration: Option<(String, tokio::sync::watch::Receiver<bool>)>,
     ) -> Result<(), McpError> {
-        let (expiration_handle, mut expiration) = match expiration {
-            Some((handle, receiver)) => (Some(handle), Some(receiver)),
-            None => (None, None),
-        };
         let baseline = observer
             .read(None)
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
@@ -204,13 +200,15 @@ impl ResourceSubscriptions {
                     change = observer.wait(&cursor, Duration::from_secs(50)) => change,
                     _ = async {
                         match expiration.as_mut() {
-                            Some(expiration) => {
+                            Some((_, expiration)) => {
                                 if !*expiration.borrow() { let _ = expiration.changed().await; }
                             }
                             None => std::future::pending::<()>().await,
                         }
                     } => {
-                        let _ = peer.notify_resource_updated(crate::attachments::expired_resource_notification(&task_uri, expiration_handle.as_deref().expect("expiration receiver has handle"))).await;
+                        if let Some((handle, _)) = expiration.as_ref() {
+                            let _ = peer.notify_resource_updated(crate::attachments::expired_resource_notification(&task_uri, handle)).await;
+                        }
                         break;
                     }
                 };
@@ -234,7 +232,7 @@ impl ResourceSubscriptions {
                     // A disconnected peer can become unavailable before the
                     // watcher confirms daemon replacement. Keep lifetime
                     // tracking until the registry actually expires membership.
-                    if let Some(expiration) = expiration.as_mut() {
+                    if let Some((handle, expiration)) = expiration.as_mut() {
                         while !*expiration.borrow() {
                             if expiration.changed().await.is_err() {
                                 break;
@@ -243,10 +241,7 @@ impl ResourceSubscriptions {
                         let _ = peer
                             .notify_resource_updated(
                                 crate::attachments::expired_resource_notification(
-                                    &task_uri,
-                                    expiration_handle
-                                        .as_deref()
-                                        .expect("expiration receiver has handle"),
+                                    &task_uri, handle,
                                 ),
                             )
                             .await;
