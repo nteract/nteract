@@ -2308,6 +2308,73 @@ pub async fn save_notebook(
     }
 }
 
+/// Read the exact attachment's local launch identity without opening an app.
+/// The supervisor launches by UUID and socket, so file-path aliases cannot
+/// redirect a dev launch to another room. This tool is intentionally hidden.
+pub(crate) async fn resolve_notebook_launch(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    resolve_notebook_launch_with_incarnation(
+        server,
+        request,
+        query_current_daemon_incarnation(server.socket_path.clone()),
+    )
+    .await
+}
+
+async fn resolve_notebook_launch_with_incarnation(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+    live_incarnation: impl std::future::Future<Output = Option<DaemonIncarnation>>,
+) -> Result<CallToolResult, McpError> {
+    // A null legacy selector is harmless; nonnull notebook_id is rejected by
+    // targets::dispatch. Paths and all other alternate selectors are rejected.
+    super::reject_unknown_args(request, &["notebook_id"])?;
+    let handle = crate::targets::current()
+        .ok_or_else(|| McpError::invalid_params("notebook_handle is required", None))?;
+    let session = {
+        let entries = server.attachments.read_entries();
+        entries
+            .get(&handle)
+            .map(|entry| entry.session.clone())
+            .ok_or_else(|| crate::attachments::expired_resource_error(&handle))?
+    };
+    if session.is_hosted() {
+        return tool_error("A hosted notebook cannot be opened by the local dev launcher");
+    }
+    if let Err(error) = session.access(crate::session::SessionRequirement::KernelControl) {
+        return super::session_access_error(error);
+    }
+    let live = live_incarnation.await;
+    if live.is_none() || live != session.local_daemon_incarnation {
+        return Err(McpError::internal_error(
+            "The attachment's local runtime is unavailable or has been replaced; reconnect before opening Desktop",
+            Some(crate::attachments::unavailable_resource_data(&handle)),
+        ));
+    }
+    // Recheck membership and readiness after sampling the daemon. Release the
+    // registry guard before returning; the common completion fence also checks
+    // expiry. No launch side effect occurs in this read.
+    let entries = server.attachments.read_entries();
+    let current = entries
+        .get(&handle)
+        .ok_or_else(|| crate::attachments::expired_resource_error(&handle))?;
+    if let Err(error) = current
+        .session
+        .access(crate::session::SessionRequirement::KernelControl)
+    {
+        return super::session_access_error(error);
+    }
+    Ok(CallToolResult::structured(serde_json::json!({
+        "notebook_handle":handle,
+        "notebook_id":session.notebook_id,
+        "socket_path":server.socket_path,
+        "source":"local",
+        "has_display":has_display(),
+    })))
+}
+
 /// Open the notebook in the nteract desktop app.
 pub async fn show_notebook(
     server: &NteractMcp,
@@ -2454,6 +2521,211 @@ mod tests {
             ActivationTicket::Leader(lease) => lease,
             ActivationTicket::Follower(_) => panic!("expected a fresh legacy selection"),
         }
+    }
+
+    async fn launch_test_session(
+        id: &str,
+        ready: bool,
+        incarnation: DaemonIncarnation,
+    ) -> NotebookSession {
+        use notebook_protocol::connection::{
+            FrameSource, NotebookFrameType, TypedNotebookFrame, WriterFrameSink,
+        };
+        use notebook_protocol::protocol::{
+            InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire,
+            SessionControlMessage, SessionSyncStatusWire,
+        };
+        struct Frames(Option<TypedNotebookFrame>);
+        impl FrameSource for Frames {
+            async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+                if let Some(frame) = self.0.take() {
+                    Some(Ok(frame))
+                } else {
+                    std::future::pending().await
+                }
+            }
+        }
+        let frame = ready.then(|| TypedNotebookFrame {
+            frame_type: NotebookFrameType::SessionControl,
+            payload: serde_json::to_vec(&SessionControlMessage::SyncStatus(
+                SessionSyncStatusWire {
+                    notebook_doc: NotebookDocPhaseWire::Interactive,
+                    runtime_state: RuntimeStatePhaseWire::Ready,
+                    initial_load: InitialLoadPhaseWire::NotNeeded,
+                },
+            ))
+            .unwrap(),
+        });
+        let handle = notebook_sync::connect::connect_frame_io(
+            id.into(),
+            "launch-test",
+            Frames(frame),
+            WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        if ready {
+            handle
+                .await_session_ready_timeout(Duration::from_secs(1))
+                .await
+                .unwrap();
+        }
+        NotebookSession::local(
+            handle,
+            id.into(),
+            Some("/same-path.ipynb".into()),
+            Some(incarnation),
+        )
+    }
+
+    #[tokio::test]
+    async fn launch_identity_keeps_exact_owner_and_rechecks_release_and_runtime() {
+        let server = NteractMcp::new("/private/tmp/exact-runtime.sock".into(), None, None);
+        let incarnation = DaemonIncarnation {
+            pid: 42,
+            started_at: Utc::now(),
+        };
+        let a = launch_test_session(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            true,
+            incarnation.clone(),
+        )
+        .await;
+        let b = launch_test_session(
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            true,
+            incarnation.clone(),
+        )
+        .await;
+        let h = a.notebook_handle.clone();
+        let id = a.notebook_id.clone();
+        server
+            .attachments
+            .insert(a, server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert(b.clone(), server.attachments.reserve().unwrap());
+        *server.session.write().await = Some(b);
+        let request = make_request("resolve_notebook_launch", serde_json::json!({}));
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"notebook_handle":""}),
+        ] {
+            assert!(crate::targets::dispatch(
+                &server,
+                &make_request("resolve_notebook_launch", args),
+            )
+            .await
+            .is_err());
+        }
+        let result = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(
+                &server,
+                &request,
+                std::future::ready(Some(incarnation.clone())),
+            ),
+        )
+        .await
+        .unwrap();
+        let identity = result.structured_content.unwrap();
+        assert_eq!(identity["notebook_handle"], h);
+        assert_eq!(identity["notebook_id"], id);
+        assert_eq!(identity["socket_path"], "/private/tmp/exact-runtime.sock");
+        assert_eq!(identity["source"], "local");
+        let unavailable = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(&server, &request, std::future::ready(None)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(unavailable.data.unwrap()["code"], "attachment_unavailable");
+        let replaced = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(
+                &server,
+                &request,
+                std::future::ready(Some(DaemonIncarnation {
+                    pid: incarnation.pid + 1,
+                    started_at: incarnation.started_at,
+                })),
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(replaced.data.unwrap()["code"], "attachment_unavailable");
+        let removed = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                drop(server.attachments.remove(&h));
+                Some(incarnation)
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(removed.data.unwrap()["code"], "attachment_expired");
+    }
+
+    #[tokio::test]
+    async fn launch_identity_rejects_unready_hosted_and_alternate_selectors() {
+        let server = NteractMcp::new("/unused.sock".into(), None, None);
+        let incarnation = DaemonIncarnation {
+            pid: 42,
+            started_at: Utc::now(),
+        };
+        let session = launch_test_session(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            false,
+            incarnation.clone(),
+        )
+        .await;
+        let h = session.notebook_handle.clone();
+        server
+            .attachments
+            .insert(session, server.attachments.reserve().unwrap());
+        let request = make_request("resolve_notebook_launch", serde_json::json!({}));
+        let result = crate::targets::with_handle(
+            h.clone(),
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                panic!("unready attachment must not query runtime")
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        for args in [
+            serde_json::json!({"path":"/other.ipynb"}),
+            serde_json::json!({"notebook_id":"other"}),
+        ] {
+            let mut args = args.as_object().unwrap().clone();
+            args.insert("notebook_handle".into(), h.clone().into());
+            assert!(crate::targets::dispatch(
+                &server,
+                &CallToolRequestParams::new("resolve_notebook_launch").with_arguments(args)
+            )
+            .await
+            .is_err());
+        }
+        let hosted = NotebookSession::hosted(
+            hosted_test_peer().await,
+            "remote".into(),
+            "https://example.com".into(),
+        );
+        let h = hosted.notebook_handle.clone();
+        server
+            .attachments
+            .insert(hosted, server.attachments.reserve().unwrap());
+        let result = crate::targets::with_handle(
+            h,
+            resolve_notebook_launch_with_incarnation(&server, &request, async {
+                panic!("hosted attachment must not query local runtime")
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("hosted"));
     }
 
     #[tokio::test]

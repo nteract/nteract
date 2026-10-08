@@ -983,6 +983,48 @@ impl McpProxy {
         Ok(result)
     }
 
+    /// Resolve a local attachment without a GUI side effect, then admit exactly
+    /// one synchronous launch on the same child generation. Never retry the
+    /// callback. Release after admission can expire the handle while the app is
+    /// already opening, just as with other admitted notebook side effects.
+    pub async fn admit_notebook_launch<T>(
+        &self,
+        mut params: CallToolRequestParams,
+        launch: impl FnOnce(NotebookLaunchIdentity) -> Result<T, McpError>,
+    ) -> Result<T, McpError> {
+        params.name = "resolve_notebook_launch".into();
+        mcp_transport::validate_tool_target_params(&params)?;
+        let handle = params
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("notebook_handle"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| McpError::invalid_params("notebook_handle is required", None))?
+            .to_owned();
+        let success = self
+            .try_forward_tool_call(&params)
+            .await
+            .map_err(|failure| failure.error)?;
+        let identity = NotebookLaunchIdentity::from_result(&success.result, &handle)?;
+        {
+            let state = self.state.read().await;
+            if state.child_generation != success.generation
+                || state
+                    .child_client
+                    .as_ref()
+                    .is_none_or(|child| child.is_transport_closed())
+            {
+                return Err(McpError::invalid_params(
+                    "Child changed before Desktop launch; reconnect the notebook",
+                    None,
+                ));
+            }
+            // Holding this guard only during the synchronous callback prevents
+            // a replacement generation from being published before admission.
+            launch(identity)
+        }
+    }
+
     /// Forward a resource read to the child, restarting if disconnected.
     pub async fn forward_read_resource(
         &self,
@@ -1568,6 +1610,59 @@ struct ForwardToolSuccess {
     handoff_revision: u64,
 }
 
+/// Authoritative local identity returned by the exact child attachment.
+#[derive(Debug)]
+pub struct NotebookLaunchIdentity {
+    pub notebook_handle: String,
+    pub notebook_id: String,
+    pub socket_path: PathBuf,
+    pub has_display: bool,
+}
+
+impl NotebookLaunchIdentity {
+    fn from_result(result: &CallToolResult, requested: &str) -> Result<Self, McpError> {
+        let invalid = || {
+            McpError::invalid_params(
+                "Child did not return a valid attachment launch identity",
+                result.structured_content.clone(),
+            )
+        };
+        if result.is_error == Some(true) {
+            return Err(invalid());
+        }
+        let value = result.structured_content.as_ref().ok_or_else(invalid)?;
+        let handle = value
+            .get("notebook_handle")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let id = value
+            .get("notebook_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let socket = value
+            .get("socket_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(invalid)?;
+        let has_display = value
+            .get("has_display")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(invalid)?;
+        if value.get("source").and_then(serde_json::Value::as_str) != Some("local")
+            || handle != requested
+            || uuid::Uuid::parse_str(id).is_err()
+            || !std::path::Path::new(socket).is_absolute()
+        {
+            return Err(invalid());
+        }
+        Ok(Self {
+            notebook_handle: handle.into(),
+            notebook_id: id.into(),
+            socket_path: socket.into(),
+            has_display,
+        })
+    }
+}
+
 fn child_requires_handle(tool: &Tool) -> bool {
     tool.input_schema
         .get("properties")
@@ -1678,6 +1773,7 @@ fn tool_can_be_replayed(name: &str) -> bool {
         name,
         "list_active_notebooks"
             | "list_notebooks"
+            | "resolve_notebook_launch"
             | "get_cell"
             | "get_all_cells"
             | "get_results"

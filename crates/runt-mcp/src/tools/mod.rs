@@ -388,6 +388,8 @@ pub async fn dispatch(
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
         "show_notebook" | "launch_app" => session::show_notebook(server, request).await,
+        // Supervisor-only read: never opens an app or selects another attachment.
+        "resolve_notebook_launch" => session::resolve_notebook_launch(server, request).await,
         "disconnect_notebook" => session::disconnect_notebook(server, request).await,
         "wait_for_notebook_change" => observation::wait_for_notebook_change(server, request).await,
         // Cell read. Hidden from tool listing but still callable for backwards compat;

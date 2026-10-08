@@ -220,6 +220,7 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
         "save_notebook"
             | "show_notebook"
             | "launch_app"
+            | "resolve_notebook_launch"
             | "disconnect_notebook"
             | "get_cell"
             | "get_all_cells"
