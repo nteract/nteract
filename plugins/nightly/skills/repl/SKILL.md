@@ -91,7 +91,7 @@ using with `disconnect_notebook(notebook_handle=h)`.
 
 4. **Check your work:**
    - Direct: inspect returned text/images/tables.
-   - MCP: `get_all_cells(notebook_handle=h, format="summary", include_outputs=true)`.
+   - MCP: `get_all_cells(notebook_handle=h, format="summary", include_output_summaries=true)`.
 
 5. **Save when done:**
    `python_save_notebook(...)` or `save_notebook(notebook_handle=h, ...)`.
