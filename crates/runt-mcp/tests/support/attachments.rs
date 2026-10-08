@@ -90,6 +90,12 @@ struct PendingOpen {
 }
 type Gates = Arc<Mutex<HashMap<String, VecDeque<PendingOpen>>>>;
 
+struct SyncPeerClose {
+    close: oneshot::Sender<()>,
+    closed: oneshot::Receiver<()>,
+}
+type SyncPeers = Arc<Mutex<HashMap<String, VecDeque<SyncPeerClose>>>>;
+
 pub struct OpenGate {
     reached: oneshot::Receiver<()>,
     release: oneshot::Sender<()>,
@@ -111,6 +117,7 @@ pub struct Fixture {
     relay: JoinHandle<()>,
     gates: Gates,
     sync_gates: Gates,
+    sync_peers: SyncPeers,
 }
 struct DaemonProcess(Child);
 impl Drop for DaemonProcess {
@@ -190,6 +197,8 @@ impl Fixture {
         let relay_gates = gates.clone();
         let sync_gates: Gates = Arc::default();
         let relay_sync_gates = sync_gates.clone();
+        let sync_peers: SyncPeers = Arc::default();
+        let relay_sync_peers = sync_peers.clone();
         let relay = tokio::spawn(async move {
             let mut connections = tokio::task::JoinSet::new();
             loop {
@@ -199,6 +208,7 @@ impl Fixture {
                         let daemon_path = daemon_path.clone();
                         let gates = relay_gates.clone();
                         let sync_gates = relay_sync_gates.clone();
+                        let sync_peers = relay_sync_peers.clone();
                         connections.spawn(async move {
                             // Clients send one preamble/handshake then receive
                             // bootstrap frames. Pool traffic never takes a gate.
@@ -215,6 +225,11 @@ impl Fixture {
                             connection::send_preamble(&mut daemon).await.unwrap();
                             connection::send_json_frame(&mut daemon, &handshake).await.unwrap();
                             if let Handshake::OpenNotebook { path, .. } = handshake {
+                                let (close, mut requested) = oneshot::channel();
+                                let (closed, stopped) = oneshot::channel();
+                                sync_peers.lock().unwrap().entry(path.clone()).or_default()
+                                    .push_back(SyncPeerClose { close, closed: stopped });
+                                {
                                 let (mut client_read, mut client_write) = client.split();
                                 let (mut daemon_read, mut daemon_write) = daemon.split();
                                 let outbound = async {
@@ -233,7 +248,14 @@ impl Fixture {
                                 tokio::select! {
                                     _ = outbound => {},
                                     _ = tokio::io::copy(&mut daemon_read, &mut client_write) => {},
+                                    _ = &mut requested => {},
                                 }
+                                }
+                                // Only this path's notebook sync socket pair
+                                // closes; PoolClient/metadata relays remain live.
+                                drop(client);
+                                drop(daemon);
+                                let _ = closed.send(());
                             } else {
                                 let _ = tokio::io::copy_bidirectional(&mut client, &mut daemon).await;
                             }
@@ -264,6 +286,7 @@ impl Fixture {
             relay,
             gates,
             sync_gates,
+            sync_peers,
         }
     }
 
@@ -287,6 +310,25 @@ impl Fixture {
     /// Register after a strict baseline receipt before issuing the mutation.
     pub fn sync_gate(&self, path: &Path) -> OpenGate {
         Self::register_gate(&self.sync_gates, path)
+    }
+
+    /// Close one currently live OpenNotebook relay connection for this path.
+    /// Shared logical owners of that backing peer observe the same socket loss.
+    pub async fn close_sync_peer(&self, path: &Path) {
+        loop {
+            let peer = {
+                self.sync_peers
+                    .lock()
+                    .unwrap()
+                    .get_mut(path.to_string_lossy().as_ref())
+                    .and_then(VecDeque::pop_front)
+            }
+            .expect("a live sync peer must exist for the selected notebook path");
+            if peer.close.send(()).is_ok() {
+                timeout(DEADLINE, peer.closed).await.unwrap().unwrap();
+                return;
+            }
+        }
     }
 
     fn register_gate(gates: &Gates, path: &Path) -> OpenGate {

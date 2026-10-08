@@ -373,10 +373,14 @@ pub fn run_child_if_requested() {
                 .await
                 .expect("legacy child service");
             }
-            "new" => {
+            "new" | "new-relay" => {
                 use rmcp::ServiceExt;
                 runt_mcp::NteractMcp::new_no_show(
-                    root.join("daemon.sock"),
+                    root.join(if mode == "new-relay" {
+                        "relay.sock"
+                    } else {
+                        "daemon.sock"
+                    }),
                     None,
                     Some(root.join("blobs")),
                 )

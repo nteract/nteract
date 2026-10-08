@@ -7919,9 +7919,12 @@ name = "runt-mcp-proxy"
 version = "0.6.1"
 dependencies = [
  "mcp-transport",
+ "notebook-protocol",
  "rmcp 1.5.0",
  "rmcp 3.2.0",
  "runt-mcp",
+ "runtimed",
+ "runtimed-client",
  "serde_json",
  "tempfile",
  "tokio",

@@ -58,6 +58,303 @@ async fn cancel(wire: &mut Wire, id: u64) {
     result(&response);
 }
 
+async fn selectively_lost_peer_retains_ownership_and_preserves_other_target(native: bool) {
+    let fixture = Fixture::start().await;
+    let a = fixture.notebook("affected", "A before disconnect");
+    let b = fixture.notebook("healthy", "B before disconnect");
+    let mut wire = fixture.wire();
+    if !native {
+        wire.initialize("2025-11-25").await;
+        wire.initialized().await;
+    }
+    let a1 = if native {
+        open(&mut wire, 10, &a, true).await
+    } else {
+        let response = wire
+            .request(
+                10,
+                "tools/call",
+                Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
+            )
+            .await;
+        payload(&response)["notebook_handle"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    fixture.ready(&a1).await;
+    fixture.synced(&a1).await;
+    let a2 = if native {
+        open(&mut wire, 11, &a, true).await
+    } else {
+        let response = wire
+            .request(
+                11,
+                "tools/call",
+                Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
+            )
+            .await;
+        payload(&response)["notebook_handle"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let b_handle = open(&mut wire, 12, &b, native).await;
+    for handle in [&a1, &a2, &b_handle] {
+        fixture.ready(handle).await;
+        fixture.synced(handle).await;
+    }
+    let a_uris = [uri(&a1), uri(&a2)];
+    let b_uri = uri(&b_handle);
+    if native {
+        listen(&mut wire, 70, &a_uris).await;
+        listen(&mut wire, 71, std::slice::from_ref(&b_uri)).await;
+    } else {
+        for (id, uri) in [(70, &a_uris[0]), (71, &b_uri), (72, &a_uris[1])] {
+            result(
+                &wire
+                    .request(id, "resources/subscribe", Some(json!({"uri":uri})))
+                    .await,
+            );
+        }
+    }
+    let pool = runtimed_client::client::PoolClient::new(fixture.root.path().join("daemon.sock"));
+    let daemon = pool.daemon_info().await.unwrap();
+    let a_id = fixture.server.attachments().read_entries()[&a1]
+        .session
+        .notebook_id
+        .clone();
+    assert_eq!(
+        pool.list_rooms()
+            .await
+            .unwrap()
+            .iter()
+            .find(|room| room.notebook_id == a_id)
+            .unwrap()
+            .active_peers,
+        1,
+        "both explicit A owners must share the one selected backing connection"
+    );
+    let original_docs = {
+        let entries = fixture.server.attachments().read_entries();
+        [
+            entries[&a1].session.handle.clone(),
+            entries[&a2].session.handle.clone(),
+        ]
+    };
+    let marker = wire.notifications.len();
+    fixture.close_sync_peer(&a).await;
+    tokio::time::timeout(support::DEADLINE, async {
+        while original_docs.iter().any(|doc| {
+            doc.status().connection != notebook_sync::status::ConnectionState::Disconnected
+        }) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("only A's shared sync backing must disconnect");
+    pool.ping().await.unwrap();
+    let still_same_daemon = pool.daemon_info().await.unwrap();
+    assert_eq!(
+        (daemon.pid, daemon.started_at),
+        (still_same_daemon.pid, still_same_daemon.started_at)
+    );
+    assert_eq!(fixture.server.attachments().read_entries().len(), 3);
+
+    // A dead peer still consumes both logical owner slots. Fill only test
+    // reservations, then prove loss did not evict ownership or return capacity.
+    let capacity = fixture.reserve_all_but(0);
+    assert!(fixture.server.attachments().reserve().is_err());
+    let refused = wire
+        .request(
+            20,
+            "tools/call",
+            Some(if native {
+                tool_params("connect_notebook", json!({"path":a}), true)
+            } else {
+                explicit_tool_params("connect_notebook", json!({"path":a}))
+            }),
+        )
+        .await;
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("attachment_limit"),
+        "capacity refusal must be specific: {refused}"
+    );
+    result(&mutate(&mut wire, 21, &b_handle, "B after A disconnect", native).await);
+    if native {
+        update(&mut wire, marker, 71, &b_uri).await;
+    } else {
+        wire.notification_after(marker, |n| {
+            n["method"] == "notifications/resources/updated" && n["params"]["uri"] == b_uri
+        })
+        .await;
+    }
+    fixture.synced(&b_handle).await;
+    assert_eq!(
+        read(&mut wire, 22, &b_handle, native).await["cells"][0]["source_preview"],
+        "B after A disconnect"
+    );
+
+    let unavailable = wire
+        .request(
+            23,
+            "resources/read",
+            Some(if native {
+                native_params(json!({"uri":a_uris[1]}))
+            } else {
+                json!({"uri":a_uris[1]})
+            }),
+        )
+        .await;
+    let duplicate_admission = if !native {
+        Some(
+            wire.request(24, "resources/subscribe", Some(json!({"uri":a_uris[1]})))
+                .await,
+        )
+    } else {
+        None
+    };
+    // Explicit release, rather than socket loss, frees exactly one slot.
+    release(&mut wire, 25, &a1, native).await;
+    let one_returned_slot = fixture.server.attachments().reserve().unwrap();
+    assert!(fixture.server.attachments().reserve().is_err());
+    drop(one_returned_slot);
+    let fresh = if native {
+        open(&mut wire, 26, &a, true).await
+    } else {
+        let response = wire
+            .request(
+                26,
+                "tools/call",
+                Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
+            )
+            .await;
+        payload(&response)["notebook_handle"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_ne!(fresh, a1);
+    assert_ne!(fresh, a2);
+    fixture.ready(&fresh).await;
+    fixture.synced(&fresh).await;
+    assert!(fixture.server.attachments().reserve().is_err());
+    assert!(fixture
+        .server
+        .attachments()
+        .read_entries()
+        .contains_key(&a2));
+    let fresh_uri = uri(&fresh);
+    if native {
+        listen(&mut wire, 73, std::slice::from_ref(&fresh_uri)).await;
+    } else {
+        result(
+            &wire
+                .request(73, "resources/subscribe", Some(json!({"uri":fresh_uri})))
+                .await,
+        );
+    }
+    let fresh_marker = wire.notifications.len();
+    result(&mutate(&mut wire, 27, &fresh, "fresh A backing is live", native).await);
+    if native {
+        update(&mut wire, fresh_marker, 73, &fresh_uri).await;
+    } else {
+        wire.notification_after(fresh_marker, |n| {
+            n["method"] == "notifications/resources/updated" && n["params"]["uri"] == fresh_uri
+        })
+        .await;
+    }
+    fixture.synced(&fresh).await;
+    assert_eq!(
+        read(&mut wire, 28, &fresh, native).await["cells"][0]["source_preview"],
+        "fresh A backing is live"
+    );
+    assert_eq!(
+        original_docs[1].status().connection,
+        notebook_sync::status::ConnectionState::Disconnected
+    );
+    assert_eq!(
+        original_docs[1].get_cell_source("sentinel").as_deref(),
+        Some("A before disconnect")
+    );
+    eprintln!("selective A peer loss kept daemon identity, retained A2 ownership/capacity, healthy B listener, and acquired a distinct live A backing after explicit A1 release");
+
+    // Assert terminal behavior before releasing the retained unavailable A2.
+    if native {
+        let completed = wire.response(70).await;
+        assert_eq!(completed["result"]["resultType"], "complete");
+    } else {
+        let terminal = wire
+            .notification_after(marker, |n| {
+                n["params"]["uri"] == a_uris[1]
+                    && n["params"]["_meta"]["io.nteract/attachmentUnavailable"]["code"]
+                        == "attachment_unavailable"
+            })
+            .await;
+        assert_eq!(
+            terminal["params"]["_meta"]["io.nteract/attachmentUnavailable"]["notebook_handle"],
+            a2
+        );
+        assert!(terminal["params"]["_meta"]
+            .get("io.nteract/attachmentExpired")
+            .is_none());
+    }
+    assert_eq!(unavailable["error"]["code"], -32603);
+    let original_readiness: Value =
+        serde_json::from_str(unavailable["error"]["message"].as_str().unwrap()).unwrap();
+    assert_eq!(original_readiness["error"]["code"], "sync_failed");
+    assert_eq!(original_readiness["session"]["document_ready"], false);
+    assert_eq!(
+        unavailable["error"]["data"]["code"], "attachment_unavailable",
+        "retained disconnected handle needs truthful typed read error: {unavailable}"
+    );
+    assert_eq!(unavailable["error"]["data"]["notebook_handle"], a2);
+    if let Some(rejected) = duplicate_admission {
+        assert_eq!(rejected["error"]["data"]["code"], "attachment_unavailable");
+        assert_eq!(rejected["error"]["data"]["notebook_handle"], a2);
+    }
+    release(&mut wire, 29, &a2, native).await;
+    let expired = wire
+        .request(
+            30,
+            "resources/read",
+            Some(if native {
+                native_params(json!({"uri":a_uris[1]}))
+            } else {
+                json!({"uri":a_uris[1]})
+            }),
+        )
+        .await;
+    assert_eq!(expired["error"]["data"]["code"], "attachment_expired");
+    drop(capacity);
+    if native {
+        cancel(&mut wire, 71).await;
+        cancel(&mut wire, 73).await;
+    } else {
+        for (id, uri) in [(90, b_uri), (91, fresh_uri)] {
+            result(
+                &wire
+                    .request(id, "resources/unsubscribe", Some(json!({"uri":uri})))
+                    .await,
+            );
+        }
+    }
+    fixture.stop(wire).await;
+}
+
+#[tokio::test]
+async fn native_selective_sync_loss_finishes_listener_without_expiring_retained_owner() {
+    selectively_lost_peer_retains_ownership_and_preserves_other_target(true).await;
+}
+
+#[tokio::test]
+async fn legacy_selective_sync_loss_signals_unavailable_without_expiring_retained_owner() {
+    selectively_lost_peer_retains_ownership_and_preserves_other_target(false).await;
+}
+
 #[tokio::test]
 async fn native_multi_resource_listener_survives_one_attachment_release() {
     // Same-notebook owners are the important edge: a shared observer lifetime
