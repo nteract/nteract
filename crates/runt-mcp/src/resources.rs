@@ -425,6 +425,9 @@ pub(crate) async fn resource_session(
     if let Some(found) = found {
         return Ok(found);
     }
+    if by_handle {
+        return Err(crate::attachments::expired_resource_error(notebook_id));
+    }
     Err(McpError::resource_not_found(
         format!(
             "Notebook resource requires a connected or parked session for notebook_id {notebook_id}. \

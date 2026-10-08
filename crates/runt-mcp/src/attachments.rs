@@ -8,6 +8,33 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::session::NotebookSession;
 
 pub const MAX_ATTACHMENTS: usize = 128;
+/// Application semantics only: the private proxy child remains legacy initialized.
+pub const ATTACHMENT_MODE_META_KEY: &str = "io.nteract/attachmentMode";
+/// Terminal signal on legacy resource notifications, recoverable through resource reads.
+pub const ATTACHMENT_EXPIRED_META_KEY: &str = "io.nteract/attachmentExpired";
+
+pub(crate) fn expired_resource_error(handle: &str) -> rmcp::ErrorData {
+    rmcp::ErrorData::resource_not_found(
+        "Notebook attachment expired; connect again and obtain a new handle",
+        Some(serde_json::json!({ "code": "attachment_expired", "notebook_handle": handle })),
+    )
+}
+
+pub(crate) fn expired_resource_notification(
+    uri: &str,
+    handle: &str,
+) -> rmcp::model::ResourceUpdatedNotificationParam {
+    let mut notification = rmcp::model::ResourceUpdatedNotificationParam::new(uri);
+    let mut meta = rmcp::model::NotificationMetaObject::new();
+    meta.insert(
+        ATTACHMENT_EXPIRED_META_KEY.into(),
+        serde_json::json!({
+            "code": "attachment_expired", "notebook_handle": handle,
+        }),
+    );
+    notification.meta = Some(meta);
+    notification
+}
 
 /// An admitted open holds capacity even while connecting. Cancellation releases it.
 pub struct AttachmentReservation {
@@ -25,11 +52,16 @@ impl AttachmentEntry {
     pub fn expiration(&self) -> tokio::sync::watch::Receiver<bool> {
         self.expired.subscribe()
     }
+
+    /// Signal removal before a caller finishes inspecting the removed payload.
+    pub fn expire(&self) {
+        self.expired.send_replace(true);
+    }
 }
 
 impl Drop for AttachmentEntry {
     fn drop(&mut self) {
-        self.expired.send_replace(true);
+        self.expire();
     }
 }
 
@@ -83,7 +115,11 @@ impl AttachmentRegistry {
     }
 
     pub fn remove(&self, handle: &str) -> Option<AttachmentEntry> {
-        self.write_entries().remove(handle)
+        let entry = self.write_entries().remove(handle);
+        if let Some(entry) = &entry {
+            entry.expire();
+        }
+        entry
     }
 }
 

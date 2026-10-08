@@ -160,8 +160,12 @@ impl ResourceSubscriptions {
         target: NotebookResourceUri,
         observer: ObservationReader,
         peer: Peer<RoleServer>,
-        mut expiration: Option<tokio::sync::watch::Receiver<bool>>,
+        expiration: Option<(String, tokio::sync::watch::Receiver<bool>)>,
     ) -> Result<(), McpError> {
+        let (expiration_handle, mut expiration) = match expiration {
+            Some((handle, receiver)) => (Some(handle), Some(receiver)),
+            None => (None, None),
+        };
         let baseline = observer
             .read(None)
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
@@ -206,7 +210,7 @@ impl ResourceSubscriptions {
                             None => std::future::pending::<()>().await,
                         }
                     } => {
-                        let _ = peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(&task_uri)).await;
+                        let _ = peer.notify_resource_updated(crate::attachments::expired_resource_notification(&task_uri, expiration_handle.as_deref().expect("expiration receiver has handle"))).await;
                         break;
                     }
                 };
@@ -227,6 +231,26 @@ impl ResourceSubscriptions {
                     break;
                 }
                 if change.outcome == ChangeOutcome::Unavailable {
+                    // A disconnected peer can become unavailable before the
+                    // watcher confirms daemon replacement. Keep lifetime
+                    // tracking until the registry actually expires membership.
+                    if let Some(expiration) = expiration.as_mut() {
+                        while !*expiration.borrow() {
+                            if expiration.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = peer
+                            .notify_resource_updated(
+                                crate::attachments::expired_resource_notification(
+                                    &task_uri,
+                                    expiration_handle
+                                        .as_deref()
+                                        .expect("expiration receiver has handle"),
+                                ),
+                            )
+                            .await;
+                    }
                     break;
                 }
             }

@@ -4,11 +4,13 @@ use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData;
 tokio::task_local! {
     static TARGET: Option<String>;
-    static NATIVE: bool;
+    static EXPLICIT_ATTACHMENT: bool;
     static RESERVATION: std::cell::RefCell<Option<crate::attachments::AttachmentReservation>>;
 }
-pub(crate) fn native() -> bool {
-    NATIVE.try_with(|native| *native).unwrap_or(false)
+pub(crate) fn explicit_attachment_mode() -> bool {
+    EXPLICIT_ATTACHMENT
+        .try_with(|explicit| *explicit)
+        .unwrap_or(false)
 }
 pub(crate) fn take_reservation(
     server: &NteractMcp,
@@ -30,7 +32,24 @@ pub(crate) async fn dispatch(
     request: &CallToolRequestParams,
     native: bool,
 ) -> Result<CallToolResult, ErrorData> {
-    let reservation = if native
+    // This application flag does not negotiate protocol or authorize a target.
+    // The proxy adds it after admitting its native upstream lifecycle, because
+    // its private child connection is initialized on the legacy wire.
+    let explicit = match request
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get(crate::attachments::ATTACHMENT_MODE_META_KEY))
+    {
+        Some(serde_json::Value::String(mode)) if mode == "explicit" => true,
+        Some(_) => {
+            return Err(ErrorData::invalid_params(
+                "io.nteract/attachmentMode must be explicit",
+                None,
+            ))
+        }
+        None => native,
+    };
+    let reservation = if explicit
         && matches!(
             request.name.as_ref(),
             "connect_notebook" | "create_notebook"
@@ -44,12 +63,12 @@ pub(crate) async fn dispatch(
     } else {
         None
     };
-    NATIVE
+    EXPLICIT_ATTACHMENT
         .scope(
-            native,
+            explicit,
             RESERVATION.scope(
                 std::cell::RefCell::new(reservation),
-                dispatch_inner(server, request, native),
+                dispatch_inner(server, request, explicit),
             ),
         )
         .await
@@ -58,7 +77,7 @@ pub(crate) async fn dispatch(
 async fn dispatch_inner(
     server: &NteractMcp,
     request: &CallToolRequestParams,
-    native: bool,
+    explicit: bool,
 ) -> Result<CallToolResult, ErrorData> {
     if !mcp_transport::notebook_scoped_tool(&request.name) {
         return crate::tools::dispatch(server, request).await;
@@ -71,7 +90,7 @@ async fn dispatch_inner(
     let target = match value {
         Some(serde_json::Value::String(handle)) if !handle.is_empty() => Some(handle),
         Some(_) => return Err(ErrorData::invalid_params("notebook_handle must be a nonempty attachment handle", None)),
-        None if native => return Err(ErrorData::invalid_params("notebook_handle is required; use the handle returned by connect_notebook or create_notebook", None)),
+        None if explicit => return Err(ErrorData::invalid_params("notebook_handle is required; use the handle returned by connect_notebook or create_notebook", None)),
         None => None,
     };
     if let Some(handle) = target.as_ref() {

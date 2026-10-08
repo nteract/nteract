@@ -768,6 +768,16 @@ impl ServerHandler for NteractMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_protocol(&context)?;
+        // rmcp extracts wire metadata into RequestContext before dispatch.
+        // Preserve only the application bridge key for attachment admission;
+        // protocol metadata remains owned by require_protocol above.
+        let mut request = request;
+        if let Some(mode) = context.meta.get(attachments::ATTACHMENT_MODE_META_KEY) {
+            request
+                .meta
+                .get_or_insert_default()
+                .insert(attachments::ATTACHMENT_MODE_META_KEY.into(), mode.clone());
+        }
         // Sniff client name on first call for use as the notebook peer label.
         // The title (e.g., "Claude Desktop") is preferred over the raw
         // implementation name ("claude-ai"), then known names are canonicalized.
@@ -907,7 +917,10 @@ impl ServerHandler for NteractMcp {
             .attachments
             .read_entries()
             .get(&notebook_handle)
-            .map(|entry| entry.expiration());
+            .map(|entry| (notebook_handle.clone(), entry.expiration()));
+        if request.uri.starts_with("nteract://sessions/") && expiration.is_none() {
+            return Err(attachments::expired_resource_error(&notebook_handle));
+        }
         self.resource_subscriptions.subscribe_with_expiration(
             request.uri,
             target,
@@ -1120,8 +1133,14 @@ mod tests {
                 .attachments
                 .insert(session, server.attachments.reserve().unwrap());
         }
-        let request = CallToolRequestParams::new("create_notebook");
-        let error = targets::dispatch(&server, &request, true)
+        let mut request = CallToolRequestParams::new("create_notebook");
+        request.meta = Some(
+            serde_json::from_value(
+                serde_json::json!({ attachments::ATTACHMENT_MODE_META_KEY: "explicit" }),
+            )
+            .unwrap(),
+        );
+        let error = targets::dispatch(&server, &request, false)
             .await
             .unwrap_err();
         assert!(error.message.contains("attachment_limit"));
@@ -1131,6 +1150,176 @@ mod tests {
         drop(server.attachments.remove(&handles[0]));
         assert!(server.attachments.reserve().is_ok());
         assert!(server.attachment_identity(&handles[1]).await.is_some());
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn legacy_child_reports_typed_attachment_expiry_and_keeps_other_watch() {
+        use rmcp::model::{ResourceUpdatedNotificationParam, SubscribeRequestParams};
+        use rmcp::service::{NotificationContext, RoleClient};
+        use rmcp::{ClientHandler, ServiceExt};
+        struct Notifications(tokio::sync::mpsc::UnboundedSender<ResourceUpdatedNotificationParam>);
+        impl ClientHandler for Notifications {
+            async fn on_resource_updated(
+                &self,
+                mut params: ResourceUpdatedNotificationParam,
+                context: NotificationContext<RoleClient>,
+            ) {
+                // Current rmcp dispatch moves extensions before extracting
+                // notification metadata; preserve both supported locations.
+                let mut meta = context.meta;
+                if let Some(extension_meta) = context
+                    .extensions
+                    .get::<rmcp::model::NotificationMetaObject>()
+                {
+                    meta.extend(extension_meta.clone());
+                }
+                params.meta = Some(meta);
+
+                let _ = self.0.send(params);
+            }
+        }
+        let server = NteractMcp::new("unused.sock".into(), None, None);
+        let peer = metadata_test_handle("same-notebook").await;
+        let a = NotebookSession::hosted(
+            peer.clone(),
+            "same-notebook".into(),
+            "https://example.com".into(),
+        );
+        let b = NotebookSession::hosted(peer, "same-notebook".into(), "https://example.com".into());
+        let a_handle = a.notebook_handle.clone();
+        let b_handle = b.notebook_handle.clone();
+        let a_uri = resources::attachment_cells_uri(&a_handle);
+        let b_uri = resources::attachment_cells_uri(&b_handle);
+        server
+            .attachments
+            .insert(a, server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert(b, server.attachments.reserve().unwrap());
+        let registry = server.attachments.clone();
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let task = tokio::spawn(async move { server.serve(server_pipe).await.unwrap() });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut client = Notifications(tx).serve(client_pipe).await.unwrap();
+        let mut serving = task.await.unwrap();
+        let mut explicit_release = CallToolRequestParams::new("disconnect_notebook");
+        explicit_release.meta = Some(
+            serde_json::from_value(serde_json::json!({
+                attachments::ATTACHMENT_MODE_META_KEY: "explicit",
+            }))
+            .unwrap(),
+        );
+        let error = client.call_tool(explicit_release).await.unwrap_err();
+        let rmcp::ServiceError::McpError(error) = error else {
+            panic!("expected mandatory-handle error")
+        };
+        assert!(error.message.contains("notebook_handle is required"));
+        client
+            .subscribe(SubscribeRequestParams::new(&a_uri))
+            .await
+            .unwrap();
+        client
+            .subscribe(SubscribeRequestParams::new(&b_uri))
+            .await
+            .unwrap();
+        let released = registry.remove(&a_handle);
+        let expired = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let notification = rx.recv().await.unwrap();
+                if notification.uri == a_uri
+                    && notification.meta.as_ref().is_some_and(|meta| {
+                        meta.get(attachments::ATTACHMENT_EXPIRED_META_KEY).is_some()
+                    })
+                {
+                    break notification;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(expired.uri, a_uri);
+        let meta = expired.meta.unwrap();
+        assert_eq!(
+            meta.get(attachments::ATTACHMENT_EXPIRED_META_KEY).unwrap(),
+            &serde_json::json!({
+                "code": "attachment_expired", "notebook_handle": a_handle,
+            })
+        );
+        let error = client
+            .read_resource(ReadResourceRequestParams::new(&a_uri))
+            .await
+            .unwrap_err();
+        let rmcp::ServiceError::McpError(error) = error else {
+            panic!("expected MCP expiry error")
+        };
+        assert_eq!(error.data.unwrap()["code"], "attachment_expired");
+        assert!(client
+            .read_resource(ReadResourceRequestParams::new(&b_uri))
+            .await
+            .is_ok());
+        let error = client
+            .read_resource(ReadResourceRequestParams::new(format!("{b_uri}/missing")))
+            .await
+            .unwrap_err();
+        let rmcp::ServiceError::McpError(error) = error else {
+            panic!("expected missing-cell error")
+        };
+        assert_ne!(
+            error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("code"))
+                .and_then(serde_json::Value::as_str),
+            Some("attachment_expired")
+        );
+        drop(registry.remove(&b_handle));
+        let expired = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let notification = rx.recv().await.unwrap();
+                if notification.uri == b_uri
+                    && notification.meta.as_ref().is_some_and(|meta| {
+                        meta.get(attachments::ATTACHMENT_EXPIRED_META_KEY).is_some()
+                    })
+                {
+                    break notification;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(expired.uri, b_uri);
+        drop(released);
+        let _ = client.close().await;
+        let _ = serving.close().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_application_flag_requires_handles_without_negotiating_native_wire() {
+        let server = NteractMcp::new("unused.sock".into(), None, None);
+        let mut request = CallToolRequestParams::new("disconnect_notebook");
+        request.meta = Some(
+            serde_json::from_value(serde_json::json!({
+                attachments::ATTACHMENT_MODE_META_KEY: "explicit",
+            }))
+            .unwrap(),
+        );
+        let error = targets::dispatch(&server, &request, false)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("notebook_handle is required"));
+        request.meta = Some(
+            serde_json::from_value(serde_json::json!({
+                attachments::ATTACHMENT_MODE_META_KEY: "anything-else",
+            }))
+            .unwrap(),
+        );
+        let error = targets::dispatch(&server, &request, false)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("attachmentMode must be explicit"));
+        request.meta = None;
+        assert!(targets::dispatch(&server, &request, false).await.is_ok());
     }
 
     #[tokio::test]

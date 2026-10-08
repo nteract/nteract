@@ -215,12 +215,13 @@ async fn canonical_local_id_target_for_server(
     // the room. While that narrow window is open, wait for publication (or
     // for the leader to register the UUID alias) instead of treating the UUID
     // as a competing target generation.
-    let mut attempts =
-        if !crate::targets::native() && server.session_activation.has_current_local_path_flight() {
-            40
-        } else {
-            1
-        };
+    let mut attempts = if !crate::targets::explicit_attachment_mode()
+        && server.session_activation.has_current_local_path_flight()
+    {
+        40
+    } else {
+        1
+    };
     loop {
         let rooms = PoolClient::new(server.socket_path.clone())
             .list_rooms()
@@ -774,7 +775,7 @@ async fn install_activated_session(
             lease.target(),
         )
     })?;
-    if crate::targets::native() {
+    if crate::targets::explicit_attachment_mode() {
         server.attachments.insert(session, reservation);
         return Ok(());
     }
@@ -1518,7 +1519,7 @@ pub async fn open_notebook(
             (NotebookTarget::LocalPath(path), canonical)
         }
         NotebookTarget::LocalNotebookId(notebook_id) => {
-            let canonical = if crate::targets::native() {
+            let canonical = if crate::targets::explicit_attachment_mode() {
                 canonical_local_id_target(&notebook_id)?
             } else {
                 canonical_local_id_target_for_server(server, &notebook_id).await?
@@ -1547,12 +1548,12 @@ pub async fn open_notebook(
         }
     };
 
-    if !crate::targets::native() {
+    if !crate::targets::explicit_attachment_mode() {
         if let Some(result) = reuse_active_session(server, &canonical_target).await {
             return Ok(result);
         }
     }
-    let activation = if crate::targets::native() {
+    let activation = if crate::targets::explicit_attachment_mode() {
         std::sync::Arc::new(crate::session_activation::SessionActivation::default())
     } else {
         server.session_activation.clone()
@@ -1561,7 +1562,7 @@ pub async fn open_notebook(
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
         ActivationTicket::Leader(lease) => lease,
     };
-    let prev = if crate::targets::native() {
+    let prev = if crate::targets::explicit_attachment_mode() {
         None
     } else {
         previous_notebook_id(server).await
@@ -1632,7 +1633,7 @@ pub async fn create_notebook(
         "local:create:{}",
         uuid::Uuid::new_v4().hyphenated()
     ));
-    let activation = if crate::targets::native() {
+    let activation = if crate::targets::explicit_attachment_mode() {
         std::sync::Arc::new(crate::session_activation::SessionActivation::default())
     } else {
         server.session_activation.clone()
@@ -1641,7 +1642,7 @@ pub async fn create_notebook(
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
         ActivationTicket::Leader(lease) => lease,
     };
-    let prev = if crate::targets::native() {
+    let prev = if crate::targets::explicit_attachment_mode() {
         None
     } else {
         previous_notebook_id(server).await
