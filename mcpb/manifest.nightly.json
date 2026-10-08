@@ -85,7 +85,7 @@
       "name": "show_notebook"
     },
     {
-      "description": "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session.",
+      "description": "Release only the attachment named by notebook_handle.",
       "name": "disconnect_notebook"
     },
     {

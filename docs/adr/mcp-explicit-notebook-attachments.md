@@ -142,9 +142,11 @@ pass it on reads, edits, execution, dependency management, saves, show and
 release. Unknown mutation/execution outcomes require state inspection before a
 caller retry. Release applies only to the owner the caller intends to stop.
 
-This is a deliberate incompatible application-tool migration, not a claim of
-backward-compatible patch behavior. App release classification is the release
-owner's decision; no version bump or publication is implied by this ADR.
+This changes previously accepted application-tool calls. The MCP interface is
+bundled with the app and is not maintained as a public interface to build on;
+the release owner has chosen a patch app release for this routing fix. Include
+a migration note to refresh tool definitions and retain the returned handles.
+No version bump or publication is implied by this ADR.
 
 ## Verification boundary
 
