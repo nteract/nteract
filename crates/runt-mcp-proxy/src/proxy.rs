@@ -897,14 +897,9 @@ impl McpProxy {
     /// Prepends any pending reconnection message to the result.
     pub async fn forward_tool_call(
         &self,
-        mut params: CallToolRequestParams,
+        params: CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        if crate::request_scope::is_native() {
-            params.meta.get_or_insert_with(Default::default).insert(
-                "io.nteract/attachmentMode".into(),
-                serde_json::json!("explicit"),
-            );
-        }
+        mcp_transport::validate_tool_target_params(&params)?;
         // Record release intent before sending: a lost disconnect reply must
         // not cause the replacement child to rejoin the notebook just released.
         if params.name.as_ref() == "disconnect_notebook" {
@@ -1210,6 +1205,49 @@ impl McpProxy {
                 may_have_run: false,
             });
         }
+        if mcp_transport::notebook_scoped_tool(&params.name)
+            || matches!(
+                params.name.as_ref(),
+                "connect_notebook" | "open_notebook" | "create_notebook"
+            )
+        {
+            // Use this exact child's live catalog, never our rewritten or disk-cached
+            // schemas. A legacy child may ignore an unknown handle and mutate its
+            // implicit current notebook. Reject before dispatch if routing is unproven.
+            let admission = crate::request_scope::observe(async {
+                let tools = tokio::time::timeout(Duration::from_secs(10), snapshot.peer.list_all_tools())
+                    .await
+                    .map_err(|_| McpError::internal_error("Timed out verifying child notebook-handle routing", None))?
+                    .map_err(|error| McpError::internal_error(format!("Cannot verify child notebook-handle routing: {error}"), None))?;
+                // create_cell is advertised even when compatibility read tools
+                // (get_cell/get_all_cells) are dispatch-only. Its required handle
+                // schema identifies the child's all-protocol routing contract.
+                if tools.iter().any(|tool| tool.name == "create_cell" && child_requires_handle(tool)) {
+                    Ok(())
+                } else {
+                    Err(McpError::invalid_params("This child does not advertise required notebook_handle routing; upgrade the child before using notebook tools", None))
+                }
+            }).await;
+            if let Err(error) = admission {
+                return Err(ForwardToolFailure {
+                    error,
+                    generation: Some(generation),
+                    transport_closed: snapshot.peer.is_transport_closed(),
+                    may_have_run: false,
+                });
+            }
+        }
+        if self.state.read().await.child_generation != generation {
+            return Err(ForwardToolFailure {
+                error: McpError::internal_error(
+                    "Child changed during notebook-handle admission",
+                    None,
+                ),
+                generation: Some(generation),
+                transport_closed: true,
+                may_have_run: false,
+            });
+        }
         let start = Instant::now();
 
         let result = match crate::request_scope::call_child(
@@ -1299,20 +1337,7 @@ impl McpProxy {
     }
 
     async fn clear_disconnect_handoff(&self, params: &CallToolRequestParams) {
-        if params
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.get("io.nteract/attachmentMode"))
-            .is_some_and(|mode| mode != "explicit")
-        {
-            return;
-        }
-        if explicit_attachment_mode(params)
-            && params
-                .arguments
-                .as_ref()
-                .is_none_or(|args| !args.contains_key("notebook_handle"))
-        {
+        if mcp_transport::validate_tool_target_params(params).is_err() {
             return;
         }
         // Invalid/conflicting selectors are rejected by the child, not intent.
@@ -1379,7 +1404,11 @@ impl McpProxy {
         params: &CallToolRequestParams,
         success: &ForwardToolSuccess,
     ) {
-        if explicit_attachment_mode(params) {
+        // Acquisitions own independent attachments and never select a restart target.
+        if matches!(
+            params.name.as_ref(),
+            "connect_notebook" | "open_notebook" | "create_notebook"
+        ) {
             return;
         }
         let result = &success.result;
@@ -1539,12 +1568,17 @@ struct ForwardToolSuccess {
     handoff_revision: u64,
 }
 
-fn explicit_attachment_mode(params: &CallToolRequestParams) -> bool {
-    params
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.get("io.nteract/attachmentMode"))
-        == Some(&serde_json::json!("explicit"))
+fn child_requires_handle(tool: &Tool) -> bool {
+    tool.input_schema
+        .get("properties")
+        .and_then(|properties| properties.get("notebook_handle"))
+        .and_then(|handle| handle.get("type"))
+        .is_some_and(|kind| kind == "string")
+        && tool
+            .input_schema
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|fields| fields.iter().any(|field| field == "notebook_handle"))
 }
 
 pub(crate) fn attachment_expiry(data: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
@@ -1770,12 +1804,12 @@ impl ServerHandler for McpProxy {
         ))
         .with_instructions(
             "nteract MCP server for Jupyter notebooks. \
-             Native notebook operations use the notebook_handle returned by \
+             Notebook operations use the notebook_handle returned by \
              connect_notebook or create_notebook for that independent attachment. \
              Release affects only the named attachment. Daemon replacement expires \
              local attachments; child replacement expires all attachments. Connect \
-             again, read a fresh baseline, and resubscribe. Legacy initialized \
-             clients retain active-notebook selection and automatic locator rejoin.",
+             again, read a fresh baseline, and resubscribe. Every notebook tool requires \
+             a nonempty notebook_handle on every supported protocol.",
         )
     }
 
@@ -1830,7 +1864,7 @@ impl ServerHandler for McpProxy {
             cached
         };
         tools.push(reconnect_tool());
-        mcp_transport::attachment_tool_schemas(&mut tools, mcp_transport::is_native(&context));
+        mcp_transport::attachment_tool_schemas(&mut tools);
         Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(0)
             .with_cache_scope(rmcp::model::CacheScope::Private))
@@ -2005,8 +2039,8 @@ fn reconnect_tool() -> Tool {
         "Restart the nteract MCP child process and reconnect to the daemon. \
          Use when tools are hanging, returning stale errors, or after a daemon \
          upgrade. All existing attachment handles expire; connect again, read a \
-         fresh baseline, and resubscribe. Legacy clients may automatically rejoin \
-         their selected target. The daemon is managed by the installed nteract app.",
+         fresh baseline, and resubscribe. Internal locator recovery does not restore \
+         expired handles. The daemon is managed by the installed nteract app.",
         schema,
     )
 }
@@ -2634,7 +2668,7 @@ mod tests {
     #[tokio::test]
     async fn explicit_opens_do_not_set_handoff_and_invalid_releases_do_not_clear_it() {
         let proxy = McpProxy::new(test_config(), None);
-        let params = serde_json::from_value(serde_json::json!({"name":"connect_notebook","arguments":{"target":"native-notebook"},"_meta":{"io.nteract/attachmentMode":"explicit"}})).unwrap();
+        let params = serde_json::from_value(serde_json::json!({"name":"connect_notebook","arguments":{"target":"native-notebook"},"_meta":{}})).unwrap();
         let result = CallToolResult::success(vec![ContentBlock::text(
             r#"{"notebook_id":"native-notebook"}"#,
         )]);
@@ -2718,7 +2752,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn track_session_captures_connect_notebook() {
+    async fn connect_does_not_select_a_restart_target() {
         let proxy = McpProxy::new(test_config(), None);
 
         let params: CallToolRequestParams = serde_json::from_value(serde_json::json!({
@@ -2731,13 +2765,14 @@ mod tests {
         proxy.track_session(&params, &result).await;
 
         let state = proxy.state.read().await;
-        assert_eq!(state.last_notebook_id, Some("/tmp/test.ipynb".to_string()));
+        assert!(state.last_notebook_id.is_none());
     }
 
     #[tokio::test]
-    async fn track_session_updates_on_new_notebook() {
+    async fn independent_opens_preserve_existing_recovery_target() {
         let proxy = McpProxy::new(test_config(), None);
 
+        proxy.state.write().await.last_notebook_id = Some("internal-recovery".into());
         // Open first notebook
         let params1: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "connect_notebook",
@@ -2751,7 +2786,7 @@ mod tests {
             )
             .await;
 
-        // Open second notebook — should replace
+        // Opening another owner must not replace internal recovery state
         let params2: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "connect_notebook",
             "arguments": { "path": "/tmp/second.ipynb" }
@@ -2767,7 +2802,7 @@ mod tests {
         let state = proxy.state.read().await;
         assert_eq!(
             state.last_notebook_id,
-            Some("/tmp/second.ipynb".to_string())
+            Some("internal-recovery".to_string())
         );
     }
 
@@ -2775,23 +2810,14 @@ mod tests {
     async fn track_session_promotes_saved_notebook_from_uuid_to_path() {
         let proxy = McpProxy::new(test_config(), None);
 
-        let create: CallToolRequestParams = serde_json::from_value(serde_json::json!({
-            "name": "create_notebook",
-            "arguments": {}
-        }))
-        .unwrap();
-        proxy
-            .track_session(
-                &create,
-                &CallToolResult::success(vec![ContentBlock::text(
-                    r#"{"notebook_id":"38582ef2-a117-4ce6-83d2-20c2c45d33d7"}"#,
-                )]),
-            )
-            .await;
-
+        {
+            let mut state = proxy.state.write().await;
+            state.last_notebook_id = Some("38582ef2-a117-4ce6-83d2-20c2c45d33d7".into());
+            state.last_notebook_handle = Some("recovery-owner".into());
+        }
         let save: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "save_notebook",
-            "arguments": { "path": "analysis.ipynb" }
+            "arguments": { "path": "analysis.ipynb", "notebook_handle": "recovery-owner" }
         }))
         .unwrap();
         proxy
@@ -2815,10 +2841,11 @@ mod tests {
         let proxy = McpProxy::new(test_config(), None);
         let hosted_target = "https://preview.runt.run/n/01KTZA152886TK1WAHYA48G7HJ";
         proxy.state.write().await.last_notebook_id = Some(hosted_target.to_string());
+        proxy.state.write().await.last_notebook_handle = Some("recovery-owner".into());
 
         let save: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "save_notebook",
-            "arguments": { "path": "analysis.ipynb" }
+            "arguments": { "path": "analysis.ipynb", "notebook_handle": "recovery-owner" }
         }))
         .unwrap();
         proxy
@@ -2842,12 +2869,13 @@ mod tests {
         {
             let mut state = proxy.state.write().await;
             state.last_notebook_id = Some("/tmp/analysis.ipynb".to_string());
+            state.last_notebook_handle = Some("recovery-owner".into());
             state.last_notebook_session_id =
                 Some("38582ef2-a117-4ce6-83d2-20c2c45d33d7".to_string());
         }
         let disconnect: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "disconnect_notebook",
-            "arguments": { "notebook_id": "38582ef2-a117-4ce6-83d2-20c2c45d33d7" }
+            "arguments": { "notebook_handle": "recovery-owner" }
         }))
         .unwrap();
 
@@ -2873,7 +2901,7 @@ mod tests {
         }
         let disconnect: CallToolRequestParams = serde_json::from_value(serde_json::json!({
             "name": "disconnect_notebook",
-            "arguments": { "notebook_id": "parked-id" }
+            "arguments": { "notebook_handle": "parked-owner" }
         }))
         .unwrap();
 
@@ -2929,6 +2957,104 @@ mod tests {
     }
 
     // ── try_forward_tool_call without child ───────────────────────────
+
+    #[tokio::test]
+    async fn live_legacy_child_routing_is_required_even_with_new_cached_schemas() {
+        use rmcp::ServiceExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        fn routing_tool(required: bool) -> Tool {
+            serde_json::from_value(serde_json::json!({
+                "name":"create_cell",
+                "inputSchema": {
+                    "type":"object", "properties":{"notebook_handle":{"type":"string"}},
+                    "required":if required {vec!["notebook_handle"]} else {vec![]},
+                },
+            }))
+            .unwrap()
+        }
+        struct RoutingChild {
+            required: bool,
+            calls: Arc<AtomicUsize>,
+        }
+        impl ServerHandler for RoutingChild {
+            async fn list_tools(
+                &self,
+                _: Option<rmcp::model::PaginatedRequestParams>,
+                _: RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, McpError> {
+                Ok(ListToolsResult::with_all_items(vec![routing_tool(
+                    self.required,
+                )]))
+            }
+            async fn call_tool(
+                &self,
+                _: CallToolRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, McpError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(CallToolResult::success(vec![ContentBlock::text("routed")]).into())
+            }
+        }
+        for required in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+            let server_calls = calls.clone();
+            let task = tokio::spawn(async move {
+                RoutingChild {
+                    required,
+                    calls: server_calls,
+                }
+                .serve(server_pipe)
+                .await
+                .unwrap()
+            });
+            let handler = crate::child::ChildClientHandler {
+                upstream_name: "legacy-caller".into(),
+                upstream_title: None,
+                notifications: tokio::sync::broadcast::channel(256).0,
+                progress: tokio::sync::broadcast::channel(256).0,
+                lifetime: Default::default(),
+            };
+            let child = handler.serve(client_pipe).await.unwrap();
+            let mut serving = task.await.unwrap();
+            let proxy = McpProxy::new(test_config(), None);
+            {
+                let mut state = proxy.state.write().await;
+                state.child_client = Some(child);
+                state.cached_tools = Some(vec![routing_tool(true)]);
+            }
+            let missing = proxy
+                .forward_tool_call(CallToolRequestParams::new("create_cell"))
+                .await
+                .unwrap_err();
+            assert!(missing.message.contains("notebook_handle is required"));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            for (name, arguments) in [
+                ("connect_notebook", serde_json::json!({"target":"a"})),
+                (
+                    "create_cell",
+                    serde_json::json!({"notebook_handle":"a", "source":"effect"}),
+                ),
+                // Hidden readers must use the same live routing proof.
+                ("get_all_cells", serde_json::json!({"notebook_handle":"a"})),
+            ] {
+                let request = CallToolRequestParams::new(name)
+                    .with_arguments(arguments.as_object().unwrap().clone());
+                let result = proxy.try_forward_tool_call(&request).await;
+                if required {
+                    assert!(result.is_ok());
+                } else {
+                    let failure = result.unwrap_err();
+                    assert!(failure.error.message.contains("upgrade the child"));
+                    assert!(!failure.may_have_run);
+                }
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), if required { 3 } else { 0 });
+            proxy.shutdown_child().await;
+            serving.close().await.unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn forward_fails_without_child() {

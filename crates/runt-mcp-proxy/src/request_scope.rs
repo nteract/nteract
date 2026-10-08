@@ -21,10 +21,18 @@ struct ScopedRequest {
     last_progress: Arc<Mutex<Option<tokio::time::Instant>>>,
 }
 
-pub(crate) fn is_native() -> bool {
-    UPSTREAM_REQUEST
-        .try_with(|scope| mcp_transport::is_native(&scope.context))
-        .unwrap_or(false)
+/// Admission reads observe the same cancellation as the subsequent tool call.
+pub(crate) async fn observe<T>(
+    future: impl Future<Output = Result<T, rmcp::ErrorData>>,
+) -> Result<T, rmcp::ErrorData> {
+    let Ok(scope) = UPSTREAM_REQUEST.try_with(Clone::clone) else {
+        return future.await;
+    };
+    tokio::select! {
+        biased;
+        _ = mcp_transport::cancelled(&scope.context) => Err(mcp_transport::cancellation_error()),
+        result = future => result,
+    }
 }
 
 /// Preserve the upstream request while supervisor helpers forward to the child.

@@ -10,6 +10,8 @@ use tokio::time::Instant;
 use crate::session::SessionRequirement;
 use crate::NteractMcp;
 
+pub use mcp_transport::notebook_scoped_tool;
+
 const READY_TIMEOUT: Duration = Duration::from_secs(125);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -19,10 +21,29 @@ pub async fn dispatch(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, ErrorData> {
-    if let Some(error) = wait_until_ready(server, request, READY_TIMEOUT).await? {
-        return Ok(error);
+    mcp_transport::validate_tool_target_params(request)?;
+    if let Some(handle) = request
+        .arguments
+        .as_ref()
+        .and_then(|args| args.get("notebook_handle"))
+        .and_then(serde_json::Value::as_str)
+    {
+        if server.attachment_identity(handle).await.is_none() {
+            return Err(ErrorData::invalid_params(
+                "Notebook attachment expired; connect again and obtain a new handle",
+                None,
+            ));
+        }
+        let error = crate::targets::with_handle(
+            handle.to_owned(),
+            wait_until_ready(server, request, READY_TIMEOUT),
+        )
+        .await?;
+        if let Some(error) = error {
+            return Ok(error);
+        }
     }
-    crate::tools::dispatch(server, request).await
+    crate::targets::dispatch(server, request).await
 }
 
 fn requirement(request: &CallToolRequestParams) -> Option<SessionRequirement> {
@@ -84,8 +105,16 @@ async fn wait_until_ready(
         };
         let retryable = matches!(error.code, "notebook_not_ready" | "runtime_not_ready");
         let kernel_blocker = if error.code == "runtime_not_ready" {
-            let guard = server.session().read().await;
-            guard.as_ref().and_then(|session| {
+            let session = if let Some(handle) = crate::targets::current() {
+                server
+                    .attachments
+                    .read_entries()
+                    .get(&handle)
+                    .map(|entry| entry.session.clone())
+            } else {
+                server.session().read().await.clone()
+            };
+            session.as_ref().and_then(|session| {
                 if session.handle.status().runtime_state
                     != notebook_sync::status::RuntimeStatePhase::Ready
                 {
@@ -194,6 +223,7 @@ mod tests {
     struct Fixture {
         server: NteractMcp,
         handle: notebook_sync::DocHandle,
+        notebook_handle: String,
         peer: Arc<Mutex<RuntimePeer>>,
     }
     impl Fixture {
@@ -260,10 +290,15 @@ mod tests {
             };
             // NteractMcp::new does not dial or launch a daemon.
             let server = NteractMcp::new("unused.sock".into(), None, None);
+            let notebook_handle = session.notebook_handle.clone();
+            server
+                .attachments
+                .insert(session.clone(), server.attachments.reserve().unwrap());
             *server.session().write().await = Some(session);
             Self {
                 server,
                 handle,
+                notebook_handle,
                 peer,
             }
         }
@@ -316,8 +351,11 @@ mod tests {
     #[tokio::test]
     async fn path_read_waits_past_stale_projection_for_current_document() {
         let fixture = Fixture::new(true).await;
-        let request = request("get_all_cells", serde_json::json!({"format":"summary"}));
-        let progressive = crate::tools::dispatch(&fixture.server, &request)
+        let request = request(
+            "get_all_cells",
+            serde_json::json!({"format":"summary", "notebook_handle":fixture.notebook_handle}),
+        );
+        let progressive = crate::targets::dispatch(&fixture.server, &request)
             .await
             .unwrap();
         assert_eq!(

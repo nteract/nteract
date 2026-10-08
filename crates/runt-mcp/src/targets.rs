@@ -40,30 +40,12 @@ pub(crate) fn current() -> Option<String> {
 pub(crate) async fn dispatch(
     server: &NteractMcp,
     request: &CallToolRequestParams,
-    native: bool,
 ) -> Result<CallToolResult, ErrorData> {
-    // This application flag does not negotiate protocol or authorize a target.
-    // The proxy adds it after admitting its native upstream lifecycle, because
-    // its private child connection is initialized on the legacy wire.
-    let explicit = match request
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.get(crate::attachments::ATTACHMENT_MODE_META_KEY))
-    {
-        Some(serde_json::Value::String(mode)) if mode == "explicit" => true,
-        Some(_) => {
-            return Err(ErrorData::invalid_params(
-                "io.nteract/attachmentMode must be explicit",
-                None,
-            ))
-        }
-        None => native,
-    };
-    let reservation = if explicit
-        && matches!(
-            request.name.as_ref(),
-            "connect_notebook" | "create_notebook"
-        ) {
+    mcp_transport::validate_tool_target_params(request)?;
+    let reservation = if matches!(
+        request.name.as_ref(),
+        "connect_notebook" | "open_notebook" | "create_notebook"
+    ) {
         Some(
             server
                 .attachments
@@ -75,10 +57,10 @@ pub(crate) async fn dispatch(
     };
     EXPLICIT_ATTACHMENT
         .scope(
-            explicit,
+            true,
             RESERVATION.scope(
                 std::cell::RefCell::new(reservation),
-                dispatch_inner(server, request, explicit),
+                dispatch_inner(server, request),
             ),
         )
         .await
@@ -87,9 +69,10 @@ pub(crate) async fn dispatch(
 async fn dispatch_inner(
     server: &NteractMcp,
     request: &CallToolRequestParams,
-    explicit: bool,
 ) -> Result<CallToolResult, ErrorData> {
-    if !mcp_transport::notebook_scoped_tool(&request.name) {
+    if !mcp_transport::notebook_scoped_tool(&request.name)
+        || request.name == "wait_for_notebook_change"
+    {
         return crate::tools::dispatch(server, request).await;
     }
     let mut request = request.clone();
@@ -100,8 +83,7 @@ async fn dispatch_inner(
     let target = match value {
         Some(serde_json::Value::String(handle)) if !handle.is_empty() => Some(handle),
         Some(_) => return Err(ErrorData::invalid_params("notebook_handle must be a nonempty attachment handle", None)),
-        None if explicit => return Err(ErrorData::invalid_params("notebook_handle is required; use the handle returned by connect_notebook or create_notebook", None)),
-        None => None,
+        None => return Err(ErrorData::invalid_params("notebook_handle is required; use the handle returned by connect_notebook or create_notebook", None)),
     };
     if let Some(handle) = target.as_ref() {
         if server.attachment_identity(handle).await.is_none() {

@@ -131,15 +131,11 @@ pub struct NteractMcp {
     /// completed background connection cannot resurrect a session after the
     /// user deliberately disconnected it.
     session_intent_epoch: Arc<AtomicU64>,
-    /// Legacy selection adapter: orders competing selections and coalesces
-    /// same-target calls. Native acquisitions each have their own activation.
+    /// Internal recovery selection adapter. Client acquisitions each have their
+    /// own activation and never select this slot.
     session_activation: Arc<SessionActivation>,
     /// Compatibility peer cache, independent of retained attachment ownership.
-    /// Parked sessions from legacy `connect_notebook` / `create_notebook`
-    /// calls. When an agent switches notebooks, the old session is moved here
-    /// instead of being dropped, keeping the daemon peer connection alive so
-    /// the room doesn't hit the eviction timer. On switch-back, the parked
-    /// session is resumed instead of creating a new connection.
+    /// Parked recovery peers can be reused without changing logical ownership.
     parked_sessions: Arc<RwLock<std::collections::HashMap<String, NotebookSession>>>,
     observation_waits: tokio::sync::Semaphore,
     resource_subscriptions: Arc<subscriptions::ResourceSubscriptions>,
@@ -441,9 +437,9 @@ impl NteractMcp {
         &self.last_session_drop
     }
 
-    /// Acquire the active session through the centralized readiness gate.
-    /// `None` means there is no active session; a typed error means a session
-    /// exists but does not currently expose the requested capability.
+    /// Acquire the request's handle through the centralized readiness gate.
+    /// Internal recovery may use the slot when no request target is scoped.
+    /// A typed error means the attachment lacks the requested capability.
     pub(crate) async fn session_access(
         &self,
         requirement: SessionRequirement,
@@ -756,15 +752,12 @@ impl ServerHandler for NteractMcp {
         .with_server_info(impl_info)
         .with_instructions(
             "nteract MCP server for Jupyter notebooks. \
-             Each connection has one active notebook session. \
-             Use list_active_notebooks to discover open notebooks, \
-             then connect_notebook or create_notebook to set your active session. \
-             Calling these again switches your active session. \
-             Read cells through MCP resources: \
-             nteract://notebooks/{notebook_id}/cells and \
-             nteract://notebooks/{notebook_id}/cells/{cell_id}. \
-             Connect/create also return a notebook_handle for that exact attachment; \
-             use its nteract://sessions/{notebook_handle}/cells or /comments resource. \
+             Use list_active_notebooks to discover notebooks, then connect_notebook \
+             or create_notebook to acquire an independent notebook_handle. Every \
+             notebook tool requires that handle on every supported protocol. Opening \
+             another notebook never changes an existing attachment's target. Read \
+             cells and comments through the returned nteract://sessions/{notebook_handle}/ \
+             resources. Legacy notebook-ID resources remain available when unambiguous. \
              Reads return a cursor. Use wait_for_notebook_change with that handle \
              and cursor for a bounded wait, or supply execution_id to wait for an \
              exact execution and its settled output. Canceling a wait only stops \
@@ -795,7 +788,7 @@ impl ServerHandler for NteractMcp {
         if self.no_show {
             tools.retain(|t| t.name.as_ref() != "show_notebook");
         }
-        mcp_transport::attachment_tool_schemas(&mut tools, mcp_transport::is_native(&context));
+        mcp_transport::attachment_tool_schemas(&mut tools);
         Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(0)
             .with_cache_scope(rmcp::model::CacheScope::Private))
@@ -807,16 +800,7 @@ impl ServerHandler for NteractMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         require_protocol(&context)?;
-        // rmcp extracts wire metadata into RequestContext before dispatch.
-        // Preserve only the application bridge key for attachment admission;
-        // protocol metadata remains owned by require_protocol above.
-        let mut request = request;
-        if let Some(mode) = context.meta.get(attachments::ATTACHMENT_MODE_META_KEY) {
-            request
-                .meta
-                .get_or_insert_default()
-                .insert(attachments::ATTACHMENT_MODE_META_KEY.into(), mode.clone());
-        }
+        mcp_transport::validate_tool_target_params(&request)?;
         // Sniff client name on first call for use as the notebook peer label.
         // The title (e.g., "Claude Desktop") is preferred over the raw
         // implementation name ("claude-ai"), then known names are canonicalized.
@@ -840,12 +824,8 @@ impl ServerHandler for NteractMcp {
             }
         }
         let start = std::time::Instant::now();
-        let mut result = progress::run(
-            &context,
-            &request.name,
-            targets::dispatch(self, &request, mcp_transport::is_native(&context)),
-        )
-        .await;
+        let mut result =
+            progress::run(&context, &request.name, targets::dispatch(self, &request)).await;
         // Also identify the current UI on the result, for hosts whose tool
         // catalog was loaded before a renderer rebuild.
         if let Ok(result) = &mut result {
@@ -1502,7 +1482,7 @@ mod tests {
                 .unwrap()
                 .clone(),
         );
-        let result = targets::dispatch(&server, &request, true).await.unwrap();
+        let result = targets::dispatch(&server, &request).await.unwrap();
         assert_ne!(result.is_error, Some(true));
         a_expired.changed().await.unwrap();
         assert!(*a_expired.borrow());
@@ -1519,7 +1499,7 @@ mod tests {
                 .notebook_handle,
             b_handle
         );
-        assert!(targets::dispatch(&server, &request, true).await.is_err());
+        assert!(targets::dispatch(&server, &request).await.is_err());
         targets::with_handle(b_handle, async {
             // Ownership does not bypass runtime readiness: this fixture has no ready runtime.
             assert!(server
@@ -1546,16 +1526,8 @@ mod tests {
                 .attachments
                 .insert(session, server.attachments.reserve().unwrap());
         }
-        let mut request = CallToolRequestParams::new("create_notebook");
-        request.meta = Some(
-            serde_json::from_value(
-                serde_json::json!({ attachments::ATTACHMENT_MODE_META_KEY: "explicit" }),
-            )
-            .unwrap(),
-        );
-        let error = targets::dispatch(&server, &request, false)
-            .await
-            .unwrap_err();
+        let request = CallToolRequestParams::new("create_notebook");
+        let error = targets::dispatch(&server, &request).await.unwrap_err();
         assert!(error.message.contains("attachment_limit"));
         for handle in &handles {
             assert!(server.attachment_identity(handle).await.is_some());
@@ -1616,13 +1588,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut client = Notifications(tx).serve(client_pipe).await.unwrap();
         let mut serving = task.await.unwrap();
-        let mut explicit_release = CallToolRequestParams::new("disconnect_notebook");
-        explicit_release.meta = Some(
-            serde_json::from_value(serde_json::json!({
-                attachments::ATTACHMENT_MODE_META_KEY: "explicit",
-            }))
-            .unwrap(),
-        );
+        let explicit_release = CallToolRequestParams::new("disconnect_notebook");
         let error = client.call_tool(explicit_release).await.unwrap_err();
         let rmcp::ServiceError::McpError(error) = error else {
             panic!("expected mandatory-handle error")
@@ -1708,31 +1674,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_application_flag_requires_handles_without_negotiating_native_wire() {
+    async fn every_protocol_requires_handles_without_application_metadata() {
         let server = NteractMcp::new("unused.sock".into(), None, None);
-        let mut request = CallToolRequestParams::new("disconnect_notebook");
-        request.meta = Some(
-            serde_json::from_value(serde_json::json!({
-                attachments::ATTACHMENT_MODE_META_KEY: "explicit",
-            }))
-            .unwrap(),
-        );
-        let error = targets::dispatch(&server, &request, false)
-            .await
-            .unwrap_err();
-        assert!(error.message.contains("notebook_handle is required"));
-        request.meta = Some(
-            serde_json::from_value(serde_json::json!({
-                attachments::ATTACHMENT_MODE_META_KEY: "anything-else",
-            }))
-            .unwrap(),
-        );
-        let error = targets::dispatch(&server, &request, false)
-            .await
-            .unwrap_err();
-        assert!(error.message.contains("attachmentMode must be explicit"));
-        request.meta = None;
-        assert!(targets::dispatch(&server, &request, false).await.is_ok());
+        for name in [
+            "disconnect_notebook",
+            "create_cell",
+            "execute_cell",
+            "wait_for_notebook_change",
+        ] {
+            let request = CallToolRequestParams::new(name);
+            let error = targets::dispatch(&server, &request).await.unwrap_err();
+            assert!(error.message.contains("notebook_handle is required"));
+        }
     }
 
     #[tokio::test]
@@ -2017,7 +1970,10 @@ mod tests {
             let results = [
                 server.list_tools(None, context()).await.map(|_| ()),
                 server
-                    .call_tool(CallToolRequestParams::new("interrupt_kernel"), context())
+                    .call_tool(
+                        CallToolRequestParams::new("list_active_notebooks"),
+                        context(),
+                    )
                     .await
                     .map(|_| ()),
                 server.list_resources(None, context()).await.map(|_| ()),
@@ -2162,8 +2118,8 @@ mod tests {
             .is_some_and(|extensions| extensions.contains_key("io.modelcontextprotocol/ui")));
 
         let instructions = info.instructions.as_deref().expect("instructions");
-        assert!(instructions.contains("nteract://notebooks/{notebook_id}/cells"));
-        assert!(instructions.contains("nteract://notebooks/{notebook_id}/cells/{cell_id}"));
+        assert!(instructions.contains("nteract://sessions/{notebook_handle}/"));
+        assert!(instructions.contains("Every notebook tool requires that handle"));
     }
 
     // ── safe_truncate unit tests ─────────────────────────────────────

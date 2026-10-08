@@ -1881,8 +1881,8 @@ async fn open_explicit_attachment(
     outcome
 }
 
-/// Acquire an independent native attachment, or select through the legacy
-/// monotonic, same-target-coalescing adapter.
+/// Acquire an independent attachment for client requests on every protocol.
+/// Internal recovery helpers can still use the monotonic selection adapter.
 pub async fn open_notebook(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -2803,11 +2803,7 @@ mod tests {
             };
             let response = tokio::time::timeout(
                 Duration::from_secs(2),
-                crate::targets::dispatch(
-                    &server,
-                    &make_request("connect_notebook", arguments),
-                    true,
-                ),
+                crate::targets::dispatch(&server, &make_request("connect_notebook", arguments)),
             )
             .await
             .unwrap()

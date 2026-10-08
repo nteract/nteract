@@ -1243,6 +1243,7 @@ impl Supervisor {
         request: &CallToolRequestParams,
         vite_port: u16,
     ) -> Result<CallToolResult, McpError> {
+        mcp_transport::validate_tool_target_params(request)?;
         if request
             .arguments
             .as_ref()
@@ -2155,7 +2156,7 @@ impl ServerHandler for Supervisor {
             tools.extend(builtin);
         }
 
-        mcp_transport::attachment_tool_schemas(&mut tools, mcp_transport::is_native(&context));
+        mcp_transport::attachment_tool_schemas(&mut tools);
         Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(0)
             .with_cache_scope(rmcp::model::CacheScope::Private))

@@ -176,7 +176,7 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "disconnect_notebook",
-            "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session.",
+            "Release only the attachment named by notebook_handle.",
             schema_for::<session::DisconnectNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
@@ -358,7 +358,7 @@ pub fn cli_discoverable_tools() -> Vec<Tool> {
 }
 
 fn attach_icons(tools: &mut [Tool]) {
-    mcp_transport::attachment_tool_schemas(tools, false);
+    mcp_transport::attachment_tool_schemas(tools);
     for tool in tools {
         if let Some(icon) = crate::icons::tool_icon(tool.name.as_ref()) {
             tool.icons = Some(crate::icons::icons(icon));

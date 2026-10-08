@@ -249,9 +249,10 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
             | "reply_comment"
             | "resolve_comment"
             | "reopen_comment"
+            | "wait_for_notebook_change"
     )
 }
-pub fn attachment_tool_schemas(tools: &mut [rmcp::model::Tool], required: bool) {
+pub fn attachment_tool_schemas(tools: &mut [rmcp::model::Tool]) {
     for tool in tools {
         if !notebook_scoped_tool(&tool.name) {
             continue;
@@ -262,27 +263,33 @@ pub fn attachment_tool_schemas(tools: &mut [rmcp::model::Tool], required: bool) 
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
         {
-            properties.insert("notebook_handle".into(), serde_json::json!({"type":"string","description":"Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks."}));
+            properties.remove("notebook_id");
+            properties.insert("notebook_handle".into(), serde_json::json!({"type":"string","minLength":1,"description":"Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks."}));
         }
-        if required {
-            if let Some(fields) = schema
-                .entry("required")
-                .or_insert_with(|| serde_json::json!([]))
-                .as_array_mut()
-            {
-                if !fields.iter().any(|field| field == "notebook_handle") {
-                    fields.push(serde_json::json!("notebook_handle"));
-                }
+        if let Some(fields) = schema
+            .entry("required")
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+        {
+            fields.retain(|field| field != "notebook_id");
+            if !fields.iter().any(|field| field == "notebook_handle") {
+                fields.push(serde_json::json!("notebook_handle"));
             }
         }
     }
 }
 pub fn validate_tool_target(
     request: &rmcp::model::CallToolRequestParams,
-    context: &RequestContext<RoleServer>,
+    _context: &RequestContext<RoleServer>,
 ) -> Result<(), rmcp::ErrorData> {
-    if is_native(context)
-        && notebook_scoped_tool(&request.name)
+    validate_tool_target_params(request)
+}
+
+/// Require request-local notebook ownership on every MCP protocol.
+pub fn validate_tool_target_params(
+    request: &rmcp::model::CallToolRequestParams,
+) -> Result<(), rmcp::ErrorData> {
+    if notebook_scoped_tool(&request.name)
         && request
             .arguments
             .as_ref()

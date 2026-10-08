@@ -24,8 +24,6 @@ pub(crate) struct BackingPeerKey {
 }
 
 pub const MAX_ATTACHMENTS: usize = 128;
-/// Application semantics only: the private proxy child remains legacy initialized.
-pub const ATTACHMENT_MODE_META_KEY: &str = "io.nteract/attachmentMode";
 /// Terminal signal on legacy resource notifications, recoverable through resource reads.
 pub const ATTACHMENT_EXPIRED_META_KEY: &str = "io.nteract/attachmentExpired";
 /// Terminal observation loss does not end logical registry membership.
