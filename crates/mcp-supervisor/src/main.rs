@@ -860,7 +860,7 @@ impl DevNotebookLaunch {
     fn command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(&self.binary);
         command
-            .arg("--notebook-id")
+            .arg("--attach-notebook-id")
             .arg(&self.identity.notebook_id)
             .env("RUNTIMED_DEV", "1")
             .env("RUNTIMED_WORKSPACE_PATH", &self.workspace_path)
@@ -3926,9 +3926,19 @@ mod tests {
                     identity.as_object_mut().unwrap().remove("has_display");
                 }
                 "tool_error" => {
-                    return Ok(
-                        CallToolResult::error(vec![ContentBlock::text("unavailable")]).into(),
-                    )
+                    let mut refusal = CallToolResult::error(vec![ContentBlock::text(
+                        "notebook is still loading",
+                    )]);
+                    refusal.structured_content = Some(
+                        serde_json::json!({"error":{"code":"document_not_ready","notebook_handle":handle}}),
+                    );
+                    return Ok(refusal.into());
+                }
+                "hosted_refusal" => {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        "A hosted notebook cannot be opened by the local dev launcher",
+                    )])
+                    .into())
                 }
                 _ => {}
             }
@@ -3989,7 +3999,7 @@ mod tests {
                     assert_eq!(
                         command.get_args().collect::<Vec<_>>(),
                         vec![
-                            std::ffi::OsStr::new("--notebook-id"),
+                            std::ffi::OsStr::new("--attach-notebook-id"),
                             std::ffi::OsStr::new(id)
                         ]
                     );
@@ -4031,7 +4041,7 @@ mod tests {
         assert!(proxy
             .admit_notebook_launch(
                 CallToolRequestParams::new("list_tools"),
-                |_| -> Result<(), McpError> {
+                |_| -> Result<CallToolResult, McpError> {
                     panic!("unscoped caller bypassed launch handle validation")
                 }
             )
@@ -4047,7 +4057,6 @@ mod tests {
             "relative_socket",
             "hosted",
             "missing_display",
-            "tool_error",
         ] {
             assert!(
                 supervisor
@@ -4057,6 +4066,32 @@ mod tests {
                     .await
                     .is_err(),
                 "{handle}"
+            );
+        }
+        for (handle, reason) in [
+            (
+                "hosted_refusal",
+                "A hosted notebook cannot be opened by the local dev launcher",
+            ),
+            ("tool_error", "notebook is still loading"),
+        ] {
+            let result = supervisor
+                .show_notebook_dev_with_launcher(&dev_launch_request(handle), 5173, |_| {
+                    panic!("child refusal launched")
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(result.content, vec![ContentBlock::text(reason)]);
+            assert_eq!(
+                result.structured_content,
+                if handle == "tool_error" {
+                    Some(
+                        serde_json::json!({"error":{"code":"document_not_ready","notebook_handle":handle}}),
+                    )
+                } else {
+                    None
+                }
             );
         }
         for (key, value) in [

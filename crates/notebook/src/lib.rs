@@ -46,6 +46,9 @@ struct WindowNotebookContext {
     /// Kept separate from `path`/`notebook_id` so reconnect and session restore
     /// never reinterpret a hosted room as an untitled local notebook.
     hosted_locator: Option<String>,
+    /// Explicit CLI attachments reconnect to this UUID, even if the room goes
+    /// missing. They cannot become a fresh notebook or a file-path fallback.
+    attachment_id: Option<String>,
     /// Runtime type for this notebook (Python or Deno).
     /// Used by session save so it doesn't need to query the daemon.
     runtime: Runtime,
@@ -161,7 +164,9 @@ impl WindowNotebookRegistry {
 // (`find_pathless_window_label`); other targets compile it for tests only.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_reusable_startup_placeholder(context: &WindowNotebookContext) -> bool {
-    context.hosted_locator.is_none() && context.path.lock().is_ok_and(|path| path.is_none())
+    context.hosted_locator.is_none()
+        && context.attachment_id.is_none()
+        && context.path.lock().is_ok_and(|path| path.is_none())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -439,7 +444,7 @@ impl SyncReadyState {
         };
         if let Some(p) = cache.get_mut(label) {
             p.notebook_path = path.map(|s| s.to_string());
-            p.ephemeral = path.is_none();
+            p.ephemeral = Some(path.is_none());
         }
     }
 
@@ -499,13 +504,16 @@ struct DaemonReadyPayload {
     needs_trust_approval: bool,
     /// Whether this notebook is in-memory only (no on-disk path).
     /// Drives the always-dirty titlebar asterisk for untitled notebooks
-    /// without a Tauri round-trip.
-    ephemeral: bool,
+    /// without a Tauri round-trip. Omitted for UUID attachments whose synced
+    /// runtime state owns this fact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ephemeral: Option<bool>,
     /// On-disk path if the notebook is file-backed. Used by the frontend
     /// to derive the titlebar filename, including after a Finder-reuse flow
     /// (macOS opens a file into an existing untitled window — no
     /// `PathChanged` broadcast fires because the path was set before the
     /// room was reconnected).
+    #[serde(skip_serializing_if = "Option::is_none")]
     notebook_path: Option<String>,
     /// Canonical hosted locator when this window is attached through the
     /// daemon-mediated cloud bridge. Hosted rooms are daemon-local ephemeral
@@ -540,14 +548,17 @@ enum OpenMode {
         working_dir: Option<PathBuf>,
         notebook_id: Option<String>,
     },
-    /// Attach to a room the daemon has already created. Used by clone: after
+    /// Attach to a room the daemon has already created, or an explicit CLI UUID.
+    /// Used by clone: after
     /// `CloneAsEphemeral` seeds a new room, the new window attaches to it by
     /// UUID via `Handshake::NotebookSync`. No create, no load, no session
     /// restore — the room is addressable and the window just syncs.
     Attach {
         notebook_id: String,
         working_dir: Option<PathBuf>,
-        runtime: String,
+        runtime: Option<String>,
+        /// Known for a newly cloned room; omitted for an arbitrary UUID attachment.
+        ephemeral: Option<bool>,
     },
     /// Open a hosted notebook through the daemon-mediated cloud bridge.
     /// A caller-triggered open may carry a relay prepared before the new window
@@ -570,6 +581,49 @@ struct StartupWindow {
     title: String,
     mode: OpenMode,
     saved_scale_factor: Option<f64>,
+}
+
+fn startup_needs_onboarding(
+    completed: bool,
+    path: Option<&Path>,
+    notebook_id: Option<&str>,
+    attach_notebook_id: Option<&uuid::Uuid>,
+) -> bool {
+    !completed && path.is_none() && notebook_id.is_none() && attach_notebook_id.is_none()
+}
+
+/// Explicit UUID targets always select a window before session restore or
+/// fresh-notebook fallback. Only the legacy ID carries creation defaults.
+fn explicit_uuid_startup_window(
+    notebook_id: Option<&str>,
+    attach_notebook_id: Option<&uuid::Uuid>,
+    runtime: &Runtime,
+    working_dir: &Option<PathBuf>,
+) -> Option<StartupWindow> {
+    let (id, mode) = if let Some(id) = attach_notebook_id {
+        let id = id.to_string();
+        let mode = OpenMode::Attach {
+            notebook_id: id.clone(),
+            working_dir: None,
+            runtime: None,
+            ephemeral: None,
+        };
+        (id, mode)
+    } else {
+        let id = notebook_id?.to_owned();
+        let mode = OpenMode::Create {
+            runtime: runtime.to_string(),
+            working_dir: working_dir.clone(),
+            notebook_id: Some(id.clone()),
+        };
+        (id, mode)
+    };
+    Some(StartupWindow {
+        label: format!("notebook-{}", &id[..8.min(id.len())]),
+        title: "Untitled.ipynb".to_string(),
+        mode,
+        saved_scale_factor: None,
+    })
 }
 
 /// Directory opens always create a fresh room. The resolved directory travels
@@ -859,7 +913,7 @@ async fn initialize_notebook_sync_open(
         relay_generation: current_generation,
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
-        ephemeral: info.ephemeral,
+        ephemeral: Some(info.ephemeral),
         notebook_path: info.notebook_path.or(Some(caller_path)),
         hosted_notebook_url: None,
         runtime: None,
@@ -944,7 +998,7 @@ async fn initialize_notebook_sync_create(
         relay_generation: current_generation,
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
-        ephemeral: info.ephemeral,
+        ephemeral: Some(info.ephemeral),
         notebook_path: info.notebook_path.clone(),
         hosted_notebook_url: None,
         runtime: Some(runtime),
@@ -976,7 +1030,8 @@ async fn initialize_notebook_sync_create(
 async fn initialize_notebook_sync_attach(
     window: tauri::WebviewWindow,
     notebook_id: String,
-    runtime: String,
+    runtime: Option<String>,
+    ephemeral: Option<bool>,
     notebook_sync: SharedNotebookSync,
     sync_generation: Arc<AtomicU64>,
     notebook_id_arc: Arc<Mutex<String>>,
@@ -985,7 +1040,7 @@ async fn initialize_notebook_sync_attach(
 
     let socket_path = runt_workspace::default_socket_path();
     info!(
-        "[notebook-sync] Attaching to existing room: id={}, runtime={} ({})",
+        "[notebook-sync] Attaching to existing room: id={}, runtime={:?} ({})",
         notebook_id,
         runtime,
         socket_path.display(),
@@ -994,14 +1049,9 @@ async fn initialize_notebook_sync_attach(
     let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
     let operator = desktop_operator_label();
-    let result = notebook_sync::connect::connect_relay_with_operator(
-        socket_path,
-        notebook_id.clone(),
-        frame_tx,
-        Some(operator),
-    )
-    .await
-    .map_err(|e| format!("sync connect (attach): {}", e))?;
+    let result = connect_attach_relay(socket_path, notebook_id.clone(), frame_tx, operator)
+        .await
+        .map_err(|e| format!("sync connect (attach): {}", e))?;
 
     require_current_sync_generation(&sync_generation, current_generation, "attach")?;
 
@@ -1014,22 +1064,16 @@ async fn initialize_notebook_sync_attach(
     }
 
     // `connect_relay` does not return a NotebookConnectionInfo — the frontend
-    // receives the true cell_count via the initial Automerge sync. Populate
-    // the payload with sensible defaults for an ephemeral clone.
-    let ready_payload = DaemonReadyPayload {
-        notebook_id: notebook_id.clone(),
-        relay_generation: current_generation,
-        cell_count: 0,
-        needs_trust_approval: false,
-        ephemeral: true,
-        notebook_path: None,
-        hosted_notebook_url: None,
-        runtime: Some(runtime),
-        actor_label: capabilities.actor_label.clone(),
-        connection_scope: capabilities.connection_scope.clone(),
-        comments_doc_id: capabilities.comments_doc_id.clone(),
-        comments_notebook_ref: capabilities.comments_notebook_ref.clone(),
-    };
+    // receives room facts via sync. Preserve known clone hints, but omit path
+    // and ephemeral hints for generic attachments so late readiness cannot
+    // overwrite an already synced saved path.
+    let ready_payload = attach_ready_payload(
+        notebook_id.clone(),
+        current_generation,
+        runtime,
+        ephemeral,
+        capabilities,
+    );
 
     setup_sync_receivers(
         window,
@@ -1040,6 +1084,46 @@ async fn initialize_notebook_sync_attach(
         sync_generation,
         current_generation,
         ready_payload,
+    )
+    .await
+}
+
+fn attach_ready_payload(
+    notebook_id: String,
+    relay_generation: u64,
+    runtime: Option<String>,
+    ephemeral: Option<bool>,
+    capabilities: notebook_protocol::connection::ProtocolCapabilities,
+) -> DaemonReadyPayload {
+    DaemonReadyPayload {
+        notebook_id,
+        relay_generation,
+        cell_count: 0,
+        needs_trust_approval: false,
+        ephemeral,
+        notebook_path: None,
+        hosted_notebook_url: None,
+        runtime,
+        actor_label: capabilities.actor_label,
+        connection_scope: capabilities.connection_scope,
+        comments_doc_id: capabilities.comments_doc_id,
+        comments_notebook_ref: capabilities.comments_notebook_ref,
+    }
+}
+
+/// The UUID attach handshake carries no creation or workstation defaults.
+/// A refused/missing room propagates as an error, with no create fallback.
+async fn connect_attach_relay(
+    socket_path: PathBuf,
+    notebook_id: String,
+    frame_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    operator: String,
+) -> Result<notebook_sync::connect::RelayConnectResult, notebook_sync::error::SyncError> {
+    notebook_sync::connect::connect_relay_with_operator(
+        socket_path,
+        notebook_id,
+        frame_tx,
+        Some(operator),
     )
     .await
 }
@@ -1113,7 +1197,7 @@ async fn initialize_notebook_sync_hosted(
         relay_generation: current_generation,
         cell_count: info.cell_count,
         needs_trust_approval: info.needs_trust_approval,
-        ephemeral: info.ephemeral,
+        ephemeral: Some(info.ephemeral),
         notebook_path: None,
         hosted_notebook_url: Some(locator),
         runtime: None,
@@ -1391,6 +1475,213 @@ async fn setup_sync_receivers(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn attach_only_startup_keeps_target_without_onboarding_or_creation_defaults() {
+        let id = uuid::Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let inherited_dir = Some(std::path::PathBuf::from("/unrelated-project"));
+        for completed in [false, true] {
+            assert!(!super::startup_needs_onboarding(
+                completed,
+                None,
+                None,
+                Some(&id)
+            ));
+            let window = super::explicit_uuid_startup_window(
+                None,
+                Some(&id),
+                &super::Runtime::Deno,
+                &inherited_dir,
+            )
+            .unwrap();
+            let context =
+                super::startup_window_context(&window, inherited_dir.clone(), super::Runtime::Deno);
+            assert_eq!(
+                context.attachment_id.as_deref(),
+                Some(id.to_string().as_str())
+            );
+            assert!(context.working_dir.is_none());
+            assert!(
+                !super::is_reusable_startup_placeholder(&context),
+                "another document must not replace the explicit target"
+            );
+            // A synced saved path does not change the reconnect UUID intent.
+            *context.path.lock().unwrap() = Some(std::path::PathBuf::from("/saved.ipynb"));
+            assert_eq!(
+                context.attachment_id.as_deref(),
+                Some(id.to_string().as_str())
+            );
+            let super::OpenMode::Attach {
+                notebook_id,
+                working_dir,
+                runtime,
+                ephemeral,
+            } = window.mode
+            else {
+                panic!("explicit attachment must never enter create/restore");
+            };
+            assert_eq!(notebook_id, id.to_string());
+            assert!(
+                working_dir.is_none(),
+                "inherited project context must not reach the attachment"
+            );
+            assert!(
+                runtime.is_none(),
+                "user defaults must not override the room's runtime hint"
+            );
+            assert!(
+                ephemeral.is_none(),
+                "an existing UUID need not be an ephemeral clone"
+            );
+        }
+        assert!(super::startup_needs_onboarding(false, None, None, None));
+        assert!(!super::startup_needs_onboarding(true, None, None, None));
+        assert!(!super::startup_needs_onboarding(
+            false,
+            Some(std::path::Path::new("saved.ipynb")),
+            None,
+            None
+        ));
+        // Legacy ID callers retain their create/restore context and exact ID.
+        assert!(!super::startup_needs_onboarding(
+            false,
+            None,
+            Some(&id.to_string()),
+            None
+        ));
+        let legacy = super::explicit_uuid_startup_window(
+            Some(&id.to_string()),
+            None,
+            &super::Runtime::Deno,
+            &inherited_dir,
+        )
+        .unwrap();
+        let super::OpenMode::Create {
+            notebook_id,
+            working_dir,
+            runtime,
+        } = legacy.mode
+        else {
+            panic!("legacy notebook-id must remain a create/restore hint");
+        };
+        assert_eq!(notebook_id.as_deref(), Some(id.to_string().as_str()));
+        assert_eq!(working_dir, inherited_dir);
+        assert_eq!(runtime, "deno");
+    }
+
+    #[test]
+    fn attach_only_run_rejects_conflicting_targets_before_app_startup() {
+        let id = uuid::Uuid::new_v4();
+        for (path, runtime, legacy_id, directory) in [
+            (
+                Some(std::path::PathBuf::from("saved.ipynb")),
+                None,
+                None,
+                None,
+            ),
+            (None, Some(super::Runtime::Python), None, None),
+            (None, None, Some(id.to_string()), None),
+            (None, None, None, Some(std::path::PathBuf::from("/project"))),
+        ] {
+            let error = super::run(path, runtime, legacy_id, directory, Some(id)).unwrap_err();
+            assert!(error.to_string().contains("cannot be combined"));
+        }
+    }
+
+    #[test]
+    fn attach_only_ready_payload_omits_unknown_path_and_runtime_but_preserves_clone_hints() {
+        let caps = notebook_protocol::connection::ProtocolCapabilities::v4(None);
+        let generic = super::attach_ready_payload("existing".into(), 7, None, None, caps.clone());
+        let value = serde_json::to_value(&generic).unwrap();
+        assert!(value.get("ephemeral").is_none());
+        assert!(
+            value.get("notebook_path").is_none(),
+            "late readiness must not clear a synced saved path"
+        );
+        assert!(value["runtime"].is_null());
+        let clone =
+            super::attach_ready_payload("clone".into(), 8, Some("deno".into()), Some(true), caps);
+        let value = serde_json::to_value(clone).unwrap();
+        assert_eq!(value["ephemeral"], true);
+        assert_eq!(value["runtime"], "deno");
+        // A subsequent daemon PathChanged updates cached authoritative facts.
+        let state = super::SyncReadyState::default();
+        state
+            .last_ready
+            .lock()
+            .unwrap()
+            .insert("attached".into(), generic);
+        state.update_cached_path("attached", Some("/project/saved.ipynb"));
+        let value = serde_json::to_value(state.last_ready.lock().unwrap().get("attached").unwrap())
+            .unwrap();
+        assert_eq!(value["ephemeral"], false);
+        assert_eq!(value["notebook_path"], "/project/saved.ipynb");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn attach_only_wire_joins_exact_uuid_without_context_mutation_or_create_fallback() {
+        use notebook_protocol::connection::{
+            recv_json_frame, recv_preamble, send_typed_bootstrap_frame, ConnectionBootstrap,
+            Handshake, NotebookConnectionInfo, ProtocolCapabilities,
+        };
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        for missing in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let socket = temp.path().join("attachment.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                recv_preamble(&mut stream).await.unwrap();
+                let Some(Handshake::NotebookSync {
+                    notebook_id,
+                    initial_metadata,
+                    working_dir,
+                    operator,
+                    typed_bootstrap,
+                    ..
+                }) = recv_json_frame::<_, Handshake>(&mut stream).await.unwrap()
+                else {
+                    panic!("attachment must not send CreateNotebook or OpenNotebook");
+                };
+                assert_eq!(notebook_id, id);
+                assert!(initial_metadata.is_none());
+                assert!(working_dir.is_none());
+                assert_eq!(operator.as_deref(), Some("desktop:attach-test"));
+                assert_eq!(typed_bootstrap, Some(true));
+                let capabilities = ProtocolCapabilities::v4(None)
+                    .with_identity("local:test/desktop:attach-test", "owner");
+                let bootstrap = if missing {
+                    ConnectionBootstrap::notebook_connection_info(NotebookConnectionInfo {
+                        capabilities,
+                        notebook_id: String::new(),
+                        cell_count: 0,
+                        needs_trust_approval: false,
+                        error: Some("Notebook is no longer available".into()),
+                        ephemeral: false,
+                        notebook_path: None,
+                    })
+                } else {
+                    ConnectionBootstrap::protocol_capabilities(capabilities)
+                };
+                send_typed_bootstrap_frame(&mut stream, &bootstrap)
+                    .await
+                    .unwrap();
+            });
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let result =
+                super::connect_attach_relay(socket, id.into(), tx, "desktop:attach-test".into())
+                    .await;
+            if missing {
+                assert!(
+                    matches!(result, Err(notebook_sync::error::SyncError::NotebookUnavailable(ref reason)) if reason.contains("no longer available"))
+                );
+            } else {
+                assert!(result.is_ok());
+            }
+            server.await.unwrap();
+        }
+    }
+
     #[test]
     fn directory_opens_create_distinct_untitled_windows_in_resolved_directory() {
         let project = tempfile::tempdir().unwrap();
@@ -3196,7 +3487,8 @@ async fn clone_notebook_to_ephemeral(
     let mode = OpenMode::Attach {
         notebook_id: clone_id.clone(),
         working_dir: working_dir_path,
-        runtime: source_runtime.to_string(),
+        runtime: Some(source_runtime.to_string()),
+        ephemeral: Some(true),
     };
     create_notebook_window_for_daemon(&app, registry.inner(), mode, None)?;
 
@@ -3289,7 +3581,10 @@ fn create_notebook_window_for_daemon(
             ..
         } => {
             // Cloned (attached) notebooks are untitled until Save-As.
-            let runtime_enum: Runtime = runtime.parse().unwrap_or(Runtime::Python);
+            let runtime_enum: Runtime = runtime
+                .as_deref()
+                .and_then(|r| r.parse().ok())
+                .unwrap_or(Runtime::Python);
             (
                 "Untitled.ipynb".to_string(),
                 None,
@@ -3465,6 +3760,7 @@ fn create_notebook_window_for_daemon(
             OpenMode::Attach {
                 notebook_id,
                 runtime,
+                ephemeral,
                 // working_dir is already plumbed through the WindowContext
                 // above; the attach handshake itself doesn't carry it.
                 working_dir: _,
@@ -3473,6 +3769,7 @@ fn create_notebook_window_for_daemon(
                     window,
                     notebook_id,
                     runtime,
+                    ephemeral,
                     notebook_sync,
                     sync_generation,
                     notebook_id_arc,
@@ -3774,6 +4071,7 @@ async fn reconnect_to_daemon(
         .clone();
     let context = registry.get(window.label())?;
     let hosted_locator = context.hosted_locator.clone();
+    let attachment_id = context.attachment_id.clone();
     let runtime = context.runtime.to_string();
 
     let window_label = window.label().to_string();
@@ -3840,7 +4138,18 @@ async fn reconnect_to_daemon(
         .ok_or_else(|| "Current webview window not found".to_string())?;
 
     // First attempt: try to connect (daemon might have restarted)
-    let result = if let Some(ref locator) = hosted_locator {
+    let result = if let Some(ref id) = attachment_id {
+        initialize_notebook_sync_attach(
+            webview_window.clone(),
+            id.clone(),
+            None,
+            None,
+            notebook_sync.clone(),
+            sync_generation.clone(),
+            context_notebook_id.clone(),
+        )
+        .await
+    } else if let Some(ref locator) = hosted_locator {
         info!("[daemon-kernel] Reconnecting hosted notebook: {locator}");
         initialize_notebook_sync_hosted(
             webview_window.clone(),
@@ -3946,7 +4255,18 @@ async fn reconnect_to_daemon(
             }
 
             // Retry connection after restart
-            let retry_result = if let Some(locator) = hosted_locator {
+            let retry_result = if let Some(id) = attachment_id {
+                initialize_notebook_sync_attach(
+                    webview_window,
+                    id,
+                    None,
+                    None,
+                    notebook_sync,
+                    sync_generation,
+                    context_notebook_id,
+                )
+                .await
+            } else if let Some(locator) = hosted_locator {
                 initialize_notebook_sync_hosted(
                     webview_window,
                     locator,
@@ -4608,8 +4928,44 @@ fn create_window_context_for_daemon(
         working_dir,
         notebook_id: Arc::new(Mutex::new(placeholder_notebook_id)),
         hosted_locator,
+        attachment_id: None,
         runtime,
     }
+}
+
+fn startup_window_context(
+    window: &StartupWindow,
+    working_dir: Option<PathBuf>,
+    runtime: Runtime,
+) -> WindowNotebookContext {
+    let placeholder_id = match &window.mode {
+        OpenMode::Open { path } => path
+            .canonicalize()
+            .unwrap_or_else(|_| path.clone())
+            .to_string_lossy()
+            .to_string(),
+        OpenMode::Create { notebook_id, .. } => notebook_id.clone().unwrap_or_default(),
+        OpenMode::Attach { notebook_id, .. } => notebook_id.clone(),
+        OpenMode::Hosted { .. } => String::new(),
+    };
+    let mut context = create_window_context_for_daemon(
+        match &window.mode {
+            OpenMode::Open { path } => Some(path.clone()),
+            _ => None,
+        },
+        working_dir,
+        placeholder_id,
+        match &window.mode {
+            OpenMode::Hosted { locator, .. } => Some(locator.clone()),
+            _ => None,
+        },
+        runtime,
+    );
+    if let OpenMode::Attach { notebook_id, .. } = &window.mode {
+        context.attachment_id = Some(notebook_id.clone());
+        context.working_dir = None;
+    }
+    context
 }
 
 fn clear_notebook_sync_handles(handles: Vec<(String, SharedNotebookSync)>, reason: &'static str) {
@@ -4874,7 +5230,12 @@ pub fn run(
     runtime: Option<Runtime>,
     notebook_id: Option<String>,
     open_directory: Option<PathBuf>,
+    attach_notebook_id: Option<uuid::Uuid>,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        attach_notebook_id.is_none() || (notebook_path.is_none() && runtime.is_none() && notebook_id.is_none() && open_directory.is_none()),
+        "--attach-notebook-id cannot be combined with path, runtime, notebook-id, or open-directory",
+    );
     let initial_directory = open_directory
         .map(|path| {
             anyhow::ensure!(path.is_dir(), "Not a directory: '{}'", path.display());
@@ -4960,10 +5321,14 @@ pub fn run(
     shell_env::load_shell_environment();
 
     // Check if onboarding is needed EARLY, before setting up notebook state.
-    // If onboarding is needed and no notebook path provided, we'll show the
-    // onboarding window instead of creating a notebook.
+    // Explicit path and UUID targets must survive first-run onboarding.
     let app_settings = settings::load_settings();
-    let needs_onboarding = !app_settings.onboarding_completed && notebook_path.is_none();
+    let needs_onboarding = startup_needs_onboarding(
+        app_settings.onboarding_completed,
+        notebook_path.as_deref(),
+        notebook_id.as_deref(),
+        attach_notebook_id.as_ref(),
+    );
 
     let runtime = runtime.unwrap_or(app_settings.default_runtime);
     let directory_window = notebook_path
@@ -4983,7 +5348,7 @@ pub fn run(
     }) = &directory_window
     {
         working_dir.clone()
-    } else if notebook_path.is_none() {
+    } else if notebook_path.is_none() && attach_notebook_id.is_none() {
         std::env::current_dir()
             .ok()
             .filter(|p| p.parent().is_some())
@@ -4993,7 +5358,10 @@ pub fn run(
     };
 
     // Try to restore session if no notebook path/id provided and not onboarding
-    let restored_session = if notebook_path.is_none() && notebook_id.is_none() && !needs_onboarding
+    let restored_session = if notebook_path.is_none()
+        && notebook_id.is_none()
+        && attach_notebook_id.is_none()
+        && !needs_onboarding
     {
         session::load_session()
     } else {
@@ -5025,18 +5393,13 @@ pub fn run(
             mode: OpenMode::Open { path: path.clone() },
             saved_scale_factor: None,
         }]
-    } else if let Some(ref id) = notebook_id {
-        // CLI --notebook-id: join an existing untitled notebook by UUID
-        vec![StartupWindow {
-            label: format!("notebook-{}", &id[..8.min(id.len())]),
-            title: "Untitled.ipynb".to_string(),
-            mode: OpenMode::Create {
-                runtime: runtime.to_string(),
-                working_dir: working_dir.clone(),
-                notebook_id: Some(id.clone()),
-            },
-            saved_scale_factor: None,
-        }]
+    } else if let Some(window) = explicit_uuid_startup_window(
+        notebook_id.as_deref(),
+        attach_notebook_id.as_ref(),
+        &runtime,
+        &working_dir,
+    ) {
+        vec![window]
     } else if let Some(ref session) = restored_session {
         // Session restore: recreate all windows from the saved session
         session
@@ -5133,38 +5496,7 @@ pub fn run(
 
     // Register all startup window contexts in the registry before setup
     for sw in &startup_windows {
-        let placeholder_id = match &sw.mode {
-            OpenMode::Open { path } => path
-                .canonicalize()
-                .unwrap_or_else(|_| path.clone())
-                .to_string_lossy()
-                .to_string(),
-            OpenMode::Create {
-                notebook_id: Some(ref id),
-                ..
-            } => id.clone(),
-            OpenMode::Create {
-                notebook_id: None, ..
-            } => String::new(),
-            // Startup windows come from session restore (persisted .ipynb files
-            // or UUID-identified untitled notebooks). Attach is strictly a
-            // live-clone mode and is never serialized into session state.
-            OpenMode::Attach { notebook_id, .. } => notebook_id.clone(),
-            OpenMode::Hosted { .. } => String::new(),
-        };
-        let context = create_window_context_for_daemon(
-            match &sw.mode {
-                OpenMode::Open { path } => Some(path.clone()),
-                _ => None,
-            },
-            working_dir.clone(),
-            placeholder_id,
-            match &sw.mode {
-                OpenMode::Hosted { locator, .. } => Some(locator.clone()),
-                _ => None,
-            },
-            runtime.clone(),
-        );
+        let context = startup_window_context(sw, working_dir.clone(), runtime.clone());
         window_registry
             .insert(&sw.label, context)
             .map_err(anyhow::Error::msg)?;
@@ -5541,12 +5873,14 @@ pub fn run(
                                     OpenMode::Attach {
                                         notebook_id: id,
                                         runtime: rt,
+                                        ephemeral,
                                         working_dir: _,
                                     } => {
                                         initialize_notebook_sync_attach(
                                             window,
                                             id,
                                             rt,
+                                            ephemeral,
                                             context.notebook_sync,
                                             context.sync_generation,
                                             context.notebook_id,

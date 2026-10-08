@@ -20,6 +20,10 @@ struct Args {
     #[arg(long)]
     notebook_id: Option<String>,
 
+    /// Attach to an existing daemon notebook without creating or changing its context.
+    #[arg(long, conflicts_with_all = ["path", "runtime", "notebook_id", "open_directory"])]
+    attach_notebook_id: Option<uuid::Uuid>,
+
     /// Seed a directory launch and consume its matching macOS document event once.
     #[arg(long, hide = true, conflicts_with_all = ["path", "notebook_id"])]
     open_directory: Option<PathBuf>,
@@ -33,6 +37,7 @@ fn main() {
         args.runtime,
         args.notebook_id.clone(),
         args.open_directory.clone(),
+        args.attach_notebook_id,
     ) {
         // Show native error dialog before exiting
         let title = "Cannot Open Notebook";
@@ -54,6 +59,33 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attach_only_cli_preserves_uuid_and_rejects_creation_selectors() {
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let args = Args::try_parse_from(["notebook", "--attach-notebook-id", id]).unwrap();
+        assert_eq!(args.attach_notebook_id.unwrap().to_string(), id);
+        assert!(args.notebook_id.is_none());
+        for extra in [
+            vec!["saved.ipynb"],
+            vec!["--runtime", "deno"],
+            vec!["--notebook-id", id],
+            vec!["--open-directory", "/project"],
+        ] {
+            let mut argv = vec!["notebook", "--attach-notebook-id", id];
+            argv.extend(extra);
+            assert!(Args::try_parse_from(argv).is_err());
+        }
+        for invalid in ["not-a-uuid", "", "/project/saved.ipynb"] {
+            assert!(Args::try_parse_from(["notebook", "--attach-notebook-id", invalid]).is_err());
+        }
+        // The legacy flag still carries a create/restore hint, not an attach intent.
+        let legacy =
+            Args::try_parse_from(["notebook", "--notebook-id", id, "--runtime", "deno"]).unwrap();
+        assert_eq!(legacy.notebook_id.as_deref(), Some(id));
+        assert!(legacy.attach_notebook_id.is_none());
+        assert_eq!(legacy.runtime, Some(Runtime::Deno));
+    }
 
     #[test]
     fn directory_document_handoff_carries_explicit_path() {

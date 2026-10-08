@@ -987,11 +987,11 @@ impl McpProxy {
     /// one synchronous launch on the same child generation. Never retry the
     /// callback. Release after admission can expire the handle while the app is
     /// already opening, just as with other admitted notebook side effects.
-    pub async fn admit_notebook_launch<T>(
+    pub async fn admit_notebook_launch(
         &self,
         mut params: CallToolRequestParams,
-        launch: impl FnOnce(NotebookLaunchIdentity) -> Result<T, McpError>,
-    ) -> Result<T, McpError> {
+        launch: impl FnOnce(NotebookLaunchIdentity) -> Result<CallToolResult, McpError>,
+    ) -> Result<CallToolResult, McpError> {
         params.name = "resolve_notebook_launch".into();
         mcp_transport::validate_tool_target_params(&params)?;
         let handle = params
@@ -1005,6 +1005,9 @@ impl McpProxy {
             .try_forward_tool_call(&params)
             .await
             .map_err(|failure| failure.error)?;
+        if success.result.is_error == Some(true) {
+            return Ok(success.result);
+        }
         let identity = NotebookLaunchIdentity::from_result(&success.result, &handle)?;
         {
             let state = self.state.read().await;

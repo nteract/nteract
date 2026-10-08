@@ -2453,14 +2453,9 @@ pub async fn show_notebook(
         return Ok(readable_notebook_session_response(server, result, &target).await);
     }
 
-    let (app_path, app_args) = if let Some(path) = resolved_path {
-        (Some(std::path::Path::new(path)), Vec::new())
-    } else if std::path::Path::new(&target).is_absolute() {
-        (Some(std::path::Path::new(&target)), Vec::new())
-    } else {
-        (None, vec!["--notebook-id", target.as_str()])
-    };
-    let opened = if server.uses_local_runtime_admission() {
+    let (app_path, app_args) = notebook_app_launch_target(&target, resolved_path);
+    let opened = if uuid::Uuid::parse_str(&target).is_ok() || server.uses_local_runtime_admission()
+    {
         runt_workspace::open_notebook_app_for_endpoint_strict(
             &server.socket_path,
             app_path,
@@ -2486,10 +2481,47 @@ pub async fn show_notebook(
     Ok(readable_notebook_session_response(server, result, &target).await)
 }
 
+/// An acquired canonical room keeps its UUID and endpoint, including after
+/// save/rename. Reopening its path could select a different room or alias.
+fn notebook_app_launch_target<'a>(
+    target: &'a str,
+    resolved_path: Option<&'a str>,
+) -> (Option<&'a std::path::Path>, Vec<&'a str>) {
+    if uuid::Uuid::parse_str(target).is_ok() {
+        (None, vec!["--attach-notebook-id", target])
+    } else if let Some(path) = resolved_path {
+        (Some(std::path::Path::new(path)), Vec::new())
+    } else if std::path::Path::new(target).is_absolute() {
+        (Some(std::path::Path::new(target)), Vec::new())
+    } else {
+        (None, vec!["--notebook-id", target])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn attach_only_bundled_launch_keeps_saved_and_untitled_canonical_room_identity() {
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        for path in [
+            None,
+            Some("/project/saved.ipynb"),
+            Some("/other/alias.ipynb"),
+        ] {
+            let (app_path, args) = notebook_app_launch_target(id, path);
+            assert!(
+                app_path.is_none(),
+                "an attached saved room must not reopen a path alias"
+            );
+            assert_eq!(args, ["--attach-notebook-id", id]);
+        }
+        let (path, args) = notebook_app_launch_target("/legacy/saved.ipynb", None);
+        assert_eq!(path, Some(std::path::Path::new("/legacy/saved.ipynb")));
+        assert!(args.is_empty());
+    }
 
     struct IdleFrames;
     impl notebook_protocol::connection::FrameSource for IdleFrames {

@@ -272,6 +272,7 @@ mod tests {
 
     fn test_context(path: Option<PathBuf>, notebook_id: &str) -> WindowNotebookContext {
         WindowNotebookContext {
+            attachment_id: None,
             notebook_sync: Arc::new(tokio::sync::Mutex::new(None)),
             sync_generation: Arc::new(AtomicU64::new(0)),
             path: Arc::new(Mutex::new(path)),
