@@ -1742,7 +1742,12 @@ async fn open_explicit_attachment(
         }
         let canonical = match &target {
             NotebookTarget::LocalNotebookId(id) => {
-                canonical_local_id_target_for_server(server, id).await?
+                canonical_local_id_target_for_server(server, id)
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::debug!(?error, "Cannot resolve backing-peer path alias; retaining requested notebook identity");
+                        requested.clone()
+                    })
             }
             _ => requested.clone(),
         };
@@ -1800,12 +1805,10 @@ async fn open_explicit_attachment(
         let rooms = PoolClient::new(server.socket_path.clone())
             .list_rooms()
             .await
-            .map_err(|error| {
-                McpError::internal_error(
-                    format!("Failed to resolve backing notebook: {error}"),
-                    None,
-                )
-            })?;
+            .unwrap_or_else(|error| {
+                tracing::debug!(%error, "Cannot resolve backing peer; opening a fresh connection");
+                Vec::new()
+            });
         let mut matches = rooms.into_iter().filter(|room| match &target {
             NotebookTarget::LocalPath(path) => {
                 room.notebook_path.as_deref().is_some_and(|room_path| {
@@ -2721,6 +2724,118 @@ mod tests {
         DaemonIncarnation {
             pid,
             started_at: Utc.timestamp_opt(pid.into(), 0).single().unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn native_open_tries_fresh_transport_when_optional_pool_room_queries_fail() {
+        use notebook_protocol::connection::{self, Handshake};
+        use runtimed_client::protocol::{Request, Response};
+
+        for by_id in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let socket = root.path().join("daemon.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let (opened, attempted) = tokio::sync::oneshot::channel();
+            let daemon = tokio::spawn(async move {
+                let mut failed_lists = 0;
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    connection::recv_preamble(&mut stream).await.unwrap();
+                    let handshake = connection::recv_json_frame::<_, Handshake>(&mut stream)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    match handshake {
+                        Handshake::Pool => {
+                            let request = connection::recv_json_frame::<_, Request>(&mut stream)
+                                .await
+                                .unwrap()
+                                .unwrap();
+                            let response = match request {
+                                Request::GetDaemonInfo => Response::DaemonInfo {
+                                    host_telemetry: false,
+                                    host_telemetry_enabled: false,
+                                    protocol_version: connection::PROTOCOL_VERSION.into(),
+                                    daemon_api_version:
+                                        runtimed_client::protocol::DAEMON_API_VERSION,
+                                    daemon_version: "test".into(),
+                                    pid: 1,
+                                    started_at: test_incarnation(1).started_at,
+                                    blob_port: None,
+                                    execution_store_dir: None,
+                                    worktree_path: None,
+                                    workspace_description: None,
+                                },
+                                Request::ListRooms => {
+                                    failed_lists += 1;
+                                    Response::Error {
+                                        message: "injected optional room lookup failure".into(),
+                                    }
+                                }
+                                _ => panic!("unexpected pool request: {request:?}"),
+                            };
+                            connection::send_json_frame(&mut stream, &response)
+                                .await
+                                .unwrap();
+                        }
+                        handshake @ (Handshake::OpenNotebook { .. }
+                        | Handshake::NotebookSync { .. }) => {
+                            opened.send(handshake).unwrap();
+                            // Deliberately fail only the fresh transport bootstrap.
+                            // Its error must replace neither admission nor lookup
+                            // outcomes with a cached attachment or false success.
+                            drop(stream);
+                            return failed_lists;
+                        }
+                        _ => panic!("unexpected channel: {handshake:?}"),
+                    }
+                }
+            });
+            let server = NteractMcp::new_no_show(socket, None, None);
+            let path = root.path().join("requested.ipynb");
+            let notebook_id = "12345678-1234-1234-1234-123456789abc";
+            let arguments = if by_id {
+                serde_json::json!({"notebook_id":notebook_id})
+            } else {
+                serde_json::json!({"path":path})
+            };
+            let response = tokio::time::timeout(
+                Duration::from_secs(2),
+                crate::targets::dispatch(
+                    &server,
+                    &make_request("connect_notebook", arguments),
+                    true,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(response.is_error, Some(true));
+            assert!(first_text(&response).contains(if by_id {
+                "Failed to join notebook"
+            } else {
+                "Failed to open notebook"
+            }));
+            assert!(!first_text(&response).contains("injected optional room lookup failure"));
+            let handshake = attempted.await.unwrap();
+            match handshake {
+                Handshake::NotebookSync {
+                    notebook_id: actual,
+                    ..
+                } if by_id => assert_eq!(actual, notebook_id),
+                Handshake::OpenNotebook { path: actual, .. } if !by_id => {
+                    assert_eq!(PathBuf::from(actual), path)
+                }
+                _ => panic!("wrong fresh transport target: {handshake:?}"),
+            }
+            assert_eq!(daemon.await.unwrap(), if by_id { 2 } else { 1 });
+            assert!(server.attachments.read_entries().is_empty());
+            let reservations = (0..crate::attachments::MAX_ATTACHMENTS)
+                .map(|_| server.attachments.reserve().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(reservations.len(), crate::attachments::MAX_ATTACHMENTS);
         }
     }
 
