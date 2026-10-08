@@ -681,3 +681,52 @@ async fn admission_counts_pending_opens_without_evicting_retained_handles() {
     );
     fixture.stop(wire).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_shutdown_reply_requires_clean_owned_daemon_exit() {
+    let fixture = Fixture::start().await;
+    let a_path = fixture.notebook("shutdown-a", "source A");
+    let b_path = fixture.notebook("shutdown-b", "source B");
+    let mut wire = fixture.wire();
+    let a = open(&mut wire, 10, &a_path, true).await;
+    let b = open(&mut wire, 11, &b_path, true).await;
+    for handle in [&a, &b] {
+        fixture.ready(handle).await;
+        fixture.synced(handle).await;
+    }
+    result(&mutate(&mut wire, 12, &a, "durable A before shutdown", true).await);
+    fixture.synced(&a).await;
+    assert_eq!(
+        read(&mut wire, 13, &b, true).await["cells"][0]["source_preview"],
+        "source B"
+    );
+    fixture
+        .stop_with_shutdown_fault(wire, ShutdownFault::LostReply)
+        .await;
+}
+
+async fn reject_shutdown_fault(fault: ShutdownFault) {
+    let fixture = Fixture::start().await;
+    let mut wire = fixture.wire();
+    wire.initialize("2025-11-25").await;
+    wire.initialized().await;
+    fixture.stop_with_shutdown_fault(wire, fault).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "daemon shutdown request failed")]
+async fn shutdown_refusal_does_not_pass_fixture_cleanup() {
+    reject_shutdown_fault(ShutdownFault::Refusal).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "daemon failed:")]
+async fn shutdown_eof_does_not_hide_failed_owned_child() {
+    reject_shutdown_fault(ShutdownFault::FailedChild).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "daemon must stop cleanly after shutdown reply")]
+async fn shutdown_eof_does_not_pass_with_live_owned_child() {
+    reject_shutdown_fault(ShutdownFault::Disconnect).await;
+}

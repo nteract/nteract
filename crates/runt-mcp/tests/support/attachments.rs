@@ -109,6 +109,15 @@ impl OpenGate {
     }
 }
 
+/// Faults injected only into an isolated fixture shutdown.
+#[derive(Clone, Copy)]
+pub enum ShutdownFault {
+    LostReply,
+    Refusal,
+    Disconnect,
+    FailedChild,
+}
+
 pub struct Fixture {
     // Stop the child before TempDir drops, including startup failure paths.
     child: DaemonProcess,
@@ -413,13 +422,98 @@ impl Fixture {
             });
     }
 
-    pub async fn stop(mut self, wire: Wire) {
+    pub async fn stop(self, wire: Wire) {
+        let socket = self.root.path().join("daemon.sock");
+        self.stop_on_socket(wire, socket).await;
+    }
+
+    /// Exercise shutdown failure handling against the actual owned process.
+    pub async fn stop_with_shutdown_fault(mut self, wire: Wire, fault: ShutdownFault) {
+        if matches!(fault, ShutdownFault::FailedChild) {
+            self.child.0.kill().unwrap();
+        }
+        let socket = self.root.path().join("shutdown-relay.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let daemon_socket = self.root.path().join("daemon.sock");
+        let relay = tokio::spawn(async move {
+            let (mut caller, _) = listener.accept().await.unwrap();
+            connection::recv_preamble(&mut caller).await.unwrap();
+            let handshake = connection::recv_json_frame::<_, Handshake>(&mut caller)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(handshake, Handshake::Pool));
+            let request =
+                connection::recv_json_frame::<_, runtimed_client::protocol::Request>(&mut caller)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(matches!(
+                request,
+                runtimed_client::protocol::Request::Shutdown
+            ));
+            match fault {
+                ShutdownFault::LostReply => {
+                    let mut daemon = UnixStream::connect(daemon_socket).await.unwrap();
+                    connection::send_preamble(&mut daemon).await.unwrap();
+                    connection::send_json_frame(&mut daemon, &handshake)
+                        .await
+                        .unwrap();
+                    connection::send_json_frame(&mut daemon, &request)
+                        .await
+                        .unwrap();
+                    let reply =
+                        connection::recv_json_frame::<_, runtimed_client::protocol::Response>(
+                            &mut daemon,
+                        )
+                        .await
+                        .unwrap();
+                    if let Some(reply) = reply {
+                        if !matches!(reply, runtimed_client::protocol::Response::ShuttingDown) {
+                            // Preserve a real refusal instead of disguising it as EOF.
+                            connection::send_json_frame(&mut caller, &reply)
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    // Discard only the successful acknowledgment; closing caller
+                    // reproduces EOF during the daemon's actual shutdown.
+                }
+                ShutdownFault::Refusal => {
+                    connection::send_json_frame(
+                        &mut caller,
+                        &runtimed_client::protocol::Response::Error {
+                            message: "injected clean shutdown refusal".into(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                }
+                ShutdownFault::Disconnect | ShutdownFault::FailedChild => {
+                    // No shutdown is forwarded: EOF must not count as a clean
+                    // exit for either a still-running or a killed owned child.
+                }
+            }
+        });
+        self.stop_on_socket(wire, socket).await;
+        timeout(DEADLINE, relay).await.unwrap().unwrap();
+    }
+
+    async fn stop_on_socket(mut self, wire: Wire, socket: PathBuf) {
         self.server.shutdown().await;
         assert!(wire.finish().await);
-        runtimed_client::client::PoolClient::new(self.root.path().join("daemon.sock"))
+        let shutdown_reply = runtimed_client::client::PoolClient::new(socket)
             .shutdown()
-            .await
-            .unwrap();
+            .await;
+        if let Err(error) = &shutdown_reply {
+            // Daemon::run can finish and drop the child runtime before the
+            // shutdown handler writes its final reply. Only this EOF is
+            // admissible, and only with the clean owned-process exit below.
+            assert!(
+                matches!(error, runtimed_client::client::ClientError::ProtocolError(message) if message == "connection closed"),
+                "daemon shutdown request failed: {error}"
+            );
+        }
         timeout(DEADLINE, async {
             loop {
                 if let Some(status) = self.child.0.try_wait().unwrap() {
@@ -434,7 +528,12 @@ impl Fixture {
             }
         })
         .await
-        .expect("daemon must stop cleanly");
+        .unwrap_or_else(|_| {
+            panic!(
+                "daemon must stop cleanly after shutdown reply {shutdown_reply:?}; daemon: {}",
+                std::fs::read_to_string(self.root.path().join("daemon.log")).unwrap()
+            )
+        });
         assert!(
             !self.root.path().join("tool-violations").exists(),
             "fixture tried to install/use an environment"
