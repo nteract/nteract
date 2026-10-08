@@ -5,6 +5,7 @@ const capturedInvokes: Array<{ cmd: string; args: unknown }> = [];
 const capturedListens: Array<{ event: string; cb: (ev: { payload: unknown }) => void }> = [];
 const mockUnlisten = vi.fn();
 let reconnectPromiseOverride: Promise<unknown> | null = null;
+let unavailablePromiseOverride: Promise<unknown> | null = null;
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class Channel<T = unknown> {
@@ -50,6 +51,8 @@ vi.mock("@tauri-apps/api/core", () => ({
           comments_doc_id: "comments:local-room:nb-1",
           comments_notebook_ref: { kind: "local_room", room_id: "nb-1" },
         });
+      case "get_daemon_unavailable_info":
+        return unavailablePromiseOverride ?? Promise.resolve(null);
       case "get_default_save_directory":
         return Promise.resolve("/tmp/notebooks");
       case "clone_notebook_to_ephemeral":
@@ -173,6 +176,7 @@ beforeEach(() => {
   updateCheckResult = null;
   updateCheckCount = 0;
   reconnectPromiseOverride = null;
+  unavailablePromiseOverride = null;
   mockUnlisten.mockReset();
   mockWindowUnlisten.mockReset();
   vi.mocked(stubTransport.sendRequest).mockReset();
@@ -442,6 +446,92 @@ describe("createTauriHost()", () => {
     // processed yet). The JS-side wrapper must gate on `cancelled`.
     entry?.cb({ payload: { runtime: "deno" } });
     expect(received.length).toBe(countBefore);
+  });
+
+  const refusal = {
+    reason: "attachment_failed",
+    message: "sync connect (attach): notebook room does not exist",
+    guidance: "The requested notebook was not opened.",
+  };
+
+  it("onUnavailable backfills the original refusal for a late subscriber", async () => {
+    unavailablePromiseOverride = Promise.resolve(refusal);
+    const host = createTauriHost({ transport: stubTransport });
+    const received: unknown[] = [];
+    host.daemonEvents.onUnavailable((payload) => received.push(payload));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(capturedInvokes.map((x) => x.cmd)).toContain("get_daemon_unavailable_info");
+    expect(received).toEqual([refusal]);
+  });
+
+  it("onUnavailable stays silent without a cached refusal", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const cb = vi.fn();
+    host.daemonEvents.onUnavailable(cb);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it("onUnavailable cancels a pending lookup and both listeners on unsubscribe", async () => {
+    let resolveLookup!: (payload: unknown) => void;
+    unavailablePromiseOverride = new Promise((resolve) => {
+      resolveLookup = resolve;
+    });
+    const host = createTauriHost({ transport: stubTransport });
+    const cb = vi.fn();
+    const unlisten = host.daemonEvents.onUnavailable(cb);
+    // Settle listener registration and unrelated host cleanup while keeping
+    // the error lookup pending; all mocked listeners share this disposer.
+    await Promise.resolve();
+    await Promise.resolve();
+    mockUnlisten.mockClear();
+    unlisten();
+    resolveLookup(refusal);
+    await Promise.resolve();
+    await Promise.resolve();
+    for (const entry of capturedListens.filter((x) => x.event === "daemon:unavailable")) {
+      entry.cb({ payload: refusal });
+    }
+    expect(cb).not.toHaveBeenCalled();
+    expect(mockUnlisten).toHaveBeenCalledTimes(2);
+  });
+
+  it("onUnavailable discards pending cached failure after a successful ready event", async () => {
+    let resolveLookup!: (payload: unknown) => void;
+    unavailablePromiseOverride = new Promise((resolve) => {
+      resolveLookup = resolve;
+    });
+    const host = createTauriHost({ transport: stubTransport });
+    const received: unknown[] = [];
+    host.daemonEvents.onUnavailable((payload) => received.push(payload));
+    for (const entry of capturedListens.filter((x) => x.event === "daemon:ready")) {
+      entry.cb({ payload: { notebook_id: "room", relay_generation: 2 } });
+    }
+    resolveLookup(refusal);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(received).toEqual([]);
+    // Only the old lookup is invalidated; a later live refusal still arrives.
+    capturedListens.find((x) => x.event === "daemon:unavailable")?.cb({ payload: refusal });
+    expect(received).toEqual([refusal]);
+  });
+
+  it("onUnavailable does not replace a newer live error with an older cache response", async () => {
+    let resolveLookup!: (payload: unknown) => void;
+    unavailablePromiseOverride = new Promise((resolve) => {
+      resolveLookup = resolve;
+    });
+    const host = createTauriHost({ transport: stubTransport });
+    const received: unknown[] = [];
+    host.daemonEvents.onUnavailable((payload) => received.push(payload));
+    const newer = { ...refusal, message: "newer refusal" };
+    capturedListens.find((x) => x.event === "daemon:unavailable")?.cb({ payload: newer });
+    resolveLookup(refusal);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(received).toEqual([newer]);
   });
 
   it("relay.notifySyncReady invokes notify_sync_ready (not on daemonEvents)", async () => {

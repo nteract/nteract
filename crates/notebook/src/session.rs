@@ -3,7 +3,7 @@
 //! Saves the list of open windows (local paths, local room ids, or hosted locators) on shutdown,
 //! and restores them on startup. Works with the tauri-plugin-window-state for geometry.
 
-use crate::WindowNotebookRegistry;
+use crate::{WindowNotebookContext, WindowNotebookRegistry};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -71,30 +71,10 @@ pub(crate) fn save_session_to<R: tauri::Runtime>(
     let windows: Vec<WindowSession> = contexts
         .iter()
         .filter_map(|(label, context)| {
-            let path = context.path.lock().ok()?.clone();
-            let notebook_id = context.notebook_id.lock().ok()?.clone();
-            let hosted_locator = context.hosted_locator.clone();
-
-            // For untitled notebooks (no path), the notebook_id is the env_id (UUID).
-            // The daemon uses this to find the persisted Automerge doc on restore.
-            let env_id = if hosted_locator.is_none() && path.is_none() && !notebook_id.is_empty() {
-                Some(notebook_id)
-            } else {
-                None
-            };
-
             let scale_factor = app
                 .get_webview_window(label)
                 .and_then(|w| w.scale_factor().ok());
-
-            Some(WindowSession {
-                label: label.clone(),
-                path,
-                env_id,
-                hosted_locator,
-                runtime: context.runtime.to_string(),
-                scale_factor,
-            })
+            window_session(label, context, scale_factor)
         })
         .collect();
 
@@ -111,27 +91,40 @@ pub(crate) fn save_session_to_without_scale(
 
     let windows: Vec<WindowSession> = contexts
         .iter()
-        .filter_map(|(label, context)| {
-            let path = context.path.lock().ok()?.clone();
-            let notebook_id = context.notebook_id.lock().ok()?.clone();
-            let hosted_locator = context.hosted_locator.clone();
-            let env_id = if hosted_locator.is_none() && path.is_none() && !notebook_id.is_empty() {
-                Some(notebook_id)
-            } else {
-                None
-            };
-            Some(WindowSession {
-                label: label.clone(),
-                path,
-                env_id,
-                hosted_locator,
-                runtime: context.runtime.to_string(),
-                scale_factor: None,
-            })
-        })
+        .filter_map(|(label, context)| window_session(label, context, None))
         .collect();
 
     write_session(windows, dest)
+}
+
+/// Project a window into the existing restore format. A pathless explicit
+/// attachment has no create/restore intent, so saving its room as an env_id
+/// would turn the next normal launch into an unintended Create request.
+fn window_session(
+    label: &str,
+    context: &WindowNotebookContext,
+    scale_factor: Option<f64>,
+) -> Option<WindowSession> {
+    let path = context.path.lock().ok()?.clone();
+    if path.is_none() && context.attachment_id.is_some() {
+        return None;
+    }
+    let notebook_id = context.notebook_id.lock().ok()?.clone();
+    let hosted_locator = context.hosted_locator.clone();
+    // Ordinary untitled notebooks still restore their persisted document.
+    let env_id = if hosted_locator.is_none() && path.is_none() && !notebook_id.is_empty() {
+        Some(notebook_id)
+    } else {
+        None
+    };
+    Some(WindowSession {
+        label: label.to_string(),
+        path,
+        env_id,
+        hosted_locator,
+        runtime: context.runtime.to_string(),
+        scale_factor,
+    })
 }
 
 /// Write a list of window sessions to disk.
@@ -366,6 +359,55 @@ mod tests {
         save_session_to_without_scale(&registry, &session_path).unwrap();
 
         // Empty registry should not create a session file
+        assert!(!session_path.exists());
+    }
+
+    #[test]
+    fn test_save_excludes_pathless_attachments_but_preserves_create_and_file_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+        let saved_path = dir.path().join("attached.ipynb");
+        std::fs::write(&saved_path, "{}").unwrap();
+        let mut pathless = test_context(None, "attached-room");
+        pathless.attachment_id = Some("attached-room".into());
+        let mut saved = test_context(Some(saved_path.clone()), "saved-room");
+        saved.attachment_id = Some("saved-room".into());
+        let registry = test_registry(vec![
+            ("attached", pathless),
+            ("ordinary-untitled", test_context(None, "create-room")),
+            ("file-backed", saved),
+        ]);
+        save_session_to_without_scale(&registry, &session_path).unwrap();
+        let loaded = load_session_from(&session_path).unwrap();
+        assert_eq!(loaded.windows.len(), 2);
+        assert!(!loaded
+            .windows
+            .iter()
+            .any(|window| window.label == "attached"));
+        let ordinary = loaded
+            .windows
+            .iter()
+            .find(|window| window.label == "ordinary-untitled")
+            .unwrap();
+        assert_eq!(ordinary.env_id.as_deref(), Some("create-room"));
+        assert!(ordinary.path.is_none());
+        let file = loaded
+            .windows
+            .iter()
+            .find(|window| window.label == "file-backed")
+            .unwrap();
+        assert_eq!(file.path, Some(saved_path));
+        assert!(file.env_id.is_none());
+    }
+
+    #[test]
+    fn test_pathless_attachment_alone_does_not_create_restore_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+        let mut attached = test_context(None, "existing-room");
+        attached.attachment_id = Some("existing-room".into());
+        save_session_to_without_scale(&test_registry(vec![("attached", attached)]), &session_path)
+            .unwrap();
         assert!(!session_path.exists());
     }
 

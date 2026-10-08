@@ -240,6 +240,14 @@ struct SyncReadyState {
     gates: Arc<Mutex<HashMap<String, SyncReadyGate>>>,
     frame_channels: Arc<Mutex<HashMap<String, FrameChannelGate>>>,
     last_ready: Arc<Mutex<HashMap<String, DaemonReadyPayload>>>,
+    attachment_failures: Arc<Mutex<HashMap<String, DaemonUnavailablePayload>>>,
+}
+
+#[derive(Clone, Serialize)]
+struct DaemonUnavailablePayload {
+    reason: String,
+    message: String,
+    guidance: String,
 }
 
 struct SyncReadyGate {
@@ -295,6 +303,12 @@ impl SyncReadyState {
         if let Some(gate) = frame_channels.get_mut(label) {
             gate.tx.send_replace(None);
         }
+        // A new attempt supersedes the prior refusal, even if it later fails
+        // for a transient endpoint reason instead of a definitive room refusal.
+        self.attachment_failures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(label);
     }
 
     /// Mark a window's relay as ready to emit frames.
@@ -419,7 +433,67 @@ impl SyncReadyState {
             Err(e) => e.into_inner(),
         };
         cache.insert(label.to_string(), payload);
+        self.attachment_failures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(label);
         true
+    }
+
+    /// Cache and emit while the generation remains registered, so a ready
+    /// reconnect or window destruction cannot overtake the refusal event.
+    fn record_attachment_failure(
+        &self,
+        label: &str,
+        generation: u64,
+        error: &notebook_sync::SyncError,
+        emit: impl FnOnce(&DaemonUnavailablePayload),
+    ) -> bool {
+        // Transient endpoint failures retain the existing daemon recovery
+        // diagnostics. Only a definitive room refusal becomes sticky here.
+        let notebook_sync::SyncError::NotebookUnavailable(refusal) = error else {
+            return false;
+        };
+        let gates = self.gates.lock().unwrap_or_else(|error| error.into_inner());
+        if gates
+            .get(label)
+            .is_none_or(|gate| gate.generation != generation)
+        {
+            return false;
+        }
+        let payload = DaemonUnavailablePayload {
+            reason: "attachment_failed".into(),
+            message: format!("sync connect (attach): {refusal}"),
+            guidance: "The requested notebook was not opened.".into(),
+        };
+        self.clear_cached_ready(label);
+        let mut failures = self
+            .attachment_failures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        failures.insert(label.into(), payload.clone());
+        emit(&payload);
+        true
+    }
+
+    fn get_attachment_failure(&self, label: &str) -> Option<DaemonUnavailablePayload> {
+        self.attachment_failures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(label)
+            .cloned()
+    }
+
+    /// Serialize generic emission with failure recording. A refusal either
+    /// suppresses this emission or follows it with the attachment's own reason.
+    fn emit_generic_unavailable(&self, label: &str, emit: impl FnOnce()) {
+        let failures = self
+            .attachment_failures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !failures.contains_key(label) {
+            emit();
+        }
     }
 
     /// Look up the cached payload on demand. Idempotent — multiple callers
@@ -480,6 +554,10 @@ impl SyncReadyState {
             }
         }
         self.clear_cached_ready(label);
+        self.attachment_failures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(label);
     }
 }
 
@@ -1037,6 +1115,17 @@ async fn initialize_notebook_sync_attach(
     notebook_id_arc: Arc<Mutex<String>>,
 ) -> Result<(), String> {
     let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let explicit_attachment = window
+        .app_handle()
+        .state::<WindowNotebookRegistry>()
+        .get(window.label())
+        .is_ok_and(|context| context.attachment_id.as_deref() == Some(notebook_id.as_str()));
+    if explicit_attachment {
+        window
+            .app_handle()
+            .state::<SyncReadyState>()
+            .reset_for_generation(window.label(), current_generation);
+    }
 
     let socket_path = runt_workspace::default_socket_path();
     info!(
@@ -1051,7 +1140,23 @@ async fn initialize_notebook_sync_attach(
     let operator = desktop_operator_label();
     let result = connect_attach_relay(socket_path, notebook_id.clone(), frame_tx, operator)
         .await
-        .map_err(|e| format!("sync connect (attach): {}", e))?;
+        .map_err(|e| {
+            let message = format!("sync connect (attach): {e}");
+            if explicit_attachment {
+                window
+                    .app_handle()
+                    .state::<SyncReadyState>()
+                    .record_attachment_failure(window.label(), current_generation, &e, |payload| {
+                        let _ = emit_to_label::<_, _, _>(
+                            &window,
+                            window.label(),
+                            "daemon:unavailable",
+                            payload,
+                        );
+                    });
+            }
+            message
+        })?;
 
     require_current_sync_generation(&sync_generation, current_generation, "attach")?;
 
@@ -2208,6 +2313,147 @@ mod tests {
             !*sync_ready.subscribe("notebook-closed").borrow(),
             "a reused deterministic label must start with a fresh readiness gate"
         );
+    }
+
+    #[test]
+    fn attachment_refusal_backfills_only_its_window_and_suppresses_generic_failure() {
+        let state = SyncReadyState::default();
+        state.reset_for_generation("attached", 1);
+        let original = "sync connect (attach): notebook room does not exist";
+        let mut emitted = Vec::new();
+        assert!(state.record_attachment_failure(
+            "attached",
+            1,
+            &notebook_sync::SyncError::NotebookUnavailable("notebook room does not exist".into()),
+            |payload| {
+                emitted.push(payload.message.clone());
+            }
+        ));
+        state.emit_generic_unavailable("attached", || emitted.push("sync_failed".into()));
+        state.emit_generic_unavailable("attached", || emitted.push("sync_timeout".into()));
+        assert_eq!(emitted, [original]);
+        let cached = state.get_attachment_failure("attached").unwrap();
+        assert_eq!(cached.reason, "attachment_failed");
+        assert_eq!(cached.message, original);
+        assert!(state.get_attachment_failure("other-window").is_none());
+        state.emit_generic_unavailable("other-window", || emitted.push("sync_failed".into()));
+        assert_eq!(emitted, [original, "sync_failed"]);
+    }
+
+    #[test]
+    fn successful_attachment_reconnect_clears_failure_and_rejects_old_generation() {
+        let state = SyncReadyState::default();
+        state.reset_for_generation("attached", 1);
+        assert!(state.record_attachment_failure(
+            "attached",
+            1,
+            &notebook_sync::SyncError::NotebookUnavailable("missing room".into()),
+            |_| {}
+        ));
+        state.reset_for_generation("attached", 2);
+        let ready = super::attach_ready_payload(
+            "room".into(),
+            2,
+            None,
+            None,
+            notebook_protocol::connection::ProtocolCapabilities::v4(None),
+        );
+        assert!(state.record_ready("attached", 2, ready));
+        assert!(state.get_attachment_failure("attached").is_none());
+        assert!(!state.record_attachment_failure(
+            "attached",
+            1,
+            &notebook_sync::SyncError::NotebookUnavailable("stale failure".into()),
+            |_| {
+                panic!("a superseded attempt must not emit");
+            }
+        ));
+        assert!(state.get_attachment_failure("attached").is_none());
+        assert!(state.get_cached_ready("attached").is_some());
+        assert!(state.record_attachment_failure(
+            "attached",
+            2,
+            &notebook_sync::SyncError::NotebookUnavailable("new refusal".into()),
+            |_| {}
+        ));
+        assert!(state.get_cached_ready("attached").is_none());
+    }
+
+    #[test]
+    fn transient_attachment_errors_do_not_cache_refusal_or_suppress_daemon_guidance() {
+        let state = SyncReadyState::default();
+        state.reset_for_generation("attached", 1);
+        let errors = [
+            notebook_sync::SyncError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "refused",
+            )),
+            notebook_sync::SyncError::DaemonUnavailable {
+                message: "daemon unavailable".into(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing socket"),
+            },
+            notebook_sync::SyncError::Timeout,
+            notebook_sync::SyncError::Protocol("invalid bootstrap".into()),
+        ];
+        for error in errors {
+            assert!(
+                !state.record_attachment_failure("attached", 1, &error, |_| {
+                    panic!("a transport failure must retain the existing daemon diagnostics");
+                })
+            );
+            assert!(state.get_attachment_failure("attached").is_none());
+            let mut generic_emitted = false;
+            state.emit_generic_unavailable("attached", || generic_emitted = true);
+            assert!(generic_emitted);
+        }
+    }
+
+    #[test]
+    fn new_attachment_attempt_discards_prior_refusal_before_transport_failure() {
+        let state = SyncReadyState::default();
+        state.reset_for_generation("attached", 1);
+        assert!(state.record_attachment_failure(
+            "attached",
+            1,
+            &notebook_sync::SyncError::NotebookUnavailable("missing room".into()),
+            |_| {}
+        ));
+        state.reset_for_generation("attached", 2);
+        let error = notebook_sync::SyncError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "daemon stopped",
+        ));
+        assert!(
+            !state.record_attachment_failure("attached", 2, &error, |_| {
+                panic!("transport failure is not a room refusal");
+            })
+        );
+        assert!(state.get_attachment_failure("attached").is_none());
+        let mut generic_emitted = false;
+        state.emit_generic_unavailable("attached", || generic_emitted = true);
+        assert!(generic_emitted);
+    }
+
+    #[test]
+    fn closed_attachment_window_cannot_repopulate_failure_cache() {
+        let state = SyncReadyState::default();
+        state.reset_for_generation("attached", 1);
+        assert!(state.record_attachment_failure(
+            "attached",
+            1,
+            &notebook_sync::SyncError::NotebookUnavailable("missing room".into()),
+            |_| {}
+        ));
+        state.clear_window("attached");
+        assert!(state.get_attachment_failure("attached").is_none());
+        assert!(!state.record_attachment_failure(
+            "attached",
+            1,
+            &notebook_sync::SyncError::NotebookUnavailable("late refusal".into()),
+            |_| {
+                panic!("a destroyed window must not receive the refusal");
+            }
+        ));
     }
 
     #[test]
@@ -4385,6 +4631,14 @@ fn get_daemon_ready_info(
     sync_ready.get_cached_ready(window.label())
 }
 
+#[tauri::command]
+fn get_daemon_unavailable_info(
+    window: tauri::Window,
+    sync_ready: tauri::State<'_, SyncReadyState>,
+) -> Option<DaemonUnavailablePayload> {
+    sync_ready.get_attachment_failure(window.label())
+}
+
 /// Send a typed frame to the daemon.
 ///
 /// The first byte is the frame type, the rest is the payload.
@@ -5610,6 +5864,7 @@ pub fn run(
             subscribe_notebook_frames,
             notify_sync_ready,
             get_daemon_ready_info,
+            get_daemon_unavailable_info,
             send_frame,
             // App update support
             begin_upgrade,
@@ -6006,11 +6261,16 @@ pub fn run(
                         "[autolaunch] Daemon sync timed out after {}ms. Daemon is not available.",
                         sync_wait_ms
                     );
-                    let _ = app_for_autolaunch.emit("daemon:unavailable", serde_json::json!({
+                    let payload = serde_json::json!({
                         "reason": "sync_timeout",
                         "message": "Daemon sync timed out. The runtime daemon may not be running.",
                         "guidance": runt_workspace::daemon_unavailable_guidance()
-                    }));
+                    });
+                    for window in app_for_autolaunch.webview_windows().into_values() {
+                        app_for_autolaunch.state::<SyncReadyState>().emit_generic_unavailable(window.label(), || {
+                            let _ = emit_to_label::<_, _, _>(&window, window.label(), "daemon:unavailable", &payload);
+                        });
+                    }
                 } else if daemon_sync_success_for_autolaunch.load(Ordering::SeqCst) {
                     // Daemon sync succeeded - daemon handles auto-launch
                     log::info!(
@@ -6023,11 +6283,16 @@ pub fn run(
                         "[autolaunch] Daemon sync failed after {}ms. Connection failed.",
                         sync_wait_ms
                     );
-                    let _ = app_for_autolaunch.emit("daemon:unavailable", serde_json::json!({
+                    let payload = serde_json::json!({
                         "reason": "sync_failed",
                         "message": "Failed to connect to runtime daemon.",
                         "guidance": runt_workspace::daemon_unavailable_guidance()
-                    }));
+                    });
+                    for window in app_for_autolaunch.webview_windows().into_values() {
+                        app_for_autolaunch.state::<SyncReadyState>().emit_generic_unavailable(window.label(), || {
+                            let _ = emit_to_label::<_, _, _>(&window, window.label(), "daemon:unavailable", &payload);
+                        });
+                    }
                 }
             });
 
