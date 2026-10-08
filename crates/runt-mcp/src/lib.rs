@@ -15,7 +15,7 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CompleteRequestParams, CompleteResult,
     Implementation, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
     ListToolsResult, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
-    ServerCapabilities, ServerInfo,
+    ReadResourceResult, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
@@ -590,6 +590,36 @@ impl NteractMcp {
         }
     }
 
+    /// A successful read may have awaited using a replica retained by another
+    /// logical owner. That replica's health does not preserve this URI's handle.
+    fn finish_attachment_resource_read(
+        &self,
+        uri: &str,
+        outcome: Result<ReadResourceResult, McpError>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let result = outcome?;
+        if let Some((handle, _)) = uri
+            .strip_prefix("nteract://sessions/")
+            .and_then(|tail| tail.split_once('/'))
+        {
+            // Reuse the existing segment decoder for every attachment resource,
+            // including output blobs, without restricting the resource suffix.
+            let resource = resources::parse_notebook_resource_uri(&format!(
+                "nteract://sessions/{handle}/cells"
+            ))
+            .map_err(|message| McpError::resource_not_found(message, None))?;
+            if let resources::NotebookResourceUri::Cells {
+                notebook_id: handle,
+            } = resource
+            {
+                if !self.attachments.read_entries().contains_key(&handle) {
+                    return Err(attachments::expired_resource_error(&handle));
+                }
+            }
+        }
+        Ok(result)
+    }
+
     fn superseded_access_error(access: &SessionAccess) -> SessionAccessError {
         SessionAccessError {
             code: "session_superseded",
@@ -866,8 +896,8 @@ impl ServerHandler for NteractMcp {
     ) -> Result<ReadResourceResponse, McpError> {
         require_protocol(&context)?;
         mcp_transport::validate_resource_uri(&request.uri, &context)?;
-        resources::read_resource(self, &request)
-            .await
+        let outcome = resources::read_resource(self, &request).await;
+        self.finish_attachment_resource_read(&request.uri, outcome)
             .map_err(|error| mcp_transport::resource_error(error, &context))
             .map(|result| {
                 result
@@ -1095,6 +1125,115 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn attachment_resource_completion_rejects_released_owner_with_live_shared_observer() {
+        let server = NteractMcp::new("unused.sock".into(), None, None);
+        let a = NotebookSession::hosted(
+            metadata_test_handle("same-notebook").await,
+            "same-notebook".into(),
+            "https://example.com".into(),
+        );
+        let observer = a.observer().unwrap();
+        let b = a.fresh_attachment(
+            2,
+            &session_activation::CanonicalNotebookTarget::new(a.activation_target.clone()),
+        );
+        let a_handle = a.notebook_handle.clone();
+        let b_handle = b.notebook_handle.clone();
+        server
+            .attachments
+            .insert(a, server.attachments.reserve().unwrap());
+        server
+            .attachments
+            .insert(b, server.attachments.reserve().unwrap());
+        let a_uri = resources::attachment_cells_uri(&a_handle);
+        let captured = resources::read_resource(&server, &ReadResourceRequestParams::new(&a_uri))
+            .await
+            .unwrap();
+        assert_eq!(
+            server
+                .finish_attachment_resource_read(&a_uri, Ok(captured.clone()))
+                .unwrap(),
+            captured
+        );
+        let (release, released) = tokio::sync::oneshot::channel();
+        let completion = async {
+            released.await.unwrap();
+            server.finish_attachment_resource_read(&a_uri, Ok(captured.clone()))
+        };
+        let releasing = async {
+            tokio::task::yield_now().await;
+            drop(server.attachments.remove(&a_handle));
+            release.send(()).unwrap();
+        };
+        let (expired, ()) = tokio::join!(completion, releasing);
+        let error = expired.unwrap_err();
+        assert_eq!(error.code.0, -32002);
+        assert_eq!(
+            error.data.as_ref().unwrap(),
+            &serde_json::json!({"code":"attachment_expired","notebook_handle":a_handle})
+        );
+        assert_ne!(
+            observer.read(None).unwrap().outcome,
+            observation::ChangeOutcome::Unavailable
+        );
+        for suffix in [
+            "comments",
+            "cells/cell-id",
+            "executions/execution-id/blobs/hash",
+        ] {
+            let uri = format!("nteract://sessions/{a_handle}/{suffix}");
+            assert_eq!(
+                server
+                    .finish_attachment_resource_read(&uri, Ok(captured.clone()))
+                    .unwrap_err()
+                    .data
+                    .as_ref()
+                    .unwrap()["code"],
+                "attachment_expired"
+            );
+        }
+        let encoded_handle = a_handle.replace('-', "%2D");
+        let encoded_uri = format!("nteract://sessions/{encoded_handle}/comments");
+        assert_eq!(
+            server
+                .finish_attachment_resource_read(&encoded_uri, Ok(captured.clone()))
+                .unwrap_err()
+                .data
+                .as_ref()
+                .unwrap()["notebook_handle"],
+            a_handle
+        );
+        assert_eq!(
+            server
+                .finish_attachment_resource_read(
+                    &resources::attachment_cells_uri(&b_handle),
+                    Ok(captured.clone())
+                )
+                .unwrap(),
+            captured
+        );
+        assert_eq!(
+            server
+                .finish_attachment_resource_read(
+                    "nteract://notebooks/same-notebook/comments",
+                    Ok(captured.clone())
+                )
+                .unwrap(),
+            captured
+        );
+        let original = McpError::internal_error(
+            "original read failure",
+            Some(serde_json::json!({"original":true})),
+        );
+        assert_eq!(
+            server
+                .finish_attachment_resource_read(&a_uri, Err(original.clone()))
+                .unwrap_err(),
+            original
+        );
     }
 
     #[tokio::test]
