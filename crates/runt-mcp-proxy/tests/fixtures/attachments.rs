@@ -18,14 +18,14 @@ impl ServerHandler for Child {
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult::with_all_items(
-            ["connect_notebook", "disconnect_notebook", "fixture_edit"]
+            ["connect_notebook", "create_cell", "disconnect_notebook", "fixture_edit"]
                 .into_iter()
                 .map(|name| {
                     Tool::new(
                         name,
                         "Attachment bridge fixture",
                         serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
-                            json!({"type":"object"}),
+                            if name == "connect_notebook" { json!({"type":"object","properties":{"target":{"type":"string"}}}) } else { json!({"type":"object","properties":{"notebook_handle":{"type":"string"}},"required":["notebook_handle"]}) },
                         )
                         .unwrap(),
                     )

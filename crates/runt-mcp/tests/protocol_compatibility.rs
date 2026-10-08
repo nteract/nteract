@@ -95,14 +95,12 @@ async fn legacy_wire(version: &str) {
             Some(json!({"name": "disconnect_notebook", "arguments": {}})),
         )
         .await;
-    let result = legacy_result(&response);
-    assert_eq!(result["isError"], true);
-    assert_eq!(result["content"][0]["type"], "text");
-    assert!(result["content"][0]["text"]
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(response["error"]["message"]
         .as_str()
-        .expect("tool error text")
-        .contains("No active session"));
-    assert_eq!(server.session_intent_epoch().load(Ordering::Acquire), 1);
+        .unwrap()
+        .contains("notebook_handle"));
+    assert_eq!(server.session_intent_epoch().load(Ordering::Acquire), 0);
 
     let response = wire
         .request(
@@ -229,6 +227,20 @@ async fn repeated_initialize_cannot_change_notebook_protocol_or_identity() {
         let (_dir, server) = isolated_server();
         let mut wire = Wire::start(server.clone());
         assert_initialize(&wire.initialize(version).await, version, "nteract");
+        // Identity is captured lazily by global discovery. The isolated
+        // missing daemon returns a tool error without changing notebook state.
+        let identified = wire
+            .request(
+                90,
+                "tools/call",
+                Some(json!({"name":"list_active_notebooks","arguments":{}})),
+            )
+            .await;
+        assert_eq!(legacy_result(&identified)["isError"], true);
+        assert_eq!(
+            *server.peer_label_shared().read().await,
+            "Compatibility Client"
+        );
         support::assert_reinitialize_preserves_legacy_peer(&mut wire, version).await;
         let response = wire
             .request(
@@ -237,7 +249,12 @@ async fn repeated_initialize_cannot_change_notebook_protocol_or_identity() {
                 Some(json!({"name": "disconnect_notebook", "arguments": {}})),
             )
             .await;
-        assert_eq!(legacy_result(&response)["isError"], true);
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("notebook_handle"));
+        assert_eq!(server.session_intent_epoch().load(Ordering::Acquire), 0);
         assert_eq!(
             *server.peer_label_shared().read().await,
             "Compatibility Client"

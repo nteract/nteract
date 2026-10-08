@@ -461,9 +461,6 @@ pub fn tool_params(name: &str, arguments: Value, native: bool) -> Value {
         params
     }
 }
-pub fn explicit_tool_params(name: &str, arguments: Value) -> Value {
-    json!({"name":name,"arguments":arguments,"_meta":{"io.nteract/attachmentMode":"explicit"}})
-}
 pub fn result(response: &Value) -> &Value {
     assert!(response.get("error").is_none(), "{response}");
     let result = &response["result"];

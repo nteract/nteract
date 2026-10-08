@@ -257,7 +257,7 @@ async fn same_notebook_opens_have_independent_handles_and_release() {
 }
 
 #[tokio::test]
-async fn legacy_selection_churn_keeps_explicit_attachments_usable() {
+async fn legacy_acquisition_churn_keeps_retained_attachments_usable() {
     let fixture = Fixture::start().await;
     let a = fixture.notebook("a", "retained A");
     let b = fixture.notebook("b", "selected B");
@@ -277,16 +277,15 @@ async fn legacy_selection_churn_keeps_explicit_attachments_usable() {
     result(&mutate(&mut wire, 12, &a_handle, "A during selection", false).await);
     gate.release();
     let b_response = payload(&wire.response(11).await);
-    fixture
-        .ready(b_response["notebook_handle"].as_str().unwrap())
-        .await;
+    let b_handle = b_response["notebook_handle"].as_str().unwrap();
+    fixture.ready(b_handle).await;
     let selected = wire
         .request(
             13,
             "tools/call",
             Some(tool_params(
                 "get_cell",
-                json!({"cell_id":"sentinel"}),
+                json!({"notebook_handle":b_handle,"cell_id":"sentinel"}),
                 false,
             )),
         )
@@ -295,11 +294,13 @@ async fn legacy_selection_churn_keeps_explicit_attachments_usable() {
         result(&selected).to_string().contains("selected B"),
         "{selected}"
     );
-    // Exceed the old eight-entry parked-peer cache through real selection.
+    // Exceed the old eight-entry parked-peer cache through retained acquisitions.
+    let mut last_handle = String::new();
     for index in 0..10 {
         let path = fixture.notebook(&format!("churn-{index}"), &format!("churn {index}"));
         let handle = open(&mut wire, 20 + index, &path, false).await;
         fixture.ready(&handle).await;
+        last_handle = handle;
     }
     assert_eq!(
         read(&mut wire, 40, &a_handle, false).await["cells"][0]["source_preview"],
@@ -312,7 +313,7 @@ async fn legacy_selection_churn_keeps_explicit_attachments_usable() {
             "tools/call",
             Some(tool_params(
                 "get_cell",
-                json!({"cell_id":"sentinel"}),
+                json!({"notebook_handle":last_handle,"cell_id":"sentinel"}),
                 false,
             )),
         )
@@ -325,7 +326,7 @@ async fn legacy_selection_churn_keeps_explicit_attachments_usable() {
 }
 
 #[tokio::test]
-async fn legacy_explicit_marker_retains_independent_owners_without_reselecting() {
+async fn ordinary_legacy_acquisitions_retain_independent_owners() {
     let fixture = Fixture::start().await;
     let selected_path = fixture.notebook("selected", "legacy selection");
     let a = fixture.notebook("a", "explicit source");
@@ -339,14 +340,14 @@ async fn legacy_explicit_marker_retains_independent_owners_without_reselecting()
     wire.send_request(
         11,
         "tools/call",
-        Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
+        Some(tool_params("connect_notebook", json!({"path":a}), false)),
     )
     .await;
     gate.reached().await;
     wire.send_request(
         12,
         "tools/call",
-        Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
+        Some(tool_params("connect_notebook", json!({"path":a}), false)),
     )
     .await;
     fixture.wait_for_reserved_capacity().await;
@@ -364,9 +365,10 @@ async fn legacy_explicit_marker_retains_independent_owners_without_reselecting()
         .request(
             13,
             "tools/call",
-            Some(explicit_tool_params(
+            Some(tool_params(
                 "get_cell",
                 json!({"cell_id":"sentinel"}),
+                false,
             )),
         )
         .await;
@@ -377,7 +379,7 @@ async fn legacy_explicit_marker_retains_independent_owners_without_reselecting()
             "tools/call",
             Some(tool_params(
                 "get_cell",
-                json!({"cell_id":"sentinel"}),
+                json!({"notebook_handle":selected_handle,"cell_id":"sentinel"}),
                 false,
             )),
         )
@@ -418,7 +420,7 @@ async fn legacy_explicit_marker_retains_independent_owners_without_reselecting()
         .request(19, "resources/read", Some(json!({"uri":id_uri})))
         .await;
     result(&by_id);
-    let changed = wire.request(20, "tools/call", Some(explicit_tool_params("set_cell", json!({"notebook_handle":second_handle,"cell_id":"sentinel","source":"explicit survivor"})))).await;
+    let changed = wire.request(20, "tools/call", Some(tool_params("set_cell", json!({"notebook_handle":second_handle,"cell_id":"sentinel","source":"explicit survivor"}), false))).await;
     assert_eq!(
         result(&changed)["content"][1]["uri"],
         format!("nteract://sessions/{second_handle}/cells/sentinel")
@@ -433,7 +435,7 @@ async fn legacy_explicit_marker_retains_independent_owners_without_reselecting()
             "tools/call",
             Some(tool_params(
                 "get_cell",
-                json!({"cell_id":"sentinel"}),
+                json!({"notebook_handle":selected_handle,"cell_id":"sentinel"}),
                 false,
             )),
         )
@@ -442,14 +444,12 @@ async fn legacy_explicit_marker_retains_independent_owners_without_reselecting()
         result(&selected).to_string().contains("legacy selection"),
         "{selected}"
     );
-    let invalid = wire.request(23, "tools/call", Some(json!({"name":"connect_notebook","arguments":{"path":a},"_meta":{"io.nteract/attachmentMode":"other"}}))).await;
-    assert_eq!(invalid["error"]["code"], -32602);
     assert_eq!(fixture.server.attachments().read_entries().len(), 2);
     fixture.stop(wire).await;
 }
 
 #[tokio::test]
-async fn legacy_switch_back_keeps_retained_handle_and_notebook_id_resource_usable() {
+async fn legacy_reacquisition_keeps_original_handle_and_id_ambiguity() {
     let fixture = Fixture::start().await;
     let a = fixture.notebook("a", "legacy A");
     let b = fixture.notebook("b", "legacy B");
@@ -481,11 +481,12 @@ async fn legacy_switch_back_keeps_retained_handle_and_notebook_id_resource_usabl
     let by_id = wire
         .request(14, "resources/read", Some(json!({"uri":id_uri})))
         .await;
-    result(&by_id);
-    assert_eq!(
-        selected_a, a_handle,
-        "switch-back must reuse its compatibility owner"
-    );
+    assert_eq!(by_id["error"]["code"], -32602);
+    assert!(by_id["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Ambiguous notebook ID"));
+    assert_ne!(selected_a, a_handle, "each acquisition owns a fresh handle");
     result(&mutate(&mut wire, 15, a_handle, "A after switch-back", false).await);
     let selected = wire
         .request(
@@ -493,7 +494,7 @@ async fn legacy_switch_back_keeps_retained_handle_and_notebook_id_resource_usabl
             "tools/call",
             Some(tool_params(
                 "get_cell",
-                json!({"cell_id":"sentinel"}),
+                json!({"notebook_handle":selected_a,"cell_id":"sentinel"}),
                 false,
             )),
         )
@@ -505,11 +506,17 @@ async fn legacy_switch_back_keeps_retained_handle_and_notebook_id_resource_usabl
         read(&mut wire, 17, &b_handle, false).await["cells"][0]["source_preview"],
         "legacy B"
     );
+    release(&mut wire, 18, &selected_a, false).await;
+    result(
+        &wire
+            .request(19, "resources/read", Some(json!({"uri":id_uri})))
+            .await,
+    );
     fixture.stop(wire).await;
 }
 
 #[tokio::test]
-async fn legacy_repeated_a_b_selection_keeps_two_owners_and_original_peers() {
+async fn legacy_repeated_acquire_release_keeps_original_owners_and_peers() {
     let fixture = Fixture::start().await;
     let a = fixture.notebook("a", "legacy A");
     let b = fixture.notebook("b", "legacy B");
@@ -534,18 +541,25 @@ async fn legacy_repeated_a_b_selection_keeps_two_owners_and_original_peers() {
         } else {
             (&b, &b_handle)
         };
-        let handle = open(&mut wire, 20 + index, path, false).await;
+        let handle = open(&mut wire, 20 + index * 2, path, false).await;
         fixture.ready(&handle).await;
         let retained = fixture.server.attachments().read_entries().len();
         let rooms = pool.list_rooms().await.unwrap();
         let peers: usize = rooms.iter().map(|room| room.active_peers).sum();
-        eprintln!("legacy switch {index}: {retained} retained owners, {peers} active daemon peers");
-        assert_eq!(
-            retained, 2,
-            "selection must not accumulate compatibility owners"
+        eprintln!(
+            "legacy acquisition {index}: {retained} retained owners, {peers} active daemon peers"
         );
-        assert_eq!(handle, *expected);
-        assert_eq!(peers, 2, "selection must not open replacement daemon peers");
+        assert_eq!(
+            retained, 3,
+            "each acquisition must retain an independent owner"
+        );
+        assert_ne!(handle, *expected);
+        assert_eq!(
+            peers, 2,
+            "same-target acquisition must share the healthy backing"
+        );
+        release(&mut wire, 21 + index * 2, &handle, false).await;
+        assert_eq!(fixture.server.attachments().read_entries().len(), 2);
         // Strict receipts from the original captured handles catch peer
         // replacement even if a broken implementation reuses the handle text.
         for doc in &original_docs {

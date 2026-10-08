@@ -62,6 +62,78 @@ fn isolated_proxy_with_mode(mode: &str) -> (tempfile::TempDir, McpProxy, Arc<Ato
 }
 
 #[tokio::test]
+async fn old_child_without_attachment_support_cannot_ignore_handle_and_mutate_current_notebook() {
+    for native in [false, true] {
+        let (dir, proxy, _) = isolated_proxy_with_mode("unsafe-implicit");
+        std::fs::write(
+            dir.path().join("current-notebook-source"),
+            "protected implicit notebook",
+        )
+        .unwrap();
+        let mut wire = Wire::start(proxy.clone());
+        if !native {
+            wire.initialize("2025-11-25").await;
+            wire.initialized().await;
+        }
+        let mut params = json!({"name":"set_cell","arguments":{"notebook_handle":"handle-a","cell_id":"sentinel","source":"must not route implicitly"}});
+        if native {
+            params["_meta"] = modern_meta("2026-07-28", false);
+        }
+        let response = wire.request(10, "tools/call", Some(params)).await;
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("current-notebook-source")).unwrap(),
+            "protected implicit notebook",
+            "old child must never receive a routed mutation it cannot honor"
+        );
+        assert!(
+            response.get("error").is_some() || response["result"]["isError"] == true,
+            "unsupported child must fail clearly"
+        );
+        assert!(
+            response.to_string().contains("attachment")
+                || response.to_string().contains("notebook_handle")
+        );
+        stop_child(&proxy).await;
+        wire.finish().await;
+    }
+}
+
+#[tokio::test]
+async fn capable_old_sdk_child_preserves_explicit_handles_over_initialize_protocol() {
+    for version in LEGACY_VERSIONS {
+        let (dir, proxy, _) = isolated_proxy_with_mode("legacy-attachments");
+        let mut wire = Wire::start(proxy.clone());
+        wire.initialize(version).await;
+        wire.initialized().await;
+        for (id, name, handle, source) in [
+            (10, "create_cell", "handle-a", "A write"),
+            (11, "set_cell", "handle-b", "B write"),
+            (12, "set_cell", "handle-a", "A final"),
+        ] {
+            let response = wire.request(id, "tools/call", Some(json!({"name":name,"arguments":{"notebook_handle":handle,"cell_id":"sentinel","source":source}}))).await;
+            let data: Value = serde_json::from_str(
+                legacy_result(&response)["content"][0]["text"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(data["notebook_handle"], handle);
+            assert_eq!(data["protocolVersion"], "2025-11-25");
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("handle-a")).unwrap(),
+            "A final"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("handle-b")).unwrap(),
+            "B write"
+        );
+        stop_child(&proxy).await;
+        wire.finish().await;
+    }
+}
+
+#[tokio::test]
 async fn native_first_listen_installs_child_watch_before_ack_and_closes_on_child_loss() {
     let (dir, proxy, resolves) = isolated_proxy();
     let mut wire = Wire::start(proxy.clone());
@@ -137,7 +209,6 @@ async fn native_attachment_bridge_preserves_b_listener_when_a_expires() {
     for id in [1, 2] {
         let response = wire.request(id, "tools/call", Some(json!({"name":"connect_notebook","arguments":{"target":"same-notebook"},"_meta":modern_meta("2026-07-28",false)}))).await;
         let data = &response["result"]["structuredContent"];
-        assert_eq!(data["attachmentMode"], "explicit", "{response}");
         assert_eq!(data["protocolVersion"], "2025-11-25");
         handles.push(data["notebook_handle"].as_str().unwrap().to_owned());
     }
@@ -235,7 +306,10 @@ async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
     for name in ["execute_cell", "future_mutation"] {
         let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
         proxy.init_child().await.expect("start response-loss child");
-        let request = serde_json::from_value(json!({"name": name, "arguments": {}})).unwrap();
+        let request = serde_json::from_value(
+            json!({"name": name, "arguments": {"notebook_handle":"fixture-handle"}}),
+        )
+        .unwrap();
         let result = timeout(DEADLINE, proxy.forward_tool_call(request))
             .await
             .expect("bounded recovery")
@@ -252,7 +326,10 @@ async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
             format!("{name}\n")
         );
 
-        let read = serde_json::from_value(json!({"name": "get_results", "arguments": {}})).unwrap();
+        let read = serde_json::from_value(
+            json!({"name": "get_results", "arguments": {"notebook_handle":"fixture-handle"}}),
+        )
+        .unwrap();
         let next = timeout(DEADLINE, proxy.forward_tool_call(read))
             .await
             .expect("recovered child responds")
@@ -266,7 +343,10 @@ async fn lost_mutation_response_is_not_replayed_even_with_read_only_hints() {
 async fn lost_read_response_is_retried_once() {
     let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
     proxy.init_child().await.expect("start response-loss child");
-    let request = serde_json::from_value(json!({"name": "get_results", "arguments": {}})).unwrap();
+    let request = serde_json::from_value(
+        json!({"name": "get_results", "arguments": {"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = timeout(DEADLINE, proxy.forward_tool_call(request))
         .await
         .expect("bounded recovery")
@@ -288,7 +368,10 @@ async fn mutation_can_run_once_when_the_stored_child_was_already_closed() {
     proxy.state.write().await.child_client = Some(child);
     // Disable the fault for the replacement: no request has been accepted.
     std::fs::write(dir.path().join("accepted-calls"), "").unwrap();
-    let request = serde_json::from_value(json!({"name":"execute_cell","arguments":{}})).unwrap();
+    let request = serde_json::from_value(
+        json!({"name":"execute_cell","arguments":{"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = timeout(DEADLINE, proxy.forward_tool_call(request))
         .await
         .unwrap()
@@ -320,7 +403,10 @@ async fn unknown_outcome_includes_failed_recovery_in_text() {
     let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
     proxy.init_child().await.unwrap();
     std::fs::write(dir.path().join("fail-resolution"), "fail").unwrap();
-    let request = serde_json::from_value(json!({"name":"execute_cell","arguments":{}})).unwrap();
+    let request = serde_json::from_value(
+        json!({"name":"execute_cell","arguments":{"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = proxy.forward_tool_call(request).await.unwrap();
     assert_eq!(
         result.structured_content.as_ref().unwrap()["error"]["code"],
@@ -342,9 +428,25 @@ async fn unknown_outcome_includes_failed_recovery_in_text() {
 async fn lost_disconnect_response_does_not_restore_the_release_target() {
     let (dir, proxy, _) = isolated_proxy_with_mode("response-loss");
     proxy.init_child().await.unwrap();
-    proxy.state.write().await.last_notebook_id = Some("released-notebook".into());
-    let request =
-        serde_json::from_value(json!({"name":"disconnect_notebook","arguments":{}})).unwrap();
+    // Acquisition retains an owner without selecting an implicit restart target.
+    // Use the real call path instead of seeding an unowned legacy handoff.
+    let acquisition = proxy
+        .forward_tool_call(
+            serde_json::from_value(
+                json!({"name":"connect_notebook","arguments":{"notebook_id":"released-notebook"}}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = serde_json::to_value(&acquisition.content).unwrap();
+    let acquired: Value = serde_json::from_str(body[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(acquired["notebook_handle"], "fixture-handle");
+    assert!(proxy.state.read().await.last_notebook_id.is_none());
+    let request = serde_json::from_value(
+        json!({"name":"disconnect_notebook","arguments":{"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = proxy.forward_tool_call(request).await.unwrap();
     assert_eq!(
         result.structured_content.as_ref().unwrap()["error"]["code"],
@@ -364,7 +466,10 @@ async fn mutation_sent_after_initial_child_recovery_still_reports_lost_response(
     // No previously advertised catalog: exercise startup, not incompatible
     // replacement of the deliberately unrelated optimistic test cache.
     proxy.state.write().await.cached_tools = None;
-    let request = serde_json::from_value(json!({"name": "execute_cell", "arguments": {}})).unwrap();
+    let request = serde_json::from_value(
+        json!({"name": "execute_cell", "arguments": {"notebook_handle":"fixture-handle"}}),
+    )
+    .unwrap();
     let result = timeout(DEADLINE, proxy.forward_tool_call(request))
         .await
         .expect("bounded startup")
@@ -569,7 +674,7 @@ async fn safe_retry_retains_one_progress_clock_and_upstream_token() {
     let mut wire = Wire::start(proxy.clone());
     wire.initialize("2025-11-25").await;
     wire.initialized().await;
-    wire.send(json!({"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"get_results","arguments":{"probe_progress":true},"_meta":{"progressToken":"retry"}}})).await;
+    wire.send(json!({"jsonrpc":"2.0","id":104,"method":"tools/call","params":{"name":"get_results","arguments":{"notebook_handle":"fixture-handle","probe_progress":true},"_meta":{"progressToken":"retry"}}})).await;
     let mut updates = Vec::new();
     for attempt in 1..=2 {
         wire.notification("notifications/progress").await;
@@ -598,7 +703,7 @@ async fn upstream_disconnect_while_waiting_for_startup_ends_promptly() {
     wire.initialize("2025-11-25").await;
     // Deliberately omit notifications/initialized so no child starts.
     wire.send(
-        json!({"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"get_results"}}),
+        json!({"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"get_results","arguments":{"notebook_handle":"fixture-handle"}}}),
     )
     .await;
     timeout(std::time::Duration::from_secs(1), wire.finish())
@@ -1113,18 +1218,15 @@ async fn version_skew_old_rmcp_client_to_new_production_child() {
             .as_str()
             .expect("HTML resource")
             .is_empty());
-        let call = serde_json::from_value(json!({"name": "disconnect_notebook", "arguments": {}}))
-            .expect("legacy tool params");
-        let result = timeout(DEADLINE, client.call_tool(call))
+        let call = serde_json::from_value(
+            json!({"name": "disconnect_notebook", "arguments": {"notebook_handle":"expired"}}),
+        )
+        .expect("legacy tool params");
+        let error = timeout(DEADLINE, client.call_tool(call))
             .await
             .expect("call timeout")
-            .expect("legacy tool result");
-        assert_eq!(result.is_error, Some(true));
-        let result = serde_json::to_value(result).expect("tool JSON");
-        assert!(result["content"][0]["text"]
-            .as_str()
-            .expect("legacy text content")
-            .contains("No active session"));
+            .expect_err("expired explicit owner must reject");
+        assert!(error.to_string().contains("expired"), "{error}");
         timeout(DEADLINE, client.cancel())
             .await
             .expect("client cancellation timeout")

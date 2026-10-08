@@ -74,7 +74,7 @@ async fn selectively_lost_peer_retains_ownership_and_preserves_other_target(nati
             .request(
                 10,
                 "tools/call",
-                Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
+                Some(tool_params("connect_notebook", json!({"path":a}), false)),
             )
             .await;
         payload(&response)["notebook_handle"]
@@ -91,7 +91,7 @@ async fn selectively_lost_peer_retains_ownership_and_preserves_other_target(nati
             .request(
                 11,
                 "tools/call",
-                Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
+                Some(tool_params("connect_notebook", json!({"path":a}), false)),
             )
             .await;
         payload(&response)["notebook_handle"]
@@ -172,7 +172,7 @@ async fn selectively_lost_peer_retains_ownership_and_preserves_other_target(nati
             Some(if native {
                 tool_params("connect_notebook", json!({"path":a}), true)
             } else {
-                explicit_tool_params("connect_notebook", json!({"path":a}))
+                tool_params("connect_notebook", json!({"path":a}), false)
             }),
         )
         .await;
@@ -229,7 +229,7 @@ async fn selectively_lost_peer_retains_ownership_and_preserves_other_target(nati
             .request(
                 26,
                 "tools/call",
-                Some(explicit_tool_params("connect_notebook", json!({"path":a}))),
+                Some(tool_params("connect_notebook", json!({"path":a}), false)),
             )
             .await;
         payload(&response)["notebook_handle"]
@@ -537,10 +537,7 @@ async fn legacy_expiry_signals_name_captured_owner_without_retiring_other_watche
         .request(
             10,
             "tools/call",
-            Some(explicit_tool_params(
-                "connect_notebook",
-                json!({"path":path}),
-            )),
+            Some(tool_params("connect_notebook", json!({"path":path}), false)),
         )
         .await;
     let first = payload(&first_response);
@@ -562,10 +559,7 @@ async fn legacy_expiry_signals_name_captured_owner_without_retiring_other_watche
         .request(
             11,
             "tools/call",
-            Some(explicit_tool_params(
-                "connect_notebook",
-                json!({"path":path}),
-            )),
+            Some(tool_params("connect_notebook", json!({"path":path}), false)),
         )
         .await;
     let second = payload(&second_response);

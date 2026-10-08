@@ -3,6 +3,8 @@
 
 #[path = "../../runt-mcp/tests/support/attachments.rs"]
 mod attachments;
+#[path = "../../runt-mcp/tests/support/explicit_targets.rs"]
+mod explicit;
 #[allow(dead_code)] // This executable only uses the real-child startup helpers.
 mod fixtures;
 #[path = "../../runt-mcp/tests/support/mod.rs"]
@@ -51,7 +53,7 @@ async fn update(wire: &mut Wire, marker: usize, id: u64, uri: &str) -> Value {
     .await
 }
 
-async fn ready(wire: &mut Wire, handle: &str, first_id: u64) {
+async fn ready(wire: &mut Wire, handle: &str, first_id: u64, native: bool) {
     tokio::time::timeout(support::DEADLINE, async {
         let mut id = first_id;
         loop {
@@ -62,7 +64,7 @@ async fn ready(wire: &mut Wire, handle: &str, first_id: u64) {
                     Some(tool_params(
                         "get_cell",
                         json!({"notebook_handle":handle,"cell_id":"sentinel"}),
-                        true,
+                        native,
                     )),
                 )
                 .await;
@@ -85,24 +87,12 @@ async fn same_daemon_peer_loss_retires_only_affected_proxy_uri_and_keeps_ownersh
     let fixture = Fixture::start().await;
     let a = fixture.notebook("affected", "proxy A");
     let b = fixture.notebook("healthy", "proxy B");
-    let executable = std::env::current_exe().unwrap();
-    let proxy = McpProxy::new(
-        ProxyConfig {
-            resolve_child_command: Box::new(move || Ok(executable.clone())),
-            child_args: fixtures::child_args(),
-            child_env: fixtures::child_env(fixture.root.path(), "new-relay"),
-            server_name: "isolated-real-attachment-proxy".into(),
-            cache_dir: Some(fixture.root.path().join("proxy-cache")),
-            monitor_poll_interval_ms: 60_000,
-            recovery_hint: "Isolated attachment fixture only".into(),
-        },
-        None,
-    );
+    let proxy = real_proxy(&fixture);
     let mut wire = Wire::start(proxy.clone());
     let a_handle = open(&mut wire, 10, &a, true).await;
     let b_handle = open(&mut wire, 11, &b, true).await;
-    ready(&mut wire, &a_handle, 1000).await;
-    ready(&mut wire, &b_handle, 2000).await;
+    ready(&mut wire, &a_handle, 1000, true).await;
+    ready(&mut wire, &b_handle, 2000, true).await;
     // Successful actual sync-confirmed tools establish baseline source health.
     result(&mutate(&mut wire, 12, &a_handle, "proxy A", true).await);
     result(&mutate(&mut wire, 13, &b_handle, "proxy B", true).await);
@@ -144,7 +134,7 @@ async fn same_daemon_peer_loss_retires_only_affected_proxy_uri_and_keeps_ownersh
     let fresh = open(&mut wire, 24, &a, true).await;
     assert_ne!(fresh, a_handle);
     let fresh_uri = uri(&fresh);
-    ready(&mut wire, &fresh, 3000).await;
+    ready(&mut wire, &fresh, 3000, true).await;
     result(
         &mutate(
             &mut wire,
@@ -255,4 +245,88 @@ async fn same_daemon_peer_loss_retires_only_affected_proxy_uri_and_keeps_ownersh
             .unwrap();
     }
     fixture.stop(wire).await;
+}
+
+fn real_proxy(fixture: &Fixture) -> McpProxy {
+    let executable = std::env::current_exe().unwrap();
+    McpProxy::new(
+        ProxyConfig {
+            resolve_child_command: Box::new(move || Ok(executable.clone())),
+            child_args: fixtures::child_args(),
+            child_env: fixtures::child_env(fixture.root.path(), "new-relay"),
+            server_name: "isolated-real-attachment-proxy".into(),
+            cache_dir: Some(fixture.root.path().join("proxy-cache")),
+            monitor_poll_interval_ms: 60_000,
+            recovery_hint: "Isolated attachment fixture only".into(),
+        },
+        None,
+    )
+}
+
+#[tokio::test]
+async fn ordinary_legacy_actual_proxy_routes_two_chats_and_rejects_missing_handles() {
+    for version in support::LEGACY_VERSIONS {
+        let fixture = Fixture::start().await;
+        let paths = [
+            fixture.notebook("chat-a", "original A"),
+            fixture.notebook("chat-b", "original B"),
+        ];
+        let proxy = real_proxy(&fixture);
+        let mut wire = Wire::start(proxy.clone());
+        wire.initialize(version).await;
+        wire.initialized().await;
+        let a = open(&mut wire, 10, &paths[0], false).await;
+        let b = open(&mut wire, 11, &paths[1], false).await;
+        ready(&mut wire, &a, 1000, false).await;
+        ready(&mut wire, &b, 2000, false).await;
+        explicit::interleaved_chats(&mut wire, &a, &b, [&paths[0], &paths[1]], 100).await;
+        let private_version = {
+            let state = proxy.state.read().await;
+            state
+                .child_client
+                .as_ref()
+                .unwrap()
+                .peer_info()
+                .unwrap()
+                .protocol_version
+                .to_string()
+        };
+        assert_eq!(
+            private_version, "2025-11-25",
+            "upstream version must not change the actual capable child's private protocol"
+        );
+        let repeated = open(&mut wire, 20, &paths[0], false).await;
+        assert_ne!(
+            repeated, a,
+            "shared legacy proxy must retain independent same-target owners"
+        );
+        ready(&mut wire, &repeated, 3000, false).await;
+        release(&mut wire, 21, &repeated, false).await;
+        assert_eq!(
+            read(&mut wire, 22, &a, false).await["cells"][0]["source_preview"],
+            "chat A final"
+        );
+        let expired = wire
+            .request(23, "resources/read", Some(json!({"uri":uri(&repeated)})))
+            .await;
+        assert_eq!(expired["error"]["data"]["code"], "attachment_expired");
+        let responses = explicit::missing_targets(&mut wire, 300).await;
+        explicit::assert_missing_targets(&responses);
+        assert_eq!(
+            read(&mut wire, 400, &a, false).await["cells"][0]["source_preview"],
+            "chat A final"
+        );
+        assert_eq!(
+            read(&mut wire, 401, &b, false).await["cells"][0]["source_preview"],
+            "chat B source"
+        );
+        let child = { proxy.state.write().await.child_client.take() };
+        if let Some(child) = child {
+            tokio::time::timeout(support::DEADLINE, child.cancel())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        fixture.stop(wire).await;
+    }
 }
