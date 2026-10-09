@@ -111,6 +111,20 @@ impl ServerHandler for LegacyChild {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let mode = std::env::var(CHILD_MODE).unwrap();
+        let root = std::path::PathBuf::from(std::env::var("NTERACT_COMPATIBILITY_ROOT").unwrap());
+        if mode == "catalog" {
+            let revision = std::fs::read_to_string(root.join("catalog-revision"))
+                .unwrap_or_else(|_| "first".into());
+            std::fs::write(root.join("tools-entered"), "entered").unwrap();
+            while root.join("block-tools").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            return match revision.as_str() {
+                "empty" => Ok(serde_json::from_value(json!({"tools":[]})).unwrap()),
+                "error" => Err(ErrorData::internal_error("Catalog unavailable", None)),
+                _ => Ok(serde_json::from_value(json!({"tools":[{"name":"compatibility_echo","description":revision,"inputSchema":{"type":"object","properties":{(revision.as_str()):{"type":"string"}},"required":[revision]}}]})).unwrap()),
+            };
+        }
         if mode == "unsafe-implicit" || mode == "legacy-attachments" {
             let capable = mode == "legacy-attachments";
             let names = if capable {
@@ -196,6 +210,9 @@ impl ServerHandler for LegacyChild {
             .open(root.join("subscription-calls"))
             .unwrap();
         writeln!(log, "{}", request.uri).unwrap();
+        while root.join("block-subscribe").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         context
             .peer
             .notify_resource_updated(rmcp_legacy::model::ResourceUpdatedNotificationParam {
@@ -424,7 +441,7 @@ pub fn run_child_if_requested() {
                     .await
                     .unwrap();
             }
-            "legacy" | "response-loss" | "unsafe-implicit" | "legacy-attachments" => {
+            "legacy" | "catalog" | "response-loss" | "unsafe-implicit" | "legacy-attachments" => {
                 use rmcp_legacy::ServiceExt;
                 LegacyChild {
                     initialized: std::sync::atomic::AtomicBool::new(false),

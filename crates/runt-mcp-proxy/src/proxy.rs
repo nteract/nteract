@@ -203,6 +203,123 @@ pub struct McpProxy {
     observation_bridge: Arc<crate::observation_bridge::ObservationBridge>,
     native_subscriptions: Arc<crate::native_subscriptions::Registry>,
     native_startup: Arc<std::sync::Mutex<Option<RestartCompletion>>>,
+    /// Retained invalidation from a successfully discovered current child.
+    catalog_changed: Arc<tokio::sync::watch::Sender<Option<u64>>>,
+    legacy_catalog_started: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// One listener's resource ownership; dropping it releases only its leases.
+struct CapturedResources {
+    peer: Peer<rmcp::service::RoleClient>,
+    uris: Vec<String>,
+    notifications: tokio::sync::broadcast::Receiver<rmcp::model::ResourceUpdatedNotificationParam>,
+    lifetime: mcp_transport::ConnectionLifetime,
+    lease: crate::native_subscriptions::Lease,
+    reconciliation_pending: bool,
+}
+impl CapturedResources {
+    async fn next(&mut self) -> Option<Vec<rmcp::model::ResourceUpdatedNotificationParam>> {
+        loop {
+            if self.reconciliation_pending {
+                // The outer select may interrupt reads to deliver a catalog
+                // event. Retain the consumed lag marker until reads complete.
+                return tokio::select! {
+                    _ = self.lifetime.closed() => None,
+                    updates = reconcile_listener_updates(&self.peer, &self.uris) => {
+                        self.reconciliation_pending = false;
+                        Some(updates)
+                    },
+                };
+            }
+            tokio::select! {
+                _ = self.lifetime.closed() => return None,
+                update = self.notifications.recv() => match update {
+                    Ok(update) => return Some(vec![update]),
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => self.reconciliation_pending = true,
+                }
+            }
+        }
+    }
+}
+
+fn catalog_notifications(tools: bool, resources: bool) -> Vec<rmcp::model::ServerNotification> {
+    let mut notifications = Vec::new();
+    if tools {
+        notifications
+            .push(rmcp::model::ServerNotification::ToolListChangedNotification(Default::default()));
+    }
+    if resources {
+        notifications.push(
+            rmcp::model::ServerNotification::ResourceListChangedNotification(Default::default()),
+        );
+    }
+    notifications
+}
+
+async fn send_catalog_notification(
+    context: &rmcp::service::SubscriptionContext,
+    notification: rmcp::model::ServerNotification,
+    resource: &mut Option<CapturedResources>,
+    ended_uris: &mut Vec<String>,
+) -> Result<(), McpError> {
+    let send = context.sink().send(notification);
+    tokio::pin!(send);
+    loop {
+        let lifetime = resource.as_ref().map(|active| active.lifetime.clone());
+        tokio::select! {
+            _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+            _ = async {
+                match lifetime {
+                    Some(lifetime) => lifetime.closed().await,
+                    None => std::future::pending().await,
+                }
+            }, if resource.is_some() => {
+                // Child expiry releases resource capacity independently of a
+                // slow catalog sink. Keep the same pending send; never rebind.
+                if let Some(expired) = resource.take() {
+                    ended_uris.extend(expired.uris.iter().cloned());
+                }
+            }
+            result = &mut send => {
+                return result.map_err(|error| McpError::internal_error(error.to_string(), None));
+            }
+        }
+    }
+}
+
+/// Catalog interest outlives the child, but the client must still learn that
+/// each captured resource watch ended. These are observed old URIs, not targets
+/// admitted to the replacement child.
+async fn send_ended_resource_updates(
+    context: &rmcp::service::SubscriptionContext,
+    uris: Vec<String>,
+) -> Result<(), McpError> {
+    for uri in uris {
+        let handle = uri
+            .strip_prefix("nteract://sessions/")
+            .and_then(|tail| tail.split('/').next())
+            .unwrap_or_default()
+            .to_owned();
+        let mut notification = rmcp::model::ServerNotification::ResourceUpdatedNotification(
+            rmcp::model::ResourceUpdatedNotification::new(
+                rmcp::model::ResourceUpdatedNotificationParam::new(uri),
+            ),
+        );
+        notification.get_meta_mut().insert("io.nteract/attachmentUnavailable".into(), serde_json::json!({
+            "code":"attachment_unavailable", "notebook_handle":handle,
+            "message":"The subscription's MCP child disconnected; acquire a current notebook_handle and subscribe again"
+        }));
+        // Keep the existing resource-delivery failure policy. No closed child
+        // lifetime can suppress the terminal observation about that child.
+        tokio::select! {
+            _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+            result = tokio::time::timeout(Duration::from_secs(1), context.sink().send(notification)) => {
+                result.map_err(|_| McpError::internal_error("Subscription delivery timed out; read a fresh baseline", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl McpProxy {
@@ -249,6 +366,8 @@ impl McpProxy {
             observation_bridge: Arc::default(),
             native_subscriptions: Arc::default(),
             native_startup: Arc::default(),
+            catalog_changed: Arc::new(tokio::sync::watch::channel(None).0),
+            legacy_catalog_started: Arc::default(),
         }
     }
 
@@ -269,6 +388,12 @@ impl McpProxy {
         &self,
         context: rmcp::service::SubscriptionContext,
     ) -> Result<(), McpError> {
+        let tools = context.accepted().tools_list_changed == Some(true);
+        let resources = context.accepted().resources_list_changed == Some(true);
+        let catalogs = tools || resources;
+        // Install both interests before acknowledgment. Catalog changes coalesce;
+        // resource ownership remains captured in this generation's lease.
+        let mut changes = self.catalog_changed.subscribe();
         let mut uris = context
             .accepted()
             .resource_subscriptions
@@ -276,80 +401,118 @@ impl McpProxy {
             .unwrap_or_default();
         uris.sort();
         uris.dedup();
-        if uris.is_empty() {
-            mcp_transport::acknowledge(context.request_context()).await?;
-            return Ok(());
-        }
-        let (peer, generation, mut notifications, lifetime) = {
-            let state = self.state.read().await;
-            let child = state.child_client.as_ref().ok_or_else(|| {
-                McpError::internal_error("Child not ready; reconnect and subscribe again", None)
-            })?;
-            (
-                child.peer().clone(),
-                state.child_generation,
-                child.service().notifications.subscribe(),
-                child.service().lifetime.clone(),
-            )
-        };
-        let mut lease = tokio::select! {
-            _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
-            _ = lifetime.closed() => return Ok(()),
-            lease = self.native_subscriptions.acquire(generation, uris.clone(), peer.clone()) => lease?,
+        let mut ended_uris = Vec::new();
+        let mut resource = if uris.is_empty() {
+            None
+        } else {
+            let (peer, generation, notifications, lifetime) = {
+                let state = self.state.read().await;
+                let child = state.child_client.as_ref().ok_or_else(|| {
+                    McpError::internal_error("Child not ready; reconnect and subscribe again", None)
+                })?;
+                (
+                    child.peer().clone(),
+                    state.child_generation,
+                    child.service().notifications.subscribe(),
+                    child.service().lifetime.clone(),
+                )
+            };
+            let lease = tokio::select! {
+                _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+                _ = lifetime.closed() => {
+                    if !catalogs { return Ok(()); }
+                    None
+                },
+                lease = self.native_subscriptions.acquire(generation, uris.clone(), peer.clone()) => {
+                    match lease {
+                        Ok(lease) => Some(lease),
+                        Err(_) if catalogs && (lifetime.is_closed() || peer.is_transport_closed()) => None,
+                        Err(error) => return Err(error),
+                    }
+                },
+            };
+            match lease {
+                Some(lease) => Some(CapturedResources {
+                    peer,
+                    uris,
+                    notifications,
+                    lifetime,
+                    lease,
+                    reconciliation_pending: false,
+                }),
+                None => {
+                    // Admission belonged to the lost child. The actor cleans up
+                    // partial watches; catalog interest still belongs to us.
+                    ended_uris = uris;
+                    None
+                }
+            }
         };
         mcp_transport::acknowledge(context.request_context()).await?;
         loop {
-            let updates = tokio::select! {
+            if !ended_uris.is_empty() {
+                send_ended_resource_updates(&context, std::mem::take(&mut ended_uris)).await?;
+            }
+            if resource.is_none() && !catalogs {
+                return Ok(());
+            }
+            tokio::select! {
                 _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
-                _ = lifetime.closed() => return Ok(()),
-                update = notifications.recv() => match update {
-                    Ok(update) => Some(vec![update]),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => None,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
-                },
-            };
-            let updates = match updates {
-                Some(updates) => updates,
-                None => tokio::select! {
-                    _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
-                    _ = lifetime.closed() => return Ok(()),
-                    updates = reconcile_listener_updates(&peer, &uris) => updates,
-                },
-            };
-            for mut update in updates {
-                if uris.contains(&update.uri) {
-                    let terminal = attachment_terminal(update.meta.as_ref())
-                        .map(|(key, signal)| (key, signal.clone()));
-                    // The private child's subscription/protocol metadata must
-                    // not leak into the upstream subscription. Preserve its
-                    // application terminal marker, then let the sink set our ID.
-                    update.meta = terminal.as_ref().map(|(key, terminal)| {
-                        let mut meta = rmcp::model::NotificationMetaObject::default();
-                        meta.insert((*key).into(), terminal.clone());
-                        meta
-                    });
-                    let uri = update.uri.clone();
-                    let meta = update.meta.take().unwrap_or_default();
-                    let mut notification =
-                        rmcp::model::ServerNotification::ResourceUpdatedNotification(
-                            rmcp::model::ResourceUpdatedNotification::new(update),
-                        );
-                    *notification.get_meta_mut() = meta;
-                    tokio::select! {
-                        _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
-                        _ = lifetime.closed() => return Ok(()),
-                        result = tokio::time::timeout(Duration::from_secs(1), context.sink().send(notification)) => {
-                            result.map_err(|_| McpError::internal_error("Subscription delivery timed out; read a fresh baseline", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                changed = changes.changed(), if catalogs => {
+                    if changed.is_err() { return Ok(()); }
+                    let generation = *changes.borrow_and_update();
+                    if self.current_catalog_publication(generation).await {
+                        for notification in catalog_notifications(tools, resources) {
+                            send_catalog_notification(&context, notification, &mut resource, &mut ended_uris).await?;
                         }
                     }
-                    if terminal.is_some() {
-                        uris.retain(|active| active != &uri);
-                        lease.release_uri(&uri);
+                }
+                updates = async {
+                    match resource.as_mut() {
+                        Some(resource) => resource.next().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let Some(updates) = updates else {
+                        // The old resource watches end here. Never acquire new
+                        // handles or rebind their URIs to a replacement child.
+                        if let Some(expired) = resource.take() {
+                            if catalogs { ended_uris.extend(expired.uris.iter().cloned()); }
+                        }
+                        continue;
+                    };
+                    if let Some(active) = resource.as_mut() {
+                        for mut update in updates {
+                            if !active.uris.contains(&update.uri) { continue; }
+                            let terminal = attachment_terminal(update.meta.as_ref()).map(|(key, signal)| (key, signal.clone()));
+                            update.meta = terminal.as_ref().map(|(key, terminal)| {
+                                let mut meta = rmcp::model::NotificationMetaObject::default();
+                                meta.insert((*key).into(), terminal.clone());
+                                meta
+                            });
+                            let uri = update.uri.clone();
+                            let meta = update.meta.take().unwrap_or_default();
+                            let mut notification = rmcp::model::ServerNotification::ResourceUpdatedNotification(rmcp::model::ResourceUpdatedNotification::new(update));
+                            *notification.get_meta_mut() = meta;
+                            tokio::select! {
+                                _ = mcp_transport::cancelled(context.request_context()) => return Ok(()),
+                                _ = active.lifetime.closed() => {
+                                    if catalogs { ended_uris.extend(active.uris.iter().cloned()); }
+                                    active.uris.clear();
+                                    break;
+                                },
+                                result = tokio::time::timeout(Duration::from_secs(1), context.sink().send(notification)) => {
+                                    result.map_err(|_| McpError::internal_error("Subscription delivery timed out; read a fresh baseline", None))?.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                                }
+                            }
+                            if terminal.is_some() {
+                                active.uris.retain(|active| active != &uri);
+                                active.lease.release_uri(&uri);
+                            }
+                        }
+                        if active.uris.is_empty() { resource = None; }
                     }
                 }
-            }
-            if uris.is_empty() {
-                return Ok(());
             }
         }
     }
@@ -699,7 +862,7 @@ impl McpProxy {
                 // Refresh tool cache and check for divergence
                 self.refresh_tool_cache_for_generation(generation).await;
 
-                let tool_list_changed_tx = {
+                {
                     let mut state = self.state.write().await;
                     if let (Some(ref old), Some(ref new)) = (&old_tools, &state.cached_tools) {
                         match tools::detect_divergence(old, new) {
@@ -747,17 +910,11 @@ impl McpProxy {
                         },
                     };
                     state.reconnection_message = Some(reconnection_event.message());
-                    state.tool_list_changed_tx.clone()
                 };
 
                 // Spawn new monitor for the restarted child
                 self.spawn_child_monitor();
 
-                // Notify upstream client to keep connection alive
-                if let Some(tx) = tool_list_changed_tx {
-                    let _ = tx.send(()).await;
-                    info!("Notified upstream client of tool list change to keep connection alive");
-                }
                 self.child_ready.notify_waiters();
                 info!("Child restarted successfully");
                 Ok(())
@@ -1077,7 +1234,12 @@ impl McpProxy {
                         start.elapsed(),
                     )
                     .await;
-                    return result.tools;
+                    if self
+                        .publish_tool_cache(snapshot.generation, result.tools.clone())
+                        .await
+                    {
+                        return result.tools;
+                    }
                 }
                 Ok(_) => {
                     self.log_child_call_if_slow(
@@ -1526,23 +1688,7 @@ impl McpProxy {
         let start = Instant::now();
         match snapshot.peer.list_tools(None).await {
             Ok(child_tools) => {
-                // Never enshrine an empty list. An old/broken child that
-                // transiently returns `{tools: []}` would otherwise poison
-                // the on-disk cache — `load_cached_tools` treats an empty
-                // file as valid, so every subsequent start would read
-                // zero tools and skip the built-in fallback.
-                if child_tools.tools.is_empty() {
-                    warn!("Child returned empty tool list — keeping prior cache");
-                } else {
-                    let tools = child_tools.tools;
-                    let mut state = self.state.write().await;
-                    if state.child_generation == generation {
-                        if let Some(ref cache_dir) = self.config.cache_dir {
-                            tools::save_tool_cache(cache_dir, &tools);
-                        }
-                        state.cached_tools = Some(tools);
-                    }
-                }
+                self.publish_tool_cache(generation, child_tools.tools).await;
             }
             Err(e) => {
                 warn!("Failed to refresh tool cache: {e}");
@@ -1550,6 +1696,85 @@ impl McpProxy {
         }
         self.log_child_call_if_slow("refresh_tool_cache", None, generation, start.elapsed())
             .await;
+    }
+
+    /// Cache advertisement is never evidence for actual-child target admission.
+    /// Publish only nonempty discovery from the current, still connected child.
+    /// Tools and resource-catalog invalidations share this validated publication:
+    /// failed discovery retains optimistic fallback without signaling readiness.
+    /// Resource reads and actual-child admission remain independently validated.
+    async fn publish_tool_cache(&self, generation: u64, discovered: Vec<Tool>) -> bool {
+        if discovered.is_empty() {
+            warn!("Child returned empty tool list — keeping prior cache");
+            return false;
+        }
+        let mut state = self.state.write().await;
+        if state.child_generation != generation
+            || state.child_client.as_ref().is_none_or(|child| {
+                child.is_transport_closed() || child.service().lifetime.is_closed()
+            })
+        {
+            return false;
+        }
+        // A live tools/list must not cause an invalidation/relist feedback loop.
+        if *self.catalog_changed.borrow() != Some(generation)
+            || state.cached_tools.as_ref() != Some(&discovered)
+        {
+            if let Some(ref cache_dir) = self.config.cache_dir {
+                tools::save_tool_cache(cache_dir, &discovered);
+            }
+            state.cached_tools = Some(discovered);
+            self.catalog_changed.send_replace(Some(generation));
+            if let Some(tx) = &state.tool_list_changed_tx {
+                // This older embedding API is a coalesced invalidation too.
+                let _ = tx.try_send(());
+            }
+        }
+        true
+    }
+
+    async fn current_catalog_publication(&self, generation: Option<u64>) -> bool {
+        let state = self.state.read().await;
+        generation == Some(state.child_generation)
+            && state.child_client.as_ref().is_some_and(|child| {
+                !child.is_transport_closed() && !child.service().lifetime.is_closed()
+            })
+    }
+
+    /// Called only after legacy notifications/initialized. The retained source
+    /// covers startup and restart, including installed proxies with no mpsc receiver.
+    pub async fn forward_catalog_notifications(&self, context: NotificationContext<RoleServer>) {
+        if context.peer.peer_info().is_none()
+            || self
+                .legacy_catalog_started
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let mut changes = self.catalog_changed.subscribe();
+        loop {
+            let generation = *changes.borrow_and_update();
+            if self.current_catalog_publication(generation).await {
+                for notification in catalog_notifications(true, true) {
+                    tokio::select! {
+                        _ = mcp_transport::notification_cancelled(&context) => return,
+                        // One owned send can wait under backpressure. The watch
+                        // coalesces later publications and teardown still cancels
+                        // promptly; a healthy slow client must not lose forwarding.
+                        result = context.peer.send_notification(notification) => {
+                            if let Err(error) = result {
+                                warn!("Legacy catalog notification failed: {error}");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::select! {
+                _ = mcp_transport::notification_cancelled(&context) => return,
+                result = changes.changed() => if result.is_err() { return; },
+            }
+        }
     }
 
     async fn child_peer_snapshot(&self) -> Result<ChildPeerSnapshot, McpError> {
@@ -1850,7 +2075,7 @@ impl ServerHandler for McpProxy {
         &self,
         requested: &rmcp::model::SubscriptionFilter,
     ) -> Option<rmcp::model::SubscriptionFilter> {
-        Some(mcp_transport::notebook_subscription_filter(requested))
+        Some(mcp_transport::proxy_subscription_filter(requested))
     }
     async fn listen(&self, context: rmcp::service::SubscriptionContext) -> Result<(), McpError> {
         mcp_transport::require_protocol(context.request_context())?;
@@ -2098,21 +2323,18 @@ impl ServerHandler for McpProxy {
         if context.peer.peer_info().is_none() {
             return;
         }
+        let proxy = self.clone();
+        tokio::spawn(async move {
+            proxy.forward_catalog_notifications(context).await;
+        });
         if self.state.read().await.child_client.is_some() {
             return;
         }
         let proxy = self.clone();
-        let peer = context.peer;
         tokio::spawn(async move {
             if let Err(e) = proxy.init_child().await {
                 error!("Failed to initialize child: {e}");
                 return;
-            }
-            if let Err(e) = peer.notify_tool_list_changed().await {
-                warn!("Failed to send tools/list_changed: {e}");
-            }
-            if let Err(e) = peer.notify_resource_list_changed().await {
-                warn!("Failed to send resources/list_changed: {e}");
             }
             info!("Child initialized after client-initialized, tools available");
         });
@@ -2846,6 +3068,105 @@ mod tests {
                 assert!(terminal.is_none());
             }
         }
+        client.close().await.unwrap();
+        server.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn catalog_delivery_during_lag_recovery_retains_terminal_reconciliation() {
+        use rmcp::ServiceExt;
+        struct GatedReadChild {
+            entered: Arc<Notify>,
+            release: Arc<Notify>,
+            reads: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl ServerHandler for GatedReadChild {
+            #[allow(deprecated)]
+            async fn subscribe(
+                &self,
+                _: rmcp::model::SubscribeRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<(), McpError> {
+                Ok(())
+            }
+            async fn read_resource(
+                &self,
+                _: ReadResourceRequestParams,
+                _: RequestContext<RoleServer>,
+            ) -> Result<rmcp::model::ReadResourceResponse, McpError> {
+                if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                Err(McpError::resource_not_found(
+                    "expired",
+                    Some(
+                        serde_json::json!({"code":"attachment_expired","notebook_handle":"expired"}),
+                    ),
+                ))
+            }
+        }
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (server_pipe, client_pipe) = tokio::io::duplex(65536);
+        let fixture = GatedReadChild {
+            entered: entered.clone(),
+            release: release.clone(),
+            reads: reads.clone(),
+        };
+        let task = tokio::spawn(async move { fixture.serve(server_pipe).await.unwrap() });
+        let mut client = ().serve(client_pipe).await.unwrap();
+        let mut server = task.await.unwrap();
+        let registry = crate::native_subscriptions::Registry::default();
+        let uri = "nteract://sessions/expired/cells".to_owned();
+        let lease = registry
+            .acquire(0, vec![uri.clone()], client.peer().clone())
+            .await
+            .unwrap();
+        let (notifications, receiver) = tokio::sync::broadcast::channel(1);
+        let mut resource = CapturedResources {
+            peer: client.peer().clone(),
+            uris: vec![uri.clone()],
+            notifications: receiver,
+            lifetime: Default::default(),
+            lease,
+            reconciliation_pending: false,
+        };
+        for _ in 0..2 {
+            notifications
+                .send(rmcp::model::ResourceUpdatedNotificationParam::new(&uri))
+                .unwrap();
+        }
+        let (catalog, mut changes) = tokio::sync::watch::channel(false);
+        let publication = tokio::spawn(async move {
+            entered.notified().await;
+            catalog.send_replace(true);
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                _ = changes.changed() => {},
+                _ = resource.next() => panic!("reconciliation must be gated until catalog publication"),
+            }
+        }).await.unwrap();
+        publication.await.unwrap();
+        assert!(
+            resource.reconciliation_pending,
+            "catalog delivery must not consume the only lag marker"
+        );
+        let updates = tokio::time::timeout(Duration::from_secs(2), resource.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            attachment_terminal(updates[0].meta.as_ref()).unwrap().0,
+            "io.nteract/attachmentExpired"
+        );
+        assert!(!resource.reconciliation_pending);
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 2);
+        resource.lease.release_uri(&uri);
+        release.notify_one();
         client.close().await.unwrap();
         server.close().await.unwrap();
     }

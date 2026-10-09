@@ -7918,6 +7918,7 @@ dependencies = [
 name = "runt-mcp-proxy"
 version = "0.6.1"
 dependencies = [
+ "hex",
  "mcp-transport",
  "notebook-protocol",
  "rmcp 1.5.0",
@@ -7926,6 +7927,7 @@ dependencies = [
  "runtimed",
  "runtimed-client",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tracing",

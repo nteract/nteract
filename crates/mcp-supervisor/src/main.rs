@@ -1441,11 +1441,6 @@ impl Supervisor {
         match self.restart_child().await {
             Ok(()) => {
                 info!("Child restarted after file change ({kind:?})");
-                // Signal that the tool list may have changed
-                let tx = { self.state.read().await.tool_list_changed_tx.clone() };
-                if let Some(tx) = tx {
-                    let _ = tx.send(()).await;
-                }
             }
             Err(e) => {
                 error!("Failed to restart child after file change: {e}");
@@ -2017,12 +2012,34 @@ impl ServerHandler for Supervisor {
         &self,
         requested: &rmcp::model::SubscriptionFilter,
     ) -> Option<rmcp::model::SubscriptionFilter> {
-        Some(mcp_transport::notebook_subscription_filter(requested))
+        Some(mcp_transport::proxy_subscription_filter(requested))
     }
     async fn listen(&self, context: rmcp::service::SubscriptionContext) -> Result<(), McpError> {
         mcp_transport::require_protocol(context.request_context())?;
         let proxy = self.native_proxy_ready(context.request_context()).await?;
         proxy.forward_listen(context).await
+    }
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
+        if context.peer.peer_info().is_none() {
+            return;
+        }
+        let supervisor = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let ready = supervisor.child_ready.notified();
+                tokio::pin!(ready);
+                ready.as_mut().enable();
+                let proxy = { supervisor.state.read().await.proxy.clone() };
+                if let Some(proxy) = proxy {
+                    proxy.forward_catalog_notifications(context).await;
+                    return;
+                }
+                tokio::select! {
+                    _ = mcp_transport::notification_cancelled(&context) => return,
+                    _ = ready => {},
+                }
+            }
+        });
     }
     async fn initialize(
         &self,
@@ -3281,7 +3298,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // time out waiting for the initialize response. The child process and
     // daemon are connected in a background task — until then, the supervisor
     // returns only its own tools and empty resource lists.
-    let (tool_list_changed_tx, mut tool_list_changed_rx) = mpsc::channel::<()>(4);
+    let (tool_list_changed_tx, _tool_list_changed_rx) = mpsc::channel::<()>(4);
     let supervisor = Supervisor::new_empty(
         project_root.clone(),
         mode,
@@ -3323,8 +3340,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_for_watcher = state_for_init.clone();
     let state_for_cleanup = state_for_init.clone();
     let child_ready = server.service().child_ready.clone();
-    let peer = server.peer().clone();
-    let peer_for_init = peer.clone();
 
     // Step 2: Spawn background task to do the heavy setup (daemon, build,
     // child spawn, file watcher). When done, populates state and notifies
@@ -3572,17 +3587,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Unblock any call_tool waiting for the child
         child_ready.notify_waiters();
 
-        // 2e: Notify the client that tools/resources are now available.
-        // Even if cached tools matched, the child is now live so tool calls work.
-        if let Err(e) = peer_for_init.notify_tool_list_changed().await {
-            warn!("Failed to send tools/list_changed after init: {e}");
-        } else {
-            info!("Background init complete — sent tools/list_changed to client");
-        }
-        if let Err(e) = peer_for_init.notify_resource_list_changed().await {
-            warn!("Failed to send resources/list_changed after init: {e}");
-        }
-
         // 2f: Start file watcher (opt-in). Off by default. Watching the
         // six source roots and kicking cargo + maturin on every edit
         // invalidated sccache keys at a rate that showed up as ~2%
@@ -3614,23 +3618,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Step 3: Handle tool_list_changed notifications from restarts
-    let peer_for_notify = peer.clone();
-    tokio::spawn(async move {
-        while let Some(()) = tool_list_changed_rx.recv().await {
-            if let Err(e) = peer_for_notify.notify_tool_list_changed().await {
-                warn!("Failed to send tools/list_changed: {e}");
-            } else {
-                info!("Sent tools/list_changed notification to client");
-            }
-            if let Err(e) = peer_for_notify.notify_resource_list_changed().await {
-                warn!("Failed to send resources/list_changed: {e}");
-            } else {
-                info!("Sent resources/list_changed notification to client");
-            }
-        }
-    });
-
     info!("MCP supervisor running, waiting for client disconnect...");
     let reason = server.waiting().await?;
     info!("Supervisor shutting down: {reason:?}");
@@ -3652,7 +3639,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+#[path = "../../runt-mcp/tests/support/mod.rs"]
+mod wire_support;
+
+#[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn supervisor_catalog_publication_waits_for_initialized_and_uses_shared_source() {
+        use crate::wire_support::Wire;
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let supervisor = Supervisor::new_empty(
+            dir.path().into(),
+            DevMode::Attach,
+            dir.path().into(),
+            None,
+            tx,
+        );
+        let child = LaunchIdentityChild {
+            calls: Default::default(),
+            entered: Default::default(),
+            release: Default::default(),
+            socket: dir.path().join("daemon.sock"),
+        };
+        let (server_io, client_io) = tokio::io::duplex(65536);
+        let (server, client) = tokio::join!(
+            child.serve(server_io),
+            catalog_test_client().serve(client_io)
+        );
+        let server = server.unwrap();
+        let proxy = unavailable_test_proxy();
+        {
+            let mut state = proxy.state.write().await;
+            state.child_client = Some(client.unwrap());
+            state.child_generation = 1;
+        }
+        proxy.child_tools().await;
+        supervisor.state.write().await.proxy = Some(proxy.clone());
+        let mut wire = Wire::start(supervisor);
+        wire.initialize("2025-11-25").await;
+        wire.request(2, "tools/list", None).await;
+        assert!(wire.notifications.is_empty());
+        wire.initialized().await;
+        wire.notification("notifications/tools/list_changed").await;
+        wire.notification("notifications/resources/list_changed")
+            .await;
+        let marker = wire.notifications.len();
+        proxy.state.write().await.child_generation += 1;
+        proxy.child_tools().await;
+        wire.notification_after(marker, |n| {
+            n["method"] == "notifications/tools/list_changed"
+        })
+        .await;
+        wire.notification_after(marker, |n| {
+            n["method"] == "notifications/resources/list_changed"
+        })
+        .await;
+        wire.finish().await;
+        proxy.shutdown_child().await;
+        server.cancel().await.unwrap();
+    }
     use super::*;
     use std::time::UNIX_EPOCH;
 
