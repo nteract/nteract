@@ -27,6 +27,27 @@
     "description": "List active notebook sessions.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "domain": {
+          "default": null,
+          "description": "Configured hosted domain; omit for this server's local daemon.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "default": null,
+          "description": "Maximum hosted notebooks to list.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
       "title": "ListNotebooksParams",
       "type": "object"
     },
@@ -45,6 +66,14 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "domain": {
+          "default": null,
+          "description": "Configured hosted domain; omit for this server's local daemon.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "notebook_id": {
           "default": null,
           "description": "UUID of a running notebook session from list_active_notebooks.\nEither this OR path must be provided, not both.",
@@ -150,11 +179,63 @@
     "description": "Save to disk; path required for notebooks from create_notebook.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "path": {
           "default": null,
@@ -165,11 +246,10 @@
           ]
         }
       },
-      "required": [
-        "notebook_handle"
-      ],
+      "required": [],
       "title": "SaveNotebookParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "save_notebook"
   },
@@ -181,18 +261,69 @@
     "description": "Open in nteract for the user. Headless: returns a structured no-display reason.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
-      "required": [
-        "notebook_handle"
-      ],
+      "required": [],
       "title": "ShowNotebookParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "show_notebook"
   },
@@ -224,32 +355,130 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Wait for notebook changes or an exact execution.",
+    "description": "Read bounded notebook cells; after a cursor, optionally wait for changes.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "after": {
-          "description": "Opaque cursor from a prior read or wait. Omit with no execution_id for an immediate baseline.",
+          "description": "Cursor from an earlier inspection/resource read. Changes are notebook-wide.",
           "type": [
             "string",
             "null"
           ]
         },
-        "execution_id": {
-          "description": "Wait for this exact execution to finish, including trailing output, even if its cell is rerun.",
+        "cell_ids": {
+          "description": "Optional cell IDs to read, in notebook order. At most 100.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "count": {
+          "description": "Cells to return, 1–100. Default 25.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
+          "minLength": 1,
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "full_source": {
+          "description": "Include source chunks instead of previews. Chunks remain bounded.",
+          "type": [
+            "boolean",
             "null"
           ]
         },
         "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_chars": {
+          "description": "Characters per cell, 1–8192; default 160, or 8192 with full_source.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source_start": {
+          "description": "Character offset into each cell's source. Default 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "start": {
+          "description": "First matching cell, zero-based. Default 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "timeout_secs": {
-          "description": "Maximum wait in seconds. Default 25; must be between 0 and 50.",
+          "description": "Wait up to 0–50 seconds after the cursor. Default 0; no cursor returns a baseline immediately.",
           "format": "double",
           "type": [
             "number",
@@ -257,13 +486,12 @@
           ]
         }
       },
-      "required": [
-        "notebook_handle"
-      ],
-      "title": "WaitForNotebookChangeParams",
-      "type": "object"
+      "required": [],
+      "title": "InspectNotebookParams",
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
-    "name": "wait_for_notebook_change"
+    "name": "inspect_notebook"
   },
   {
     "_meta": {
@@ -279,6 +507,39 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "after_cell_id": {
           "description": "Insert after this cell. Omit to append at the end; pass null to insert at the beginning.",
@@ -303,10 +564,29 @@
             "null"
           ]
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "source": {
           "default": null,
@@ -326,11 +606,10 @@
           ]
         }
       },
-      "required": [
-        "notebook_handle"
-      ],
+      "required": [],
       "title": "CreateCellParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "create_cell"
   },
@@ -348,6 +627,39 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "and_run": {
           "default": null,
@@ -369,10 +681,29 @@
             "null"
           ]
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "source": {
           "default": null,
@@ -393,11 +724,11 @@
         }
       },
       "required": [
-        "cell_id",
-        "notebook_handle"
+        "cell_id"
       ],
       "title": "SetCellParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "set_cell"
   },
@@ -410,23 +741,75 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "cell_id": {
           "description": "The cell ID to delete.",
           "type": "string"
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
-        "cell_id",
-        "notebook_handle"
+        "cell_id"
       ],
       "title": "DeleteCellParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "delete_cell"
   },
@@ -440,6 +823,39 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "after_cell_id": {
           "default": null,
@@ -453,18 +869,37 @@
           "description": "The cell ID to move.",
           "type": "string"
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
-        "cell_id",
-        "notebook_handle"
+        "cell_id"
       ],
       "title": "MoveCellParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "move_cell"
   },
@@ -481,15 +916,67 @@
     "description": "Execute a code cell and return execution_id, status, and compact output summary.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "cell_id": {
           "description": "The cell ID to execute.",
           "type": "string"
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "timeout_secs": {
           "default": null,
@@ -502,11 +989,11 @@
         }
       },
       "required": [
-        "cell_id",
-        "notebook_handle"
+        "cell_id"
       ],
       "title": "ExecuteCellParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "execute_cell"
   },
@@ -523,11 +1010,63 @@
     "description": "Execute all code cells in order.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "timeout_secs": {
           "default": null,
@@ -547,11 +1086,10 @@
           ]
         }
       },
-      "required": [
-        "notebook_handle"
-      ],
+      "required": [],
       "title": "RunAllCellsParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "run_all_cells"
   },
@@ -565,10 +1103,51 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Get outputs and status (done/error/running/queued) for an execution_id.",
+    "description": "Read an execution_id's outputs/status; optionally wait up to 50 seconds.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "execution_id": {
           "description": "The execution ID returned by `execute_cell`, `set_cell(and_run=true)`,\n`create_cell(and_run=true)`, or `run_all_cells`.",
           "type": "string"
@@ -582,17 +1161,36 @@
           ]
         },
         "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_secs": {
+          "description": "Wait 0–50 seconds for this existing run to settle. Default 0 (read immediately); never submits a new run.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       "required": [
-        "execution_id",
-        "notebook_handle"
+        "execution_id"
       ],
       "title": "GetResultsParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "get_results"
   },
@@ -606,18 +1204,69 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Empty params for tools that take no arguments.",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
-      "required": [
-        "notebook_handle"
-      ],
+      "required": [],
       "title": "EmptyParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "interrupt_kernel"
   },
@@ -630,18 +1279,69 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Empty params for tools that take no arguments.",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
-      "required": [
-        "notebook_handle"
-      ],
+      "required": [],
       "title": "EmptyParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "restart_kernel"
   },
@@ -655,6 +1355,39 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "add": {
           "default": [],
@@ -684,10 +1417,29 @@
             "null"
           ]
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "remove": {
           "default": [],
@@ -703,11 +1455,10 @@
           "type": "boolean"
         }
       },
-      "required": [
-        "notebook_handle"
-      ],
+      "required": [],
       "title": "ManageDependenciesParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "manage_dependencies"
   },
@@ -724,6 +1475,39 @@
     "description": "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "and_run": {
           "default": null,
@@ -757,14 +1541,33 @@
             "null"
           ]
         },
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "match": {
           "description": "Literal text to find (must match exactly once).",
           "type": "string"
         },
         "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "timeout_secs": {
           "default": null,
@@ -779,11 +1582,11 @@
       "required": [
         "cell_id",
         "match",
-        "content",
-        "notebook_handle"
+        "content"
       ],
       "title": "ReplaceMatchParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "replace_match"
   },
@@ -800,6 +1603,39 @@
     "description": "Replace a regex match in a cell (fancy-regex). Fails if 0 or >1 matches. Replacement is literal text.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "and_run": {
           "default": null,
@@ -817,10 +1653,29 @@
           "description": "Literal replacement text — not interpreted as a regex or escape sequence. To insert a newline, use an actual newline character in the JSON string.",
           "type": "string"
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "pattern": {
           "description": "Regex pattern (must match exactly once). MULTILINE ((?m)) enabled by default — ^/$ match line boundaries, use \\z for end-of-string. DOTALL is off — . does not match \\n unless you add (?s).",
@@ -839,11 +1694,11 @@
       "required": [
         "cell_id",
         "pattern",
-        "content",
-        "notebook_handle"
+        "content"
       ],
       "title": "ReplaceRegexParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "replace_regex"
   },
@@ -884,6 +1739,39 @@
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "anchor": {
           "$ref": "#/$defs/AnchorParam",
@@ -893,19 +1781,38 @@
           "description": "Comment text (markdown supported).",
           "type": "string"
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "anchor",
-        "body",
-        "notebook_handle"
+        "body"
       ],
       "title": "CreateCommentParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "create_comment"
   },
@@ -918,15 +1825,67 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
         "body": {
           "description": "Reply text (markdown supported).",
           "type": "string"
         },
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "thread_id": {
           "description": "Thread ID to reply to.",
@@ -935,11 +1894,11 @@
       },
       "required": [
         "thread_id",
-        "body",
-        "notebook_handle"
+        "body"
       ],
       "title": "ReplyCommentParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "reply_comment"
   },
@@ -953,11 +1912,63 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "thread_id": {
           "description": "Thread ID to resolve.",
@@ -965,11 +1976,11 @@
         }
       },
       "required": [
-        "thread_id",
-        "notebook_handle"
+        "thread_id"
       ],
       "title": "ResolveCommentParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "resolve_comment"
   },
@@ -983,11 +1994,63 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "domain": {
+              "type": "null"
+            },
+            "notebook_handle": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "notebook_id": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "notebook_handle"
+          ]
+        },
+        {
+          "properties": {
+            "notebook_handle": {
+              "type": "null"
+            },
+            "notebook_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "notebook_id"
+          ]
+        }
+      ],
       "properties": {
-        "notebook_handle": {
-          "description": "Attachment handle from connect_notebook or create_notebook; also addresses parked notebooks.",
+        "domain": {
+          "description": "Configured hosted domain; only with notebook_id. Omit for local.",
           "minLength": 1,
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_handle": {
+          "description": "Compatibility attachment handle; use instead of notebook_id/domain.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notebook_id": {
+          "description": "ID of an already connected notebook. Omitted domain uses this server's local daemon.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "thread_id": {
           "description": "Thread ID to reopen.",
@@ -995,11 +2058,11 @@
         }
       },
       "required": [
-        "thread_id",
-        "notebook_handle"
+        "thread_id"
       ],
       "title": "ReopenCommentParams",
-      "type": "object"
+      "type": "object",
+      "x-nteract-notebook-target-version": 1
     },
     "name": "reopen_comment"
   }

@@ -29,10 +29,12 @@ pub mod editing;
 pub mod execution;
 pub mod formatting;
 mod icons;
+mod notebook_target;
 pub mod observation;
 pub mod presence;
 mod progress;
 pub mod project_file;
+mod replica;
 mod resources;
 mod session;
 mod session_activation;
@@ -210,6 +212,17 @@ impl NteractMcp {
         &self,
         notebook_handle: &str,
     ) -> Result<Option<(String, observation::ObservationReader)>, McpError> {
+        if let Some(session) =
+            targets::captured_session().filter(|session| session.notebook_handle == notebook_handle)
+        {
+            session
+                .access(SessionRequirement::DocumentRead)
+                .map_err(resources::resource_session_access_error)?;
+            return session
+                .observer()
+                .map(|observer| Some((session.notebook_id.clone(), observer)))
+                .map_err(|error| McpError::internal_error(error, None));
+        }
         let entries = self.attachments.read_entries();
         let Some(entry) = entries.get(notebook_handle) else {
             return Ok(None);
@@ -363,6 +376,13 @@ impl NteractMcp {
     /// snapshot. Contention waits for ownership to resolve; it is not evidence
     /// that local durable outputs are absent.
     pub(crate) async fn local_runtime_metadata(&self) -> LocalRuntimeMetadata {
+        if let Some(session) = targets::captured_session() {
+            let mut metadata = self.local_metadata_snapshot(!session.is_hosted());
+            if !session.is_hosted() && metadata.blob_base_url.is_some() {
+                metadata.output_resource_session = Some(session.notebook_handle);
+            }
+            return metadata;
+        }
         if let Some(target) = targets::current() {
             let allowed = self
                 .attachments
@@ -444,6 +464,9 @@ impl NteractMcp {
         &self,
         requirement: SessionRequirement,
     ) -> Result<Option<SessionAccess>, SessionAccessError> {
+        if let Some(session) = targets::captured_session() {
+            return session.access(requirement).map(Some);
+        }
         if let Some(handle) = targets::current() {
             return self
                 .attachments
@@ -478,6 +501,15 @@ impl NteractMcp {
         &self,
         access: &SessionAccess,
     ) -> Result<(), SessionAccessError> {
+        if let Some(session) = targets::captured_session() {
+            return if session.notebook_handle == access.notebook_handle
+                && session.notebook_id == access.notebook_id
+            {
+                Ok(())
+            } else {
+                Err(Self::expired_attachment_access_error(access))
+            };
+        }
         if let Some(handle) = targets::current() {
             return if access.notebook_handle == handle
                 && self.attachment_identity(&handle).await.is_some()
@@ -513,6 +545,19 @@ impl NteractMcp {
         access: &SessionAccess,
         path: String,
     ) -> Result<(), SessionAccessError> {
+        if let Some(session) = targets::captured_session() {
+            self.ensure_session_access_current(access).await?;
+            if let Some(entry) = self
+                .attachments
+                .write_entries()
+                .get_mut(&session.notebook_handle)
+            {
+                entry.session.notebook_path = Some(path);
+            }
+            // Saving already succeeded against the captured authority. Removal
+            // of address retention cannot erase that known outcome.
+            return Ok(());
+        }
         if let Some(handle) = targets::current() {
             if access.notebook_handle != handle {
                 return Err(Self::expired_attachment_access_error(access));
@@ -752,17 +797,20 @@ impl ServerHandler for NteractMcp {
         .with_server_info(impl_info)
         .with_instructions(
             "nteract MCP server for Jupyter notebooks. \
-             Use list_active_notebooks to discover notebooks, then connect_notebook \
-             or create_notebook to acquire an independent notebook_handle. Every \
-             notebook tool requires that handle on every supported protocol. Opening \
-             another notebook never changes an existing attachment's target. Read \
-             cells and comments through the returned nteract://sessions/{notebook_handle}/ \
-             resources. Legacy notebook-ID resources remain available when unambiguous. \
-             Reads return a cursor. Use wait_for_notebook_change with that handle \
-             and cursor for a bounded wait, or supply execution_id to wait for an \
-             exact execution and its settled output. Canceling a wait only stops \
-             observation; interrupt_kernel explicitly stops computation. A released \
-             attachment needs a new connect and handle.",
+             Discover and connect/create a notebook, then supply notebook_id on every \
+             notebook call (configured domain also required for hosted notebooks). \
+             Omitted domain always means this server's local daemon. Existing \
+             notebook_handle calls remain supported instead of ID/domain. ID calls \
+             retain an already connected authorized replica; cold targets require \
+             explicit connect. Opening another notebook never changes a captured target. \
+             Read nteract://sessions/{notebook_handle}/ resources and use subscriptions for ongoing observation. \
+             inspect_notebook provides bounded cells/source and a cursor; after plus \
+             timeout_secs waits for notebook changes. get_results with execution_id \
+             and timeout_secs continues waiting for the same run without executing again. \
+             Both waits default to zero, maximum 50 seconds. Cancellation stops observation, \
+             not computation. disconnect_notebook requires an exact notebook_handle. \
+             ID results name their shared address owner's release handle; explicit \
+             handles retain independent lifetimes. No TTL or pressure eviction.",
         )
     }
 
@@ -788,7 +836,7 @@ impl ServerHandler for NteractMcp {
         if self.no_show {
             tools.retain(|t| t.name.as_ref() != "show_notebook");
         }
-        mcp_transport::attachment_tool_schemas(&mut tools);
+        mcp_transport::notebook_target_tool_schemas(&mut tools);
         Ok(ListToolsResult::with_all_items(tools)
             .with_ttl_ms(0)
             .with_cache_scope(rmcp::model::CacheScope::Private))
@@ -2135,7 +2183,9 @@ mod tests {
 
         let instructions = info.instructions.as_deref().expect("instructions");
         assert!(instructions.contains("nteract://sessions/{notebook_handle}/"));
-        assert!(instructions.contains("Every notebook tool requires that handle"));
+        assert!(instructions.contains("supply notebook_id on every"));
+        assert!(instructions.contains("cold targets require"));
+        assert!(instructions.contains("notebook_handle calls remain supported"));
     }
 
     // ── safe_truncate unit tests ─────────────────────────────────────

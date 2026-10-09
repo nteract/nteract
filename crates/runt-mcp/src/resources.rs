@@ -550,29 +550,47 @@ fn cells_json(notebook_id: &str, view: &ObservedNotebook, notebook_handle: &str)
     let cell_entries: Vec<_> = cells
         .iter()
         .enumerate()
-        .map(|(index, cell)| {
-            let execution_id = view.notebook.execution_pointers.get(&cell.id);
-            let execution = execution_id.and_then(|id| view.runtime.executions.get(id));
-            let status = observed_cell_status(view, cell);
-            serde_json::json!({
-                "cell_id": cell.id,
-                "uri": attachment_cell_uri(notebook_handle, &cell.id),
-                "cell_type": cell.cell_type,
-                "previous_cell_id": previous_cell_id(cells, index),
-                "next_cell_id": next_cell_id(cells, index),
-                "source_preview": source_preview(&cell.source, 160),
-                "execution_id": execution_id,
-                "execution_count": execution.and_then(|entry| entry.execution_count).map(|count| count.to_string()),
-                "status": status,
-                "outputs": summarize_outputs(execution.map(|entry| entry.outputs.as_slice()).unwrap_or(&[])),
-            })
-        })
+        .map(|(index, _)| observed_cell_summary(view, notebook_handle, index, 160, None))
         .collect();
     serde_json::to_string_pretty(&serde_json::json!({
         "notebook_id": notebook_id,
         "cells": cell_entries,
     }))
     .unwrap_or_else(|_| "{}".into())
+}
+
+/// One captured notebook/runtime projection, shared by resources and the tool fallback.
+pub(crate) fn observed_cell_summary(
+    view: &ObservedNotebook,
+    notebook_handle: &str,
+    index: usize,
+    preview_chars: usize,
+    output_limit: Option<usize>,
+) -> serde_json::Value {
+    let cells = view.notebook.cells();
+    let cell = &cells[index];
+    let execution_id = view.notebook.execution_pointers.get(&cell.id);
+    let execution = execution_id.and_then(|id| view.runtime.executions.get(id));
+    let outputs = execution
+        .map(|entry| entry.outputs.as_slice())
+        .unwrap_or(&[]);
+    let mut result = serde_json::json!({
+        "cell_id": cell.id,
+        "uri": attachment_cell_uri(notebook_handle, &cell.id),
+        "cell_type": cell.cell_type,
+        "previous_cell_id": previous_cell_id(cells, index),
+        "next_cell_id": next_cell_id(cells, index),
+        "source_preview": source_preview(&cell.source, preview_chars),
+        "execution_id": execution_id,
+        "execution_count": execution.and_then(|entry| entry.execution_count).map(|count| count.to_string()),
+        "status": observed_cell_status(view, cell),
+        "outputs": match output_limit { Some(limit) => bounded_output_summaries(outputs, limit), None => summarize_outputs(outputs) },
+    });
+    if let Some(limit) = output_limit {
+        result["output_count"] = serde_json::json!(outputs.len());
+        result["outputs_truncated"] = serde_json::json!(outputs.len() > limit);
+    }
+    result
 }
 
 fn previous_cell_id(cells: &[notebook_doc::CellSnapshot], index: usize) -> Option<&str> {
@@ -663,6 +681,21 @@ fn observed_cell_status<'a>(
         .get(id)
         .map(|entry| entry.status.as_str())
         .filter(|status| matches!(*status, "done" | "error" | "cancelled"))
+}
+
+/// Summaries for a bounded tool read, without materializing all output manifests.
+fn bounded_output_summaries(outputs: &[serde_json::Value], limit: usize) -> Vec<serde_json::Value> {
+    outputs.iter().take(limit).map(|output| {
+        let data = output.get("data").and_then(serde_json::Value::as_object);
+        let bounded = |value: Option<&str>| value.map(|value| value.chars().take(128).collect::<String>());
+        let id = output.get("output_id").and_then(serde_json::Value::as_str);
+        let kind = output.get("output_type").and_then(serde_json::Value::as_str);
+        let mimes: Vec<_> = data.into_iter().flat_map(|data| data.keys()).take(16).map(|key| bounded(Some(key))).collect();
+        let truncated = id.is_some_and(|id| id.chars().count() > 128)
+            || kind.is_some_and(|kind| kind.chars().count() > 128)
+            || data.is_some_and(|data| data.len() > 16 || data.keys().take(16).any(|key| key.chars().count() > 128));
+        serde_json::json!({"output_id":bounded(id),"output_type":bounded(kind),"mime_types":mimes,"truncated":truncated})
+    }).collect()
 }
 
 fn summarize_outputs(outputs: &[serde_json::Value]) -> Vec<serde_json::Value> {
@@ -756,7 +789,7 @@ pub(crate) fn attachment_cell_resource_link(notebook_handle: &str, cell_id: &str
     resource
 }
 
-fn attachment_cell_uri(notebook_handle: &str, cell_id: &str) -> String {
+pub(crate) fn attachment_cell_uri(notebook_handle: &str, cell_id: &str) -> String {
     format!(
         "{}/{}",
         attachment_cells_uri(notebook_handle),

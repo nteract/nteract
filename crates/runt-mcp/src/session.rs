@@ -206,6 +206,7 @@ pub struct NotebookSession {
     pub notebook_path: Option<String>,
     /// Session source. Hosted sessions do not depend on the local daemon.
     pub source: NotebookSessionSource,
+    pub(crate) hosted_authority: Option<crate::cloud::HostedAuthority>,
     /// The local daemon process that owns this handle. `None` means either a
     /// hosted session or a local connection whose daemon changed while the
     /// connection was being established. An unbound local handle is stale.
@@ -253,6 +254,7 @@ impl NotebookSession {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
             backing_key: None,
+            hosted_authority: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -277,6 +279,7 @@ impl NotebookSession {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
             backing_key: None,
+            hosted_authority: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -296,6 +299,7 @@ impl NotebookSession {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
             backing_key: None,
+            hosted_authority: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,
@@ -318,6 +322,7 @@ impl NotebookSession {
         Self {
             notebook_handle: uuid::Uuid::new_v4().to_string(),
             backing_key: None,
+            hosted_authority: None,
             observation: Arc::new(OnceLock::new()),
             handle,
             notebook_id,

@@ -55,15 +55,63 @@ impl NotebookTarget {
     }
 }
 
-pub async fn connect_hosted_notebook(
+/// Resolved credentials are pinned to the connection that actually authenticated.
+/// Never debug-format or serialize this value: it contains credential material.
+#[derive(Clone)]
+pub(crate) struct HostedCredentials {
+    pub domain: String,
+    operator: String,
+    auth: CloudAuth,
+}
+
+impl HostedCredentials {
+    pub(crate) fn resolve(domain: &ResolvedCloudDomain) -> Result<Self, String> {
+        Ok(Self {
+            domain: domain.base_url.clone(),
+            operator: domain
+                .operator
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(DEFAULT_MCP_OPERATOR)
+                .to_owned(),
+            auth: domain.resolve_auth()?,
+        })
+    }
+
+    pub(crate) fn matches(&self, other: &Self) -> bool {
+        use CloudAuth::*;
+        self.domain == other.domain
+            && self.operator == other.operator
+            && match (&self.auth, &other.auth) {
+                (OidcBearer { token: a }, OidcBearer { token: b })
+                | (AnacondaApiKey { token: a }, AnacondaApiKey { token: b })
+                | (WorkstationCredential { token: a }, WorkstationCredential { token: b }) => {
+                    a == b
+                }
+                (Dev { token: a, user: au }, Dev { token: b, user: bu }) => a == b && au == bu,
+                _ => false,
+            }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct HostedAuthority {
+    pub credentials: HostedCredentials,
+    pub principal: String,
+    /// Requested permission, not a claim about the server's effective grants.
+    pub requested_scope: &'static str,
+}
+
+pub(crate) async fn connect_hosted_bound(
     domain: &ResolvedCloudDomain,
     notebook_id: &str,
-) -> Result<ConnectResult, String> {
+) -> Result<(ConnectResult, HostedAuthority), String> {
+    let credentials = HostedCredentials::resolve(domain)?;
     let transport = CloudWsFrameTransport::new(CloudWsConfig {
-        cloud_url: domain.base_url.clone(),
+        cloud_url: credentials.domain.clone(),
         notebook_id: notebook_id.to_string(),
         scope: "editor".to_string(),
-        auth: domain.resolve_auth()?,
+        auth: credentials.auth.clone(),
         workstation: None,
     });
     let (source, sink) = transport
@@ -72,11 +120,34 @@ pub async fn connect_hosted_notebook(
         .map_err(|e| format!("Failed to connect hosted notebook: {e}"))?;
     let principal = transport
         .principal()
-        .ok_or_else(|| "Hosted room did not provide an authenticated principal".to_string())?;
-    let actor_label = domain.actor_label(principal, DEFAULT_MCP_OPERATOR);
-    notebook_sync::connect::connect_frame_io(notebook_id.to_string(), &actor_label, source, sink)
+        .ok_or_else(|| "Hosted room did not provide an authenticated principal".to_string())?
+        .to_owned();
+    let actor_label = domain.actor_label(&principal, DEFAULT_MCP_OPERATOR);
+    let result = notebook_sync::connect::connect_frame_io(
+        notebook_id.to_string(),
+        &actor_label,
+        source,
+        sink,
+    )
+    .await
+    .map_err(|e| format!("Failed to start hosted notebook sync: {e}"))?;
+    Ok((
+        result,
+        HostedAuthority {
+            credentials,
+            principal,
+            requested_scope: "editor",
+        },
+    ))
+}
+
+pub async fn connect_hosted_notebook(
+    domain: &ResolvedCloudDomain,
+    notebook_id: &str,
+) -> Result<ConnectResult, String> {
+    connect_hosted_bound(domain, notebook_id)
         .await
-        .map_err(|e| format!("Failed to start hosted notebook sync: {e}"))
+        .map(|(result, _)| result)
 }
 
 pub async fn list_hosted_notebooks(
@@ -384,7 +455,7 @@ credential = { kind = "anaconda-api-key-env", env = "NTERACT_TEST_ANACONDA_KEY" 
 
     #[tokio::test]
     #[allow(clippy::result_large_err)] // tokio-tungstenite's handshake callback requires this error shape.
-    async fn connect_hosted_notebook_uses_local_room_and_sends_sync_frame() {
+    async fn connect_hosted_bound_captures_transport_principal_credentials_and_sends_sync_frame() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (frame_tx, frame_rx) = oneshot::channel::<usize>();
@@ -454,10 +525,28 @@ credential = { kind = "anaconda-api-key-env", env = "NTERACT_TEST_ANACONDA_KEY" 
             },
         );
 
-        let result = connect_hosted_notebook(&domain, "hosted-test")
-            .await
-            .unwrap();
+        let (result, authority) = connect_hosted_bound(&domain, "hosted-test").await.unwrap();
         assert_eq!(result.handle.notebook_id(), "hosted-test");
+        assert_eq!(authority.principal, "anaconda:alice");
+        assert_eq!(authority.requested_scope, "editor");
+        assert!(authority
+            .credentials
+            .matches(&HostedCredentials::resolve(&domain).unwrap()));
+        assert!(result
+            .handle
+            .get_actor_id()
+            .unwrap()
+            .starts_with("anaconda:alice/agent:test:"));
+        let rotated = ResolvedCloudDomain::with_auth_override(
+            format!("http://{addr}"),
+            Some("agent:test".to_string()),
+            CloudAuth::AnacondaApiKey {
+                token: "rotated-secret-key".to_string(),
+            },
+        );
+        assert!(!authority
+            .credentials
+            .matches(&HostedCredentials::resolve(&rotated).unwrap()));
 
         result
             .handle

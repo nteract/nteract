@@ -1,10 +1,34 @@
 # MCP direction: notebook identity and realtime collaboration
 
-Date: 2026-10-09. Status: research proposal; not an accepted ADR or implemented API.
+Date: 2026-10-09. Status: staged implementation and remaining research direction.
 Source check: `3a83bd2684c76367434cbc409a3a9b2db4b27ede` (2026-10-09 main). The inspected MCP, sync, runtime, hosted transport, and MCP App implementations match the earlier investigation checkpoint; intervening differences in those directories are version manifests.
-Prepared from source and standards research with an independent Kilo Fable architecture consultation. The accepted [attachment contract](../adr/mcp-explicit-notebook-attachments.md) remains authoritative until a decision is adopted. Adoption would amend Decision 1 to allow exactly one of an address or handle, and extend Decision 2 with separately owned internal replicas. Existing logical handles keep their deliberate-release/no-TTL contract; any ownerless-pool eviction policy is a new contract, not retroactive handle expiry.
+Prepared from source and standards research with an independent Kilo Fable architecture consultation. The [attachment contract](../adr/mcp-explicit-notebook-attachments.md) now records the approved first migration: ID/domain or handle targeting and separate retained address ownership. Existing logical handles keep their deliberate-release/no-TTL contract; any ownerless-pool eviction policy is a new contract, not retroactive handle expiry.
+
+## First implementation
+
+The first slice fixes local replica actor identity and adds bounded
+`inspect_notebook`. Ordinary operations accept notebook ID/domain or an existing
+handle. ID requests retain and capture already connected, authorized replicas;
+a cold target still requires explicit connect. Shared address owners have no
+TTL/eviction, count toward capacity, and are separate from explicit handle
+ownership. This is a staged subset of the full resolver below: cold projection
+inspection, bridge canonical-address metadata and broader hosted readiness
+qualification remain future work.
+
+`get_results(timeout_secs)` continues an existing execution wait, default zero,
+maximum 50 seconds. `inspect_notebook(after, timeout_secs)` covers notebook-wide
+changes with the same bounds. The old combined wait remains callable with its
+original handle/default contract but leaves the advertised catalog, so inspect
+does not increase tool count. Resources and subscriptions remain first-class.
+
+Actor IDs use a full random UUID per independent writable local replica (and full-entropy hosted nonce) and
+reconstructed recovery peer; shared DocHandles retain one actor. Stable
+principal/operator attribution and historical labels remain readable. Automerge
+0.12's released Authors API is being qualified separately; the collision repair
+does not require changing the dependency or admission model.
 
 ## Recommendation
+
 
 Make notebook identity the ordinary public target. Use `notebook_id` under the MCP server's fixed local authority; hosted calls also name the configured `domain`. Resolve the address once per request into authorized access appropriate to the operation: a ready, captured replica for edits, and an existing replica or side-effect-free authority snapshot for inspection. Keep retention leases, subscriptions, physical replica identity, and execution identity separate.
 
@@ -15,7 +39,7 @@ Deliver this in small stages: fix the known actor defect and make reads dependab
 ## What the investigation established
 
 - The installed swarm passed 104 edits and 52 executions on three notebooks, including concurrent calls from one caller across three targets. Its cells had different IDs across notebooks, and shared-notebook calls did not actually overlap. This is useful bounded routing evidence, not transport/load qualification.
-- A separate isolated real-daemon fixture reproduced create-then-connect in one worker producing distinct writable replicas with identical actors and daemon `DuplicateSeqNumber` rejection. Healthy file-open reuse passed its control. Fix replica identity regardless of pooling or argument naming. Source anchors: `crates/runt-mcp/src/tools/session.rs:1802`, `crates/runtimed/src/notebook_sync_server/identity.rs:100`, and `crates/notebook-sync/src/connect.rs:460`. These experiments are local investigation evidence, not a new committed regression test.
+- A separate isolated real-daemon fixture reproduced create-then-connect in one worker producing distinct writable replicas with identical actors and daemon `DuplicateSeqNumber` rejection. Healthy file-open reuse passed its control. Fix replica identity regardless of pooling or argument naming. Source anchors: `crates/runt-mcp/src/tools/session.rs:1802`, `crates/runtimed/src/notebook_sync_server/identity.rs:100`, and `crates/notebook-sync/src/connect.rs:460`. The implementation adds a real-daemon regression and preserves the healthy reuse control.
 - WebSocket selects a notebook at `/n/{id}/sync` admission and binds subsequent frames to that room. Individual `NotebookRequestEnvelope` operations carry correlation/causal information, not another notebook selector. MCP must resolve its per-call target before borrowing such a bound connection. See `crates/notebook-cloud-transport/src/lib.rs:180` and `crates/notebook-protocol/src/protocol.rs:468`.
 - Local and hosted admission are not identical: local causal admission waits for missing heads; hosted currently rejects them. Hosted readiness still has a connected-replica fallback, and edit permission does not establish compute permission. The API must expose those facts and retain the safety gates.
 - A native integration can own notebook retention through trusted host lifecycle hooks. Generic MCP cannot assume it receives equivalent chat identity; its operations must remain correct when such hooks are absent.
@@ -34,31 +58,30 @@ Deliver this in small stages: fix the known actor defect and make reads dependab
 
 For the mixed installed server, retain the existing `domain` vocabulary: omitted domain always means its configured local daemon; a hosted notebook requires its explicit configured origin. Never consult mutable default-domain, last-opened state, first cache match, or credential availability to guess a target. Return effective authority alongside notebook ID. A future multi-account origin needs an explicit account selector; current origin-only configuration cannot safely guess one.
 
-This vocabulary currently exists in the parser, not the advertised hosted tool contract: `OpenNotebookParams.target` and `.domain` use `#[schemars(skip)]` at `crates/runt-mcp/src/tools/session.rs:1056`. Stage 2 must publish correctly typed hosted selectors and authority discovery in live and packaged catalogs; do not describe hidden dispatch support as a working model-facing feature.
+Configured `domain` is now published for connect/list and ordinary ID-targeted calls. The compatibility `target` locator remains hidden. Live and packaged catalogs must agree; broader authority and bridge discovery remains part of Stage 2.
 
 Room locators, MCP resource URIs, and host-owned file URIs stay separate. Do not reinterpret a `nteract://` representation URI as a credential or raw network endpoint. Keep hosted canonical IDs visible even if an internal bridge uses a local UUID alias. This requires daemon protocol work: `RoomInfo` currently lacks the bridge locator and effective hosted identity/scope (`crates/runtimed-client/src/protocol.rs:510`), although the internal bridge retains the locator and hosted ID (`crates/runtimed/src/notebook_sync_server/hosted_bridge.rs:64`). Stage 2 must expose an authorized, credential-free canonical address mapping and obtain effective capabilities from admission. A bridge alias must not be presented as a different local authority or pooled with a direct hosted connection without compatible identity evidence.
 
 Internally, pool on address plus endpoint/incarnation or hosted generation, authenticated principal/scope/auth epoch, and attribution compatibility. Coalesce concurrent opens per compatible key. Revalidate after connection establishment. An operation that permits peer acquisition may create another replica after a pool miss, unhealthy candidate, or failed optional lookup, so correctness must never depend on perfect pooling. Inspection follows the separate no-launch rule below.
 
-For the local actor fix, use the shipped hosted per-connection nonce as the starting point (`crates/notebook-cloud-transport/src/registry.rs:158`). Separate stable operator attribution from unique replica identity rather than changing the worker operator on every request. Audit typed actor parsing, NotebookDoc/CommentsDoc admission, backing-key attribution comparisons, proxy identity seeding, and presence/comment rendering. Preserve authenticated-principal checks; do not replace them with loose string-prefix matching.
+For the local actor fix, use a full UUID per physical replica; the shipped hosted per-connection nonce illustrates the lifetime boundary (`crates/notebook-cloud-transport/src/registry.rs:158`). Separate stable operator attribution from unique replica identity rather than changing the worker operator on every request. Audit typed actor parsing, NotebookDoc/CommentsDoc admission, backing-key attribution comparisons, proxy identity seeding, and presence/comment rendering. Preserve authenticated-principal checks; do not replace them with loose string-prefix matching.
 
 Each request retains its captured access, including any borrowed replica, until completion. Preserve known admission/outcome and IDs even if the lease ends meanwhile. A lost reply remains uncertain; never replay a mutation automatically. An unavailable ID must not open an empty notebook or choose another authority.
 
 ## Proposed ordinary API
 
-Illustrative signatures, not implemented declarations:
+The implemented ordinary surface (additional bounded inspection options are in tools/list):
 
 ```text
-inspect_notebook(notebook_id, domain?, cell_ids?, page_token?, limit?)
+inspect_notebook(notebook_id, domain?, cell_ids?, start?, count?, after?, timeout_secs=0)
 set_cell(notebook_id, cell_id, source, domain?, ...)
 execute_cell(notebook_id, cell_id, domain?, ...)
-get_results(notebook_id, execution_id, domain?, ...)
-wait_for_notebook_change(notebook_id, cursor?, execution_id?, domain?, timeout?)
+get_results(notebook_id, execution_id, domain?, timeout_secs=0, full_output=false)
 ```
 
 The inspection tool is advertised and bounded, using the same projection/read code as resources. Sharing projections does not imply acquiring an ordinary peer for every read: use an already-authorized replica or a daemon-owned snapshot that cannot auto-launch a kernel. For cold rooms where that is insufficient, return explicit unavailability until a non-launching observer admission is available. Do not silently connect an ordinary peer to satisfy a read. Defaults return a useful summary, stable cell IDs, effective capabilities, heads, truncation/pagination, and a matching cursor when observation is available; otherwise report that observation is unavailable. Do not assume every host discovers resource templates or hidden tools. Current hidden reads are in `crates/runt-mcp/src/tools/mod.rs:329`.
 
-Pagination tokens and observation cursors are distinct. Mutation receipts distinguish locally applied, authority-synced, and file-saved outcomes; a successful edit receipt must not imply a disk checkpoint.
+Current pagination uses offsets over live snapshots, with explicit next offsets/truncation. Compare observation cursors before combining pages; it is not a pinned historical snapshot. Future stable pagination tokens must remain distinct from observation cursors. Mutation receipts distinguish locally applied, authority-synced, and file-saved outcomes; a successful edit receipt must not imply a disk checkpoint.
 
 Execution always references synced cells; required heads establish containment, not a global lock or a guarantee to execute exactly the source the model last saw. Return exact execution IDs and authoritative source snapshots where available. Optional guarded editing/execution can reject an outdated observed source. A local guard must validate and apply atomically, and cannot prevent a concurrent remote change that has not arrived. Same-cell collaboration remains allowed.
 
@@ -139,6 +162,6 @@ Run the same behavioral assertions through local stdio, direct hosted MCP/WebSoc
 ## Open decisions and evidence limits
 
 - Headless idle-kernel retention, capacity refusal, and any ownerless warm-pool eviction policy require an explicit daemon contract and measurement before Stage 2 ships. No timeout is chosen here.
-- No new live hosted, Codex UI, or extension tests ran in this research pass. Prior swarm/probe receipts have their stated scope.
+- Isolated local daemon and fake hosted/proxy fixtures qualify the first implementation. No new live hosted service, installed Codex UI, or extension tests are claimed. Prior swarm/probe receipts retain their stated scope.
 
-The two decisions to settle in review are the ID/domain API contract and peer-pool ownership/eviction semantics. Host-specific rendering, file binding, and event-triggered work remain separately qualified stages.
+The first slice adopts explicit ID/domain targeting with deliberate bounded retention and no eviction. General cold acquisition and ownerless peer eviction remain separate decisions. Host-specific rendering, file binding, and event-triggered work remain separately qualified stages.

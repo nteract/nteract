@@ -944,9 +944,7 @@ async fn install_activated_session(
             .filter(|key| {
                 session.local_daemon_incarnation.as_ref() == Some(&key.incarnation)
                     && session.handle.get_actor_id().is_ok_and(|actor| {
-                        actor
-                            .rsplit_once('/')
-                            .is_some_and(|(_, operator)| operator == key.operator)
+                        crate::replica::belongs_to_operator(&actor, &key.operator)
                     })
             });
         server.attachments.insert(session, reservation);
@@ -1065,22 +1063,19 @@ pub struct OpenNotebookParams {
     /// Either this OR path must be provided, not both.
     #[serde(default)]
     pub notebook_id: Option<String>,
-    /// Hidden domain selector for configured local/cloud connection modes.
+    /// Configured hosted domain; omit for this server's local daemon.
     #[serde(default)]
-    #[schemars(skip)]
     pub domain: Option<String>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListNotebooksParams {
-    /// Hidden domain selector for configured local/cloud connection modes.
+    /// Configured hosted domain; omit for this server's local daemon.
     #[serde(default)]
-    #[schemars(skip)]
     pub domain: Option<String>,
-    /// Hidden listing limit for configured non-default notebook sources.
+    /// Maximum hosted notebooks to list.
     #[serde(default)]
-    #[schemars(skip)]
     pub limit: Option<u16>,
 }
 
@@ -1408,8 +1403,8 @@ async fn connect_hosted_notebook(
     if !lease.is_current() {
         return Ok(superseded_result(lease));
     }
-    match cloud::connect_hosted_notebook(&domain_config, &notebook_id).await {
-        Ok(result) => {
+    match cloud::connect_hosted_bound(&domain_config, &notebook_id).await {
+        Ok((result, authority)) => {
             let handle = &result.handle;
             let peer_label = server.get_peer_label().await;
             crate::presence::announce(handle, &peer_label).await;
@@ -1445,13 +1440,14 @@ async fn connect_hosted_notebook(
                 }
             }
 
-            let session = NotebookSession::hosted_activated(
+            let mut session = NotebookSession::hosted_activated(
                 result.handle,
                 notebook_id.clone(),
                 domain_config.base_url,
                 lease.generation(),
                 lease.target().clone(),
             );
+            session.hosted_authority = Some(authority);
             add_progressive_session_fields(&mut response, &session);
             let call_result = notebook_session_response(response, &notebook_id);
             if let Err(result) = install_activated_session(server, lease, session).await {
@@ -1487,7 +1483,7 @@ async fn connect_local_path_progressive(
     let result = match notebook_sync::connect::connect_open(
         server.socket_path.clone(),
         abs_path.clone(),
-        &server.get_operator().await,
+        &crate::replica::fresh_operator(&server.get_operator().await),
     )
     .await
     {
@@ -1566,7 +1562,7 @@ async fn connect_local_id_progressive(
     let result = match notebook_sync::connect::connect(
         server.socket_path.clone(),
         notebook_id.clone(),
-        &server.get_operator().await,
+        &crate::replica::fresh_operator(&server.get_operator().await),
     )
     .await
     {
@@ -2075,7 +2071,7 @@ pub async fn create_notebook(
             server.socket_path.clone(),
             notebook_sync::connect::CreateNotebookSpec {
                 working_dir,
-                actor_label: server.get_operator().await,
+                actor_label: crate::replica::fresh_operator(&server.get_operator().await),
                 ephemeral,
                 package_manager: explicit_pkg_manager.clone(),
                 dependencies: deps.clone(),

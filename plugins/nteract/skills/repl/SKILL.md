@@ -13,7 +13,7 @@ Prefer the direct pi tools when present:
 - `python_add_dependencies` — batch-add packages and hot-sync the environment.
 - `python_save_notebook` — save the backing notebook.
 
-If only MCP tools are available, use `create_notebook`, `create_cell`, `execute_cell`, `set_cell`, and `get_all_cells`.
+If only MCP tools are available, use `create_notebook`, `create_cell`, `execute_cell`, `set_cell`, `inspect_notebook`, and `get_results`.
 
 ## If the notebook tools aren't appearing
 
@@ -51,53 +51,74 @@ Pass `dependencies` on the first `python` call when imports may be missing. The 
 
 ```
 create_notebook(dependencies=["numpy"])
-# Keep notebook_handle from the successful creation result as h.
-create_cell(notebook_handle=h, source="import numpy as np\nnp.arange(3)", cell_type="code", and_run=true)
+# Keep notebook_id as n and notebook_handle as h for deliberate release.
+create_cell(notebook_id=n, source="import numpy as np\nnp.arange(3)", cell_type="code", and_run=true)
 ```
 
-## MCP attachment handles
+## MCP notebook targets and handles
 
-Every notebook-scoped MCP call requires `notebook_handle`, including calls from
-clients using older MCP protocol versions. Keep the handle returned by a
-successful `create_notebook` or `connect_notebook` for this task and pass it on
-every read, edit, execution, dependency, save, show, and disconnect call.
-`cell_id` identifies a cell inside that notebook; it does not select a notebook.
+Keep `notebook_id` from `create_notebook` or `connect_notebook` and pass it on
+every notebook call. Hosted notebooks also need their configured `domain`;
+omitting it always selects this server's local daemon. A `cell_id` identifies
+a cell inside the selected notebook, never the notebook itself.
 
-One MCP process can serve unrelated chats. Never infer your notebook from the
-last connect call, the process, a client label, or another chat's tool result.
-Keep separate handles when working with multiple notebooks. Repeated connect
-calls acquire separate attachments, so reuse a retained healthy handle when you
-intend to continue the same attachment.
+An existing `notebook_handle` still works instead of ID/domain. It identifies
+one independent attachment, with no TTL. `disconnect_notebook` requires that
+exact handle; expired handles never rebind. Use the target form advertised by
+the running server when working with an older installation.
 
-If the handle expires, reconnect to the original notebook target and retain the
-new handle. An old handle never rebinds to the new connection. If a mutation or
-execution returned an unknown outcome, inspect notebook state and execution
-results before repeating it. Release only the attachment you intend to stop
-using with `disconnect_notebook(notebook_handle=h)`.
+ID calls use an already connected, authorized replica and retain one shared
+address owner per notebook/authority. They do not open a peer or start a kernel.
+If the server returns `notebook_not_connected`, connect to the same ID/domain
+and retry. Releasing the original connect handle leaves the address owner
+available. The `target.notebook_handle` returned by an ID call can deliberately
+release that shared retention; it is not a chat-private lease. Existing separate
+handles and already admitted ID operations remain independent.
+
+One MCP process may serve unrelated chats. Never infer your target from the
+last connect call, client label, or another chat's result. If a mutation's
+outcome is unknown, inspect the notebook and its execution results before
+repeating it.
+
+Use `inspect_notebook(notebook_id=n)` for bounded cells, source previews,
+readiness and resource links. `cell_ids`, `start`/`count`, and `full_source` with
+`source_start`/`source_chars` select bounded chunks. Pagination reads live state;
+compare cursors before combining pages after edits. Resource-aware hosts should
+use the returned resources and subscriptions for ongoing observation. Tool-only
+hosts can call inspect with `after=cursor, timeout_secs=25`; without a cursor it
+returns an immediate baseline.
+
+`execute_cell` and `and_run` already wait for an initial result. If a run is
+still active, continue with `get_results(notebook_id=n, execution_id=e,
+timeout_secs=25)`. This waits for the same run; executing again starts another
+run. Get-results and inspect waits default to zero and allow up to 50 seconds.
+Canceling observation does not interrupt computation. The older
+`wait_for_notebook_change` call remains callable for compatibility but is not
+advertised.
 
 ## Core Workflow
 
 1. **Start or reuse a notebook-backed REPL:**
    - Direct: call `python(...)`; the session is created lazily and state persists.
-   - MCP: call `create_notebook(...)` or `connect_notebook(...)` and retain its `notebook_handle` as `h`.
+   - MCP: call `create_notebook(...)` or `connect_notebook(...)` and retain its `notebook_id` as `n` and release handle as `h`.
 
 2. **Declare dependencies before import-heavy code:**
    - Direct: pass `dependencies` to `python` or call `python_add_dependencies`.
-   - MCP: pass `dependencies` to `create_notebook` or use `manage_dependencies(notebook_handle=h, ...)`.
+   - MCP: pass `dependencies` to `create_notebook` or use `manage_dependencies(notebook_id=n, ...)`.
 
 3. **Run and iterate:**
    - Direct: call `python` repeatedly; variables/imports persist.
-   - MCP: edit with `set_cell(notebook_handle=h, ...)` and rerun with `execute_cell(notebook_handle=h, cell_id=...)`.
+   - MCP: edit with `set_cell(notebook_id=n, ...)` and rerun with `execute_cell(notebook_id=n, cell_id=...)`.
 
 4. **Check your work:**
    - Direct: inspect returned text/images/tables.
-   - MCP: `get_all_cells(notebook_handle=h, format="summary", include_output_summaries=true)`.
+   - MCP: `inspect_notebook(notebook_id=n)` and `get_results(notebook_id=n, execution_id=..., timeout_secs=25)` for an existing run.
 
 5. **Save when done:**
-   `python_save_notebook(...)` or `save_notebook(notebook_handle=h, ...)`.
+   `python_save_notebook(...)` or `save_notebook(notebook_id=n, ...)`.
 
 6. **Open the app for the user:**
-   `show_notebook(notebook_handle=h)` when they ask to see the MCP notebook. This can be disruptive if unexpected.
+   `show_notebook(notebook_id=n)` when they ask to see the MCP notebook. This can be disruptive if unexpected.
 
 ## When to Use This
 

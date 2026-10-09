@@ -26,6 +26,77 @@ fn sync_error(error: Box<notebook_sync::SyncError>) -> McpError {
     McpError::internal_error(error.to_string(), None)
 }
 
+pub(super) fn bounded_timeout(seconds: Option<f64>, default: f64) -> Result<Duration, McpError> {
+    let seconds = seconds.unwrap_or(default);
+    if !seconds.is_finite() || !(0.0..=50.0).contains(&seconds) {
+        return Err(McpError::invalid_params(
+            "timeout_secs must be between 0 and 50",
+            None,
+        ));
+    }
+    Ok(Duration::from_secs_f64(seconds))
+}
+
+pub(super) fn wait_permit(
+    server: &NteractMcp,
+) -> Result<tokio::sync::SemaphorePermit<'_>, McpError> {
+    server.observation_waits.try_acquire().map_err(|_| {
+        McpError::invalid_request(
+            "At most eight notebook waits may be active on this connection",
+            None,
+        )
+    })
+}
+
+/// Explicit attachments may be revoked while waiting. Captured ID operations
+/// retain their exact replica for the admitted call independently of retention.
+pub(super) fn expiration(
+    server: &NteractMcp,
+    handle: &str,
+) -> Result<Option<tokio::sync::watch::Receiver<bool>>, ()> {
+    if crate::targets::captured_session().is_some_and(|session| session.notebook_handle == handle) {
+        return Ok(None);
+    }
+    server
+        .attachments
+        .read_entries()
+        .get(handle)
+        .map(|entry| Some(entry.expiration()))
+        .ok_or(())
+}
+
+pub(super) async fn expired(expiration: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match expiration {
+        Some(expiration) => {
+            if !*expiration.borrow() {
+                let _ = expiration.changed().await;
+            }
+        }
+        None => std::future::pending().await,
+    }
+}
+
+pub(super) fn is_expired(expiration: &Option<tokio::sync::watch::Receiver<bool>>) -> bool {
+    expiration
+        .as_ref()
+        .is_some_and(|expiration| *expiration.borrow())
+}
+
+pub(super) async fn read_or_wait(
+    observer: &ObservationReader,
+    after: Option<&str>,
+    timeout: Duration,
+) -> Result<ChangeRead, McpError> {
+    let initial = observer.read(after).map_err(sync_error)?;
+    if after.is_none() || initial.outcome != ChangeOutcome::Unchanged || timeout.is_zero() {
+        return Ok(initial);
+    }
+    observer
+        .wait(after.unwrap_or(&initial.cursor), timeout)
+        .await
+        .map_err(sync_error)
+}
+
 pub async fn wait_for_notebook_change(
     server: &NteractMcp,
     request: &CallToolRequestParams,
@@ -89,30 +160,26 @@ fn unavailable_attachment(params: &WaitForNotebookChangeParams) -> CallToolResul
     }))
 }
 
-async fn run_wait(
-    server: &NteractMcp,
-    params: &WaitForNotebookChangeParams,
-    notebook_id: &str,
+/// Observe one existing run without submitting work or retaining its writable peer.
+pub(super) async fn observe_execution(
     observer: &ObservationReader,
-    timeout: Duration,
-) -> Result<CallToolResult, McpError> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let initial = observer.read(params.after.as_deref()).map_err(sync_error)?;
+    execution_id: &str,
+    after: Option<&str>,
+    deadline: tokio::time::Instant,
+) -> Result<
+    (
+        ChangeRead,
+        Option<notebook_sync::execution_watch::ExecutionProgressState>,
+    ),
+    McpError,
+> {
+    let initial = observer.read(after).map_err(sync_error)?;
     if matches!(
         initial.outcome,
         ChangeOutcome::Unavailable | ChangeOutcome::ResyncRequired
-    ) || (params.after.is_none() && params.execution_id.is_none())
-    {
-        return Ok(change_result(params, notebook_id, initial, None));
+    ) {
+        return Ok((initial, None));
     }
-    let Some(execution_id) = params.execution_id.as_deref() else {
-        crate::progress::status("Watching notebook edits, outputs, and comments");
-        let change = observer
-            .wait(params.after.as_deref().unwrap_or(&initial.cursor), timeout)
-            .await
-            .map_err(sync_error)?;
-        return Ok(change_result(params, notebook_id, change, None));
-    };
     let mut watcher = observer
         .execution_watcher(execution_id)
         .map_err(sync_error)?;
@@ -140,11 +207,48 @@ async fn run_wait(
     };
     let progress = tokio::select! {
         result = tokio::time::timeout_at(deadline, terminal) => result.ok().flatten(),
-        unavailable = unavailable => return Ok(change_result(params, notebook_id, unavailable?, None)),
+        unavailable = unavailable => return Ok((unavailable?, None)),
     };
     let mut latest = observer
-        .read(Some(params.after.as_deref().unwrap_or(&initial.cursor)))
+        .read(Some(after.unwrap_or(&initial.cursor)))
         .map_err(sync_error)?;
+    if progress.is_none()
+        && !matches!(
+            latest.outcome,
+            ChangeOutcome::Unavailable | ChangeOutcome::ResyncRequired
+        )
+    {
+        latest.outcome = ChangeOutcome::TimedOut;
+    }
+    Ok((latest, progress))
+}
+
+async fn run_wait(
+    server: &NteractMcp,
+    params: &WaitForNotebookChangeParams,
+    notebook_id: &str,
+    observer: &ObservationReader,
+    timeout: Duration,
+) -> Result<CallToolResult, McpError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let initial = observer.read(params.after.as_deref()).map_err(sync_error)?;
+    if matches!(
+        initial.outcome,
+        ChangeOutcome::Unavailable | ChangeOutcome::ResyncRequired
+    ) || (params.after.is_none() && params.execution_id.is_none())
+    {
+        return Ok(change_result(params, notebook_id, initial, None));
+    }
+    let Some(execution_id) = params.execution_id.as_deref() else {
+        crate::progress::status("Watching notebook edits, outputs, and comments");
+        let change = observer
+            .wait(params.after.as_deref().unwrap_or(&initial.cursor), timeout)
+            .await
+            .map_err(sync_error)?;
+        return Ok(change_result(params, notebook_id, change, None));
+    };
+    let (mut latest, progress) =
+        observe_execution(observer, execution_id, params.after.as_deref(), deadline).await?;
     if matches!(
         latest.outcome,
         ChangeOutcome::Unavailable | ChangeOutcome::ResyncRequired
@@ -152,7 +256,6 @@ async fn run_wait(
         return Ok(change_result(params, notebook_id, latest, None));
     }
     let Some(progress) = progress else {
-        latest.outcome = ChangeOutcome::TimedOut;
         return Ok(change_result(params, notebook_id, latest, None));
     };
     if !matches!(
@@ -592,5 +695,70 @@ mod tests {
         );
         assert_eq!(result.structured_content.unwrap()["outcome"], "timed_out");
         stall.abort();
+    }
+    #[tokio::test]
+    async fn inspect_results_and_legacy_wait_share_one_budget() {
+        let server = server();
+        let permits = server.observation_waits.acquire_many(8).await.unwrap();
+        for (name, args) in [
+            (
+                "inspect_notebook",
+                json!({"after":"cursor","timeout_secs":1}),
+            ),
+            (
+                "get_results",
+                json!({"execution_id":"run","timeout_secs":1}),
+            ),
+            (
+                "wait_for_notebook_change",
+                json!({"notebook_handle":"attachment","timeout_secs":1}),
+            ),
+        ] {
+            let request =
+                CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+            let error = super::super::dispatch(&server, &request).await.unwrap_err();
+            assert!(error.message.contains("eight notebook waits"));
+        }
+        drop(permits);
+        assert_eq!(server.observation_waits.available_permits(), 8);
+    }
+
+    #[tokio::test]
+    async fn cancelled_observation_releases_budget_and_keeps_notebook_alive() {
+        let server = std::sync::Arc::new(server());
+        let fixture = fixture();
+        let reader = fixture.owner.reader();
+        let baseline = reader.read(None).unwrap();
+        let waiting = reader.clone();
+        let worker = server.clone();
+        let task = tokio::spawn(async move {
+            let _permit = wait_permit(&worker).unwrap();
+            read_or_wait(&waiting, Some(&baseline.cursor), Duration::from_secs(50)).await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(server.observation_waits.available_permits(), 7);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(server.observation_waits.available_permits(), 8);
+        fixture.notebook.send_replace(edited("after cancellation"));
+        assert_eq!(
+            reader.read(None).unwrap().snapshot.notebook.cells()[0].source,
+            "after cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn attachment_release_wakes_wait_without_waiting_for_an_edit() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let mut receiver = Some(receiver);
+        let waiting = expired(&mut receiver);
+        tokio::pin!(waiting);
+        assert!(tokio::time::timeout(Duration::from_millis(1), &mut waiting)
+            .await
+            .is_err());
+        sender.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap();
     }
 }

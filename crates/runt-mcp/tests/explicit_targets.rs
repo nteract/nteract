@@ -115,24 +115,38 @@ async fn ordinary_legacy_same_target_acquisitions_release_independently_and_expi
 }
 
 #[tokio::test]
-async fn every_initialize_protocol_advertises_required_handles() {
+async fn every_initialize_protocol_advertises_explicit_id_or_handle_targets() {
     for version in support::LEGACY_VERSIONS {
         let fixture = Fixture::start().await;
         let mut wire = fixture.wire();
         wire.initialize(version).await;
         wire.initialized().await;
         let response = wire.request(10, "tools/list", None).await;
-        for tool in result(&response)["tools"].as_array().unwrap() {
-            if mcp_transport::notebook_scoped_tool(tool["name"].as_str().unwrap()) {
-                assert!(
-                    tool["inputSchema"]["required"]
-                        .as_array()
-                        .is_some_and(|fields| fields
-                            .iter()
-                            .any(|field| field == "notebook_handle")),
-                    "{version}: {} needs required notebook_handle",
-                    tool["name"]
-                );
+        let tools = result(&response)["tools"].as_array().unwrap();
+        assert!(tools.iter().any(|tool| tool["name"] == "inspect_notebook"));
+        assert!(!tools
+            .iter()
+            .any(|tool| tool["name"] == "wait_for_notebook_change"));
+        for value in tools {
+            let tool: rmcp::model::Tool = serde_json::from_value(value.clone()).unwrap();
+            if mcp_transport::notebook_scoped_tool(&tool.name) {
+                if mcp_transport::handle_only_tool(&tool.name) {
+                    assert!(
+                        value["inputSchema"]["required"]
+                            .as_array()
+                            .is_some_and(|fields| fields
+                                .iter()
+                                .any(|field| field == "notebook_handle")),
+                        "{version}: {}",
+                        tool.name
+                    );
+                } else {
+                    assert!(
+                        mcp_transport::tool_supports_notebook_ids(&tool),
+                        "{version}: {}",
+                        tool.name
+                    );
+                }
             }
         }
         fixture.stop(wire).await;

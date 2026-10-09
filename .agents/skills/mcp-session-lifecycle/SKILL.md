@@ -38,32 +38,29 @@ an authorization boundary for same-user local clients.
 
 ## Explicit Targets on Every Protocol
 
-Every notebook-scoped `tools/call` requires a nonempty `notebook_handle`,
-including initialize-based clients. This is an application argument, separate
-from MCP protocol negotiation. Missing targets fail before notebook or runtime
-side effects. Discovery and connect/create do not require an existing handle.
+Ordinary notebook calls require exactly one of `notebook_id` (plus configured
+`domain` for hosted notebooks) or `notebook_handle`. Omitted domain is the fixed
+local daemon. Disconnect and the hidden compatibility wait require an exact
+handle. Missing/ambiguous targets fail before effects on every MCP protocol.
 
-Connect/create return a fresh logical attachment and its exact handle. Retain
-that handle for subsequent operations. Repeated same-notebook acquisitions have
-independent ownership and release. Opening B never changes what an A-qualified
-request means. A `cell_id` is resolved inside the explicitly selected notebook.
+ID resolution uses already connected authorized replicas; it never opens a peer
+or launches a kernel. The first ID call retains a separate shared address owner,
+counted under the 128-owner limit, with no TTL/eviction. Local selection checks
+daemon incarnation/operator; hosted selection checks pinned actual credentials,
+operator and authenticated principal. Conflicting principal evidence fails closed.
+Release of an explicit handle does not release the address owner. The ID result's
+`target.notebook_handle` releases that shared retention, not a chat-private lease.
 
-`targets::dispatch` scopes the handle to the request. Access goes through
-`NteractMcp::session_access` and `NotebookSession::access`, cloning owned state
-before awaits. Successful handle-scoped completions revalidate membership;
-expired completion does not claim rollback of already-admitted side effects.
-Original failures, including unknown outcomes, remain intact.
+Each ID request captures its exact replica through completion, preserving known
+cell/execution outcomes after retention release. Exact-handle calls retain their
+membership fences. A `cell_id` is always resolved inside the supplied notebook.
+Cold IDs require an explicit connect; expired handles never rebind as ID requests.
 
-Missing, malformed, unknown or expired tool handles use `isError: true` tool
-results so the model can see the target/refresh correction. Protocol negotiation,
-malformed MCP requests and unknown tool names still use protocol errors;
-resource errors keep their resource contract. A valid captured observation can
-finish with its documented unavailable outcome if its attachment ends.
-
-Tool schemas advertise the required handle, including the startup cache. A
-proxy must not silently discard it when forwarding to an older worker that
-cannot route attachments. Read the proxy's admission checks and version-skew
-fixtures before changing compatibility behavior.
+`targets::dispatch`, `notebook_target::acquire`, `session_access` and
+`NotebookSession::access` separate selection from operation readiness. Preserve
+source/runtime authority and causal execution gates. The proxy checks the exact
+live child's target contract before forwarding; cache/schema rewriting cannot
+prove support. Handle-only workers reject ID requests before dispatch.
 
 Catalog migration and attachment recovery are separate. Prefer standard
 `tools/list_changed` notification and native catalog subscription relisting
@@ -150,9 +147,15 @@ transient failures do not end a live URI lease. A mixed listener survives until
 its last URI ends. Observation receivers do not independently keep notebook
 peers or kernels alive.
 
-`wait_for_notebook_change` is the bounded fallback: explicit handle, optional
-cursor/execution ID, 25-second default and 50-second maximum, with eight waits
-per connection. Canceling observation does not interrupt the kernel.
+Resources/subscriptions remain the ongoing observation API. `inspect_notebook`
+returns bounded cells/source/readiness and a matching cursor; `after` plus
+`timeout_secs` waits for notebook-wide changes. `get_results` waits for an exact
+execution without submitting another run, preserves executed source after edits,
+and checks durable result context against the target notebook. Both default to
+zero and cap at 50 seconds, sharing eight wait permits with the hidden legacy
+`wait_for_notebook_change` (whose 25-second default and handle contract remain).
+Cancellation ends observation, not computation. Retained projections have no
+live cursor; pagination reads live state and callers must compare cursors.
 
 Relevant source: `resources.rs`, `subscriptions.rs`, `tools/observation.rs`,
 proxy `native_subscriptions.rs`, `observation_bridge.rs`, and `child.rs`.

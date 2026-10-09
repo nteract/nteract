@@ -165,7 +165,7 @@ impl ResolvedCloudDomain {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(fallback_operator);
-        format!("{principal}/{operator}:{}", short_nonce())
+        format!("{principal}/{operator}:{}", uuid::Uuid::new_v4())
     }
 }
 
@@ -246,4 +246,27 @@ pub fn normalize_url_domain(url: &Url) -> Result<String, String> {
 
 pub fn short_nonce() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+}
+
+#[cfg(test)]
+mod actor_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_actors_keep_attribution_and_full_replica_entropy() {
+        let domain = ResolvedCloudDomain::with_auth_override(
+            "https://example.com",
+            Some("agent:codex".into()),
+            CloudAuth::OidcBearer {
+                token: "fixture".into(),
+            },
+        );
+        let first = domain.actor_label("user:alice", "ignored");
+        let second = domain.actor_label("user:alice", "ignored");
+        assert_ne!(first, second);
+        for actor in [first, second] {
+            let nonce = actor.strip_prefix("user:alice/agent:codex:").unwrap();
+            assert_eq!(uuid::Uuid::parse_str(nonce).unwrap().get_version_num(), 4);
+        }
+    }
 }

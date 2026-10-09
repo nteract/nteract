@@ -46,6 +46,8 @@ pub struct RunAllCellsParams {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetResultsParams {
+    /// Wait 0–50 seconds for this existing run to settle. Default 0 (read immediately); never submits a new run.
+    pub timeout_secs: Option<f64>,
     /// The execution ID returned by `execute_cell`, `set_cell(and_run=true)`,
     /// `create_cell(and_run=true)`, or `run_all_cells`.
     pub execution_id: String,
@@ -382,98 +384,274 @@ pub async fn get_results(
         McpError::invalid_params("Missing required parameter: execution_id", None)
     })?;
     let full_output = arg_bool(request, "full_output").unwrap_or(false);
-
-    let (handle, access_error, metadata) = match server
-        .session_access(crate::session::SessionRequirement::RuntimeRead)
-        .await
-    {
-        Ok(Some(access)) => {
-            let metadata = server.local_metadata_for_access(&access);
-            (Some(access.handle), None, metadata)
-        }
-        Ok(None) => (None, None, server.local_runtime_metadata().await),
-        Err(error) => {
-            // Durable output reads do not require a ready runtime replica.
-            // Keep the resource bridge for a readable notebook while its
-            // runtime is still connecting.
-            let metadata = match server
-                .session_access(crate::session::SessionRequirement::DocumentRead)
-                .await
-            {
-                Ok(Some(access)) => server.local_metadata_for_access(&access),
-                _ => server.local_runtime_metadata().await,
-            };
-            (None, Some(error), metadata)
-        }
-    };
-
-    if let Some(handle) = handle.as_ref() {
-        let runtime_state = handle.get_runtime_state().map_err(|_| {
-            McpError::internal_error("Failed to read RuntimeStateDoc".to_string(), None)
-        })?;
-        if let Some(exec) = runtime_state.executions.get(execution_id) {
-            let cell = handle.get_cells().into_iter().find(|cell| {
-                handle.get_cell_execution_id(&cell.id).as_deref() == Some(execution_id)
-            });
-            let mut execution_cell_map = execution::execution_cell_map(handle);
-            if let Some(cell) = &cell {
-                execution_cell_map
-                    .entry(execution_id.to_string())
-                    .or_insert_with(|| cell.id.clone());
-            }
-            return render_execution_result(
-                &metadata,
-                execution_id,
-                exec,
-                Some(&runtime_state.comms),
-                cell,
-                Some(execution_cell_map),
-                full_output,
-            )
-            .await;
-        }
-    }
-
-    let record = if let Some(path) = &metadata.execution_store_path {
-        runtimed_client::execution_store::ExecutionStore::new(path)
-            .read_record(execution_id)
-            .await
-    } else {
+    // Preserve the existing CLI/string handling for full_output. Only the new
+    // timeout argument needs numeric validation here.
+    let timeout_secs = request
+        .arguments
+        .as_ref()
+        .and_then(|args| args.get("timeout_secs"))
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value.as_f64().ok_or_else(|| {
+                McpError::invalid_params("timeout_secs must be a number between 0 and 50", None)
+            })
+        })
+        .transpose()?;
+    let timeout = super::observation::bounded_timeout(timeout_secs, 0.0)?;
+    let deadline = tokio::time::Instant::now() + timeout;
+    let _permit = if timeout.is_zero() {
         None
+    } else {
+        Some(super::observation::wait_permit(server)?)
     };
-    if let Some(record) = record {
-        let exec = runtime_doc::ExecutionState {
-            status: record.status,
-            execution_count: record.execution_count,
-            success: record.success,
-            outputs: record.outputs,
-            source: record.source,
-            cell_id: record.cell_id.clone(),
-            seq: record.seq,
-            submitted_by_actor_label: record.submitted_by_actor_label,
+
+    let read = async {
+        // Durable results still require one readable, explicitly selected notebook.
+        // A global execution UUID is not proof that it belongs to this target.
+        let (access, runtime_handle, access_error) = match server
+            .session_access(crate::session::SessionRequirement::RuntimeRead)
+            .await
+        {
+            // Runtime reads remain available when source recovery gates edits.
+            Ok(Some(access)) => {
+                let handle = access.handle.clone();
+                (access, Some(handle), None)
+            }
+            Ok(None) => (require_session_access!(server, ProjectionRead), None, None),
+            Err(error) => (
+                require_session_access!(server, ProjectionRead),
+                None,
+                Some(error),
+            ),
         };
-        let execution_cell_map = record
-            .cell_id
-            .map(|cell_id| std::collections::HashMap::from([(execution_id.to_string(), cell_id)]));
-        return render_execution_result(
+        let metadata = server.local_metadata_for_access(&access);
+        if let Some(handle) = runtime_handle.as_ref() {
+            let state = handle
+                .get_runtime_state()
+                .map_err(|_| McpError::internal_error("Failed to read RuntimeStateDoc", None))?;
+            if let Some(exec) = state.executions.get(execution_id) {
+                if timeout.is_zero() {
+                    return render_execution_result(
+                        &metadata,
+                        execution_id,
+                        exec,
+                        Some(&state.comms),
+                        exec.cell_id.as_deref().and_then(|id| handle.get_cell(id)),
+                        Some(execution::execution_cell_map(handle)),
+                        full_output,
+                    )
+                    .await;
+                }
+            } else if let Some(record) = read_durable_execution(
+                &metadata,
+                &access.notebook_id,
+                access.is_hosted,
+                execution_id,
+            )
+            .await
+            {
+                return render_durable_result(&metadata, execution_id, record, full_output).await;
+            }
+            if !timeout.is_zero() {
+                let Ok(mut expiration) =
+                    super::observation::expiration(server, &access.notebook_handle)
+                else {
+                    return Ok(unavailable_result(execution_id, "attachment_expired"));
+                };
+                let Some((_, observer)) =
+                    server.observer_for_handle(&access.notebook_handle).await?
+                else {
+                    return Ok(unavailable_result(execution_id, "attachment_unavailable"));
+                };
+                let result = tokio::select! {
+                    result = wait_existing_result(&metadata, &observer, execution_id, deadline, full_output) => result?,
+                    _ = super::observation::expired(&mut expiration) => return Ok(unavailable_result(execution_id, "attachment_expired")),
+                };
+                if super::observation::is_expired(&expiration) {
+                    return Ok(unavailable_result(execution_id, "attachment_expired"));
+                }
+                return Ok(result);
+            }
+        }
+        if let Some(record) = read_durable_execution(
             &metadata,
+            &access.notebook_id,
+            access.is_hosted,
             execution_id,
-            &exec,
-            None,
-            None,
-            execution_cell_map,
-            full_output,
         )
-        .await;
+        .await
+        {
+            return render_durable_result(&metadata, execution_id, record, full_output).await;
+        }
+        if let Some(error) = access_error {
+            return super::session_access_error(error);
+        }
+        tool_error(&format!("Execution not found in notebook {}: {execution_id}. It may have been evicted and no notebook-qualified durable result record was found.", access.notebook_id))
+    };
+    if timeout.is_zero() {
+        read.await
+    } else {
+        match tokio::time::timeout_at(deadline, read).await {
+            Ok(result) => result,
+            Err(_) => Ok(CallToolResult::structured(
+                serde_json::json!({"execution_id":execution_id,"outcome":"timed_out","execution_status":null,"outputs_pending":true}),
+            )),
+        }
     }
+}
 
-    if let Some(error) = access_error {
-        return super::session_access_error(error);
+async fn read_durable_execution(
+    metadata: &crate::LocalRuntimeMetadata,
+    notebook_id: &str,
+    is_hosted: bool,
+    execution_id: &str,
+) -> Option<runtimed_client::execution_store::ExecutionRecord> {
+    if is_hosted {
+        return None;
     }
+    let record = runtimed_client::execution_store::ExecutionStore::new(
+        metadata.execution_store_path.as_ref()?,
+    )
+    .read_record(execution_id)
+    .await?;
+    // Old path-only contexts cannot establish identity after a path is rebound.
+    (record.context_kind == "notebook"
+        && record.context_id == notebook_id
+        && record.execution_id == execution_id)
+        .then_some(record)
+}
 
-    tool_error(&format!(
-        "Execution not found: {execution_id}. It may have been evicted and no durable result record was found."
-    ))
+async fn render_durable_result(
+    metadata: &crate::LocalRuntimeMetadata,
+    execution_id: &str,
+    record: runtimed_client::execution_store::ExecutionRecord,
+    full_output: bool,
+) -> Result<CallToolResult, McpError> {
+    let exec = runtime_doc::ExecutionState {
+        status: record.status,
+        execution_count: record.execution_count,
+        success: record.success,
+        outputs: record.outputs,
+        source: record.source,
+        cell_id: record.cell_id.clone(),
+        seq: record.seq,
+        submitted_by_actor_label: record.submitted_by_actor_label,
+    };
+    let mapping = record
+        .cell_id
+        .map(|id| std::collections::HashMap::from([(execution_id.to_owned(), id)]));
+    render_execution_result(
+        metadata,
+        execution_id,
+        &exec,
+        None,
+        None,
+        mapping,
+        full_output,
+    )
+    .await
+}
+
+fn unavailable_result(execution_id: &str, reason: &str) -> CallToolResult {
+    CallToolResult::structured(
+        serde_json::json!({"execution_id":execution_id,"outcome":"unavailable","reason":reason}),
+    )
+}
+
+async fn wait_existing_result(
+    metadata: &crate::LocalRuntimeMetadata,
+    observer: &crate::observation::ObservationReader,
+    execution_id: &str,
+    deadline: tokio::time::Instant,
+    full_output: bool,
+) -> Result<CallToolResult, McpError> {
+    use crate::observation::ChangeOutcome;
+    use notebook_sync::execution_watch::ExecutionTerminalReason;
+    let (read, progress) =
+        super::observation::observe_execution(observer, execution_id, None, deadline).await?;
+    if read.outcome == ChangeOutcome::Unavailable {
+        return Ok(unavailable_result(execution_id, "attachment_unavailable"));
+    }
+    let reason = progress
+        .as_ref()
+        .and_then(|value| value.terminal_reason.as_ref());
+    if let Some(reason) = reason.filter(|reason| {
+        !matches!(
+            reason,
+            ExecutionTerminalReason::Done
+                | ExecutionTerminalReason::Error
+                | ExecutionTerminalReason::Cancelled
+                | ExecutionTerminalReason::Interrupted
+        )
+    }) {
+        return Ok(unavailable_result(execution_id, reason.as_str()));
+    }
+    let Some(exec) = read.snapshot.runtime.executions.get(execution_id) else {
+        return Ok(CallToolResult::structured(
+            serde_json::json!({"execution_id":execution_id,"outcome":"timed_out","execution_status":null}),
+        ));
+    };
+    let outcome = if read.outcome == ChangeOutcome::TimedOut {
+        "timed_out"
+    } else {
+        "completed"
+    };
+    // Keep partial state available even when the wait used its deadline. Do not
+    // begin potentially slow output resolution after the deadline has elapsed.
+    let partial = || {
+        CallToolResult::structured(serde_json::json!({
+            "execution_id":execution_id,"outcome":"timed_out","execution_status":exec.status,
+            "cell_id":exec.cell_id,"execution_count":exec.execution_count,
+            "output_count":exec.outputs.len(),"outputs_pending":true,
+        }))
+    };
+    if tokio::time::Instant::now() >= deadline {
+        return Ok(partial());
+    }
+    let cell = exec
+        .cell_id
+        .as_deref()
+        .and_then(|id| read.snapshot.notebook.get_cell(id))
+        .cloned();
+    let mapping = exec
+        .cell_id
+        .as_ref()
+        .map(|id| std::collections::HashMap::from([(execution_id.to_owned(), id.clone())]));
+    let mut result = match tokio::time::timeout_at(
+        deadline,
+        render_execution_result(
+            metadata,
+            execution_id,
+            exec,
+            Some(&read.snapshot.runtime.comms),
+            cell,
+            mapping,
+            full_output,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => return Ok(partial()),
+    };
+    if observer
+        .read(None)
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?
+        .outcome
+        == ChangeOutcome::Unavailable
+    {
+        return Ok(unavailable_result(execution_id, "attachment_unavailable"));
+    }
+    let data = result
+        .structured_content
+        .get_or_insert_with(|| serde_json::json!({}));
+    data["outcome"] = serde_json::json!(outcome);
+    data["execution_id"] = serde_json::json!(execution_id);
+    data["execution_status"] = serde_json::json!(exec.status);
+    result.content.push(formatting::assistant_text(format!(
+        "Execution {execution_id}: {outcome}"
+    )));
+    Ok(result)
 }
 
 pub(super) async fn render_execution_result(
@@ -499,6 +677,7 @@ pub(super) async fn render_execution_result(
     let cell_id = cell
         .as_ref()
         .map(|cell| cell.id.as_str())
+        .or(exec.cell_id.as_deref())
         .unwrap_or(execution_id);
 
     // Build header with execution state front and center
@@ -565,7 +744,10 @@ pub(super) async fn render_execution_result(
     // Build structured content from the execution's output manifests
     let fallback_source = exec.source.as_deref().unwrap_or_default();
     let fallback_cell = notebook_doc::CellSnapshot {
-        id: execution_id.to_string(),
+        id: exec
+            .cell_id
+            .clone()
+            .unwrap_or_else(|| execution_id.to_string()),
         cell_type: "code".to_string(),
         position: String::new(),
         source: fallback_source.to_string(),
@@ -577,7 +759,10 @@ pub(super) async fn render_execution_result(
         resolved_assets: std::collections::HashMap::new(),
         attachments: std::collections::HashMap::new(),
     };
-    let snap = cell.unwrap_or(fallback_cell);
+    let mut snap = cell.unwrap_or(fallback_cell);
+    // Execution output always belongs to the captured executed source, not a later edit.
+    snap.source = fallback_source.to_string();
+    snap.cell_type = "code".to_owned();
     let mut structured_content = if exec.outputs.is_empty() {
         None
     } else {
@@ -616,8 +801,28 @@ pub(super) async fn render_execution_result(
         })
     };
 
+    let mut data = structured_content
+        .take()
+        .unwrap_or_else(|| serde_json::json!({}));
+    data["outcome"] = serde_json::json!("snapshot");
+    data["execution_id"] = serde_json::json!(execution_id);
+    data["execution_status"] = serde_json::json!(exec.status);
+    data["cell_id"] = serde_json::json!(exec.cell_id);
+    data["execution_source_available"] = serde_json::json!(exec.source.is_some());
+    if exec.source.is_none() {
+        if let Some(cell) = data
+            .get_mut("cell")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            cell.remove("source");
+            cell.insert(
+                "execution_source_available".into(),
+                serde_json::json!(false),
+            );
+        }
+    }
     let mut call_result = rmcp::model::CallToolResult::success(items);
-    call_result.structured_content = structured_content.take();
+    call_result.structured_content = Some(data);
     Ok(call_result)
 }
 
@@ -678,70 +883,317 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn get_results_reads_durable_store_without_active_session() {
+    async fn durable_fixture() -> (tempfile::TempDir, crate::LocalRuntimeMetadata) {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = runtimed_client::execution_store::ExecutionStore::new(tmp.path());
-        store
-            .write_record(runtimed_client::execution_store::ExecutionRecord {
+        for (id, context) in [
+            ("run-a", "notebook-a"),
+            ("path-only", "/tmp/notebook.ipynb"),
+        ] {
+            store.write_record(runtimed_client::execution_store::ExecutionRecord {
                 schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
-                execution_id: "exec-durable".to_string(),
-                context_kind: "notebook".to_string(),
-                context_id: "/tmp/notebook.ipynb".to_string(),
-                notebook_path: Some("/tmp/notebook.ipynb".to_string()),
-                cell_id: Some("cell-1".to_string()),
-                status: "done".to_string(),
-                success: Some(true),
-                execution_count: Some(3),
-                source: Some("print('hi')".to_string()),
-                seq: Some(0),
-                submitted_by_actor_label: None,
-                outputs: vec![serde_json::json!({
-                    "output_type": "stream",
-                    "name": "stdout",
-                    "text": {"inline": "hi\n"}
-                })],
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            })
+                execution_id: id.into(), context_kind:"notebook".into(), context_id:context.into(),
+                notebook_path:Some("/tmp/notebook.ipynb".into()), cell_id:Some("cell-1".into()),
+                status:"done".into(),success:Some(true),execution_count:Some(3),source:Some("print('notebook A secret')".into()),
+                seq:Some(0),submitted_by_actor_label:None,
+                outputs:vec![serde_json::json!({"output_type":"stream","name":"stdout","text":{"inline":"notebook A secret"}})],
+                created_at:chrono::Utc::now(),updated_at:chrono::Utc::now(),
+            }).await.unwrap();
+        }
+        let metadata = NteractMcp::new(PathBuf::from("unused.sock"), None, None)
+            .with_execution_store_path(Some(tmp.path().into()))
+            .local_runtime_metadata()
+            .await;
+        (tmp, metadata)
+    }
+
+    #[tokio::test]
+    async fn durable_results_require_exact_local_notebook_identity() {
+        let (_tmp, metadata) = durable_fixture().await;
+        let record = read_durable_execution(&metadata, "notebook-a", false, "run-a")
             .await
             .unwrap();
-
-        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None)
-            .with_execution_store_path(Some(tmp.path().to_path_buf()));
-        let result = get_results(
-            &server,
-            &make_request(serde_json::json!({"execution_id": "exec-durable"})),
-        )
-        .await
-        .unwrap();
-
-        assert_ne!(result.is_error, Some(true));
-        let content = serde_json::to_string(&result.content).unwrap();
-        assert!(content.contains("exec-durable"));
-        assert!(content.contains("hi"));
-        assert_eq!(
-            result.structured_content.unwrap()["cell"]["execution_id"],
-            "exec-durable"
+        let result = render_durable_result(&metadata, "run-a", record, false)
+            .await
+            .unwrap();
+        assert!(serde_json::to_string(&result.content)
+            .unwrap()
+            .contains("notebook A secret"));
+        // A known execution ID does not grant access through B or a hosted notebook.
+        assert!(
+            read_durable_execution(&metadata, "notebook-b", false, "run-a")
+                .await
+                .is_none()
+        );
+        assert!(
+            read_durable_execution(&metadata, "notebook-a", true, "run-a")
+                .await
+                .is_none()
+        );
+        assert!(
+            read_durable_execution(&metadata, "notebook-a", false, "path-only")
+                .await
+                .is_none()
+        );
+        assert!(
+            read_durable_execution(&metadata, "notebook-a", false, "missing")
+                .await
+                .is_none()
         );
     }
 
     #[tokio::test]
-    async fn get_results_missing_durable_record_omits_unknown_cell_recovery_hint() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None)
-            .with_execution_store_path(Some(tmp.path().to_path_buf()));
+    async fn get_results_without_target_cannot_read_global_durable_records() {
+        let (tmp, _) = durable_fixture().await;
+        let server = NteractMcp::new("unused.sock".into(), None, None)
+            .with_execution_store_path(Some(tmp.path().into()));
         let result = get_results(
             &server,
-            &make_request(serde_json::json!({"execution_id": "exec-missing"})),
+            &make_request(serde_json::json!({"execution_id":"run-a"})),
         )
         .await
         .unwrap();
-
         assert_eq!(result.is_error, Some(true));
-        let content = serde_json::to_string(&result.content).unwrap();
-        assert!(content.contains("Execution not found"));
-        assert!(!content.contains("get_cell("));
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("notebook A secret"));
+    }
+
+    async fn ready_test_session(id: &str) -> crate::session::NotebookSession {
+        use notebook_protocol::connection::{
+            FrameSource, NotebookFrameType, TypedNotebookFrame, WriterFrameSink,
+        };
+        use notebook_protocol::protocol::{
+            InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire,
+            SessionControlMessage, SessionSyncStatusWire,
+        };
+        struct Frames(Option<TypedNotebookFrame>);
+        impl FrameSource for Frames {
+            async fn recv_frame(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+                if let Some(frame) = self.0.take() {
+                    Some(Ok(frame))
+                } else {
+                    std::future::pending().await
+                }
+            }
+        }
+        let frame = TypedNotebookFrame {
+            frame_type: NotebookFrameType::SessionControl,
+            payload: serde_json::to_vec(&SessionControlMessage::SyncStatus(
+                SessionSyncStatusWire {
+                    notebook_doc: NotebookDocPhaseWire::Interactive,
+                    runtime_state: RuntimeStatePhaseWire::Ready,
+                    initial_load: InitialLoadPhaseWire::NotNeeded,
+                },
+            ))
+            .unwrap(),
+        };
+        let peer = notebook_sync::connect::connect_frame_io(
+            id.into(),
+            "agent:results-test",
+            Frames(Some(frame)),
+            WriterFrameSink::new(tokio::io::sink()),
+        )
+        .await
+        .unwrap()
+        .handle;
+        peer.await_session_ready_timeout(Duration::from_secs(1))
+            .await
+            .unwrap();
+        crate::session::NotebookSession::local(peer, id.into(), None, None)
+    }
+
+    #[tokio::test]
+    async fn get_results_dispatch_cannot_read_a_through_target_b() {
+        let (tmp, _) = durable_fixture().await;
+        let server = NteractMcp::new("unused.sock".into(), None, None)
+            .with_execution_store_path(Some(tmp.path().into()));
+        for (id, allowed) in [("notebook-b", false), ("notebook-a", true)] {
+            let session = ready_test_session(id).await;
+            let handle = session.notebook_handle.clone();
+            server
+                .attachments
+                .insert(session, server.attachments.reserve().unwrap());
+            let result = crate::targets::dispatch(
+                &server,
+                &make_request(serde_json::json!({"notebook_handle":handle,"execution_id":"run-a"})),
+            )
+            .await
+            .unwrap();
+            let text = serde_json::to_string(&result).unwrap();
+            assert_eq!(text.contains("notebook A secret"), allowed, "{text}");
+            assert_eq!(result.is_error, Some(!allowed), "{text}");
+        }
+    }
+
+    fn execution_state(source: Option<&str>) -> runtime_doc::ExecutionState {
+        serde_json::from_value(serde_json::json!({"cell_id":"cell-1","source":source,"status":"done","outputs":[{"output_type":"stream","name":"stdout","text":{"inline":"captured output"}}]})).unwrap()
+    }
+
+    #[tokio::test]
+    async fn execution_rendering_never_pairs_old_outputs_with_new_cell_source() {
+        let metadata = NteractMcp::new("unused.sock".into(), None, None)
+            .local_runtime_metadata()
+            .await;
+        let edited = crate::observation::tests::edited("new unexecuted source");
+        let mut current_cell = edited.cells().first().unwrap().clone();
+        current_cell.cell_type = "markdown".into();
+        for source in [Some("executed source"), None] {
+            let result = render_execution_result(
+                &metadata,
+                "old-run",
+                &execution_state(source),
+                None,
+                Some(current_cell.clone()),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+            let serialized = serde_json::to_string(&result).unwrap();
+            assert!(!serialized.contains("new unexecuted source"));
+            let data = result.structured_content.unwrap();
+            assert_eq!(data["execution_source_available"], source.is_some());
+            assert_eq!(data["cell"]["cell_type"], "code");
+            if let Some(source) = source {
+                assert_eq!(data["cell"]["source"], source);
+            } else {
+                assert!(data["cell"].get("source").is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn get_results_wait_follows_exact_run_through_rerun_and_trailing_output() {
+        let fixture = crate::observation::tests::fixture();
+        fixture
+            .notebook
+            .send_replace(crate::observation::tests::edited("new run source"));
+        fixture.notebook.send_modify(|view| {
+            std::sync::Arc::make_mut(&mut view.execution_pointers)
+                .insert("cell-1".into(), "new-run".into());
+        });
+        fixture.runtime.send_modify(|state| {
+            let mut old = execution_state(Some("old run source"));
+            old.status = "running".into();
+            old.outputs.clear();
+            state.executions.insert("old-run".into(), old);
+            state
+                .executions
+                .insert("new-run".into(), execution_state(Some("new run source")));
+        });
+        let publisher = fixture.runtime.clone();
+        let updates = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            publisher.send_modify(|state| {
+                *state.executions.get_mut("old-run").unwrap() =
+                    execution_state(Some("old run source"));
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            publisher.send_modify(|state| { state.executions.get_mut("old-run").unwrap().outputs.push(serde_json::json!({"output_type":"stream","name":"stdout","text":{"inline":"trailing output"}})); });
+        });
+        let metadata = NteractMcp::new("unused.sock".into(), None, None)
+            .local_runtime_metadata()
+            .await;
+        let result = wait_existing_result(
+            &metadata,
+            &fixture.owner.reader(),
+            "old-run",
+            tokio::time::Instant::now() + Duration::from_secs(2),
+            false,
+        )
+        .await
+        .unwrap();
+        updates.await.unwrap();
+        let data = result.structured_content.as_ref().unwrap();
+        assert_eq!(data["outcome"], "completed");
+        assert_eq!(data["execution_id"], "old-run");
+        assert_eq!(data["cell"]["source"], "old run source");
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(text.contains("trailing output"));
+        assert!(!text.contains("new run source"));
+        assert_eq!(fixture.runtime.borrow().executions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_results_wait_timeout_and_observer_release_never_submit_or_interrupt() {
+        let fixture = crate::observation::tests::fixture();
+        let metadata = NteractMcp::new("unused.sock".into(), None, None)
+            .local_runtime_metadata()
+            .await;
+        fixture.runtime.send_modify(|state| {
+            let mut run = execution_state(Some("pending"));
+            run.status = "running".into();
+            state.executions.insert("pending-run".into(), run);
+            state
+                .executions
+                .insert("unrelated".into(), execution_state(Some("done")));
+        });
+        let observer = fixture.owner.reader();
+        let result = wait_existing_result(
+            &metadata,
+            &observer,
+            "pending-run",
+            tokio::time::Instant::now() + Duration::from_millis(10),
+            false,
+        )
+        .await
+        .unwrap();
+        let data = result.structured_content.unwrap();
+        assert_eq!(data["outcome"], "timed_out");
+        assert_eq!(data["execution_status"], "running");
+        assert_eq!(
+            fixture.runtime.borrow().executions["pending-run"].status,
+            "running"
+        );
+        drop(fixture.owner);
+        let result = wait_existing_result(
+            &metadata,
+            &observer,
+            "pending-run",
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.structured_content.unwrap()["outcome"], "unavailable");
+        assert_eq!(fixture.runtime.borrow().executions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_results_keeps_full_output_opt_in() {
+        let mut metadata = NteractMcp::new("unused.sock".into(), None, None)
+            .local_runtime_metadata()
+            .await;
+        let mut exec = execution_state(Some("source"));
+        let text = (0..1000)
+            .map(|n| format!("line {n}: a long output line\n"))
+            .collect::<String>();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hash = "a".repeat(64);
+        std::fs::create_dir_all(tmp.path().join(&hash[..2])).unwrap();
+        std::fs::write(tmp.path().join(&hash[..2]).join(&hash[2..]), &text).unwrap();
+        metadata.blob_store_path = Some(tmp.path().into());
+        exec.outputs = vec![
+            serde_json::json!({"output_type":"stream","name":"stdout","text":{"blob":hash,"size":text.len()},"llm_preview":{"head":"line 0","tail":"line 999","total_bytes":text.len(),"total_lines":1000}}),
+        ];
+        let preview = render_execution_result(&metadata, "run", &exec, None, None, None, false)
+            .await
+            .unwrap();
+        let full = render_execution_result(&metadata, "run", &exec, None, None, None, true)
+            .await
+            .unwrap();
+        let text_content = |result: &CallToolResult| {
+            result
+                .content
+                .iter()
+                .filter_map(|item| item.as_text())
+                .map(|item| item.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(text_content(&full).contains("line 500:"));
+        assert!(text_content(&full).len() > text_content(&preview).len());
     }
 
     #[test]
